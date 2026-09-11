@@ -325,8 +325,8 @@ describe('/health typed shape (AC10a)', () => {
   const providerOperationAdoptionRemedies = [
     { kind: 'restart-coordinator' },
     { kind: 'remote-settlement' },
-    { kind: 'recovery-quarantine-discard', allowReadable: false },
-    { kind: 'recovery-quarantine-clear' },
+    { kind: 'recovery-quarantine-discard', command: { kind: 'list' } },
+    { kind: 'recovery-quarantine-clear', command: { kind: 'list' } },
     { kind: 'external-repair' },
   ] as const;
 

@@ -6,7 +6,7 @@ import {
   MAX_SETTLED_UNBOUND_STATUS_ENTRIES,
 } from '#src/coordinator/services/recovery/settled-unbound-status.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
-import { SETTLED_UNBOUND_STATUS_BOUNDARY, SETTLED_UNBOUND_STATUS_REMEDIATION } from '#src/recovery/source-registry.js';
+import { SETTLED_UNBOUND_STATUS_BOUNDARY } from '#src/recovery/source-registry.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
@@ -45,7 +45,7 @@ describe('settled unbound status', () => {
           errorMessage: expect.stringContaining(
             `job '${record.operation.jobId}' operation '${record.operation.operationId}'`,
           ),
-          detail: expect.stringContaining(SETTLED_UNBOUND_STATUS_REMEDIATION.exit),
+          detail: expect.stringContaining('command=coral-cli backend recovery-quarantine list'),
         }),
       ]),
     );

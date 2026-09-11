@@ -58,6 +58,7 @@ import {
 import type { Principal } from '../../security/principal.js';
 import { principalToWire } from '../../security/principal-wire.js';
 import { CoralSetupError } from '../../runtime/errors.js';
+import { formatProviderOperationRemedy } from '../../recovery/provider-operation-remedy.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
 import { buildTransportErrorResponse } from '../../transport/error-response.js';
 import {
@@ -805,7 +806,18 @@ export function createCoordinatorCore(
           kind: 'recovery-in-progress',
           code: 'backend_recovering',
           message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
-          remediation: 'Wait for startup recovery to finish, then run this command again.',
+          remediation: [
+            'Wait for startup recovery to finish.',
+            formatProviderOperationRemedy({
+              kind: 'recovery-quarantine-discard',
+              command: {
+                kind: 'discard-provider-operation',
+                key: request.key,
+                revision: `fingerprint:${request.revision}`,
+                allowReadable: request.allowReadable === true,
+              },
+            }),
+          ].join('\n'),
         });
       }
       const discard = createUnreadableProviderOperationDiscardService({

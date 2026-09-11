@@ -21,6 +21,7 @@ import {
 } from '../../../jobs/runtime-meta-store.js';
 import type { DurableCliContainmentStatus } from '../../../jobs/runtime-meta.js';
 import type { RecoveryDisposition, RecoverySettlementFact } from '../../../recovery/containment.js';
+import { formatProviderOperationRemedy } from '../../../recovery/provider-operation-remedy.js';
 import { installCoordinatorJobRetryPolicy } from './retry-plans.js';
 import { COORDINATOR_NOT_APPLICABLE_FACTS, type QueuedRecoverableJob, type RunningRecoverableJob } from './actions.js';
 import { buildRecoverySnapshot, type CoordinatorRecoveryItem } from './snapshot.js';
@@ -357,7 +358,7 @@ export function createCoordinatorStartupRecovery(
             jobId: ownership.operation.jobId,
             operationId: ownership.operation.operationId,
             reason: ownership.bindingDisposition.reason,
-            exit: ownership.bindingDisposition.exit,
+            remedy: ownership.bindingDisposition.remedy,
           });
         }
         log(`${reason}\n`);
@@ -376,13 +377,13 @@ export function createCoordinatorStartupRecovery(
           hold.kind === 'operation' ? `operation=${hold.operationId}` : `record=${JSON.stringify(hold.recordKey)}`;
         return (
           `provider operation job=${hold.jobId} ${subject} reason=${JSON.stringify(hold.reason)} ` +
-          `exit=${JSON.stringify(hold.exit)}`
+          formatProviderOperationRemedy(hold.remedy)
         );
       });
       if (durableHoldRemains) {
         heldSubjects.push('durable containment awaiting repair or operator abandonment');
       }
-      log(`Recovery reconciliation remains held: ${heldSubjects.join('; ')}. Launch fence lifted.\n`);
+      log(`Recovery reconciliation remains held:\n${heldSubjects.join('\n')}\nLaunch fence lifted.\n`);
       return {
         kind: 'held',
         progressStore,

@@ -10,6 +10,7 @@ import {
   unreadableProviderOperationSubject,
   type ProviderOperationAdoptionRemedy,
 } from '#src/recovery/unreadable-provider-operation.js';
+import { formatProviderOperationRemedy } from '#src/recovery/provider-operation-remedy.js';
 import type { RecoveryQuarantinePort } from '#src/recovery/containment.js';
 import { createRecoveryQuarantineRetryService, createRecoverySourceRegistry } from '#src/recovery/source-registry.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -164,36 +165,25 @@ describe('unreadable provider operation recovery quarantine', () => {
   });
 
   it.each([
+    { remedy: { kind: 'restart-coordinator' } as const },
+    { remedy: { kind: 'remote-settlement' } as const },
+    { remedy: { kind: 'recovery-quarantine-discard', command: { kind: 'list' } } as const },
     {
-      remedy: { kind: 'restart-coordinator' } as const,
-      advice: 'Restart the coordinator to initialize the repaired row at boot, then retry this coordinate.',
+      remedy: {
+        kind: 'recovery-quarantine-discard',
+        command: {
+          kind: 'discard-provider-operation',
+          key: 'provider-operation-row',
+          revision: `fingerprint:sha256:${'a'.repeat(64)}`,
+          allowReadable: true,
+        },
+      } as const,
     },
-    {
-      remedy: { kind: 'remote-settlement' } as const,
-      advice: 'Coral retries the remote settlement path automatically; re-check this coordinate after settlement.',
-    },
-    {
-      remedy: { kind: 'recovery-quarantine-discard', allowReadable: false } as const,
-      advice:
-        'Run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command it prints if losing that row is acceptable.',
-    },
-    {
-      remedy: { kind: 'recovery-quarantine-discard', allowReadable: true } as const,
-      advice:
-        'Run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command with --allow-readable it prints if losing that row is acceptable.',
-    },
-    {
-      remedy: { kind: 'recovery-quarantine-clear' } as const,
-      advice: 'Run coral-cli backend recovery-quarantine list and use its exact clear command.',
-    },
-    {
-      remedy: { kind: 'external-repair' } as const,
-      advice:
-        'External repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then retry this coordinate.',
-    },
-  ] satisfies readonly Readonly<{ remedy: ProviderOperationAdoptionRemedy; advice: string }>[])(
+    { remedy: { kind: 'recovery-quarantine-clear', command: { kind: 'list' } } as const },
+    { remedy: { kind: 'external-repair' } as const },
+  ] satisfies readonly Readonly<{ remedy: ProviderOperationAdoptionRemedy }>[])(
     'retains $remedy.kind advice when adoption of a readable row is refused',
-    async ({ remedy, advice }) => {
+    async ({ remedy }) => {
       const repaired = providerOperationRecord('executing');
       const key = recordKey(repaired);
       db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
@@ -234,7 +224,7 @@ describe('unreadable provider operation recovery quarantine', () => {
       expect(quarantine.list()).toEqual([
         expect.objectContaining({
           state: 'active',
-          detail: expect.stringContaining(advice),
+          detail: expect.stringContaining(formatProviderOperationRemedy(remedy)),
         }),
       ]);
     },

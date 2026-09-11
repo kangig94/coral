@@ -18,6 +18,7 @@ import {
 } from '../../../recovery/source-registry.js';
 import type { ProviderOperationAdoptionRemedy } from '../../../recovery/unreadable-provider-operation.js';
 import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
+import { formatProviderOperationRemedy } from '../../../recovery/provider-operation-remedy.js';
 import type { RawCoordinatorJobRecoveryEnvelope } from './coordinator-job-source.js';
 import type { RawUnreadableProviderOperationRecoveryRow } from './unreadable-provider-operation-recovery-source.js';
 import type { RawSettledUnboundStatusRecovery } from './settled-unbound-status-recovery-source.js';
@@ -37,20 +38,7 @@ export type UnreadableProviderOperationQuarantineReport = Readonly<{
 }>;
 
 function providerOperationAdoptionRefusalRetryAdvice(remedy: ProviderOperationAdoptionRemedy): string {
-  switch (remedy.kind) {
-    case 'restart-coordinator':
-      return 'Restart the coordinator to initialize the repaired row at boot, then retry this coordinate.';
-    case 'remote-settlement':
-      return 'Coral retries the remote settlement path automatically; re-check this coordinate after settlement.';
-    case 'recovery-quarantine-discard': {
-      const consent = remedy.allowReadable ? ' with --allow-readable' : '';
-      return `Run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command${consent} it prints if losing that row is acceptable.`;
-    }
-    case 'recovery-quarantine-clear':
-      return 'Run coral-cli backend recovery-quarantine list and use its exact clear command.';
-    case 'external-repair':
-      return 'External repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then retry this coordinate.';
-  }
+  return formatProviderOperationRemedy(remedy);
 }
 
 export async function quarantineUnreadableProviderOperations(
@@ -145,7 +133,10 @@ export function createUnreadableProviderOperationRetryPolicy(
             ? {
                 remedy: {
                   kind: 'discard-provider-operation' as const,
-                  allowReadable: adoption.remedy.allowReadable,
+                  allowReadable:
+                    adoption.remedy.command.kind === 'discard-provider-operation'
+                      ? adoption.remedy.command.allowReadable
+                      : true,
                 },
               }
             : {}),

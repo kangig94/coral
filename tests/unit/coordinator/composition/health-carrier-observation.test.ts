@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
@@ -10,6 +11,7 @@ import type * as NodeProcessMod from '#src/infra/node-process.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
+import { registerBackendCommands } from '#src/cli/commands/backend.js';
 
 type DiscardProviderOperation = NonNullable<HttpHandlerPorts['recoveryQuarantine']['discardProviderOperation']>;
 type ReleaseStartupOwnership = (recordKey: string) => Promise<ProviderOperationStartupOwnershipReleaseDisposition>;
@@ -112,8 +114,10 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { formatProviderOperationRemedy } from '#src/recovery/provider-operation-remedy.js';
 import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 import {
   SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -791,8 +795,42 @@ describe('health local carrier observation', () => {
       kind: 'recovery-in-progress',
       code: 'backend_recovering',
       message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
-      remediation: 'Wait for startup recovery to finish, then run this command again.',
+      remediation: [
+        'Wait for startup recovery to finish.',
+        formatProviderOperationRemedy({
+          kind: 'recovery-quarantine-discard',
+          command: {
+            kind: 'discard-provider-operation',
+            key: unreadableKey,
+            revision: `fingerprint:${attribution.revision}`,
+            allowReadable: false,
+          },
+        }),
+      ].join('\n'),
     });
+    if (result.kind !== 'recovery-in-progress') throw new Error('expected startup-recovery refusal');
+    const output = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        recoveryQuarantine: {
+          list: () => quarantine.list(),
+          clear: async () => {
+            throw new Error('clear was not requested');
+          },
+          discardProviderOperation: async (request) => discardProviderOperation(request),
+        },
+      });
+      await executeRenderedCommand(program, result.remediation, {
+        label: 'command',
+        includes: encodeRecoveryQuarantineKey(unreadableKey),
+      });
+      expect(process.exitCode).toBe(75);
+    } finally {
+      output.mockRestore();
+      process.exitCode = undefined;
+    }
     expect(readProviderOperations(db).unreadableKeys).toContain(unreadableKey);
     expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, unreadableKey)).toMatchObject({
       state: 'active',

@@ -30,6 +30,10 @@ import type {
   ProviderProxySetContainResponse,
 } from '../../transport/rpc/catalog.js';
 import type { UnreadableProviderOperationDiscardResult } from '../../recovery/unreadable-provider-operation.js';
+import {
+  formatProviderOperationRemedy,
+  renderRecoveryQuarantineCommand,
+} from '../../recovery/provider-operation-remedy.js';
 import type { ProviderProxySetLifecycleState } from '../../provider-proxy/set-lifecycle-state-vocabulary.js';
 import type { ProviderProxySetOperatorExit } from '../../provider-proxy/operator-disposition-vocabulary.js';
 import { isProviderOperationRecordKey } from '../../store/provider-operation-journal.js';
@@ -55,7 +59,10 @@ function providerProxySetOperatorRefusalGuidance(ground: ProviderProxySetOperato
     case 'identity-unobservable':
       return `restore process-identity observation and run ${contain}; after external verification, the explicit alternative is ${abandon}`;
     case 'store-unreadable':
-      return 'run coral-cli backend recovery-quarantine list, then run coral-cli backend recovery-quarantine discard-provider-operation with the exact printed key and revision if losing that raw operation record is acceptable';
+      return formatProviderOperationRemedy({
+        kind: 'recovery-quarantine-discard',
+        command: { kind: 'list' },
+      });
     case 'representation-release-fatal':
       return `run ${abandon}; this accepts the unresolved representation release without retrying its fatal operation`;
     default:
@@ -1084,7 +1091,12 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       entry.updatedAt !== null;
     if (isClearable) {
       lines.push(
-        `  clear=coral-cli backend recovery-quarantine clear --boundary ${JSON.stringify(entry.boundary)} --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}`,
+        `  clear=${renderRecoveryQuarantineCommand({
+          kind: 'clear',
+          boundary: entry.boundary,
+          key: entry.subject.key,
+          revision: formatRecoveryRevision(entry),
+        })}`,
       );
     }
     if (
@@ -1095,9 +1107,13 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       isProviderOperationRecordKey(entry.subject.key) &&
       entry.remedy?.kind === 'discard-provider-operation'
     ) {
-      const consent = entry.remedy.allowReadable ? ' --allow-readable' : '';
       lines.push(
-        `  discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}${consent}`,
+        `  discard=${renderRecoveryQuarantineCommand({
+          kind: 'discard-provider-operation',
+          key: entry.subject.key,
+          revision: formatRecoveryRevision(entry),
+          allowReadable: entry.remedy.allowReadable,
+        })}`,
       );
     }
   }
@@ -1112,9 +1128,9 @@ export function formatRecoveryQuarantineClear(result: RecoveryQuarantineClearRes
     case 'advanced':
       return `Recovery quarantine resolved and removed: ${coordinate}`;
     case 'quarantined':
-      return `Recovery retry failed again; the subject is still quarantined: ${coordinate}. Run coral-cli backend recovery-quarantine list to inspect the updated error.`;
+      return `Recovery retry failed again; the subject is still quarantined: ${coordinate}. Inspect the updated error:\ncommand=${renderRecoveryQuarantineCommand({ kind: 'list' })}`;
     case 'continuation':
-      return `Recovery retry made partial progress: ${coordinate}. Run coral-cli backend recovery-quarantine list to inspect the durable continuation; do not run clear again with this coordinate.`;
+      return `Recovery retry made partial progress: ${coordinate}. Do not run clear again with this coordinate; inspect the durable continuation:\ncommand=${renderRecoveryQuarantineCommand({ kind: 'list' })}`;
     default:
       return assertNever(result.disposition);
   }
@@ -1167,7 +1183,15 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
         'Observed: the exact raw row decoded under this build.',
         'Not observed: process state or an operation-settlement outcome.',
         'Effect: nothing was removed and the temporary discard claim was released.',
-        `Next step: run coral-cli backend recovery-quarantine clear --boundary ${UNREADABLE_PROVIDER_OPERATION_BOUNDARY} --key ${encodeRecoveryQuarantineKey(result.key)} --revision ${JSON.stringify(`${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`)}.`,
+        `Next step: ${formatProviderOperationRemedy({
+          kind: 'recovery-quarantine-clear',
+          command: {
+            kind: 'clear',
+            boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+            key: result.key,
+            revision: `${RECOVERY_REVISION_FINGERPRINT_PREFIX}${result.revision}`,
+          },
+        })}`,
       ].join('\n');
     case 'revision-mismatch':
       return [
@@ -1295,11 +1319,10 @@ function formatProviderOperationAdoptionRefusalNextStep(
     case 'remote-settlement':
       return `Next step: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Re-check with ${inspect}, then coral-cli backend status.`;
     case 'recovery-quarantine-discard': {
-      const consent = refusal.remedy.allowReadable ? ' with --allow-readable' : '';
-      return `Next step: for record=${refusal.recordKey}, run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command${consent} it prints if losing that row is acceptable. Then run ${inspect} and coral-cli backend status.`;
+      return `Next step for record=${refusal.recordKey}: ${formatProviderOperationRemedy(refusal.remedy)}\nThen run ${inspect} and coral-cli backend status.`;
     }
     case 'recovery-quarantine-clear':
-      return `Next step: for record=${refusal.recordKey}, run coral-cli backend recovery-quarantine list and use its exact clear command. Then run ${inspect} and coral-cli backend status.`;
+      return `Next step for record=${refusal.recordKey}: ${formatProviderOperationRemedy(refusal.remedy)}\nThen run ${inspect} and coral-cli backend status.`;
     case 'external-repair':
       return `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then run ${inspect} and coral-cli backend status.`;
   }

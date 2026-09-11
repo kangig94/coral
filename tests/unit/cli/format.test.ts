@@ -1041,17 +1041,25 @@ describe('cli format', () => {
         forbidden: 'external repair',
       },
       {
-        remedy: { kind: 'recovery-quarantine-discard' as const, allowReadable: false },
-        required: ['recovery-quarantine list', 'discard-provider-operation'],
-        forbidden: '--allow-readable',
+        remedy: { kind: 'recovery-quarantine-discard' as const, command: { kind: 'list' as const } },
+        required: ['command=coral-cli backend recovery-quarantine list'],
+        forbidden: 'discard-provider-operation',
       },
       {
-        remedy: { kind: 'recovery-quarantine-discard' as const, allowReadable: true },
-        required: ['recovery-quarantine list', 'discard-provider-operation', '--allow-readable'],
+        remedy: {
+          kind: 'recovery-quarantine-discard' as const,
+          command: {
+            kind: 'discard-provider-operation' as const,
+            key: 'surviving-record-key',
+            revision: `fingerprint:sha256:${'b'.repeat(64)}`,
+            allowReadable: true,
+          },
+        },
+        required: ['discard-provider-operation', '--key', '--revision', '--allow-readable'],
       },
       {
-        remedy: { kind: 'recovery-quarantine-clear' as const },
-        required: ['recovery-quarantine list'],
+        remedy: { kind: 'recovery-quarantine-clear' as const, command: { kind: 'list' as const } },
+        required: ['command=coral-cli backend recovery-quarantine list'],
         forbidden: 'discard-provider-operation',
       },
       {

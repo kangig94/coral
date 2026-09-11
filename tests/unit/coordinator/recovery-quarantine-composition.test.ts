@@ -6,7 +6,6 @@ import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recov
 import {
   repeatableRecoveryBoundaryIds,
   SETTLED_UNBOUND_STATUS_BOUNDARY,
-  SETTLED_UNBOUND_STATUS_REMEDIATION,
   type RecoveryQuarantineClearResult,
 } from '#src/recovery/source-registry.js';
 import {
@@ -14,6 +13,8 @@ import {
   settledUnboundStatusSubject,
 } from '#src/coordinator/services/recovery/settled-unbound-status.js';
 import { registerBackendCommands } from '#src/cli/commands/backend.js';
+import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 import {
   deleteProviderOperation,
   insertProviderOperation,
@@ -182,16 +183,10 @@ describe('recovery quarantine composition', () => {
           client.request<RecoveryQuarantineClearResult>('coordinator.recovery_quarantine.clear', request),
       },
     });
-    await program.parseAsync([
-      'node',
-      ...SETTLED_UNBOUND_STATUS_REMEDIATION.exit.split(' '),
-      '--boundary',
-      subject.boundary,
-      '--key',
-      encodeRecoveryQuarantineKey(subject.key),
-      '--revision',
-      `fingerprint:${subject.revision}`,
-    ]);
+    await executeRenderedCommand(program, formatRecoveryQuarantineList(quarantine.list()), {
+      label: 'clear',
+      includes: encodeRecoveryQuarantineKey(subject.key),
+    });
 
     expect(quarantine.read(subject.boundary, subject.key)).toBeNull();
     expect(readProviderOperation(harness.db, record.operation)).toBeNull();

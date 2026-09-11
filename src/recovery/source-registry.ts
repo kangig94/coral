@@ -13,10 +13,8 @@ import type { RecoveryQuarantineClaim, RecoveryQuarantineReclaim } from './quara
 export const UNREADABLE_PROVIDER_OPERATION_BOUNDARY = 'provider-operation-unreadable';
 export const SETTLED_UNBOUND_STATUS_REMEDIATION = {
   boundary: 'provider-operation-settled-unbound',
-  exit: 'coral-cli backend recovery-quarantine clear',
 } as const;
 export const SETTLED_UNBOUND_STATUS_BOUNDARY = SETTLED_UNBOUND_STATUS_REMEDIATION.boundary;
-export type SettledUnboundStatusRemediationExit = (typeof SETTLED_UNBOUND_STATUS_REMEDIATION)['exit'];
 export const COORDINATOR_JOB_RECOVERY_BOUNDARY = 'coordinator-job-recovery';
 
 export const repeatableRecoveryBoundaryIds = [

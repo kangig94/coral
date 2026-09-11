@@ -134,8 +134,38 @@ const providerOperationAdoptionRefusalSchema = z
     remedy: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('restart-coordinator') }).strict(),
       z.object({ kind: z.literal('remote-settlement') }).strict(),
-      z.object({ kind: z.literal('recovery-quarantine-discard'), allowReadable: z.boolean() }).strict(),
-      z.object({ kind: z.literal('recovery-quarantine-clear') }).strict(),
+      z
+        .object({
+          kind: z.literal('recovery-quarantine-discard'),
+          command: z.union([
+            z.object({ kind: z.literal('list') }).strict(),
+            z
+              .object({
+                kind: z.literal('discard-provider-operation'),
+                key: providerOperationDiscardKeySchema,
+                revision: z.string().min(1),
+                allowReadable: z.boolean(),
+              })
+              .strict(),
+          ]),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('recovery-quarantine-clear'),
+          command: z.union([
+            z.object({ kind: z.literal('list') }).strict(),
+            z
+              .object({
+                kind: z.literal('clear'),
+                boundary: z.string().min(1),
+                key: z.string().min(1),
+                revision: z.string().min(1),
+              })
+              .strict(),
+          ]),
+        })
+        .strict(),
       z.object({ kind: z.literal('external-repair') }).strict(),
     ]),
   })

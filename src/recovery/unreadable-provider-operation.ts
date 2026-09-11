@@ -1,4 +1,5 @@
 import type { RecoverySubject } from './containment.js';
+import type { ProviderOperationRemedy } from './provider-operation-remedy.js';
 
 const unreadableProviderOperationSubjectBrand: unique symbol = Symbol('unreadable-provider-operation-subject');
 const PROVIDER_OPERATION_FINGERPRINT = /^sha256:[0-9a-f]{64}$/u;
@@ -19,12 +20,7 @@ export type UnreadableProviderOperationDiscardRequest = Readonly<{
   allowReadable?: boolean;
 }>;
 
-export type ProviderOperationAdoptionRemedy =
-  | Readonly<{ kind: 'restart-coordinator' }>
-  | Readonly<{ kind: 'remote-settlement' }>
-  | Readonly<{ kind: 'recovery-quarantine-discard'; allowReadable: boolean }>
-  | Readonly<{ kind: 'recovery-quarantine-clear' }>
-  | Readonly<{ kind: 'external-repair' }>;
+export type ProviderOperationAdoptionRemedy = ProviderOperationRemedy;
 
 export type ProviderOperationAdoptionRefusal = Readonly<{
   recordKey: string;

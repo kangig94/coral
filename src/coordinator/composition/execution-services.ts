@@ -26,7 +26,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { createRecordedProcessObserver } from '../../infra/node-process.js';
 import { assertNever } from '../../infra/error-format.js';
 import type { ProviderOperationRecord } from '../../store/provider-operation-record.js';
-import type { ProviderOperationStartupHold, ProviderOperationStartupOwnership } from '../../jobs/startup.js';
+import type { ProviderOperationStartupOwnership } from '../../jobs/startup.js';
 import { ProviderOperationCleanupRouter } from '../../jobs/provider-operation-cleanup.js';
 import { readProviderOperationJobLaunch } from '../../jobs/provider-operation-state.js';
 import { readProjectionProviderSession } from '../../sessions/projections.js';
@@ -47,7 +47,6 @@ import {
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import type {
   ProviderOperationAdoptionRefusal,
-  ProviderOperationAdoptionRemedy,
   ProviderOperationStartupOwnershipReleaseDisposition,
 } from '../../recovery/unreadable-provider-operation.js';
 import {
@@ -90,21 +89,6 @@ type CreateExecutionServicesDeps = {
 
 function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
   return [...services.values()];
-}
-
-function adoptionRemedyForStartupExit(exit: ProviderOperationStartupHold['exit']): ProviderOperationAdoptionRemedy {
-  switch (exit) {
-    case 'restart-or-operator-repair':
-      return { kind: 'restart-coordinator' };
-    case 'remote-settlement':
-      return { kind: 'remote-settlement' };
-    case 'coral-cli backend recovery-quarantine discard-provider-operation':
-      return { kind: 'recovery-quarantine-discard', allowReadable: false };
-    case 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable':
-      return { kind: 'recovery-quarantine-discard', allowReadable: true };
-    case 'coral-cli backend recovery-quarantine clear':
-      return { kind: 'recovery-quarantine-clear' };
-  }
 }
 
 export function createExecutionServices({
@@ -428,7 +412,7 @@ export function createExecutionServices({
       return {
         kind: 'refused',
         reason: ownership.bindingDisposition.reason,
-        remedy: adoptionRemedyForStartupExit(ownership.bindingDisposition.exit),
+        remedy: ownership.bindingDisposition.remedy,
       };
     }
     if (ownership.bindingDisposition.kind === 'not-reconciled') {

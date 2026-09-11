@@ -682,7 +682,7 @@ describe('execution services provider-proxy proof composition', () => {
           bindingDisposition: {
             kind: 'refused',
             reason: 'the remote provider still owns settlement',
-            exit: 'remote-settlement',
+            remedy: { kind: 'remote-settlement' },
           },
         }),
         releaseUnreadableProviderOperationStartupOwnership: () => ({

@@ -44,31 +44,20 @@ import {
 } from '#src/jobs/runtime-meta-store.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { unreadableProviderOperationSubject } from '#src/recovery/unreadable-provider-operation.js';
 import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/recovery/source-registry.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
 import { registerBackendCommands } from '#src/cli/commands/backend.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
 const NAMESPACE = 'inherited-abort-tests';
 const PROJECT_ROOT = '/tmp/coral-inherited-abort-project';
 const BACKEND_NAMESPACE = NAMESPACE;
-
-function printedCommandArgv(output: string, encodedKey: string): string[] {
-  const line = output
-    .split('\n')
-    .find((candidate) => candidate.startsWith('  discard=') && candidate.includes(encodedKey));
-  if (line === undefined) throw new Error(`expected a discard command for ${encodedKey}`);
-  const tokens = line
-    .slice('  discard='.length)
-    .match(/"(?:[^"\\]|\\.)*"|\S+/gu)
-    ?.map((token) => (token.startsWith('"') ? (JSON.parse(token) as string) : token));
-  if (tokens?.[0] !== 'coral-cli') throw new Error('expected a complete coral-cli invocation');
-  return ['node', ...tokens];
-}
 
 function createProgressStore(runtime: ReturnType<typeof createRealRuntime>): JobStore {
   const db = newRawDatabase(':memory:');
@@ -412,13 +401,13 @@ describe('runStartupRecovery provider-operation ownership', () => {
         bindingDisposition: {
           kind: 'refused',
           reason: 'startup binding refused',
-          exit: 'restart-or-operator-repair',
+          remedy: { kind: 'restart-coordinator' },
         },
       }),
     ]);
     expect(ownership.completion).toMatchObject({
       kind: 'held',
-      holds: [expect.objectContaining({ jobId, exit: 'restart-or-operator-repair' })],
+      holds: [expect.objectContaining({ jobId, remedy: { kind: 'restart-coordinator' } })],
     });
     expect(readProviderOperation(progressStore.getDb(), record.operation)).toMatchObject({
       retryNotBeforeMs: Number.MAX_SAFE_INTEGER,
@@ -485,13 +474,13 @@ describe('runStartupRecovery provider-operation ownership', () => {
         bindingDisposition: {
           kind: 'refused',
           reason: 'settlement mailbox full',
-          exit: 'remote-settlement',
+          remedy: { kind: 'remote-settlement' },
         },
       }),
     ]);
     expect(ownership.completion).toMatchObject({
       kind: 'held',
-      holds: [expect.objectContaining({ jobId, exit: 'remote-settlement' })],
+      holds: [expect.objectContaining({ jobId, remedy: { kind: 'remote-settlement' } })],
     });
     expect(readProviderOperation(progressStore.getDb(), record.operation)).toEqual(settlement);
     expect(launchCoordinator.reservationFor(jobId)).toMatchObject({
@@ -653,14 +642,126 @@ describe('runStartupRecovery provider-operation ownership', () => {
       providerOperationHolds: expect.arrayContaining([
         expect.objectContaining({
           jobId,
-          exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
+          remedy: expect.objectContaining({ kind: 'recovery-quarantine-discard' }),
         }),
       ]),
     });
     const messages = log.mock.calls.flatMap((call) => call).join('\n');
     expect(messages).toContain('Recovery reconciliation remains held');
-    expect(messages).toContain('discard-provider-operation --allow-readable');
     expect(messages).not.toContain('Recovery adoption complete');
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    const discarded = quarantine.list().find((entry) => entry.subject.key.includes(first.operation.operationId));
+    if (discarded === undefined) throw new Error('expected first readable quarantine row');
+    const discard = createUnreadableProviderOperationDiscardService({
+      instanceId: 'ambiguous-startup-disposition',
+      ids: runtime.ids,
+      db: progressStore.getDb(),
+      time: runtime.time,
+    });
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        recoveryQuarantine: {
+          list: () => quarantine.list(),
+          clear: async () => {
+            throw new Error('clear was not requested');
+          },
+          discardProviderOperation: async (request) => discard.discard(request),
+        },
+      });
+      await executeRenderedCommand(program, messages, {
+        label: 'command',
+        includes: encodeRecoveryQuarantineKey(discarded.subject.key),
+      });
+    } finally {
+      output.mockRestore();
+      process.exitCode = undefined;
+    }
+    expect(readProviderOperation(progressStore.getDb(), first.operation)).toBeNull();
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, discarded.subject.key)).toBeNull();
+    await recoveryCoordinator.teardown();
+  });
+
+  it('prints and executes the exact discard command for an unreadable startup hold', async () => {
+    const runtime = createRealRuntime('prod');
+    const progressStore = createProgressStore(runtime);
+    const jobId = randomUUID();
+    seedQueuedProviderJob(progressStore, { jobId, sessionId: randomUUID(), enqueueSequence: 1 });
+    const unreadableKey =
+      `provider_operation_saga.v1:record:${jobId}:${randomUUID()}:` + `${randomUUID()}:${randomUUID()}`;
+    progressStore
+      .getDb()
+      .prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)')
+      .run(unreadableKey, 'not json at all');
+    const observation = observeProviderOperationRecord(progressStore.getDb(), unreadableKey);
+    if (observation.kind !== 'unreadable') throw new Error('expected unreadable provider-operation row');
+    const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
+    quarantine.upsert({
+      boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+      subject: unreadableProviderOperationSubject(unreadableKey, observation.attribution.revision),
+      state: 'active',
+      stage: 'hydrate',
+      errorMessage: 'Provider operation row is unreadable by this build.',
+      detail: 'Repair or remove the raw provider operation row, then retry this exact quarantine coordinate.',
+    });
+    const { recoveryCoordinator, log, runStartupRecovery } = await createHeldRecoveryCoordinator(
+      runtime,
+      progressStore,
+      createFakeService(),
+      'unreadable-startup-hold-command',
+    );
+
+    const disposition = await runStartupRecovery();
+
+    expect(disposition).toMatchObject({
+      kind: 'held',
+      providerOperationHolds: expect.arrayContaining([
+        expect.objectContaining({
+          remedy: {
+            kind: 'recovery-quarantine-discard',
+            command: expect.objectContaining({
+              kind: 'discard-provider-operation',
+              key: unreadableKey,
+              allowReadable: false,
+            }),
+          },
+        }),
+      ]),
+    });
+    const messages = log.mock.calls.flatMap((call) => call).join('\n');
+    const entry = quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, unreadableKey);
+    if (entry === null) throw new Error('expected unreadable provider-operation quarantine entry');
+    const discard = createUnreadableProviderOperationDiscardService({
+      instanceId: 'unreadable-startup-hold-command',
+      ids: runtime.ids,
+      db: progressStore.getDb(),
+      time: runtime.time,
+    });
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        recoveryQuarantine: {
+          list: () => quarantine.list(),
+          clear: async () => {
+            throw new Error('clear was not requested');
+          },
+          discardProviderOperation: async (request) => discard.discard(request),
+        },
+      });
+      await executeRenderedCommand(program, messages, {
+        label: 'command',
+        includes: encodeRecoveryQuarantineKey(unreadableKey),
+      });
+    } finally {
+      output.mockRestore();
+      process.exitCode = undefined;
+    }
+    expect(observeProviderOperationRecord(progressStore.getDb(), unreadableKey)).toEqual({ kind: 'absent' });
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, unreadableKey)).toBeNull();
     await recoveryCoordinator.teardown();
   });
 
@@ -696,7 +797,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
           jobId,
           operationId: record.operation.operationId,
           reason: expect.stringContaining('recovery acceptance unavailable'),
-          exit: 'restart-or-operator-repair',
+          remedy: { kind: 'restart-coordinator' },
         }),
       ],
     });
@@ -740,7 +841,7 @@ describe('runStartupRecovery provider-operation ownership', () => {
       holds: expect.arrayContaining([
         expect.objectContaining({
           jobId,
-          exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
+          remedy: expect.objectContaining({ kind: 'recovery-quarantine-discard' }),
         }),
       ]),
     });
@@ -775,8 +876,6 @@ describe('runStartupRecovery provider-operation ownership', () => {
       db: progressStore.getDb(),
       time: runtime.time,
     });
-    const commandArgv = printedCommandArgv(listing, encodeRecoveryQuarantineKey(discarded.subject.key));
-    expect(commandArgv).toContain('--allow-readable');
     const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     try {
       const program = new Command();
@@ -790,7 +889,10 @@ describe('runStartupRecovery provider-operation ownership', () => {
           discardProviderOperation: async (request) => discard.discard(request),
         },
       });
-      await program.parseAsync(commandArgv);
+      await executeRenderedCommand(program, listing, {
+        label: 'discard',
+        includes: encodeRecoveryQuarantineKey(discarded.subject.key),
+      });
     } finally {
       output.mockRestore();
       process.exitCode = undefined;

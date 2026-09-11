@@ -8,10 +8,8 @@ import type {
   SettledUnboundStatusResult,
   SettledUnboundStatusSubject,
 } from '../../../jobs/contracts/provider-operation-lifecycle.js';
-import {
-  SETTLED_UNBOUND_STATUS_BOUNDARY,
-  SETTLED_UNBOUND_STATUS_REMEDIATION,
-} from '../../../recovery/source-registry.js';
+import { SETTLED_UNBOUND_STATUS_BOUNDARY } from '../../../recovery/source-registry.js';
+import { formatProviderOperationRemedy } from '../../../recovery/provider-operation-remedy.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type { Database } from '../../../store/db.js';
 import { providerOperationRecordKeyPrefix, readProviderOperations } from '../../../store/provider-operation-journal.js';
@@ -65,11 +63,14 @@ export function matchingSettledUnboundRecordKeys(
 }
 
 export function settledUnboundStatusDetail(recordKeys: readonly string[] | null, scanFailure: string | null): string {
-  const exit = `Run ${SETTLED_UNBOUND_STATUS_REMEDIATION.exit} with the boundary, key, and revision printed for this row.`;
+  const remedy = formatProviderOperationRemedy({
+    kind: 'recovery-quarantine-clear',
+    command: { kind: 'list' },
+  });
   if (recordKeys === null) {
-    return `The journal scan failed (${scanFailure ?? 'unknown failure'}). Restore journal access. ${exit}`;
+    return `The journal scan failed (${scanFailure ?? 'unknown failure'}). Restore journal access. ${remedy}`;
   }
-  return `Matching provider-operation rows remain unresolved: ${recordKeys.join(', ')}. ${exit}`;
+  return `Matching provider-operation rows remain unresolved: ${recordKeys.join(', ')}. ${remedy}`;
 }
 
 function mintOwnership(

@@ -12,18 +12,13 @@ import type {
   ProviderOperationSettlementResult,
 } from './contracts/provider-operation-lifecycle.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../store/provider-operation-record.js';
-import type { SettledUnboundStatusRemediationExit } from '../recovery/source-registry.js';
+import type { ProviderOperationRemedy } from '../recovery/provider-operation-remedy.js';
 
-/** A refused startup association must name the event that can end its ownership hold. */
+/** A refused startup association must carry the remedy that can end its ownership hold. */
 type ProviderOperationStartupBindingRefusal = Readonly<{
   kind: 'refused';
   reason: string;
-  exit:
-    | 'restart-or-operator-repair'
-    | 'remote-settlement'
-    | SettledUnboundStatusRemediationExit
-    | 'coral-cli backend recovery-quarantine discard-provider-operation'
-    | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
+  remedy: ProviderOperationRemedy;
 }>;
 
 type ProviderOperationStartupNotReconciled = Readonly<{
@@ -85,6 +80,7 @@ export type ProviderOperationStartupRecordOwnership =
 /** An unreadable row's permit cannot be released by operation identity until repair supplies that identity. */
 export type ProviderOperationUnreadableStartupOwnership = Readonly<{
   recordKey: string;
+  revision: string;
   jobId: string;
   restoredPermit: LaunchPermit | null;
 }>;
@@ -95,14 +91,14 @@ export type ProviderOperationStartupHold =
       jobId: string;
       operationId: string;
       reason: string;
-      exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
+      remedy: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['remedy'];
     }>
   | Readonly<{
       kind: 'unreadable-record';
       jobId: string;
       recordKey: string;
       reason: string;
-      exit: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['exit'];
+      remedy: Extract<ProviderOperationStartupBindingDisposition, { kind: 'refused' }>['remedy'];
     }>;
 
 export type ProviderOperationStartupOwnership = Readonly<{

@@ -22,10 +22,13 @@ import type {
 } from '../../../jobs/startup.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
+import {
+  formatProviderOperationRemedy,
+  type ProviderOperationRemedy,
+} from '../../../recovery/provider-operation-remedy.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import {
   SETTLED_UNBOUND_STATUS_BOUNDARY,
-  SETTLED_UNBOUND_STATUS_REMEDIATION,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '../../../recovery/source-registry.js';
 import {
@@ -239,7 +242,7 @@ export function createProviderOperationStartupOwnership(
 
   const settleBinding = (operation: ProviderOperationRecord['operation']): ProviderOperationSettlementDisposition => {
     const disposition = binding.settleProviderOperationBinding(operation);
-    if (disposition.kind === 'refused') return { ...disposition, exit: 'remote-settlement' };
+    if (disposition.kind === 'refused') return { ...disposition, remedy: { kind: 'remote-settlement' } };
     return disposition;
   };
 
@@ -249,7 +252,7 @@ export function createProviderOperationStartupOwnership(
   ): ProviderOperationSettlementDisposition => {
     const preparation = binding.prepareProviderOperationBinding(permit, operation);
     if (preparation.kind === 'refused') {
-      return { ...preparation, exit: 'remote-settlement' };
+      return { ...preparation, remedy: { kind: 'remote-settlement' } };
     }
     const settlement = settleBinding(operation);
     if (settlement.kind === 'refused') return settlement;
@@ -317,7 +320,7 @@ export function createProviderOperationStartupOwnership(
           bindingDisposition: {
             kind: 'refused',
             reason: `Provider operation binding retirement was refused: ${retirement.reason}`,
-            exit: SETTLED_UNBOUND_STATUS_REMEDIATION.exit,
+            remedy: { kind: 'recovery-quarantine-clear', command: { kind: 'list' } },
           },
         };
       }
@@ -363,22 +366,32 @@ export function createProviderOperationStartupOwnership(
     return assertNever(disposition);
   };
 
-  const quarantineAmbiguousReadable = (record: ProviderOperationRecord): void => {
+  const quarantineAmbiguousReadable = (record: ProviderOperationRecord): ProviderOperationRemedy => {
     const key = recordKey(record.operation);
-    const subject = unreadableProviderOperationSubject(key, recordFingerprint(record));
+    const revision = recordFingerprint(record);
+    const subject = unreadableProviderOperationSubject(key, revision);
+    const remedy = {
+      kind: 'recovery-quarantine-discard' as const,
+      command: {
+        kind: 'discard-provider-operation' as const,
+        key,
+        revision: `fingerprint:${revision}`,
+        allowReadable: true,
+      },
+    };
     const persisted = quarantine.upsert({
       boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
       subject,
       state: 'active',
       stage: 'hydrate',
       errorMessage: 'More than one readable provider operation row claims this job.',
-      detail:
-        'Discarding readable data requires an operator decision. Run the printed discard-provider-operation command with --allow-readable for one row, then inspect recovery-quarantine list again.',
+      detail: formatProviderOperationRemedy(remedy),
       remedy: { kind: 'discard-provider-operation', allowReadable: true },
     });
     if (!persisted && quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, key) === null) {
       log(`Provider operation ambiguity quarantine failed for ${key}.\n`);
     }
+    return remedy;
   };
 
   const clearResolvedReadableAmbiguity = (record: ProviderOperationRecord): void => {
@@ -413,7 +426,7 @@ export function createProviderOperationStartupOwnership(
     return resolveHold(record, permit, dispositionHold, {
       kind: 'refused',
       reason: disposition.reason,
-      exit: 'restart-or-operator-repair',
+      remedy: { kind: 'restart-coordinator' },
     });
   };
 
@@ -431,7 +444,7 @@ export function createProviderOperationStartupOwnership(
           bindingDisposition: {
             kind: 'refused',
             reason: `Launch ownership transferred to ${JSON.stringify(release.holder)}.`,
-            exit: 'remote-settlement',
+            remedy: { kind: 'remote-settlement' },
           },
         };
       }
@@ -475,7 +488,7 @@ export function createProviderOperationStartupOwnership(
         return resolveHold(current, restoredPermit, hold(current, reason), {
           kind: 'refused',
           reason,
-          exit: 'restart-or-operator-repair',
+          remedy: { kind: 'restart-coordinator' },
         });
       }
       return {
@@ -490,7 +503,7 @@ export function createProviderOperationStartupOwnership(
       return resolveHold(current, restoredPermit, hold(current, reason), {
         kind: 'refused',
         reason,
-        exit: 'restart-or-operator-repair',
+        remedy: { kind: 'restart-coordinator' },
       });
     }
 
@@ -542,8 +555,8 @@ export function createProviderOperationStartupOwnership(
           restoredPermit,
           bindingDisposition: settleBinding(disposition.record.operation),
         };
-      case 'fenced':
-        quarantineAmbiguousReadable(disposition.record);
+      case 'fenced': {
+        const remedy = quarantineAmbiguousReadable(disposition.record);
         return {
           phase: disposition.record.phase,
           operation: disposition.record.operation,
@@ -551,9 +564,10 @@ export function createProviderOperationStartupOwnership(
           bindingDisposition: {
             kind: 'refused',
             reason,
-            exit: 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable',
+            remedy,
           },
         };
+      }
     }
     return assertNever(disposition);
   };
@@ -611,7 +625,11 @@ export function createProviderOperationStartupOwnership(
     );
     const unreadableSubjects = ownershipSnapshot.unreadable.flatMap((attribution) =>
       attribution.jobs.kind === 'known'
-        ? attribution.jobs.values.map((jobId) => ({ recordKey: attribution.key, jobId }))
+        ? attribution.jobs.values.map((jobId) => ({
+            recordKey: attribution.key,
+            revision: attribution.revision,
+            jobId,
+          }))
         : [],
     );
     const undecidedRecordKeysByJob = new Map<string, string[]>();
@@ -637,8 +655,9 @@ export function createProviderOperationStartupOwnership(
       if (recordKeys === undefined) throw new Error(`Unreadable provider-operation ownership lost job ${jobId}.`);
       return restorePermit(jobId, { kind: 'undecided-provider-operation', recordKeys });
     };
-    const unreadable = unreadableSubjects.map(({ recordKey: unreadableRecordKey, jobId }) => ({
+    const unreadable = unreadableSubjects.map(({ recordKey: unreadableRecordKey, revision, jobId }) => ({
       recordKey: unreadableRecordKey,
+      revision,
       jobId,
       restoredPermit: restoreUnreadablePermit(jobId),
     }));
@@ -678,7 +697,7 @@ export function createProviderOperationStartupOwnership(
               jobId: record.operation.jobId,
               operationId: record.operation.operationId,
               reason: record.bindingDisposition.reason,
-              exit: record.bindingDisposition.exit,
+              remedy: record.bindingDisposition.remedy,
             },
           ]
         : [],
@@ -692,7 +711,15 @@ export function createProviderOperationStartupOwnership(
               jobId: ownership.jobId,
               recordKey: ownership.recordKey,
               reason: 'The provider operation record is unreadable, so its live ownership cannot be decided.',
-              exit: 'coral-cli backend recovery-quarantine discard-provider-operation' as const,
+              remedy: {
+                kind: 'recovery-quarantine-discard' as const,
+                command: {
+                  kind: 'discard-provider-operation' as const,
+                  key: ownership.recordKey,
+                  revision: `fingerprint:${ownership.revision}`,
+                  allowReadable: false,
+                },
+              },
             },
           ],
     );
@@ -853,7 +880,7 @@ export function createProviderOperationStartupOwnership(
       resolveHold(record, null, hold(record, reason), {
         kind: 'refused',
         reason,
-        exit: 'restart-or-operator-repair',
+        remedy: { kind: 'restart-coordinator' },
       }),
     releaseAll: () => {
       for (const { permit } of permits.values()) void binding.releaseLaunch(permit);

@@ -21,14 +21,21 @@ import {
 } from '#src/cli/format/backend.js';
 import { buildProgram } from '#src/cli/program.js';
 import { encodeRecoveryQuarantineKey, RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
+import { formatProviderOperationRemedy } from '#src/recovery/provider-operation-remedy.js';
 import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
+import { sha256Hex } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
+import { encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
+import { insertProviderOperation, readProviderOperation } from '#src/store/provider-operation-journal.js';
 import * as ipcEnsure from '#src/transport/ipc/ensure.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
+import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const storeReset: StoreResetCommandOperations = {
   list: () => ({ incidents: [] }),
@@ -272,67 +279,100 @@ describe('backend recovery-quarantine commands', () => {
       `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
       '00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:' +
       '00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004';
-    const revision = `sha256:${'a'.repeat(64)}`;
+    const rawValue = 'not-json';
+    const revision = `sha256:${sha256Hex(rawValue)}`;
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-discard-cli-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
+    const db = openStoreDatabase({
+      path: runtime.paths.coral.store.dbFile,
+      storage: runtime.storage,
+      storeFormat: currentCoralStoreFormat(),
+      flavor: runtime.flavor,
+    });
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, rawValue);
+    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
     const entry = {
       boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
       subject: { key, revision: { kind: 'fingerprint' as const, value: revision } },
       state: 'active' as const,
       stage: 'hydrate' as const,
-      retry: null,
-      continuation: null,
       errorMessage: 'unreadable',
       detail: 'discardable exact row',
       remedy: { kind: 'discard-provider-operation' as const, allowReadable: false },
-      detectedAt: '2026-08-28T00:00:00.000Z',
-      updatedAt: '2026-08-28T00:00:00.000Z',
     };
-    const discardProviderOperation = vi.fn<
-      NonNullable<RecoveryQuarantineCommandOperations['discardProviderOperation']>
-    >(async (request) => ({ ...request, kind: 'discarded' as const }));
+    expect(quarantine.upsert(entry)).toBe(true);
+    const discard = createUnreadableProviderOperationDiscardService({
+      instanceId: 'listed-unreadable-discard',
+      ids: runtime.ids,
+      db,
+      time: runtime.time,
+    });
+    const listing = formatRecoveryQuarantineList(quarantine.list());
+    await executeRenderedCommand(
+      programWith({
+        list: () => quarantine.list(),
+        clear: vi.fn(),
+        discardProviderOperation: async (request) => discard.discard(request),
+      }),
+      listing,
+      { label: 'discard', includes: encodeRecoveryQuarantineKey(key) },
+    );
 
-    await programWith({ list: () => [entry], clear: vi.fn(), discardProviderOperation }).parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'recovery-quarantine',
-      'discard-provider-operation',
-      '--key',
-      encodeRecoveryQuarantineKey(key),
-      '--revision',
-      `fingerprint:${revision}`,
-    ]);
-
-    expect(discardProviderOperation).toHaveBeenCalledWith({ key, revision });
+    expect(db.prepare<[string], { value: string }>('SELECT value FROM meta WHERE key = ?').get(key)).toBeUndefined();
+    expect(quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, key)).toBeNull();
     expect(stdout).toBe(`${formatUnreadableProviderOperationDiscard({ key, revision, kind: 'discarded' })}\n`);
     expect(stdout).toContain('permanently removed');
     expect(stderr).toBe('');
     expect(process.exitCode).toBe(0);
+    db.close();
   });
 
-  it('should require and transmit explicit consent before discarding a readable row', async () => {
+  it('should preserve a readable row when explicit consent is omitted at CLI ingress', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-readable-cli-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
+    const db = openStoreDatabase({
+      path: runtime.paths.coral.store.dbFile,
+      storage: runtime.storage,
+      storeFormat: currentCoralStoreFormat(),
+      flavor: runtime.flavor,
+    });
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const record = providerOperationRecord('executing');
+    insertProviderOperation(db, record);
     const key =
       `provider_operation_saga.v${PROVIDER_OPERATION_RECORD_VERSION}:record:` +
-      '00000000-0000-4000-8000-000000000011:00000000-0000-4000-8000-000000000012:' +
-      '00000000-0000-4000-8000-000000000013:00000000-0000-4000-8000-000000000014';
-    const revision = `sha256:${'b'.repeat(64)}`;
+      `${record.operation.jobId}:${record.operation.operationId}:` +
+      `${record.operation.proxyInstanceId}:${record.operation.buildSetId}`;
+    const revision = `sha256:${sha256Hex(encodeProviderOperationRecord(record))}`;
+    const quarantine = new RecoveryQuarantineStore(db, runtime.time);
     const entry = {
       boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
       subject: { key, revision: { kind: 'fingerprint' as const, value: revision } },
       state: 'active' as const,
       stage: 'hydrate' as const,
-      retry: null,
-      continuation: null,
       errorMessage: 'More than one readable provider operation row claims this job.',
       detail: 'Run the printed command with --allow-readable.',
       remedy: { kind: 'discard-provider-operation' as const, allowReadable: true },
-      detectedAt: '2026-08-28T00:00:00.000Z',
-      updatedAt: '2026-08-28T00:00:00.000Z',
     };
-    const discardProviderOperation = vi.fn<
-      NonNullable<RecoveryQuarantineCommandOperations['discardProviderOperation']>
-    >(async (request) => ({ ...request, kind: 'discarded' as const }));
+    expect(quarantine.upsert(entry)).toBe(true);
+    const quarantineBefore = quarantine.list();
+    const discard = createUnreadableProviderOperationDiscardService({
+      instanceId: 'readable-no-consent',
+      ids: runtime.ids,
+      db,
+      time: runtime.time,
+    });
 
-    await programWith({ list: () => [entry], clear: vi.fn(), discardProviderOperation }).parseAsync([
+    await programWith({
+      list: () => quarantine.list(),
+      clear: vi.fn(),
+      discardProviderOperation: async (request) => discard.discard(request),
+    }).parseAsync([
       'node',
       'coral-cli',
       'backend',
@@ -342,14 +382,14 @@ describe('backend recovery-quarantine commands', () => {
       encodeRecoveryQuarantineKey(key),
       '--revision',
       `fingerprint:${revision}`,
-      '--allow-readable',
     ]);
 
-    expect(discardProviderOperation).toHaveBeenCalledWith({ key, revision, allowReadable: true });
-    expect(stdout).toContain('Discarded readable provider-operation row');
-    expect(stdout).toContain(encodeRecoveryQuarantineKey(key));
-    expect(stderr).toBe('');
-    expect(process.exitCode).toBe(0);
+    expect(readProviderOperation(db, record.operation)).toEqual(record);
+    expect(quarantine.list()).toEqual(quarantineBefore);
+    expect(stderr).toContain('Readable provider-operation discard requires explicit consent');
+    expect(stdout).toBe('');
+    expect(process.exitCode).toBe(2);
+    db.close();
   });
 
   it('should refuse a retired tagged key at CLI ingress without calling the destructive operation', async () => {
@@ -399,7 +439,15 @@ describe('backend recovery-quarantine commands', () => {
         kind: 'recovery-in-progress',
         code: 'backend_recovering',
         message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
-        remediation: 'Wait for startup recovery to finish, then run this command again.',
+        remediation: formatProviderOperationRemedy({
+          kind: 'recovery-quarantine-discard',
+          command: {
+            kind: 'discard-provider-operation',
+            key: 'raw-key',
+            revision: `fingerprint:sha256:${'a'.repeat(64)}`,
+            allowReadable: false,
+          },
+        }),
       },
       exitCode: 75,
       stream: 'stderr',
@@ -512,7 +560,15 @@ describe('backend recovery-quarantine commands', () => {
     }
     if (result.kind === 'recovery-in-progress') {
       expect(stderr).toContain('[backend_recovering]');
-      expect(stderr).toContain('Wait for startup recovery to finish, then run this command again.');
+      const refusal = stderr;
+      stderr = '';
+      process.exitCode = undefined;
+      await executeRenderedCommand(programWith({ list: () => [], clear: vi.fn(), discardProviderOperation }), refusal, {
+        label: 'command',
+      });
+      expect(stderr).toContain('[backend_recovering]');
+      expect(stderr).toContain(encodeRecoveryQuarantineKey(result.key));
+      expect(process.exitCode).toBe(75);
     }
   });
 
@@ -719,7 +775,6 @@ describe('backend recovery-quarantine commands', () => {
   });
 
   it('should execute the continuation instruction and show the durable continuation', async () => {
-    const instruction = 'coral-cli backend recovery-quarantine list';
     const continuation = {
       boundary: 'workflow-recovery',
       subject: { key: 'workflow-1', revision: { kind: 'fingerprint' as const, value: 'revision-1' } },
@@ -739,10 +794,11 @@ describe('backend recovery-quarantine commands', () => {
       revision: continuation.subject.revision.value,
       disposition: 'continuation',
     });
-    expect(formatted).toContain(`Run ${instruction}`);
 
     const clear = vi.fn();
-    await programWith({ list: () => [continuation], clear }).parseAsync(['node', ...instruction.split(' ')]);
+    await executeRenderedCommand(programWith({ list: () => [continuation], clear }), formatted, {
+      label: 'command',
+    });
 
     expect(clear).not.toHaveBeenCalled();
     expect(stdout).toContain('state=continuation');
@@ -970,7 +1026,15 @@ describe('backend recovery-quarantine commands', () => {
       kind: 'recovery-in-progress' as const,
       code: 'backend_recovering' as const,
       message: 'Provider-operation discard is unavailable while startup recovery owns the launch fence.',
-      remediation: 'Wait for startup recovery to finish, then run this command again.',
+      remediation: formatProviderOperationRemedy({
+        kind: 'recovery-quarantine-discard',
+        command: {
+          kind: 'discard-provider-operation',
+          key: coordinate.key,
+          revision: `fingerprint:${coordinate.revision}`,
+          allowReadable: false,
+        },
+      }),
     };
     vi.spyOn(ipcEnsure, 'ensure').mockResolvedValue({
       request: vi.fn().mockResolvedValue(refusal),
