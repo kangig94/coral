@@ -104,3 +104,31 @@ describe('coral-hud git segment', () => {
     expect(source).not.toMatch(/execSync\('git (?!--no-optional-locks)/u);
   });
 });
+
+describe('coral-hud shared-state writes', () => {
+  it('routes every cache and session write through a temp path and a rename', () => {
+    const source = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
+
+    // Readers take no lock, so a direct write to one of these paths is visible to another session
+    // half-written. The lock file is the deliberate exception: exclusivity there comes from `wx`.
+    for (const target of ['CACHE_FILE', 'GIT_CACHE_FILE', 'SESSIONS_FILE', 'BACKEND_CACHE_FILE']) {
+      expect(source, `${target} must be written via rename, not in place`).not.toMatch(
+        new RegExp(`writeFileSync\\(\\s*${target}\\b`, 'u'),
+      );
+    }
+    expect(source).toContain("writeFileSync(lockPath, JSON.stringify({ ts: now }), { flag: 'wx'");
+  });
+
+  it('gives every timed subprocess a kill signal a stuck process cannot ignore', () => {
+    const source = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
+
+    // A timeout only removes the child if the signal it sends can be taken, and SIGTERM cannot be
+    // taken by a process blocked in an uninterruptible wait.
+    const calls = source.split('execSync(').slice(1);
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      const options = call.slice(0, call.indexOf('})'));
+      if (options.includes('timeout:')) expect(options).toContain("killSignal: 'SIGKILL'");
+    }
+  });
+});

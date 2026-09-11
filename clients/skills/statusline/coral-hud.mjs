@@ -6,7 +6,6 @@
 
 import {
   readFileSync,
-  readdirSync,
   existsSync,
   writeFileSync,
   mkdirSync,
@@ -474,6 +473,7 @@ const BACKEND_CACHE_FILE = join(CACHE_DIR, '.coral-backend-cache.json');
 const CODEX_FLAG_FILE = join(CACHE_DIR, '.coral-codex-enabled');
 const CACHE_TTL_MS = 180_000;
 const CACHE_FAIL_TTL_MS = 30_000;
+const NO_CREDENTIALS_KIND = 'noCredentials';
 const RATE_LIMIT_BASE_MS = 120_000;
 const RATE_LIMIT_MAX_MS = 600_000;
 const API_TIMEOUT_MS = 5_000;
@@ -531,10 +531,15 @@ function readFullCache(key) {
   }
 }
 
+// Readers take no lock, so a reader in another session may open this file at any point during a
+// write. Only the rename makes what they open a whole document.
 function writeFullCache(all, key) {
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(key === undefined ? CACHE_FILE : hudCacheFile(CACHE_DIR, key), JSON.stringify(all), { mode: 0o600 });
+    const path = key === undefined ? CACHE_FILE : hudCacheFile(CACHE_DIR, key);
+    const tmpPath = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmpPath, JSON.stringify(all), { mode: 0o600 });
+    renameSync(tmpPath, path);
   } catch {}
 }
 
@@ -684,6 +689,7 @@ function getClaudeAccessToken() {
       const raw = execSync('/usr/bin/security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null', {
         encoding: 'utf-8',
         timeout: 2000,
+        killSignal: 'SIGKILL',
       }).trim();
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -874,6 +880,7 @@ function cacheError(slot, errorKind, rateLimit = 0) {
 async function renderLimits() {
   const cached = readCacheSlot('claude');
   if (cached) {
+    if (cached.errorKind === NO_CREDENTIALS_KIND) return null;
     if (cached.error) {
       if (cached.data) return formatLimits(cached.data);
       return formatErrorIndicator(cached);
@@ -888,7 +895,13 @@ async function renderLimits() {
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   try {
     const token = getClaudeAccessToken();
-    if (!token) return null;
+    // Absence has to be recorded, or a machine that never logged in reaches the credential source on
+    // every render — on macOS that is a Keychain subprocess per render. The fail TTL is the retry,
+    // so a later login is still picked up without anything being asked of the user.
+    if (!token) {
+      writeCacheSlot('claude', null, true, 0, NO_CREDENTIALS_KIND);
+      return null;
+    }
 
     const resp = await fetchUsage(token, controller.signal);
     if (resp?.unauthorized) return cacheError('claude', 'auth');
