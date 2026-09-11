@@ -64,6 +64,21 @@ describe('coral-hud account isolation', () => {
     expect(skill).toContain('^\\.coral-codex-[0-9a-f]{12}\\.lock$');
     expect(skill).toContain('Do not follow symlinks or delete any broader `.coral-*` pattern.');
   });
+
+  it('names every file the script can leave behind in the uninstall list', () => {
+    const source = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
+    const skill = readFileSync('clients/skills/statusline/SKILL.md', 'utf-8');
+
+    // Uninstall may not use a `.coral-*` glob, so coverage has to come from the list naming each
+    // file. Deriving the list from the script's own literals is what makes a new writer fail here
+    // instead of leaving its file on an uninstalled machine — `.coral-sessions.json` holds prompt
+    // text, and it survived uninstall for exactly as long as this test asserted wording instead.
+    const written = [...source.matchAll(/'(\.coral-[a-z-]+(?:-cache)?\.(?:json|lock))'/gu)].map((m) => m[1]);
+    expect(written.length).toBeGreaterThan(4);
+    for (const basename of new Set(written)) {
+      expect(skill, `uninstall must name ${basename}`).toContain(`CONFIG_DIR/hud/${basename}`);
+    }
+  });
 });
 
 describe('coral-hud git segment', () => {
@@ -116,7 +131,9 @@ describe('coral-hud shared-state writes', () => {
         new RegExp(`writeFileSync\\(\\s*${target}\\b`, 'u'),
       );
     }
-    expect(source).toContain("writeFileSync(lockPath, JSON.stringify({ ts: now }), { flag: 'wx'");
+    const lockWrites = source.split('\n').filter((line) => line.includes('writeFileSync(lockPath,'));
+    expect(lockWrites.length).toBeGreaterThan(0);
+    for (const line of lockWrites) expect(line).toContain("flag: 'wx'");
   });
 
   it('gives every timed subprocess a kill signal a stuck process cannot ignore', () => {

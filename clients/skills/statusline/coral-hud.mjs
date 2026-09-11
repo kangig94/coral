@@ -98,38 +98,44 @@ async function readStdin() {
 // --- git ---
 
 // A statusline renders on every turn of every open session, so this segment's cost is multiplied by
-// both. Three properties keep that multiplication off the repository's own filesystem, and a network
-// mount is where losing any one of them stops being survivable:
-//   - `--no-optional-locks` is required, not preferred: without it `git status` refreshes and
-//     rewrites `.git/index`, so concurrent renders contend for `.git/index.lock` inside the repo.
-//   - At most one probe runs at a time across all sessions; every other render serves the cache.
-//   - A probe that did not return is not replaced by another. `execSync`'s timeout delivers a
-//     signal, and a process blocked in an uninterruptible filesystem wait does not take one, so an
-//     elapsed timeout does not establish that the previous probe is gone. Re-probing on that
-//     assumption is what turns one stalled subprocess into an accumulating pile of them.
+// both, and a repository on a network mount is where that multiplication stops being survivable.
+// `--no-optional-locks` is required rather than preferred: without it `git status` refreshes and
+// rewrites `.git/index`, so concurrent renders contend for `.git/index.lock` inside the repository.
+// `execSync`'s timeout delivers a signal, and a process blocked in an uninterruptible filesystem
+// wait does not take one, so no elapsed bound here establishes that a probe is gone.
 function renderGitBranch(input) {
   const cwd = input.cwd || input.workspace?.current_dir || input.workspace?.project_dir;
   if (!cwd) return null;
   const key = gitCacheKey(cwd);
-  const cache = readGitCache();
-  const entry = cache[key] || null;
+  const entry = readGitCache()[key] || null;
   const now = Date.now();
 
   if (entry && (now - entry.ts <= GIT_TTL_MS || now < entry.backoffUntil)) return formatGitSegment(entry.value);
 
-  const lock = claimGitProbe(key, cache, now);
-  if (lock === null) return formatGitSegment(entry?.value);
+  const claim = claimGitProbe(key, now);
+  if (claim === null) return formatGitSegment(entry?.value);
 
-  let value = entry?.value ?? null;
   try {
-    value = probeGit(cwd);
-  } catch {
-    value = null;
+    const value = probeGit(cwd);
+    writeGitEntry(key, { ts: Date.now(), value, backoffUntil: 0 });
+    return formatGitSegment(value);
+  } catch (error) {
+    // A git that ran and refused answered the question: this is not a repository, and `null` is that
+    // answer. A probe cut short answered nothing, and re-asking every TTL is what spends a
+    // subprocess per render against whatever made it slow.
+    if (probeWasCutShort(error)) {
+      backOffRepo(key, now);
+      return formatGitSegment(entry?.value);
+    }
+    writeGitEntry(key, { ts: Date.now(), value: null, backoffUntil: 0 });
+    return null;
   } finally {
-    releaseFetchLock(lock);
+    releaseGitProbe(claim);
   }
-  writeGitCache({ ...readGitCache(), [key]: { ts: Date.now(), value, backoffUntil: 0 } });
-  return formatGitSegment(value);
+}
+
+function probeWasCutShort(error) {
+  return error?.signal === 'SIGKILL' || error?.code === 'ETIMEDOUT' || error?.code === 'ENOBUFS';
 }
 
 // One invocation carries both the head name and the dirty flag, so a render never costs more than a
@@ -166,29 +172,68 @@ export function formatGitSegment(value) {
   return `${CYAN}⎇ ${value.branch}${RESET}${value.dirty ? `${YELLOW}*${RESET}` : ''}`;
 }
 
-// A lock older than the stale window means the probe holding it never reported. That is not a dead
-// holder, so the lock is surrendered without starting a replacement and the repo is left alone until
-// the back-off expires — the one exit that ends the hold without needing to observe the process.
-function claimGitProbe(key, cache, now) {
+// One lock covers every repository, so a hold that outlived its holder must name the repository it
+// was probing: the render that finds it is usually rendering a different one, and fencing that one
+// leaves the stalled repository free to be probed again. The holder cannot be signalled, so the
+// back-off expiring is the only exit this hold has.
+function claimGitProbe(key, now) {
   const lockPath = hudFetchLockPath(CACHE_DIR, GIT_LOCK_KEY);
-  try {
-    const held = JSON.parse(readFileSync(lockPath, 'utf-8'));
+  const held = readGitProbeHold(lockPath);
+  if (held !== null) {
     if (now - held.ts <= LOCK_STALE_MS) return null;
-    try {
-      unlinkSync(lockPath);
-    } catch {}
-    // `ts` dates the last value actually measured, so backing off must not advance it.
-    const entry = cache[key] || { ts: 0, value: null };
-    writeGitCache({ ...cache, [key]: { ...entry, backoffUntil: now + GIT_BACKOFF_MS } });
+    deleteHudFile(lockPath);
+    if (held.key !== null) backOffRepo(held.key, now);
     return null;
-  } catch {} // ENOENT or corrupt JSON → no live holder
+  }
+  const nonce = `${process.pid}-${now}-${Math.random().toString(36).slice(2)}`;
   try {
     mkdirSync(CACHE_DIR, { recursive: true });
-    writeFileSync(lockPath, JSON.stringify({ ts: now }), { flag: 'wx', mode: 0o600 });
-    return lockPath;
+    writeFileSync(lockPath, JSON.stringify({ ts: now, key, nonce }), { flag: 'wx', mode: 0o600 });
+    return { lockPath, nonce };
   } catch {
     return null;
   }
+}
+
+// A record that cannot be read still proves a holder created the file, and its age is the only thing
+// it can still say. Treating it as no holder is what let one interrupted write hold the lock forever:
+// `wx` cannot replace a file that is already there, so the claim below would fail on every render.
+function readGitProbeHold(lockPath) {
+  let mtimeMs;
+  try {
+    mtimeMs = statSync(lockPath).mtimeMs;
+  } catch {
+    return null;
+  }
+  try {
+    const held = JSON.parse(readFileSync(lockPath, 'utf-8'));
+    if (Number.isFinite(held?.ts) && typeof held?.key === 'string' && typeof held?.nonce === 'string') return held;
+  } catch {}
+  return { ts: mtimeMs, key: null, nonce: null };
+}
+
+// Releasing by path alone deletes whatever lock is there, including a successor's.
+function releaseGitProbe(claim) {
+  const held = readGitProbeHold(claim.lockPath);
+  if (held !== null && held.nonce !== claim.nonce) return;
+  deleteHudFile(claim.lockPath);
+}
+
+// `ts` dates the last value actually measured, so backing off must not advance it.
+function backOffRepo(key, now) {
+  const cache = readGitCache();
+  const entry = cache[key] || { ts: 0, value: null };
+  writeGitCache({ ...cache, [key]: { ...entry, backoffUntil: now + GIT_BACKOFF_MS } });
+}
+
+function writeGitEntry(key, entry) {
+  writeGitCache({ ...readGitCache(), [key]: entry });
+}
+
+function deleteHudFile(path) {
+  try {
+    unlinkSync(path);
+  } catch {}
 }
 
 function gitCacheKey(cwd) {
@@ -945,7 +990,7 @@ function writeBackCodexCredentials(creds, refreshed) {
     const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
     parsed.tokens.access_token = refreshed.accessToken;
     parsed.tokens.refresh_token = refreshed.refreshToken;
-    const tmpPath = authPath + '.tmp';
+    const tmpPath = `${authPath}.tmp-${process.pid}`;
     writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
     renameSync(tmpPath, authPath);
   } catch {}
@@ -1033,6 +1078,7 @@ async function renderCodexData() {
 
   const cached = readCacheSlot(CODEX_CACHE_SLOT);
   if (cached) {
+    if (cached.errorKind === NO_CREDENTIALS_KIND) return { kind: 'none' };
     if (cached.error) {
       if (cached.data) return { kind: 'data', ...cached.data };
       return { kind: 'error', message: formatErrorIndicator(cached) };
@@ -1054,7 +1100,10 @@ async function renderCodexData() {
 
   try {
     const creds = readCodexCredentials();
-    if (!creds) return { kind: 'none' };
+    if (!creds) {
+      writeCacheSlot(CODEX_CACHE_SLOT, null, true, 0, NO_CREDENTIALS_KIND);
+      return { kind: 'none' };
+    }
 
     let token = creds.accessToken;
     let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
