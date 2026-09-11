@@ -41,11 +41,13 @@ export interface ProviderOperationCleanupPort {
   release(identity: ProviderOperationCleanupIdentity): void;
 }
 
+/** Both fields must come from the same provider-operation record and must never be recombined across records. */
 export type ProviderOperationBindingIdentity = Readonly<{
   jobId: string;
   operationId: string;
 }>;
 
+/** `unknown` must never authorize an absence-dependent binding transition. */
 export type ProviderOperationJournalProbeResult =
   | Readonly<{ kind: 'present' }>
   | Readonly<{ kind: 'absent' }>
@@ -66,6 +68,7 @@ export type ProviderOperationCommitResult =
   | Readonly<{ kind: 'already-settled' }>
   | ProviderOperationBindingRefusal;
 
+/** `settled-unbound` must remain a live recovery obligation; it is not evidence that no launch reservation exists. */
 export type ProviderOperationSettlementResult =
   | Readonly<{ kind: 'settled-unbound' }>
   | Readonly<{ kind: 'settled'; reservationId: string }>
@@ -86,6 +89,7 @@ export type SettledUnboundStatusSubject = Readonly<{
   state: 'active';
 }>;
 
+/** Only the settled-unbound status port may mint this token, and clearing requires the exact token it returned. */
 export type SettledUnboundStatusOwnership = Readonly<{
   identity: ProviderOperationBindingIdentity;
   subjects: readonly SettledUnboundStatusSubject[];
@@ -94,6 +98,7 @@ export type SettledUnboundStatusOwnership = Readonly<{
 
 declare const settledUnboundStatusAbsenceBrand: unique symbol;
 
+/** Only an exact journal-absence observation may mint this token; consumers must match its recovery owner before release. */
 export type SettledUnboundStatusAbsence = Readonly<{
   identity: ProviderOperationBindingIdentity;
   subject: SettledUnboundStatusSubject;
@@ -105,6 +110,7 @@ export type SettledUnboundStatusResult =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'refused'; reason: string }>;
 
+/** Clearing recorded status must reject ownership that does not match both the identity and the current subjects. */
 export interface SettledUnboundStatusPort {
   record(identity: ProviderOperationBindingIdentity): SettledUnboundStatusResult;
   rebind(subject: SettledUnboundStatusSubject): SettledUnboundStatusOwnership | null;
@@ -113,30 +119,17 @@ export interface SettledUnboundStatusPort {
   clearRefusal(identity: ProviderOperationBindingIdentity): void;
 }
 
+/** `settled-unbound` may be returned only after the durable subject has been rebound into local ownership. */
 export interface SettledUnboundStatusHydrationPort {
   hydrateSettledUnboundStatus(subject: SettledUnboundStatusSubject): SettledUnboundStatusHydrationResult;
 }
-
-export type ProviderOperationBindingState =
-  | Readonly<{
-      kind: 'settled-unbound';
-      identity: ProviderOperationBindingIdentity;
-      unknownObservations: number;
-      successor:
-        | Readonly<{ kind: 'mailbox' }>
-        | Readonly<{ kind: 'provider-operation-journal' }>
-        | Readonly<{ kind: 'recovery-quarantine'; ownership: SettledUnboundStatusOwnership }>
-        | Readonly<{ kind: 'status-recording-refused' }>;
-    }>
-  | Readonly<{ kind: 'prepared'; sourcePermit: LaunchPermit }>
-  | Readonly<{ kind: 'bound'; proxyPermit: LaunchPermit }>
-  | Readonly<{ kind: 'settled'; reservationId: string }>;
 
 export type ProviderOperationBindingRetirementDisposition =
   | Readonly<{ kind: 'retired' }>
   | Readonly<{ kind: 'nothing-to-retire' }>
   | Readonly<{ kind: 'refused'; reason: string }>;
 
+/** Binding transitions must preserve one reservation generation; after binding, only the returned successor permit may release it. */
 export interface ProviderOperationBindingPort {
   prepareProviderOperationBinding(
     permit: LaunchPermit,

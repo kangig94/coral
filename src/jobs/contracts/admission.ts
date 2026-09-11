@@ -17,6 +17,7 @@ export type PermitHolder =
   | Readonly<{ kind: 'undecided-provider-operation'; recordKeys: readonly string[] }>
   | Readonly<{ kind: 'queue-handoff' }>;
 
+/** Only the launch coordinator may mint or replace a permit; mutation callers must return the exact received generation. */
 export type LaunchPermit = Readonly<{
   reservationId: string;
   jobId: string;
@@ -26,6 +27,7 @@ export type LaunchPermit = Readonly<{
   acquiredAt: number;
 }>;
 
+/** Diagnostic snapshots are observational only and must not authorize release or reclamation. */
 export type LaunchPermitDiagnostic = Readonly<{
   reservationId: string;
   jobId: string;
@@ -46,7 +48,7 @@ export type QueuedHandle = {
   cancel: () => QueueCancellation;
 };
 
-export type AdmittedHandle = {
+type AdmittedHandle = {
   type: 'immediate';
   permit: LaunchPermit;
 };
@@ -72,6 +74,7 @@ export type LaunchReservationView =
       heldForMs: number;
     }>;
 
+/** Only `released` proves that this permit returned capacity; a transferred reservation remains occupied. */
 export type LaunchRelease =
   | Readonly<{ kind: 'released'; pool: LaunchPool; admittedNext: boolean }>
   | Readonly<{ kind: 'already-released'; pool: LaunchPool }>
@@ -87,13 +90,13 @@ export type LaunchReleaseDiagnostic = Readonly<{
   observedAtMs: number;
 }>;
 
-export type LaunchJobReclamationEvidence =
+type LaunchJobReclamationEvidence =
   | Readonly<{ kind: 'job-absent' }>
   | Readonly<{ kind: 'job-terminal'; phase: Extract<JobPhase, 'completed' | 'error' | 'aborted'> }>;
 
 export type ReclaimablePermitHolderKind = Exclude<PermitHolder['kind'], 'system-task' | 'queue-handoff'>;
 
-export type LaunchPermitReclamationEvidenceByHolder = Readonly<{
+type LaunchPermitReclamationEvidenceByHolder = Readonly<{
   'local-execution': LaunchJobReclamationEvidence;
   recovery: LaunchJobReclamationEvidence;
   'proxy-operation': Readonly<{
@@ -108,6 +111,7 @@ export type LaunchPermitReclamationEvidenceByHolder = Readonly<{
   }>;
 }>;
 
+/** Reclamation may consume this evidence only for the exact current permit and its matching holder identity. */
 export type LaunchPermitReclamationEvidence =
   LaunchPermitReclamationEvidenceByHolder[keyof LaunchPermitReclamationEvidenceByHolder];
 
@@ -125,6 +129,7 @@ type LaunchPermitReclamationDiagnosticBase = Readonly<{
   reclaimedAtMs: number;
 }>;
 
+/** A diagnostic may exist only after the exact reservation generation was reclaimed; refused probes must leave none. */
 export type LaunchPermitReclamationDiagnostic = {
   [K in ReclaimablePermitHolderKind]: LaunchPermitReclamationDiagnosticBase &
     Readonly<{
@@ -133,8 +138,9 @@ export type LaunchPermitReclamationDiagnostic = {
     }>;
 }[ReclaimablePermitHolderKind];
 
-export type SettlementRefusalCause = 'terminal-persist-failed' | 'claim-release-failed' | 'claim-already-reassigned';
+type SettlementRefusalCause = 'terminal-persist-failed' | 'claim-release-failed' | 'claim-already-reassigned';
 
+/** Only `quarantine: 'recorded'` permits callers to treat the refusal as durably contained. */
 export type SettlementRefusal = Readonly<{
   kind: 'settlement-refused';
   cause: SettlementRefusalCause;

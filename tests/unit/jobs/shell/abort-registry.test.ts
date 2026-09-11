@@ -76,6 +76,12 @@ describe('jobs AbortRegistry', () => {
   it('releases the captured permit when abort settles even if the carrier never returns', () => {
     const registry = new AbortRegistry(runtime.ids);
     const admission = new LaunchCoordinator({ runtime });
+    let carrierStarted = false;
+    const carrierSettlement = new Promise<void>(() => {});
+    const unsettledCarrier = () => {
+      carrierStarted = true;
+      void carrierSettlement;
+    };
     const launched = admission.requestLaunch(
       'stuck-carrier',
       'codex',
@@ -83,9 +89,10 @@ describe('jobs AbortRegistry', () => {
       'default',
     );
     if (launched === 'queue_full' || launched.type !== 'immediate') throw new Error('expected exact permit');
-    registry.register(launched.permit.jobId, undefined, () => admission.releaseLaunch(launched.permit));
+    registry.register(launched.permit.jobId, unsettledCarrier, () => admission.releaseLaunch(launched.permit));
 
     expect(registry.abort([launched.permit.jobId])).toEqual({ aborted: [launched.permit.jobId], notFound: [] });
+    expect(carrierStarted).toBe(true);
     expect(admission.reservationFor(launched.permit.jobId)).toBeNull();
     expect(admission.active).toBe(0);
   });

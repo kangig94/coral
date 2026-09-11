@@ -1048,13 +1048,6 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
   }
 }
 
-// Deliberately not "not running": the record exists and could not be read, which says nothing about whether a
-// coordinator is serving. The remedy names the file because nothing in Coral rewrites it while a coordinator is
-// up — it is written once at startup — so an operator is the only party who can clear it.
-//
-// The remedy is the operator rather than a Coral command because every command that could stop a
-// coordinator needs its host, port and boot token, and all three live in the record this status exists to
-// report unreadable. Nothing that reads them can act while it cannot be read.
 function formatUndecodableRecordStatus(result: Extract<BackendStatusFull, { status: 'undecodable_record' }>): string {
   return [
     `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
@@ -1266,9 +1259,6 @@ export function formatShutdown(result: ShutdownResult): string {
   }
 }
 
-// No Coral command reaches this: shutdown needs host/port/bootToken from the very record it just failed to
-// read, so the manual path is the only one that exists. `backend status` is named only for the file's path,
-// not as a command that can stop anything here.
 function formatUnreadableRecordShutdown(detail: string): string {
   return [
     `Shutdown not attempted: the coordinator discovery record could not be read (${detail}).`,

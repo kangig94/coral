@@ -84,6 +84,7 @@ import {
 } from '#src/coordinator/composition/index.js';
 import {
   LAUNCH_RECLAMATION_AGE_FLOOR_MS,
+  LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS,
   SETTLED_UNBOUND_ABSENCE_CHECK_MS,
   SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT,
 } from '#src/coordinator/live/admission.js';
@@ -889,5 +890,65 @@ describe('health local carrier observation', () => {
     ]);
     expect(core.launchCoordinator.active).toBe(0);
     expect(core.launchCoordinator.reservationFor(admission.permit.jobId)).toBeNull();
+  });
+
+  it('admits queued work when the registered sweep reclaims a stale terminal permit without a phase event', async () => {
+    let now = 50_000;
+    const intervals = new Map<number, () => void>();
+    const baseRuntime = createRealRuntime('prod');
+    const runtime = {
+      ...baseRuntime,
+      env: {
+        ...baseRuntime.env,
+        get: (key: string) => (key === 'CORAL_MAX_WORKERS' ? '1' : baseRuntime.env.get(key)),
+      },
+      time: {
+        ...baseRuntime.time,
+        now: () => now,
+        setInterval: (callback: () => void, ms: number) => {
+          intervals.set(ms, callback);
+          return { unref: () => undefined };
+        },
+        clearInterval: () => undefined,
+      },
+    } satisfies Runtime;
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+    );
+    const stale = core.launchCoordinator.requestLaunch(
+      'stale-terminal-job',
+      'codex',
+      { kind: 'provider-session', id: 'stale-terminal-session' },
+      'default',
+    );
+    const queued = core.launchCoordinator.requestLaunch(
+      'queued-after-sweep',
+      'claude',
+      { kind: 'provider-session', id: 'queued-after-sweep-session' },
+      'default',
+    );
+    if (stale === 'queue_full' || stale.type !== 'immediate') throw new Error('expected immediate stale permit');
+    if (queued === 'queue_full' || queued.type !== 'queued') throw new Error('expected queued launch');
+    const terminalStatus = { ...acquiredDetail(stale.permit.jobId).status!, phase: 'error' as const };
+    const db = createDb();
+    installProgressStore(core, db, {
+      getDb: () => db,
+      listStoredNonterminalJobIds: () => [],
+      loadJobProjectionDetail: () => ({ status: terminalStatus, launch: null, runtime: null, exit: null }),
+      liveJobCount: () => 0,
+      listJobIds: () => [],
+      readStatus: () => terminalStatus,
+    });
+
+    now += LAUNCH_RECLAMATION_AGE_FLOOR_MS;
+    const sweep = intervals.get(LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS);
+    if (sweep === undefined) throw new Error('launch reclamation sweep was not registered');
+    sweep();
+
+    await expect(queued.waitForPermit()).resolves.toMatchObject({ jobId: 'queued-after-sweep', pool: 'default' });
+    expect(core.launchCoordinator.reservationFor(stale.permit.jobId)).toBeNull();
+    expect(core.launchCoordinator.reservationFor('queued-after-sweep')).toMatchObject({ kind: 'active' });
   });
 });

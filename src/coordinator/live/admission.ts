@@ -43,13 +43,13 @@ import type {
   ProviderOperationCommitResult,
   ProviderOperationBindingIdentity,
   ProviderOperationBindingPort,
-  ProviderOperationBindingState,
   ProviderOperationBindingRetirementDisposition,
   ProviderOperationJournalProbeResult,
   ProviderOperationPrepareResult,
   ProviderOperationSettlementResult,
   SettledUnboundStatusHydrationResult,
   SettledUnboundStatusAbsence,
+  SettledUnboundStatusOwnership,
   SettledUnboundStatusSubject,
   SettledUnboundStatusPort,
 } from '../../jobs/contracts/provider-operation-lifecycle.js';
@@ -82,6 +82,21 @@ type ActiveLaunchReservation = Readonly<{
 }>;
 
 type PoolState = { active: Map<string, ActiveLaunchReservation>; queued: QueuedLaunchEntry[] };
+
+type ProviderOperationBindingState =
+  | Readonly<{
+      kind: 'settled-unbound';
+      identity: ProviderOperationBindingIdentity;
+      unknownObservations: number;
+      successor:
+        | Readonly<{ kind: 'mailbox' }>
+        | Readonly<{ kind: 'provider-operation-journal' }>
+        | Readonly<{ kind: 'recovery-quarantine'; ownership: SettledUnboundStatusOwnership }>
+        | Readonly<{ kind: 'status-recording-refused' }>;
+    }>
+  | Readonly<{ kind: 'prepared'; sourcePermit: LaunchPermit }>
+  | Readonly<{ kind: 'bound'; proxyPermit: LaunchPermit }>
+  | Readonly<{ kind: 'settled'; reservationId: string }>;
 
 const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
