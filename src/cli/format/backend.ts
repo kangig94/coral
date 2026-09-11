@@ -1076,16 +1076,23 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       );
     }
     lines.push(`  error=${JSON.stringify(entry.errorMessage)}`, `  detail=${JSON.stringify(entry.detail)}`);
-    if (
-      entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY &&
+    const isClearable =
       entry.state === 'active' &&
       entry.retry === null &&
       entry.continuation === null &&
+      entry.detectedAt !== null &&
+      entry.updatedAt !== null;
+    if (isClearable) {
+      lines.push(
+        `  clear=coral-cli backend recovery-quarantine clear --boundary ${JSON.stringify(entry.boundary)} --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}`,
+      );
+    }
+    if (
+      isClearable &&
+      entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY &&
       entry.subject.revision.kind === 'fingerprint' &&
       /^sha256:[0-9a-f]{64}$/u.test(entry.subject.revision.value) &&
-      isProviderOperationRecordKey(entry.subject.key) &&
-      entry.detectedAt !== null &&
-      entry.updatedAt !== null
+      isProviderOperationRecordKey(entry.subject.key)
     ) {
       lines.push(
         `  discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}`,

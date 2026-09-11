@@ -20,9 +20,11 @@ import {
 } from '#src/runtime/errors.js';
 import {
   formatBackendStatus as formatComposedBackendStatus,
+  formatRecoveryQuarantineList,
   formatShutdown,
   formatUnreadableProviderOperationDiscard,
 } from '#src/cli/format/backend.js';
+import { encodeRecoveryQuarantineKey } from '#src/recovery/quarantine.js';
 import {
   formatDiscussAbort,
   formatDiscussParticipate,
@@ -1049,7 +1051,7 @@ describe('cli format', () => {
       },
       {
         remedy: { kind: 'recovery-quarantine-clear' as const },
-        required: ['recovery-quarantine list', 'clear command'],
+        required: ['recovery-quarantine list'],
         forbidden: 'discard-provider-operation',
       },
       {
@@ -1082,6 +1084,29 @@ describe('cli format', () => {
       expect(output).toContain('coral-cli backend status');
       for (const action of required) expect(output).toContain(action);
       if (forbidden !== undefined) expect(output).not.toContain(forbidden);
+    });
+
+    it('renders the complete recovery-quarantine clear command for an eligible row', () => {
+      const key = 'surviving-record-key';
+      const revision = `sha256:${'a'.repeat(64)}`;
+      const output = formatRecoveryQuarantineList([
+        {
+          boundary: 'provider-operation-unreadable',
+          subject: { key, revision: { kind: 'fingerprint', value: revision } },
+          state: 'active',
+          stage: 'settle',
+          retry: null,
+          continuation: null,
+          errorMessage: 'adoption refused',
+          detail: 'operator retry required',
+          detectedAt: '2026-09-11T00:00:00.000Z',
+          updatedAt: '2026-09-11T00:00:00.000Z',
+        },
+      ]);
+
+      expect(output).toContain(
+        `clear=coral-cli backend recovery-quarantine clear --boundary "provider-operation-unreadable" --key ${encodeRecoveryQuarantineKey(key)} --revision "fingerprint:${revision}"`,
+      );
     });
 
     it('renders automatic launch reclamation evidence', () => {

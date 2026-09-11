@@ -671,7 +671,7 @@ describe('health local carrier observation', () => {
       recordKey: survivingRecordKey,
       ...surviving.operation,
       reason: 'the provider operation ownership path is not initialized',
-      remedy: { kind: 'restart-coordinator' },
+      remedy: { kind: 'remote-settlement' },
     } as const;
     releaseStartupOwnership.current = async () => ({
       kind: 'adoption-refused',
@@ -730,6 +730,8 @@ describe('health local carrier observation', () => {
     );
     expect(formatted).toContain(`record=${survivingRecordKey} job=${surviving.operation.jobId}`);
     expect(formatted).toContain(`reason=${refusal.reason}`);
+    expect(formatted).toContain('Coral retries the remote settlement path automatically');
+    expect(formatted).not.toContain('external repair');
   });
 
   it('preserves the provider-operation row and launch capacity while startup recovery owns the fence', async () => {

@@ -357,14 +357,6 @@ export function createRecoveryWalk(
       emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
     });
 
-  /**
-   * A record this build cannot read is not a job that failed. The provider process and its session
-   * outlive the coordinator on purpose — adoption exists so a wrapper lost across a restart or an
-   * upgrade reattaches instead of destroying the work it was supervising. When two builds disagree
-   * about a durable shape, the honest answer is that this coordinator cannot speak for the subject,
-   * which is what the quarantine boundary already holds. Terminalizing instead spends the provider's
-   * work to settle a question about our own schema.
-   */
   const isUninterpretableRecord = (error: unknown): boolean =>
     error instanceof StoreDecodeError || error instanceof ZodError;
 

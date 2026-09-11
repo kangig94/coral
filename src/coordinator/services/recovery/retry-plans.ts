@@ -36,6 +36,23 @@ export type UnreadableProviderOperationQuarantineReport = Readonly<{
   failed: readonly Readonly<{ key: string; error: string }>[];
 }>;
 
+function providerOperationAdoptionRefusalRetryAdvice(remedy: ProviderOperationAdoptionRemedy): string {
+  switch (remedy.kind) {
+    case 'restart-coordinator':
+      return 'Restart the coordinator to initialize the repaired row at boot, then retry this coordinate.';
+    case 'remote-settlement':
+      return 'Coral retries the remote settlement path automatically; re-check this coordinate after settlement.';
+    case 'recovery-quarantine-discard': {
+      const consent = remedy.allowReadable ? ' with --allow-readable' : '';
+      return `Run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command${consent} it prints if losing that row is acceptable.`;
+    }
+    case 'recovery-quarantine-clear':
+      return 'Run coral-cli backend recovery-quarantine list and use its exact clear command.';
+    case 'external-repair':
+      return 'External repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then retry this coordinate.';
+  }
+}
+
 export async function quarantineUnreadableProviderOperations(
   quarantine: RecoveryQuarantinePort,
   rows: readonly UnreadableProviderOperationAttribution[],
@@ -122,7 +139,7 @@ export function createUnreadableProviderOperationRetryPolicy(
           kind: 'quarantine',
           detail:
             `Provider operation row ${item.key} is readable, but this coordinator did not accept ownership: ` +
-            `${adoption.reason}. Restart the coordinator to initialize the repaired row at boot, then retry this coordinate.`,
+            `${adoption.reason}. ${providerOperationAdoptionRefusalRetryAdvice(adoption.remedy)}`,
         };
       }
       return {

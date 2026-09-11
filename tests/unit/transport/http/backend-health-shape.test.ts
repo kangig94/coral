@@ -322,7 +322,15 @@ describe('/health typed shape (AC10a)', () => {
     ).toBeNull();
   });
 
-  it('decodes provider-operation adoption refusals and rejects incomplete identities', () => {
+  const providerOperationAdoptionRemedies = [
+    { kind: 'restart-coordinator' },
+    { kind: 'remote-settlement' },
+    { kind: 'recovery-quarantine-discard', allowReadable: false },
+    { kind: 'recovery-quarantine-clear' },
+    { kind: 'external-repair' },
+  ] as const;
+
+  it.each(providerOperationAdoptionRemedies)('decodes the $kind provider-operation adoption remedy', (remedy) => {
     const refusal = {
       triggerRecordKey: 'discarded-record-key',
       rowDisposition: 'discarded',
@@ -333,7 +341,7 @@ describe('/health typed shape (AC10a)', () => {
       proxyInstanceId: 'proxy-1',
       buildSetId: 'build-set-1',
       reason: 'the provider operation ownership path is not initialized',
-      remedy: { kind: 'restart-coordinator' },
+      remedy,
       observedAtMs: 456,
     } as const;
 
@@ -343,6 +351,23 @@ describe('/health typed shape (AC10a)', () => {
         diagnostics: { providerOperationAdoptionRefusals: [refusal] },
       })?.health.diagnostics?.providerOperationAdoptionRefusals,
     ).toEqual([refusal]);
+  });
+
+  it('rejects a provider-operation adoption refusal with an incomplete identity', () => {
+    const refusal = {
+      triggerRecordKey: 'discarded-record-key',
+      rowDisposition: 'discarded',
+      releasedLaunchPermits: 0,
+      recordKey: 'surviving-record-key',
+      jobId: 'job-1',
+      operationId: 'operation-1',
+      proxyInstanceId: 'proxy-1',
+      buildSetId: 'build-set-1',
+      reason: 'the provider operation ownership path is not initialized',
+      remedy: { kind: 'remote-settlement' },
+      observedAtMs: 456,
+    } as const;
+
     expect(
       parseBackendHealth({
         ...HEALTHY_BASE,

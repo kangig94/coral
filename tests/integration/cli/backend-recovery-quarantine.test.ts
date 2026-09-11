@@ -132,6 +132,9 @@ describe('backend recovery-quarantine commands', () => {
       )} revision="fingerprint:revision-1" state=active stage=hydrate`,
     );
     expect(stdout).toContain(
+      `clear=coral-cli backend recovery-quarantine clear --boundary "workflow-recovery" --key ${encodeRecoveryQuarantineKey('workflow-1')} --revision "fingerprint:revision-1"`,
+    );
+    expect(stdout).toContain(
       `key=${encodeRecoveryQuarantineKey('workflow-literal-sentinel')} revision="fingerprint:until-cleared"`,
     );
     expect(stdout).toContain(`key=${encodeRecoveryQuarantineKey('workflow-unversioned')} revision="until-cleared"`);
@@ -176,6 +179,7 @@ describe('backend recovery-quarantine commands', () => {
     expect(rendered).toContain(`key=${encodeRecoveryQuarantineKey(key)}`);
     expect(rendered).toContain('detected_at=unavailable updated_at=unavailable');
     expect(rendered).toContain('derived from the durable unreadable provider operation row');
+    expect(rendered).not.toContain('clear=');
     expect(rendered).not.toContain('discard=');
   });
 
@@ -187,6 +191,7 @@ describe('backend recovery-quarantine commands', () => {
       persisted: true,
       revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
       key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      clearable: true,
       prints: true,
     },
     {
@@ -196,6 +201,7 @@ describe('backend recovery-quarantine commands', () => {
       persisted: true,
       revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
       key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      clearable: false,
       prints: false,
     },
     {
@@ -205,6 +211,7 @@ describe('backend recovery-quarantine commands', () => {
       persisted: true,
       revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
       key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      clearable: false,
       prints: false,
     },
     {
@@ -214,6 +221,7 @@ describe('backend recovery-quarantine commands', () => {
       persisted: false,
       revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
       key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      clearable: false,
       prints: false,
     },
     {
@@ -223,6 +231,7 @@ describe('backend recovery-quarantine commands', () => {
       persisted: true,
       revision: { kind: 'until-cleared' as const },
       key: 'provider_operation_saga.v1:record:00000000-0000-4000-8000-000000000001:00000000-0000-4000-8000-000000000002:00000000-0000-4000-8000-000000000003:00000000-0000-4000-8000-000000000004',
+      clearable: true,
       prints: false,
     },
     {
@@ -232,11 +241,12 @@ describe('backend recovery-quarantine commands', () => {
       persisted: true,
       revision: { kind: 'fingerprint' as const, value: `sha256:${'a'.repeat(64)}` },
       key: 'not-a-provider-operation-key',
+      clearable: true,
       prints: false,
     },
   ])(
-    'prints discard=$prints for $state persisted=$persisted evidence',
-    ({ state, retry, continuation, persisted, revision, key, prints }) => {
+    'prints clear=$clearable and discard=$prints for $state persisted=$persisted evidence',
+    ({ state, retry, continuation, persisted, revision, key, clearable, prints }) => {
       const rendered = formatRecoveryQuarantineList([
         {
           boundary: UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
@@ -251,6 +261,7 @@ describe('backend recovery-quarantine commands', () => {
           updatedAt: persisted ? '2026-08-28T00:00:00.000Z' : null,
         },
       ]);
+      expect(rendered.includes('clear=')).toBe(clearable);
       expect(rendered.includes('discard=')).toBe(prints);
     },
   );

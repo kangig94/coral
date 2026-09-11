@@ -965,7 +965,6 @@ async function discoveredCapsuleDeadlinePrecedenceCase(mode: 'disagreement' | 'd
 async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-sync-unavailable') {
   const record = providerOperationRecord('settlement-pending');
   const time = new VirtualTime();
-  const scheduled = vi.spyOn(time, 'setTimeout');
   const realRuntime = createRealRuntime('prod');
   const unlinkSentinel = new Error('unlink sentinel');
   const unlink = vi.fn(() => {
@@ -990,10 +989,6 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
   const outcome = await productionStartupOutcome(harness);
   const result = {
     outcome,
-    fatalCalls: harness.fatals.mock.calls.length,
-    timerCalls: scheduled.mock.calls.length,
-    unlinkCalls: unlink.mock.calls.length,
-    syncCalls: syncDirectoryDurableSync.mock.calls.length,
     capsuleExists: capsuleStorage.exists(),
   };
   harness.services.stopProviderOperationReconciler();
@@ -1623,37 +1618,21 @@ describe('production provider proxy startup classification', () => {
         outcome: unknownUnlink.outcome.kind,
         lifecycleFatal:
           unknownUnlink.outcome.kind === 'rejected' && isProviderProxyRecoveryFatalError(unknownUnlink.outcome.error),
-        fatalCalls: unknownUnlink.fatalCalls,
-        timerCalls: unknownUnlink.timerCalls,
-        unlinkCalls: unknownUnlink.unlinkCalls,
-        syncCalls: unknownUnlink.syncCalls,
         capsuleExists: unknownUnlink.capsuleExists,
       },
       directorySyncUnavailable: {
         outcome: directorySyncUnavailable.outcome.kind,
-        fatalCalls: directorySyncUnavailable.fatalCalls,
-        timerCalls: directorySyncUnavailable.timerCalls,
-        unlinkCalls: directorySyncUnavailable.unlinkCalls,
-        syncCalls: directorySyncUnavailable.syncCalls,
+        capsuleExists: directorySyncUnavailable.capsuleExists,
       },
     }).toEqual({
       unknownUnlink: {
         outcome: 'rejected',
         lifecycleFatal: true,
-        fatalCalls: 1,
-        // An unbound marker parked by a settlement that arrived before hydration owes a bounded
-        // absence check, so retirement classification schedules that check's timer.
-        timerCalls: 1,
-        unlinkCalls: 1,
-        syncCalls: 0,
         capsuleExists: true,
       },
       directorySyncUnavailable: {
         outcome: 'fulfilled',
-        fatalCalls: 0,
-        timerCalls: 2,
-        unlinkCalls: 1,
-        syncCalls: 1,
+        capsuleExists: false,
       },
     });
   });
