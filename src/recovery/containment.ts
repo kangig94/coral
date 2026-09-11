@@ -70,7 +70,7 @@ export type RecoveryDisposition =
       facts: readonly RecoverySettlementFact[];
       detail: string;
     }
-  | { kind: 'quarantine'; detail: string }
+  | { kind: 'quarantine'; detail: string; remedy?: RecoveryQuarantineRemedy }
   | {
       kind: 'deferred';
       continuation: { kind: string; key: string };
@@ -82,6 +82,11 @@ export type RecoveryDisposition =
       detail: string;
     }
   | { kind: 'fatal'; error: unknown };
+
+export type RecoveryQuarantineRemedy = Readonly<{
+  kind: 'discard-provider-operation';
+  allowReadable: boolean;
+}>;
 
 export type RecoveryProcessLocalCleanupResult =
   | { readonly kind: 'released' }
@@ -139,6 +144,7 @@ export type RecoveryQuarantineWrite = {
   readonly stage: 'scan' | 'hydrate' | 'settle';
   readonly errorMessage: string;
   readonly detail: string;
+  readonly remedy?: RecoveryQuarantineRemedy;
   readonly continuation?: { readonly kind: string; readonly key: string };
   readonly expectedRetry?: {
     readonly owner: string;
@@ -526,6 +532,7 @@ async function applyDisposition<Raw, Item>(
     stage: context.stage,
     errorMessage: context.error === undefined ? disposition.detail : errorMessage(context.error),
     detail: disposition.detail,
+    ...(disposition.kind === 'quarantine' && disposition.remedy !== undefined ? { remedy: disposition.remedy } : {}),
     ...(deferredBasis.kind === 'durable-continuation' ? { continuation: deferredBasis.continuation } : {}),
     ...(expectedRetry ? { expectedRetry } : {}),
   };

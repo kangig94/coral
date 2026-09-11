@@ -6,6 +6,7 @@ import type {
   RecoveryQuarantineDelete,
   RecoveryQuarantinePort,
   RecoveryQuarantineRecord,
+  RecoveryQuarantineRemedy,
   RecoveryQuarantineWrite,
   RecoverySubject,
 } from './containment.js';
@@ -14,6 +15,21 @@ type RecoveryQuarantineClock = Pick<TimePort, 'now'>;
 
 const RECOVERY_QUARANTINE_KEY_PREFIX = 'rqk1-';
 const ENCODED_CODE_UNIT_WIDTH = 4;
+const STRUCTURED_DETAIL_PREFIX = 'recovery-quarantine-detail.v1:';
+
+const recoveryQuarantineRemedySchema = z
+  .object({
+    kind: z.literal('discard-provider-operation'),
+    allowReadable: z.boolean(),
+  })
+  .strict();
+
+const structuredRecoveryQuarantineDetailSchema = z
+  .object({
+    detail: z.string(),
+    remedy: recoveryQuarantineRemedySchema,
+  })
+  .strict();
 
 export type RecoveryQuarantineKeyDecode = Readonly<{ kind: 'decoded'; key: string }> | Readonly<{ kind: 'invalid' }>;
 
@@ -127,6 +143,7 @@ export type RecoveryQuarantineEntry = {
   readonly continuation: { readonly kind: string; readonly key: string } | null;
   readonly errorMessage: string;
   readonly detail: string;
+  readonly remedy: RecoveryQuarantineRemedy | null;
   readonly detectedAt: string;
   readonly updatedAt: string;
 };
@@ -148,6 +165,26 @@ type RecoveryQuarantineColumns = {
   readonly dispositionDetail: string;
 };
 
+function encodeDispositionDetail(detail: string, remedy: RecoveryQuarantineRemedy | undefined): string {
+  if (remedy === undefined) return detail;
+  return `${STRUCTURED_DETAIL_PREFIX}${JSON.stringify({ detail, remedy })}`;
+}
+
+function decodeDispositionDetail(value: string): Readonly<{
+  detail: string;
+  remedy: RecoveryQuarantineRemedy | null;
+}> {
+  if (!value.startsWith(STRUCTURED_DETAIL_PREFIX)) return { detail: value, remedy: null };
+  try {
+    const decoded = structuredRecoveryQuarantineDetailSchema.safeParse(
+      JSON.parse(value.slice(STRUCTURED_DETAIL_PREFIX.length)) as unknown,
+    );
+    return decoded.success ? decoded.data : { detail: value, remedy: null };
+  } catch {
+    return { detail: value, remedy: null };
+  }
+}
+
 function revisionValue(subject: RecoverySubject): string | null {
   return subject.revision.kind === 'fingerprint' ? subject.revision.value : null;
 }
@@ -166,12 +203,13 @@ function writeColumns(write: RecoveryQuarantineWrite): RecoveryQuarantineColumns
     continuationKind: write.state === 'continuation' ? (write.continuation?.kind ?? null) : null,
     continuationKey: write.state === 'continuation' ? (write.continuation?.key ?? null) : null,
     errorMessage: write.errorMessage,
-    dispositionDetail: write.detail,
+    dispositionDetail: encodeDispositionDetail(write.detail, write.remedy),
   };
 }
 
 function rowToEntry(row: RecoveryQuarantineRow): RecoveryQuarantineEntry {
   const parsed = recoveryQuarantineRowSchema.parse(row);
+  const disposition = decodeDispositionDetail(parsed.disposition_detail);
   const subject: RecoverySubject = {
     key: parsed.subject_key,
     revision:
@@ -217,7 +255,8 @@ function rowToEntry(row: RecoveryQuarantineRow): RecoveryQuarantineEntry {
     retry,
     continuation,
     errorMessage: parsed.error_message,
-    detail: parsed.disposition_detail,
+    detail: disposition.detail,
+    remedy: disposition.remedy,
     detectedAt: parsed.detected_at,
     updatedAt: parsed.updated_at,
   };

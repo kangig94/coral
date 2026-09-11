@@ -15,6 +15,8 @@ import { providerOperationPrepareAttempt } from '#src/coordinator/services/provi
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
+import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
+import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 import type { ProviderProxyAuthorityFault } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import type { ProviderOperationPrepareMaterializationResult } from '#src/coordinator/services/provider-operation-prepare.js';
 import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/services/recovery/provider-operation-job-recovery.js';
@@ -68,7 +70,6 @@ import {
   asJointContainmentReceipt,
   asReservation,
 } from '#tests/helpers/provider-proxy-correlation.js';
-import { createProviderOperationStartupOwnershipHarness } from '#tests/helpers/provider-operation-startup-ownership.js';
 
 function proxyHeartbeatFault(error: unknown): ProviderProxyAuthorityFault {
   return {
@@ -614,16 +615,39 @@ function createHarness(
     buildOperationControl: () => ({ stop: overrides.stopOperation ?? (async () => undefined) }),
   };
   const registry = { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() };
-  const startupOwnership = createProviderOperationStartupOwnershipHarness({
-    runtime: createRealRuntime('prod'),
-    records: [record],
-    launchFor: () => {
-      const launch = progressStore.readLaunchProjection(record.operation.jobId);
-      if (launch === null) throw new Error('expected launch projection for startup ownership');
-      if (launch.provider === null) throw new Error('expected provider launch projection');
-      return { provider: launch.provider, owner: launch.owner, pool: launch.pool };
-    },
-  });
+  const startupRuntime = createRealRuntime('prod');
+  const startupBinding = new LaunchCoordinator({ runtime: startupRuntime });
+  const startupLaunch = progressStore.readLaunchProjection(record.operation.jobId);
+  if (startupLaunch === null || startupLaunch.provider === null) {
+    throw new Error('expected provider launch projection');
+  }
+  const startupPermit = startupBinding.restoreActiveLaunch(
+    record.operation.jobId,
+    startupLaunch.provider,
+    startupLaunch.owner,
+    startupLaunch.pool,
+  );
+  startupBinding.prepareProviderOperationBinding(startupPermit, record.operation);
+  let startupOwnershipService: ReturnType<typeof createProviderOperationStartupOwnership> | null = null;
+  const getStartupOwnershipService = () => {
+    if (startupOwnershipService !== null) return startupOwnershipService;
+    startupBinding.cancelProviderOperationBinding(startupPermit, record.operation);
+    startupBinding.releaseLaunch(startupPermit);
+    startupOwnershipService = createProviderOperationStartupOwnership({
+      runtime: startupRuntime,
+      progressStore,
+      binding: startupBinding,
+      log: () => undefined,
+    });
+    return startupOwnershipService;
+  };
+  const startupOwnership = {
+    binding: startupBinding,
+    ownershipFor: (records: readonly ProviderOperationRecord[]) =>
+      getStartupOwnershipService().hydrate({ records, unreadable: [] }),
+    releaseStartupOwnership: (operation: ProviderOperationRecord['operation']) =>
+      startupOwnershipService?.release(operation) ?? { kind: 'not-owned' as const },
+  };
   let now = 100;
   const terminalization = {
     terminalize:

@@ -1,5 +1,6 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { randomUUID } from 'node:crypto';
+import { Command } from 'commander';
 import { describe, expect, it, vi } from 'vitest';
 
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -48,12 +49,26 @@ import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/recovery/source-registry.js';
 import { formatRecoveryQuarantineList } from '#src/cli/format/backend.js';
+import { registerBackendCommands } from '#src/cli/commands/backend.js';
 
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
 
 const NAMESPACE = 'inherited-abort-tests';
 const PROJECT_ROOT = '/tmp/coral-inherited-abort-project';
 const BACKEND_NAMESPACE = NAMESPACE;
+
+function printedCommandArgv(output: string, encodedKey: string): string[] {
+  const line = output
+    .split('\n')
+    .find((candidate) => candidate.startsWith('  discard=') && candidate.includes(encodedKey));
+  if (line === undefined) throw new Error(`expected a discard command for ${encodedKey}`);
+  const tokens = line
+    .slice('  discard='.length)
+    .match(/"(?:[^"\\]|\\.)*"|\S+/gu)
+    ?.map((token) => (token.startsWith('"') ? (JSON.parse(token) as string) : token));
+  if (tokens?.[0] !== 'coral-cli') throw new Error('expected a complete coral-cli invocation');
+  return ['node', ...tokens];
+}
 
 function createProgressStore(runtime: ReturnType<typeof createRealRuntime>): JobStore {
   const db = newRawDatabase(':memory:');
@@ -750,7 +765,6 @@ describe('runStartupRecovery provider-operation ownership', () => {
       if (entry.subject.revision.kind !== 'fingerprint') throw new Error('expected fingerprint coordinate');
       expect(listing).toContain(entry.subject.revision.value);
     }
-    expect(listing).toContain('--allow-readable');
     const discarded = coordinates.find((entry) => entry.subject.key.includes(first.operation.operationId));
     const survivingCoordinate = coordinates.find((entry) => entry.subject.key.includes(second.operation.operationId));
     if (discarded?.subject.revision.kind !== 'fingerprint') throw new Error('expected first record coordinate');
@@ -761,12 +775,26 @@ describe('runStartupRecovery provider-operation ownership', () => {
       db: progressStore.getDb(),
       time: runtime.time,
     });
-    const request = {
-      key: discarded.subject.key,
-      revision: discarded.subject.revision.value,
-      allowReadable: true,
-    } as const;
-    expect(discard.discard(request)).toMatchObject({ kind: 'discarded' });
+    const commandArgv = printedCommandArgv(listing, encodeRecoveryQuarantineKey(discarded.subject.key));
+    expect(commandArgv).toContain('--allow-readable');
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const program = new Command();
+      program.exitOverride();
+      registerBackendCommands(program, {
+        recoveryQuarantine: {
+          list: () => quarantine.list(),
+          clear: async () => {
+            throw new Error('clear was not requested');
+          },
+          discardProviderOperation: async (request) => discard.discard(request),
+        },
+      });
+      await program.parseAsync(commandArgv);
+    } finally {
+      output.mockRestore();
+      process.exitCode = undefined;
+    }
     const resolution = recoveryCoordinator.releaseUnreadableProviderOperationStartupOwnership(discarded.subject.key);
     expect(resolution.released).toBe(0);
     expect(resolution.readableRecords).toHaveLength(1);

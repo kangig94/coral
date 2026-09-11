@@ -1253,6 +1253,7 @@ function unreadableProviderOperationEntries(
         errorMessage: 'Provider operation quarantine status could not be materialized.',
         detail:
           'This coordinate was derived from the durable unreadable provider operation row, but no persisted quarantine subject currently grants operator-discard authority. Repair the row externally, or start or repair the canonical coordinator and rerun this list until it publishes an eligible discard command.',
+        remedy: null,
         detectedAt: null,
         updatedAt: null,
       },

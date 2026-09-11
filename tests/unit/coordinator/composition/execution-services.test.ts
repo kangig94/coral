@@ -70,7 +70,7 @@ import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { createProviderOperationStartupOwnershipHarness } from '#tests/helpers/provider-operation-startup-ownership.js';
+import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 
 /** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -130,24 +130,25 @@ function providerOperationRecordKey(record: ProviderOperationRecord): string {
 
 const startupOwnershipHarnesses = new WeakMap<
   LaunchCoordinator,
-  ReturnType<typeof createProviderOperationStartupOwnershipHarness>
+  ReturnType<typeof createProviderOperationStartupOwnership>
 >();
 
 function startupOwnership(
   runtime: ReturnType<typeof isolatedExecutionRuntime>,
-  db: Parameters<typeof readProviderOperations>[0],
+  progressStore: JobStore,
   launchCoordinator: LaunchCoordinator,
 ) {
-  let harness = startupOwnershipHarnesses.get(launchCoordinator);
-  if (harness === undefined) {
-    harness = createProviderOperationStartupOwnershipHarness({
+  let service = startupOwnershipHarnesses.get(launchCoordinator);
+  if (service === undefined) {
+    service = createProviderOperationStartupOwnership({
       runtime,
-      records: [],
-      coordinator: launchCoordinator,
+      progressStore,
+      binding: launchCoordinator,
+      log: () => undefined,
     });
-    startupOwnershipHarnesses.set(launchCoordinator, harness);
+    startupOwnershipHarnesses.set(launchCoordinator, service);
   }
-  return harness.ownershipFor(readProviderOperations(db).records);
+  return service.hydrate(service.snapshot());
 }
 
 function createUnreadableStartupHarness() {
@@ -197,6 +198,7 @@ function createUnreadableStartupHarness() {
     quarantine: new RecoveryQuarantineStore(db, runtime.time),
     readable,
     launchCoordinator,
+    progressStore,
     runtime,
     services,
     unreadableKey,
@@ -278,7 +280,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
     }) as never,
   });
   await services.reconcileProviderOperationsAtStartup(
-    startupOwnership(runtime, db, launchCoordinator),
+    startupOwnership(runtime, progressStore, launchCoordinator),
     new AbortController().signal,
   );
 
@@ -403,6 +405,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
     lifecycle,
     records,
     launchCoordinator,
+    progressStore,
     runtime,
     services,
     settlement,
@@ -475,7 +478,7 @@ describe('execution services provider-proxy proof composition', () => {
     });
     try {
       await services.reconcileProviderOperationsAtStartup(
-        startupOwnership(runtime, db, launchCoordinator),
+        startupOwnership(runtime, progressStore, launchCoordinator),
         new AbortController().signal,
       );
       quarantined = new RecoveryQuarantineStore(db, runtime.time).list();
@@ -534,26 +537,46 @@ describe('execution services provider-proxy proof composition', () => {
         throw new Error('execution service creation was not expected');
       }) as never,
     });
-    const repairedOwnership = createProviderOperationStartupOwnershipHarness({
+    const repairedOwnership = createProviderOperationStartupOwnership({
       runtime,
-      records: [],
-      coordinator: launchCoordinator,
+      progressStore,
+      binding: launchCoordinator,
+      log: () => undefined,
     });
     services.connectProviderOperationRecovery({
       adoptRepairedProviderOperationOwnership: (record: ProviderOperationRecord) => {
-        const [ownership] = repairedOwnership.ownershipFor([record]).records;
-        if (ownership === undefined) throw new Error('expected repaired operation ownership');
-        return ownership;
+        return repairedOwnership.adoptRepaired(record);
       },
-      releaseProviderOperationStartupOwnership: repairedOwnership.releaseStartupOwnership,
+      releaseProviderOperationStartupOwnership: repairedOwnership.release,
     } as never);
     await services.reconcileProviderOperationsAtStartup(
-      startupOwnership(runtime, db, launchCoordinator),
+      startupOwnership(runtime, progressStore, launchCoordinator),
       new AbortController().signal,
     );
 
     const repaired = providerOperationRecord('executing');
     const key = providerOperationRecordKey(repaired);
+    seedTestSessionProjection(db, {
+      sessionId: repaired.operation.jobId,
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: namespace,
+      activeJobId: repaired.operation.jobId,
+    });
+    progressStore.appendLaunchRequested(repaired.operation.jobId, {
+      jobId: repaired.operation.jobId,
+      owner: { kind: 'provider-session', id: repaired.operation.jobId },
+      sessionId: repaired.operation.jobId,
+      provider: 'codex',
+      projectRoot: process.cwd(),
+      backendNamespace: namespace,
+      jobKind: 'provider',
+      pool: 'default',
+      enqueueSequence: 1,
+      providerAction: 'exec',
+      request: { prompt: 'test', cwd: process.cwd(), bypassPermissions: false, coralEnv: {} },
+      createdAt: '2026-08-09T12:34:55.000Z',
+    });
     db.prepare<[string, string]>('INSERT INTO meta (key, value) VALUES (?, ?)').run(key, 'not-json');
     const quarantine = new RecoveryQuarantineStore(db, runtime.time);
     await quarantineUnreadableProviderOperations(
@@ -648,7 +671,7 @@ describe('execution services provider-proxy proof composition', () => {
 
     try {
       await harness.services.reconcileProviderOperationsAtStartup(
-        startupOwnership(harness.runtime, harness.db, harness.launchCoordinator),
+        startupOwnership(harness.runtime, harness.progressStore, harness.launchCoordinator),
         new AbortController().signal,
       );
       harness.services.connectProviderOperationRecovery({
@@ -694,7 +717,7 @@ describe('execution services provider-proxy proof composition', () => {
     try {
       await expect(
         harness.services.reconcileProviderOperationsAtStartup(
-          startupOwnership(harness.runtime, harness.db, harness.launchCoordinator),
+          startupOwnership(harness.runtime, harness.progressStore, harness.launchCoordinator),
           new AbortController().signal,
         ),
       ).resolves.toBeDefined();
@@ -752,7 +775,7 @@ describe('execution services provider-proxy proof composition', () => {
     try {
       await expect(
         harness.services.reconcileProviderOperationsAtStartup(
-          startupOwnership(harness.runtime, harness.db, harness.launchCoordinator),
+          startupOwnership(harness.runtime, harness.progressStore, harness.launchCoordinator),
           new AbortController().signal,
         ),
       ).resolves.toBeDefined();
@@ -1007,6 +1030,7 @@ describe('execution services provider-proxy proof composition', () => {
       db,
       formattedTimeout,
       launchCoordinator,
+      progressStore,
       records,
       runtime,
       services,
@@ -1020,7 +1044,7 @@ describe('execution services provider-proxy proof composition', () => {
 
     try {
       const report = await services.reconcileProviderOperationsAtStartup(
-        startupOwnership(runtime, db, launchCoordinator),
+        startupOwnership(runtime, progressStore, launchCoordinator),
         new AbortController().signal,
       );
       const storedSettlement = readProviderOperation(db, settlement.operation);
@@ -1254,6 +1278,10 @@ describe('execution services provider-proxy proof composition', () => {
     } as never;
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
+    const progressStore = new JobStore('execution-services-inheritance-test', runtime, createEventBodyCodec(), {
+      db,
+      providers: permissiveProviderLookupPort,
+    });
     const record = providerOperationRecord('settlement-pending');
     insertProviderOperation(db, record);
     const claims = new ProviderProxySetClaimMirror();
@@ -1267,7 +1295,7 @@ describe('execution services provider-proxy proof composition', () => {
     const world = {
       identity: { buildSetId: FIXTURE_BUILD_SET_ID, instanceId: FIXTURE_COORDINATOR_INSTANCE_ID },
       storeServicesRef: {
-        tryGet: () => ({ progressStore: { getDb: () => db } }),
+        tryGet: () => ({ progressStore }),
       },
       operationRegistry,
       providerProxyClaims: claims,
@@ -1298,7 +1326,7 @@ describe('execution services provider-proxy proof composition', () => {
     });
 
     await services.reconcileProviderOperationsAtStartup(
-      startupOwnership(runtime, db, launchCoordinator),
+      startupOwnership(runtime, progressStore, launchCoordinator),
       new AbortController().signal,
     );
     const lifecycle = lifecycleRef.get();
@@ -1377,7 +1405,7 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
       }) as never,
     });
     await services.reconcileProviderOperationsAtStartup(
-      startupOwnership(runtime, db, launchCoordinator),
+      startupOwnership(runtime, progressStore, launchCoordinator),
       new AbortController().signal,
     );
     const lifecycle = lifecycleRef.get();

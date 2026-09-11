@@ -1099,6 +1099,7 @@ describe('cli format', () => {
           continuation: null,
           errorMessage: 'adoption refused',
           detail: 'operator retry required',
+          remedy: null,
           detectedAt: '2026-09-11T00:00:00.000Z',
           updatedAt: '2026-09-11T00:00:00.000Z',
         },

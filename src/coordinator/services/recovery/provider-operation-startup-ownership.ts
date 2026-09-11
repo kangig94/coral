@@ -146,7 +146,7 @@ function observeSupersededProviderOperationTargets(
 
 export function createProviderOperationStartupOwnership(
   deps: Readonly<{
-    progressStore: JobStore;
+    progressStore: Pick<JobStore, 'getDb' | 'readStatus' | 'readLaunchProjection'>;
     runtime: Runtime;
     log(message: string): void;
     binding: StartupOwnershipBinding;
@@ -374,6 +374,7 @@ export function createProviderOperationStartupOwnership(
       errorMessage: 'More than one readable provider operation row claims this job.',
       detail:
         'Discarding readable data requires an operator decision. Run the printed discard-provider-operation command with --allow-readable for one row, then inspect recovery-quarantine list again.',
+      remedy: { kind: 'discard-provider-operation', allowReadable: true },
     });
     if (!persisted && quarantine.read(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, key) === null) {
       log(`Provider operation ambiguity quarantine failed for ${key}.\n`);

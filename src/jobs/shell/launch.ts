@@ -1075,13 +1075,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         return 'terminalized';
       }
       if (providerStream.kind === 'proxied') {
-        // Activation succeeded: `applyProviderEventAtSeq`, wired as the proxy's `onProviderEvent` handler on
-        // the live control connection this coordinator holds, is now the sole and exclusive applier of every
-        // durable effect this operation will ever produce — progress, continuity, artifacts, and its terminal.
-        // That handler runs independently of this call stack (it fires whenever a frame arrives on the
-        // control socket), so this function stops here rather than calling
-        // `consumeJobStream`/`completeConsumedJob`: doing both would apply every one of those effects a
-        // second time, and a double-applied terminal is strictly worse than not finishing this call.
         return 'proxied';
       }
       const consumed = await consumeJobStream({
@@ -1093,9 +1086,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         sessionApi: {
           checkpointJobContinuityAtomic: async (claimedSessionId, options) => {
             if (this.quiescedAppServerJobs.has(jobId)) {
-              // After quiesce: short-circuit so the dying daemon does not mutate
-              // session continuity. The replacement daemon's startup recovery
-              // probes the latest checkpoint that committed before quiesce.
               return { ok: false as const };
             }
             const result = await this.trackAppServerWrite(jobId, () =>
@@ -1337,11 +1327,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     };
   }
 
-  /**
-   * Either a local event stream to run through `consumeJobStream` exactly as before, or `proxied` — the
-   * operation is now durably owned by a live provider proxy set and the coordinator's `onProviderEvent`
-   * handler, and no stream exists here for this call to consume.
-   */
   private async executePreparedProvider(
     provider: BoundProvider,
     prepared: BoundProviderPreparedExecution,
@@ -1410,13 +1395,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           throw error;
         }
         if (activation.kind === 'remote-executing') {
-          // `registerAppServerJob` enrolled this job before its placement was known, into tracking that only
-          // ever fences *local* write paths (`onAppServerWaiting`/`onHostRef`/`checkpointJobContinuityAtomic`
-          // above) — a proxied operation takes none of them; its durable effects come from the control
-          // socket's `provider.event.v1` applier instead, which does not consult either set. Leaving the
-          // entries in place would make a later `quiesceAppServerJobsForHandoff` believe this job's writes
-          // are fenced when nothing here ever fences them, so drop them the instant local admission ownership
-          // moves to the proxy rather than waiting for identity-addressed cleanup at settlement.
           this.appServerJobs.delete(jobId);
           this.appServerHandoffAborts.delete(jobId);
           return { kind: 'proxied', operationId };

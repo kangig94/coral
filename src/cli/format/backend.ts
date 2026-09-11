@@ -734,8 +734,8 @@ export function formatHandoffRoutingResolveResult(result: HandoffRoutingResolveR
       return `Refusing to resolve routing invocation ${result.invocationId}: its recorded owner is alive.\nNext step: wait for the owner to finish, then rerun coral-cli backend status.`;
     case 'unauthorized-unobservable':
       return result.cause === 'deadline-expired'
-        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then retry without --force-unobservable; the flag cannot override an expired observation budget.`
-        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).\nNext step: verify the owner externally, then rerun this command with --force-unobservable only if abandoning it is safe.`;
+        ? `Refusing to resolve routing invocation ${result.invocationId}: the owner sweep deadline expired.\nNext step: rerun coral-cli backend status, then run coral-cli backend routing-status resolve --invocation ${result.invocationId}; --force-unobservable cannot override an expired observation budget.`
+        : `Refusing to resolve routing invocation ${result.invocationId}: owner observation is unobservable (${result.cause}).\nNext step: verify the owner externally, then run coral-cli backend routing-status resolve --invocation ${result.invocationId} --force-unobservable only if abandoning it is safe.`;
     case 'status-unavailable':
       return `Refusing to resolve routing invocation ${result.invocationId} because the authoritative journal is ${result.status.kind}.\n${formatUnavailableRoutingResolution(result.status)}`;
     case 'not-published':
@@ -1092,10 +1092,12 @@ export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantin
       entry.boundary === UNREADABLE_PROVIDER_OPERATION_BOUNDARY &&
       entry.subject.revision.kind === 'fingerprint' &&
       /^sha256:[0-9a-f]{64}$/u.test(entry.subject.revision.value) &&
-      isProviderOperationRecordKey(entry.subject.key)
+      isProviderOperationRecordKey(entry.subject.key) &&
+      entry.remedy?.kind === 'discard-provider-operation'
     ) {
+      const consent = entry.remedy.allowReadable ? ' --allow-readable' : '';
       lines.push(
-        `  discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}`,
+        `  discard=coral-cli backend recovery-quarantine discard-provider-operation --key ${encodeRecoveryQuarantineKey(entry.subject.key)} --revision ${JSON.stringify(formatRecoveryRevision(entry))}${consent}`,
       );
     }
   }

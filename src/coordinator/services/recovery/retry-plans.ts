@@ -70,6 +70,7 @@ export async function quarantineUnreadableProviderOperations(
       stage: 'hydrate' as const,
       errorMessage: 'Provider operation row is unreadable by this build.',
       detail: 'Repair or remove the raw provider operation row, then retry this exact quarantine coordinate.',
+      remedy: { kind: 'discard-provider-operation' as const, allowReadable: false },
     };
     let persisted = false;
     let writeFailure: unknown = null;
@@ -140,6 +141,14 @@ export function createUnreadableProviderOperationRetryPolicy(
           detail:
             `Provider operation row ${item.key} is readable, but this coordinator did not accept ownership: ` +
             `${adoption.reason}. ${providerOperationAdoptionRefusalRetryAdvice(adoption.remedy)}`,
+          ...(adoption.remedy.kind === 'recovery-quarantine-discard'
+            ? {
+                remedy: {
+                  kind: 'discard-provider-operation' as const,
+                  allowReadable: adoption.remedy.allowReadable,
+                },
+              }
+            : {}),
         };
       }
       return {
