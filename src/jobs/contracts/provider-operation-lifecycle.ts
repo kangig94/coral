@@ -66,6 +66,14 @@ export type SettledUnboundStatusOwnership = Readonly<{
   [settledUnboundStatusOwnershipBrand]: true;
 }>;
 
+declare const settledUnboundStatusAbsenceBrand: unique symbol;
+
+export type SettledUnboundStatusAbsence = Readonly<{
+  identity: ProviderOperationBindingIdentity;
+  subject: SettledUnboundStatusSubject;
+  [settledUnboundStatusAbsenceBrand]: true;
+}>;
+
 export type SettledUnboundStatusResult =
   | Readonly<{ kind: 'recorded'; ownership: SettledUnboundStatusOwnership }>
   | Readonly<{ kind: 'absent' }>

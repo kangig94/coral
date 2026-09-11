@@ -8,7 +8,10 @@ import type {
   SettledUnboundStatusResult,
   SettledUnboundStatusSubject,
 } from '../../../jobs/contracts/provider-operation-lifecycle.js';
-import { SETTLED_UNBOUND_STATUS_BOUNDARY } from '../../../recovery/source-registry.js';
+import {
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
+  SETTLED_UNBOUND_STATUS_REMEDIATION,
+} from '../../../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type { Database } from '../../../store/db.js';
 import { providerOperationRecordKeyPrefix, readProviderOperations } from '../../../store/provider-operation-journal.js';
@@ -61,9 +64,8 @@ export function matchingSettledUnboundRecordKeys(
   ];
 }
 
-function statusDetail(recordKeys: readonly string[] | null, scanFailure: string | null): string {
-  const exit =
-    'Run coral-cli backend shutdown, then retry any Coral command; startup reconstructs this ownership and resumes its exact journal probe.';
+export function settledUnboundStatusDetail(recordKeys: readonly string[] | null, scanFailure: string | null): string {
+  const exit = `Run ${SETTLED_UNBOUND_STATUS_REMEDIATION.exit} with the boundary, key, and revision printed for this row.`;
   if (recordKeys === null) {
     return `The journal scan failed (${scanFailure ?? 'unknown failure'}). Restore journal access. ${exit}`;
   }
@@ -80,7 +82,9 @@ function mintOwnership(
   }) as SettledUnboundStatusOwnership;
 }
 
-function identityFromStatusSubject(subject: SettledUnboundStatusSubject): ProviderOperationBindingIdentity | null {
+export function settledUnboundStatusIdentity(
+  subject: SettledUnboundStatusSubject,
+): ProviderOperationBindingIdentity | null {
   if (!subject.key.startsWith(STATUS_SUBJECT_PREFIX)) return null;
   try {
     const value: unknown = JSON.parse(subject.key.slice(STATUS_SUBJECT_PREFIX.length));
@@ -162,7 +166,7 @@ function materializeActionableStatus(
     state: subject.state,
     stage: 'settle',
     errorMessage: statusError(identity),
-    detail: statusDetail(recordKeys, scanFailure),
+    detail: settledUnboundStatusDetail(recordKeys, scanFailure),
   });
   if (!persisted) {
     return { kind: 'refused', reason: 'The durable unsettled settlement status did not persist.' };
@@ -200,7 +204,7 @@ export function createSettledUnboundStatusPort(
     },
     rebind(subject): SettledUnboundStatusOwnership | null {
       try {
-        const identity = identityFromStatusSubject(subject);
+        const identity = settledUnboundStatusIdentity(subject);
         if (identity === null) return null;
         const current = new RecoveryQuarantineStore(getDb(), time).read(subject.boundary, subject.key);
         if (

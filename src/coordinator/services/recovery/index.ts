@@ -34,6 +34,7 @@ import type {
 } from '../../../jobs/contracts/admission.js';
 import type {
   ProviderOperationBindingPort,
+  SettledUnboundStatusAbsence,
   SettledUnboundStatusHydrationPort,
   SettledUnboundStatusSubject,
 } from '../../../jobs/contracts/provider-operation-lifecycle.js';
@@ -67,6 +68,11 @@ import {
   unreadableProviderOperationRecoverySource,
   type RawUnreadableProviderOperationRecoveryRow,
 } from './unreadable-provider-operation-recovery-source.js';
+import {
+  settledUnboundStatusRecoverySource,
+  type RawSettledUnboundStatusRecovery,
+} from './settled-unbound-status-recovery-source.js';
+import { settledUnboundStatusDetail } from './settled-unbound-status.js';
 import { unreadableProviderOperationSubject } from '../../../recovery/unreadable-provider-operation.js';
 import { RecoveryQuarantineStore } from '../../../recovery/quarantine.js';
 import type {
@@ -83,6 +89,7 @@ import { RecoveryContainment } from '../../../recovery/containment.js';
 import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   SETTLED_UNBOUND_STATUS_BOUNDARY,
+  SETTLED_UNBOUND_STATUS_REMEDIATION,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryPolicy,
   type RecoverySourceFactoryPlan,
@@ -422,6 +429,49 @@ export function createUnreadableProviderOperationRetryPlan(
       onFault: (fault) => ({
         kind: 'quarantine',
         detail: `Provider operation unreadable-row retry failed during ${fault.stage}.`,
+      }),
+    },
+  };
+}
+
+export function createSettledUnboundStatusRetryPlan(
+  db: Database,
+  subject: RecoverySubject,
+  quarantine: RecoveryQuarantinePort,
+  releaseAbsent: (absence: SettledUnboundStatusAbsence) => boolean,
+): RecoverySourceFactoryPlan<RawSettledUnboundStatusRecovery, RawSettledUnboundStatusRecovery> {
+  return {
+    source: settledUnboundStatusRecoverySource(db, subject),
+    policy: {
+      processLocalCleanup: {
+        kind: 'boundary-required',
+        release: async (item) => {
+          if (item.kind === 'present') return { kind: 'released' };
+          const retained = await quarantine.read(item.subject.boundary, item.subject.key);
+          if (retained !== null || releaseAbsent(item.absence)) return { kind: 'released' };
+          return {
+            kind: 'incomplete',
+            error: new Error('The rehydrated settled-unbound ownership could not be released.'),
+          };
+        },
+      },
+      hydrate: (raw) => raw,
+      requiredObligations: () => [],
+      settle: (item) =>
+        item.kind === 'absent'
+          ? {
+              kind: 'advanced',
+              outcome: 'settled',
+              facts: [],
+              detail: 'The exact provider-operation identity is absent from the journal.',
+            }
+          : {
+              kind: 'quarantine',
+              detail: settledUnboundStatusDetail(item.recordKeys, null),
+            },
+      onFault: (fault) => ({
+        kind: 'quarantine',
+        detail: settledUnboundStatusDetail(null, errorMessage(fault.error)),
       }),
     },
   };
@@ -2195,7 +2245,7 @@ export function createRecoveryCoordinator(
           bindingDisposition: {
             kind: 'refused',
             reason: `Provider operation binding retirement was refused: ${retirement.reason}`,
-            exit: 'coral-cli backend recovery-quarantine clear',
+            exit: SETTLED_UNBOUND_STATUS_REMEDIATION.exit,
           },
         };
       }

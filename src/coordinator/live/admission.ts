@@ -45,6 +45,7 @@ import type {
   ProviderOperationBindingState,
   ProviderOperationBindingRetirementDisposition,
   ProviderOperationJournalProbeResult,
+  SettledUnboundStatusAbsence,
   SettledUnboundStatusSubject,
   SettledUnboundStatusPort,
 } from '../../jobs/contracts/provider-operation-lifecycle.js';
@@ -727,6 +728,25 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return this.deleteOperationBinding(key)
       ? { kind: 'retired' }
       : { kind: 'refused', reason: 'The durable unsettled settlement status could not be cleared.' };
+  }
+
+  releaseSettledUnboundStatusAfterObservedAbsence(absence: SettledUnboundStatusAbsence): boolean {
+    const key = this.operationBindingKey(absence.identity);
+    const current = this.operationBindings.get(key);
+    if (current === undefined) return true;
+    if (current.kind !== 'settled-unbound' || current.successor.kind !== 'recovery-quarantine') return false;
+    const [ownedSubject] = current.successor.ownership.subjects;
+    if (
+      current.successor.ownership.subjects.length !== 1 ||
+      ownedSubject?.boundary !== absence.subject.boundary ||
+      ownedSubject.key !== absence.subject.key ||
+      ownedSubject.revision !== absence.subject.revision ||
+      ownedSubject.state !== absence.subject.state
+    ) {
+      return false;
+    }
+    this.clearSettledUnboundCheck(key);
+    return this.operationBindings.delete(key);
   }
 
   async terminateAll(signal?: AbortSignal): Promise<TerminateAllDisposition> {

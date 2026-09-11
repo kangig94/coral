@@ -125,12 +125,14 @@ import {
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
   type RecoveryRetryQuarantinePort,
 } from '../../recovery/source-registry.js';
 import {
   createCoordinatorJobSettlementRefusalRecorder,
   createCoordinatorJobRecoveryRetryPlan,
+  createSettledUnboundStatusRetryPlan,
   createUnreadableProviderOperationRetryPlan,
 } from '../services/recovery/index.js';
 import { createDiscussionCandidateRetryPlan, createDiscussionSourceRetryPlan } from '../../discuss/shell/recovery.js';
@@ -742,6 +744,11 @@ export function createCoordinatorCore(
   recoverySources.register('stale-job-cleanup', (subject) => createStaleJobCleanupRetryPlan(recoveryDb(), subject));
   recoverySources.register('crashed-job-terminalization', (subject) =>
     createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
+  );
+  recoverySources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (subject, _signal, quarantine) =>
+    createSettledUnboundStatusRetryPlan(recoveryDb(), subject, quarantine, (absence) =>
+      world.launchCoordinator.releaseSettledUnboundStatusAfterObservedAbsence(absence),
+    ),
   );
   recoverySources.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (subject) =>
     createUnreadableProviderOperationRetryPlan(recoveryDb(), subject, adoptRepairedProviderOperation),

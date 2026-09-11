@@ -1,4 +1,7 @@
-import { UNREADABLE_PROVIDER_OPERATION_BOUNDARY } from '#src/recovery/source-registry.js';
+import {
+  SETTLED_UNBOUND_STATUS_BOUNDARY,
+  UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
+} from '#src/recovery/source-registry.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { defineRecoverySource, type RecoveryDisposition, type RecoverySubject } from '#src/recovery/containment.js';
@@ -14,7 +17,10 @@ import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuati
 import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
-import { createUnreadableProviderOperationRetryPlan } from '#src/coordinator/services/recovery/index.js';
+import {
+  createSettledUnboundStatusRetryPlan,
+  createUnreadableProviderOperationRetryPlan,
+} from '#src/coordinator/services/recovery/index.js';
 import {
   assertRecoverySourceRegistryComplete,
   createRecoveryQuarantineRetryService,
@@ -174,6 +180,7 @@ describe('recovery quarantine retry service', () => {
       'workflow-recovery',
       'stale-job-cleanup',
       'crashed-job-terminalization',
+      'provider-operation-settled-unbound',
       'provider-operation-unreadable',
     ]);
     const registeredSourceBoundaries = [
@@ -188,6 +195,7 @@ describe('recovery quarantine retry service', () => {
       workflowRecoverySource(db).boundary,
       staleJobCleanupSource(db).boundary,
       crashedJobTerminalizationSource(db).boundary,
+      createSettledUnboundStatusRetryPlan(db, subject(), quarantine, () => true).source.boundary,
       createUnreadableProviderOperationRetryPlan(
         db,
         {
@@ -246,6 +254,9 @@ describe('recovery quarantine retry service', () => {
       source: crashedJobTerminalizationSource(db, retrySubject),
       policy: passThroughPolicy(),
     }));
+    runtimeRegistry.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (retrySubject) =>
+      createSettledUnboundStatusRetryPlan(db, retrySubject, quarantine, () => true),
+    );
     runtimeRegistry.register(UNREADABLE_PROVIDER_OPERATION_BOUNDARY, (retrySubject) =>
       createUnreadableProviderOperationRetryPlan(db, retrySubject, () => ({
         kind: 'refused',

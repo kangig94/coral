@@ -7,6 +7,7 @@ import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.
 import type { CommitEventsFn } from '../store/append.js';
 import type { LaunchPermit, OperationBindingResult } from './contracts/admission.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../store/provider-operation-record.js';
+import type { SettledUnboundStatusRemediationExit } from '../recovery/source-registry.js';
 
 /** A refused startup association must name the event that can end its ownership hold. */
 export type ProviderOperationStartupBindingDisposition =
@@ -17,7 +18,7 @@ export type ProviderOperationStartupBindingDisposition =
       exit:
         | 'restart-or-operator-repair'
         | 'remote-settlement'
-        | 'coral-cli backend recovery-quarantine clear'
+        | SettledUnboundStatusRemediationExit
         | 'coral-cli backend recovery-quarantine discard-provider-operation'
         | 'coral-cli backend recovery-quarantine discard-provider-operation --allow-readable';
     }>
