@@ -8,7 +8,7 @@ Coral is a CLI-first plugin backed by a persistent local coordinator for orchest
 
 ## Install
 
-**Requirements:** Node.js 24+
+**Requirements:** Node.js 26. Older releases from 24 up are likely to work but are not tested.
 
 ```bash
 # Claude Code:

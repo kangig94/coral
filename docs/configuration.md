@@ -382,7 +382,7 @@ Live scratch artifacts:
 | ----------- | ------------------------------------------ |
 | Codex CLI   | Codex execution                            |
 | Claude CLI  | Claude execution through the broker helper |
-| Node.js 24+ | Runtime                                    |
+| Node.js 26  | Runtime; 24 and above are untested                  |
 
 ## File Role Summary
 

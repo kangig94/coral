@@ -4,7 +4,7 @@
 
 - **`main`**: the only long-lived branch. Protected by the "protect main" ruleset (changes via PR + 1 review). Always deployable. Never commit directly.
 - **Feature branches**: branch from `main`, open a PR back to `main`. Naming: `feature/`, `fix/`, `refactor/`, `docs/`, `chore/` prefixes.
-- **Merge**: squash (one commit per PR on `main`, traceable via PR link `(#N)`). CI (`.github/workflows/ci.yml`) runs the full gate on Node 24 and 26: `typecheck:tests`, `lint`, `format:check`, `knip`, `build`, then the unit, integration, store-reset and lifecycle suites.
+- **Merge**: squash (one commit per PR on `main`, traceable via PR link `(#N)`). CI (`.github/workflows/ci.yml`) runs the full gate on Node 26: `typecheck:tests`, `lint`, `format:check`, `knip`, `build`, then the unit, integration, store-reset and lifecycle suites.
 
 Feature PRs carry **source only**. Do **not** bump the version or rebuild `clients/bridge/` in a feature PR — both belong to the release step (see Releasing). CI does not check `clients/bridge/`, so a stale `clients/bridge/` on `main` between releases is expected and harmless (installs come from tags, see below).
 

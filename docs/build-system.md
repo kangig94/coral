@@ -122,7 +122,7 @@ npm run verify:kiwi-runtime-build
 | ------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `bundle`                              | `true`                           | Single-file deployable bundles                                                                                      |
 | `platform`                            | `node`                           | Node.js runtime target                                                                                              |
-| `target`                              | `node22`                         | Conservative transpilation target below the supported Node 24 runtime floor                                         |
+| `target`                              | `node22`                         | Conservative transpilation target below the supported Node 26 runtime floor                                         |
 | `format`                              | `cjs`                            | Bundles are committed as `.cjs`                                                                                     |
 | `external`                            | `['node:*', '@lydell/node-pty']` | Keep Node built-ins and native modules external (the store uses the built-in `node:sqlite`, so no `better-sqlite3`) |
 | `minify`                              | `true`                           | Smaller committed bundles                                                                                           |
