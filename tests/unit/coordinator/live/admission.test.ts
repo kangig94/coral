@@ -791,7 +791,7 @@ describe('launch admission', () => {
     ]);
   });
 
-  it('never reclaims a holder kind without a registered oracle', () => {
+  it('retains queue-handoff permits after the reclamation age floor', () => {
     let now = 22_000;
     const base = createRealRuntime('prod');
     const localCoordinator = new LaunchCoordinator({

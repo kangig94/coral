@@ -4,7 +4,7 @@ import type { ProviderOperationStartupOwnership } from '#src/jobs/startup.js';
 import type { ExecutionOwner } from '#src/runtime/execution-owner.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
-import type { ProviderOperationStartupRelease } from '#src/coordinator/services/recovery/index.js';
+import type { ProviderOperationStartupRelease } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
 
 type StartupLaunch = Readonly<{
   provider: string;
@@ -24,7 +24,9 @@ function operationKey(operation: ProviderOperationRecord['operation']): string {
 }
 
 function startupBindingDisposition(
-  disposition: ReturnType<LaunchCoordinator['prepareProviderOperationBinding']>,
+  disposition:
+    | ReturnType<LaunchCoordinator['prepareProviderOperationBinding']>
+    | ReturnType<LaunchCoordinator['settleProviderOperationBinding']>,
   exit:
     | 'restart-or-operator-repair'
     | 'remote-settlement'

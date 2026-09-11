@@ -133,15 +133,6 @@ export type LaunchPermitReclamationDiagnostic = {
     }>;
 }[ReclaimablePermitHolderKind];
 
-export type OperationBindingResult =
-  | Readonly<{ kind: 'prepared' }>
-  | Readonly<{ kind: 'bound'; successorPermit: LaunchPermit }>
-  | Readonly<{ kind: 'cancelled' }>
-  | Readonly<{ kind: 'settled-unbound' }>
-  | Readonly<{ kind: 'settled'; reservationId: string }>
-  | Readonly<{ kind: 'already-settled' }>
-  | Readonly<{ kind: 'refused'; reason: string }>;
-
 export type SettlementRefusalCause = 'terminal-persist-failed' | 'claim-release-failed' | 'claim-already-reassigned';
 
 export type SettlementRefusal = Readonly<{

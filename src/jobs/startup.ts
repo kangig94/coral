@@ -5,13 +5,18 @@ import type { ProviderCatalog } from '../providers/catalog.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { InterruptedAppServerReason } from './reconcile/interrupted-reason.js';
 import type { CommitEventsFn } from '../store/append.js';
-import type { LaunchPermit, OperationBindingResult } from './contracts/admission.js';
+import type { LaunchPermit } from './contracts/admission.js';
+import type {
+  ProviderOperationBindingRefusal,
+  ProviderOperationPrepareResult,
+  ProviderOperationSettlementResult,
+} from './contracts/provider-operation-lifecycle.js';
 import type { ProviderOperationIdentity, ProviderOperationRecord } from '../store/provider-operation-record.js';
 import type { SettledUnboundStatusRemediationExit } from '../recovery/source-registry.js';
 
 /** A refused startup association must name the event that can end its ownership hold. */
 export type ProviderOperationStartupBindingDisposition =
-  | Exclude<OperationBindingResult, Readonly<{ kind: 'refused'; reason: string }>>
+  | Exclude<ProviderOperationPrepareResult | ProviderOperationSettlementResult, ProviderOperationBindingRefusal>
   | Readonly<{
       kind: 'refused';
       reason: string;

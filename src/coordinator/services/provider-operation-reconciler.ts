@@ -71,7 +71,8 @@ import {
   type ProviderProxySetKey,
   type ProviderProxySetIdentity,
 } from './provider-proxy-set/identity.js';
-import type { ProviderOperationRecoveryAcceptance, ProviderOperationStartupRelease } from './recovery/index.js';
+import type { ProviderOperationRecoveryAcceptance } from './recovery/index.js';
+import type { ProviderOperationStartupRelease } from './recovery/provider-operation-startup-ownership.js';
 import {
   type ContainmentAbsenceAcceptance,
   type ContainmentAbsenceOperationalIncident,
@@ -2148,16 +2149,6 @@ export class ProviderOperationReconciler
         current: this.#recordRekeyRefusalContainment(record, binding.reason),
       };
     }
-    if (binding.kind !== 'bound') {
-      return {
-        kind: 'rekey-refused',
-        current: this.#recordRekeyRefusalContainment(
-          record,
-          `Coordinator ownership re-key returned unexpected disposition '${binding.kind}'.`,
-        ),
-      };
-    }
-
     if (this.#publications.has(operationKey(record.operation))) {
       this.#deps.registry.activate(record, control, cleanup);
     } else {

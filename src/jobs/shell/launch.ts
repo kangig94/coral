@@ -1375,9 +1375,13 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         const jobLaunchEventSeq = readProviderOperationJobLaunchEventSeq(this.deps.progressStore.getDb(), jobId);
         const binding = this.deps.providerOperationBinding.prepareProviderOperationBinding(permit, operationIdentity);
         if (binding.kind === 'already-settled') return { kind: 'terminalized' };
-        if (binding.kind !== 'prepared') {
-          const reason = binding.kind === 'refused' ? binding.reason : `unexpected '${binding.kind}' disposition`;
-          throw new Error(`Provider operation binding preparation failed: ${reason}.`);
+        if (binding.kind === 'refused') {
+          throw new Error(`Provider operation binding preparation failed: ${binding.reason}.`);
+        }
+        if (binding.kind === 'bound') {
+          throw new Error(
+            'Provider operation binding preparation failed: the new operation identity is already bound.',
+          );
         }
 
         let activation: Awaited<ReturnType<AppServerProxyRoute['activate']>>;
@@ -1424,10 +1428,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           permit,
           operationIdentity,
         );
-        if (cancellation.kind !== 'cancelled') {
-          const reason =
-            cancellation.kind === 'refused' ? cancellation.reason : `unexpected '${cancellation.kind}' disposition`;
-          throw new Error(`Provider operation binding cancellation failed: ${reason}.`);
+        if (cancellation.kind === 'refused') {
+          throw new Error(`Provider operation binding cancellation failed: ${cancellation.reason}.`);
         }
       }
       return {

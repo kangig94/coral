@@ -18,7 +18,11 @@ import {
   type DocumentedCoralSetupErrorCode,
   type OperatorFacingCoralSetupError,
 } from '#src/runtime/errors.js';
-import { formatBackendStatus as formatComposedBackendStatus, formatShutdown } from '#src/cli/format/backend.js';
+import {
+  formatBackendStatus as formatComposedBackendStatus,
+  formatShutdown,
+  formatUnreadableProviderOperationDiscard,
+} from '#src/cli/format/backend.js';
 import {
   formatDiscussAbort,
   formatDiscussParticipate,
@@ -1020,7 +1024,32 @@ describe('cli format', () => {
           '  record=surviving-record-key job=job-1 operation=operation-1 proxy=proxy-1 buildSet=build-set-1 observedAtMs=123456',
           '    triggerRecord=discarded-record-key rowDisposition=discarded releasedLaunchPermits=0',
           '    reason=the provider operation ownership path is not initialized',
+          '    Next step: for record=surviving-record-key, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
         ].join('\n'),
+      );
+    });
+
+    it('renders an adoption-refused discard with the exact job inspection command', () => {
+      const output = formatUnreadableProviderOperationDiscard({
+        key: 'discarded-record-key',
+        revision: 'a'.repeat(64),
+        kind: 'adoption-refused',
+        rowDisposition: 'discarded',
+        releasedLaunchPermits: 0,
+        refusals: [
+          {
+            recordKey: 'surviving-record-key',
+            jobId: 'job-1',
+            operationId: 'operation-1',
+            proxyInstanceId: 'proxy-1',
+            buildSetId: 'build-set-1',
+            reason: 'the provider operation ownership path is not initialized',
+          },
+        ],
+      });
+
+      expect(output).toContain(
+        'Next step: for record=surviving-record-key, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
       );
     });
 
@@ -1104,7 +1133,17 @@ describe('cli format', () => {
           },
         } satisfies BackendStatusFull;
 
-        expect(formatBackendStatus(status)).toContain(`job=job-1 cause=${cause} observedAtMs=123456`);
+        const output = formatBackendStatus(status);
+        expect(output).toContain(`job=job-1 cause=${cause} observedAtMs=123456`);
+        const nextStep = {
+          'terminal-persist-failed':
+            'nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
+          'claim-release-failed':
+            'nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail job-1, then coral-cli backend status.',
+          'claim-already-reassigned':
+            'nextStep=no automatic retry applies because the session claim belongs to another job. Run coral-cli jobs detail job-1, verify the current session owner externally, then run coral-cli backend status.',
+        }[cause];
+        expect(output).toContain(nextStep);
       },
     );
 
@@ -1131,6 +1170,9 @@ describe('cli format', () => {
 
       expect(formatBackendStatus(status)).toContain(
         'job=job-unbound operation=operation-unbound cause=settled-unbound-status-persist-failed observedAtMs=123456',
+      );
+      expect(formatBackendStatus(status)).toContain(
+        'nextStep=Coral retries this settlement-status write automatically. Run coral-cli backend status to confirm that job=job-unbound operation=operation-unbound is no longer listed.',
       );
     });
 

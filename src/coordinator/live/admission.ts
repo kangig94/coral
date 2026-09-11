@@ -33,18 +33,22 @@ import type {
   LaunchRelease,
   LaunchReleaseDiagnostic,
   LaunchReservationView,
-  OperationBindingResult,
   PermitHolder,
   QueueCancellation,
   QueuedHandle,
   ReclaimablePermitHolderKind,
 } from '../../jobs/contracts/admission.js';
 import type {
+  ProviderOperationCancellationResult,
+  ProviderOperationCommitResult,
   ProviderOperationBindingIdentity,
   ProviderOperationBindingPort,
   ProviderOperationBindingState,
   ProviderOperationBindingRetirementDisposition,
   ProviderOperationJournalProbeResult,
+  ProviderOperationPrepareResult,
+  ProviderOperationSettlementResult,
+  SettledUnboundStatusHydrationResult,
   SettledUnboundStatusAbsence,
   SettledUnboundStatusSubject,
   SettledUnboundStatusPort,
@@ -564,7 +568,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   prepareProviderOperationBinding(
     permit: LaunchPermit,
     identity: ProviderOperationBindingIdentity,
-  ): OperationBindingResult {
+  ): ProviderOperationPrepareResult {
     if (identity.jobId !== permit.jobId) {
       return { kind: 'refused', reason: 'The operation identity does not name the permit job.' };
     }
@@ -617,7 +621,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   cancelProviderOperationBinding(
     permit: LaunchPermit,
     identity: ProviderOperationBindingIdentity,
-  ): OperationBindingResult {
+  ): ProviderOperationCancellationResult {
     if (identity.jobId !== permit.jobId) {
       return { kind: 'refused', reason: 'The operation identity does not name the permit job.' };
     }
@@ -634,7 +638,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return { kind: 'cancelled' };
   }
 
-  commitProviderOperationBinding(identity: ProviderOperationBindingIdentity): OperationBindingResult {
+  commitProviderOperationBinding(identity: ProviderOperationBindingIdentity): ProviderOperationCommitResult {
     const key = this.operationBindingKey(identity);
     const current = this.operationBindings.get(key);
     if (current?.kind === 'settled-unbound' || current?.kind === 'settled') {
@@ -668,7 +672,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return { kind: 'bound', successorPermit };
   }
 
-  settleProviderOperationBinding(identity: ProviderOperationBindingIdentity): OperationBindingResult {
+  settleProviderOperationBinding(identity: ProviderOperationBindingIdentity): ProviderOperationSettlementResult {
     const key = this.operationBindingKey(identity);
     const current = this.operationBindings.get(key);
     if (current === undefined) {
@@ -693,7 +697,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return { kind: 'settled', reservationId: permit.reservationId };
   }
 
-  hydrateSettledUnboundStatus(subject: SettledUnboundStatusSubject): OperationBindingResult {
+  hydrateSettledUnboundStatus(subject: SettledUnboundStatusSubject): SettledUnboundStatusHydrationResult {
     const ownership = this.settledUnboundStatus?.rebind(subject) ?? null;
     if (ownership === null) {
       return { kind: 'refused', reason: 'The durable unsettled settlement status could not be rebound.' };

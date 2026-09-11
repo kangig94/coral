@@ -1142,7 +1142,7 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
           (refusal) =>
             `Refusal: record=${encodeRecoveryQuarantineKey(refusal.recordKey)} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} reason=${refusal.reason}`,
         ),
-        'Next step: run coral-cli backend status and repair the reported adoption path before treating the job capacity as recovered.',
+        ...result.refusals.map((refusal) => formatProviderOperationAdoptionRefusalNextStep(refusal)),
       ].join('\n');
     case 'absent':
       return [
@@ -1208,6 +1208,12 @@ type LaunchReleaseDispositionStatus = NonNullable<
   NonNullable<BackendHealth['diagnostics']>['launchReleaseDispositions']
 >[number];
 type LaunchReclamationStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['launchReclamations']>[number];
+type ProviderOperationAdoptionRefusalStatus = NonNullable<
+  NonNullable<BackendHealth['diagnostics']>['providerOperationAdoptionRefusals']
+>[number];
+type SettlementRefusalRecordingFailureStatus = NonNullable<
+  NonNullable<BackendHealth['diagnostics']>['settlementRefusalRecordingFailures']
+>[number];
 
 function formatLaunchPermitHolder(holder: LaunchPermitStatus['holder']): string {
   switch (holder.kind) {
@@ -1267,6 +1273,35 @@ function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evid
       );
     default:
       return assertNever(evidence);
+  }
+}
+
+function formatProviderOperationAdoptionRefusalNextStep(
+  refusal: Pick<ProviderOperationAdoptionRefusalStatus, 'jobId' | 'reason' | 'recordKey'>,
+): string {
+  const inspect = `coral-cli jobs detail ${refusal.jobId}`;
+  const reason = refusal.reason.toLowerCase();
+  if (reason.includes('not initialized') || reason.includes('not connected')) {
+    return `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Re-check with ${inspect}, then coral-cli backend status.`;
+  }
+  if (reason.includes('more than one readable') || reason.includes('unreadable provider operation')) {
+    return `Next step: for record=${refusal.recordKey}, run coral-cli backend recovery-quarantine list and use only the exact discard-provider-operation command it prints if losing that row is acceptable. Then run ${inspect} and coral-cli backend status.`;
+  }
+  return `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then run ${inspect} and coral-cli backend status.`;
+}
+
+function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefusalRecordingFailureStatus): string {
+  switch (failure.cause) {
+    case 'terminal-persist-failed':
+      return `    nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail ${failure.jobId}, then coral-cli backend status.`;
+    case 'claim-release-failed':
+      return `    nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Re-check with coral-cli jobs detail ${failure.jobId}, then coral-cli backend status.`;
+    case 'claim-already-reassigned':
+      return `    nextStep=no automatic retry applies because the session claim belongs to another job. Run coral-cli jobs detail ${failure.jobId}, verify the current session owner externally, then run coral-cli backend status.`;
+    case 'settled-unbound-status-persist-failed':
+      return `    nextStep=Coral retries this settlement-status write automatically. Run coral-cli backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`;
+    default:
+      return assertNever(failure);
   }
 }
 
@@ -1380,6 +1415,7 @@ function formatRunningStatus(health: RunningHealth): string {
         `  record=${refusal.recordKey} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} observedAtMs=${refusal.observedAtMs}`,
         `    triggerRecord=${refusal.triggerRecordKey} rowDisposition=${refusal.rowDisposition} releasedLaunchPermits=${refusal.releasedLaunchPermits}`,
         `    reason=${refusal.reason}`,
+        `    ${formatProviderOperationAdoptionRefusalNextStep(refusal)}`,
       );
     }
   }
@@ -1402,6 +1438,7 @@ function formatRunningStatus(health: RunningHealth): string {
       lines.push(
         `  job=${failure.jobId}${operation} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
         `    error=${failure.error}`,
+        formatSettlementRefusalRecordingFailureNextStep(failure),
       );
     }
   }

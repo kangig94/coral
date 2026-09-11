@@ -519,8 +519,6 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     }
   }
 
-  // A hold is only ever installed from a callback, so a read in the enclosing body narrows to the
-  // initializer; every reader must take it through its own scope.
   function settleAnyPendingWrapperHold(): void {
     const hold = pendingWrapperHold;
     if (hold !== null) settlePendingWrapperHold(hold.generation);

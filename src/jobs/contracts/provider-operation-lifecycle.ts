@@ -1,5 +1,5 @@
 import type { PrincipalWire } from '../../security/principal-wire.js';
-import type { LaunchPermit, LaunchPool, OperationBindingResult } from './admission.js';
+import type { LaunchPermit, LaunchPool } from './admission.js';
 
 export type ProviderOperationChildAuthorization = Readonly<{
   principalWire: PrincipalWire;
@@ -51,6 +51,32 @@ export type ProviderOperationJournalProbeResult =
   | Readonly<{ kind: 'absent' }>
   | Readonly<{ kind: 'unknown'; reason: string }>;
 
+export type ProviderOperationBindingRefusal = Readonly<{ kind: 'refused'; reason: string }>;
+
+export type ProviderOperationPrepareResult =
+  | Readonly<{ kind: 'prepared' }>
+  | Readonly<{ kind: 'bound'; successorPermit: LaunchPermit }>
+  | Readonly<{ kind: 'already-settled' }>
+  | ProviderOperationBindingRefusal;
+
+export type ProviderOperationCancellationResult = Readonly<{ kind: 'cancelled' }> | ProviderOperationBindingRefusal;
+
+export type ProviderOperationCommitResult =
+  | Readonly<{ kind: 'bound'; successorPermit: LaunchPermit }>
+  | Readonly<{ kind: 'already-settled' }>
+  | ProviderOperationBindingRefusal;
+
+export type ProviderOperationSettlementResult =
+  | Readonly<{ kind: 'settled-unbound' }>
+  | Readonly<{ kind: 'settled'; reservationId: string }>
+  | Readonly<{ kind: 'already-settled' }>
+  | ProviderOperationBindingRefusal;
+
+export type SettledUnboundStatusHydrationResult =
+  | Readonly<{ kind: 'settled-unbound' }>
+  | Readonly<{ kind: 'already-settled' }>
+  | ProviderOperationBindingRefusal;
+
 declare const settledUnboundStatusOwnershipBrand: unique symbol;
 
 export type SettledUnboundStatusSubject = Readonly<{
@@ -88,7 +114,7 @@ export interface SettledUnboundStatusPort {
 }
 
 export interface SettledUnboundStatusHydrationPort {
-  hydrateSettledUnboundStatus(subject: SettledUnboundStatusSubject): OperationBindingResult;
+  hydrateSettledUnboundStatus(subject: SettledUnboundStatusSubject): SettledUnboundStatusHydrationResult;
 }
 
 export type ProviderOperationBindingState =
@@ -115,13 +141,13 @@ export interface ProviderOperationBindingPort {
   prepareProviderOperationBinding(
     permit: LaunchPermit,
     identity: ProviderOperationBindingIdentity,
-  ): OperationBindingResult;
+  ): ProviderOperationPrepareResult;
   cancelProviderOperationBinding(
     permit: LaunchPermit,
     identity: ProviderOperationBindingIdentity,
-  ): OperationBindingResult;
-  commitProviderOperationBinding(identity: ProviderOperationBindingIdentity): OperationBindingResult;
-  settleProviderOperationBinding(identity: ProviderOperationBindingIdentity): OperationBindingResult;
+  ): ProviderOperationCancellationResult;
+  commitProviderOperationBinding(identity: ProviderOperationBindingIdentity): ProviderOperationCommitResult;
+  settleProviderOperationBinding(identity: ProviderOperationBindingIdentity): ProviderOperationSettlementResult;
   retireProviderOperationBinding(
     identity: ProviderOperationBindingIdentity,
   ): ProviderOperationBindingRetirementDisposition;
