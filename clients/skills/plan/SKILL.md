@@ -1,7 +1,7 @@
 ---
 name: plan
-description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N[,M].'
-argument-hint: '[--delegate] [--no-handoff] [round=N[,M]] [task description]'
+description: 'Use when a task needs structured planning before implementation. Supports --delegate and round=N[,M,...].'
+argument-hint: '[--delegate] [--no-handoff] [round=N[,M,...]] [task description]'
 ---
 
 # Planning
@@ -15,17 +15,19 @@ Execute a multi-round planning session with architect/critic review.
 | `<prompt>`     | Self-execute on current host (default)                                                                                            |
 | `--delegate`   | Add a review pass on `<other-host>` (see Review Phases for the mapping). On a host that is not itself a provider it **replaces** Phase 2 rather than adding to it, so the net is still one review phase. |
 | `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
-| `round=N,M`    | Per-phase budget: Phase 1 (`<other-host>`) gets `N` rounds, Phase 2 gets `M`. **Turns `--delegate` on.**                          |
+| `round=N,M,…`  | Per-phase budget, one value per phase in order: Phase 1 gets `N`, Phase 2 gets `M`, and any further value adds that phase. A `0` skips its phase. **Two or more values turn `--delegate` on.**                          |
 | `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
 
 Reviewers and the resolver always run in every review phase that dispatches — the round budget only sets how many times each phase iterates.
 
 **Parsing the round budget** (`round=…` and `--round=…` are the same token):
 
-- `round=N` → every applicable phase gets `N`. Does not affect `--delegate`.
-- `round=N,M` → `{maxRounds[1]}` = `N`, `{maxRounds[2]}` = `M`, and `--delegate` is on whether or not it was written. Phase 1 exists only under `--delegate`, so naming two budgets IS the request for both phases.
-- Absent → `1` for every phase.
-- Every value must be an integer ≥ 1. More than two values, a `0`, or a non-integer is a usage error: report it and stop. Do not clamp, drop the extras, or fall back to the default.
+- `round=N` → every applicable phase gets `N`. Does not affect `--delegate`, so on its own it is Phase 2 alone; with `--delegate` it is Phase 1 and Phase 2.
+- `round=N,M,…` → the i-th value is `{maxRounds[i]}`, for as many values as are written, and `--delegate` is on whether or not it was written. Phase 1 exists only under `--delegate`, so naming a budget per phase IS the request for those phases.
+- A value of `0` skips its phase: that phase does not dispatch and reports as skipped. `round=1,0` is one delegated round and no local review; `round=0,2` is two local rounds and no delegation.
+- **More than two values extends the review beyond Phase 2**, alternating hosts: odd phases run on `<other-host>`, even phases on `<phase-2-provider>`. `round=1,1,3` is one delegated round, one local round, then three more delegated rounds as Phase 3.
+- Absent → `1` for every applicable phase.
+- Every value must be an integer ≥ 0. A negative value or a non-integer is a usage error: report it and stop. Do not clamp or fall back to the default. There is no cap on how many values may be given.
 
 Strip `--delegate`, the round token, and `--no-handoff` before passing the prompt to the execution path.
 
@@ -80,14 +82,15 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     ### 4. Review Loop
 
     Phase 0 always runs first. Phase 0b (Complexity Gate) may skip review phases.
-    Phase 1 runs only when `--delegate` is set — explicitly, or implied by a two-value `round=N,M` (review on `<other-host>`). Phase 2 runs when the current host is itself a registered provider, or when Phase 1 did not already resolve to `<phase-2-provider>`; it is skipped by the Complexity Gate, and skipped when it would repeat Phase 1's provider or re-attempt a provider Phase 1's dispatch already failed on.
+    Phase 1 runs only when `--delegate` is set — explicitly, or implied by a multi-value `round=N,M,…` (review on `<other-host>`). Phase 2 runs when the current host is itself a registered provider, or when Phase 1 did not already resolve to `<phase-2-provider>`; it is skipped by the Complexity Gate, and skipped when it would repeat Phase 1's provider or re-attempt a provider Phase 1's dispatch already failed on. Phase 3 and beyond exist only when the round budget named them, and each runs under the same conditions as the phase two before it — they alternate hosts, so a later phase re-reviews on a host an earlier one already used, which is the point of asking for it.
 
-    **Round budget**: `{maxRounds[P]}` is phase P's own budget. `round=N` gives every phase `N`; `round=N,M` gives Phase 1 `N` and Phase 2 `M`; absent gives every phase `1`. Each phase iterates up to its own budget and then exits — a phase at budget `1` runs exactly one round with no iteration. Phase structure is independent of the budget: Phase 1 (if `--delegate`) and Phase 2 still run whatever the numbers are.
+    **Round budget**: `{maxRounds[P]}` is phase P's own budget. `round=N` gives every applicable phase `N`; `round=N,M,…` gives phase i the i-th value; absent gives every applicable phase `1`. Each phase iterates up to its own budget and then exits — a phase at budget `1` runs exactly one round with no iteration, and a phase at budget `0` does not dispatch at all and reports as skipped. Apart from `0`, the budget does not decide structure: Phase 1 (if `--delegate`) and Phase 2 still run whatever the numbers are. How many phases exist is decided by how many values were written.
 
     **Task registration**: Before starting Phase 0, register one Task per applicable phase:
     - `TaskCreate({ subject: "Phase 0 — Frame Gate" })`
     - `TaskCreate({ subject: "Phase 1 — <other-host> review" })` (only if `--delegate`, explicit or implied)
     - `TaskCreate({ subject: "Phase 2 — <phase-2-provider> review" })` (omit when Phase 2 is excluded because Phase 1 resolves to the same provider)
+    - One more per phase the round budget named beyond Phase 2, using that phase's own host — omit any phase whose budget is `0`
     - `TaskCreate({ subject: "Execution Ordering" })`
 
     On phase start: `TaskUpdate({ taskId, status: "in_progress" })`.
@@ -128,8 +131,9 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     | Phase | Condition | Provider | Round Label | Budget |
     |-------|-----------|----------|-------------|--------|
-    | 1 | `--delegate`, explicit or implied by `round=N,M` | `<other-host>` | `(<other-host capitalized>)` | `{maxRounds[1]}` |
+    | 1 | `--delegate`, explicit or implied by `round=N,M,…` | `<other-host>` | `(<other-host capitalized>)` | `{maxRounds[1]}` |
     | 2 | the current host is itself a registered provider, **or** `<phase-2-provider>` is one Phase 1 did not already resolve to | `<phase-2-provider>` | `(<phase-2-provider capitalized>)` | `{maxRounds[2]}` |
+    | 3+ | the round budget named this phase with a non-zero value | odd → `<other-host>`, even → `<phase-2-provider>` | that provider, capitalized | `{maxRounds[P]}` |
 
     `<phase-2-provider>` is not a second delegation concept — it is a label for whichever provider Phase 2 resolved to, so the Round Label, the Task subject, and the Review Summary can name it without repeating the resolution rule at each site.
 
@@ -278,11 +282,12 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     ### Review Summary
     - Phases: list only the phases that produced a result — `0 (Frame Gate) + 1 (<other-host>) + 2 (<phase-2-provider>)`, `0 (Frame Gate) + 2 (<phase-2-provider>)`, `0 (Frame Gate) + 1 (<other-host>)`, or `0 (Frame Gate)` alone.
-    - Rounds: rounds **actually completed** / budget, per phase — e.g. `Phase 1: 2/3, Phase 2: 1/1`. A phase that never dispatched reports `0/{maxRounds[P]}`; a phase that failed partway reports the rounds it completed, never `0`.
+    - Rounds: rounds **actually completed** / budget, for every phase the budget named — e.g. `Phase 1: 2/3, Phase 2: 1/1` or `Phase 1: 1/1, Phase 2: 0/0, Phase 3: 3/3`. A phase that never dispatched reports `0/{maxRounds[P]}`; a phase that failed partway reports the rounds it completed, never `0`.
     - ⚠️ One line per phase that did not run, or that ran fewer rounds than its budget — **Phase {P} {skipped | ended early}**: {reason}.
       - Phase 1, skipped — `<other-host>` dispatch failed: "{observed error}"
       - Phase 2, skipped — `<other-host>` already used by Phase 1 | `<other-host>` dispatch already failed in Phase 1: "{observed error}" | `<phase-2-provider>` dispatch failed: "{observed error}"
-      - Either phase, ended early — dispatch failed in round {M} of {maxRounds[P]}: "{observed error}"; this phase's verdict is its round {M−1} verdict.
+      - Any phase, skipped — budget `0`
+      - Any phase, ended early — dispatch failed in round {M} of {maxRounds[P]}: "{observed error}"; this phase's verdict is its round {M−1} verdict.
 
       Add "The plan is unreviewed." only when no review phase produced a result. Append "Install and authenticate a provider CLI (`coral-cli codex` / `coral-cli claude`, or `/coral:equip`) and re-run for a second perspective." **only** to a reason whose text is a dispatch failure — never to "already used by Phase 1", which no install changes.
     - Final verdict: [APPROVED / APPROVED WITH CONDITIONS / NOT REVIEWED]
