@@ -1497,7 +1497,7 @@ describe('openOrResetBackendStoreDb', () => {
         removed = true;
         rmSync(dbPath);
       }
-      return lstatSync(path, { bigint: true });
+      return lstatSync(path);
     });
 
     expect(
