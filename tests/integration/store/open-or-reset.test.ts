@@ -1488,7 +1488,7 @@ describe('openOrResetBackendStoreDb', () => {
     createMismatchStore(dbPath);
     const lstatSync = runtime.storage.lstatSync;
     let removed = false;
-    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((path) => {
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint: true }) => {
       const stagingRoot = join(root, 'store-reset-quarantine', '.staging');
       const manifestPublished =
         existsSync(stagingRoot) &&
@@ -1497,8 +1497,8 @@ describe('openOrResetBackendStoreDb', () => {
         removed = true;
         rmSync(dbPath);
       }
-      return lstatSync(path);
-    });
+      return options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
+    }) as typeof runtime.storage.lstatSync);
 
     expect(
       publishReset(runtime, dbPath, {
