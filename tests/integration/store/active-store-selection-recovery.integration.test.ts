@@ -629,11 +629,11 @@ describe('active-store selection recovery', () => {
     const { runtime, currentSelection, authority } = harness();
     const evidence = createIncompatibleFormatStore(runtime);
     const dbPath = runtime.paths.coral.store.dbFile;
-    const originalUnlinkSync = runtime.storage.unlinkSync.bind(runtime.storage);
-    let shmAtQuarantine: Buffer | undefined;
-    vi.spyOn(runtime.storage, 'unlinkSync').mockImplementation((path) => {
-      if (path === `${dbPath}-shm`) shmAtQuarantine = readFileSync(path);
-      originalUnlinkSync(path);
+    const originalRenameSync = runtime.storage.renameSync.bind(runtime.storage);
+    let shmAtParking: Buffer | undefined;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+      if (source === `${dbPath}-shm`) shmAtParking = readFileSync(source);
+      originalRenameSync(source, destination);
     });
     const exportPath = join(runtime.paths.coral.exports.jobsRoot, 'prior-job', 'result.md');
     mkdirSync(dirname(exportPath), { recursive: true });
@@ -723,8 +723,8 @@ describe('active-store selection recovery', () => {
     for (const [name, bytes] of Object.entries(evidence)) {
       const retained = readFileSync(join(incidentPath, name));
       if (name === 'store.db-shm') {
-        expect(shmAtQuarantine).toBeDefined();
-        expect(retained).toEqual(shmAtQuarantine);
+        expect(shmAtParking).toBeDefined();
+        expect(retained).toEqual(shmAtParking);
       } else {
         expect(retained, name).toEqual(bytes);
       }

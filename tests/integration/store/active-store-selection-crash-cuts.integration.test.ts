@@ -393,7 +393,7 @@ describe('active-store-selection crash cuts', () => {
         coordinateActiveStoreSelection(runtime, authority, {
           storeFormat: currentCoralStoreFormat(),
           currentSelection,
-          dependencies: successfulDependencies(),
+          dependencies: startupDependencies(),
         }),
       ).rejects.toMatchObject({
         code: 'active_store_coordination_invalid',
@@ -426,7 +426,7 @@ describe('active-store-selection crash cuts', () => {
       coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: successfulDependencies(),
+        dependencies: startupDependencies(),
       }),
     ).rejects.toMatchObject({
       code: 'active_store_coordination_invalid',
@@ -460,7 +460,7 @@ describe('active-store-selection crash cuts', () => {
     expect(existsSync(resolveGenerationBoundaryPaths(runtime).adoptionLock)).toBe(false);
   });
 
-  it('should resume after incident publication fails without resetting the store', async () => {
+  it('should resume after manifest publication fails with the old store parked', async () => {
     const { runtime, currentSelection, authority } = harness();
     createVersionedStore(runtime, '99.0.0');
     const original = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
@@ -474,7 +474,11 @@ describe('active-store-selection crash cuts', () => {
         dependencies: startupDependencies(),
       }),
     ).rejects.toMatchObject({ code: 'store_reset_quarantine_failed' });
-    expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(true);
+    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
+    const parkingRoot = join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY, '.parked');
+    const parkingId = readdirSync(parkingRoot).find(isCanonicalStoreResetIncidentId);
+    expect(parkingId).toBeDefined();
+    expect(tableExists(join(parkingRoot, parkingId ?? '', 'store.db'), 'sentinel_before_reset')).toBe(true);
     expect(readActiveStoreTransition(runtime)).toMatchObject({
       kind: 'valid',
       transition: { evidence: { storeEvidence: { kind: 'newer-incompatible' } } },
@@ -491,35 +495,30 @@ describe('active-store-selection crash cuts', () => {
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
 
-  it('should resume after reset starts but before active evidence is removed', async () => {
+  it('should continue when parking cannot move an observed active name', async () => {
     const { runtime, currentSelection, authority } = harness();
     createVersionedStore(runtime, '99.0.0');
-    const originalUnlink = runtime.storage.unlinkSync.bind(runtime.storage);
+    const originalRename = runtime.storage.renameSync.bind(runtime.storage);
     let cut = true;
-    runtime.storage.unlinkSync = (path) => {
-      if (cut && path === runtime.paths.coral.store.dbFile) {
+    runtime.storage.renameSync = (source, destination) => {
+      if (cut && source === runtime.paths.coral.store.dbFile && destination.includes(`${join('.parked', '')}`)) {
         cut = false;
         throw new Error('crash:reset');
       }
-      originalUnlink(path);
+      originalRename(source, destination);
     };
 
-    await expect(
-      coordinateActiveStoreSelection(runtime, authority, {
-        storeFormat: currentCoralStoreFormat(),
-        currentSelection,
-        dependencies: startupDependencies(),
-      }),
-    ).rejects.toMatchObject({ code: 'store_reset_quarantine_failed' });
-    expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(true);
-
-    runtime.storage.unlinkSync = originalUnlink;
-    const resumed = await coordinateActiveStoreSelection(runtime, authority, {
+    const result = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
       dependencies: startupDependencies(),
     });
-    if (resumed.kind === 'opened') resumed.db.close();
+    runtime.storage.renameSync = originalRename;
+    expect(result.kind).toBe('opened');
+    if (result.kind === 'opened') {
+      expect(result.publications).toHaveLength(2);
+      result.db.close();
+    }
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(false);
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });

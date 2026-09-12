@@ -26,6 +26,7 @@ import {
 import type { IncumbentHealth } from '#src/transport/ipc/handoff.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { isCanonicalStoreResetIncidentId } from '#src/store/reset-incident.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -361,7 +362,7 @@ describe('incumbent handoff reset authority', () => {
       expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(false);
       const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
       const incidentNames = readdirSync(quarantineRoot, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && entry.name !== '.staging')
+        .filter((entry) => entry.isDirectory() && isCanonicalStoreResetIncidentId(entry.name))
         .map((entry) => entry.name);
       expect(incidentNames).toHaveLength(1);
       expect(readFileSync(join(quarantineRoot, incidentNames[0], 'store.db'))).toEqual(storeBefore);

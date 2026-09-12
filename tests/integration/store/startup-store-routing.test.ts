@@ -19,6 +19,7 @@ import {
 } from '#src/store/active-store-selection.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import {
+  isCanonicalStoreResetIncidentId,
   parseStoreResetIncidentManifest,
   STORE_RESET_MANIFEST_FILE_NAME,
   STORE_RESET_QUARANTINE_DIRECTORY,
@@ -205,7 +206,7 @@ describe('startup-store-routing', () => {
     opened.close();
     const quarantine = join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
     const incident = readdirSync(quarantine, { withFileTypes: true }).find(
-      (entry) => entry.isDirectory() && entry.name !== '.staging',
+      (entry) => entry.isDirectory() && isCanonicalStoreResetIncidentId(entry.name),
     )?.name;
     if (incident === undefined) throw new Error('Expected a retained reset incident.');
     expect(
