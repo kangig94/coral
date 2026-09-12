@@ -430,6 +430,130 @@ an explicit request naming the exact incident is decisive for a want. What makes
 that the slot rule never needed acknowledgement: data safety comes from never evicting, and the disk
 bound comes from refusing to add. Only the bound ever depended on a refusal, and only in the rare branch.
 
+## Revision 2 — the active evidence pathname gets an owner
+
+Everything above stands. This section replaces how the active pathname is touched, because the design
+above gave `ActiveEvidenceObservation` to the **resume** path only and left publication and discard
+touching the active name through raw throwing calls. Two review rounds then found the same boot refusal
+at four separate lines, and a targeted fix for the first one did not prevent the next three.
+
+Counting those lines was the wrong activity. **Every site that can name an active store path is a site**,
+and there are sixteen `candidate.source` references in `backend-store-reset.ts` alone. The answer is
+ownership, not a fourth fix.
+
+### The owner
+
+`src/store/reset-active-evidence.ts` is the only module that may name `files.dbFile`, `walFile`,
+`shmFile` or `formatFile`. `backend-store-reset.ts` keeps staging and the quarantine root.
+`candidateForEvidence` moves there and is unexported. **`ActiveEvidence` carries an identity, not a
+path** — the path cannot leave the module, so no caller can reconstruct a site.
+
+It exposes: `enumerateActiveEvidence` (mints the identity every later step is checked against);
+`openActiveEvidence` (lstat → open → fstat, returning a `StableSource` whose `reobserve()` answers
+`stable | changed | absent | undeterminable`, so the copy reads through a descriptor and never sees a
+path); `linkActiveEvidence` (compares the **destination** to the minted identity, not the source to the
+destination — the post-link source re-stat disappears rather than being softened);
+`observeActiveEvidence` taking an explicit `ActiveEvidenceExpectation` of `identity` (link, copy, discard)
+or `content` (resume); and `removeActiveEvidence`, which holds the module's single `unlinkSync`,
+authorized only by `same-inode` or `distinct-matching`, answering `removed | absent | left`.
+
+### Which failures throw — the rule, stated once
+
+At a new call site, ask which of three things is being touched:
+
+1. **A claim** — anything the manifest will assert about the staged bytes. Minting one needs an unbroken
+   identity bracket, and a frozen manifest has no field to carry a broken one, so it **throws**. Every
+   such throw happens before the first active unlink, where the existing `activeRemovalStarted === false`
+   cleanup makes it a refusal-to-begin with nothing moved.
+2. **A name** — the active pathname *after* the claim is minted. Present? Same inode? May I unlink?
+   **A disposition, never an exception.** `ENOENT` is the answer `absent`. The name's fate always has a
+   field (`coherence`, `leftActive`) and classification judges what remains.
+3. **A refused mutation** — a non-`ENOENT` errno on a mkdir, write, link, rename, sync, or an unlink the
+   observation already authorized. **Throws.** This is the genuine filesystem failure the governing rule
+   allows, and crash-resume exists for it.
+
+A site that fits none of the three is at the wrong layer.
+
+`'Linked store-reset evidence changed before active removal.'` is this defect class, not an exception to
+it: at removal the staged link already holds the inode and the manifest is durable, so an active-name
+mismatch is a name question, and throwing leaves a staging directory that can never be resumed. No test
+pins it. It becomes `left`. `PreservationMechanism.linked` gains `coherence` so a linked inode that moved
+after the manifest is recorded rather than refused.
+
+The copy arm's re-hash of the whole active file at removal also goes: `copyCandidateForPublication`
+already returned the identity, and the rule is *identity where identity exists, content where it does not*.
+
+### The discard arm shares the owner
+
+It is the least safe arm today — it re-stats every candidate and unlinks with no identity bracket at all.
+Enumeration mints the identity, `evidenceBytes` sums it instead of re-stating, and removal goes through
+`removeActiveEvidence`. The obligations stay different and stay in their callers; what is shared is the
+pathname operation, which has the same three answers and the same errno classification on every arm.
+**The proof that it is one concept: afterwards the owner has no arm-specific branch.** A second unlink
+path that destroys rather than preserves would be a second canonical home for the same syscall on the
+same file.
+
+### A left name is handled once
+
+Publication can now leave an active name, which today it never does. Publication and resume produce the
+same `leftActive` list, and `openOrResetBackendStoreDb` loops at most twice: classify, publish, and go
+round again only if `store.db` itself was left. Pass 2 needs a foreign actor replacing the inode inside
+the reset lock, so it is practically unreachable — but the alternative is `openStoreDatabase` refusing
+with `store_schema_outdated`, which is an observation selecting a refusal. Exhausting the retry reaches
+that classification's own remediation, which names `backend store-reset discard`: a bounded retry whose
+successor is a command that exists.
+
+### Retention crosses as a promise, then a claim
+
+`storedProductVersion`, preservation cause and coherence live only in memory until after the final
+rename, so a crash in the commit window loses them; and when a holder already occupies the slot a
+resumed incident is never entered in the ledger at all, so bytes and counts silently go missing.
+
+The ledger gains one additive `pending` key holding the reset time, the enumerated identities, and the
+outcome it promises. It is written after the manifest is durable and before the first unlink, and cleared
+by the commit write, by the failed-publication cleanup, or by reconciliation.
+
+**`pending` is a promise, not a claim: slot resolution never treats it as the holder**, so the ordering
+argument above survives intact — a ledger still cannot name a holder that does not exist. Reconciliation
+is the first step of `resolveStoreResetRetentionSlot` and runs before adoption, so a committed directory
+named by `pending` is promoted with its full metadata instead of being adopted with id, time and size.
+A `discard` outcome commits once every name is absent or a different inode, and is otherwise left for
+this boot's publication to replace under the same lock.
+
+The staging directory is not an option for this record: `validateStagingEntries` is an exact set, so a
+sidecar there makes every shipped build refuse with `store_reset_interrupted_foreign`. The ledger is the
+right address and carries no mixed-window risk — `src/store/reset-retention.ts` is absent at `v0.10.9`
+and on `origin/main`, so it has never shipped.
+
+### The invariant, in three layers
+
+The current text-regex guard is what let all four findings ship green — `candidate.source` bypasses it.
+
+1. **Type** — `ActiveEvidence` has no path field, and `candidateForEvidence` is unexported.
+2. **AST** — outside the owner, no `.walFile`/`.shmFile`/`.formatFile` access anywhere in `src/`, and
+   `.dbFile` only as an argument to the classifier and the store opener. Inside the owner, exactly one
+   `unlinkSync`, enclosed by `removeActiveEvidence`, in a `try` whose catch tests `isNoEntryError`.
+3. **Behaviour** — record the sequence of storage calls made against an active path during a clean run of
+   each arm, then re-run once per index with the file deleted, and again with it replaced by a new inode,
+   asserting the boot succeeds every time. The earlier rounds were single-point injections; this sweep is
+   their closure, and it is the test that would have found all four windows at once.
+
+### Two findings from the same family, with different owners
+
+**`release` holds a pathname where it is owed a capability.** It recursive-deletes after checking two
+joined paths, never proving the quarantine root is a non-symlink directory or that the incident is a
+realpath-contained child — while the read boundary already refuses a symlinked root. `assertQuarantineRoot`
+and `assertContainedDirectory` move into `reset-retention.ts` and run before the removal, and the result
+union gains `unsafe`, which is the read boundary's own word and distinct from `undeterminable`: a
+symlinked root *is* verified, as not ours.
+
+**`store_product_version` stops being raw at the classifier.** Today the corrupt arm returns the
+unparseable string under a field name that elsewhere means "a version", and it flows to the ledger and
+into a rendered table that then advises installing it — so a value containing a newline injects a row.
+The valid arms also store the raw string rather than the normalized one. The corrupt arm carries
+`string | null` holding valid semver only, plus a discriminator naming why it is absent. Escaping in the
+renderer would treat the symptom; §8 puts the boundary at ingress.
+
 ## Invariants to add
 
 - No `store_reset_*` remediation contains `store-reset release`.
