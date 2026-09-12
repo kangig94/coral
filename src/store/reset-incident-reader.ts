@@ -14,6 +14,7 @@ import {
   STORE_RESET_INCIDENT_SCHEMA_VERSION,
   type STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_MANIFEST_FILE_NAME,
+  STORE_RESET_PARKED_DIRECTORY,
   StoreResetManifestDecodeError,
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentManifest,
@@ -51,7 +52,7 @@ type StoreResetIncidentListBase =
     }
   | {
       readonly incidentId: string;
-      readonly state: 'malformed' | 'unsupported' | 'build_mismatch' | 'unsafe' | 'unavailable';
+      readonly state: 'parked' | 'malformed' | 'unsupported' | 'build_mismatch' | 'unsafe' | 'unavailable';
       readonly resetAt: null;
       readonly reason: null;
       readonly schemaVersion: null;
@@ -66,6 +67,7 @@ export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
         readonly resumeLeftActive: boolean;
         readonly parked: readonly string[];
       })
+    | { readonly slot: 'pending'; readonly parked: readonly string[] }
     | { readonly slot: 'unknown' };
   readonly storedProductVersion: string | null | 'unknown';
   readonly evidenceBytes: number | 'unknown';
@@ -190,6 +192,22 @@ function listRetention(
         ? { incident: ledger.excess.latest, retention: ledger.excess.latest }
         : null;
   if (retained === null) {
+    if (ledger?.pending?.parkingId === incidentId) {
+      return {
+        retention: {
+          slot: 'pending',
+          parked: ledger.pending.parked ?? ledger.pending.identities.map((identity) => identity.name),
+        },
+        storedProductVersion:
+          ledger.pending.outcome.kind === 'preserve'
+            ? (ledger.pending.outcome.incident.storedProductVersion ?? null)
+            : null,
+        evidenceBytes:
+          ledger.pending.outcome.kind === 'preserve'
+            ? ledger.pending.outcome.incident.evidenceBytes
+            : ledger.pending.outcome.receipt.evidenceBytes,
+      };
+    }
     return { retention: { slot: 'unknown' }, storedProductVersion: 'unknown', evidenceBytes: 'unknown' };
   }
   return {
@@ -351,9 +369,26 @@ export function listStoreResetIncidents(options: {
     throw new StoreResetIncidentReadError('unavailable');
   }
 
+  const pendingParkingId = ledger?.pending?.parkingId;
+  let parkingOnlyId: string | null = null;
+  let parkingOnlyState: 'parked' | 'malformed' | 'unsafe' = 'parked';
+  if (pendingParkingId !== undefined && !incidentIds.includes(pendingParkingId)) {
+    const parkingStat = options.fs.lstat(join(options.quarantineRoot, STORE_RESET_PARKED_DIRECTORY, pendingParkingId));
+    if (parkingStat !== null) {
+      parkingOnlyId = pendingParkingId;
+      parkingOnlyState =
+        parkingStat.kind === 'directory' ? 'parked' : parkingStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed';
+      incidentIds.push(pendingParkingId);
+    }
+  }
+
   return {
     incidents: incidentIds
-      .map((incidentId) => readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger))
+      .map((incidentId) =>
+        incidentId === parkingOnlyId
+          ? unavailableEntry(incidentId, parkingOnlyState, ledger)
+          : readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger),
+      )
       .sort(compareEntries),
     truncated,
     discarded: ledger?.discarded ?? null,

@@ -102,18 +102,6 @@ describe('parseStoreResetRetentionLedger', () => {
       }),
     ],
     [
-      'coherent copy without exclusion',
-      ledger({
-        preserved: incident({
-          preservation: {
-            kind: 'copied',
-            cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
-            coherence: 'coherent',
-          },
-        }),
-      }),
-    ],
-    [
       'invalid link errno',
       ledger({
         preserved: incident({
@@ -197,7 +185,7 @@ describe('parseStoreResetRetentionLedger', () => {
     });
   });
 
-  it('preserves the distinction between unattempted and timed-out writer exclusion', () => {
+  it('rejects the obsolete unattempted and unproven Revision 2 vocabulary', () => {
     const parsed = parse(
       ledger({
         preserved: incident({
@@ -210,11 +198,7 @@ describe('parseStoreResetRetentionLedger', () => {
       }),
     );
 
-    expect(parsed?.preserved?.preservation).toEqual({
-      kind: 'copied',
-      cause: { kind: 'exclusion-unproven', reason: 'not-attempted' },
-      coherence: 'unproven',
-    });
+    expect(parsed).toBeNull();
   });
 
   it('accepts a pending promise without treating it as a preserved claim', () => {
@@ -224,6 +208,8 @@ describe('parseStoreResetRetentionLedger', () => {
         preserved: null,
         pending: {
           resetAt: '2026-09-13T00:00:00.000Z',
+          parkingId: HOLDER_ID,
+          parked: ['store.db-wal'],
           identities: [{ name: 'store.db', dev: '1', ino: '2' }],
           outcome: { kind: 'preserve', incident: pendingIncident, retention: { slot: 'claimed' } },
         },
@@ -231,7 +217,11 @@ describe('parseStoreResetRetentionLedger', () => {
     );
 
     expect(parsed).toMatchObject({
-      pending: { outcome: { kind: 'preserve', incident: { incidentId: HOLDER_ID } } },
+      pending: {
+        parkingId: HOLDER_ID,
+        parked: ['store.db-wal'],
+        outcome: { kind: 'preserve', incident: { incidentId: HOLDER_ID } },
+      },
       preserved: null,
     });
   });

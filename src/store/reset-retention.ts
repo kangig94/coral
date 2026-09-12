@@ -79,6 +79,7 @@ export type StoreResetPendingIdentity = Readonly<{
 export type StoreResetRetentionPending = Readonly<{
   resetAt: string;
   parkingId?: string;
+  parked?: readonly StoreResetEvidenceFileName[];
   identities: readonly StoreResetPendingIdentity[];
   outcome:
     | Readonly<{
@@ -279,6 +280,15 @@ function retentionPending(value: unknown): StoreResetRetentionPending | null {
   if (parkingId !== undefined && (typeof parkingId !== 'string' || !isCanonicalStoreResetIncidentId(parkingId))) {
     return null;
   }
+  const parked = value.parked === undefined ? undefined : value.parked;
+  if (
+    parked !== undefined &&
+    (!Array.isArray(parked) ||
+      parked.some((name) => !STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName)) ||
+      new Set(parked).size !== parked.length)
+  ) {
+    return null;
+  }
   if (new Set(present.map((identity) => identity.name)).size !== present.length || !isRecord(value.outcome)) {
     return null;
   }
@@ -289,6 +299,7 @@ function retentionPending(value: unknown): StoreResetRetentionPending | null {
       : {
           resetAt: value.resetAt,
           ...(parkingId === undefined ? {} : { parkingId }),
+          ...(parked === undefined ? {} : { parked: parked as StoreResetEvidenceFileName[] }),
           identities: present,
           outcome: { kind: 'discard', receipt },
         };
@@ -301,6 +312,7 @@ function retentionPending(value: unknown): StoreResetRetentionPending | null {
     : {
         resetAt: value.resetAt,
         ...(parkingId === undefined ? {} : { parkingId }),
+        ...(parked === undefined ? {} : { parked: parked as StoreResetEvidenceFileName[] }),
         identities: present,
         outcome: { kind: 'preserve', incident, retention },
       };
@@ -612,6 +624,18 @@ export function recordStoreResetPending(
 ): StoreResetRetentionLedger {
   const next = { ...ledger, pending };
   writeRequiredLedger(storage, quarantineRoot, next);
+  return next;
+}
+
+export function recordStoreResetPendingParked(
+  storage: StoragePort,
+  quarantineRoot: string,
+  ledger: StoreResetRetentionLedger,
+  parked: readonly StoreResetEvidenceFileName[],
+): StoreResetRetentionLedger {
+  if (ledger.pending === null) return ledger;
+  const next = { ...ledger, pending: { ...ledger.pending, parked } };
+  writeLedger(storage, quarantineRoot, next);
   return next;
 }
 

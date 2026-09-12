@@ -15,6 +15,8 @@ function retention(entry: StoreResetIncidentListResult['incidents'][number]): st
   switch (entry.retention.slot) {
     case 'unknown':
       return 'unknown';
+    case 'pending':
+      return 'pending';
     case 'claimed':
       return 'claimed';
     case 'excess':
@@ -27,6 +29,7 @@ function retention(entry: StoreResetIncidentListResult['incidents'][number]): st
 function preservation(entry: StoreResetIncidentListResult['incidents'][number]): string {
   switch (entry.retention.slot) {
     case 'unknown':
+    case 'pending':
       return 'unknown';
     case 'claimed':
     case 'excess': {
@@ -75,7 +78,7 @@ function discarded(result: StoreResetIncidentListResult): string {
 function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
   return target === 'gen2'
     ? [
-        'To permanently remove a committed incident: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>',
+        'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>',
       ]
     : [];
 }
@@ -150,15 +153,15 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`
-        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     '',
     discarded(result),
     ...(result.truncated
       ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
       : []),
-    'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
+    'States: ready produces a Markdown report; parked is owned evidence awaiting release; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
     `Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`,
     'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.',
     'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.',

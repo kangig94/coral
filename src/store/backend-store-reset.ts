@@ -62,6 +62,7 @@ import {
   clearStoreResetPending,
   recordStoreResetDiscarded,
   recordStoreResetPending,
+  recordStoreResetPendingParked,
   recordStoreResetPreserved,
   recordStoreResetResumeLeftActive,
   readStoreResetRetentionLedger,
@@ -921,7 +922,7 @@ function resumeInterruptedIncident(
   const interrupted = detectInterruptedIncident(runtime, files);
   if (interrupted === null) return null;
   if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
-  let ledger = readStoreResetRetentionLedger(runtime.storage, interrupted.quarantineRoot);
+  const ledger = readStoreResetRetentionLedger(runtime.storage, interrupted.quarantineRoot);
   const pendingEvidence = pendingActiveEvidence(ledger, interrupted.incidentId);
   const parkingRoot = join(interrupted.quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   const parkingDirectory = join(parkingRoot, interrupted.incidentId);
@@ -1480,6 +1481,12 @@ function publishIncident(
         const discard = discardIncidentEvidence(runtime.storage, files, activeEvidence, parkingDirectory);
         const parkedNames = runtime.storage.readDirectoryBoundedSync(parkingDirectory, MAX_INCIDENT_DIR_ENTRIES);
         if (parkedNames.overflow) throw new Error('Store-reset parking directory exceeds its entry limit.');
+        const keptParked = parkedNames.entries.filter((name): name is StoreResetEvidenceFileName =>
+          STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName),
+        );
+        if (keptParked.length > 0) {
+          pendingLedger = recordStoreResetPendingParked(runtime.storage, quarantineRoot, pendingLedger, keptParked);
+        }
         if (discard.identitiesSettled && parkedNames.entries.length === 0) {
           recordStoreResetDiscarded(runtime.storage, quarantineRoot, pendingLedger, receipt);
           writeAuditEvent('store_reset_discarded', receipt, 'warn');

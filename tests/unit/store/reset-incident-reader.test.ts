@@ -239,6 +239,52 @@ describe('store reset incident listing', () => {
     ]);
   });
 
+  it('lists a pending parking namespace even when no incident directory was committed', () => {
+    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
+    const fs = new MemoryInspectionFs();
+    fs.addRoot(['.parked']);
+    fs.stats.set(join(ROOT, '.parked', parkingId), stat('directory'));
+    fs.addFile(
+      join(ROOT, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
+      JSON.stringify({
+        version: 1,
+        pending: {
+          resetAt: '2026-09-13T00:00:00.000Z',
+          parkingId,
+          parked: ['store.db-wal'],
+          identities: [{ name: 'store.db', dev: '1', ino: '2' }],
+          outcome: {
+            kind: 'discard',
+            receipt: {
+              resetAt: '2026-09-13T00:00:00.000Z',
+              resetPolicyCause: 'older-incompatible',
+              evidenceBytes: 42,
+              deferredTo: '223e4567-e89b-42d3-a456-426614174000',
+            },
+          },
+        },
+        preserved: null,
+        excess: null,
+        discarded: null,
+      }),
+    );
+
+    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD }).incidents).toEqual([
+      {
+        incidentId: parkingId,
+        state: 'parked',
+        resetAt: null,
+        reason: null,
+        schemaVersion: null,
+        resetPolicyCause: null,
+        fileCount: null,
+        evidenceBytes: 42,
+        retention: { slot: 'pending', parked: ['store.db-wal'] },
+        storedProductVersion: null,
+      },
+    ]);
+  });
+
   it('returns only fixed states for malformed and mixed-build incidents', () => {
     const malformed = '123e4567-e89b-42d3-a456-426614174000';
     const mixed = '223e4567-e89b-42d3-a456-426614174000';
