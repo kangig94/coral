@@ -100,7 +100,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   const pluginRoot = resolvePluginRoot();
   const flavor = readBuildFlavor(pluginRoot ?? projectRoot);
   const runtime = createRealRuntime(flavor);
-  const dbPath = runtime.paths.coral.store.dbFile;
+  const { dbFile: dbPath } = runtime.paths.coral.store;
   const hasStore = runtime.storage.existsSync(dbPath);
 
   const db = hasStore

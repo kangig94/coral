@@ -36,7 +36,8 @@ export function openReadOnlyStoreDatabase(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
-  const path = options.path ?? runtime.paths.coral.store.dbFile;
+  const { dbFile } = runtime.paths.coral.store;
+  const path = options.path ?? dbFile;
   return openStoreDatabase({
     path: path,
     storage: runtime.storage,

@@ -142,6 +142,10 @@ function corruptOrUnsupported(
   currentProductVersion: string,
   storedFingerprint: string | null,
   storedProductVersion: string | null,
+  storedProductVersionState: Extract<
+    StoreFormatClassification,
+    { kind: 'corrupt-or-unsupported' }
+  >['storedProductVersionState'],
 ): StoreFormatClassification {
   return {
     kind: 'corrupt-or-unsupported',
@@ -149,6 +153,7 @@ function corruptOrUnsupported(
     currentProductVersion,
     storedFingerprint,
     storedProductVersion,
+    storedProductVersionState,
   };
 }
 
@@ -167,10 +172,24 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
   const fingerprintMetadata = readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY);
   const versionMetadata = readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY);
   const storedFingerprint = stringMetadataValue(fingerprintMetadata);
-  const storedProductVersion = stringMetadataValue(versionMetadata);
+  const rawStoredProductVersion = stringMetadataValue(versionMetadata);
+  const storedProductVersion =
+    rawStoredProductVersion === null ? null : validateProductVersion(rawStoredProductVersion);
+  const storedProductVersionState =
+    versionMetadata.kind === 'absent'
+      ? ('absent' as const)
+      : storedProductVersion === null
+        ? ('invalid' as const)
+        : ('valid' as const);
 
   if (!isStoreFormatFingerprint(storedFingerprint)) {
-    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, storedProductVersion);
+    return corruptOrUnsupported(
+      currentFingerprint,
+      currentProductVersion,
+      storedFingerprint,
+      storedProductVersion,
+      storedProductVersionState,
+    );
   }
 
   if (versionMetadata.kind === 'absent') {
@@ -181,18 +200,14 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
           currentProductVersion,
           storedFingerprint,
         }
-      : corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null);
+      : corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null, 'absent');
   }
 
   if (storedProductVersion === null) {
-    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null);
-  }
-  const validStoredProductVersion = validateProductVersion(storedProductVersion);
-  if (validStoredProductVersion === null) {
-    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, storedProductVersion);
+    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null, 'invalid');
   }
 
-  const precedence = compareProductVersions(validStoredProductVersion, currentProductVersion);
+  const precedence = compareProductVersions(storedProductVersion, currentProductVersion);
   const identity = {
     currentFingerprint,
     currentProductVersion,
@@ -202,7 +217,7 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
   if (precedence > 0) return { kind: 'newer-incompatible', ...identity };
   if (storedFingerprint === currentFingerprint) return { kind: 'compatible', ...identity };
   if (precedence < 0) return { kind: 'older-incompatible', ...identity };
-  return { kind: 'corrupt-or-unsupported', ...identity };
+  return { kind: 'corrupt-or-unsupported', storedProductVersionState: 'valid', ...identity };
 }
 
 export function classifyStoreFile(
@@ -360,7 +375,8 @@ function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendSto
   if (options.path === ':memory:') {
     return ':memory:';
   }
-  return resolve(options.path ?? runtime.paths.coral.store.dbFile);
+  const { dbFile } = runtime.paths.coral.store;
+  return resolve(options.path ?? dbFile);
 }
 
 export function openWritableStoreDbNoReset(

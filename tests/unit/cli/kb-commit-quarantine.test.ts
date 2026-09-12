@@ -10,7 +10,7 @@ import { emitError } from '#src/cli/emit.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
 
 const storeReset: StoreResetCommandOperations = {
-  list: () => ({ incidents: [] }),
+  list: () => ({ incidents: [], truncated: false, discarded: null }),
   report: async () => {
     throw new Error('not used');
   },

@@ -133,8 +133,9 @@ function classifyStoreForProtocol(
   files: BackendStoreFileSet,
   options: ActiveStoreSelectionProtocolOptions,
 ): StoreFormatClassification {
+  const { dbFile } = files;
   try {
-    return classifyStoreFile(files.dbFile, runtime.storage, options.storeFormat);
+    return classifyStoreFile(dbFile, runtime.storage, options.storeFormat);
   } catch (error: unknown) {
     const failure = classifyBackendStoreFailure(error, options.storeFormat);
     switch (failure.kind) {
@@ -142,7 +143,7 @@ function classifyStoreForProtocol(
         return failure.classification;
       case 'unavailable':
       case 'unclassified':
-        throw documentedBackendStoreClassificationFailure(runtime, files, failure);
+        throw documentedBackendStoreClassificationFailure(runtime, dbFile, failure);
       default:
         return assertNever(failure);
     }
@@ -320,7 +321,7 @@ function authorizeClassifiedStore(
   if (classification.kind === 'newer-incompatible') {
     const publication =
       transition === null
-        ? ({ kind: 'no-evidence' } as const)
+        ? ({ kind: 'no-evidence', leftActive: [] } as const)
         : publishClassifiedBackendStoreResetIncident(
             runtime,
             authority,
@@ -340,7 +341,8 @@ function authorizeClassifiedStore(
         return assertNever(publication);
     }
   }
-  refuseIncompatibleBackendStore(runtime, files, classification);
+  const { dbFile } = files;
+  refuseIncompatibleBackendStore(runtime, dbFile, classification);
   return undefined;
 }
 
@@ -349,8 +351,9 @@ function openProtocolStore(
   options: ActiveStoreSelectionProtocolOptions,
   files: BackendStoreFileSet,
 ): Database {
+  const { dbFile } = files;
   const db = openStoreDatabase({
-    path: files.dbFile,
+    path: dbFile,
     storage: runtime.storage,
     storeFormat: options.storeFormat,
     flavor: runtime.flavor,

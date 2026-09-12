@@ -8,6 +8,7 @@ import { DOCUMENTED_CORAL_SETUP_ERROR_CODES, documentedCoralSetupError } from '#
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
+const RESET_ACTIVE_EVIDENCE_PATH = 'src/store/reset-active-evidence.ts';
 const ACTIVE_STORE_SELECTION_PATH = 'src/store/active-store-selection.ts';
 const ACTIVE_STORE_SELECTION_COORDINATION_PATH = 'src/store/active-store-selection-coordination.ts';
 const STARTUP_STORE_ROUTING_PATH = 'src/store/startup-store-routing.ts';
@@ -301,7 +302,7 @@ describe('store reset discipline invariants', () => {
     const body = withoutComments(resetFunction.body?.getText(source) ?? '');
     const authorityIndex = body.indexOf('assertBackendStoreResetAuthority(');
     const lockIndex = body.indexOf('acquireBackendStoreResetLock(');
-    const resumeIndex = body.indexOf('resumeAutomaticBackendStoreResetIncident(');
+    const resumeIndex = body.indexOf('resumeAutomaticBackendStoreReset(');
     const classificationIndex = body.indexOf('classifyStoreFile(');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
     const writerExclusionIndex = body.indexOf("writerExclusion.kind === 'proven'");
@@ -393,7 +394,7 @@ describe('store reset discipline invariants', () => {
   });
 
   it('links only into staging before removing active evidence', () => {
-    const calls = collectCalls(BACKEND_STORE_RESET_PATH);
+    const calls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH);
     const linkCalls = calls.filter((call) => call.callee === 'linkSync');
     const incidentSource = sourceFile(BACKEND_STORE_RESET_PATH);
     const publish = withoutComments(
@@ -401,10 +402,66 @@ describe('store reset discipline invariants', () => {
     );
 
     expect(linkCalls).toHaveLength(1);
-    expect(linkCalls[0]?.enclosingFunctions).toContain('linkCandidateForPublication');
+    expect(linkCalls[0]?.enclosingFunctions).toContain('linkActiveEvidence');
     expect(linkCalls[0]?.text).toContain('destination');
     expect(publish.indexOf('linkIncidentEvidence(')).toBeGreaterThanOrEqual(0);
     expect(publish.indexOf('removeCommittedActiveEvidence(')).toBeGreaterThan(publish.indexOf('linkIncidentEvidence('));
+  });
+
+  it('keeps active evidence paths and unlink authority inside their canonical owner', () => {
+    const forbiddenProperties = new Set(['dbFile', 'walFile', 'shmFile', 'formatFile']);
+    const externalPathAccesses: string[] = [];
+    for (const relativePath of allSourcePaths()) {
+      if (relativePath === RESET_ACTIVE_EVIDENCE_PATH) continue;
+      const source = sourceFile(relativePath);
+      const visit = (node: ts.Node): void => {
+        if (ts.isPropertyAccessExpression(node) && forbiddenProperties.has(node.name.text)) {
+          const position = source.getLineAndCharacterOfPosition(node.getStart(source));
+          externalPathAccesses.push(`${relativePath}:${position.line + 1} ${node.getText(source)}`);
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+
+    const owner = sourceFile(RESET_ACTIVE_EVIDENCE_PATH);
+    const activeEvidence = owner.statements.find(
+      (statement): statement is ts.TypeAliasDeclaration =>
+        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'ActiveEvidence',
+    );
+    expect(activeEvidence).toBeDefined();
+    const activeEvidenceType =
+      activeEvidence !== undefined &&
+      ts.isTypeReferenceNode(activeEvidence.type) &&
+      activeEvidence.type.typeName.getText(owner) === 'Readonly'
+        ? activeEvidence.type.typeArguments?.[0]
+        : activeEvidence?.type;
+    const activeEvidenceProperties =
+      activeEvidenceType !== undefined && ts.isTypeLiteralNode(activeEvidenceType)
+        ? activeEvidenceType.members.flatMap((member) =>
+            ts.isPropertySignature(member) && member.name !== undefined ? [propertyNameText(member.name)] : [],
+          )
+        : [];
+    expect(activeEvidenceProperties).toEqual(['name', 'identity']);
+
+    const candidate = owner.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'candidateForEvidence',
+    );
+    expect(candidate).toBeDefined();
+    expect(candidate?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false).toBe(
+      false,
+    );
+
+    const unlinkCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter((call) => call.callee === 'unlinkSync');
+    expect(unlinkCalls).toHaveLength(1);
+    expect(unlinkCalls[0]?.enclosingFunctions).toContain('removeActiveEvidence');
+    const remove = findFunction(RESET_ACTIVE_EVIDENCE_PATH, 'removeActiveEvidence');
+    const unlinkTry = remove.body?.statements.find(ts.isTryStatement);
+    expect(unlinkTry).toBeDefined();
+    expect(unlinkTry?.tryBlock.getText(owner)).toContain('storage.unlinkSync(');
+    expect(unlinkTry?.catchClause?.block.getText(owner)).toContain('isNoEntryError(error)');
+    expect(externalPathAccesses).toEqual([]);
   });
 
   it('keeps destructive release out of store-reset remediation text', () => {
@@ -421,7 +478,7 @@ describe('store reset discipline invariants', () => {
     expect(body).toBeDefined();
     const bodyText = withoutComments(body?.getText(source) ?? '');
     const lockIndex = bodyText.indexOf('acquireBackendStoreResetLock(');
-    const interruptedIndex = bodyText.indexOf('resumeAutomaticBackendStoreResetIncident(');
+    const interruptedIndex = bodyText.indexOf('resumeAutomaticBackendStoreReset(');
     const classificationIndex = bodyText.indexOf('classifyStoreFile(');
 
     expect(lockIndex).toBeGreaterThanOrEqual(0);

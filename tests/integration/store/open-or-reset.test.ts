@@ -60,13 +60,16 @@ import {
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
-  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type StoreResetIncidentManifestV2,
   type StoreResetIncidentManifestV3,
   type StoreResetPolicyCause,
 } from '#src/store/reset-incident.js';
 import { readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
-import { readStoreResetRetentionLedger, resolveStoreResetRetentionSlot } from '#src/store/reset-retention.js';
+import {
+  readStoreResetRetentionLedger,
+  resolveStoreResetRetentionSlot,
+  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
+} from '#src/store/reset-retention.js';
 import { pragmaSimple } from '#tests/helpers/test-db.js';
 
 const REPO_ROOT = process.cwd();
@@ -384,6 +387,118 @@ function captureError(fn: () => unknown): unknown {
   }
 }
 
+type ActiveEvidenceArm = 'link' | 'copy' | 'discard' | 'resume';
+type ActiveEvidenceMutation = 'deleted' | 'replaced';
+
+function traceActivePathCalls(
+  runtime: Runtime,
+  activePath: string,
+  boundary: 'descriptor' | 'identity' | 'immediate',
+  mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation },
+): {
+  readonly runtime: Runtime;
+  readonly calls: readonly string[];
+  readonly mutationApplied: () => boolean;
+  readonly stop: () => void;
+} {
+  const calls: string[] = [];
+  let activeDescriptor: number | null = null;
+  let recording = boundary === 'immediate';
+  let stopped = false;
+  let applied = false;
+  const storage = new Proxy(runtime.storage, {
+    get(target, property) {
+      const member = Reflect.get(target, property, target) as unknown;
+      if (typeof member !== 'function') return member;
+      return (...args: unknown[]) => {
+        const method = String(property);
+        const touchesActivePath = args.some((argument) => argument === activePath);
+        const observesActiveDescriptor =
+          method === 'fstatSync' && activeDescriptor !== null && args[0] === activeDescriptor;
+        if (!stopped && recording && touchesActivePath) {
+          const index = calls.length;
+          calls.push(method);
+          if (mutation?.index === index) {
+            applied = true;
+            rmSync(activePath, { force: true });
+            if (mutation.kind === 'replaced') {
+              createMismatchStore(activePath, `sha256:${'f'.repeat(64)}`);
+            }
+          }
+        }
+
+        const result = Reflect.apply(member, target, args) as unknown;
+        if (method === 'openSync' && args[0] === activePath && typeof result === 'number') {
+          activeDescriptor = result;
+        }
+        if (boundary === 'descriptor' && observesActiveDescriptor) recording = true;
+        if (
+          boundary === 'identity' &&
+          (method === 'lstatSync' || method === 'statSync') &&
+          touchesActivePath &&
+          typeof args[1] === 'object' &&
+          args[1] !== null &&
+          'bigint' in args[1]
+        ) {
+          recording = true;
+        }
+        return result;
+      };
+    },
+  });
+  return {
+    runtime: { ...runtime, storage },
+    calls,
+    mutationApplied: () => applied,
+    stop: () => {
+      stopped = true;
+    },
+  };
+}
+
+function exerciseActiveEvidenceArm(
+  arm: ActiveEvidenceArm,
+  mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation },
+): { readonly calls: readonly string[]; readonly mutationApplied: boolean } {
+  const runtime = createRuntime();
+  const dbPath = join(makeTempRoot(`coral-store-active-${arm}-sweep-`), 'store.db');
+
+  if (arm === 'discard') {
+    createMismatchStore(dbPath);
+    const holder = publishReset(runtime, dbPath);
+    if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+    const trace = traceActivePathCalls(runtime, dbPath, 'identity', mutation);
+    publishNewerReset(trace.runtime, dbPath);
+    trace.stop();
+    const db = openReset(runtime, dbPath);
+    db.close();
+    return { calls: trace.calls, mutationApplied: trace.mutationApplied() };
+  }
+
+  if (arm === 'resume') {
+    createInterruptedCopyReset(runtime, dbPath);
+    const trace = traceActivePathCalls(runtime, dbPath, 'immediate', mutation);
+    resumeReset(trace.runtime, dbPath);
+    trace.stop();
+    const db = openReset(runtime, dbPath);
+    db.close();
+    return { calls: trace.calls, mutationApplied: trace.mutationApplied() };
+  }
+
+  createMismatchStore(dbPath);
+  const trace = traceActivePathCalls(runtime, dbPath, 'descriptor', mutation);
+  publishReset(
+    trace.runtime,
+    dbPath,
+    arm === 'link' ? writerExclusion() : { kind: 'unproven', reason: 'writer-live', blockers: 'active-evidence sweep' },
+  );
+  trace.stop();
+  const db = openReset(runtime, dbPath);
+  db.close();
+  return { calls: trace.calls, mutationApplied: trace.mutationApplied() };
+}
+
 function createInterruptedReset(
   runtime: Runtime,
   dbPath: string,
@@ -494,6 +609,34 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readFormatFingerprint(dbPath)).toBe(STORE_FORMAT.fingerprint);
     expect(readFileSync(`${dbPath}.format`, 'utf8')).toBe(`${STORE_FORMAT.fingerprint}\n`);
     expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
+  it('measures writable open with an absent database and a frames-bearing WAL', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-wal-without-db-');
+    const sourcePath = join(root, 'source.db');
+    const dbPath = join(root, 'store.db');
+    const source = new DatabaseSync(sourcePath);
+    try {
+      source.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA wal_autocheckpoint = 0;
+        CREATE TABLE wal_frame_source (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO wal_frame_source (value) VALUES ('frame');
+      `);
+      copyFileSync(`${sourcePath}-wal`, `${dbPath}-wal`);
+      expect(readFileSync(`${dbPath}-wal`).length).toBeGreaterThan(32);
+      expect(existsSync(dbPath)).toBe(false);
+
+      const db = openStoreDatabase({ path: dbPath, storage: runtime.storage, storeFormat: STORE_FORMAT });
+      db.close();
+
+      expect(existsSync(`${dbPath}-wal`)).toBe(false);
+      expect(tableExists(dbPath, 'wal_frame_source')).toBe(false);
+      expect(tableExists(dbPath, 'events')).toBe(true);
+    } finally {
+      source.close();
+    }
   });
 
   it('creates a missing dbDir before reaching the sync reset lock path', () => {
@@ -630,12 +773,42 @@ describe('openOrResetBackendStoreDb', () => {
         preservation: {
           kind: 'copied',
           cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
+          coherence: 'unproven',
         },
       });
     } finally {
       writer.release();
     }
     expect(heldLink).not.toHaveBeenCalled();
+  });
+
+  it('falls back only for the link capability errors named by the preservation contract', () => {
+    const fallbackRuntime = createRuntime();
+    const fallbackPath = join(makeTempRoot('coral-store-reset-link-fallback-'), 'store.db');
+    createMismatchStore(fallbackPath);
+    vi.spyOn(fallbackRuntime.storage, 'linkSync').mockImplementation(() => {
+      throw errno('EXDEV');
+    });
+
+    expect(publishReset(fallbackRuntime, fallbackPath)).toMatchObject({
+      kind: 'preserved',
+      preservation: {
+        kind: 'copied',
+        cause: { kind: 'link-unsupported', errno: 'EXDEV', code: 'EXDEV' },
+        coherence: 'coherent',
+      },
+    });
+
+    const refusedRuntime = createRuntime();
+    const refusedPath = join(makeTempRoot('coral-store-reset-link-refused-'), 'store.db');
+    createMismatchStore(refusedPath);
+    vi.spyOn(refusedRuntime.storage, 'linkSync').mockImplementation(() => {
+      throw errno('EIO');
+    });
+    const error = captureError(() => publishReset(refusedRuntime, refusedPath));
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(tableExists(refusedPath, 'sentinel_before_reset')).toBe(true);
   });
 
   it('adopts one orphaned committed incident when the preserved slot is vacant', () => {
@@ -681,7 +854,13 @@ describe('openOrResetBackendStoreDb', () => {
     createMismatchStore(dbPath);
     const holder = publishReset(runtime, dbPath);
     if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
-    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, 'not-semver');
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, 'not-semver\nINJECTED-ROW');
+
+    expect(classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT)).toMatchObject({
+      kind: 'corrupt-or-unsupported',
+      storedProductVersion: null,
+      storedProductVersionState: 'invalid',
+    });
 
     expect(publishReset(runtime, dbPath)).toMatchObject({
       kind: 'preserved',
@@ -711,6 +890,41 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
       preserved: { incidentId: holder.incident.incidentId },
       discarded: { count: 1, latest: { deferredTo: holder.incident.incidentId } },
+    });
+  });
+
+  it('reconciles a pending discard only after every promised identity is gone', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-reset-pending-discard-'), 'store.db');
+    createMismatchStore(dbPath);
+    const holder = publishReset(runtime, dbPath);
+    if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+    const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
+    let discardLedgerWrites = 0;
+    const ledgerWrite = vi
+      .spyOn(runtime.storage, 'writeAtomicDurableSync')
+      .mockImplementation((path, data, options) => {
+        if (!path.endsWith(STORE_RESET_RETENTION_LEDGER_FILE_NAME)) {
+          return writeAtomicDurableSync(path, data, options);
+        }
+        discardLedgerWrites += 1;
+        return discardLedgerWrites === 1 ? writeAtomicDurableSync(path, data, options) : false;
+      });
+
+    expect(publishNewerReset(runtime, dbPath)).toMatchObject({ kind: 'discarded' });
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
+      pending: { outcome: { kind: 'discard' } },
+      discarded: null,
+      preserved: { incidentId: holder.incident.incidentId },
+    });
+
+    ledgerWrite.mockRestore();
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, [])).toMatchObject({
+      kind: 'held',
+      ledger: { pending: null, discarded: { count: 1 } },
+      holder: { incidentId: holder.incident.incidentId },
     });
   });
 
@@ -1294,9 +1508,16 @@ describe('openOrResetBackendStoreDb', () => {
     const dbPath = join(dbDir, 'store.db');
     createMismatchStore(dbPath);
     const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
-    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, data, options) =>
-      path.endsWith(STORE_RESET_RETENTION_LEDGER_FILE_NAME) ? false : writeAtomicDurableSync(path, data, options),
-    );
+    let ledgerWrites = 0;
+    const ledgerWrite = vi
+      .spyOn(runtime.storage, 'writeAtomicDurableSync')
+      .mockImplementation((path, data, options) => {
+        if (!path.endsWith(STORE_RESET_RETENTION_LEDGER_FILE_NAME)) {
+          return writeAtomicDurableSync(path, data, options);
+        }
+        ledgerWrites += 1;
+        return ledgerWrites === 1 ? writeAtomicDurableSync(path, data, options) : false;
+      });
     const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
     const db = openReset(runtime, dbPath);
@@ -1305,6 +1526,18 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedIncidentNames(join(dbDir, 'store-reset-quarantine'))).toHaveLength(1);
     expect(tableExists(dbPath, 'events')).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('store_reset_retention_ledger_write_failed'));
+    const quarantineRoot = join(dbDir, 'store-reset-quarantine');
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
+      pending: { outcome: { kind: 'preserve' } },
+      preserved: null,
+    });
+
+    ledgerWrite.mockRestore();
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({
+      kind: 'held',
+      holder: { preservation: { kind: 'linked', coherence: 'coherent' } },
+      ledger: { pending: null },
+    });
   });
 
   it('returns an adopted slot when its bookkeeping write fails', () => {
@@ -1420,7 +1653,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(tableExists(target, 'sentinel_before_reset')).toBe(true);
-    expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
+    expect(existsSync(join(root, 'store-reset-quarantine'))).toBe(false);
   });
 
   it('fails closed when active evidence is replaced between path stat and descriptor open', () => {
@@ -1480,6 +1713,33 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
     expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
   });
+
+  it.each(['deleted', 'replaced'] as const)(
+    'boots when active evidence is %s at every post-claim pathname call',
+    (kind) => {
+      const arms: readonly ActiveEvidenceArm[] = ['link', 'copy', 'discard', 'resume'];
+      const traces = new Map(arms.map((arm) => [arm, exerciseActiveEvidenceArm(arm).calls]));
+      const failures: string[] = [];
+
+      for (const arm of arms) {
+        const calls = traces.get(arm) ?? [];
+        expect(calls.length, arm).toBeGreaterThan(0);
+        for (const [index, method] of calls.entries()) {
+          const error = captureError(() => {
+            const result = exerciseActiveEvidenceArm(arm, { index, kind });
+            expect(result.mutationApplied).toBe(true);
+          });
+          if (error !== null) {
+            const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
+            failures.push(`${arm}[${index}] ${method}: ${cause}`);
+          }
+        }
+      }
+
+      expect(failures).toEqual([]);
+    },
+    120_000,
+  );
 
   it('finishes a copy publication when an active name is already absent during removal', () => {
     const runtime = createRuntime();

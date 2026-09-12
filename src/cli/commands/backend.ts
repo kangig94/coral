@@ -1274,7 +1274,7 @@ function unreadableProviderOperationEntries(
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
 ): readonly RecoveryQuarantineListEntry[] {
-  const dbPath = runtime.paths.coral.store.dbFile;
+  const { dbFile: dbPath } = runtime.paths.coral.store;
   const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat());
   // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
   // means rows this build cannot read may be there, and an empty list is then the opposite of what is

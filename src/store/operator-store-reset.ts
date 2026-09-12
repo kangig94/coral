@@ -89,11 +89,12 @@ export function resolveStoreResetTargetPaths(
 ): StoreResetTargetPaths {
   const boundary = resolveGenerationBoundaryPaths(runtime);
   if (target === 'gen2') {
+    const { dbFile, dbDir } = runtime.paths.coral.store;
     return {
       target,
       baseDir: boundary.baseDir,
-      storeDbPath: runtime.paths.coral.store.dbFile,
-      quarantineRoot: join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
+      storeDbPath: dbFile,
+      quarantineRoot: join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
       socketPath: runtime.paths.coral.coordinator.socketPath,
     };
   }

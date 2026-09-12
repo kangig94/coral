@@ -6,6 +6,7 @@ import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-d
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import { validateForeignHandoffTarget } from '../coordinator/handoff-routing/runner.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { CoralSetupError } from '../runtime/errors.js';
 import {
   discardStoreReset,
   releaseStoreReset,
@@ -23,7 +24,6 @@ import type { StoreResetInspectionFs } from '../store/reset-incident-inspection-
 import {
   listStoreResetIncidents as readStoreResetIncidentList,
   readStoreResetIncidentReport,
-  StoreResetIncidentLimitError,
   type StoreResetIncidentListResult,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
@@ -139,9 +139,6 @@ export function listStoreResetIncidentsLocal(
       expectedBuild: manifest,
     });
   } catch (error: unknown) {
-    if (error instanceof StoreResetIncidentLimitError) {
-      throw new StoreResetCliError('store_reset_incident_limit_exceeded');
-    }
     if (error instanceof StoreResetCliError) throw error;
     throw new StoreResetCliError('store_reset_reporting_failed');
   }
@@ -172,6 +169,8 @@ export async function reportStoreResetIncidentLocal(
   return result.report;
 }
 
-export function boundStoreResetCliError(error: unknown): StoreResetCliError {
-  return error instanceof StoreResetCliError ? error : new StoreResetCliError('store_reset_reporting_failed');
+export function boundStoreResetCliError(error: unknown): StoreResetCliError | CoralSetupError {
+  return error instanceof StoreResetCliError || error instanceof CoralSetupError
+    ? error
+    : new StoreResetCliError('store_reset_reporting_failed');
 }

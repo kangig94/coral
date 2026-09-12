@@ -11,7 +11,7 @@ function incident(overrides: Record<string, unknown> = {}): Record<string, unkno
     resetAt: '2026-09-13T00:00:00.000Z',
     evidenceBytes: 42,
     storedProductVersion: '0.9.16',
-    preservation: { kind: 'linked' },
+    preservation: { kind: 'linked', coherence: 'coherent' },
     resumeLeftActive: false,
     ...overrides,
   };
@@ -20,6 +20,7 @@ function incident(overrides: Record<string, unknown> = {}): Record<string, unkno
 function ledger(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     version: 1,
+    pending: null,
     preserved: incident(),
     excess: null,
     discarded: null,
@@ -43,6 +44,38 @@ describe('parseStoreResetRetentionLedger', () => {
     ['fractional evidence bytes', ledger({ preserved: incident({ evidenceBytes: 1.5 }) })],
     ['invalid resume marker', ledger({ preserved: incident({ resumeLeftActive: 'false' }) })],
     ['invalid stored version type', ledger({ preserved: incident({ storedProductVersion: 4 }) })],
+    ['invalid stored version text', ledger({ preserved: incident({ storedProductVersion: 'bad\nrow' }) })],
+    [
+      'invalid pending identity',
+      ledger({
+        pending: {
+          resetAt: '2026-09-13T00:00:00.000Z',
+          identities: [{ name: 'store.db', dev: '-1', ino: '2' }],
+          outcome: { kind: 'preserve', incident: incident(), retention: { slot: 'claimed' } },
+        },
+      }),
+    ],
+    [
+      'duplicate pending identity',
+      ledger({
+        pending: {
+          resetAt: '2026-09-13T00:00:00.000Z',
+          identities: [
+            { name: 'store.db', dev: '1', ino: '2' },
+            { name: 'store.db', dev: '1', ino: '3' },
+          ],
+          outcome: {
+            kind: 'discard',
+            receipt: {
+              resetAt: 'now',
+              resetPolicyCause: 'older-incompatible',
+              evidenceBytes: 1,
+              deferredTo: HOLDER_ID,
+            },
+          },
+        },
+      }),
+    ],
     ['invalid preservation kind', ledger({ preserved: incident({ preservation: { kind: 'moved' } }) })],
     [
       'invalid copied coherence',
@@ -63,6 +96,18 @@ describe('parseStoreResetRetentionLedger', () => {
           preservation: {
             kind: 'copied',
             cause: { kind: 'exclusion-unproven', reason: 'busy' },
+            coherence: 'coherent',
+          },
+        }),
+      }),
+    ],
+    [
+      'coherent copy without exclusion',
+      ledger({
+        preserved: incident({
+          preservation: {
+            kind: 'copied',
+            cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
             coherence: 'coherent',
           },
         }),
@@ -114,7 +159,10 @@ describe('parseStoreResetRetentionLedger', () => {
   it('accepts additive unknown keys at every ledger level', () => {
     const value = ledger({
       futureRoot: true,
-      preserved: incident({ futureIncident: true, preservation: { kind: 'linked', futureMechanism: true } }),
+      preserved: incident({
+        futureIncident: true,
+        preservation: { kind: 'linked', coherence: 'coherent', futureMechanism: true },
+      }),
       excess: {
         count: 1,
         evidenceBytes: 42,
@@ -156,7 +204,7 @@ describe('parseStoreResetRetentionLedger', () => {
           preservation: {
             kind: 'copied',
             cause: { kind: 'exclusion-unproven', reason: 'not-attempted' },
-            coherence: 'coherent',
+            coherence: 'unproven',
           },
         }),
       }),
@@ -165,7 +213,32 @@ describe('parseStoreResetRetentionLedger', () => {
     expect(parsed?.preserved?.preservation).toEqual({
       kind: 'copied',
       cause: { kind: 'exclusion-unproven', reason: 'not-attempted' },
-      coherence: 'coherent',
+      coherence: 'unproven',
+    });
+  });
+
+  it('accepts a pending promise without treating it as a preserved claim', () => {
+    const pendingIncident = incident({ incidentId: HOLDER_ID });
+    const parsed = parse(
+      ledger({
+        preserved: null,
+        pending: {
+          resetAt: '2026-09-13T00:00:00.000Z',
+          identities: [{ name: 'store.db', dev: '1', ino: '2' }],
+          outcome: { kind: 'preserve', incident: pendingIncident, retention: { slot: 'claimed' } },
+        },
+      }),
+    );
+
+    expect(parsed).toMatchObject({
+      pending: { outcome: { kind: 'preserve', incident: { incidentId: HOLDER_ID } } },
+      preserved: null,
+    });
+  });
+
+  it('normalizes a valid stored product version at ledger ingress', () => {
+    expect(parse(ledger({ preserved: incident({ storedProductVersion: 'v0.9.16' }) }))?.preserved).toMatchObject({
+      storedProductVersion: '0.9.16',
     });
   });
 });

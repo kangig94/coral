@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import { listStoreResetIncidents, StoreResetIncidentLimitError } from '#src/store/reset-incident-reader.js';
+import { listStoreResetIncidents } from '#src/store/reset-incident-reader.js';
 import type {
   StoreResetDirectoryCursor,
   StoreResetFileDescriptor,
@@ -12,9 +12,9 @@ import type {
 import {
   MAX_INCIDENT_ROOT_ENTRIES,
   serializeStoreResetIncidentManifest,
-  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
+import { STORE_RESET_RETENTION_LEDGER_FILE_NAME } from '#src/store/reset-retention.js';
 
 const ROOT = '/coral/store/store-reset-quarantine';
 const BUILD: StrictBundleManifest = {
@@ -173,16 +173,20 @@ describe('store reset incident listing', () => {
     const fs = new MemoryInspectionFs();
     expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
       incidents: [],
+      truncated: false,
+      discarded: null,
     });
   });
 
-  it('streams only through the root cap plus one and rejects overflow', () => {
+  it('returns the bounded prefix and marks root overflow', () => {
     const fs = new MemoryInspectionFs();
     fs.addRoot(Array.from({ length: MAX_INCIDENT_ROOT_ENTRIES + 1 }, (_, index) => `ignored-${index}`));
 
-    expect(() => listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toThrow(
-      StoreResetIncidentLimitError,
-    );
+    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
+      incidents: [],
+      truncated: true,
+      discarded: null,
+    });
   });
 
   it.each([MAX_INCIDENT_ROOT_ENTRIES - 1, MAX_INCIDENT_ROOT_ENTRIES])(
@@ -193,6 +197,8 @@ describe('store reset incident listing', () => {
 
       expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
         incidents: [],
+        truncated: false,
+        discarded: null,
       });
     },
   );
@@ -298,12 +304,22 @@ describe('store reset incident listing', () => {
           futureIncidentField: true,
         },
         excess: null,
-        discarded: null,
+        discarded: {
+          count: 2,
+          evidenceBytes: 23,
+          latest: {
+            resetAt: '2026-07-23T01:02:03.004Z',
+            resetPolicyCause: 'newer-incompatible-invalid-target',
+            evidenceBytes: 6,
+            deferredTo: incidentId,
+          },
+        },
         futureLedgerField: true,
       }),
     );
 
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD }).incidents[0]).toMatchObject({
+    const result = listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD });
+    expect(result.incidents[0]).toMatchObject({
       incidentId,
       retention: {
         slot: 'claimed',
@@ -316,6 +332,11 @@ describe('store reset incident listing', () => {
       },
       storedProductVersion: '0.9.15',
       evidenceBytes: 17,
+    });
+    expect(result.discarded).toMatchObject({
+      count: 2,
+      evidenceBytes: 23,
+      latest: { deferredTo: incidentId, evidenceBytes: 6 },
     });
   });
 

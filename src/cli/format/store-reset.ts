@@ -34,7 +34,7 @@ function preservation(entry: StoreResetIncidentListResult['incidents'][number]):
       if (mechanism === 'unknown') return 'unknown';
       switch (mechanism.kind) {
         case 'linked':
-          return 'linked';
+          return `linked (${mechanism.coherence})`;
         case 'copied': {
           let why: string;
           switch (mechanism.cause.kind) {
@@ -56,6 +56,20 @@ function preservation(entry: StoreResetIncidentListResult['incidents'][number]):
     default:
       return assertNever(entry.retention);
   }
+}
+
+function discarded(result: StoreResetIncidentListResult): string {
+  if (result.discarded === null) return 'Discarded descendant evidence: none.';
+  const latest = result.discarded.latest;
+  return `Discarded descendant evidence: count=${result.discarded.count} bytes=${result.discarded.evidenceBytes} latest_reset_at=${latest.resetAt} latest_cause=${latest.resetPolicyCause} deferred_to=${latest.deferredTo}.`;
+}
+
+function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
+  return target === 'gen2'
+    ? [
+        'To permanently remove a committed incident: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>',
+      ]
+    : [];
 }
 
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
@@ -116,24 +130,32 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
   if (result.incidents.length === 0) {
     return [
       `No ${target} store-reset incidents.`,
+      discarded(result),
+      ...(result.truncated
+        ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
+        : []),
       'File a Store-reset incident issue with this complete output; do not attach DB, WAL, SHM, or raw logs.',
-      `To permanently remove a committed incident: coral-cli backend store-reset release --target ${target === 'legacy' ? 'gen2' : target} --flavor <prod|dev> <incident-id>`,
+      ...releaseInstruction(target),
     ].join('\n');
   }
   return [
-    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Stored Coral version',
+    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Resume left active | Stored Coral version',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.storedProductVersion ?? 'none'}`
-        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.storedProductVersion ?? 'none'}`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     '',
+    discarded(result),
+    ...(result.truncated
+      ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
+      : []),
     'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
     `Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`,
     'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.',
     'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.',
     'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.',
-    `To permanently remove a committed incident: coral-cli backend store-reset release --target ${target === 'legacy' ? 'gen2' : target} --flavor <prod|dev> <incident-id>`,
+    ...releaseInstruction(target),
   ].join('\n');
 }
 
@@ -151,6 +173,8 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;
     case 'staged':
       return `Store-reset incident '${result.incidentId}' is staged and belongs to crash recovery; no evidence was released. Start Coral and let crash recovery finish, then retry.`;
+    case 'unsafe':
+      return `Store-reset incident '${result.incidentId}' is behind an unsafe quarantine path; no evidence was released and the preserved slot is unchanged.`;
     case 'undeterminable':
       return `Store-reset incident '${result.incidentId}' could not be verified as committed; no evidence was released and the preserved slot is unchanged. Retry; if it persists, report this complete output.`;
     default:

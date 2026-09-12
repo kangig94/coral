@@ -8,22 +8,23 @@ import {
   MAX_INCIDENT_DIR_ENTRIES,
   MAX_REPORT_HASH_BYTES,
   MAX_RESET_MANIFEST_BYTES,
-  MAX_RESET_RETENTION_LEDGER_BYTES,
   parseStoreResetIncidentManifest,
   projectStoreResetPublicReport,
   STORE_RESET_EVIDENCE_FILE_NAMES,
   STORE_RESET_INCIDENT_SCHEMA_VERSION,
+  type STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_MANIFEST_FILE_NAME,
-  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   StoreResetManifestDecodeError,
   type StoreResetIncidentLocalReport,
-  type StoreResetIncidentListEntry as BaseStoreResetIncidentListEntry,
-  type StoreResetIncidentListResult as BaseStoreResetIncidentListResult,
   type StoreResetIncidentManifest,
+  type StoreResetPolicyCause,
+  type StoreResetReason,
   type StoreResetPublicReport,
 } from './reset-incident.js';
 import {
+  MAX_RESET_RETENTION_LEDGER_BYTES,
   parseStoreResetRetentionLedger,
+  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type PreservationMechanism,
   type PreservedRetention,
   type StoreResetRetentionLedger,
@@ -36,14 +37,29 @@ import {
 } from './reset-incident-inspection-fs.js';
 import type { StoreResetIncidentDiagnosticRunner } from './reset-incident-diagnostic.js';
 
-export class StoreResetIncidentLimitError extends Error {
-  constructor() {
-    super('Store reset incident listing limit exceeded.');
-    this.name = 'StoreResetIncidentLimitError';
-  }
-}
+type StoreResetIncidentListBase =
+  | {
+      readonly incidentId: string;
+      readonly state: 'ready';
+      readonly resetAt: string;
+      readonly reason: StoreResetReason;
+      readonly schemaVersion:
+        | typeof STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION
+        | typeof STORE_RESET_INCIDENT_SCHEMA_VERSION;
+      readonly resetPolicyCause: StoreResetPolicyCause | null;
+      readonly fileCount: number;
+    }
+  | {
+      readonly incidentId: string;
+      readonly state: 'malformed' | 'unsupported' | 'build_mismatch' | 'unsafe' | 'unavailable';
+      readonly resetAt: null;
+      readonly reason: null;
+      readonly schemaVersion: null;
+      readonly resetPolicyCause: null;
+      readonly fileCount: null;
+    };
 
-export type StoreResetIncidentListEntry = BaseStoreResetIncidentListEntry & {
+export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
   readonly retention:
     | (PreservedRetention & {
         readonly preservation: PreservationMechanism | 'unknown';
@@ -54,8 +70,10 @@ export type StoreResetIncidentListEntry = BaseStoreResetIncidentListEntry & {
   readonly evidenceBytes: number | 'unknown';
 };
 
-export type StoreResetIncidentListResult = Omit<BaseStoreResetIncidentListResult, 'incidents'> & {
+export type StoreResetIncidentListResult = {
   readonly incidents: readonly StoreResetIncidentListEntry[];
+  readonly truncated: boolean;
+  readonly discarded: StoreResetRetentionLedger['discarded'];
 };
 
 export type StoreResetIncidentReportFailure =
@@ -276,7 +294,7 @@ export function listStoreResetIncidents(options: {
 }): StoreResetIncidentListResult {
   const rootStat = options.fs.lstat(options.quarantineRoot);
   if (rootStat === null) {
-    return { incidents: [] };
+    return { incidents: [], truncated: false, discarded: null };
   }
   if (rootStat.kind !== 'directory') {
     throw new StoreResetIncidentReadError(rootStat.kind === 'symbolic-link' ? 'unsafe' : 'unavailable');
@@ -300,6 +318,7 @@ export function listStoreResetIncidents(options: {
   const incidentIds: string[] = [];
   let cursor: unknown = null;
   let closeFailed = false;
+  let truncated = false;
   try {
     cursor = options.fs.openDirectory(options.quarantineRoot);
     let consumed = 0;
@@ -310,7 +329,8 @@ export function listStoreResetIncidents(options: {
       }
       consumed += 1;
       if (consumed > MAX_INCIDENT_ROOT_ENTRIES) {
-        throw new StoreResetIncidentLimitError();
+        truncated = true;
+        break;
       }
       if (isCanonicalStoreResetIncidentId(entry.name)) {
         incidentIds.push(entry.name);
@@ -333,6 +353,8 @@ export function listStoreResetIncidents(options: {
     incidents: incidentIds
       .map((incidentId) => readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger))
       .sort(compareEntries),
+    truncated,
+    discarded: ledger?.discarded ?? null,
   };
 }
 

@@ -10,6 +10,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,6 +36,7 @@ import { socketPathForRunDir } from '#src/infra/path/coordinator.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import { resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
 import { classifyStoreFile } from '#src/store/db.js';
 import { generationMutationCoordinationSeam } from '#src/store/generation-mutation-coordination.js';
@@ -302,7 +304,7 @@ describe('local store-reset operations', () => {
       createDiagnosticRunner,
     });
 
-    expect(result).toEqual({ incidents: [] });
+    expect(result).toEqual({ incidents: [], truncated: false, discarded: null });
     expect(createDiagnosticRunner).not.toHaveBeenCalled();
   });
 
@@ -516,7 +518,11 @@ describe('local store-reset operations', () => {
     expect(listStoreResetIncidentsLocal('legacy', targetedDependencies).incidents).toMatchObject([
       { incidentId: INCIDENT_ID, state: 'ready', schemaVersion: 2, resetPolicyCause: null },
     ]);
-    expect(listStoreResetIncidentsLocal('gen2', targetedDependencies)).toEqual({ incidents: [] });
+    expect(listStoreResetIncidentsLocal('gen2', targetedDependencies)).toEqual({
+      incidents: [],
+      truncated: false,
+      discarded: null,
+    });
     await expect(reportStoreResetIncidentLocal('legacy', INCIDENT_ID, targetedDependencies)).resolves.toMatchObject({
       incidentId: INCIDENT_ID,
     });
@@ -541,7 +547,7 @@ describe('operator store-reset discard', () => {
       }
       const before = snapshotTree(baseDir);
       const operations: StoreResetCommandOperations = {
-        list: () => ({ incidents: [] }),
+        list: () => ({ incidents: [], truncated: false, discarded: null }),
         report: async () => publicReport(),
         release: operationsRelease,
         discard: async (target) => {
@@ -607,7 +613,7 @@ describe('operator store-reset discard', () => {
     mkdirSync(selectionPaths.coordinationRoot, { recursive: true, mode: 0o700 });
     mkdirSync(selectionPaths.selectionFile, { mode: 0o700 });
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       release: operationsRelease,
       discard: async () =>
@@ -648,7 +654,7 @@ describe('operator store-reset discard', () => {
     writeFileSync(selectionPaths.transitionFile, malformedBytes, { mode: 0o600 });
     chmodSync(selectionPaths.transitionFile, 0o600);
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       release: operationsRelease,
       discard: async () =>
@@ -895,6 +901,35 @@ describe('operator store-reset discard', () => {
     expect(existsSync(holderPath)).toBe(true);
   });
 
+  it('refuses symlinked quarantine roots and incident children without deleting their targets', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const { quarantineRoot } = resolveStoreResetTargetPaths(runtime, 'gen2');
+    const outsideRoot = join(baseDir, 'outside-quarantine');
+    const outsideIncident = join(baseDir, 'outside-incident');
+    mkdirSync(outsideRoot, { recursive: true });
+    mkdirSync(outsideIncident);
+    writeFileSync(join(outsideRoot, 'sentinel'), 'root target');
+    writeFileSync(join(outsideIncident, 'sentinel'), 'incident target');
+    mkdirSync(dirname(quarantineRoot), { recursive: true });
+    symlinkSync(outsideRoot, quarantineRoot, 'dir');
+
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: INCIDENT_ID })).resolves.toMatchObject({
+      kind: 'unsafe',
+      target: 'gen2',
+    });
+    expect(readFileSync(join(outsideRoot, 'sentinel'), 'utf-8')).toBe('root target');
+
+    rmSync(quarantineRoot);
+    mkdirSync(quarantineRoot);
+    symlinkSync(outsideIncident, join(quarantineRoot, INCIDENT_ID), 'dir');
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: INCIDENT_ID })).resolves.toMatchObject({
+      kind: 'unsafe',
+      target: 'gen2',
+    });
+    expect(readFileSync(join(outsideIncident, 'sentinel'), 'utf-8')).toBe('incident target');
+  });
+
   it('resumes an interrupted incident through the operator service before initialization', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
@@ -983,7 +1018,7 @@ describe('backend store-reset commands', () => {
       evidenceBytes: 42,
     }));
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: operationsDiscard,
       release,
@@ -1013,9 +1048,13 @@ describe('backend store-reset commands', () => {
       kind: 'undeterminable' as const,
       expected: 'Retry; if it persists, report this complete output.',
     },
+    {
+      kind: 'unsafe' as const,
+      expected: 'behind an unsafe quarantine path',
+    },
   ])('gives the $kind release failure a reversible next step', async ({ kind, expected }) => {
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: operationsDiscard,
       release: async (_target, flavor, incidentId) => ({ kind, target: 'gen2', flavor, incidentId }),
@@ -1032,7 +1071,7 @@ describe('backend store-reset commands', () => {
 
   it('uses release-specific guidance for an invalid incident id', async () => {
     await runCommand(['backend', 'store-reset', 'release', 'NOT-A-UUID', '--target', 'current', '--flavor', 'prod'], {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: operationsDiscard,
       release: releaseStoreResetLocal,
@@ -1048,7 +1087,7 @@ describe('backend store-reset commands', () => {
     const program = new Command();
     registerBackendCommands(program, {
       storeReset: {
-        list: () => ({ incidents: [] }),
+        list: () => ({ incidents: [], truncated: false, discarded: null }),
         report: async () => publicReport(),
         discard: operationsDiscard,
         release: operationsRelease,
@@ -1079,7 +1118,7 @@ describe('backend store-reset commands', () => {
       publicationIncidents: [],
     });
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard,
       release: operationsRelease,
@@ -1137,7 +1176,7 @@ describe('backend store-reset commands', () => {
       };
     });
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
       release: operationsRelease,
@@ -1166,7 +1205,7 @@ describe('backend store-reset commands', () => {
       publicationIncidents: [],
     });
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
       release: operationsRelease,
@@ -1199,7 +1238,7 @@ describe('backend store-reset commands', () => {
       publicationIncidents: [],
     });
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
       release: operationsRelease,
@@ -1220,7 +1259,7 @@ describe('backend store-reset commands', () => {
 
   it('identifies the selected target when no incidents are retained', async () => {
     const operations: StoreResetCommandOperations = {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => publicReport(),
       discard: operationsDiscard,
       release: operationsRelease,
@@ -1232,7 +1271,9 @@ describe('backend store-reset commands', () => {
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
 
     expect(legacyOutput).toContain('No legacy store-reset incidents.');
+    expect(legacyOutput).not.toContain('store-reset release');
     expect(stdout).toContain('No gen2 store-reset incidents.');
+    expect(stdout).toContain('store-reset release --target gen2');
     expect(stdout).not.toContain('unexpected reset warning');
     expect(stdout).not.toBe(legacyOutput);
   });
@@ -1251,10 +1292,16 @@ describe('backend store-reset commands', () => {
             resetPolicyCause: 'older-incompatible',
             fileCount: 0,
             evidenceBytes: 42,
-            retention: { slot: 'claimed', preservation: { kind: 'linked' }, resumeLeftActive: false },
+            retention: {
+              slot: 'claimed',
+              preservation: { kind: 'linked', coherence: 'coherent' },
+              resumeLeftActive: false,
+            },
             storedProductVersion: '0.9.15',
           },
         ],
+        truncated: false,
+        discarded: null,
       }),
       report: async () => report,
       release: operationsRelease,
@@ -1271,7 +1318,8 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked | 0.9.15\n\n` +
+      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked (coherent) | no | 0.9.15\n\n` +
+        'Discarded descendant evidence: none.\n' +
         'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
@@ -1292,7 +1340,7 @@ describe('backend store-reset commands', () => {
   });
 
   it('requires and forwards explicit targets for inspection and discard', async () => {
-    const list = vi.fn(() => ({ incidents: [] }));
+    const list = vi.fn(() => ({ incidents: [], truncated: false, discarded: null }));
     const report = vi.fn(async () => publicReport());
     const discard = vi.fn(async () => ({
       kind: 'discarded' as const,
@@ -1323,7 +1371,7 @@ describe('backend store-reset commands', () => {
   it('preserves known errors and collapses unknown exceptions without leaking arguments or details', async () => {
     const sentinel = '../PRIVATE_ARGUMENT_SENTINEL';
     await runCommand(['backend', 'store-reset', 'report', '--target', 'gen2', sentinel], {
-      list: () => ({ incidents: [] }),
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
       report: async () => {
         throw new StoreResetCliError('invalid_store_reset_incident_id');
       },
@@ -1337,6 +1385,26 @@ describe('backend store-reset commands', () => {
     );
     expect(`${stdout}${stderr}`).not.toContain(sentinel);
     expect(process.exitCode).toBe(2);
+
+    stderr = '';
+    process.exitCode = undefined;
+    await runCommand(['backend', 'store-reset', 'release', INCIDENT_ID, '--target', 'gen2', '--flavor', 'prod'], {
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: async () => {
+        throw documentedCoralSetupError({
+          code: 'store_reset_lock_contended',
+          target: 'gen2',
+          flavor: 'prod',
+          baseDir: '/coral',
+          holder: 'another store-reset command',
+        });
+      },
+    });
+    expect(stdout).toBe('');
+    expect(stderr).toContain('[code=store_reset_lock_contended]');
+    expect(stderr).not.toContain('store_reset_reporting_failed');
 
     stderr = '';
     process.exitCode = undefined;
@@ -1357,19 +1425,19 @@ describe('backend store-reset commands', () => {
     expect(process.exitCode).toBe(70);
   });
 
-  it('maps retained-entry overflow through the real command envelope', async () => {
+  it('renders a bounded partial listing as a drainable result', async () => {
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], {
-      list: () => {
-        throw new StoreResetCliError('store_reset_incident_limit_exceeded');
-      },
+      list: () => ({ incidents: [], truncated: true, discarded: null }),
       report: async () => publicReport(),
       discard: operationsDiscard,
       release: operationsRelease,
     });
 
-    expect(stdout).toBe('');
-    expect(stderr).toContain('[code=store_reset_incident_limit_exceeded]');
-    expect(stderr).toContain('File a Store-reset incident issue with this fixed error output');
-    expect(process.exitCode).toBe(1);
+    expect(stdout).toContain(
+      'Listing truncated at the incident-root safety bound; release a listed incident, then list again.',
+    );
+    expect(stdout).toContain('store-reset release --target gen2');
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBeUndefined();
   });
 });

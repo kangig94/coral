@@ -71,6 +71,7 @@ export type StoreFormatClassification =
       readonly kind: 'corrupt-or-unsupported';
       readonly storedFingerprint: string | null;
       readonly storedProductVersion: string | null;
+      readonly storedProductVersionState: 'valid' | 'absent' | 'invalid' | 'unavailable';
     });
 
 export const STORE_FORMAT_FINGERPRINT_META_KEY = 'store_format_fingerprint';
