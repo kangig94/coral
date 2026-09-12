@@ -138,9 +138,19 @@ describe('recovery quarantine composition', () => {
     const [subject] = recorded.ownership.subjects;
     if (subject === undefined) throw new Error('expected durable settled-unbound subject');
 
-    const coordinator = await harness.bootCore({ instanceId: 'settled-unbound-restart-owner' });
     const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
-    expect(quarantine.read(subject.boundary, subject.key)).not.toBeNull();
+    const beforeBoot = quarantine.list().map((entry) => `${entry.boundary}/${entry.subject.key}`);
+    const coordinator = await harness.bootCore({ instanceId: 'settled-unbound-restart-owner' });
+    // Boot must rehydrate the durable status, not consume it. This has failed on CI and never locally,
+    // so the failure carries the state that decides which of the two happened.
+    expect(
+      quarantine.read(subject.boundary, subject.key),
+      `boot consumed the durable settled-unbound status.\n` +
+        `  want: ${subject.boundary}/${subject.key}\n` +
+        `  before boot: ${JSON.stringify(beforeBoot)}\n` +
+        `  after boot:  ${JSON.stringify(quarantine.list().map((entry) => `${entry.boundary}/${entry.subject.key}`))}\n` +
+        `  operation row after boot: ${JSON.stringify(readProviderOperation(harness.db, record.operation))}`,
+    ).not.toBeNull();
     const admission = coordinator.core.launchCoordinator.requestLaunch(
       record.operation.jobId,
       'codex',
