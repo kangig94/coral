@@ -32,6 +32,8 @@ import type {
 import {
   handoffRoutingRecordSchemaRegistry,
   handoffRoutingStatusStoreSchema,
+  MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
+  MAX_RETIREMENT_TOMBSTONES,
   type HandoffRoutingStatusReadResult,
 } from '#src/coordinator/handoff-routing/status.js';
 import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
@@ -944,9 +946,23 @@ describe('backend status local exit combination', () => {
 });
 
 describe('backend routing status', () => {
-  it('keeps the entries needing action visible once settled ones have accumulated', () => {
-    // Measured in the field: 387 invocations rendered 417 lines, of which three needed an operator.
-    const settled = Array.from({ length: 300 }, (_, index) => ({
+  it('should keep every hold visible once history has reached the store ceilings', () => {
+    const terminals = Array.from({ length: MAX_COMPLETED_HANDOFF_ROUTING_PAIRS }, (_, index) => ({
+      kind: 'terminal' as const,
+      selection: null,
+      terminal: {
+        generation: HANDOFF_ROUTING_STATUS_GENERATION,
+        sequence: index + 1_000,
+        eventId: `terminal-event-${index}`,
+        invocationId: `terminal-${index}`,
+        observedAt: '2026-08-02T00:00:00.000Z',
+        eventKind: 'continuation-finalized' as const,
+        phase: 'terminal' as const,
+        selection: { kind: 'with-selection-sequence' as const, selectionSequence: index + 1 },
+        disposition: { kind: 'delegated-exit' as const, version: '0.10.9', exitCode: 7 },
+      },
+    }));
+    const compacted = Array.from({ length: MAX_RETIREMENT_TOMBSTONES }, (_, index) => ({
       kind: 'retired' as const,
       selection: null,
       tombstone: {
@@ -983,9 +999,6 @@ describe('backend routing status', () => {
           ownerLiveness: { kind: 'absent' as const },
         },
         {
-          // A capacity eviction is an obligation that is not `unresolved` — it prints its own resolve
-          // command. A cap that hid it would withhold an operator's work, which is the one thing the
-          // collapse may never do.
           kind: 'retired' as const,
           selection: null,
           tombstone: {
@@ -1002,7 +1015,8 @@ describe('backend routing status', () => {
             observedAt: '2026-08-01T00:00:00.000Z',
           },
         },
-        ...settled,
+        ...compacted,
+        ...terminals,
       ],
       retirementHistoryTruncated: {
         kind: 'retirement-history-truncated' as const,
@@ -1019,9 +1033,11 @@ describe('backend routing status', () => {
 
     expect(rendered).toContain('needs-action-invocation');
     expect(rendered, 'a hold that is not `unresolved` survives the collapse too').toContain('evicted-invocation');
-    expect(rendered).not.toContain('settled-0');
-    expect(rendered).toContain('Routing invocations already history, needing no action: 300.');
-    expect(rendered.split('\n').length).toBeLessThan(20);
+    expect(rendered, 'a compaction retirement is history').not.toContain('settled-0');
+    expect(rendered, 'a terminal is history, which is the case the field hit').not.toContain('terminal-0');
+    expect(rendered).toContain(
+      `Routing invocations already history, needing no action: ${MAX_RETIREMENT_TOMBSTONES + MAX_COMPLETED_HANDOFF_ROUTING_PAIRS}.`,
+    );
   });
 
   it('renders invocation dispositions and aggregate retirement history in journal order', async () => {

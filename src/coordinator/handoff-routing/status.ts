@@ -1576,13 +1576,7 @@ function unclassifiedPersistedDispositionPolicy(
   }
 }
 
-/**
- * Whether an invocation is still an obligation or is already history.
- *
- * `backend status` reports holds. The classification table above is the authority for that — deriving
- * it again at a rendering site produces a second answer that drifts, and unlike the table it is not
- * pinned by a type that forces a new terminal kind to be history.
- */
+/** A stored terminal disposition classifies as history; only a hold carries an obligation forward. */
 export function handoffRoutingInvocationClassification(
   status: HandoffRoutingInvocationStatus,
 ): PersistedDispositionClassification {

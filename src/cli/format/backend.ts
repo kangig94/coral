@@ -836,8 +836,6 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
   }
 }
 
-// The store caps itself at 256 completed pairs plus 128 tombstones plus 64 unresolved, so a status at
-// both ceilings renders several hundred blocks however few are obligations. Measured: 417 lines for three.
 const ROUTING_INVOCATION_RENDER_LIMIT = 20;
 
 function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
@@ -945,10 +943,7 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
       if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
       // `backend status` reports obligations. The domain already says which invocations are still one
       // and which are history, so this asks rather than re-deciding — history is counted, not printed.
-      // Which invocations are still an obligation is the domain's fact, so this asks rather than
-      // deciding again. A hold is never withheld — the cap only collapses history, which the same
-      // authority says contributes nothing to status, and which is retained evidence worth printing
-      // while there is little of it.
+      // A hold may not be withheld, so the cap may only ever drop `history`.
       const holds = result.statuses.filter((status) => handoffRoutingInvocationClassification(status) === 'hold');
       const rendered = result.statuses.length <= ROUTING_INVOCATION_RENDER_LIMIT ? result.statuses : holds;
       const sections = rendered.map(formatRoutingInvocationStatus);
