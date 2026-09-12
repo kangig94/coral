@@ -62,16 +62,6 @@ const CYAN = '\x1b[36m';
 const MAGENTA = '\x1b[35m';
 const CODEX_USER_AGENT = 'codex_cli_rs/0.117.0';
 
-function getCodexClientId(idToken) {
-  try {
-    const payload = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64url').toString());
-    const aud = payload.aud;
-    return Array.isArray(aud) ? aud[0] : aud;
-  } catch {
-    return null;
-  }
-}
-
 // --- stdin ---
 
 async function readStdin() {
@@ -583,6 +573,10 @@ const LOCK_STALE_MS = 10_000;
 const CORAL_HEALTH_TTL_MS = 5_000;
 const CORAL_HEALTH_TIMEOUT_MS = 3_000;
 const GIT_CACHE_FILE = join(CACHE_DIR, '.coral-git-cache.json');
+// One lock for every repository, deliberately. Keying it per repository would let N repositories on
+// one network mount spawn N concurrent probes, which is the pile-up this segment exists to prevent.
+// The cost is that a stalled repository blanks the others' branch slot until its hold goes stale, and
+// that is accepted: this segment assists a reader and never gates anything.
 const GIT_LOCK_KEY = 'git';
 const GIT_TTL_MS = 5_000;
 const GIT_TIMEOUT_MS = 1_000;
@@ -612,6 +606,8 @@ function sweepOldTempFiles(dir, isTempFile) {
   }
 }
 
+// The Codex entry reclaims what an older build could leave: this one never writes `auth.json`, but a
+// build that did could be killed mid-write and strand a file holding a live access and refresh token.
 function sweepOrphanedTemps() {
   if (orphanedTempsSwept) return;
   orphanedTempsSwept = true;
@@ -1062,56 +1058,16 @@ async function renderLimits() {
 
 // --- Codex rate limits ---
 
+// `auth.json` belongs to the Codex CLI, which refreshes it. This reader takes the access token and
+// nothing else: the refresh token is not read, and a statusline may not rotate a credential a process
+// it does not coordinate with is holding — two writers of one token means whichever rotates second
+// invalidates the other, and the loser is logged out with nothing to say why.
 function readCodexCredentials() {
   try {
-    const authPath = join(CODEX_DIR, 'auth.json');
-    const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
-    const { id_token, access_token, refresh_token, account_id } = parsed.tokens || {};
-    if (!account_id) return null;
-    const clientId = getCodexClientId(id_token);
-    if (!clientId) return null;
-    return { accessToken: access_token, refreshToken: refresh_token, accountId: account_id, clientId };
-  } catch {
-    return null;
-  }
-}
-
-function writeBackCodexCredentials(refreshed) {
-  try {
-    const authPath = join(CODEX_DIR, 'auth.json');
-    const parsed = JSON.parse(readFileSync(authPath, 'utf-8'));
-    parsed.tokens.access_token = refreshed.accessToken;
-    // A refresh need not rotate the refresh token, and writing an absent one back logs the user out.
-    if (refreshed.refreshToken) parsed.tokens.refresh_token = refreshed.refreshToken;
-    const tmpPath = `${authPath}.tmp-${process.pid}`;
-    try {
-      writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
-      renameSync(tmpPath, authPath);
-    } catch (error) {
-      deleteHudFile(tmpPath);
-      throw error;
-    }
-  } catch {}
-}
-
-async function refreshCodexToken(refreshTok, clientId, signal) {
-  try {
-    const resp = await fetch('https://auth.openai.com/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'refresh_token',
-        client_id: clientId,
-        refresh_token: refreshTok,
-        scope: 'openid profile email',
-      }).toString(),
-      signal,
-    });
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    const accessToken = data.access_token;
-    if (!accessToken) return null;
-    return { accessToken, refreshToken: data.refresh_token || null };
+    const parsed = JSON.parse(readFileSync(join(CODEX_DIR, 'auth.json'), 'utf-8'));
+    const { access_token, account_id } = parsed.tokens || {};
+    if (!account_id || !access_token) return null;
+    return { accessToken: access_token, accountId: account_id };
   } catch {
     return null;
   }
@@ -1203,18 +1159,15 @@ async function renderCodexData() {
       return { kind: 'none' };
     }
 
-    let token = creds.accessToken;
-    let result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+    const result = await fetchCodexUsage(creds.accessToken, creds.accountId, controller.signal);
 
+    // A refused token is either expired, which the Codex CLI clears on its own next run, or revoked.
+    // Nothing readable here separates them, so this renders nothing and asks again on the fail TTL
+    // rather than telling someone whose login works that it does not.
     if (result?.unauthorized) {
-      const refreshed = await refreshCodexToken(creds.refreshToken, creds.clientId, controller.signal);
-      if (!refreshed) return codexCacheError('generic');
-      token = refreshed.accessToken;
-      writeBackCodexCredentials(refreshed);
-      result = await fetchCodexUsage(token, creds.accountId, controller.signal);
+      writeCacheSlot(CODEX_CACHE_SLOT, null, true, 0, NO_CREDENTIALS_KIND);
+      return { kind: 'none' };
     }
-
-    if (result?.unauthorized) return codexCacheError('auth');
     if (result?.rateLimited) return codexCacheError('rateLimit', readBackoffState(CODEX_CACHE_SLOT) + 1);
 
     if (result) {

@@ -83,8 +83,8 @@ The install command reads this file and writes it to `CONFIG_DIR/hud/coral-hud.m
 - Both fetches run in parallel
 - Claude API results are cached for 180 seconds on success, 30 seconds on error. HTTP 429 responses trigger exponential backoff from 2 minutes up to 10 minutes.
 - On error, the HUD preserves last-known-good rate-limit data until the error cache expires. The error indicator is shown only when no stale data exists.
-- Error indicators are explicit: `throttled: refreshes in Xm` for HTTP 429, `re-login required` for explicit 401/403 auth failures, and `API unavailable` for other fetch/refresh failures.
-- Missing or unsupported credentials stay silent; `re-login required` appears only for observable auth failures.
+- Error indicators are explicit: `throttled: refreshes in Xm` for HTTP 429, `re-login required` for a Claude 401/403, and `API unavailable` for other fetch failures.
+- Missing or unsupported credentials stay silent. The HUD reads `CODEX_DIR/auth.json` and never writes it — refreshing Codex tokens belongs to the Codex CLI, and two writers of one token log the user out. A Codex token the API refuses is therefore either expired or revoked with nothing here able to tell which, so the Codex section goes silent and retries rather than reporting a login failure it cannot establish.
 - The session slot combines spend and duration when available, for example `$0.43 47m`.
 - Codex opt-in is controlled by `CONFIG_DIR/hud/.coral-codex-enabled` flag file; managed during install
 - If credentials are unavailable (e.g., API key users or Codex not installed), the respective rate limit section is silently omitted

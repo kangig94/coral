@@ -542,3 +542,18 @@ describe('coral-hud git cache under concurrent repositories', () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe('coral-hud Codex credential boundary', () => {
+  it('reads auth.json and never writes it or refreshes the token', () => {
+    const source = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
+
+    // The Codex CLI owns this file's freshness. Two writers of one refresh token means whichever
+    // rotates second invalidates the other, and the loser is logged out with nothing to say why.
+    expect(source).not.toContain('auth.openai.com');
+    expect(source).not.toContain('grant_type');
+    expect(source).not.toContain('refresh_token');
+    for (const write of source.split('\n').filter((line) => /writeFileSync|renameSync/u.test(line))) {
+      expect(write, 'no write may target auth.json').not.toContain('authPath');
+    }
+  });
+});
