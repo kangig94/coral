@@ -8,7 +8,7 @@ import { assertNever } from '../infra/error-format.js';
 import { errorNumber } from '../infra/error-number.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
-import { compareProductVersions } from '../infra/product-version.js';
+import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -146,7 +146,7 @@ export type WriterExclusion =
   | { readonly kind: 'proven'; readonly lease: GenerationMaintenanceLease }
   | {
       readonly kind: 'unproven';
-      readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout';
+      readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout' | 'not-attempted';
       readonly blockers: string | null;
     };
 
@@ -821,8 +821,14 @@ function resumeInterruptedIncident(
   requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
   runtime.storage.renameSync(stagingDirectory, join(quarantineRoot, manifest.incidentId));
   requireDirectorySync(runtime.storage, quarantineRoot, stagingRoot);
-  resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
-  recordStoreResetResumeLeftActive(runtime.storage, quarantineRoot, manifest.incidentId, leftActive);
+  const retentionSlot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
+  recordStoreResetResumeLeftActive(
+    runtime.storage,
+    quarantineRoot,
+    retentionSlot.ledger,
+    manifest.incidentId,
+    leftActive,
+  );
   if (leftActive.length > 0) {
     writeAuditEvent('store_reset_resume_left_active', { incidentId: manifest.incidentId, files: leftActive }, 'warn');
   }
@@ -1044,7 +1050,11 @@ function removeCommittedActiveEvidence(
         preservation.kind === 'linked'
           ? active.dev === staged.dev && active.ino === staged.ino
           : evidenceMatches(storage, candidate, expected);
-    } catch {
+    } catch (error: unknown) {
+      if (preservation.kind === 'copied' && isNoEntryError(error)) {
+        coherence = 'torn';
+        continue;
+      }
       removable = false;
     }
     if (!removable && preservation.kind === 'linked') {
@@ -1158,9 +1168,9 @@ function lineageFromHolder(
   if (holder === null) return 'undeterminable';
   if (storedFingerprint(classification) !== holder.expectedFingerprint) return 'unrelated';
   if (classification.storedProductVersion === null) return 'undeterminable';
-  return compareProductVersions(classification.storedProductVersion, holder.build.version) >= 0
-    ? 'descendant'
-    : 'unrelated';
+  const storedProductVersion = validateProductVersion(classification.storedProductVersion);
+  if (storedProductVersion === null) return 'undeterminable';
+  return compareProductVersions(storedProductVersion, holder.build.version) >= 0 ? 'descendant' : 'unrelated';
 }
 
 function evidenceBytes(storage: StoragePort, candidates: readonly StoreFileCandidate[]): number {

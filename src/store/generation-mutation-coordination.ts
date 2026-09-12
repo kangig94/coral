@@ -460,15 +460,24 @@ export async function acquireGenerationMaintenanceLease(
 ): Promise<GenerationMaintenanceLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
   ensureCoordinationRoot(runtime, paths);
-  const releaseAdmission = await acquireDirectoryLock(paths.admissionLock, directoryLockDeps(runtime), timeoutMs);
+  const deadline = runtime.time.now() + timeoutMs;
+  const remainingBudget = (): number => Math.max(0, deadline - runtime.time.now());
+  const releaseAdmission = await acquireDirectoryLock(
+    paths.admissionLock,
+    directoryLockDeps(runtime),
+    remainingBudget(),
+  );
   let releaseMaintenance: DirectoryLockLease;
   try {
-    releaseMaintenance = await acquireDirectoryLock(paths.maintenanceLock, directoryLockDeps(runtime), timeoutMs);
+    releaseMaintenance = await acquireDirectoryLock(
+      paths.maintenanceLock,
+      directoryLockDeps(runtime),
+      remainingBudget(),
+    );
   } finally {
     releaseAdmission();
   }
 
-  const deadline = runtime.time.now() + timeoutMs;
   try {
     while (true) {
       const blockers = removeDeadWriterLeases(runtime, paths);

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { writeAuditEvent } from '../infra/audit-log.js';
 import { isRecord } from '../infra/json.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
@@ -30,7 +31,7 @@ export type PreservationMechanism =
           }
         | {
             readonly kind: 'exclusion-unproven';
-            readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout';
+            readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout' | 'not-attempted';
           };
       readonly coherence: 'coherent' | 'torn';
     };
@@ -84,8 +85,8 @@ export type StoreResetRetentionSlot =
     };
 
 export type StoreResetReleaseResult =
-  | { readonly kind: 'released'; readonly incidentId: string; readonly evidenceBytes: number }
-  | { readonly kind: 'not-holder'; readonly incidentId: string; readonly evidenceBytes: number }
+  | { readonly kind: 'released'; readonly incidentId: string; readonly evidenceBytes: number | null }
+  | { readonly kind: 'not-holder'; readonly incidentId: string; readonly evidenceBytes: number | null }
   | { readonly kind: 'absent'; readonly incidentId: string }
   | { readonly kind: 'staged'; readonly incidentId: string }
   | { readonly kind: 'undeterminable'; readonly incidentId: string };
@@ -111,7 +112,14 @@ function preservationMechanism(value: unknown): PreservationMechanism | null {
   if (coherence !== 'coherent' && coherence !== 'torn') return null;
   if (value.cause.kind === 'exclusion-unproven') {
     const reason = value.cause.reason;
-    if (reason !== 'writer-live' && reason !== 'writer-unobservable' && reason !== 'lock-timeout') return null;
+    if (
+      reason !== 'writer-live' &&
+      reason !== 'writer-unobservable' &&
+      reason !== 'lock-timeout' &&
+      reason !== 'not-attempted'
+    ) {
+      return null;
+    }
     return { kind: 'copied', cause: { kind: 'exclusion-unproven', reason }, coherence };
   }
   if (value.cause.kind !== 'link-unsupported' || typeof value.cause.code !== 'string') return null;
@@ -263,12 +271,21 @@ export function readStoreResetRetentionLedger(
 }
 
 function writeLedger(storage: StoragePort, quarantineRoot: string, ledger: StoreResetRetentionLedger): void {
-  const written = storage.writeAtomicDurableSync(
-    join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
-    `${JSON.stringify(ledger)}\n`,
-    { encoding: 'utf-8', mode: 0o600 },
-  );
-  if (!written) throw new Error('Store-reset retention ledger could not be published durably.');
+  try {
+    const written = storage.writeAtomicDurableSync(
+      join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
+      `${JSON.stringify(ledger)}\n`,
+      { encoding: 'utf-8', mode: 0o600 },
+    );
+    if (written) return;
+    writeAuditEvent('store_reset_retention_ledger_write_failed', { cause: 'durable-write-rejected' }, 'warn');
+  } catch (error: unknown) {
+    writeAuditEvent(
+      'store_reset_retention_ledger_write_failed',
+      { cause: error instanceof Error ? error.message : String(error) },
+      'warn',
+    );
+  }
 }
 
 function pathPresence(storage: StoragePort, path: string): 'present' | 'absent' | 'undeterminable' {
@@ -315,6 +332,7 @@ export function resolveStoreResetRetentionSlot(storage: StoragePort, quarantineR
   const ledger = readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger();
   if (ledger.preserved !== null) {
     const holderPath = join(quarantineRoot, ledger.preserved.incidentId);
+    // Any result except proven absence must keep the slot held; uncertainty cannot authorize replacement.
     if (pathPresence(storage, holderPath) !== 'absent') {
       return {
         kind: 'held',
@@ -331,7 +349,8 @@ export function resolveStoreResetRetentionSlot(storage: StoragePort, quarantineR
     .filter(isCanonicalStoreResetIncidentId)
     .map((incidentId) => readCommittedManifest(storage, quarantineRoot, incidentId))
     .filter((manifest): manifest is StoreResetIncidentManifest => manifest !== null);
-  if (manifests.length !== 1) return { kind: 'vacant', ledger: { ...ledger, preserved: null } };
+  // Adoption requires one complete candidate set; truncation or several manifests cannot authorize a guess.
+  if (read.overflow || manifests.length !== 1) return { kind: 'vacant', ledger: { ...ledger, preserved: null } };
 
   const manifest = manifests[0];
   const holder = incidentFromManifest(manifest);
@@ -380,19 +399,19 @@ export function recordStoreResetDiscarded(
 export function recordStoreResetResumeLeftActive(
   storage: StoragePort,
   quarantineRoot: string,
+  ledger: StoreResetRetentionLedger,
   incidentId: string,
   names: readonly StoreResetEvidenceFileName[],
 ): void {
   if (names.length === 0) return;
-  const ledger = readStoreResetRetentionLedger(storage, quarantineRoot);
-  if (ledger === null) return;
   const update = (incident: StoreResetRetentionIncident): StoreResetRetentionIncident =>
     incident.incidentId === incidentId
       ? {
           ...incident,
           resumeLeftActive: true,
           ...(incident.preservation?.kind === 'copied'
-            ? { preservation: { ...incident.preservation, coherence: 'torn' as const } }
+            ? // Unresolved active evidence means a resumed copy can no longer certify a coherent snapshot.
+              { preservation: { ...incident.preservation, coherence: 'torn' as const } }
             : {}),
         }
       : incident;
@@ -421,16 +440,15 @@ export function releaseStoreResetIncident(
   if (incidentPresence === 'absent') return { kind: 'absent', incidentId };
   if (incidentPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
   const manifest = readCommittedManifest(storage, quarantineRoot, incidentId);
-  if (manifest === null) return { kind: 'undeterminable', incidentId };
 
   const slot = resolveStoreResetRetentionSlot(storage, quarantineRoot);
   const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
-  const evidenceBytes = manifest.files.reduce((total, file) => total + file.sizeBytes, 0);
+  const evidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? null;
   storage.rmSync(incidentPath, { recursive: true });
   if (!storage.syncDirectoryDurableSync(quarantineRoot)) {
     throw new Error('Store-reset release directory metadata could not be synchronized.');
   }
-  if (holder) {
+  if (holder && manifest !== null) {
     writeLedger(storage, quarantineRoot, { ...slot.ledger, preserved: null });
     return { kind: 'released', incidentId, evidenceBytes };
   }

@@ -658,6 +658,40 @@ describe('openOrResetBackendStoreDb', () => {
     });
   });
 
+  it('does not adopt from a truncated incident-root listing', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-reset-adoption-overflow-'), 'store.db');
+    createMismatchStore(dbPath);
+    const publication = publishReset(runtime, dbPath);
+    if (publication.kind !== 'preserved') throw new Error('Expected preserved reset evidence.');
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
+    vi.spyOn(runtime.storage, 'readDirectoryBoundedSync').mockReturnValue({
+      entries: [publication.incident.incidentId],
+      overflow: true,
+    });
+
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({ kind: 'vacant' });
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
+  });
+
+  it('keeps an invalid stored version as undeterminable lineage and boots', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-reset-invalid-lineage-version-'), 'store.db');
+    createMismatchStore(dbPath);
+    const holder = publishReset(runtime, dbPath);
+    if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, 'not-semver');
+
+    expect(publishReset(runtime, dbPath)).toMatchObject({
+      kind: 'preserved',
+      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
+    });
+    const db = openReset(runtime, dbPath);
+    db.close();
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
   it('discards a provable descendant in deference to the preserved slot holder', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-reset-descendant-'), 'store.db');
@@ -1254,6 +1288,42 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readdirSync(join(dbDir, 'store-reset-quarantine', '.staging'))).toEqual([]);
   });
 
+  it('boots after a committed incident ledger write fails', () => {
+    const runtime = createRuntime();
+    const dbDir = makeTempRoot('coral-store-ledger-publication-failure-');
+    const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
+    const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
+    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, data, options) =>
+      path.endsWith(STORE_RESET_RETENTION_LEDGER_FILE_NAME) ? false : writeAtomicDurableSync(path, data, options),
+    );
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    const db = openReset(runtime, dbPath);
+    db.close();
+
+    expect(retainedIncidentNames(join(dbDir, 'store-reset-quarantine'))).toHaveLength(1);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('store_reset_retention_ledger_write_failed'));
+  });
+
+  it('returns an adopted slot when its bookkeeping write fails', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-reset-adoption-ledger-failure-'), 'store.db');
+    createMismatchStore(dbPath);
+    const publication = publishReset(runtime, dbPath);
+    if (publication.kind !== 'preserved') throw new Error('Expected preserved reset evidence.');
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
+    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
+
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({
+      kind: 'held',
+      holder: { incidentId: publication.incident.incidentId },
+    });
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
+  });
+
   it('does not remove active evidence when the durable manifest directory sync fails', () => {
     const runtime = createRuntime();
     const dbDir = makeTempRoot('coral-store-manifest-directory-sync-failure-');
@@ -1377,6 +1447,73 @@ describe('openOrResetBackendStoreDb', () => {
     expect(replaced).toBe(true);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
     expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
+  });
+
+  it('fails closed on the copy arm when active evidence is replaced before descriptor open', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-copy-active-replacement-');
+    const dbPath = join(root, 'store.db');
+    const replacement = join(root, 'replacement.db');
+    createMismatchStore(dbPath);
+    createMismatchStore(replacement);
+    const openSync = runtime.storage.openSync;
+    let replaced = false;
+    vi.spyOn(runtime.storage, 'openSync').mockImplementation((path, flags) => {
+      if (path === dbPath && !replaced) {
+        replaced = true;
+        rmSync(dbPath);
+        renameFileSync(replacement, dbPath);
+      }
+      return openSync(path, flags);
+    });
+
+    const error = captureError(() =>
+      publishReset(runtime, dbPath, {
+        kind: 'unproven',
+        reason: 'writer-live',
+        blockers: 'fixture writer',
+      }),
+    );
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(replaced).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+    expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
+  });
+
+  it('finishes a copy publication when an active name is already absent during removal', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-copy-active-absent-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const lstatSync = runtime.storage.lstatSync;
+    let removed = false;
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((path) => {
+      const stagingRoot = join(root, 'store-reset-quarantine', '.staging');
+      const manifestPublished =
+        existsSync(stagingRoot) &&
+        readdirSync(stagingRoot).some((entry) => existsSync(join(stagingRoot, entry, 'reset-manifest.json')));
+      if (path === dbPath && manifestPublished && !removed) {
+        removed = true;
+        rmSync(dbPath);
+      }
+      return lstatSync(path, { bigint: true });
+    });
+
+    expect(
+      publishReset(runtime, dbPath, {
+        kind: 'unproven',
+        reason: 'writer-live',
+        blockers: 'fixture writer',
+      }),
+    ).toMatchObject({
+      kind: 'preserved',
+      preservation: { kind: 'copied', coherence: 'torn' },
+    });
+    expect(removed).toBe(true);
+    const db = openReset(runtime, dbPath);
+    db.close();
+    expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
   it('commits staged evidence and reclassifies an unmatched active inode', () => {

@@ -297,7 +297,7 @@ function authorizeClassifiedStore(
   resetLock: BackendStoreResetLockLease,
   writerExclusion: WriterExclusion | undefined,
 ): BackendStoreResetIncident | undefined {
-  const exclusion = writerExclusion ?? { kind: 'unproven', reason: 'lock-timeout', blockers: null };
+  const exclusion = writerExclusion ?? { kind: 'unproven', reason: 'not-attempted', blockers: null };
   if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
     const publication = publishClassifiedBackendStoreResetIncident(
       runtime,
@@ -415,7 +415,10 @@ function recoverActiveStoreTransition(
       resetLock.release();
       resetLock = null;
       adoption.assertOwned();
-      db = openPreparedStore(adoption, writerExclusion ?? { kind: 'unproven', reason: 'lock-timeout', blockers: null });
+      db = openPreparedStore(
+        adoption,
+        writerExclusion ?? { kind: 'unproven', reason: 'not-attempted', blockers: null },
+      );
     }
     try {
       if (options.dependencies.kind === 'operator') {

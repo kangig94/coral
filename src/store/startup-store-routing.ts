@@ -7,6 +7,8 @@ import {
 import { acquireBackendStoreWriterExclusion, type BackendStoreResetAuthority } from './backend-store-reset.js';
 import type { Database } from './db.js';
 
+const STARTUP_STORE_RESET_WRITER_EXCLUSION_TIMEOUT_MS = 5_000;
+
 export type StartupBackendStoreRoutingResult =
   | { readonly kind: 'open'; readonly db: Database }
   | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget; readonly source: 'active-selection' }
@@ -32,7 +34,8 @@ export async function routeOrOpenBackendStoreAtStartup(
     dependencies: {
       kind: 'startup',
       validateSelectedTarget: input.validateForeignTarget,
-      acquireWriterExclusion: () => acquireBackendStoreWriterExclusion(input.runtime),
+      acquireWriterExclusion: () =>
+        acquireBackendStoreWriterExclusion(input.runtime, STARTUP_STORE_RESET_WRITER_EXCLUSION_TIMEOUT_MS),
       recordInvalidTargetRecovery: (evidence) => {
         invalidTargetEvidence = evidence;
       },
