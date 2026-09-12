@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
-import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, extractUserText, formatGitSegment, holdIsLive, renderActivityStr, stripControlSequences, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
+import { codexCacheKey, composeCoralThirdLine, coralBackendInfoPath, extractUserText, formatGitSegment, holdIsLive, probeAnswered, readSettingsEnvValue, renderActivityStr, stripControlSequences, hudCacheFile, hudFetchLockPath, parseGitStatus, renderTextProjectionIndicator, shouldUseClaudeKeychain } from '../../../clients/skills/statusline/coral-hud.mjs';
 
 function visible(value: string): string {
   // eslint-disable-next-line no-control-regex -- Strips ANSI SGR escape sequences from hook output.
@@ -72,13 +72,12 @@ describe('coral-hud account isolation', () => {
     const source = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
     const skill = readFileSync('clients/skills/statusline/SKILL.md', 'utf-8');
 
-    // Uninstall may not use a `.coral-*` glob, so coverage has to come from the list naming each
-    // file. Deriving the list from the script's own literals is what makes a new writer fail here
-    // instead of leaving its file on an uninstalled machine — `.coral-sessions.json` holds prompt
-    // text, and it survived uninstall for exactly as long as this test asserted wording instead.
-    const written = [...source.matchAll(/'(\.coral-[a-z-]+(?:-cache)?\.(?:json|lock))'/gu)].map((m) => m[1]);
-    expect(written.length).toBeGreaterThan(4);
-    for (const basename of new Set(written)) {
+    // Uninstall may not use a `.coral-*` glob, so coverage has to come from the list naming each file.
+    // Deriving the expected names from the script's own literals is what makes a new writer fail here
+    // rather than leave its file behind; `.coral-sessions.json` retains prompt text.
+    const written = new Set([...source.matchAll(/'(\.coral-[a-z-]+(?:-cache)?\.(?:json|lock))'/gu)].map((m) => m[1]));
+    expect(written.size).toBeGreaterThan(3);
+    for (const basename of written) {
       expect(skill, `uninstall must name ${basename}`).toContain(`CONFIG_DIR/hud/${basename}`);
     }
   });
@@ -270,5 +269,86 @@ describe('coral-hud transcript rendering end to end', () => {
 
     expect(printed).not.toContain('\u001b]');
     expect(printed).not.toContain('\u001b[2J');
+  });
+});
+
+describe('coral-hud probe classification', () => {
+  it('counts only a git that ran and exited as having answered', () => {
+    // execSync sets a numeric `status` exactly when the child produced an exit code.
+    expect(probeAnswered({ status: 128, code: undefined, signal: null })).toBe(true);
+    expect(probeAnswered({ status: 127, code: undefined, signal: null })).toBe(true);
+
+    // These never produced a child, and N concurrent renders are how they happen.
+    expect(probeAnswered({ status: null, code: 'EAGAIN', signal: null })).toBe(false);
+    expect(probeAnswered({ status: null, code: 'EMFILE', signal: null })).toBe(false);
+    expect(probeAnswered({ status: null, code: 'ETIMEDOUT', signal: 'SIGKILL' })).toBe(false);
+    expect(probeAnswered({ status: null, code: 'ENOENT', signal: null })).toBe(false);
+    expect(probeAnswered(undefined)).toBe(false);
+  });
+});
+
+describe('coral-hud repository-supplied settings', () => {
+  it('strips and bounds a value a cloned repository chose', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'coral-hud-set-'));
+    const settings = join(dir, 'settings.json');
+    writeFileSync(settings, JSON.stringify({ env: { CORAL_CODEX_MODEL: '\u001b]0;pwned\u0007' + 'x'.repeat(200) } }));
+
+    const value = readSettingsEnvValue(settings, 'CORAL_CODEX_MODEL') as string;
+
+    expect(value).not.toContain('\u001b');
+    expect(value.length).toBeLessThanOrEqual(32);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('coral-hud git cache under concurrent repositories', () => {
+  function renderIn(cfgDir: string, cwd: string): void {
+    spawnSync(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
+      input: JSON.stringify({ cwd, session_id: 'gc', model: { display_name: 'O' } }),
+      env: { ...process.env, CLAUDE_CONFIG_DIR: cfgDir },
+      encoding: 'utf-8',
+    });
+  }
+
+  it('keeps another repository fenced while a healthy one records its branch', () => {
+    // A back-off is the only containment a repository on a stalled mount has, and a whole-map write
+    // from an unrelated repository could carry away the entry holding it.
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-gc-'));
+    const cfg = join(root, 'cfg');
+    const cacheFile = join(cfg, 'hud', '.coral-git-cache.json');
+    renderIn(cfg, process.cwd());
+
+    const fencedUntil = Date.now() + 600_000;
+    const cache = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, Record<string, unknown>>;
+    // Expire the healthy repository so the next render actually probes and rewrites the map.
+    for (const entry of Object.values(cache)) entry.ts = 0;
+    cache.stalledrepokey = { ts: 0, value: { branch: 'main', dirty: false }, backoffUntil: fencedUntil };
+    writeFileSync(cacheFile, JSON.stringify(cache));
+
+    renderIn(cfg, process.cwd());
+
+    const after = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, { backoffUntil: number }>;
+    expect(after.stalledrepokey?.backoffUntil, 'the fence must survive an unrelated write').toBe(fencedUntil);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('does not serve a branch from a cache entry stamped in the future', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-clock-'));
+    const cfg = join(root, 'cfg');
+    const cacheFile = join(cfg, 'hud', '.coral-git-cache.json');
+    renderIn(cfg, process.cwd());
+
+    // A clock that moved backward leaves every entry stamped ahead of now; an unguarded
+    // `now - ts <= TTL` stays true for the length of the skew and freezes the branch name.
+    const cache = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, Record<string, unknown>>;
+    const [key] = Object.keys(cache);
+    cache[key] = { ts: Date.now() + 3_600_000, value: { branch: 'stale-branch', dirty: false }, backoffUntil: 0 };
+    writeFileSync(cacheFile, JSON.stringify(cache));
+
+    renderIn(cfg, process.cwd());
+
+    const after = JSON.parse(readFileSync(cacheFile, 'utf-8')) as Record<string, Record<string, number>>;
+    expect(after[key]?.ts, 'a future stamp must not be served as fresh').toBeLessThanOrEqual(Date.now());
+    rmSync(root, { recursive: true, force: true });
   });
 });

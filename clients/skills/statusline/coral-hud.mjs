@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-// Coral HUD Statusline
-
 import {
   readFileSync,
   existsSync,
@@ -15,7 +13,7 @@ import {
   renameSync,
   unlinkSync,
 } from 'fs';
-import { isAbsolute, join, normalize } from 'path';
+import { dirname, isAbsolute, join, normalize } from 'path';
 import { homedir } from 'os';
 import { execSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -93,8 +91,6 @@ async function readStdin() {
 
 // --- git ---
 
-// A statusline renders on every turn of every open session, so this segment's cost is multiplied by
-// both, and a repository on a network mount is where that multiplication stops being survivable.
 // `--no-optional-locks` is required rather than preferred: without it `git status` refreshes and
 // rewrites `.git/index`, so concurrent renders contend for `.git/index.lock` inside the repository.
 // `execSync`'s timeout delivers a signal, and a process blocked in an uninterruptible filesystem
@@ -106,7 +102,8 @@ function renderGitBranch(input) {
   const entry = readGitCache()[key] || null;
   const now = Date.now();
 
-  if (entry && (now - entry.ts <= GIT_TTL_MS || now < entry.backoffUntil)) return formatGitSegment(entry.value);
+  if (entry && ((entry.ts <= now && now - entry.ts <= GIT_TTL_MS) || now < entry.backoffUntil))
+    return formatGitSegment(entry.value);
 
   const claim = claimGitProbe(key, now);
   if (claim === null) return formatGitSegment(entry?.value);
@@ -116,22 +113,25 @@ function renderGitBranch(input) {
     writeGitEntry(key, { ts: Date.now(), value, backoffUntil: 0 });
     return formatGitSegment(value);
   } catch (error) {
-    // A probe cut short answered nothing. Anything else is an answer — no repository here, no git to
-    // run, a repository git will not open — and re-asking any of them at branch cadence is what spends
-    // a subprocess per render forever.
-    if (probeWasCutShort(error)) {
-      backOffRepo(key, now);
-      return formatGitSegment(entry?.value);
+    // An answer that there is no repository here will still be true on the next render, so re-asking it
+    // at the cadence a branch name needs is what spends a subprocess per render forever.
+    if (probeAnswered(error)) {
+      writeGitEntry(key, { ts: Date.now(), value: null, backoffUntil: now + GIT_NEGATIVE_TTL_MS });
+      return null;
     }
-    writeGitEntry(key, { ts: Date.now(), value: null, backoffUntil: now + GIT_NEGATIVE_TTL_MS });
-    return null;
+    backOffRepo(key, now);
+    return formatGitSegment(entry?.value);
   } finally {
     releaseHudLock(claim);
   }
 }
 
-function probeWasCutShort(error) {
-  return error?.signal === 'SIGKILL' || error?.code === 'ETIMEDOUT' || error?.code === 'ENOBUFS';
+// `status` is the child's own exit code and is a number only when git ran to completion. A spawn that
+// never produced a child — EAGAIN under fork pressure, EMFILE, a missing cwd — leaves it null, and
+// those are exactly the failures N concurrent renders create. Listing the non-answers instead makes
+// every unlisted one default to "answered", which is the wrong direction to be wrong in.
+export function probeAnswered(error) {
+  return typeof error?.status === 'number';
 }
 
 function probeGit(cwd) {
@@ -166,10 +166,9 @@ export function formatGitSegment(value) {
   return `${CYAN}⎇ ${value.branch}${RESET}${value.dirty ? `${YELLOW}*${RESET}` : ''}`;
 }
 
-// One lock covers every repository, so a hold that outlived its holder must name the repository it
-// was probing: the render that finds it is usually rendering a different one, and fencing that one
-// leaves the stalled repository free to be probed again. The holder cannot be signalled, so the
-// back-off expiring is the only exit this hold has.
+// A hold that outlived its holder must name the repository it was probing, or the render that finds it
+// fences its own instead and leaves the stalled one free to be probed again. The holder cannot be
+// signalled, so the back-off expiring is the only exit this hold has.
 function claimGitProbe(key, now) {
   const lockPath = hudFetchLockPath(CACHE_DIR, GIT_LOCK_KEY);
   const held = readHudLockHold(lockPath);
@@ -234,15 +233,19 @@ function backOffRepo(key, now) {
   writeGitCache({ ...cache, [key]: { ...entry, backoffUntil: now + GIT_BACKOFF_MS } });
 }
 
+// Another render may have fenced a stalled repository between this one's read and its rename. A
+// back-off is that repository's only containment, so it is re-read here and carried forward rather
+// than being whatever this writer happened to observe earlier.
 function writeGitEntry(key, entry) {
   const cache = readGitCache();
   const now = Date.now();
+  const next = { [key]: entry };
   for (const [cached, value] of Object.entries(cache)) {
-    if (cached !== key && now - (value?.ts || 0) > GIT_ENTRY_PRUNE_MS && now > (value?.backoffUntil || 0)) {
-      delete cache[cached];
-    }
+    if (cached === key) continue;
+    const fenced = now < (value?.backoffUntil || 0);
+    if (fenced || now - (value?.ts || 0) <= GIT_ENTRY_PRUNE_MS) next[cached] = value;
   }
-  writeGitCache({ ...cache, [key]: entry });
+  writeGitCache(next);
 }
 
 function deleteHudFile(path) {
@@ -265,12 +268,20 @@ function readGitCache() {
 }
 
 function writeGitCache(all) {
+  publishJsonAtomically(GIT_CACHE_FILE, all);
+}
+
+// The rename is what publishes, so a process killed before it leaves the temp file behind with nobody
+// to reclaim it — and one caller's temp holds a live OAuth access and refresh token.
+function publishJsonAtomically(path, value) {
+  const tmpPath = `${path}.tmp-${process.pid}`;
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    const tmpPath = `${GIT_CACHE_FILE}.tmp-${process.pid}`;
-    writeFileSync(tmpPath, JSON.stringify(all), { mode: 0o600 });
-    renameSync(tmpPath, GIT_CACHE_FILE);
-  } catch {}
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(tmpPath, JSON.stringify(value), { mode: 0o600 });
+    renameSync(tmpPath, path);
+  } catch {
+    deleteHudFile(tmpPath);
+  }
 }
 
 // --- elements ---
@@ -410,9 +421,9 @@ function parseRunningAgents(lines) {
   return Array.from(agentMap.values()).filter((a) => !a.startTime || now - a.startTime.getTime() < STALE_AGENT_MS);
 }
 
-// Every transcript-derived string printed to the terminal passes through here. An escape that survives
-// is executed on every later render of the session, and is persisted into the session cache and
-// replayed after the transcript is gone, so control bytes are removed rather than escaped.
+// An escape that survives here is executed on every later render of the session, and is persisted into
+// the session cache and replayed after the transcript is gone, so control bytes are removed rather
+// than escaped.
 export function stripControlSequences(text) {
   /* eslint-disable no-control-regex -- Removing terminal control bytes is the point. */
   return text
@@ -557,8 +568,8 @@ const GIT_LOCK_KEY = 'git';
 const GIT_TTL_MS = 5_000;
 const GIT_TIMEOUT_MS = 1_000;
 const GIT_BACKOFF_MS = 600_000;
-// A directory that is not a repository, a git that will not run, and a repository git refuses to open
-// are all answers that will not change in five seconds; a branch name is the only thing here that can.
+// A directory that is not a repository, and a git that will not run, stay that way; a branch name is
+// the only thing in this segment that can change between two renders.
 const GIT_NEGATIVE_TTL_MS = 300_000;
 const GIT_ENTRY_PRUNE_MS = 7 * 24 * 60 * 60_000;
 
@@ -604,10 +615,7 @@ function writeSession(sessionId, data) {
     for (const key of Object.keys(all)) {
       if (now - (all[key]?.ts || 0) > SESSION_PRUNE_MS) delete all[key];
     }
-    mkdirSync(CACHE_DIR, { recursive: true });
-    const tmpPath = `${SESSIONS_FILE}.tmp-${process.pid}`;
-    writeFileSync(tmpPath, JSON.stringify(all), { mode: 0o600 });
-    renameSync(tmpPath, SESSIONS_FILE);
+    publishJsonAtomically(SESSIONS_FILE, all);
     _sessionsCache = all;
   } catch {}
 }
@@ -623,13 +631,7 @@ function readFullCache(key) {
 // Readers take no lock, so a reader in another session may open this file at any point during a
 // write. Only the rename makes what they open a whole document.
 function writeFullCache(all, key) {
-  try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    const path = key === undefined ? CACHE_FILE : hudCacheFile(CACHE_DIR, key);
-    const tmpPath = `${path}.tmp-${process.pid}`;
-    writeFileSync(tmpPath, JSON.stringify(all), { mode: 0o600 });
-    renameSync(tmpPath, path);
-  } catch {}
+  publishJsonAtomically(key === undefined ? CACHE_FILE : hudCacheFile(CACHE_DIR, key), all);
 }
 
 function normalizeCacheEntry(raw) {
@@ -743,10 +745,7 @@ function readStaleBackendSlot() {
 
 function writeBackendSlot(slot) {
   try {
-    mkdirSync(CACHE_DIR, { recursive: true });
-    const tmp = `${BACKEND_CACHE_FILE}.tmp-${process.pid}`;
-    writeFileSync(tmp, JSON.stringify({ ts: Date.now(), ...slot }), { mode: 0o600 });
-    renameSync(tmp, BACKEND_CACHE_FILE);
+    publishJsonAtomically(BACKEND_CACHE_FILE, { ts: Date.now(), ...slot });
   } catch {}
 }
 
@@ -947,9 +946,8 @@ function formatErrorIndicator(cache) {
   }
 }
 
-// `writeCacheSlot` carries last-known-good data forward across an error, so the two answers a caller
-// can get after one are not interchangeable: a badge shown over data that still renders tells someone
-// their login is broken while it is working.
+// The two answers a caller can get after an error are not interchangeable: a badge shown over data that
+// still renders tells someone their login is broken while it is working.
 function cacheError(slot, errorKind, rateLimit = 0) {
   writeCacheSlot(slot, null, true, rateLimit, errorKind);
   const preserved = normalizeCacheEntry(readFullCache(slot)[slot]).data;
@@ -959,7 +957,7 @@ function cacheError(slot, errorKind, rateLimit = 0) {
 
 function claudeCacheError(errorKind, rateLimit = 0) {
   const outcome = cacheError('claude', errorKind, rateLimit);
-  return outcome.preserved ? formatLimits(outcome.preserved) : outcome.indicator;
+  return (outcome.preserved ? formatLimits(outcome.preserved) : null) ?? outcome.indicator;
 }
 
 function codexCacheError(errorKind, rateLimit = 0) {
@@ -1036,8 +1034,13 @@ function writeBackCodexCredentials(refreshed) {
     // A refresh need not rotate the refresh token, and writing an absent one back logs the user out.
     if (refreshed.refreshToken) parsed.tokens.refresh_token = refreshed.refreshToken;
     const tmpPath = `${authPath}.tmp-${process.pid}`;
-    writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
-    renameSync(tmpPath, authPath);
+    try {
+      writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), { mode: 0o600 });
+      renameSync(tmpPath, authPath);
+    } catch (error) {
+      deleteHudFile(tmpPath);
+      throw error;
+    }
   } catch {}
 }
 
@@ -1320,10 +1323,15 @@ function alignColumns(a, b) {
 
 const CODEX_MODEL_DEFAULT = 'gpt-5.6-sol';
 
-function readSettingsEnvValue(path, key) {
+// A project-local settings file is repository content, so this value arrives from whoever wrote the
+// repo rather than from the user reading it: it is printed every render and must carry no control
+// sequence and no width a clone gets to choose.
+export function readSettingsEnvValue(path, key) {
   try {
     const value = JSON.parse(readFileSync(path, 'utf-8'))?.env?.[key];
-    return typeof value === 'string' && value.length > 0 ? value : undefined;
+    if (typeof value !== 'string' || value.length === 0) return undefined;
+    const safe = stripControlSequences(value).trim().slice(0, 32);
+    return safe.length > 0 ? safe : undefined;
   } catch {
     return undefined;
   }
@@ -1355,6 +1363,16 @@ async function main() {
   }
 
   const safe = (p) => p.catch(() => null);
+  // A renderer that throws may cost its own slot and nothing else. Without this the three async
+  // renderers are contained and the synchronous ones are not, so one bad field blanks the statusline
+  // including everything already computed.
+  const slot = (render) => {
+    try {
+      return render();
+    } catch {
+      return null;
+    }
+  };
   const [limits, rawCodexData, coralSlot] = await Promise.all([
     safe(renderLimits()),
     safe(renderCodexData()),
@@ -1362,12 +1380,12 @@ async function main() {
   ]);
   const codexData = rawCodexData ?? { kind: 'none' };
 
-  const claudeModel = renderModel(input);
+  const claudeModel = slot(() => renderModel(input));
   let col1Claude, col1Codex, col2Claude, col2Codex;
   let codexCreditStr = null;
 
   if (codexData.kind === 'data') {
-    [col1Claude, col1Codex] = alignColumns(claudeModel, resolveCodexModelDisplay(input));
+    [col1Claude, col1Codex] = alignColumns(claudeModel, slot(() => resolveCodexModelDisplay(input)));
     const codexLimits = formatLimits(codexData.codex);
     codexCreditStr = formatCodexCreditState(codexData.codex?.credits, codexData.codex?.spendControl, !codexLimits);
     [col2Claude, col2Codex] = alignColumns(limits, codexLimits);
@@ -1378,14 +1396,14 @@ async function main() {
     col2Codex = null;
   }
 
-  const transcript = parseTranscript(input);
+  const transcript = slot(() => parseTranscript(input)) ?? { activity: null, lastUserMessage: null };
 
   const line1 = [
     col1Claude,
     col2Claude,
-    renderContext(input),
-    renderSession(input),
-    renderGitBranch(input),
+    slot(() => renderContext(input)),
+    slot(() => renderSession(input)),
+    slot(() => renderGitBranch(input)),
     transcript.activity,
   ].filter(Boolean);
 
