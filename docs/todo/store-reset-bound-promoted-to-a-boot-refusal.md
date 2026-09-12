@@ -554,6 +554,154 @@ The valid arms also store the raw string rather than the normalized one. The cor
 `string | null` holding valid semver only, plus a discriminator naming why it is absent. Escaping in the
 renderer would treat the symptom; §8 puts the boundary at ingress.
 
+## Revision 3 — one machine, and a namespace you own
+
+Revision 2 was implemented faithfully and the defect it existed to remove **reappeared inside the owner
+module**. Two tier-1 reviewers returned BLOCKING-only verdicts. The design was insufficient, not the
+implementation, and parts of it were wrong rather than incomplete.
+
+### What Revision 2 got wrong
+
+**It named the wrong home.** Its governing sentence and three of its invariants guard
+`openOrResetBackendStoreDb`, whose only callers are the recovery arm, the operator path and a type test.
+Production startup enters through `coordinateActiveStoreSelection`, and `authorizeClassifiedStore`
+narrows the publication union to an incident or `undefined` — so `leftActive` is discarded and the
+still-incompatible database is opened anyway. The two-pass loop was dead code on the production path.
+
+**Seven fields are not an identity.** `sameEvidenceIdentity` compares `dev`, `ino`, `mode`, `size`,
+`mtimeNs` and both type predicates, and `openActiveEvidence` uses it — so ordinary WAL growth between
+enumeration and descriptor open fails the check and refuses the boot, on the arm that exists *because* a
+writer is live. The same module already answers the same question correctly elsewhere:
+`linkActiveEvidence` compares `dev` and `ino` alone. That inconsistency was the tell.
+
+**`removeActiveEvidence` is the observe-then-act shape the redesign set out to eliminate**, written
+inside the module created to eliminate it.
+
+**"Claims throw" is not an extendable category.** It is defined by what the manifest asserts, so an
+author reasoning backward from manifest to descriptor to enumerated identity lands a throw on a *source*
+path. Nothing in it says which namespace a path lives in, and namespace is the only thing that decides
+whether a surprise is a fault.
+
+**The completeness check was carried forward without applying the design's own reasoning.** Rejecting
+every active name absent from the manifest is inherited from `v0.10.9`; Revision 2 kept it while arguing
+that classification judges what remains.
+
+**The rollback claim held only for the link arm.** A shipped build meeting a torn copy hashes the present
+active name against the manifest and refuses. Ordering fixes it, not a new mechanism.
+
+**The behaviour sweep did not earn its billing.** It publishes directly and calls the dead opener, so it
+never exercises the production route; and its replacement variant asserts only that boot succeeded, so a
+run that deletes someone else's file counts as a pass. An invariant satisfiable while the defect is
+present is a smoke test.
+
+### The rule
+
+> **The store directory is shared; the quarantine is owned.**
+>
+> A shared name is read, renamed into the quarantine, or linked back from it — never
+> inspected-then-unlinked, never overwritten, never renamed over. After enumeration nothing observed at a
+> shared name throws: an inode you did not enumerate is the next epoch, a size or mtime that moved is
+> `torn`, `ENOENT` is `absent`, any other errno is `undeterminable`.
+>
+> An owned name is one you created. An entry you did not create, a post-condition that fails, or a
+> syscall the filesystem refuses is a fault and throws.
+
+**Read it, rename it, or link it back; inspect only what you own.**
+
+Two categories replace three. "Claim" disappears because the manifest is written only once every name of
+every inode it describes is owned. The single shared-directory refusal that remains is a *precondition*
+stated once at the top of the sequence — enumeration refuses an entry that is not a regular file, before
+anything has moved — so no author can generalize from it.
+
+### Removal is a capability: park, inspect, drop or link back
+
+Exclusive namespace ownership is unattainable against the only population that can race: every Coral
+actor is already excluded from replacing an inode by the adoption lock, the reset lock and the
+maintenance lease, and SQLite never renames over `store.db`. The racing party is foreign, and POSIX
+offers no mandatory lock and no conditional unlink. So the answer is a primitive, not a lock.
+
+You cannot inspect-then-act on a name you do not own. You *can* move whatever is at that name into a name
+you do own, and then inspect what arrived:
+
+```
+park(name):  rename(active/name -> <root>/.parked/<op>/name)     atomic; takes whatever is there
+             ours?  (dev, ino) equals the enumerated identity
+ours:        unlink(parked)                                      the only unlink, on an owned path
+other:       link(parked -> active/name)                         atomic claim; EEXIST means a newer epoch owns it
+             success -> unlink(parked); the name is `left` for the next pass
+             EEXIST | EXDEV | EPERM -> keep parked, record in the ledger, `left`
+```
+
+Every step is on an owned path or is an atomic claim that fails rather than clobbers, and there is no
+arm-specific branch: the link arm drops a parked inode its staged link already holds, the copy arm drops
+the source it already copied, the discard arm parks and drops.
+
+**Order matters for rollback.** Staging reads from the active name so the multi-second copy window leaves
+that name intact. Parking precedes the manifest, so the crash state a shipped build can meet after the
+manifest has an **absent** active name — which `v0.10.9` skips — and the present-active-torn-source state
+it would refuse on can no longer exist.
+
+`.parked/` is a sibling of `.staging/`, not inside it: shipped `detectInterruptedIncident` descends only
+into `.staging`, and a sidecar there would make every shipped build refuse as `foreign`.
+
+The exit for a kept-parked file exists: the ledger names it on its incident's retention record, `list`
+renders it, and `release <incident-id>` removes `<root>/<id>/` and `<root>/.parked/<id>/` together.
+
+### One machine
+
+The machine lives where the reset lock is taken — the coordination module — as `settleActiveStore`,
+returning an `ActiveStoreSettlement` carrying the opened database, the resumed incident, one publication
+per settled epoch, and any invalid-target evidence. `openOrResetBackendStoreDb`,
+`authorizeClassifiedStore`, `openProtocolStore`, `openPreparedStore`, `recordRecoveryOutcome` and
+`recordInvalidTargetRecovery` are **deleted**. The last two exist only because the result type could not
+carry a fact.
+
+Routing production into the standalone opener is the other option and is worse: the `newer-incompatible`
+transition policy is coordination vocabulary that would have to flow down as a side-effecting callback,
+and the second door would remain.
+
+No disposition can be dropped because there is exactly one call to
+`publishClassifiedBackendStoreResetIncident` in `src/`, it sits inside the loop, and its result is pushed
+and tested in the same block. The operator arm keeps its stricter lease and its unauthorized resume as a
+`mode` the one machine takes.
+
+### Consequences
+
+Identity becomes exactly `{ dev, ino }`. `reobserve`, `ActiveEvidenceExpectation`, `hashActiveContent`
+and `sameEvidenceIdentity` are deleted; a size or mtime that moved is `torn`, recorded through the
+descriptor. The completeness check is deleted — a name outside the settled epoch is the next epoch.
+Resume takes the `WriterExclusion` the machine holds and re-selects its primitive, so a linked staging
+under unproven exclusion is re-staged as a copy rather than committing an artifact whose reader verdict is
+permanently `mismatch`.
+
+`releaseStoreResetIncident`'s post-`rmSync` sync failure is the same §11 family but a local fix: the
+`released` variant carries whether durability was proven, instead of throwing after the bytes are gone.
+
+### What the sweep must assert
+
+It enters through `coordinateActiveStoreSelection` — by construction, once there is no other function
+that publishes. Mutations are applied before the Nth active-path call: deleted, replaced (by a
+*compatible* store carrying a sentinel table, so a run can prove the replacement was classified rather
+than merely surviving), appended (same inode, WAL growth), sidecar, and crash — crossed with the others
+applied between crash and resume.
+
+The assertion is a **conservation law**: every inode the fixture ever placed at an active name is
+findable at the end by `(dev, ino)` at its active name, in a committed incident directory, or in
+`.parked/`; or, for an enumerated original on the copy arm only, by content in a manifest entry. **An
+injected inode may never satisfy the content clause** — that is the clause a run which deletes someone
+else's file fails. Plus: `appended` yields a committed incident recorded `torn`; `replaced` makes the
+sentinel readable through the opened database or present as a second incident; `pending` is null unless a
+kept-parked file is named; `.staging/` is empty.
+
+### Invariants
+
+`ActiveEvidence.identity` has exactly the members `dev` and `ino`. In the owner, every storage call on a
+candidate path is one of lstat, open-for-read, rename-from, or link-from/link-to, and `unlinkSync`/
+`rmSync` receive only paths built from the parking root. In `src/`, `openOrResetBackendStoreDb` does not
+exist — replacing the `quarantineStoreFiles` ghost guard, which names a symbol that never existed;
+`publishClassifiedBackendStoreResetIncident` has exactly one call expression, enclosed by the loop; and
+`openStoreDatabase` is called once in that module, after the loop.
+
 ## Invariants to add
 
 - No `store_reset_*` remediation contains `store-reset release`.
