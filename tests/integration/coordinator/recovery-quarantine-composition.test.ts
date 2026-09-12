@@ -129,7 +129,11 @@ describe('recovery quarantine composition', () => {
   );
 
   it('rehydrates and clears a settled-unbound status after restart without an in-memory binding', async () => {
-    harness = createHandoffCoresHarness();
+    // The fixture's recorded pids are small numbers a busy host usually has running, and startup retires
+    // a superseded record whose processes are all observed absent. Left to the real port this test asks
+    // the host what pid 101 is doing: a developer machine answers EPERM and the record survives, a CI
+    // container answers ESRCH and boot retires the very status the test is here to see rehydrated.
+    harness = createHandoffCoresHarness({ observeLiveness: () => 'alive' });
     const record = providerOperationRecord('settlement-pending');
     insertProviderOperation(harness.db, record);
     const status = createSettledUnboundStatusPort(() => harness!.db, harness.runtime.time);
@@ -141,8 +145,7 @@ describe('recovery quarantine composition', () => {
     const quarantine = new RecoveryQuarantineStore(harness.db, harness.runtime.time);
     const beforeBoot = quarantine.list().map((entry) => `${entry.boundary}/${entry.subject.key}`);
     const coordinator = await harness.bootCore({ instanceId: 'settled-unbound-restart-owner' });
-    // Boot must rehydrate the durable status, not consume it. This has failed on CI and never locally,
-    // so the failure carries the state that decides which of the two happened.
+    // Boot must rehydrate this status, not consume it, so a failure has to say which one happened.
     expect(
       quarantine.read(subject.boundary, subject.key),
       `boot consumed the durable settled-unbound status.\n` +

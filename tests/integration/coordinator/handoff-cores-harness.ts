@@ -78,6 +78,10 @@ function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: s
 
 interface CreateHarnessOptions {
   flavor?: 'prod' | 'dev';
+  /** Pins what booting cores observe about a recorded process. Startup retires a superseded record whose
+   *  processes are all absent, so a test that boots with fixture pids is otherwise deciding its outcome
+   *  from whatever the host happens to be running at those numbers. */
+  observeLiveness?: Runtime['process']['observeLiveness'];
   /** Lengthens the home path until the tagged selector would relocate the coordinator socket, which is
    *  the only condition under which a published address differs from the derived one. */
   relocatedSocket?: boolean;
@@ -102,7 +106,11 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
 
   const previousHome = process.env.HOME;
   process.env.HOME = homeDir;
-  const runtime = createRealRuntime(flavor);
+  const realRuntime = createRealRuntime(flavor);
+  const runtime: Runtime =
+    options.observeLiveness === undefined
+      ? realRuntime
+      : { ...realRuntime, process: { ...realRuntime.process, observeLiveness: options.observeLiveness } };
   if (previousHome === undefined) {
     delete process.env.HOME;
   } else {
