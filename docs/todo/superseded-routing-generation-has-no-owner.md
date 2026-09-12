@@ -5,9 +5,17 @@
 
 ## What exists
 
-`handoff-routing.<generation>.db` takes its generation from a hash of the routing schema, so a schema
-change mints a new address an older reader's selector never matches — the durable-shape rule in
-[`design-philosophy`](../../.claude/rules/design-philosophy.md) §10, working as intended.
+`handoff-routing.<generation>.db` takes its generation from the routing schema's fingerprint, so a
+schema change normally mints a new address an older reader's selector never matches — the durable-shape
+rule in [`design-philosophy`](../../.claude/rules/design-philosophy.md) §10, working as intended.
+
+**Normally, and the exception belongs in whatever gets designed here.** The generation is not the
+fingerprint; it is `fingerprint.readUInt32BE(0) % generationCount` folded into
+`HANDOFF_ROUTING_STATUS_GENERATION_BAND`, whose width exists because `PRAGMA user_version` cannot hold
+more. Two schemas can therefore land on one address, and the reader that meets it does not see a foreign
+generation at all — it sees a divergent schema at its own address. A lifetime design that assumes one
+address per schema is wrong for that case, so the collision has to be an explicit premise rather than an
+oversight.
 
 What nothing owns is the address left behind. Measured on the author's host on 2026-09-12: eleven
 generations and 3.5 MB accumulated since 2026-08-23, none reclaimed.
@@ -32,9 +40,12 @@ reasons it was wrong are the part that does not re-derive:
 
 ## The shape that fits
 
-`backend routing-status quarantine` already moves a store artifact aside and already offers `list` and
-`clear --id`; its description reads "Inspect and clear retained routing-status journal evidence", which
-is what a superseded generation is. Quarantining rather than deleting satisfies what §11 asks of a hold:
+The machinery is already built, in two commands rather than one. `backend routing-status discard`
+performs the move — "Quarantine derived routing history so the next publication can replace it" — and
+`backend routing-status quarantine list` / `clear --id` is the surface over what the move retained. So
+what a superseded generation needs is a mover of its own that lands in the same place, not an extension
+of `quarantine`, which only inspects and clears. Retaining rather than deleting satisfies what §11 asks
+of a hold:
 durable status an operator can read, keyed by an identity it can be acted on with, and an exit through a
 command that exists. It also improves on the sibling precedent in `generation-mutation-coordination.ts`,
 which reports a legacy path and offers nothing to do about it.
