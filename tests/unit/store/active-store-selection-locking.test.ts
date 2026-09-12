@@ -856,6 +856,7 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
+          acquireWriterExclusion: async () => ({ kind: 'unproven', reason: 'lock-timeout', blockers: null }),
         },
       }),
     ).rejects.toThrow('requires a real filesystem store path');

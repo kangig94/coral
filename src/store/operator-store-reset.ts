@@ -12,19 +12,27 @@ import {
   type ActiveStoreSelectionRecoveryOutcome,
 } from './active-store-selection-coordination.js';
 import {
+  acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
   openOrResetBackendStoreDb,
+  resolveBackendStoreFileSet,
   type BackendStoreResetIncident,
 } from './backend-store-reset.js';
 import {
+  acquireGenerationAdoptionLock,
   acquireGenerationMaintenanceLease,
   resolveGenerationBoundaryPaths,
   type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
+import { releaseStoreResetIncident, type StoreResetReleasePresentation } from './reset-retention.js';
+import { currentCoralStoreFormat } from '../store-format.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 
 export type StoreResetTarget = 'legacy' | 'gen2';
+export type StoreResetReleaseTarget = 'current' | 'gen2';
+
+export type StoreResetReleaseDecision = StoreResetReleasePresentation;
 
 export type StoreResetTargetPaths = {
   readonly target: StoreResetTarget;
@@ -157,8 +165,8 @@ async function discardGeneratedStore(
         }
         return maintenance;
       },
-      openPreparedStore: (adoption) =>
-        openOrResetBackendStoreDb(options.runtime, authority, adoption, {
+      openPreparedStore: (adoption, writerExclusion) =>
+        openOrResetBackendStoreDb(options.runtime, authority, adoption, writerExclusion, {
           path: paths.storeDbPath,
           storeFormat: options.storeFormat,
         }),
@@ -211,5 +219,31 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
     return await discardGeneratedStore(options, paths);
   } finally {
     await socket.release();
+  }
+}
+
+export async function releaseStoreReset(options: {
+  readonly target: StoreResetReleaseTarget;
+  readonly runtime: Runtime;
+  readonly incidentId: string;
+}): Promise<StoreResetReleaseDecision> {
+  const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
+  const files = resolveBackendStoreFileSet(options.runtime, {
+    path: paths.storeDbPath,
+    storeFormat: currentCoralStoreFormat(),
+  });
+  const adoption = await acquireGenerationAdoptionLock(options.runtime);
+  let resetLock: ReturnType<typeof acquireBackendStoreResetLock> | null = null;
+  try {
+    resetLock = acquireBackendStoreResetLock(options.runtime, files, adoption);
+    resetLock.assertOwned();
+    return {
+      ...releaseStoreResetIncident(options.runtime.storage, paths.quarantineRoot, options.incidentId),
+      target: options.target,
+      flavor: options.runtime.flavor,
+    };
+  } finally {
+    resetLock?.release();
+    adoption();
   }
 }

@@ -8,18 +8,26 @@ import {
   MAX_INCIDENT_DIR_ENTRIES,
   MAX_REPORT_HASH_BYTES,
   MAX_RESET_MANIFEST_BYTES,
+  MAX_RESET_RETENTION_LEDGER_BYTES,
   parseStoreResetIncidentManifest,
   projectStoreResetPublicReport,
   STORE_RESET_EVIDENCE_FILE_NAMES,
   STORE_RESET_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_MANIFEST_FILE_NAME,
+  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   StoreResetManifestDecodeError,
   type StoreResetIncidentLocalReport,
-  type StoreResetIncidentListEntry,
-  type StoreResetIncidentListResult,
+  type StoreResetIncidentListEntry as BaseStoreResetIncidentListEntry,
+  type StoreResetIncidentListResult as BaseStoreResetIncidentListResult,
   type StoreResetIncidentManifest,
   type StoreResetPublicReport,
 } from './reset-incident.js';
+import {
+  parseStoreResetRetentionLedger,
+  type PreservationMechanism,
+  type PreservedRetention,
+  type StoreResetRetentionLedger,
+} from './reset-retention.js';
 import {
   sameStoreResetInspectionIdentity,
   type StoreResetFileDescriptor,
@@ -34,6 +42,20 @@ export class StoreResetIncidentLimitError extends Error {
     this.name = 'StoreResetIncidentLimitError';
   }
 }
+
+export type StoreResetIncidentListEntry = BaseStoreResetIncidentListEntry & {
+  readonly retention:
+    | (PreservedRetention & {
+        readonly preservation: PreservationMechanism | 'unknown';
+        readonly resumeLeftActive: boolean;
+      })
+    | { readonly slot: 'unknown' };
+  readonly storedProductVersion: string | null | 'unknown';
+};
+
+export type StoreResetIncidentListResult = Omit<BaseStoreResetIncidentListResult, 'incidents'> & {
+  readonly incidents: readonly StoreResetIncidentListEntry[];
+};
 
 export type StoreResetIncidentReportFailure =
   | 'invalid_id'
@@ -58,23 +80,24 @@ class StoreResetIncidentReadError extends Error {
   }
 }
 
-function readManifestBytes(
+function readBoundedFileBytes(
   fs: StoreResetInspectionFs,
-  manifestPath: string,
+  path: string,
   before: StoreResetInspectionStat,
+  maxBytes: number,
 ): Uint8Array {
   let descriptor: StoreResetFileDescriptor | null = null;
   let closeFailed = false;
   let contents: Uint8Array | null = null;
   let failure: StoreResetIncidentReadError | null = null;
   try {
-    descriptor = fs.open(manifestPath, fs.openFlags.readOnly);
+    descriptor = fs.open(path, fs.openFlags.readOnly);
     const opened = fs.fstat(descriptor);
     if (opened.kind !== 'file' || !sameStoreResetInspectionIdentity(before, opened)) {
       throw new StoreResetIncidentReadError('unsafe');
     }
 
-    if (opened.size > BigInt(MAX_RESET_MANIFEST_BYTES)) {
+    if (opened.size > BigInt(maxBytes)) {
       throw new StoreResetIncidentReadError('unavailable');
     }
     const expectedBytes = Number(opened.size);
@@ -94,7 +117,7 @@ function readManifestBytes(
     if (fs.read(descriptor, eofProbe, 0, 1, offset) !== 0) {
       throw new StoreResetIncidentReadError('unavailable');
     }
-    const after = fs.lstat(manifestPath);
+    const after = fs.lstat(path);
     if (after === null || !sameStoreResetInspectionIdentity(opened, after)) {
       throw new StoreResetIncidentReadError('unsafe');
     }
@@ -136,9 +159,34 @@ function buildMatches(manifest: StoreResetIncidentManifest, expected: StrictBund
   );
 }
 
+function listRetention(
+  incidentId: string,
+  ledger: StoreResetRetentionLedger | null,
+): Pick<StoreResetIncidentListEntry, 'retention' | 'storedProductVersion'> {
+  const retained =
+    ledger?.preserved?.incidentId === incidentId
+      ? { incident: ledger.preserved, retention: { slot: 'claimed' as const } }
+      : ledger?.excess?.latest.incidentId === incidentId
+        ? { incident: ledger.excess.latest, retention: ledger.excess.latest }
+        : null;
+  if (retained === null) {
+    return { retention: { slot: 'unknown' }, storedProductVersion: 'unknown' };
+  }
+  return {
+    retention: {
+      ...retained.retention,
+      preservation: retained.incident.preservation ?? 'unknown',
+      resumeLeftActive: retained.incident.resumeLeftActive,
+    },
+    storedProductVersion:
+      retained.incident.storedProductVersion === undefined ? 'unknown' : retained.incident.storedProductVersion,
+  };
+}
+
 function unavailableEntry(
   incidentId: string,
   state: Exclude<StoreResetIncidentListEntry['state'], 'ready'>,
+  ledger: StoreResetRetentionLedger | null,
 ): StoreResetIncidentListEntry {
   return {
     incidentId,
@@ -148,6 +196,7 @@ function unavailableEntry(
     schemaVersion: null,
     resetPolicyCause: null,
     fileCount: null,
+    ...listRetention(incidentId, ledger),
   };
 }
 
@@ -156,29 +205,32 @@ function readListEntry(
   root: string,
   incidentId: string,
   expectedBuild: StrictBundleManifest,
+  ledger: StoreResetRetentionLedger | null,
 ): StoreResetIncidentListEntry {
   const incidentPath = join(root, incidentId);
   const incidentStat = fs.lstat(incidentPath);
   if (incidentStat === null || incidentStat.kind !== 'directory') {
-    return unavailableEntry(incidentId, incidentStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed');
+    return unavailableEntry(incidentId, incidentStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger);
   }
 
   const manifestPath = join(incidentPath, STORE_RESET_MANIFEST_FILE_NAME);
   const manifestStat = fs.lstat(manifestPath);
   if (manifestStat === null) {
-    return unavailableEntry(incidentId, 'malformed');
+    return unavailableEntry(incidentId, 'malformed', ledger);
   }
   if (manifestStat.kind !== 'file') {
-    return unavailableEntry(incidentId, manifestStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed');
+    return unavailableEntry(incidentId, manifestStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger);
   }
 
   try {
-    const manifest = parseStoreResetIncidentManifest(readManifestBytes(fs, manifestPath, manifestStat));
+    const manifest = parseStoreResetIncidentManifest(
+      readBoundedFileBytes(fs, manifestPath, manifestStat, MAX_RESET_MANIFEST_BYTES),
+    );
     if (manifest.incidentId !== incidentId) {
-      return unavailableEntry(incidentId, 'malformed');
+      return unavailableEntry(incidentId, 'malformed', ledger);
     }
     if (!buildMatches(manifest, expectedBuild)) {
-      return unavailableEntry(incidentId, 'build_mismatch');
+      return unavailableEntry(incidentId, 'build_mismatch', ledger);
     }
     return {
       incidentId,
@@ -189,15 +241,20 @@ function readListEntry(
       resetPolicyCause:
         manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
+      ...listRetention(incidentId, ledger),
     };
   } catch (error: unknown) {
     if (error instanceof StoreResetIncidentReadError) {
-      return unavailableEntry(incidentId, error.state);
+      return unavailableEntry(incidentId, error.state, ledger);
     }
     if (error instanceof StoreResetManifestDecodeError) {
-      return unavailableEntry(incidentId, error.code === 'manifest_invalid_schema' ? 'unsupported' : 'malformed');
+      return unavailableEntry(
+        incidentId,
+        error.code === 'manifest_invalid_schema' ? 'unsupported' : 'malformed',
+        ledger,
+      );
     }
-    return unavailableEntry(incidentId, 'unavailable');
+    return unavailableEntry(incidentId, 'unavailable', ledger);
   }
 }
 
@@ -221,6 +278,21 @@ export function listStoreResetIncidents(options: {
   }
   if (rootStat.kind !== 'directory') {
     throw new StoreResetIncidentReadError(rootStat.kind === 'symbolic-link' ? 'unsafe' : 'unavailable');
+  }
+
+  let ledger: StoreResetRetentionLedger | null = null;
+  const ledgerPath = join(options.quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
+  const ledgerStat = options.fs.lstat(ledgerPath);
+  if (ledgerStat?.kind === 'file') {
+    try {
+      ledger = parseStoreResetRetentionLedger(
+        Buffer.from(
+          readBoundedFileBytes(options.fs, ledgerPath, ledgerStat, MAX_RESET_RETENTION_LEDGER_BYTES),
+        ).toString('utf-8'),
+      );
+    } catch {
+      ledger = null;
+    }
   }
 
   const incidentIds: string[] = [];
@@ -257,7 +329,7 @@ export function listStoreResetIncidents(options: {
 
   return {
     incidents: incidentIds
-      .map((incidentId) => readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild))
+      .map((incidentId) => readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger))
       .sort(compareEntries),
   };
 }
@@ -424,7 +496,9 @@ export async function readStoreResetIncidentReport(options: {
       return { ok: false, state: 'unsafe' };
     }
 
-    const manifest = parseStoreResetIncidentManifest(readManifestBytes(options.fs, manifestPath, manifestStat));
+    const manifest = parseStoreResetIncidentManifest(
+      readBoundedFileBytes(options.fs, manifestPath, manifestStat, MAX_RESET_MANIFEST_BYTES),
+    );
     if (manifest.incidentId !== options.incidentId) return { ok: false, state: 'malformed' };
     if (!buildMatches(manifest, options.expectedBuild)) {
       return { ok: false, state: 'build_mismatch' };

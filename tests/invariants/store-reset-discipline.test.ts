@@ -295,12 +295,14 @@ describe('store reset discipline invariants', () => {
     const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
     const authorityParam = resetFunction.parameters[1];
     const adoptionParam = resetFunction.parameters[2];
+    const writerExclusionParam = resetFunction.parameters[3];
     const body = withoutComments(resetFunction.body?.getText(source) ?? '');
     const authorityIndex = body.indexOf('assertBackendStoreResetAuthority(');
     const lockIndex = body.indexOf('acquireBackendStoreResetLock(');
     const resumeIndex = body.indexOf('resumeAutomaticBackendStoreResetIncident(');
     const classificationIndex = body.indexOf('classifyStoreFile(');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
+    const writerExclusionIndex = body.indexOf("writerExclusion.kind === 'proven'");
     const openIndex = body.indexOf('openStoreDatabase(');
     const releaseIndex = body.indexOf('resetLock.release()');
     const lockFunction = findFunction(BACKEND_STORE_RESET_PATH, 'acquireBackendStoreResetLock');
@@ -322,11 +324,15 @@ describe('store reset discipline invariants', () => {
     expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
     expect(adoptionParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('adoption');
     expect(adoptionParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('GenerationAdoptionLockLease');
+    expect(writerExclusionParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('writerExclusion');
+    expect(writerExclusionParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('WriterExclusion');
     expect(authorityIndex).toBeGreaterThanOrEqual(0);
     expect(lockIndex).toBeGreaterThan(authorityIndex);
     expect(resumeIndex).toBeGreaterThan(lockIndex);
     expect(classificationIndex).toBeGreaterThan(resumeIndex);
     expect(publishIndex).toBeGreaterThan(classificationIndex);
+    expect(writerExclusionIndex).toBeGreaterThan(lockIndex);
+    expect(publishIndex).toBeGreaterThan(writerExclusionIndex);
     expect(openIndex).toBeGreaterThan(publishIndex);
     expect(releaseIndex).toBeGreaterThan(openIndex);
     expect(adoptionOwnedIndex).toBeGreaterThanOrEqual(0);
@@ -336,6 +342,40 @@ describe('store reset discipline invariants', () => {
     expect(body).not.toContain('acquireDirectoryLockSync(');
     expect(body).not.toMatch(/publishBackendStoreResetIncident\(|resumeInterruptedBackendStoreResetIncident\(/u);
     expect(directStoreUnlinks).toEqual([]);
+  });
+
+  it('maps expected maintenance-acquisition failures to copy dispositions', () => {
+    const source = sourceFile(BACKEND_STORE_RESET_PATH);
+    const acquire = findFunction(BACKEND_STORE_RESET_PATH, 'acquireBackendStoreWriterExclusion');
+    const body = withoutComments(acquire.body?.getText(source) ?? '');
+
+    expect(body).toContain("error.code === 'legacy_source_not_quiescent'");
+    expect(body).toContain("reason: 'writer-live'");
+    expect(body).toContain("error.code === 'legacy_source_writer_observation_unknown'");
+    expect(body).toContain("reason: 'writer-unobservable'");
+    expect(body).toContain('isDirectoryLockTimeoutError(error)');
+    expect(body).toContain("reason: 'lock-timeout'");
+    expect(body.lastIndexOf('throw error')).toBeGreaterThan(body.indexOf('isDirectoryLockTimeoutError(error)'));
+  });
+
+  it('links only into staging before removing active evidence', () => {
+    const calls = collectCalls(BACKEND_STORE_RESET_PATH);
+    const linkCalls = calls.filter((call) => call.callee === 'linkSync');
+    const incidentSource = sourceFile(BACKEND_STORE_RESET_PATH);
+    const publish = withoutComments(
+      findFunction(BACKEND_STORE_RESET_PATH, 'publishIncident').body?.getText(incidentSource) ?? '',
+    );
+
+    expect(linkCalls).toHaveLength(1);
+    expect(linkCalls[0]?.enclosingFunctions).toContain('linkCandidateForPublication');
+    expect(linkCalls[0]?.text).toContain('destination');
+    expect(publish.indexOf('linkIncidentEvidence(')).toBeGreaterThanOrEqual(0);
+    expect(publish.indexOf('removeCommittedActiveEvidence(')).toBeGreaterThan(publish.indexOf('linkIncidentEvidence('));
+  });
+
+  it('keeps destructive release out of store-reset remediation text', () => {
+    const errors = readFileSync(join(REPO_ROOT, 'src/runtime/errors.ts'), 'utf8');
+    expect(errors).not.toMatch(/store_reset_[\s\S]{0,1000}store-reset release/u);
   });
 
   it('limits startup reset reachability to V3 resume and the two core policy causes', () => {

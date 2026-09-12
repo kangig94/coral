@@ -12,6 +12,7 @@ import type {
 import {
   MAX_INCIDENT_ROOT_ENTRIES,
   serializeStoreResetIncidentManifest,
+  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
 
@@ -126,6 +127,12 @@ class MemoryInspectionFs implements StoreResetInspectionFs {
     this.stats.set(manifestPath, stat('file', contents.length));
     this.files.set(manifestPath, contents);
   }
+
+  addFile(path: string, value: string): void {
+    const contents = new TextEncoder().encode(value);
+    this.stats.set(path, stat('file', contents.length));
+    this.files.set(path, contents);
+  }
 }
 
 function manifest(id: string, resetAt: string, build: StrictBundleManifest = BUILD): StoreResetIncidentManifestV2 {
@@ -207,6 +214,8 @@ describe('store reset incident listing', () => {
         schemaVersion: 2,
         resetPolicyCause: null,
         fileCount: 1,
+        retention: { slot: 'unknown' },
+        storedProductVersion: 'unknown',
       },
       {
         incidentId: older,
@@ -216,6 +225,8 @@ describe('store reset incident listing', () => {
         schemaVersion: 2,
         resetPolicyCause: null,
         fileCount: 1,
+        retention: { slot: 'unknown' },
+        storedProductVersion: 'unknown',
       },
     ]);
   });
@@ -243,6 +254,8 @@ describe('store reset incident listing', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
+        retention: { slot: 'unknown' },
+        storedProductVersion: 'unknown',
       },
       {
         incidentId: mixed,
@@ -252,8 +265,53 @@ describe('store reset incident listing', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
+        retention: { slot: 'unknown' },
+        storedProductVersion: 'unknown',
       },
     ]);
+  });
+
+  it('projects additive retention fields without deriving the stored version from the manifest', () => {
+    const incidentId = '123e4567-e89b-42d3-a456-426614174000';
+    const fs = new MemoryInspectionFs();
+    fs.addRoot([STORE_RESET_RETENTION_LEDGER_FILE_NAME, incidentId]);
+    fs.addIncident(incidentId, manifest(incidentId, '2026-07-22T01:02:03.004Z'));
+    fs.addFile(
+      join(ROOT, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
+      JSON.stringify({
+        version: 1,
+        preserved: {
+          incidentId,
+          resetAt: '2026-07-22T01:02:03.004Z',
+          evidenceBytes: 17,
+          storedProductVersion: '0.9.15',
+          preservation: {
+            kind: 'copied',
+            cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
+            coherence: 'torn',
+          },
+          resumeLeftActive: true,
+          futureIncidentField: true,
+        },
+        excess: null,
+        discarded: null,
+        futureLedgerField: true,
+      }),
+    );
+
+    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD }).incidents[0]).toMatchObject({
+      incidentId,
+      retention: {
+        slot: 'claimed',
+        preservation: {
+          kind: 'copied',
+          cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
+          coherence: 'torn',
+        },
+        resumeLeftActive: true,
+      },
+      storedProductVersion: '0.9.15',
+    });
   });
 
   it('fails closed when the bounded directory cursor cannot close', () => {

@@ -8,8 +8,11 @@ import { validateForeignHandoffTarget } from '../coordinator/handoff-routing/run
 import { createRealRuntime } from '../runtime/real.js';
 import {
   discardStoreReset,
+  releaseStoreReset,
   resolveStoreResetTargetPaths,
   type StoreResetDiscardDecision,
+  type StoreResetReleaseDecision,
+  type StoreResetReleaseTarget,
   type StoreResetTarget,
 } from '../store/operator-store-reset.js';
 import {
@@ -21,13 +24,10 @@ import {
   listStoreResetIncidents as readStoreResetIncidentList,
   readStoreResetIncidentReport,
   StoreResetIncidentLimitError,
+  type StoreResetIncidentListResult,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
-import {
-  isCanonicalStoreResetIncidentId,
-  type StoreResetIncidentListResult,
-  type StoreResetPublicReport,
-} from '../store/reset-incident.js';
+import { isCanonicalStoreResetIncidentId, type StoreResetPublicReport } from '../store/reset-incident.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import { StoreResetCliError } from './errors.js';
 import { acquireStoreResetSocketGuard } from './store-reset-socket.js';
@@ -61,13 +61,30 @@ export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal):
   readonly list: (target: StoreResetTarget) => StoreResetIncidentListResult;
   readonly report: (target: StoreResetTarget, incidentId: string) => Promise<StoreResetPublicReport>;
   readonly discard: (target: StoreResetTarget, flavor: BuildFlavor) => Promise<StoreResetDiscardDecision>;
+  readonly release: (
+    target: StoreResetReleaseTarget,
+    flavor: BuildFlavor,
+    incidentId: string,
+  ) => Promise<StoreResetReleaseDecision>;
 } {
   const dependencies = defaultDependencies(shutdownSignal);
   return {
     list: (target) => listStoreResetIncidentsLocal(target, dependencies),
     report: (target, incidentId) => reportStoreResetIncidentLocal(target, incidentId, dependencies),
     discard: discardStoreResetLocal,
+    release: releaseStoreResetLocal,
   };
+}
+
+export function releaseStoreResetLocal(
+  target: StoreResetReleaseTarget,
+  flavor: BuildFlavor,
+  incidentId: string,
+): Promise<StoreResetReleaseDecision> {
+  if (!isCanonicalStoreResetIncidentId(incidentId)) {
+    throw new StoreResetCliError('invalid_store_reset_incident_id');
+  }
+  return releaseStoreReset({ target, runtime: createRealRuntime(flavor), incidentId });
 }
 
 /**

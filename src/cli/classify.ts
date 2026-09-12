@@ -152,6 +152,7 @@ export const commandClassExemptions = {
   'backend store-reset list': 'local operational incident inspection',
   'backend store-reset report': 'local operational incident inspection',
   'backend store-reset discard': 'operator-only direct-filesystem store quarantine',
+  'backend store-reset release': 'operator-only retained store evidence deletion',
   'backend routing-status resolve': 'operator-only local routing journal repair',
   'backend routing-status discard': 'operator-only derived routing-history quarantine',
   'backend routing-status quarantine list': 'local retained routing-history inspection',

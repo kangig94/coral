@@ -10,7 +10,11 @@ import { backendLog } from '#src/infra/backend-log.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createBackendStoreResetAuthority, openOrResetBackendStoreDb } from '#src/store/backend-store-reset.js';
+import {
+  acquireBackendStoreWriterExclusion,
+  createBackendStoreResetAuthority,
+  openOrResetBackendStoreDb,
+} from '#src/store/backend-store-reset.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import {
   formatLegacyGenerationIgnoredNotice,
@@ -50,9 +54,11 @@ async function openGeneratedStore(runtime: Runtime): Promise<void> {
     },
   );
   const adoption = await acquireGenerationAdoptionLock(runtime);
+  const writerExclusion = await acquireBackendStoreWriterExclusion(runtime);
   try {
-    openOrResetBackendStoreDb(runtime, authority, adoption, { storeFormat: STORE_FORMAT }).close();
+    openOrResetBackendStoreDb(runtime, authority, adoption, writerExclusion, { storeFormat: STORE_FORMAT }).close();
   } finally {
+    if (writerExclusion.kind === 'proven') writerExclusion.lease.release();
     adoption();
   }
 }

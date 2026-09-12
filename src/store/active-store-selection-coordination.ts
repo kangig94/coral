@@ -38,6 +38,7 @@ import {
   assertBackendStoreResetAuthority,
   classifyBackendStoreFailure,
   documentedBackendStoreClassificationFailure,
+  hasPendingBackendStoreResetIncident,
   publishClassifiedBackendStoreResetIncident,
   refuseIncompatibleBackendStore,
   resolveBackendStoreFileSet,
@@ -49,6 +50,7 @@ import {
   type BackendStoreResetAuthority,
   type BackendStoreResetIncident,
   type BackendStoreResetLockLease,
+  type WriterExclusion,
   type NewerStoreResetPolicy,
   type OpenOrResetBackendStoreOptions,
 } from './backend-store-reset.js';
@@ -74,6 +76,7 @@ export type ActiveStoreSelectionRecoveryOutcome = Readonly<{
 export type ActiveStoreSelectionStartupDependencies = Readonly<{
   kind: 'startup';
   validateSelectedTarget: ForeignTargetValidator;
+  acquireWriterExclusion: () => Promise<WriterExclusion>;
   recordInvalidTargetRecovery?: (evidence: InvalidTargetEvidence) => void;
 }>;
 
@@ -81,7 +84,7 @@ export type ActiveStoreSelectionOperatorDependencies = Readonly<{
   kind: 'operator';
   validateSelectedTarget: ForeignTargetValidator;
   acquireStoreRecoveryLease?: () => Promise<GenerationMaintenanceLease>;
-  openPreparedStore?: (adoption: GenerationAdoptionLockLease) => Database;
+  openPreparedStore?: (adoption: GenerationAdoptionLockLease, writerExclusion: WriterExclusion) => Database;
   recordRecoveryOutcome?: (outcome: ActiveStoreSelectionRecoveryOutcome) => void;
 }>;
 
@@ -292,38 +295,50 @@ function authorizeClassifiedStore(
   classification: StoreFormatClassification,
   transition: ActiveStoreTransition | null,
   resetLock: BackendStoreResetLockLease,
+  writerExclusion: WriterExclusion | undefined,
 ): BackendStoreResetIncident | undefined {
+  const exclusion = writerExclusion ?? { kind: 'unproven', reason: 'lock-timeout', blockers: null };
   if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
-    const incident = publishClassifiedBackendStoreResetIncident(runtime, authority, files, classification, resetLock);
-    if (incident === undefined) {
-      throw documentedCoralSetupError({
-        code: 'store_reset_quarantine_failed',
-        reason: 'classified_evidence_missing',
-        flavor: runtime.flavor,
-      });
+    const publication = publishClassifiedBackendStoreResetIncident(
+      runtime,
+      authority,
+      files,
+      classification,
+      resetLock,
+      exclusion,
+    );
+    switch (publication.kind) {
+      case 'preserved':
+        return publication.incident;
+      case 'discarded':
+      case 'no-evidence':
+        return undefined;
+      default:
+        return assertNever(publication);
     }
-    return incident;
   }
   if (classification.kind === 'newer-incompatible') {
-    const incident =
+    const publication =
       transition === null
-        ? undefined
+        ? ({ kind: 'no-evidence' } as const)
         : publishClassifiedBackendStoreResetIncident(
             runtime,
             authority,
             files,
             classification,
             resetLock,
+            exclusion,
             resetPolicyForTransition(transition),
           );
-    if (incident === undefined) {
-      throw documentedCoralSetupError({
-        code: 'store_reset_quarantine_failed',
-        reason: 'classified_evidence_missing',
-        flavor: runtime.flavor,
-      });
+    switch (publication.kind) {
+      case 'preserved':
+        return publication.incident;
+      case 'discarded':
+      case 'no-evidence':
+        return undefined;
+      default:
+        return assertNever(publication);
     }
-    return incident;
   }
   refuseIncompatibleBackendStore(runtime, files, classification);
   return undefined;
@@ -351,16 +366,20 @@ function recoverActiveStoreTransition(
   options: ActiveStoreSelectionProtocolOptions,
   initialTransition: ActiveStoreTransition | null,
   adoption: GenerationAdoptionLockLease,
+  writerExclusion: WriterExclusion | undefined,
+  initialClassification: StoreFormatClassification | null,
 ): Database {
   const files = resolveBackendStoreFileSet(runtime, options);
-  inspectCurrentGeneration(runtime, options);
   let resetLock: BackendStoreResetLockLease | null = acquireBackendStoreResetLock(runtime, files, adoption);
   try {
     const resumed =
       options.dependencies.kind === 'operator'
         ? resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock)
         : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, resetLock);
-    const classification = classifyStoreForProtocol(runtime, files, options);
+    const classification =
+      resumed === null && initialClassification !== null && writerExclusion === undefined
+        ? initialClassification
+        : classifyStoreForProtocol(runtime, files, options);
     let transition = initialTransition;
     if (classification.kind === 'newer-incompatible') {
       const evidence = newerStoreEvidence(classification);
@@ -378,7 +397,15 @@ function recoverActiveStoreTransition(
     if (transition?.evidence.kind === 'valid-target-invalid' && options.dependencies.kind === 'startup') {
       options.dependencies.recordInvalidTargetRecovery?.(transition.evidence.invalidTargetEvidence);
     }
-    const published = authorizeClassifiedStore(runtime, authority, files, classification, transition, resetLock);
+    const published = authorizeClassifiedStore(
+      runtime,
+      authority,
+      files,
+      classification,
+      transition,
+      resetLock,
+      writerExclusion,
+    );
     const openPreparedStore =
       options.dependencies.kind === 'operator' ? options.dependencies.openPreparedStore : undefined;
     let db: Database;
@@ -388,7 +415,7 @@ function recoverActiveStoreTransition(
       resetLock.release();
       resetLock = null;
       adoption.assertOwned();
-      db = openPreparedStore(adoption);
+      db = openPreparedStore(adoption, writerExclusion ?? { kind: 'unproven', reason: 'lock-timeout', blockers: null });
     }
     try {
       if (options.dependencies.kind === 'operator') {
@@ -422,14 +449,38 @@ async function recoverActiveStoreSelection(
   transition: ActiveStoreTransition | null,
   adoption: GenerationAdoptionLockLease,
 ): Promise<Database> {
-  const recoveryLease =
-    options.dependencies.kind === 'operator' ? await options.dependencies.acquireStoreRecoveryLease?.() : undefined;
+  inspectCurrentGeneration(runtime, options);
+  const files = resolveBackendStoreFileSet(runtime, options);
+  let initialClassification: StoreFormatClassification | null = null;
+  let writerExclusion: WriterExclusion | undefined;
+  if (options.dependencies.kind === 'operator') {
+    const recoveryLease = await options.dependencies.acquireStoreRecoveryLease?.();
+    if (recoveryLease !== undefined) writerExclusion = { kind: 'proven', lease: recoveryLease };
+  } else {
+    const pending = hasPendingBackendStoreResetIncident(runtime, files);
+    if (!pending) initialClassification = classifyStoreForProtocol(runtime, files, options);
+    const classificationNeedsReset =
+      initialClassification?.kind === 'older-incompatible' ||
+      initialClassification?.kind === 'corrupt-or-unsupported' ||
+      initialClassification?.kind === 'newer-incompatible';
+    if (pending || classificationNeedsReset) {
+      writerExclusion = await options.dependencies.acquireWriterExclusion();
+    }
+  }
   try {
     adoption.assertOwned();
-    recoveryLease?.assertOwned();
-    return recoverActiveStoreTransition(runtime, authority, options, transition, adoption);
+    if (writerExclusion?.kind === 'proven') writerExclusion.lease.assertOwned();
+    return recoverActiveStoreTransition(
+      runtime,
+      authority,
+      options,
+      transition,
+      adoption,
+      writerExclusion,
+      initialClassification,
+    );
   } finally {
-    recoveryLease?.release();
+    if (writerExclusion?.kind === 'proven') writerExclusion.lease.release();
   }
 }
 

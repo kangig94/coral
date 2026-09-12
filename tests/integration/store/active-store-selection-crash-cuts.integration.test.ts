@@ -43,6 +43,7 @@ import type { Database } from '#src/store/db.js';
 import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import {
+  isCanonicalStoreResetIncidentId,
   parseStoreResetIncidentManifest,
   STORE_RESET_MANIFEST_FILE_NAME,
   STORE_RESET_QUARANTINE_DIRECTORY,
@@ -185,6 +186,7 @@ function startupDependencies(): ActiveStoreSelectionStartupDependencies {
     validateSelectedTarget: () => {
       throw new Error('validator should not run');
     },
+    acquireWriterExclusion: async () => ({ kind: 'unproven', reason: 'lock-timeout', blockers: null }),
   };
 }
 
@@ -254,10 +256,7 @@ function tableExists(path: string, table: string): boolean {
 
 function newestIncidentManifest(runtime: Runtime) {
   const quarantine = join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  const incident = readdirSync(quarantine)
-    .filter((entry) => entry !== '.staging')
-    .sort()
-    .at(-1);
+  const incident = readdirSync(quarantine).filter(isCanonicalStoreResetIncidentId).sort().at(-1);
   if (incident === undefined) throw new Error('Expected a reset incident.');
   return parseStoreResetIncidentManifest(readFileSync(join(quarantine, incident, STORE_RESET_MANIFEST_FILE_NAME)));
 }

@@ -169,7 +169,7 @@ import {
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
-import { formatStoreResetList, formatStoreResetReport } from '../format/store-reset.js';
+import { formatStoreResetList, formatStoreResetRelease, formatStoreResetReport } from '../format/store-reset.js';
 import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '../routing-status-discard.js';
 import {
   createProviderProxyRoleTerminationCommandOperations,
@@ -460,12 +460,13 @@ export function handoffPublicationIncidentsExitContribution(
 }
 
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
-import type { StoreResetTarget } from '../../store/operator-store-reset.js';
+import type { StoreResetReleaseTarget, StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
   boundStoreResetCliError,
   discardStoreResetLocal,
   listStoreResetIncidentsLocal,
   reportStoreResetIncidentLocal,
+  releaseStoreResetLocal,
 } from '../store-reset.js';
 
 function providerProxySetNoVerdictExitContribution(status: BackendStatusFull): 0 | 75 {
@@ -498,6 +499,11 @@ export interface StoreResetCommandOperations {
   list(target: StoreResetTarget): ReturnType<typeof listStoreResetIncidentsLocal>;
   report(target: StoreResetTarget, incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
   discard(target: StoreResetTarget, flavor: BuildFlavor): ReturnType<typeof discardStoreResetLocal>;
+  release?(
+    target: StoreResetReleaseTarget,
+    flavor: BuildFlavor,
+    incidentId: string,
+  ): ReturnType<typeof releaseStoreResetLocal>;
 }
 
 export interface KbCommitCommandOperations {
@@ -1478,6 +1484,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       list: listStoreResetIncidentsLocal,
       report: reportStoreResetIncidentLocal,
       discard: discardStoreResetLocal,
+      release: releaseStoreResetLocal,
     },
     kbCommit = {
       quarantine: quarantineKbCommitLocal,
@@ -2030,6 +2037,30 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         emitError(error);
       }
     });
+  storeResetCommand
+    .command('release')
+    .description('Permanently delete one committed store-reset incident')
+    .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
+    .requiredOption(
+      '--target <target>',
+      'Store generation containing the incident (current or gen2)',
+      parseStoreResetReleaseTarget,
+    )
+    .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
+    .action(async (incidentId: string, options: { target: StoreResetReleaseTarget; flavor: BuildFlavor }) => {
+      try {
+        const result = await (storeReset.release ?? releaseStoreResetLocal)(options.target, options.flavor, incidentId);
+        const output = `${formatStoreResetRelease(result)}\n`;
+        if (result.kind === 'released' || result.kind === 'not-holder') {
+          process.stdout.write(output);
+          return;
+        }
+        process.stderr.write(output);
+        process.exitCode = result.kind === 'undeterminable' ? errorCodeToExit('transient') : 1;
+      } catch (error: unknown) {
+        emitError(boundStoreResetCliError(error));
+      }
+    });
 
   const kbCommitCommand = backend.command('kb-commit').description('Operate on retained blocking KB commit evidence');
   kbCommitCommand.configureOutput({ writeErr: () => undefined });
@@ -2095,6 +2126,11 @@ function parseStoreResetTarget(value: string): StoreResetTarget {
   if (value === 'legacy' || value === 'gen2') return value;
   if (value === 'current') return 'gen2';
   throw new InvalidArgumentError("Target must be 'legacy', 'current', or 'gen2'.");
+}
+
+function parseStoreResetReleaseTarget(value: string): StoreResetReleaseTarget {
+  if (value === 'current' || value === 'gen2') return value;
+  throw new InvalidArgumentError("Target must be 'current' or 'gen2'.");
 }
 
 function parseKbCommitId(value: string): string {

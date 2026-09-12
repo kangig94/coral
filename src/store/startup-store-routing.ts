@@ -4,7 +4,7 @@ import {
   coordinateActiveStoreSelection,
   type ActiveStoreSelectionProtocolOptions,
 } from './active-store-selection-coordination.js';
-import type { BackendStoreResetAuthority } from './backend-store-reset.js';
+import { acquireBackendStoreWriterExclusion, type BackendStoreResetAuthority } from './backend-store-reset.js';
 import type { Database } from './db.js';
 
 export type StartupBackendStoreRoutingResult =
@@ -32,6 +32,7 @@ export async function routeOrOpenBackendStoreAtStartup(
     dependencies: {
       kind: 'startup',
       validateSelectedTarget: input.validateForeignTarget,
+      acquireWriterExclusion: () => acquireBackendStoreWriterExclusion(input.runtime),
       recordInvalidTargetRecovery: (evidence) => {
         invalidTargetEvidence = evidence;
       },

@@ -7,8 +7,10 @@ import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
 import { errorNumber } from '../infra/error-number.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError } from '../infra/fs-lock.js';
+import { isNoEntryError } from '../infra/fs-errors.js';
+import { compareProductVersions } from '../infra/product-version.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
-import { documentedCoralSetupError } from '../runtime/errors.js';
+import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { ACTIVE_STORE_TRANSITION_VERSION } from './active-store-selection.js';
 import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
@@ -20,13 +22,15 @@ import {
 } from './format-fingerprint.js';
 import {
   formatLegacyGenerationIgnoredNotice,
+  acquireGenerationMaintenanceLease,
   inspectGenerationReadiness,
   type GenerationAdoptionLockLease,
+  type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
 import {
   isCanonicalStoreResetIncidentId,
+  MAX_ACTIVE_STORE_TRANSITION_BYTES,
   MAX_INCIDENT_DIR_ENTRIES,
-  MAX_REPORT_HASH_BYTES,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
@@ -43,6 +47,16 @@ import {
   type StoreResetNewerTargetEvidence,
   type StoreResetPolicyCause,
 } from './reset-incident.js';
+import {
+  recordStoreResetDiscarded,
+  recordStoreResetPreserved,
+  recordStoreResetResumeLeftActive,
+  resolveStoreResetRetentionSlot,
+  type DiscardReceipt,
+  type PreservationMechanism,
+  type PreservedRetention,
+  type StoreResetRetentionIncident,
+} from './reset-retention.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
@@ -62,11 +76,7 @@ type ResettableStoreFormatClassification =
   | Extract<StoreFormatClassification, { readonly kind: 'older-incompatible' }>
   | Extract<StoreFormatClassification, { readonly kind: 'corrupt-or-unsupported' }>;
 
-type LegacyOperatorResetClassification = {
-  readonly kind: 'newer-incompatible';
-  readonly currentFingerprint: StoreFormatFingerprint;
-  readonly storedFingerprint: StoreFormatFingerprint;
-};
+type LegacyOperatorResetClassification = Extract<StoreFormatClassification, { readonly kind: 'newer-incompatible' }>;
 
 export type BackendStoreResetClassification = ResettableStoreFormatClassification | LegacyOperatorResetClassification;
 
@@ -129,7 +139,54 @@ type PublishedEvidenceFile<Name extends string> = Omit<StoreResetIncidentFile, '
 type PublishedEvidenceCopy<Name extends string> = Readonly<{
   evidence: PublishedEvidenceFile<Name>;
   sourceIdentity: StorageBigIntStat;
+  coherence: 'coherent' | 'torn';
 }>;
+
+export type WriterExclusion =
+  | { readonly kind: 'proven'; readonly lease: GenerationMaintenanceLease }
+  | {
+      readonly kind: 'unproven';
+      readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout';
+      readonly blockers: string | null;
+    };
+
+export type IncidentPublication =
+  | {
+      readonly kind: 'preserved';
+      readonly incident: BackendStoreResetIncident;
+      readonly preservation: PreservationMechanism;
+      readonly retention: PreservedRetention;
+    }
+  | { readonly kind: 'discarded'; readonly receipt: DiscardReceipt }
+  | { readonly kind: 'no-evidence' };
+
+export async function acquireBackendStoreWriterExclusion(
+  runtime: Runtime,
+  timeoutMs?: number,
+): Promise<WriterExclusion> {
+  try {
+    return { kind: 'proven', lease: await acquireGenerationMaintenanceLease(runtime, timeoutMs) };
+  } catch (error: unknown) {
+    if (error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent') {
+      return {
+        kind: 'unproven',
+        reason: 'writer-live',
+        blockers: typeof error.context?.holder === 'string' ? error.context.holder : null,
+      };
+    }
+    if (error instanceof CoralSetupError && error.code === 'legacy_source_writer_observation_unknown') {
+      return {
+        kind: 'unproven',
+        reason: 'writer-unobservable',
+        blockers: typeof error.context?.holder === 'string' ? error.context.holder : null,
+      };
+    }
+    if (isDirectoryLockTimeoutError(error)) {
+      return { kind: 'unproven', reason: 'lock-timeout', blockers: null };
+    }
+    throw error;
+  }
+}
 
 type StoreFileCandidate = EvidenceFileCandidate<StoreResetEvidenceFileName>;
 
@@ -291,24 +348,27 @@ function hashExactDescriptor(
   descriptor: number,
   expectedSize: number,
   consume?: (buffer: Buffer, length: number) => void,
-): string {
+): { readonly sha256: string; readonly bytesConsumed: number; readonly overrun: boolean } {
   const hash = createHash('sha256');
   const buffer = Buffer.allocUnsafe(64 * 1024);
   let total = 0;
   while (total < expectedSize) {
     const requested = Math.min(buffer.length, expectedSize - total);
     const bytesRead = storage.readSync(descriptor, buffer, 0, requested, null);
-    if (bytesRead <= 0 || bytesRead > requested) {
-      throw new Error('Store-reset evidence read failed.');
-    }
+    if (bytesRead === 0) break;
+    if (bytesRead < 0 || bytesRead > requested) throw new Error('Store-reset evidence read failed.');
     consume?.(buffer, bytesRead);
     total += bytesRead;
     hash.update(buffer.subarray(0, bytesRead));
   }
-  if (storage.readSync(descriptor, buffer, 0, 1, null) !== 0) {
-    throw new Error('Store-reset evidence grew during reading.');
+  const overrunBytes = storage.readSync(descriptor, buffer, 0, 1, null);
+  if (overrunBytes < 0 || overrunBytes > 1) throw new Error('Store-reset evidence read failed.');
+  if (overrunBytes === 1) {
+    consume?.(buffer, 1);
+    total += 1;
+    hash.update(buffer.subarray(0, 1));
   }
-  return hash.digest('hex');
+  return { sha256: hash.digest('hex'), bytesConsumed: total, overrun: overrunBytes === 1 };
 }
 
 function writeExactDescriptor(storage: StoragePort, descriptor: number, buffer: Buffer, length: number): void {
@@ -325,13 +385,13 @@ function writeExactDescriptor(storage: StoragePort, descriptor: number, buffer: 
 function describeCandidate<Name extends string>(
   storage: StoragePort,
   candidate: EvidenceFileCandidate<Name>,
-  remainingBudget: number,
+  remainingBudget: number | null,
 ): PublishedEvidenceFile<Name> {
   const pathBefore = stablePathStat(storage, candidate.source);
   if (
     !pathBefore.isFile() ||
     pathBefore.size < 0n ||
-    pathBefore.size > BigInt(remainingBudget) ||
+    (remainingBudget !== null && pathBefore.size > BigInt(remainingBudget)) ||
     pathBefore.size > BigInt(Number.MAX_SAFE_INTEGER)
   ) {
     throw new Error('Store-reset evidence exceeds the bounded hashing budget.');
@@ -346,7 +406,11 @@ function describeCandidate<Name extends string>(
       throw new Error('Store-reset evidence identity changed before hashing.');
     }
     const expectedSize = Number(opened.size);
-    digest = hashExactDescriptor(storage, descriptor, expectedSize);
+    const hashed = hashExactDescriptor(storage, descriptor, expectedSize);
+    if (hashed.bytesConsumed !== expectedSize || hashed.overrun) {
+      throw new Error('Store-reset evidence changed size during hashing.');
+    }
+    digest = hashed.sha256;
     const openedAfter = storage.fstatSync(descriptor, { bigint: true });
     const pathAfter = stablePathStat(storage, candidate.source);
     if (!sameEvidenceFileStat(opened, openedAfter) || !sameEvidenceFileStat(opened, pathAfter)) {
@@ -374,13 +438,13 @@ function copyCandidateForPublication<Name extends string>(
   storage: StoragePort,
   candidate: EvidenceFileCandidate<Name>,
   destination: string,
-  remainingBudget: number,
+  remainingBudget: number | null,
 ): PublishedEvidenceCopy<Name> {
   const pathBefore = stablePathStat(storage, candidate.source);
   if (
     !pathBefore.isFile() ||
     pathBefore.size < 0n ||
-    pathBefore.size > BigInt(remainingBudget) ||
+    (remainingBudget !== null && pathBefore.size > BigInt(remainingBudget)) ||
     pathBefore.size > BigInt(Number.MAX_SAFE_INTEGER)
   ) {
     throw new Error('Store-reset evidence exceeds the bounded publication budget.');
@@ -400,28 +464,33 @@ function copyCandidateForPublication<Name extends string>(
     destinationDescriptor = openedDestination;
 
     const expectedSize = Number(sourceOpened.size);
-    const digest = hashExactDescriptor(storage, sourceDescriptor, expectedSize, (buffer, length) => {
+    const hashed = hashExactDescriptor(storage, sourceDescriptor, expectedSize, (buffer, length) => {
       writeExactDescriptor(storage, openedDestination, buffer, length);
     });
     const sourceAfter = storage.fstatSync(sourceDescriptor, { bigint: true });
     const sourcePathAfter = stablePathStat(storage, candidate.source);
-    if (!sameEvidenceFileStat(sourceOpened, sourceAfter) || !sameEvidenceFileStat(sourceOpened, sourcePathAfter)) {
-      throw new Error('Store-reset evidence identity changed during publication.');
-    }
+    const coherence =
+      !hashed.overrun &&
+      hashed.bytesConsumed === expectedSize &&
+      sameEvidenceFileStat(sourceOpened, sourceAfter) &&
+      sameEvidenceFileStat(sourceOpened, sourcePathAfter)
+        ? 'coherent'
+        : 'torn';
 
     storage.fdatasyncSync(destinationDescriptor);
     const destinationOpened = storage.fstatSync(destinationDescriptor, { bigint: true });
-    if (!destinationOpened.isFile() || destinationOpened.size !== sourceOpened.size) {
+    if (!destinationOpened.isFile() || destinationOpened.size !== BigInt(hashed.bytesConsumed)) {
       throw new Error('Published store-reset evidence has an unexpected size.');
     }
     result = {
       evidence: {
         name: candidate.name,
-        sizeBytes: expectedSize,
+        sizeBytes: hashed.bytesConsumed,
         mtimeMs: Number(sourceOpened.mtimeNs / 1_000_000n),
-        sha256: digest,
+        sha256: hashed.sha256,
       },
       sourceIdentity: sourceOpened,
+      coherence,
     };
   } finally {
     for (const descriptor of [destinationDescriptor, sourceDescriptor]) {
@@ -586,7 +655,7 @@ function evidenceMatches<Name extends string>(
   expected: PublishedEvidenceFile<Name>,
 ): boolean {
   if (!storage.existsSync(candidate.source)) return false;
-  const actual = describeCandidate(storage, candidate, MAX_REPORT_HASH_BYTES);
+  const actual = describeCandidate(storage, candidate, null);
   return actual.sizeBytes === expected.sizeBytes && actual.sha256 === expected.sha256;
 }
 
@@ -623,32 +692,104 @@ function discardUncommittedStaging(storage: StoragePort, stagingDirectory: strin
   requireDirectorySync(storage, stagingRoot);
 }
 
+type StagedEvidenceIntegrity =
+  | { readonly kind: 'intact' }
+  | { readonly kind: 'corrupt' }
+  | { readonly kind: 'undeterminable'; readonly cause: string };
+
+type ActiveEvidenceObservation =
+  | { readonly kind: 'same-inode'; readonly identity: { readonly dev: bigint; readonly ino: bigint } }
+  | { readonly kind: 'distinct-matching' }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unmatched' }
+  | { readonly kind: 'undeterminable'; readonly cause: string };
+
+function stagedEvidenceIntegrity(
+  storage: StoragePort,
+  staged: StoreFileCandidate,
+  expected: StoreResetIncidentFile,
+): StagedEvidenceIntegrity {
+  try {
+    return evidenceMatches(storage, staged, expected) ? { kind: 'intact' } : { kind: 'corrupt' };
+  } catch (error: unknown) {
+    return { kind: 'undeterminable', cause: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function observeActiveEvidence(
+  storage: StoragePort,
+  active: StoreFileCandidate,
+  staged: StoreFileCandidate,
+  expected: StoreResetIncidentFile,
+): ActiveEvidenceObservation {
+  let activeStat: StorageBigIntStat;
+  let stagedStat: StorageBigIntStat;
+  try {
+    stagedStat = stablePathStat(storage, staged.source);
+    activeStat = stablePathStat(storage, active.source);
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return { kind: 'absent' };
+    return { kind: 'undeterminable', cause: error instanceof Error ? error.message : String(error) };
+  }
+  if (activeStat.dev === stagedStat.dev && activeStat.ino === stagedStat.ino) {
+    return { kind: 'same-inode', identity: { dev: activeStat.dev, ino: activeStat.ino } };
+  }
+  if (activeStat.size !== BigInt(expected.sizeBytes) || Number(activeStat.mtimeNs / 1_000_000n) !== expected.mtimeMs) {
+    return { kind: 'unmatched' };
+  }
+  try {
+    return evidenceMatches(storage, active, expected) ? { kind: 'distinct-matching' } : { kind: 'unmatched' };
+  } catch (error: unknown) {
+    return { kind: 'undeterminable', cause: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function reconcileCommittedEvidence(
   storage: StoragePort,
   files: BackendStoreFileSet,
   stagingDirectory: string,
   stagingIdentity: StorageBigIntStat,
   manifest: StoreResetIncidentManifest,
-): void {
-  let remainingBudget = MAX_REPORT_HASH_BYTES;
+): readonly StoreResetEvidenceFileName[] {
+  const observations: Array<{
+    active: StoreFileCandidate;
+    observation: ActiveEvidenceObservation;
+  }> = [];
   for (const expected of manifest.files) {
-    if (expected.sizeBytes > remainingBudget) {
-      throw new InterruptedStoreResetRefusal('store_reset_interrupted_malformed');
-    }
     const active = candidateForEvidence(files, expected.name);
     const staged = { source: join(stagingDirectory, expected.name), name: expected.name };
-    if (!evidenceMatches(storage, staged, expected)) {
-      throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
-    }
-    if (storage.existsSync(active.source)) {
-      if (!evidenceMatches(storage, active, expected)) {
+    const integrity = stagedEvidenceIntegrity(storage, staged, expected);
+    switch (integrity.kind) {
+      case 'intact':
+        observations.push({ active, observation: observeActiveEvidence(storage, active, staged, expected) });
+        break;
+      case 'corrupt':
         throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
-      }
-      requireSameDirectory(storage, stagingDirectory, stagingIdentity);
-      storage.unlinkSync(active.source);
-      requireDirectorySync(storage, files.dbDir);
+      case 'undeterminable':
+        throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched', new Error(integrity.cause));
+      default:
+        assertNever(integrity);
     }
-    remainingBudget -= expected.sizeBytes;
+  }
+
+  const leftActive: StoreResetEvidenceFileName[] = [];
+  for (const { active, observation } of observations) {
+    switch (observation.kind) {
+      case 'same-inode':
+      case 'distinct-matching':
+        requireSameDirectory(storage, stagingDirectory, stagingIdentity);
+        storage.unlinkSync(active.source);
+        requireDirectorySync(storage, files.dbDir);
+        break;
+      case 'absent':
+        break;
+      case 'unmatched':
+      case 'undeterminable':
+        leftActive.push(active.name);
+        break;
+      default:
+        assertNever(observation);
+    }
   }
 
   const recordedNames = new Set(manifest.files.map((file) => file.name));
@@ -657,6 +798,7 @@ function reconcileCommittedEvidence(
       throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
     }
   }
+  return leftActive;
 }
 
 function resumeInterruptedIncident(
@@ -673,12 +815,17 @@ function resumeInterruptedIncident(
 
   const { manifest, quarantineRoot, stagingDirectory, stagingIdentity, stagingRoot } = interrupted;
   authorizeCommittedManifest?.(manifest);
-  reconcileCommittedEvidence(runtime.storage, files, stagingDirectory, stagingIdentity, manifest);
+  const leftActive = reconcileCommittedEvidence(runtime.storage, files, stagingDirectory, stagingIdentity, manifest);
 
   validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
   requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
   runtime.storage.renameSync(stagingDirectory, join(quarantineRoot, manifest.incidentId));
   requireDirectorySync(runtime.storage, quarantineRoot, stagingRoot);
+  resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
+  recordStoreResetResumeLeftActive(runtime.storage, quarantineRoot, manifest.incidentId, leftActive);
+  if (leftActive.length > 0) {
+    writeAuditEvent('store_reset_resume_left_active', { incidentId: manifest.incidentId, files: leftActive }, 'warn');
+  }
   return {
     incident: {
       incidentId: manifest.incidentId,
@@ -769,10 +916,94 @@ function detectInterruptedIncident(
   };
 }
 
+export function hasPendingBackendStoreResetIncident(
+  runtime: Pick<Runtime, 'storage'>,
+  files: BackendStoreFileSet,
+): boolean {
+  const stagingRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY, STORE_RESET_STAGING_DIRECTORY);
+  if (!runtime.storage.existsSync(stagingRoot)) return false;
+  const read = runtime.storage.readDirectoryBoundedSync(stagingRoot, 1);
+  return read.overflow || read.entries.length > 0;
+}
+
 function activeEvidenceCandidates(storage: StoragePort, files: BackendStoreFileSet): StoreFileCandidate[] {
   return STORE_RESET_EVIDENCE_FILE_NAMES.map((name) => candidateForEvidence(files, name)).filter((candidate) =>
     storage.existsSync(candidate.source),
   );
+}
+
+type PublishedIncidentEvidence = Readonly<{
+  files: readonly StoreResetIncidentFile[];
+  coherence: 'coherent' | 'torn';
+}>;
+
+class StoreResetLinkUnavailable extends Error {
+  readonly code: string;
+
+  constructor(error: unknown) {
+    const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
+    super(`Store-reset evidence could not be linked (${code}).`, { cause: error });
+    this.name = 'StoreResetLinkUnavailable';
+    this.code = code;
+  }
+}
+
+function linkCandidateForPublication(
+  storage: StoragePort,
+  candidate: StoreFileCandidate,
+  destination: string,
+): StoreResetIncidentFile {
+  const sourceBefore = stablePathStat(storage, candidate.source);
+  if (!sourceBefore.isFile() || sourceBefore.size < 0n || sourceBefore.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Store-reset evidence cannot be represented in the incident manifest.');
+  }
+  const descriptor = storage.openSync(candidate.source, 'r');
+  try {
+    const opened = storage.fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || !sameEvidenceFileStat(sourceBefore, opened)) {
+      throw new Error('Store-reset evidence identity changed before publication.');
+    }
+  } finally {
+    storage.closeSync(descriptor);
+  }
+  try {
+    storage.linkSync(candidate.source, destination);
+  } catch (error: unknown) {
+    throw new StoreResetLinkUnavailable(error);
+  }
+  const sourceAfterLink = stablePathStat(storage, candidate.source);
+  const destinationAfterLink = stablePathStat(storage, destination);
+  if (
+    sourceAfterLink.dev !== destinationAfterLink.dev ||
+    sourceAfterLink.ino !== destinationAfterLink.ino ||
+    !sameEvidenceFileStat(sourceBefore, sourceAfterLink)
+  ) {
+    throw new Error('Linked store-reset evidence does not identify the active file.');
+  }
+  return describeCandidate(storage, { source: destination, name: candidate.name }, null);
+}
+
+function removeStagedEvidence(
+  storage: StoragePort,
+  candidates: readonly StoreFileCandidate[],
+  stagingDirectory: string,
+): void {
+  for (const candidate of candidates) {
+    const destination = join(stagingDirectory, candidate.name);
+    if (storage.existsSync(destination)) storage.unlinkSync(destination);
+  }
+}
+
+function linkIncidentEvidence(
+  storage: StoragePort,
+  candidates: readonly StoreFileCandidate[],
+  stagingDirectory: string,
+  stagingIdentity: StorageBigIntStat,
+): readonly StoreResetIncidentFile[] {
+  return candidates.map((candidate) => {
+    requireSameDirectory(storage, stagingDirectory, stagingIdentity);
+    return linkCandidateForPublication(storage, candidate, join(stagingDirectory, candidate.name));
+  });
 }
 
 function copyIncidentEvidence(
@@ -780,19 +1011,15 @@ function copyIncidentEvidence(
   candidates: readonly StoreFileCandidate[],
   stagingDirectory: string,
   stagingIdentity: StorageBigIntStat,
-): StoreResetIncidentFile[] {
-  let remainingBudget = MAX_REPORT_HASH_BYTES;
-  return candidates.map((candidate) => {
+): PublishedIncidentEvidence {
+  let coherence: PublishedIncidentEvidence['coherence'] = 'coherent';
+  const files = candidates.map((candidate) => {
     requireSameDirectory(storage, stagingDirectory, stagingIdentity);
-    const copied = copyCandidateForPublication(
-      storage,
-      candidate,
-      join(stagingDirectory, candidate.name),
-      remainingBudget,
-    );
-    remainingBudget -= copied.evidence.sizeBytes;
+    const copied = copyCandidateForPublication(storage, candidate, join(stagingDirectory, candidate.name), null);
+    if (copied.coherence === 'torn') coherence = 'torn';
     return copied.evidence;
   });
+  return { files, coherence };
 }
 
 function removeCommittedActiveEvidence(
@@ -802,18 +1029,34 @@ function removeCommittedActiveEvidence(
   manifestFiles: readonly StoreResetIncidentFile[],
   stagingDirectory: string,
   stagingIdentity: StorageBigIntStat,
+  preservation: PreservationMechanism,
   markStarted: () => void,
-): void {
+): 'coherent' | 'torn' {
+  let coherence: 'coherent' | 'torn' = preservation.kind === 'copied' ? preservation.coherence : 'coherent';
   for (const [index, candidate] of candidates.entries()) {
     const expected = manifestFiles[index];
-    if (expected === undefined || !evidenceMatches(storage, candidate, expected)) {
-      throw new Error('Store-reset evidence changed before active removal.');
+    if (expected === undefined) throw new Error('Store-reset evidence has no manifest entry.');
+    const staged = stablePathStat(storage, join(stagingDirectory, expected.name));
+    let removable: boolean;
+    try {
+      const active = stablePathStat(storage, candidate.source);
+      removable =
+        preservation.kind === 'linked'
+          ? active.dev === staged.dev && active.ino === staged.ino
+          : evidenceMatches(storage, candidate, expected);
+    } catch {
+      removable = false;
     }
+    if (!removable && preservation.kind === 'linked') {
+      throw new Error('Linked store-reset evidence changed before active removal.');
+    }
+    if (!removable) coherence = 'torn';
     requireSameDirectory(storage, stagingDirectory, stagingIdentity);
     markStarted();
     storage.unlinkSync(candidate.source);
     requireDirectorySync(storage, files.dbDir);
   }
+  return coherence;
 }
 
 function createIncidentManifest(
@@ -880,7 +1123,11 @@ function createIncidentManifest(
   } satisfies StoreResetIncidentManifestV3;
 }
 
-function recordIncidentAudit(manifest: StoreResetIncidentManifest): void {
+function recordIncidentAudit(
+  manifest: StoreResetIncidentManifest,
+  preservation: PreservationMechanism,
+  retention: PreservedRetention,
+): void {
   writeAuditEvent(
     'store_reset_quarantine',
     {
@@ -897,9 +1144,45 @@ function recordIncidentAudit(manifest: StoreResetIncidentManifest): void {
       flavor: manifest.build.flavor,
       acquiredViaHandoff: manifest.handoff.acquiredViaHandoff,
       fileCount: manifest.files.length,
+      preservation,
+      retention,
     },
     'warn',
   );
+}
+
+function lineageFromHolder(
+  classification: BackendStoreResetClassification,
+  holder: StoreResetIncidentManifest | null,
+): 'descendant' | 'unrelated' | 'undeterminable' {
+  if (holder === null) return 'undeterminable';
+  if (storedFingerprint(classification) !== holder.expectedFingerprint) return 'unrelated';
+  if (classification.storedProductVersion === null) return 'undeterminable';
+  return compareProductVersions(classification.storedProductVersion, holder.build.version) >= 0
+    ? 'descendant'
+    : 'unrelated';
+}
+
+function evidenceBytes(storage: StoragePort, candidates: readonly StoreFileCandidate[]): number {
+  return candidates.reduce((total, candidate) => total + Number(stablePathStat(storage, candidate.source).size), 0);
+}
+
+function discardIncidentEvidence(
+  storage: StoragePort,
+  files: BackendStoreFileSet,
+  candidates: readonly StoreFileCandidate[],
+): number {
+  const bytes = evidenceBytes(storage, candidates);
+  for (const candidate of candidates) {
+    storage.unlinkSync(candidate.source);
+    requireDirectorySync(storage, files.dbDir);
+  }
+  return bytes;
+}
+
+function unsupportedLinkCause(code: string): Extract<PreservationMechanism, { readonly kind: 'copied' }>['cause'] {
+  const errno = code === 'EXDEV' || code === 'EMLINK' || code === 'EPERM' || code === 'EOPNOTSUPP' ? code : 'other';
+  return { kind: 'link-unsupported', errno, code };
 }
 
 function publishIncident(
@@ -907,11 +1190,12 @@ function publishIncident(
   authority: BackendStoreResetAuthority,
   files: BackendStoreFileSet,
   classification: BackendStoreResetClassification,
+  writerExclusion: WriterExclusion,
   newerStorePolicy?: NewerStoreResetPolicy,
-): BackendStoreResetIncident | undefined {
+): IncidentPublication {
   const candidates = activeEvidenceCandidates(runtime.storage, files);
   if (candidates.length === 0) {
-    return undefined;
+    return { kind: 'no-evidence' };
   }
 
   const incidentId = runtime.ids.uuid();
@@ -924,6 +1208,24 @@ function publishIncident(
 
   try {
     ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform());
+    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
+    if (slot.kind === 'held') {
+      const lineage = lineageFromHolder(classification, slot.manifest);
+      if (lineage === 'descendant') {
+        const receipt: DiscardReceipt = {
+          resetAt,
+          resetPolicyCause:
+            classification.kind === 'newer-incompatible'
+              ? (newerStorePolicy?.cause ?? 'newer-incompatible-invalid-target')
+              : classification.kind,
+          evidenceBytes: discardIncidentEvidence(runtime.storage, files, candidates),
+          deferredTo: slot.holder.incidentId,
+        };
+        recordStoreResetDiscarded(runtime.storage, quarantineRoot, slot.ledger, receipt);
+        writeAuditEvent('store_reset_discarded', receipt, 'warn');
+        return { kind: 'discarded', receipt };
+      }
+    }
     ensurePrivateDirectory(runtime.storage, stagingRoot, runtime.env.platform());
     requireDirectorySync(runtime.storage, quarantineRoot);
     runtime.storage.mkdirSync(stagingDirectory);
@@ -933,7 +1235,29 @@ function publishIncident(
     requireDirectorySync(runtime.storage, stagingRoot, files.dbDir);
     const stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
 
-    const manifestFiles = copyIncidentEvidence(runtime.storage, candidates, stagingDirectory, stagingIdentity);
+    let preservation: PreservationMechanism;
+    let manifestFiles: readonly StoreResetIncidentFile[];
+    if (writerExclusion.kind === 'proven') {
+      try {
+        manifestFiles = linkIncidentEvidence(runtime.storage, candidates, stagingDirectory, stagingIdentity);
+        preservation = { kind: 'linked' };
+      } catch (error: unknown) {
+        if (!(error instanceof StoreResetLinkUnavailable)) throw error;
+        removeStagedEvidence(runtime.storage, candidates, stagingDirectory);
+        requireDirectorySync(runtime.storage, stagingDirectory);
+        const copied = copyIncidentEvidence(runtime.storage, candidates, stagingDirectory, stagingIdentity);
+        manifestFiles = copied.files;
+        preservation = { kind: 'copied', cause: unsupportedLinkCause(error.code), coherence: copied.coherence };
+      }
+    } else {
+      const copied = copyIncidentEvidence(runtime.storage, candidates, stagingDirectory, stagingIdentity);
+      manifestFiles = copied.files;
+      preservation = {
+        kind: 'copied',
+        cause: { kind: 'exclusion-unproven', reason: writerExclusion.reason },
+        coherence: copied.coherence,
+      };
+    }
     requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
     requireDirectorySync(runtime.storage, stagingDirectory);
     const manifest = createIncidentManifest(
@@ -954,31 +1278,58 @@ function publishIncident(
       throw new Error('Store reset incident manifest could not be published durably.');
     }
     requireDirectorySync(runtime.storage, stagingDirectory);
-    removeCommittedActiveEvidence(
+    const retention: PreservedRetention =
+      slot.kind === 'vacant'
+        ? { slot: 'claimed' }
+        : {
+            slot: 'excess',
+            holder: slot.holder.incidentId,
+            lineage: lineageFromHolder(classification, slot.manifest) === 'unrelated' ? 'unrelated' : 'undeterminable',
+          };
+    let retentionIncident: StoreResetRetentionIncident = {
+      incidentId,
+      resetAt,
+      evidenceBytes: manifestFiles.reduce((total, file) => total + file.sizeBytes, 0),
+      storedProductVersion: classification.storedProductVersion,
+      preservation,
+      resumeLeftActive: false,
+    };
+    const removalCoherence = removeCommittedActiveEvidence(
       runtime.storage,
       files,
       candidates,
       manifestFiles,
       stagingDirectory,
       stagingIdentity,
+      preservation,
       () => {
         activeRemovalStarted = true;
       },
     );
+    if (preservation.kind === 'copied' && removalCoherence === 'torn' && preservation.coherence !== 'torn') {
+      preservation = { ...preservation, coherence: 'torn' };
+      retentionIncident = { ...retentionIncident, preservation };
+    }
     validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
     requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
     runtime.storage.renameSync(stagingDirectory, finalDirectory);
     requireDirectorySync(runtime.storage, quarantineRoot, stagingRoot);
+    recordStoreResetPreserved(runtime.storage, quarantineRoot, slot.ledger, retentionIncident, retention);
 
-    recordIncidentAudit(manifest);
+    recordIncidentAudit(manifest, preservation, retention);
     return {
-      incidentId,
-      resetAt,
-      reason: manifest.reason,
-      schemaVersion: manifest.schemaVersion,
-      resetPolicyCause:
-        manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
-      fileCount: manifestFiles.length,
+      kind: 'preserved',
+      incident: {
+        incidentId,
+        resetAt,
+        reason: manifest.reason,
+        schemaVersion: manifest.schemaVersion,
+        resetPolicyCause:
+          manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
+        fileCount: manifestFiles.length,
+      },
+      preservation,
+      retention,
     };
   } catch (error: unknown) {
     if (!activeRemovalStarted) {
@@ -1003,10 +1354,12 @@ export function publishClassifiedBackendStoreResetIncident(
   files: BackendStoreFileSet,
   classification: BackendStoreResetClassification,
   resetLock: BackendStoreResetLockLease,
+  writerExclusion: WriterExclusion,
   newerStorePolicy?: NewerStoreResetPolicy,
-): BackendStoreResetIncident | undefined {
+): IncidentPublication {
   resetLock.assertOwned();
-  return publishIncident(runtime, authority, files, classification, newerStorePolicy);
+  if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
+  return publishIncident(runtime, authority, files, classification, writerExclusion, newerStorePolicy);
 }
 
 export function resumeBackendStoreResetIncidentForOperator(
@@ -1061,7 +1414,7 @@ export function retainTransitionFileInStoreResetQuarantine(
     const evidence = describeCandidate(
       runtime.storage,
       { source: sourcePath, name: evidenceName },
-      MAX_REPORT_HASH_BYTES,
+      MAX_ACTIVE_STORE_TRANSITION_BYTES,
     );
     const sourceAfter = stablePathStat(runtime.storage, sourcePath);
     if (!sameEvidenceFileStat(sourceIdentity, sourceAfter)) {
@@ -1091,8 +1444,11 @@ export function retainTransitionFileInStoreResetQuarantine(
     runtime.storage,
     { source: sourcePath, name: evidenceName },
     stagingPath,
-    MAX_REPORT_HASH_BYTES,
+    MAX_ACTIVE_STORE_TRANSITION_BYTES,
   );
+  if (copied.coherence !== 'coherent') {
+    throw new Error('Retained active-store transition source changed during publication.');
+  }
   requireDirectorySync(runtime.storage, evidenceRoot);
   runtime.storage.renameSync(stagingPath, evidencePath);
   requireDirectorySync(runtime.storage, evidenceRoot);
@@ -1289,6 +1645,7 @@ export function openOrResetBackendStoreDb(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   adoption: GenerationAdoptionLockLease,
+  writerExclusion: WriterExclusion,
   options: OpenOrResetBackendStoreOptions,
 ): Database {
   const files = resolveBackendStoreFileSet(runtime, options);
@@ -1315,6 +1672,7 @@ export function openOrResetBackendStoreDb(
   }
   const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
   try {
+    if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
     resumeAutomaticBackendStoreResetIncident(runtime, authority, files, resetLock);
 
     let classification: StoreFormatClassification;
@@ -1334,14 +1692,21 @@ export function openOrResetBackendStoreDb(
       }
     }
     if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
-      if (
-        publishClassifiedBackendStoreResetIncident(runtime, authority, files, classification, resetLock) === undefined
-      ) {
-        throw documentedCoralSetupError({
-          code: 'store_reset_quarantine_failed',
-          reason: 'classified_evidence_missing',
-          flavor: runtime.flavor,
-        });
+      const publication = publishClassifiedBackendStoreResetIncident(
+        runtime,
+        authority,
+        files,
+        classification,
+        resetLock,
+        writerExclusion,
+      );
+      switch (publication.kind) {
+        case 'preserved':
+        case 'discarded':
+        case 'no-evidence':
+          break;
+        default:
+          assertNever(publication);
       }
     } else {
       refuseIncompatibleBackendStore(runtime, files, classification);

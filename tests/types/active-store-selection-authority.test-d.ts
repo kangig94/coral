@@ -5,6 +5,7 @@ import {
   openOrResetBackendStoreDb,
   type BackendStoreResetAuthority,
   type OpenOrResetBackendStoreOptions,
+  type WriterExclusion,
 } from '../../src/store/backend-store-reset.js';
 import type { GenerationAdoptionLockLease } from '../../src/store/generation-mutation-coordination.js';
 import type { ActiveStoreSelectionProtocolDependencies } from '../../src/store/active-store-selection-coordination.js';
@@ -22,10 +23,11 @@ declare const runtime: Runtime;
 declare const authority: BackendStoreResetAuthority;
 declare const adoption: GenerationAdoptionLockLease;
 declare const openOptions: OpenOrResetBackendStoreOptions;
+declare const writerExclusion: WriterExclusion;
 declare const selection: ActiveStoreSelection;
 declare const validator: ForeignTargetValidator;
 
-openOrResetBackendStoreDb(runtime, authority, adoption, openOptions);
+openOrResetBackendStoreDb(runtime, authority, adoption, writerExclusion, openOptions);
 
 // @ts-expect-error reset-lock acquisition is unreachable without the nominal adoption lease.
 openOrResetBackendStoreDb(runtime, authority, openOptions);
@@ -58,6 +60,7 @@ void forbiddenStartupOptions;
 const forbiddenStartupDependencies: ActiveStoreSelectionProtocolDependencies = {
   kind: 'startup',
   validateSelectedTarget: validator,
+  acquireWriterExclusion: async () => writerExclusion,
   // @ts-expect-error a startup dependency literal cannot name operator-only recovery capabilities.
   acquireStoreRecoveryLease: async () => {
     throw new Error('type-only operator recovery lease');
