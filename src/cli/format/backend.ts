@@ -941,8 +941,6 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
       ].join('\n');
     case 'content-dependent': {
       if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
-      // `backend status` reports obligations. The domain already says which invocations are still one
-      // and which are history, so this asks rather than re-deciding — history is counted, not printed.
       // A hold may not be withheld, so the cap may only ever drop `history`.
       const holds = result.statuses.filter((status) => handoffRoutingInvocationClassification(status) === 'hold');
       const rendered = result.statuses.length <= ROUTING_INVOCATION_RENDER_LIMIT ? result.statuses : holds;
