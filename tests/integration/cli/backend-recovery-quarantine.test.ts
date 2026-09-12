@@ -698,7 +698,7 @@ describe('backend recovery-quarantine commands', () => {
     expect(stdout).toContain('revision="fingerprint:until-cleared"');
   });
 
-  it('should treat an unequivocally older store as having no recovery quarantine yet', () => {
+  it('should refuse to call an unreadable older store an empty quarantine', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-older-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
@@ -721,7 +721,9 @@ describe('backend recovery-quarantine commands', () => {
     expect(
       classifyStoreFile(runtime.paths.coral.store.dbFile, runtime.storage, currentCoralStoreFormat()),
     ).toMatchObject({ kind: 'older-incompatible' });
-    expect(listRecoveryQuarantineLocal(runtime)).toEqual([]);
+    // An older store is one this build cannot read, not one with nothing in it. Answering `[]` tells an
+    // operator the rows they are looking for are gone.
+    expect(() => listRecoveryQuarantineLocal(runtime)).toThrow(/older-incompatible/u);
   });
 
   it('should state the daemon-down limitation for an ambiguous store format', () => {
