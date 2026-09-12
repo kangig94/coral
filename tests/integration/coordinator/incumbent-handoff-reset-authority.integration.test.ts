@@ -360,7 +360,9 @@ describe('incumbent handoff reset authority', () => {
       expect(readStoreFormatFingerprint(dbPath)).toBe(currentCoralStoreFormat().fingerprint);
       expect(tableExists(dbPath, 'incumbent_owned_store')).toBe(false);
       const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-      const incidentNames = readdirSync(quarantineRoot).filter((name) => name !== '.staging');
+      const incidentNames = readdirSync(quarantineRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name !== '.staging')
+        .map((entry) => entry.name);
       expect(incidentNames).toHaveLength(1);
       expect(readFileSync(join(quarantineRoot, incidentNames[0], 'store.db'))).toEqual(storeBefore);
     } finally {

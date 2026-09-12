@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -204,9 +204,9 @@ describe('startup-store-routing', () => {
     ).toBeUndefined();
     opened.close();
     const quarantine = join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-    const incident = runtime.storage
-      .readDirectoryBoundedSync(quarantine, 16)
-      .entries.find((entry) => entry !== '.staging');
+    const incident = readdirSync(quarantine, { withFileTypes: true }).find(
+      (entry) => entry.isDirectory() && entry.name !== '.staging',
+    )?.name;
     if (incident === undefined) throw new Error('Expected a retained reset incident.');
     expect(
       parseStoreResetIncidentManifest(readFileSync(join(quarantine, incident, STORE_RESET_MANIFEST_FILE_NAME))),
