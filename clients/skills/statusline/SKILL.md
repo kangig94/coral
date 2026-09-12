@@ -73,18 +73,11 @@ The install command reads this file and writes it to `CONFIG_DIR/hud/coral-hud.m
 
 ## Notes
 
-- `CONFIG_DIR` is the Claude config dir from the SessionStart context (see Config directory above); each config dir keeps its own HUD install and its own Codex opt-in flag
+- `CONFIG_DIR` is the Claude config dir from the SessionStart context (see Config directory above); each config dir keeps its own HUD install, its own Codex opt-in flag, and its own runtime files
 - If re-running install, overwrite the existing script (this updates the HUD to the latest version)
-- Claude rate limits are fetched from `api.anthropic.com/api/oauth/usage` using OAuth credentials
-- Enterprise/extra-usage plans have no 5h/weekly windows; instead the usage API returns `extra_usage` (a monthly dollar cap), shown in the limits slot as `mo: <pct> ($used/$limit)`
-- Codex limits, credits, and spend controls are fetched from `chatgpt.com/backend-api/wham/usage` (GET, no token cost); requires Codex login (`CODEX_DIR/auth.json`)
-- Layout: Line 1 shows Claude model/limits/context/session/activity; Line 2 conditionally shows Codex model/limits/credits; Line 3 conditionally shows Coral backend state
-- Skill detection reads the last 500KB of `transcript_path` JSONL and recognizes `Skill`/`proxy_Skill` tool-use blocks plus slash-command messages
-- Both fetches run in parallel
-- Claude API results are cached for 180 seconds on success, 30 seconds on error. HTTP 429 responses trigger exponential backoff from 2 minutes up to 10 minutes.
-- On error, the HUD preserves last-known-good rate-limit data until the error cache expires. The error indicator is shown only when no stale data exists.
-- Error indicators are explicit: `throttled: refreshes in Xm` for HTTP 429, `re-login required` for a Claude 401/403, and `API unavailable` for other fetch failures.
-- Missing or unsupported credentials stay silent. The HUD reads `CODEX_DIR/auth.json` and never writes it — refreshing Codex tokens belongs to the Codex CLI, and two writers of one token log the user out. A Codex token the API refuses is therefore either expired or revoked with nothing here able to tell which, so the Codex section goes silent and retries rather than reporting a login failure it cannot establish.
-- The session slot combines spend and duration when available, for example `$0.43 47m`.
-- Codex opt-in is controlled by `CONFIG_DIR/hud/.coral-codex-enabled` flag file; managed during install
-- If credentials are unavailable (e.g., API key users or Codex not installed), the respective rate limit section is silently omitted
+- Step 3 lists every path the script can create, plus one an older build could have stranded
+  (`CODEX_DIR/auth.json.tmp-<pid>`, which held credentials). Adding a path the script writes without
+  adding it there leaves a file behind on an uninstalled machine.
+- Nothing else about how the script behaves belongs in this file. It installs the script and removes
+  it; a second description of the script's runtime would be wrong the first time the script changed,
+  and nothing here would fail to say so.
