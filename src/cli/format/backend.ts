@@ -9,6 +9,7 @@ import {
   type RetirementHistoryTruncated,
   type SelectedHandoffDisposition,
   type StoredTerminalDisposition,
+  handoffRoutingInvocationClassification,
 } from '../../coordinator/handoff-routing/status.js';
 import {
   liveHandoffResultObligation,
@@ -835,6 +836,10 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
   }
 }
 
+// The store caps itself at 256 completed pairs plus 128 tombstones plus 64 unresolved, so a status at
+// both ceilings renders several hundred blocks however few are obligations. Measured: 417 lines for three.
+const ROUTING_INVOCATION_RENDER_LIMIT = 20;
+
 function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
   switch (status.kind) {
     case 'unresolved':
@@ -938,7 +943,17 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
       ].join('\n');
     case 'content-dependent': {
       if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
-      const sections = result.statuses.map(formatRoutingInvocationStatus);
+      // `backend status` reports obligations. The domain already says which invocations are still one
+      // and which are history, so this asks rather than re-deciding — history is counted, not printed.
+      // Which invocations are still an obligation is the domain's fact, so this asks rather than
+      // deciding again. A hold is never withheld — the cap only collapses history, which the same
+      // authority says contributes nothing to status, and which is retained evidence worth printing
+      // while there is little of it.
+      const holds = result.statuses.filter((status) => handoffRoutingInvocationClassification(status) === 'hold');
+      const rendered = result.statuses.length <= ROUTING_INVOCATION_RENDER_LIMIT ? result.statuses : holds;
+      const sections = rendered.map(formatRoutingInvocationStatus);
+      const collapsed = result.statuses.length - rendered.length;
+      if (collapsed > 0) sections.push(`Routing invocations already history, needing no action: ${collapsed}.`);
       const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
       if (truncatedHistory !== null) sections.push(truncatedHistory);
       return sections.length === 0 ? null : sections.join('\n');

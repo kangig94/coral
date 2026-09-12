@@ -944,6 +944,86 @@ describe('backend status local exit combination', () => {
 });
 
 describe('backend routing status', () => {
+  it('keeps the entries needing action visible once settled ones have accumulated', () => {
+    // Measured in the field: 387 invocations rendered 417 lines, of which three needed an operator.
+    const settled = Array.from({ length: 300 }, (_, index) => ({
+      kind: 'retired' as const,
+      selection: null,
+      tombstone: {
+        generation: HANDOFF_ROUTING_STATUS_GENERATION,
+        sequence: index + 10,
+        invocationId: `settled-${index}`,
+        retirementCause: 'completed-pair-compaction' as const,
+        selectedDisposition: null,
+        terminalExisted: true,
+        resolutionReason: null,
+        observedAt: '2026-08-01T00:00:00.000Z',
+      },
+    }));
+    const routingStatus = {
+      kind: 'current' as const,
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      statuses: [
+        {
+          kind: 'unresolved' as const,
+          selection: {
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
+            sequence: 1,
+            eventId: 'needs-action-event',
+            invocationId: 'needs-action-invocation',
+            observedAt: '2026-08-01T00:00:00.000Z',
+            eventKind: 'routing-selected' as const,
+            phase: 'selection' as const,
+            owner: { pid: 101, incarnation: testIncarnation(101) },
+            disposition: {
+              kind: 'continue-current' as const,
+              basis: { kind: 'same-build-set' as const, buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+          },
+          ownerLiveness: { kind: 'absent' as const },
+        },
+        {
+          // A capacity eviction is an obligation that is not `unresolved` — it prints its own resolve
+          // command. A cap that hid it would withhold an operator's work, which is the one thing the
+          // collapse may never do.
+          kind: 'retired' as const,
+          selection: null,
+          tombstone: {
+            generation: HANDOFF_ROUTING_STATUS_GENERATION,
+            sequence: 9,
+            invocationId: 'evicted-invocation',
+            retirementCause: 'selection-evicted-at-capacity' as const,
+            selectedDisposition: {
+              kind: 'continue-current' as const,
+              basis: { kind: 'same-build-set' as const, buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+            },
+            terminalExisted: false,
+            resolutionReason: null,
+            observedAt: '2026-08-01T00:00:00.000Z',
+          },
+        },
+        ...settled,
+      ],
+      retirementHistoryTruncated: {
+        kind: 'retirement-history-truncated' as const,
+        expiredIdentityCount: 0,
+        causes: { 'selection-evicted-at-capacity': 0, 'completed-pair-compaction': 0, 'operator-resolved': 0 },
+        minSelectionSequence: 0,
+        maxSelectionSequence: 0,
+        earliestSelectedAt: null,
+        latestSelectedAt: null,
+      },
+    } as unknown as Parameters<typeof formatHandoffRoutingStatus>[0];
+
+    const rendered = formatHandoffRoutingStatus(routingStatus) ?? '';
+
+    expect(rendered).toContain('needs-action-invocation');
+    expect(rendered, 'a hold that is not `unresolved` survives the collapse too').toContain('evicted-invocation');
+    expect(rendered).not.toContain('settled-0');
+    expect(rendered).toContain('Routing invocations already history, needing no action: 300.');
+    expect(rendered.split('\n').length).toBeLessThan(20);
+  });
+
   it('renders invocation dispositions and aggregate retirement history in journal order', async () => {
     const routingStatus = {
       kind: 'current',
