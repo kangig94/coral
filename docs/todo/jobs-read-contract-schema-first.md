@@ -52,6 +52,10 @@ response type.
 
 ## Compatibility rules already settled
 
+**Ratified project-wide on 2026-09-12** — the rule this entry anticipated is now
+[`design-philosophy`](../../.claude/rules/design-philosophy.md) §10 and binds every durable record, not
+just these responses. Nothing here needs re-deciding; what is left is the conversion itself.
+
 Response records are additive and unknown-key tolerant. Zod's default strip-on-parse behavior lets an older
 client consume a newer backend's optional additions without a cold upgrade. `.strict()` is therefore unsafe
 for list/detail envelopes, job rows, and statuses. It remains appropriate only for genuinely closed leaf

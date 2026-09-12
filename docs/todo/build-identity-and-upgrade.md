@@ -6,7 +6,7 @@ document has been wrong three times, kept because the corrections are the part t
 |                |                                                                                                                                                                                                                                                                           |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not. The routing-reason step is also closed: the routing preflight continuation retains its basis and `backend status` renders the process-local result. |
-| **Still open** | The **record** direction (a new CLI writes what an old coordinator reads), the **output** direction (a live session holding old skill text drives a new CLI), and the compatibility policy that the ordering ledger places ahead of the record direction. |
+| **Still open** | The **record** direction (a new CLI writes what an old coordinator reads), now under a settled policy — durable records are additive-only — and what remains is applying it. The **output** direction is closed as a deliberate non-goal; see the end of "Options". |
 | **Elsewhere**  | The same defect, uncorrected, at four other pairs of processes — see `proxy-set-acquisition.md`.                                                                                                                                                                          |
 
 ## Correction — this document named the wrong cause
@@ -165,17 +165,26 @@ about. Treat it as motivation, not as evidence.
 - ~~**Refuse the mixed window.**~~ Ruled out earlier and still ruled out: refusing is a cold upgrade,
   and handing off backwards makes the upgrade silently not take effect. Note that this is a different
   question from the takeover above — refusing keeps the old daemon, finishing the takeover replaces it.
-- **Make durable records forward-readable.** Additive-only shapes with unknown-key tolerance, so an
-  older reader can adopt a newer record. This is the same compatibility rule the jobs read contract
-  needs — see `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`, and settle
-  all three with one policy rather than three.
+- ~~**Make durable records forward-readable.**~~ **Chosen, 2026-09-12.** A durable record is
+  additive-only and its reader tolerates unknown keys: a field may be added; none may be removed,
+  renamed, retyped, or made newly required, and an existing field's meaning may not change under the
+  same name. A shape that cannot stay additive becomes a new generation at a new address rather than an
+  edit to the old one. The rule is in [`design-philosophy`](../../.claude/rules/design-philosophy.md)
+  §10, and it is the same rule `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`
+  were waiting on, so all three are settled by it.
 - **Restart the coordinator on upgrade.** Honest, but it is the cold upgrade the project rules out, and
   it does not help the jobs already running when the restart happens.
 
-Note that none of these address the output direction. A skill already loaded in a live session cannot
-be reached by anything the CLI or coordinator does; that half needs the machine-readable surface
-`cli-machine-channel.md` describes, so that a stale reader fails to find its field instead of
-misreading a value.
+**The output direction will not be defended. Decided 2026-09-12.** A skill already loaded in a live
+session cannot be reached by anything the CLI or coordinator does, and it does not have to be: restarting
+or resuming the session replaces that text, and a model that reads an unexpected result in conversation
+recovers without help. Paying for a defense here buys less than it costs.
+
+That is a decision about effort, not a licence. It leaves one constraint behind, and it is the one
+`cli-machine-channel.md` is bound by: a CLI surface may not be changed so that a stale reader's existing
+expectation silently becomes wrong. Reshaping output so an old reader fails to find its field is fine.
+Redefining what a value it already reads means is not — which is exactly what making `wait`'s exit code
+always zero would do to a skill still branching on it.
 
 ## Evidence to preserve
 

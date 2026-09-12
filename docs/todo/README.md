@@ -34,18 +34,22 @@ entry is half closed and its remainder wants an observed flake, so it cannot lea
 put first was what 0.10.10 cannot ship without, followed by what the 0.10.9..main diff has made cheap
 while that code is still warm.
 
-**Top priority, set 2026-09-09: the compatibility policy, then `build-identity-and-upgrade`.** The two entries
-that held this rank before it both closed on the same collapse, one boundary apart — a coordinator starved for
-60 seconds reading heartbeat silence as proof the provider was gone, and then a preflight that could not check
-terminalizing the job it could not check. Both are now three answers where there were two. What is left at the
-top is the policy that decides what two builds may say to each other, and 0.10.10 is the release that exercises
-it: the store DDL changed, so this build ships a new format fingerprint.
+**The compatibility policy is decided, 2026-09-12, and is no longer an entry here.** A durable record is
+additive-only and its reader tolerates unknown keys; a shape that cannot stay additive becomes a new
+generation at a new address. The output direction — a live session holding old skill text against a new CLI
+— will not be defended, because restarting or resuming the session replaces that text and a model recovers
+from an unexpected result on its own. Both halves live in
+[`design-philosophy`](../../.claude/rules/design-philosophy.md) §10; the entries below consume them rather
+than wait on them. The decision leaves one constraint in its place: a CLI surface may not be changed so
+that a stale reader's existing expectation silently becomes wrong.
 
-**One decision blocks four documents.** `build-identity-and-upgrade`, `jobs-read-contract-schema-first`
-and `result-artifact-availability` are the same transition — an older and a newer build reading each
-other's output — and `cli-machine-channel`'s `wait` half waits on the output direction of the first.
-Settle the compatibility policy once, across all of them; `result-artifact-availability` already says so
-and may be a consumer of that policy rather than its driver. Deciding it is not a document task.
+**What that decision left behind.** `build-identity-and-upgrade` keeps the record direction, which is now
+applying the rule rather than choosing it. `jobs-read-contract-schema-first` and
+`result-artifact-availability` are consumers of it and need no policy of their own.
+`cli-machine-channel`'s `wait` half is the one that got harder rather than easier: it was waiting for a
+defense of the output direction that will now never come, and its settled design — `wait` always exiting
+zero — redefines a value six shipped skill documents still branch on, which the surviving constraint
+forbids. It needs a shape a stale reader fails to read, not one it misreads.
 
 **Relationships that matter before starting.** `legacy-v1-capsule-retirement` and
 `foreign-capsule-retirement-terminal-recovery`
@@ -66,20 +70,19 @@ signal a correctly identified target, they are about there being no party left t
 **What the 0.10.9..main diff made cheap.** Twenty-one commits across 315 files, dominated by a new
 handoff-routing subsystem, a provable build identity, the coordinator socket address, the file-mode
 discipline under a shared root, and two comment sweeps. Entries sitting on that code are cheapest now:
-the compatibility policy because 0.10.10 is the release that exercises it, the comment ledger because the
-sweep that filled it just landed, and `exec-result-overclaim` because both its members were found in the
+the comment ledger because the sweep that filled it just landed, and `exec-result-overclaim` because both its members were found in the
 branch that became the build-identity work.
 
 **One suspicion, checked and dismissed, so nobody re-derives it.** `src/store/schema.sql` gained
 `projection_jobs.work_dir` and a `CHECK` constraint since 0.10.9, and the store format fingerprint is a hash
 over the DDL, so 0.10.10 ships a new store format. That is not a principle-10 problem: `v0.10.9` already
 carries `newer-incompatible` and `current-selection-newer-store`, so an older build meeting the newer store
-refuses to open it rather than failing on the constraint. The compatibility policy below is still worth
-settling first, but not because the schema change is unsafe.
+refuses to open it rather than failing on the constraint. The compatibility policy was worth settling for
+other reasons, and was; the schema change was never the one.
 
 | Order | Entry                                                       | Why here                                                                                                                                                  |
 | ----- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | the compatibility policy, then `build-identity-and-upgrade` | Unblocks three others, and 0.10.10 is the release that exercises it: the store DDL changed, so this build ships a new format fingerprint. The routing-reason step is closed; this entry still carries the record direction and the independent output direction. |
+| 1     | `build-identity-and-upgrade`                                | The policy it waited on is decided, so what is left is applying it: durable records additive-only, readers unknown-key tolerant. The routing-reason step and the output direction are both closed; the record direction is what remains. |
 | 2     | [`comment-sweep-bug-ledger`](./comment-sweep-bug-ledger.md) | A ledger of defects the sweeps deliberately did not fix. Draining it is cheapest immediately after the sweep that filled it, which has just landed.        |
 | 3     | [`exec-result-overclaim`](./exec-result-overclaim.md)       | Two small independent members, each with a correct sibling in the same file, both found in the branch that became the build-identity work.                 |
 | 4     | [`unit-suite-concurrency-and-real-time-tests`](./unit-suite-concurrency-and-real-time-tests.md) | **Half closed**, and the reason it used to lead still holds: a suite run saturates the one filesystem the repo, `~/.coral` and `/tmp` share, and a coordinator blocked mid-fsync holds the store lock and misses its heartbeat. What remains is the cap itself and 22 real sleeps totalling 1.4 s — under 1% of wall time — so the case for them is flake. Two flakes have now been observed and neither is a sleep: both raced a real subprocess against a wall-clock budget, so that class is what the entry now asks to be settled first. |
@@ -129,11 +132,12 @@ and with neither.
 
 `build-identity`'s first half — a record this build cannot parse must not become a job this build
 destroys — shipped as #316. What remains is three things, not two: **finishing the takeover** (above,
-now the front item), the **record** direction, which shares a compatibility policy with
+now the front item), the **record** direction, which applies the settled additive-only policy shared with
 [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and
-[`result-artifact-availability.md`](./result-artifact-availability.md), and the **output** direction —
-a live session holding old skill text driving a new CLI — which has no defense today and is what
-actually blocks the `wait` change below.
+[`result-artifact-availability.md`](./result-artifact-availability.md). The **output** direction — a live
+session holding old skill text driving a new CLI — is closed as a deliberate non-goal: resuming the session
+replaces that text and a model recovers from an unexpected result on its own. What it leaves is a rule the
+`wait` change below has to satisfy rather than wait out.
 
 Read its status block before citing it. The document has now been wrong **three times** about this
 subject — a cause inferred from a bundle-string diff, a trigger declared missing that fires every

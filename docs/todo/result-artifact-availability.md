@@ -62,8 +62,10 @@ becomes a controlled subscription error for clients that cannot represent the ne
 designed and tested before the old field is removed.
 
 That transition is the same problem `build-identity-and-upgrade.md` and
-`jobs-read-contract-schema-first.md` face. Settle the compatibility policy once, across all three,
-rather than inventing it here.
+`jobs-read-contract-schema-first.md` face, and the policy it was waiting for was settled on 2026-09-12:
+durable records are additive-only with unknown-key tolerant readers
+([`design-philosophy`](../../.claude/rules/design-philosophy.md) §10). This entry is a consumer of that
+rule now rather than a driver of it.
 
 ## Start condition
 

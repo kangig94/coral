@@ -51,11 +51,22 @@ do instead of surfacing a raw 403. No exit-code change is needed for it.
 **What it costs.** `toExitCode`'s outcome mapping goes away, and every skill that branches on it must
 move to the structured record — all six named above, not the three an earlier revision listed.
 
-**Binding constraint.** This must not ship before the build-identity work's **output** direction. A
-session holding the old skill's text against a new CLI would read the new always-zero exit as
-"everything succeeded" — silently converting failure into success, which is the worst available
-failure direction. See `build-identity-and-upgrade.md`; note that its shipped half (#316) is the other
-direction and does not lift this.
+**Binding constraint, and it no longer resolves by waiting.** This waited on the build-identity work's
+**output** direction, and on 2026-09-12 that direction was closed as a deliberate non-goal: a session
+holding old skill text is left to be fixed by restarting or resuming it. So nothing will arrive that makes
+the proposed change safe.
+
+What survives is the rule that replaced it
+([`design-philosophy`](../../.claude/rules/design-philosophy.md) §10): a CLI surface may not be changed so
+that a stale reader's existing expectation silently becomes wrong. Reshaping output so an old reader fails
+to find its field is permitted; redefining what a value it already reads means is not.
+
+**That rules out the settled design as written.** Making `wait` always exit zero redefines a value six
+shipped skill documents still branch on, and turns failure into success for every session holding their
+old text. The monitor/job split below is still the right separation — it has to be reached without
+changing what today's exit integer means to a reader that has not been reloaded. An exit code retired by
+being made unreachable, or a job outcome that a stale reader cannot find at all, satisfies the rule; an
+exit code quietly redefined does not.
 
 **Bonus the same change should carry.** A monitor should be able to show what has happened so far
 without waiting for a bound. If the structured surface is a read rather than only a stream, that falls
