@@ -1337,6 +1337,11 @@ export function readSettingsEnvValue(path, key) {
   }
 }
 
+// This slot exists so the user can see which default they configured, so it is the settings value
+// itself and must not be resolved into the model a call will run. A request names its own model and
+// concurrent jobs in one project can each name a different one, so there is no single effective model
+// for a statusline to show, and nothing to ask the backend for.
+//
 // This statusLine subprocess inherits the parent session's env, frozen at session start, so
 // `process.env` cannot answer what CORAL_CODEX_MODEL is now and a shell-exported one may not be
 // consulted either — honoring that frozen snapshot would make unsetting the value impossible.
