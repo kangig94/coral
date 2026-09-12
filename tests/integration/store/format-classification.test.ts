@@ -165,7 +165,7 @@ describe('store format classification', () => {
 
     expect(classify(dbPath, format('1.2.3+current'))).toMatchObject({
       kind: 'compatible',
-      storedProductVersion: '1.2.3+stored',
+      storedProductVersion: '1.2.3',
     });
   });
 
