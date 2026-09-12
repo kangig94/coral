@@ -148,4 +148,24 @@ describe('parseStoreResetRetentionLedger', () => {
       discarded: { count: 1, latest: { deferredTo: HOLDER_ID } },
     });
   });
+
+  it('preserves the distinction between unattempted and timed-out writer exclusion', () => {
+    const parsed = parse(
+      ledger({
+        preserved: incident({
+          preservation: {
+            kind: 'copied',
+            cause: { kind: 'exclusion-unproven', reason: 'not-attempted' },
+            coherence: 'coherent',
+          },
+        }),
+      }),
+    );
+
+    expect(parsed?.preserved?.preservation).toEqual({
+      kind: 'copied',
+      cause: { kind: 'exclusion-unproven', reason: 'not-attempted' },
+      coherence: 'coherent',
+    });
+  });
 });
