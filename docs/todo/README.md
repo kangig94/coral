@@ -111,6 +111,8 @@ sockets. Still no attribution, which is what it asks for.
 
 ---
 
+| [`routing-status-holds-and-superseded-generations`](./routing-status-holds-and-superseded-generations.md) | Two halves a direction review left after the contained fixes landed: history should leave `backend status` for an inspection verb rather than collapse past a threshold, and a superseded routing generation should be quarantined rather than deleted on a clock. The second is blocked on whether a superseded address competes for the 16 quarantine slots a damaged store uses. |
+
 ## Build identity — one build's records read by another
 
 |                                                                                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
