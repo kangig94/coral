@@ -2039,7 +2039,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('release')
-    .description('Permanently delete one committed store-reset incident')
+    .description('Permanently remove one committed store-reset incident')
     .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
     .requiredOption(
       '--target <target>',
