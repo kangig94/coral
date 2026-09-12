@@ -92,7 +92,7 @@ export type StoreResetReleaseResult =
   | { readonly kind: 'undeterminable'; readonly incidentId: string };
 
 export type StoreResetReleasePresentation = StoreResetReleaseResult & {
-  readonly target: 'current' | 'gen2';
+  readonly target: 'gen2';
   readonly flavor: BuildFlavor;
 };
 
@@ -448,8 +448,10 @@ export function releaseStoreResetIncident(
   if (!storage.syncDirectoryDurableSync(quarantineRoot)) {
     throw new Error('Store-reset release directory metadata could not be synchronized.');
   }
-  if (holder && manifest !== null) {
-    writeLedger(storage, quarantineRoot, { ...slot.ledger, preserved: null });
+  if (holder) {
+    if (manifest !== null) {
+      writeLedger(storage, quarantineRoot, { ...slot.ledger, preserved: null });
+    }
     return { kind: 'released', incidentId, evidenceBytes };
   }
   return { kind: 'not-holder', incidentId, evidenceBytes };

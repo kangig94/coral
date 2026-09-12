@@ -239,7 +239,7 @@ export async function releaseStoreReset(options: {
     resetLock.assertOwned();
     return {
       ...releaseStoreResetIncident(options.runtime.storage, paths.quarantineRoot, options.incidentId),
-      target: options.target,
+      target: 'gen2',
       flavor: options.runtime.flavor,
     };
   } finally {

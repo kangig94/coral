@@ -25,6 +25,7 @@ import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import {
   listStoreResetIncidentsLocal,
+  releaseStoreResetLocal,
   reportStoreResetIncidentLocal,
   type StoreResetCliDependencies,
 } from '#src/cli/store-reset.js';
@@ -244,6 +245,12 @@ const operationsDiscard: StoreResetCommandOperations['discard'] = async () => ({
   incident: null,
   resumed: false,
 });
+const operationsRelease: StoreResetCommandOperations['release'] = async (_target, flavor, incidentId) => ({
+  kind: 'absent',
+  target: 'gen2',
+  flavor,
+  incidentId,
+});
 async function runCommand(args: readonly string[], operations: StoreResetCommandOperations): Promise<void> {
   const program = new Command();
   program.exitOverride();
@@ -395,6 +402,7 @@ describe('local store-reset operations', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
+        evidenceBytes: 'unknown',
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -535,6 +543,7 @@ describe('operator store-reset discard', () => {
       const operations: StoreResetCommandOperations = {
         list: () => ({ incidents: [] }),
         report: async () => publicReport(),
+        release: operationsRelease,
         discard: async (target) => {
           if (target === 'legacy') return discardStoreReset({ target, runtime });
           throw new Error('unexpected generated target');
@@ -600,6 +609,7 @@ describe('operator store-reset discard', () => {
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
+      release: operationsRelease,
       discard: async () =>
         discardStoreReset({
           target: 'gen2',
@@ -640,6 +650,7 @@ describe('operator store-reset discard', () => {
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
+      release: operationsRelease,
       discard: async () =>
         discardStoreReset({
           target: 'gen2',
@@ -773,13 +784,115 @@ describe('operator store-reset discard', () => {
 
     expect(result).toMatchObject({
       kind: 'released',
-      target: 'current',
+      target: 'gen2',
       flavor: 'prod',
       incidentId: discarded.incident.incidentId,
     });
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
     expect(existsSync(join(quarantineRoot, discarded.incident.incidentId))).toBe(false);
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+  });
+
+  it('releases a holder with an unreadable manifest without clearing its preserved record', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const discarded = await discardStoreReset({
+      target: 'gen2',
+      runtime,
+      build: CURRENT_BUILD,
+      storeFormat: STORE_FORMAT,
+      acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
+    });
+    if (discarded.kind !== 'discarded' || discarded.incident === null) {
+      throw new Error('Expected a committed store-reset incident.');
+    }
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
+    const preservedBefore = readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved;
+    writeFileSync(join(incidentPath, 'reset-manifest.json'), '{');
+
+    await expect(
+      releaseStoreReset({ target: 'current', runtime, incidentId: discarded.incident.incidentId }),
+    ).resolves.toMatchObject({
+      kind: 'released',
+      target: 'gen2',
+      evidenceBytes: null,
+    });
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toEqual(preservedBefore);
+    expect(existsSync(incidentPath)).toBe(false);
+  });
+
+  it('reports absent, staged, non-holder, and indeterminate release outcomes from real storage', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const discarded = await discardStoreReset({
+      target: 'gen2',
+      runtime,
+      build: CURRENT_BUILD,
+      storeFormat: STORE_FORMAT,
+      acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
+    });
+    if (discarded.kind !== 'discarded' || discarded.incident === null) {
+      throw new Error('Expected a committed store-reset incident.');
+    }
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const holderId = discarded.incident.incidentId;
+    const holderPath = join(quarantineRoot, holderId);
+    const preservedBefore = readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved;
+
+    await expect(
+      releaseStoreReset({ target: 'gen2', runtime, incidentId: PUBLICATION_INVOCATION_ID }),
+    ).resolves.toMatchObject({ kind: 'absent', target: 'gen2' });
+
+    const stagedId = '423e4567-e89b-42d3-a456-426614174000';
+    mkdirSync(join(quarantineRoot, '.staging', stagedId), { recursive: true });
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: stagedId })).resolves.toMatchObject({
+      kind: 'staged',
+      target: 'gen2',
+    });
+
+    const nonHolderId = '523e4567-e89b-42d3-a456-426614174000';
+    const nonHolderPath = join(quarantineRoot, nonHolderId);
+    mkdirSync(nonHolderPath);
+    const holderManifest = JSON.parse(
+      readFileSync(join(holderPath, 'reset-manifest.json'), 'utf-8'),
+    ) as StoreResetIncidentManifestV3;
+    writeFileSync(
+      join(nonHolderPath, 'reset-manifest.json'),
+      serializeStoreResetIncidentManifest({ ...holderManifest, incidentId: nonHolderId }),
+    );
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: nonHolderId })).resolves.toMatchObject({
+      kind: 'not-holder',
+      target: 'gen2',
+    });
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toEqual(preservedBefore);
+
+    const lstatSync = runtime.storage.lstatSync;
+    const lstatSpy = vi.spyOn(runtime.storage, 'lstatSync').mockImplementation((path) => {
+      if (path === holderPath) {
+        throw Object.assign(new Error('fixture observation failure'), { code: 'EACCES' });
+      }
+      return lstatSync(path, { bigint: true });
+    });
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: holderId })).resolves.toMatchObject({
+      kind: 'undeterminable',
+      target: 'gen2',
+    });
+    lstatSpy.mockRestore();
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toEqual(preservedBefore);
+    expect(existsSync(holderPath)).toBe(true);
   });
 
   it('resumes an interrupted incident through the operator service before initialization', async () => {
@@ -862,9 +975,9 @@ describe('operator store-reset discard', () => {
 
 describe('backend store-reset commands', () => {
   it('forwards release without a legacy target or coordinator operation', async () => {
-    const release = vi.fn(async (target: 'current' | 'gen2', flavor: BuildFlavor, incidentId: string) => ({
+    const release = vi.fn(async (_target: 'current' | 'gen2', flavor: BuildFlavor, incidentId: string) => ({
       kind: 'not-holder' as const,
-      target,
+      target: 'gen2' as const,
       flavor,
       incidentId,
       evidenceBytes: 42,
@@ -882,14 +995,64 @@ describe('backend store-reset commands', () => {
     );
 
     expect(release).toHaveBeenCalledWith('current', 'dev', INCIDENT_ID);
-    expect(stdout).toContain(`Released non-holder store-reset incident '${INCIDENT_ID}'`);
+    expect(stdout).toContain(`Released non-holder store-reset incident '${INCIDENT_ID}' (42 bytes) from gen2 dev`);
+    expect(stdout).not.toContain('from current');
     expect(stderr).toBe('');
+  });
+
+  it.each([
+    {
+      kind: 'absent' as const,
+      expected: `Next: coral-cli backend store-reset list --target gen2.`,
+    },
+    {
+      kind: 'staged' as const,
+      expected: 'Start Coral and let crash recovery finish, then retry.',
+    },
+    {
+      kind: 'undeterminable' as const,
+      expected: 'Retry; if it persists, report this complete output.',
+    },
+  ])('gives the $kind release failure a reversible next step', async ({ kind, expected }) => {
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: async (_target, flavor, incidentId) => ({ kind, target: 'gen2', flavor, incidentId }),
+    };
+
+    await runCommand(
+      ['backend', 'store-reset', 'release', INCIDENT_ID, '--target', 'current', '--flavor', 'prod'],
+      operations,
+    );
+
+    expect(stderr).toContain(expected);
+    expect(stderr).not.toContain('store-reset release');
+  });
+
+  it('uses release-specific guidance for an invalid incident id', async () => {
+    await runCommand(['backend', 'store-reset', 'release', 'NOT-A-UUID', '--target', 'current', '--flavor', 'prod'], {
+      list: () => ({ incidents: [] }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: releaseStoreResetLocal,
+    });
+
+    expect(stderr).toContain('[code=invalid_store_reset_release_incident_id]');
+    expect(stderr).toContain('--target <current|gen2>');
+    expect(stderr).toContain('regardless of its state');
+    expect(stderr).not.toContain('ready state');
   });
 
   it('describes discard as running on a newer build when one already owns the store', () => {
     const program = new Command();
     registerBackendCommands(program, {
-      storeReset: { list: () => ({ incidents: [] }), report: async () => publicReport(), discard: operationsDiscard },
+      storeReset: {
+        list: () => ({ incidents: [] }),
+        report: async () => publicReport(),
+        discard: operationsDiscard,
+        release: operationsRelease,
+      },
     });
 
     const discard = program.commands
@@ -919,6 +1082,7 @@ describe('backend store-reset commands', () => {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
       discard,
+      release: operationsRelease,
     };
 
     await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
@@ -976,6 +1140,7 @@ describe('backend store-reset commands', () => {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
       discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
+      release: operationsRelease,
     };
 
     await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
@@ -1004,6 +1169,7 @@ describe('backend store-reset commands', () => {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
       discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
+      release: operationsRelease,
     };
 
     await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
@@ -1036,6 +1202,7 @@ describe('backend store-reset commands', () => {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
       discard: async () => ({ kind: 'handoff', target, source: 'active-selection' }),
+      release: operationsRelease,
     };
 
     await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
@@ -1056,6 +1223,7 @@ describe('backend store-reset commands', () => {
       list: () => ({ incidents: [] }),
       report: async () => publicReport(),
       discard: operationsDiscard,
+      release: operationsRelease,
     };
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'legacy'], operations);
@@ -1082,12 +1250,14 @@ describe('backend store-reset commands', () => {
             schemaVersion: 3,
             resetPolicyCause: 'older-incompatible',
             fileCount: 0,
+            evidenceBytes: 42,
             retention: { slot: 'claimed', preservation: { kind: 'linked' }, resumeLeftActive: false },
             storedProductVersion: '0.9.15',
           },
         ],
       }),
       report: async () => report,
+      release: operationsRelease,
       discard: async () => ({
         kind: 'discarded',
         target: 'gen2',
@@ -1101,12 +1271,13 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Retention | Preservation | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | claimed | linked | 0.9.15\n\n` +
+      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked | 0.9.15\n\n` +
         'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
         'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n' +
-        'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.\n',
+        'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.\n' +
+        'To permanently remove a committed incident: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
     );
     expect(stderr).toBe('');
 
@@ -1132,7 +1303,7 @@ describe('backend store-reset commands', () => {
       incident: null,
       resumed: false,
     }));
-    const operations: StoreResetCommandOperations = { list, report, discard };
+    const operations: StoreResetCommandOperations = { list, report, discard, release: operationsRelease };
 
     await expect(runCommand(['backend', 'store-reset', 'list'], operations)).rejects.toMatchObject({
       code: 'commander.missingMandatoryOptionValue',
@@ -1157,6 +1328,7 @@ describe('backend store-reset commands', () => {
         throw new StoreResetCliError('invalid_store_reset_incident_id');
       },
       discard: operationsDiscard,
+      release: operationsRelease,
     });
     expect(stdout).toBe('');
     expect(stderr).toBe(
@@ -1174,6 +1346,7 @@ describe('backend store-reset commands', () => {
       },
       report: async () => publicReport(),
       discard: operationsDiscard,
+      release: operationsRelease,
     });
     expect(stdout).toBe('');
     expect(stderr).toBe(
@@ -1191,6 +1364,7 @@ describe('backend store-reset commands', () => {
       },
       report: async () => publicReport(),
       discard: operationsDiscard,
+      release: operationsRelease,
     });
 
     expect(stdout).toBe('');

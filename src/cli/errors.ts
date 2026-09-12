@@ -16,6 +16,7 @@ import { IpcRpcError } from '../transport/ipc/client.js';
 
 export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
+  | 'invalid_store_reset_release_incident_id'
   | 'store_reset_incident_not_found'
   | 'store_reset_incident_limit_exceeded'
   | 'store_reset_build_mismatch'
@@ -27,6 +28,12 @@ const STORE_RESET_ERRORS = {
     message: 'Incident ID must be a canonical lowercase UUID.',
     remediation:
       'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.',
+    exitCode: 2,
+  },
+  invalid_store_reset_release_incident_id: {
+    message: 'Release incident ID must be a canonical lowercase UUID.',
+    remediation:
+      'Run `coral-cli backend store-reset list --target <current|gen2>` and use the ID of the incident to remove, regardless of its state.',
     exitCode: 2,
   },
   store_reset_incident_not_found: {

@@ -12,17 +12,50 @@ function observed(value: string | null): string {
 }
 
 function retention(entry: StoreResetIncidentListResult['incidents'][number]): string {
-  if (entry.retention.slot === 'unknown') return 'unknown';
-  if (entry.retention.slot === 'claimed') return 'claimed';
-  return `excess (${entry.retention.lineage}; holder ${entry.retention.holder})`;
+  switch (entry.retention.slot) {
+    case 'unknown':
+      return 'unknown';
+    case 'claimed':
+      return 'claimed';
+    case 'excess':
+      return `excess (${entry.retention.lineage}; holder ${entry.retention.holder})`;
+    default:
+      return assertNever(entry.retention);
+  }
 }
 
 function preservation(entry: StoreResetIncidentListResult['incidents'][number]): string {
-  if (entry.retention.slot === 'unknown' || entry.retention.preservation === 'unknown') return 'unknown';
-  if (entry.retention.preservation.kind === 'linked') return 'linked';
-  const cause = entry.retention.preservation.cause;
-  const why = cause.kind === 'exclusion-unproven' ? cause.reason : cause.code;
-  return `copied (${why}; ${entry.retention.preservation.coherence})`;
+  switch (entry.retention.slot) {
+    case 'unknown':
+      return 'unknown';
+    case 'claimed':
+    case 'excess': {
+      const mechanism = entry.retention.preservation;
+      if (mechanism === 'unknown') return 'unknown';
+      switch (mechanism.kind) {
+        case 'linked':
+          return 'linked';
+        case 'copied': {
+          let why: string;
+          switch (mechanism.cause.kind) {
+            case 'exclusion-unproven':
+              why = mechanism.cause.reason;
+              break;
+            case 'link-unsupported':
+              why = mechanism.cause.code;
+              break;
+            default:
+              return assertNever(mechanism.cause);
+          }
+          return `copied (${why}; ${mechanism.coherence})`;
+        }
+        default:
+          return assertNever(mechanism);
+      }
+    }
+    default:
+      return assertNever(entry.retention);
+  }
 }
 
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
@@ -84,14 +117,15 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     return [
       `No ${target} store-reset incidents.`,
       'File a Store-reset incident issue with this complete output; do not attach DB, WAL, SHM, or raw logs.',
+      `To permanently remove a committed incident: coral-cli backend store-reset release --target ${target === 'legacy' ? 'gen2' : target} --flavor <prod|dev> <incident-id>`,
     ].join('\n');
   }
   return [
-    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Retention | Preservation | Stored Coral version',
+    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Stored Coral version',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${retention(incident)} | ${preservation(incident)} | ${incident.storedProductVersion ?? 'none'}`
-        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${retention(incident)} | ${preservation(incident)} | ${incident.storedProductVersion ?? 'none'}`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.storedProductVersion ?? 'none'}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     '',
     'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
@@ -99,21 +133,26 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.',
     'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.',
     'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.',
+    `To permanently remove a committed incident: coral-cli backend store-reset release --target ${target === 'legacy' ? 'gen2' : target} --flavor <prod|dev> <incident-id>`,
   ].join('\n');
 }
 
 export function formatStoreResetRelease(result: StoreResetReleasePresentation): string {
   switch (result.kind) {
-    case 'released':
-      return `Released preserved store-reset incident '${result.incidentId}' (${result.evidenceBytes} bytes) from ${result.target} ${result.flavor}.`;
-    case 'not-holder':
-      return `Released non-holder store-reset incident '${result.incidentId}' (${result.evidenceBytes} bytes) from ${result.target} ${result.flavor}; the preserved slot is unchanged.`;
+    case 'released': {
+      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
+      return `Released preserved store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}.`;
+    }
+    case 'not-holder': {
+      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
+      return `Released non-holder store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; the preserved slot is unchanged.`;
+    }
     case 'absent':
-      return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}.`;
+      return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;
     case 'staged':
-      return `Store-reset incident '${result.incidentId}' is staged and belongs to crash recovery; no evidence was released.`;
+      return `Store-reset incident '${result.incidentId}' is staged and belongs to crash recovery; no evidence was released. Start Coral and let crash recovery finish, then retry.`;
     case 'undeterminable':
-      return `Store-reset incident '${result.incidentId}' could not be verified as committed; no evidence was released and the preserved slot is unchanged.`;
+      return `Store-reset incident '${result.incidentId}' could not be verified as committed; no evidence was released and the preserved slot is unchanged. Retry; if it persists, report this complete output.`;
     default:
       return assertNever(result);
   }

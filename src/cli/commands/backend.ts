@@ -499,7 +499,7 @@ export interface StoreResetCommandOperations {
   list(target: StoreResetTarget): ReturnType<typeof listStoreResetIncidentsLocal>;
   report(target: StoreResetTarget, incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
   discard(target: StoreResetTarget, flavor: BuildFlavor): ReturnType<typeof discardStoreResetLocal>;
-  release?(
+  release(
     target: StoreResetReleaseTarget,
     flavor: BuildFlavor,
     incidentId: string,
@@ -2049,7 +2049,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
     .action(async (incidentId: string, options: { target: StoreResetReleaseTarget; flavor: BuildFlavor }) => {
       try {
-        const result = await (storeReset.release ?? releaseStoreResetLocal)(options.target, options.flavor, incidentId);
+        const result = await storeReset.release(options.target, options.flavor, incidentId);
         const output = `${formatStoreResetRelease(result)}\n`;
         if (result.kind === 'released' || result.kind === 'not-holder') {
           process.stdout.write(output);

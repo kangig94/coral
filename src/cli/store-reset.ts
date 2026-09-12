@@ -82,7 +82,7 @@ export function releaseStoreResetLocal(
   incidentId: string,
 ): Promise<StoreResetReleaseDecision> {
   if (!isCanonicalStoreResetIncidentId(incidentId)) {
-    throw new StoreResetCliError('invalid_store_reset_incident_id');
+    throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
   return releaseStoreReset({ target, runtime: createRealRuntime(flavor), incidentId });
 }

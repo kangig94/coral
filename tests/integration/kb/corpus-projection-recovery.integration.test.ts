@@ -136,6 +136,9 @@ async function runQuarantineCommand(harness: ProjectionHarness, commitId: string
       discard: async () => {
         throw new Error('Store reset is not part of KB commit recovery.');
       },
+      release: async () => {
+        throw new Error('Store reset is not part of KB commit recovery.');
+      },
     },
     kbCommit: {
       quarantine: async (flavor, blockingCommitId) => {

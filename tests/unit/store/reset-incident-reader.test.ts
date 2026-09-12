@@ -214,6 +214,7 @@ describe('store reset incident listing', () => {
         schemaVersion: 2,
         resetPolicyCause: null,
         fileCount: 1,
+        evidenceBytes: 'unknown',
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -225,6 +226,7 @@ describe('store reset incident listing', () => {
         schemaVersion: 2,
         resetPolicyCause: null,
         fileCount: 1,
+        evidenceBytes: 'unknown',
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -254,6 +256,7 @@ describe('store reset incident listing', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
+        evidenceBytes: 'unknown',
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -265,6 +268,7 @@ describe('store reset incident listing', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
+        evidenceBytes: 'unknown',
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -311,6 +315,7 @@ describe('store reset incident listing', () => {
         resumeLeftActive: true,
       },
       storedProductVersion: '0.9.15',
+      evidenceBytes: 17,
     });
   });
 

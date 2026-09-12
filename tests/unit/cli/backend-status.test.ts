@@ -131,6 +131,9 @@ const storeReset: StoreResetCommandOperations = {
   discard: async () => {
     throw new Error('not used');
   },
+  release: async () => {
+    throw new Error('not used');
+  },
 };
 
 const noDirectProviderProxySetHolders = async () => [] as const;

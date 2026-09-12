@@ -51,6 +51,7 @@ export type StoreResetIncidentListEntry = BaseStoreResetIncidentListEntry & {
       })
     | { readonly slot: 'unknown' };
   readonly storedProductVersion: string | null | 'unknown';
+  readonly evidenceBytes: number | 'unknown';
 };
 
 export type StoreResetIncidentListResult = Omit<BaseStoreResetIncidentListResult, 'incidents'> & {
@@ -162,7 +163,7 @@ function buildMatches(manifest: StoreResetIncidentManifest, expected: StrictBund
 function listRetention(
   incidentId: string,
   ledger: StoreResetRetentionLedger | null,
-): Pick<StoreResetIncidentListEntry, 'retention' | 'storedProductVersion'> {
+): Pick<StoreResetIncidentListEntry, 'retention' | 'storedProductVersion' | 'evidenceBytes'> {
   const retained =
     ledger?.preserved?.incidentId === incidentId
       ? { incident: ledger.preserved, retention: { slot: 'claimed' as const } }
@@ -170,7 +171,7 @@ function listRetention(
         ? { incident: ledger.excess.latest, retention: ledger.excess.latest }
         : null;
   if (retained === null) {
-    return { retention: { slot: 'unknown' }, storedProductVersion: 'unknown' };
+    return { retention: { slot: 'unknown' }, storedProductVersion: 'unknown', evidenceBytes: 'unknown' };
   }
   return {
     retention: {
@@ -180,6 +181,7 @@ function listRetention(
     },
     storedProductVersion:
       retained.incident.storedProductVersion === undefined ? 'unknown' : retained.incident.storedProductVersion,
+    evidenceBytes: retained.incident.evidenceBytes,
   };
 }
 
