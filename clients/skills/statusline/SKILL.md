@@ -53,6 +53,12 @@ Manage the coral HUD statusline for Claude Code.
    - `CONFIG_DIR/hud/.coral-backend-cache.json`
    - `CONFIG_DIR/hud/.coral-claude.lock`
    - `CONFIG_DIR/hud/.coral-backend.lock`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-cache\.json\.tmp-[0-9]+$`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-git-cache\.json\.tmp-[0-9]+$`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-sessions\.json\.tmp-[0-9]+$`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-backend-cache\.json\.tmp-[0-9]+$`
+   - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-codex-[0-9a-f]{12}-cache\.json\.tmp-[0-9]+$`
+   - regular files in `CODEX_DIR` whose basename matches exactly `^auth\.json\.tmp-[0-9]+$`
    - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-codex-[0-9a-f]{12}-cache\.json$`
    - regular files in `CONFIG_DIR/hud` whose basename matches exactly `^\.coral-codex-[0-9a-f]{12}\.lock$`
    Do not follow symlinks or delete any broader `.coral-*` pattern.

@@ -8,6 +8,7 @@ import {
   openSync,
   fstatSync,
   statSync,
+  readdirSync,
   readSync,
   closeSync,
   renameSync,
@@ -163,6 +164,7 @@ export function parseGitStatus(out) {
 
 export function formatGitSegment(value) {
   if (!value || typeof value.branch !== 'string' || value.branch === '') return null;
+  // `git check-ref-format` rejects refname bytes below \040 and \177, so this value cannot carry terminal controls.
   return `${CYAN}⎇ ${value.branch}${RESET}${value.dirty ? `${YELLOW}*${RESET}` : ''}`;
 }
 
@@ -174,8 +176,17 @@ function claimGitProbe(key, now) {
   const held = readHudLockHold(lockPath);
   if (held !== null) {
     if (holdIsLive(held, now)) return null;
-    deleteHudFile(lockPath);
-    if (held.key !== null) backOffRepo(held.key, now);
+    if (!deleteStaleHudLock(lockPath, held)) return null;
+    if (held.key !== null) {
+      const claim = claimHudLock(lockPath, held.key, now);
+      if (claim) {
+        try {
+          backOffRepo(held.key, now);
+        } finally {
+          releaseHudLock(claim);
+        }
+      }
+    }
     return null;
   }
   return claimHudLock(lockPath, key, now);
@@ -198,10 +209,20 @@ function readHudLockHold(lockPath) {
   return { ts: mtimeMs, key: null, nonce: null };
 }
 
-// A `ts` ahead of `now` is a clock that moved backward, not a hold with a long future. Left unguarded
-// the difference stays negative for the length of the skew and the hold never expires.
+// A `ts` ahead of `now` is expired: treating a backward clock step as live leaves no exit until the
+// skew elapses, while the exclusive create bounds the extra probe it can admit.
 export function holdIsLive(held, now) {
   return held.ts <= now && now - held.ts <= LOCK_STALE_MS;
+}
+
+function deleteStaleHudLock(lockPath, held) {
+  const current = readHudLockHold(lockPath);
+  const matches =
+    current !== null &&
+    (held.nonce !== null ? current.nonce === held.nonce : current.nonce === null && current.ts === held.ts);
+  if (!matches) return false;
+  deleteHudFile(lockPath);
+  return true;
 }
 
 // The exclusive create is the whole arbitration, so a stale lock is surrendered by whoever finds it
@@ -271,8 +292,6 @@ function writeGitCache(all) {
   publishJsonAtomically(GIT_CACHE_FILE, all);
 }
 
-// The rename is what publishes, so a process killed before it leaves the temp file behind with nobody
-// to reclaim it — and one caller's temp holds a live OAuth access and refresh token.
 function publishJsonAtomically(path, value) {
   const tmpPath = `${path}.tmp-${process.pid}`;
   try {
@@ -429,7 +448,7 @@ export function stripControlSequences(text) {
   return text
     .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
-    .replace(/[\x00-\x1f\x7f]/g, ' ');
+    .replace(/[\x00-\x1f\x7f\u0080-\u009f]/g, ' ');
   /* eslint-enable no-control-regex */
 }
 
@@ -572,6 +591,37 @@ const GIT_BACKOFF_MS = 600_000;
 // the only thing in this segment that can change between two renders.
 const GIT_NEGATIVE_TTL_MS = 300_000;
 const GIT_ENTRY_PRUNE_MS = 7 * 24 * 60 * 60_000;
+const ORPHANED_TEMP_MAX_AGE_MS = 5 * 60 * 1000;
+let orphanedTempsSwept = false;
+
+function sweepOldTempFiles(dir, isTempFile) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const oldest = Date.now() - ORPHANED_TEMP_MAX_AGE_MS;
+  for (const entry of entries) {
+    if (!entry.isFile() || !isTempFile(entry.name)) continue;
+    const path = join(dir, entry.name);
+    try {
+      if (statSync(path).mtimeMs < oldest) deleteHudFile(path);
+    } catch {}
+  }
+}
+
+function sweepOrphanedTemps() {
+  if (orphanedTempsSwept) return;
+  orphanedTempsSwept = true;
+  sweepOldTempFiles(CACHE_DIR, (name) =>
+    /^(?:\.coral-(?:cache|git-cache|sessions|backend-cache)\.json|\.coral-codex-[0-9a-f]{12}-cache\.json)\.tmp-\d+$/u.test(
+      name,
+    ),
+  );
+  sweepOldTempFiles(CODEX_DIR, (name) => /^auth\.json\.tmp-\d+$/u.test(name));
+}
 
 // --- session state ---
 
@@ -710,7 +760,7 @@ function acquireFetchLock(key) {
   const now = Date.now();
   const held = readHudLockHold(lockPath);
   if (held !== null) {
-    if (!holdIsLive(held, now)) deleteHudFile(lockPath);
+    if (!holdIsLive(held, now)) deleteStaleHudLock(lockPath, held);
     return null;
   }
   return claimHudLock(lockPath, key, now);
@@ -1206,9 +1256,20 @@ const REEF_INFO_PATH = join(CLAUDE_DIR, 'coral', 'reef.json');
 function readReefInfo() {
   try {
     const info = JSON.parse(readFileSync(REEF_INFO_PATH, 'utf-8'));
-    return info?.url ? info : null;
+    if (!isSafeReefUrl(info?.url)) return null;
+    return info;
   } catch {
     return null;
+  }
+}
+
+function isSafeReefUrl(value) {
+  if (typeof value !== 'string' || value !== stripControlSequences(value) || /\s/u.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname !== '' && !url.username && !url.password;
+  } catch {
+    return false;
   }
 }
 
@@ -1366,6 +1427,8 @@ async function main() {
     process.stdout.write('');
     return;
   }
+
+  sweepOrphanedTemps();
 
   const safe = (p) => p.catch(() => null);
   // A renderer that throws may cost its own slot and nothing else. Without this the three async

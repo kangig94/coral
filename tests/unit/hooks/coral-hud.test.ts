@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -72,13 +72,56 @@ describe('coral-hud account isolation', () => {
     const source = readFileSync('clients/skills/statusline/coral-hud.mjs', 'utf-8');
     const skill = readFileSync('clients/skills/statusline/SKILL.md', 'utf-8');
 
-    // Uninstall may not use a `.coral-*` glob, so coverage has to come from the list naming each file.
-    // Deriving the expected names from the script's own literals is what makes a new writer fail here
-    // rather than leave its file behind; `.coral-sessions.json` retains prompt text.
     const written = new Set([...source.matchAll(/'(\.coral-[a-z-]+(?:-cache)?\.(?:json|lock))'/gu)].map((m) => m[1]));
     expect(written.size).toBeGreaterThan(3);
     for (const basename of written) {
       expect(skill, `uninstall must name ${basename}`).toContain(`CONFIG_DIR/hud/${basename}`);
+    }
+
+    for (const pattern of [
+      '^\\.coral-cache\\.json\\.tmp-[0-9]+$',
+      '^\\.coral-git-cache\\.json\\.tmp-[0-9]+$',
+      '^\\.coral-sessions\\.json\\.tmp-[0-9]+$',
+      '^\\.coral-backend-cache\\.json\\.tmp-[0-9]+$',
+      '^\\.coral-codex-[0-9a-f]{12}-cache\\.json\\.tmp-[0-9]+$',
+      '^auth\\.json\\.tmp-[0-9]+$',
+    ]) {
+      expect(skill).toContain(pattern);
+    }
+  });
+});
+
+describe('coral-hud temporary files', () => {
+  it('reclaims only expired HUD and Codex credential temps', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-temp-'));
+    const cfg = join(root, 'cfg');
+    const hud = join(cfg, 'hud');
+    const codex = join(root, 'codex');
+    const oldHudTemp = join(hud, '.coral-cache.json.tmp-123');
+    const oldCodexTemp = join(codex, 'auth.json.tmp-123');
+    const freshHudTemp = join(hud, '.coral-git-cache.json.tmp-456');
+    const unrelatedTemp = join(hud, '.coral-unrelated.json.tmp-123');
+    try {
+      mkdirSync(hud, { recursive: true });
+      mkdirSync(codex, { recursive: true });
+      for (const path of [oldHudTemp, oldCodexTemp, freshHudTemp, unrelatedTemp]) writeFileSync(path, 'temp');
+      const old = new Date(Date.now() - 6 * 60 * 1000);
+      utimesSync(oldHudTemp, old, old);
+      utimesSync(oldCodexTemp, old, old);
+      utimesSync(unrelatedTemp, old, old);
+
+      spawnSync(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
+        input: JSON.stringify({ cwd: root, session_id: 'temps', model: { display_name: 'O' } }),
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: codex },
+        encoding: 'utf-8',
+      });
+
+      expect(existsSync(oldHudTemp)).toBe(false);
+      expect(existsSync(oldCodexTemp)).toBe(false);
+      expect(existsSync(freshHudTemp)).toBe(true);
+      expect(existsSync(unrelatedTemp)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -167,6 +210,7 @@ describe('coral-hud terminal-safe rendering', () => {
     expect(stripControlSequences('hi \x1b[31mred\x1b[0m there')).toBe('hi red there');
     expect(stripControlSequences(`click ${hyperlink('http://evil', 'here')}`)).toBe('click here');
     expect(stripControlSequences('line\u0007bell')).toBe('line bell');
+    expect(stripControlSequences('line\u009b2Jred')).toBe('line 2Jred');
   });
 
   it('sanitizes on the path a pasted prompt actually travels, not only in the helper', () => {
@@ -176,6 +220,43 @@ describe('coral-hud terminal-safe rendering', () => {
     expect(extractUserText('<command-name>/ship</command-name><command-args>\x1b[31mprod</command-args>')).toBe(
       '/ship prod',
     );
+  });
+});
+
+describe('coral-hud reef rendering', () => {
+  it('rejects a control byte in the URL before putting it in an OSC hyperlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-reef-'));
+    const cfg = join(root, 'cfg');
+    const home = join(root, 'home');
+    const preload = join(root, 'fetch.cjs');
+    try {
+      mkdirSync(join(home, '.coral', 'gen2', 'run'), { recursive: true });
+      mkdirSync(join(cfg, 'coral'), { recursive: true });
+      writeFileSync(
+        join(home, '.coral', 'gen2', 'run', 'coordinator.json'),
+        JSON.stringify({ pid: process.pid, port: 41237, bootToken: 'test' }),
+      );
+      writeFileSync(join(cfg, 'coral', 'reef.json'), JSON.stringify({ url: 'http://127.0.0.1:41237/\x1b]8;;pwned' }));
+      writeFileSync(
+        preload,
+        'global.fetch = async () => ({ ok: true, json: async () => ({ active: 0, queueDepth: 0, liveDiscuss: 0 }) });\n',
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        ['--require', preload, join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')],
+        {
+          input: JSON.stringify({ cwd: root, session_id: 'reef', model: { display_name: 'O' } }),
+          env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex'), HOME: home },
+          encoding: 'utf-8',
+        },
+      );
+
+      expect(result.stdout ?? '').not.toContain('reef');
+      expect(result.stdout ?? '').not.toContain('\x1b]8;;pwned');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -214,6 +295,106 @@ describe('coral-hud holds and staleness', () => {
   });
 });
 
+describe('coral-hud stale lock recovery', () => {
+  function renderAfterReplacingStaleLock(lockName: string, key: string): string | undefined {
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-lock-'));
+    const cfg = join(root, 'cfg');
+    const hud = join(cfg, 'hud');
+    const lockPath = join(hud, lockName);
+    const preload = join(root, 'replace-lock.cjs');
+    try {
+      mkdirSync(hud, { recursive: true });
+      writeFileSync(lockPath, JSON.stringify({ ts: Date.now() - 60_000, key, nonce: 'stale' }));
+      writeFileSync(
+        preload,
+        [
+          "const fs = require('node:fs');",
+          "const { syncBuiltinESMExports } = require('node:module');",
+          `const target = ${JSON.stringify(lockPath)};`,
+          `const fresh = ${JSON.stringify(JSON.stringify({ ts: Date.now(), key, nonce: 'fresh' }))};`,
+          'const readFile = fs.readFileSync;',
+          'let replaced = false;',
+          'fs.readFileSync = (...args) => {',
+          '  const value = readFile(...args);',
+          '  if (!replaced && args[0] === target) {',
+          '    replaced = true;',
+          '    fs.writeFileSync(target, fresh);',
+          '  }',
+          '  return value;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+
+      spawnSync(
+        process.execPath,
+        ['--require', preload, join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')],
+        {
+          input: JSON.stringify({ cwd: root, session_id: lockName, model: { display_name: 'O' } }),
+          env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex') },
+          encoding: 'utf-8',
+        },
+      );
+
+      return existsSync(lockPath) ? JSON.parse(readFileSync(lockPath, 'utf-8')).nonce : undefined;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('keeps a replacement git lock instead of deleting it as stale', () => {
+    expect(renderAfterReplacingStaleLock('.coral-git.lock', 'stalled-repository')).toBe('fresh');
+  });
+
+  it('keeps a replacement fetch lock instead of deleting it as stale', () => {
+    expect(renderAfterReplacingStaleLock('.coral-claude.lock', 'claude')).toBe('fresh');
+  });
+
+  it('holds the git lock while publishing a stale repository fence', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-hud-fence-'));
+    const cfg = join(root, 'cfg');
+    const hud = join(cfg, 'hud');
+    const lockPath = join(hud, '.coral-git.lock');
+    const cachePath = join(hud, '.coral-git-cache.json');
+    const record = join(root, 'lock-state');
+    const preload = join(root, 'observe-rename.cjs');
+    try {
+      mkdirSync(hud, { recursive: true });
+      writeFileSync(lockPath, JSON.stringify({ ts: Date.now() - 60_000, key: 'stalled-repository', nonce: 'stale' }));
+      writeFileSync(
+        preload,
+        [
+          "const fs = require('node:fs');",
+          "const { syncBuiltinESMExports } = require('node:module');",
+          `const cachePath = ${JSON.stringify(cachePath)};`,
+          `const lockPath = ${JSON.stringify(lockPath)};`,
+          `const record = ${JSON.stringify(record)};`,
+          'const rename = fs.renameSync;',
+          'fs.renameSync = (...args) => {',
+          '  if (args[1] === cachePath) fs.writeFileSync(record, fs.existsSync(lockPath) ? "locked" : "unlocked");',
+          '  return rename(...args);',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+
+      spawnSync(
+        process.execPath,
+        ['--require', preload, join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')],
+        {
+          input: JSON.stringify({ cwd: root, session_id: 'fence', model: { display_name: 'O' } }),
+          env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex') },
+          encoding: 'utf-8',
+        },
+      );
+
+      expect(readFileSync(record, 'utf-8')).toBe('locked');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('coral-hud transcript rendering end to end', () => {
   function renderWithTranscript(sessionId: string, lines: string[]): string {
     const dir = mkdtempSync(join(tmpdir(), 'coral-hud-'));
@@ -226,7 +407,7 @@ describe('coral-hud transcript rendering end to end', () => {
         transcript_path: transcript,
         model: { display_name: 'O' },
       }),
-      env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'cfg') },
+      env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, 'cfg'), HOME: join(dir, 'home') },
       encoding: 'utf-8',
     });
     rmSync(dir, { recursive: true, force: true });
@@ -236,6 +417,15 @@ describe('coral-hud transcript rendering end to end', () => {
   // Each extractor owns a different slot and one hides the others — a running agent outranks the
   // activity name — so a single transcript cannot prove all three are sanitized.
   const ESCAPE = '\u001b]0;pwned\u0007\u001b[2J';
+
+  it('removes C1 controls from a pasted prompt before the statusline prints it', () => {
+    const printed = renderWithTranscript('c1-prompt', [
+      JSON.stringify({ message: { content: '<command-message>deploy\u009b2Jnow</command-message>' } }),
+    ]);
+
+    expect(printed).toContain('deploy 2Jnow');
+    expect(printed).not.toContain('\u009b');
+  });
 
   it('sanitizes the slash-command name it prints as activity', () => {
     const printed = renderWithTranscript('esc-cmd', [
