@@ -799,7 +799,44 @@ describe('operator store-reset discard', () => {
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
   });
 
-  it('releases a holder with an unreadable manifest without clearing its preserved record', async () => {
+  it('releases the incident and its parked namespace while reporting unproven directory durability', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const discarded = await discardStoreReset({
+      target: 'gen2',
+      runtime,
+      build: CURRENT_BUILD,
+      storeFormat: STORE_FORMAT,
+      acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
+    });
+    if (discarded.kind !== 'discarded' || discarded.incident === null) {
+      throw new Error('Expected a committed store-reset incident.');
+    }
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const parkingPath = join(quarantineRoot, '.parked', discarded.incident.incidentId);
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db-wal'), 'kept replacement');
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValue(false);
+
+    const result = await releaseStoreReset({
+      target: 'gen2',
+      runtime,
+      incidentId: discarded.incident.incidentId,
+    });
+
+    expect(result).toMatchObject({ kind: 'released', durability: 'unproven' });
+    expect(existsSync(join(quarantineRoot, discarded.incident.incidentId))).toBe(false);
+    expect(existsSync(parkingPath)).toBe(false);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+  });
+
+  it('releases a holder with an unreadable manifest and clears its preserved record', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
@@ -820,7 +857,6 @@ describe('operator store-reset discard', () => {
     }
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
     const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
-    const preservedBefore = readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved;
     writeFileSync(join(incidentPath, 'reset-manifest.json'), '{');
 
     await expect(
@@ -828,9 +864,9 @@ describe('operator store-reset discard', () => {
     ).resolves.toMatchObject({
       kind: 'released',
       target: 'gen2',
-      evidenceBytes: null,
+      durability: 'proven',
     });
-    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toEqual(preservedBefore);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
     expect(existsSync(incidentPath)).toBe(false);
   });
 
@@ -936,14 +972,14 @@ describe('operator store-reset discard', () => {
     const dbPath = runtime.paths.coral.store.dbFile;
     createMismatchStore(dbPath);
     writeFileSync(`${dbPath}-wal`, 'interrupted wal evidence');
-    const unlinkSync = runtime.storage.unlinkSync;
+    const renameSync = runtime.storage.renameSync;
     let interrupted = false;
-    const unlinkSpy = vi.spyOn(runtime.storage, 'unlinkSync').mockImplementation((path) => {
-      if (path === `${dbPath}-wal` && !interrupted) {
+    const renameSpy = vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+      if (dirname(source) === join(dirname(dbPath), 'store-reset-quarantine', '.staging') && !interrupted) {
         interrupted = true;
         throw new Error('fixture interruption');
       }
-      unlinkSync(path);
+      renameSync(source, destination);
     });
     await expect(
       discardStoreReset({
@@ -958,7 +994,7 @@ describe('operator store-reset discard', () => {
         },
       }),
     ).rejects.toThrow();
-    unlinkSpy.mockRestore();
+    renameSpy.mockRestore();
     const stagingRoot = join(dirname(dbPath), 'store-reset-quarantine', '.staging');
     const [incidentId] = readdirSync(stagingRoot);
 
@@ -1016,6 +1052,7 @@ describe('backend store-reset commands', () => {
       flavor,
       incidentId,
       evidenceBytes: 42,
+      durability: 'proven' as const,
     }));
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [], truncated: false, discarded: null }),
@@ -1295,6 +1332,7 @@ describe('backend store-reset commands', () => {
             retention: {
               slot: 'claimed',
               preservation: { kind: 'linked', coherence: 'coherent' },
+              parked: ['store.db-wal'],
               resumeLeftActive: false,
             },
             storedProductVersion: '0.9.15',
@@ -1318,7 +1356,7 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked (coherent) | no | 0.9.15\n\n` +
+      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked (coherent) | store.db-wal | no | 0.9.15\n\n` +
         'Discarded descendant evidence: none.\n' +
         'States: ready produces a Markdown report; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +

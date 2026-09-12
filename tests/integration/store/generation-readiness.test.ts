@@ -10,15 +10,12 @@ import { backendLog } from '#src/infra/backend-log.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import {
-  acquireBackendStoreWriterExclusion,
-  createBackendStoreResetAuthority,
-  openOrResetBackendStoreDb,
-} from '#src/store/backend-store-reset.js';
+import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
+import { ACTIVE_STORE_SELECTION_VERSION } from '#src/store/active-store-selection.js';
+import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { openStoreDatabase } from '#src/store/db.js';
 import {
   formatLegacyGenerationIgnoredNotice,
-  acquireGenerationAdoptionLock,
   generationMutationCoordinationSeam,
   inspectGenerationReadiness,
   resolveGenerationBoundaryPaths,
@@ -35,32 +32,45 @@ function harness(flavor: BuildFlavor = 'prod'): { readonly runtime: Runtime } {
 }
 
 async function openGeneratedStore(runtime: Runtime): Promise<void> {
+  const build = {
+    version: STORE_FORMAT.productVersion,
+    buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+    bundleHash: '0123456789abcdef',
+    cliBundleHash: '123456789abcdef0',
+    claudeAppserverBundleHash: '23456789abcdef01',
+    durableWrapperBundleHash: '3456789abcdef012',
+    flavor: runtime.flavor,
+    storeFormatFingerprint: STORE_FORMAT.fingerprint,
+  };
   const authority = createBackendStoreResetAuthority(
     runtime,
     { acquiredViaHandoff: true },
     {
       namespace: 'generation-readiness-test',
-      build: {
-        version: STORE_FORMAT.productVersion,
-        buildSetId: '123e4567-e89b-42d3-a456-426614174000',
-        bundleHash: '0123456789abcdef',
-        cliBundleHash: '123456789abcdef0',
-        claudeAppserverBundleHash: '23456789abcdef01',
-        durableWrapperBundleHash: '3456789abcdef012',
-        flavor: runtime.flavor,
-        storeFormatFingerprint: STORE_FORMAT.fingerprint,
-      },
+      build,
       storeFormat: STORE_FORMAT,
     },
   );
-  const adoption = await acquireGenerationAdoptionLock(runtime);
-  const writerExclusion = await acquireBackendStoreWriterExclusion(runtime);
-  try {
-    openOrResetBackendStoreDb(runtime, authority, adoption, writerExclusion, { storeFormat: STORE_FORMAT }).close();
-  } finally {
-    if (writerExclusion.kind === 'proven') writerExclusion.lease.release();
-    adoption();
-  }
+  const bundleDir = mkdtempSync(join(tmpdir(), 'coral-generation-readiness-bundle-'));
+  roots.push(bundleDir);
+  const result = await coordinateActiveStoreSelection(runtime, authority, {
+    storeFormat: STORE_FORMAT,
+    currentSelection: {
+      version: ACTIVE_STORE_SELECTION_VERSION,
+      manifest: build,
+      bundleDir,
+      activeStoreFingerprint: build.storeFormatFingerprint,
+    },
+    dependencies: {
+      kind: 'startup',
+      validateSelectedTarget: () => {
+        throw new Error('Generation-readiness fixture never selects a foreign target.');
+      },
+      acquireWriterExclusion: async () => ({ kind: 'unproven', reason: 'lock-timeout', blockers: null }),
+    },
+  });
+  if (result.kind !== 'opened') throw new Error('Generation-readiness fixture unexpectedly handed off.');
+  result.db.close();
 }
 
 function createForeignLegacyStore(runtime: Runtime, productVersion?: string): string {

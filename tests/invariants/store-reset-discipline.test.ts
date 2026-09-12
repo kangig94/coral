@@ -293,58 +293,44 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('keeps startup reset calls behind validated authority and the canonical reset lease', () => {
-    const source = sourceFile(BACKEND_STORE_RESET_PATH);
-    const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
-    const authorityParam = resetFunction.parameters[1];
-    const adoptionParam = resetFunction.parameters[2];
-    const writerExclusionParam = resetFunction.parameters[3];
-    const body = withoutComments(resetFunction.body?.getText(source) ?? '');
-    const authorityIndex = body.indexOf('assertBackendStoreResetAuthority(');
-    const lockIndex = body.indexOf('acquireBackendStoreResetLock(');
-    const resumeIndex = body.indexOf('resumeAutomaticBackendStoreReset(');
-    const classificationIndex = body.indexOf('classifyStoreFile(');
+  it('keeps one bounded settlement machine between classification and the single store open', () => {
+    const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
+    const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
+    const body = withoutComments(settlement.body?.getText(coordination) ?? '');
+    const acquireExclusionIndex = body.indexOf('acquireSettlementWriterExclusion(');
+    const resetLockIndex = body.indexOf('acquireBackendStoreResetLock(');
+    const resumeIndex = body.indexOf('resumeBackendStoreResetIncident');
+    const loopIndex = body.indexOf('for (;;)');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
-    const writerExclusionIndex = body.indexOf("writerExclusion.kind === 'proven'");
     const openIndex = body.indexOf('openStoreDatabase(');
-    const releaseIndex = body.indexOf('resetLock.release()');
-    const lockFunction = findFunction(BACKEND_STORE_RESET_PATH, 'acquireBackendStoreResetLock');
-    const lockBody = withoutComments(lockFunction.body?.getText(source) ?? '');
-    const adoptionOwnedIndex = lockBody.indexOf('adoption.assertOwned()');
-    const mkdirIndex = lockBody.indexOf('runtime.storage.mkdirSync(');
-    const lockPathIndex = lockBody.indexOf("join(files.dbDir, 'store.db.reset.lock')");
-    const directoryLockIndex = lockBody.indexOf('acquireDirectoryLockSync(');
-    const directStoreUnlinks = allSourcePaths()
-      .flatMap((relativePath) =>
-        collectCalls(relativePath)
-          .filter((call) => call.callee === 'rmSync' || call.callee === 'unlinkSync')
-          .filter((call) => /store\.db|walFile|shmFile|coral\.store/.test(call.text))
-          .map((call) => `${call.relativePath}:${call.line} ${call.text}`),
-      )
-      .sort();
 
-    expect(authorityParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('authority');
-    expect(authorityParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('BackendStoreResetAuthority');
-    expect(adoptionParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('adoption');
-    expect(adoptionParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('GenerationAdoptionLockLease');
-    expect(writerExclusionParam?.name.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('writerExclusion');
-    expect(writerExclusionParam?.type?.getText(sourceFile(BACKEND_STORE_RESET_PATH))).toBe('WriterExclusion');
-    expect(authorityIndex).toBeGreaterThanOrEqual(0);
-    expect(lockIndex).toBeGreaterThan(authorityIndex);
-    expect(resumeIndex).toBeGreaterThan(lockIndex);
-    expect(classificationIndex).toBeGreaterThan(resumeIndex);
-    expect(publishIndex).toBeGreaterThan(classificationIndex);
-    expect(writerExclusionIndex).toBeGreaterThan(lockIndex);
-    expect(publishIndex).toBeGreaterThan(writerExclusionIndex);
+    expect(acquireExclusionIndex).toBeGreaterThanOrEqual(0);
+    expect(resetLockIndex).toBeGreaterThan(acquireExclusionIndex);
+    expect(resumeIndex).toBeGreaterThan(resetLockIndex);
+    expect(loopIndex).toBeGreaterThan(resumeIndex);
+    expect(publishIndex).toBeGreaterThan(loopIndex);
     expect(openIndex).toBeGreaterThan(publishIndex);
-    expect(releaseIndex).toBeGreaterThan(openIndex);
-    expect(adoptionOwnedIndex).toBeGreaterThanOrEqual(0);
-    expect(mkdirIndex).toBeGreaterThan(adoptionOwnedIndex);
-    expect(lockPathIndex).toBeGreaterThan(mkdirIndex);
-    expect(directoryLockIndex).toBeGreaterThan(lockPathIndex);
-    expect(body).not.toContain('acquireDirectoryLockSync(');
-    expect(body).not.toMatch(/publishBackendStoreResetIncident\(|resumeInterruptedBackendStoreResetIncident\(/u);
-    expect(directStoreUnlinks).toEqual([]);
+    expect(body).toContain('publications.length === 2');
+
+    const publicationCalls = allSourcePaths().flatMap((path) =>
+      collectCalls(path).filter((call) => call.callee === 'publishClassifiedBackendStoreResetIncident'),
+    );
+    expect(publicationCalls).toHaveLength(1);
+    expect(publicationCalls[0]?.relativePath).toBe(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
+    expect(publicationCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
+
+    const openCalls = collectCalls(ACTIVE_STORE_SELECTION_COORDINATION_PATH).filter(
+      (call) => call.callee === 'openStoreDatabase',
+    );
+    expect(openCalls).toHaveLength(1);
+    expect(openCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
+
+    const source = allSourcePaths()
+      .map((path) => readFileSync(join(REPO_ROOT, path), 'utf8'))
+      .join('\n');
+    expect(source).not.toMatch(
+      /\b(?:openOrResetBackendStoreDb|authorizeClassifiedStore|openProtocolStore|openPreparedStore|recordRecoveryOutcome|recordInvalidTargetRecovery)\b/u,
+    );
   });
 
   it('maps expected maintenance-acquisition failures to copy dispositions', () => {
@@ -393,7 +379,7 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('links only into staging before removing active evidence', () => {
+  it('parks active evidence before publishing the manifest', () => {
     const calls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH);
     const linkCalls = calls.filter((call) => call.callee === 'linkSync');
     const incidentSource = sourceFile(BACKEND_STORE_RESET_PATH);
@@ -401,14 +387,20 @@ describe('store reset discipline invariants', () => {
       findFunction(BACKEND_STORE_RESET_PATH, 'publishIncident').body?.getText(incidentSource) ?? '',
     );
 
-    expect(linkCalls).toHaveLength(1);
-    expect(linkCalls[0]?.enclosingFunctions).toContain('linkActiveEvidence');
-    expect(linkCalls[0]?.text).toContain('destination');
-    expect(publish.indexOf('linkIncidentEvidence(')).toBeGreaterThanOrEqual(0);
-    expect(publish.indexOf('removeCommittedActiveEvidence(')).toBeGreaterThan(publish.indexOf('linkIncidentEvidence('));
+    expect(linkCalls).toHaveLength(2);
+    expect(linkCalls.map((call) => call.enclosingFunctions[0]).sort()).toEqual([
+      'linkActiveEvidence',
+      'restoreParkedEvidence',
+    ]);
+    const stageIndex = publish.indexOf('linkIncidentEvidence(');
+    const parkIndex = publish.indexOf('parkIncidentEvidence(');
+    const manifestIndex = publish.indexOf('createIncidentManifest(');
+    expect(stageIndex).toBeGreaterThanOrEqual(0);
+    expect(parkIndex).toBeGreaterThan(stageIndex);
+    expect(manifestIndex).toBeGreaterThan(parkIndex);
   });
 
-  it('keeps active evidence paths and unlink authority inside their canonical owner', () => {
+  it('keeps shared-path capabilities and exact inode identity inside their canonical owner', () => {
     const forbiddenProperties = new Set(['dbFile', 'walFile', 'shmFile', 'formatFile']);
     const externalPathAccesses: string[] = [];
     for (const relativePath of allSourcePaths()) {
@@ -425,24 +417,29 @@ describe('store reset discipline invariants', () => {
     }
 
     const owner = sourceFile(RESET_ACTIVE_EVIDENCE_PATH);
-    const activeEvidence = owner.statements.find(
+    const activeEvidenceIdentity = owner.statements.find(
       (statement): statement is ts.TypeAliasDeclaration =>
-        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'ActiveEvidence',
+        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'ActiveEvidenceIdentity',
     );
-    expect(activeEvidence).toBeDefined();
-    const activeEvidenceType =
-      activeEvidence !== undefined &&
-      ts.isTypeReferenceNode(activeEvidence.type) &&
-      activeEvidence.type.typeName.getText(owner) === 'Readonly'
-        ? activeEvidence.type.typeArguments?.[0]
-        : activeEvidence?.type;
-    const activeEvidenceProperties =
-      activeEvidenceType !== undefined && ts.isTypeLiteralNode(activeEvidenceType)
-        ? activeEvidenceType.members.flatMap((member) =>
+    expect(activeEvidenceIdentity).toBeDefined();
+    const identityType =
+      activeEvidenceIdentity !== undefined &&
+      ts.isTypeReferenceNode(activeEvidenceIdentity.type) &&
+      activeEvidenceIdentity.type.typeName.getText(owner) === 'Readonly'
+        ? activeEvidenceIdentity.type.typeArguments?.[0]
+        : activeEvidenceIdentity?.type;
+    const identityProperties =
+      identityType !== undefined && ts.isTypeLiteralNode(identityType)
+        ? identityType.members.flatMap((member) =>
             ts.isPropertySignature(member) && member.name !== undefined ? [propertyNameText(member.name)] : [],
           )
         : [];
-    expect(activeEvidenceProperties).toEqual(['name', 'identity']);
+    expect(identityProperties).toEqual(['dev', 'ino']);
+
+    const activeEvidenceSource = readFileSync(join(REPO_ROOT, RESET_ACTIVE_EVIDENCE_PATH), 'utf8');
+    expect(activeEvidenceSource).not.toMatch(
+      /\b(?:reobserve|ActiveEvidenceExpectation|hashActiveContent|sameEvidenceIdentity|removeActiveEvidence)\b/u,
+    );
 
     const candidate = owner.statements.find(
       (statement): statement is ts.FunctionDeclaration =>
@@ -455,12 +452,18 @@ describe('store reset discipline invariants', () => {
 
     const unlinkCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter((call) => call.callee === 'unlinkSync');
     expect(unlinkCalls).toHaveLength(1);
-    expect(unlinkCalls[0]?.enclosingFunctions).toContain('removeActiveEvidence');
-    const remove = findFunction(RESET_ACTIVE_EVIDENCE_PATH, 'removeActiveEvidence');
-    const unlinkTry = remove.body?.statements.find(ts.isTryStatement);
-    expect(unlinkTry).toBeDefined();
-    expect(unlinkTry?.tryBlock.getText(owner)).toContain('storage.unlinkSync(');
-    expect(unlinkTry?.catchClause?.block.getText(owner)).toContain('isNoEntryError(error)');
+    expect(unlinkCalls[0]?.enclosingFunctions).toContain('dropParkedPath');
+    expect(unlinkCalls[0]?.text).toContain('parkedPath(parkingDirectory, evidence)');
+
+    const sharedPathCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter(
+      (call) => call.callee !== 'candidateForEvidence' && call.text.includes('candidateForEvidence('),
+    );
+    expect(sharedPathCalls.map((call) => call.callee).sort()).toEqual([
+      'linkSync',
+      'linkSync',
+      'openSync',
+      'renameSync',
+    ]);
     expect(externalPathAccesses).toEqual([]);
   });
 
@@ -471,23 +474,21 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('limits startup reset reachability to V3 resume and the two core policy causes', () => {
-    const source = sourceFile(BACKEND_STORE_RESET_PATH);
-    const resetFunction = findFunction(BACKEND_STORE_RESET_PATH, 'openOrResetBackendStoreDb');
-    const body = resetFunction.body;
-    expect(body).toBeDefined();
-    const bodyText = withoutComments(body?.getText(source) ?? '');
-    const lockIndex = bodyText.indexOf('acquireBackendStoreResetLock(');
-    const interruptedIndex = bodyText.indexOf('resumeAutomaticBackendStoreReset(');
-    const classificationIndex = bodyText.indexOf('classifyStoreFile(');
+  it('keeps all resettable classifications in the settlement loop', () => {
+    const source = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
+    const resettable = withoutComments(
+      findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'needsStoreReset').body?.getText(source) ?? '',
+    );
+    const settlement = withoutComments(
+      findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore').body?.getText(source) ?? '',
+    );
 
-    expect(lockIndex).toBeGreaterThanOrEqual(0);
-    expect(interruptedIndex).toBeGreaterThan(lockIndex);
-    expect(classificationIndex).toBeGreaterThan(interruptedIndex);
-    expect(bodyText).toContain("classification.kind === 'older-incompatible'");
-    expect(bodyText).toContain("classification.kind === 'corrupt-or-unsupported'");
-    expect(bodyText).not.toContain("classification.kind === 'newer-incompatible-invalid-target'");
-    expect(bodyText).not.toMatch(/resumeInterruptedIncident\(/u);
+    expect(resettable).toContain("classification.kind === 'older-incompatible'");
+    expect(resettable).toContain("classification.kind === 'corrupt-or-unsupported'");
+    expect(resettable).toContain("classification.kind === 'newer-incompatible'");
+    expect(settlement).toContain('resumeAutomaticBackendStoreResetIncident(');
+    expect(settlement).toContain('resumeBackendStoreResetIncidentForOperator(');
+    expect(settlement).toContain('publications.push(publication)');
   });
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {

@@ -58,6 +58,14 @@ function preservation(entry: StoreResetIncidentListResult['incidents'][number]):
   }
 }
 
+function parked(entry: StoreResetIncidentListResult['incidents'][number]): string {
+  return entry.retention.slot === 'unknown'
+    ? 'unknown'
+    : entry.retention.parked.length === 0
+      ? 'none'
+      : entry.retention.parked.join(',');
+}
+
 function discarded(result: StoreResetIncidentListResult): string {
   if (result.discarded === null) return 'Discarded descendant evidence: none.';
   const latest = result.discarded.latest;
@@ -139,11 +147,11 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     ].join('\n');
   }
   return [
-    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Resume left active | Stored Coral version',
+    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`
-        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'unknown' ? 'unknown' : incident.retention.resumeLeftActive ? 'yes' : 'no'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     '',
     discarded(result),
@@ -163,11 +171,11 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
   switch (result.kind) {
     case 'released': {
       const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Released preserved store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}.`;
+      return `Released preserved store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}.`;
     }
     case 'not-holder': {
       const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Released non-holder store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; the preserved slot is unchanged.`;
+      return `Released non-holder store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;

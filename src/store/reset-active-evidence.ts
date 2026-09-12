@@ -1,12 +1,8 @@
-import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
-import {
-  STORE_RESET_EVIDENCE_FILE_NAMES,
-  type StoreResetEvidenceFileName,
-  type StoreResetIncidentFile,
-} from './reset-incident.js';
+import { STORE_RESET_EVIDENCE_FILE_NAMES, type StoreResetEvidenceFileName } from './reset-incident.js';
 
 export type ActiveEvidenceFileSet = Readonly<{
   dbFile: string;
@@ -15,49 +11,55 @@ export type ActiveEvidenceFileSet = Readonly<{
   formatFile: string;
 }>;
 
+export type ActiveEvidenceIdentity = Readonly<{
+  dev: bigint;
+  ino: bigint;
+}>;
+
 export type ActiveEvidence = Readonly<{
   name: StoreResetEvidenceFileName;
-  identity: StorageBigIntStat;
+  identity: ActiveEvidenceIdentity;
+  sizeBytes: number;
+  mtimeMs: number;
 }>;
 
 export type StableSource = Readonly<{
   evidence: ActiveEvidence;
   descriptor: number;
-  reobserve(): StableSourceObservation;
+  openedStat: StorageBigIntStat;
+  sizeBytes: number;
+  mtimeMs: number;
   close(): void;
 }>;
 
-export type StableSourceObservation =
-  | { readonly kind: 'stable' }
+export type ActiveEvidenceOpen =
+  | { readonly kind: 'opened'; readonly source: StableSource }
+  | { readonly kind: 'absent' }
   | { readonly kind: 'changed' }
-  | { readonly kind: 'absent' }
   | { readonly kind: 'undeterminable'; readonly cause: string };
-
-export type ActiveEvidenceExpectation =
-  | { readonly kind: 'identity'; readonly identity: StorageBigIntStat }
-  | {
-      readonly kind: 'content';
-      readonly stagedIdentity: StorageBigIntStat;
-      readonly expected: StoreResetIncidentFile;
-    };
-
-export type ActiveEvidenceObservation =
-  | { readonly kind: 'same-inode'; readonly identity: { readonly dev: bigint; readonly ino: bigint } }
-  | { readonly kind: 'distinct-matching' }
-  | { readonly kind: 'absent' }
-  | { readonly kind: 'unmatched' }
-  | { readonly kind: 'undeterminable'; readonly cause: string };
-
-export type ActiveEvidenceRemoval =
-  | { readonly kind: 'removed' }
-  | { readonly kind: 'absent' }
-  | { readonly kind: 'left' };
 
 export type ActiveEvidenceLink =
   | { readonly kind: 'linked' }
   | { readonly kind: 'absent' }
   | { readonly kind: 'changed' }
   | { readonly kind: 'unavailable'; readonly code: string };
+
+export type ParkedActiveEvidence = Readonly<{
+  evidence: ActiveEvidence;
+  ownership: 'ours' | 'other';
+}>;
+
+export type ActiveEvidencePark =
+  | { readonly kind: 'parked'; readonly parked: ParkedActiveEvidence }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'undeterminable'; readonly cause: string };
+
+export type ActiveEvidenceRestore = { readonly kind: 'restored' } | { readonly kind: 'kept'; readonly code: string };
+
+export type ExpectedActiveEvidence = Readonly<{
+  name: StoreResetEvidenceFileName;
+  identity: ActiveEvidenceIdentity;
+}>;
 
 function candidateForEvidence(files: ActiveEvidenceFileSet, name: StoreResetEvidenceFileName): string {
   return name === 'store.db'
@@ -69,40 +71,41 @@ function candidateForEvidence(files: ActiveEvidenceFileSet, name: StoreResetEvid
         : files.formatFile;
 }
 
+function parkedPath(parkingDirectory: string, evidence: ActiveEvidence): string {
+  return join(parkingDirectory, evidence.name);
+}
+
 function errorCause(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function activeEvidenceStat(storage: StoragePort, path: string): StorageBigIntStat {
-  const link = storage.lstatSync(path);
-  const stat = storage.lstatSync(path, { bigint: true });
-  if (!link.isFile() || link.isSymbolicLink() || !stat.isFile()) {
-    throw new Error('Store-reset evidence is not a regular file.');
-  }
-  return stat;
+function errorCode(error: unknown): string {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
 }
 
-function sameEvidenceIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.isFile() === right.isFile() &&
-    left.isDirectory() === right.isDirectory()
-  );
+function sameIdentity(left: ActiveEvidenceIdentity, right: ActiveEvidenceIdentity): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
 }
 
 export function enumerateActiveEvidence(storage: StoragePort, files: ActiveEvidenceFileSet): readonly ActiveEvidence[] {
   const evidence: ActiveEvidence[] = [];
   for (const name of STORE_RESET_EVIDENCE_FILE_NAMES) {
     try {
-      const identity = activeEvidenceStat(storage, candidateForEvidence(files, name));
-      if (identity.size < 0n || identity.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      const path = candidateForEvidence(files, name);
+      const link = storage.lstatSync(path);
+      const stat = storage.lstatSync(path, { bigint: true });
+      if (!link.isFile() || link.isSymbolicLink() || !stat.isFile()) {
+        throw new Error('Store-reset evidence is not a regular file.');
+      }
+      if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new Error('Store-reset evidence cannot be represented safely.');
       }
-      evidence.push({ name, identity });
+      evidence.push({
+        name,
+        identity: { dev: stat.dev, ino: stat.ino },
+        sizeBytes: Number(stat.size),
+        mtimeMs: Number(stat.mtimeNs / 1_000_000n),
+      });
     } catch (error: unknown) {
       if (!isNoEntryError(error)) throw error;
     }
@@ -114,47 +117,49 @@ export function openActiveEvidence(
   storage: StoragePort,
   files: ActiveEvidenceFileSet,
   evidence: ActiveEvidence,
-): StableSource {
-  const path = candidateForEvidence(files, evidence.name);
-  const before = activeEvidenceStat(storage, path);
-  if (!sameEvidenceIdentity(evidence.identity, before)) {
-    throw new Error('Store-reset evidence identity changed before descriptor open.');
+): ActiveEvidenceOpen {
+  let descriptor: number;
+  try {
+    descriptor = storage.openSync(candidateForEvidence(files, evidence.name), 'r');
+  } catch (error: unknown) {
+    return isNoEntryError(error) ? { kind: 'absent' } : { kind: 'undeterminable', cause: errorCause(error) };
   }
 
-  const descriptor = storage.openSync(path, 'r');
-  let opened: StorageBigIntStat;
   try {
-    opened = storage.fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || !sameEvidenceIdentity(evidence.identity, opened)) {
-      throw new Error('Store-reset evidence identity changed before publication.');
+    const opened = storage.fstatSync(descriptor, { bigint: true });
+    if (!opened.isFile() || !sameIdentity(evidence.identity, opened)) {
+      storage.closeSync(descriptor);
+      return { kind: 'changed' };
     }
+    if (opened.size < 0n || opened.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      storage.closeSync(descriptor);
+      return { kind: 'undeterminable', cause: 'Store-reset evidence cannot be represented safely.' };
+    }
+
+    let closed = false;
+    return {
+      kind: 'opened',
+      source: {
+        evidence,
+        descriptor,
+        openedStat: opened,
+        sizeBytes: Number(opened.size),
+        mtimeMs: Number(opened.mtimeNs / 1_000_000n),
+        close: () => {
+          if (closed) return;
+          storage.closeSync(descriptor);
+          closed = true;
+        },
+      },
+    };
   } catch (error: unknown) {
     try {
       storage.closeSync(descriptor);
     } catch {
-      // The failed identity claim remains authoritative.
+      // The observation failure remains authoritative.
     }
-    throw error;
+    return { kind: 'undeterminable', cause: errorCause(error) };
   }
-
-  let closed = false;
-  return {
-    evidence,
-    descriptor,
-    reobserve: () => {
-      try {
-        const current = activeEvidenceStat(storage, path);
-        return sameEvidenceIdentity(opened, current) ? { kind: 'stable' } : { kind: 'changed' };
-      } catch (error: unknown) {
-        return isNoEntryError(error) ? { kind: 'absent' } : { kind: 'undeterminable', cause: errorCause(error) };
-      }
-    },
-    close: () => {
-      if (closed) return;
-      storage.closeSync(descriptor);
-      closed = true;
-    },
-  };
 }
 
 export function linkActiveEvidence(
@@ -167,99 +172,103 @@ export function linkActiveEvidence(
     storage.linkSync(candidateForEvidence(files, evidence.name), destination);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'absent' };
-    const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
-    if (code === 'EXDEV' || code === 'EMLINK' || code === 'EPERM' || code === 'EOPNOTSUPP') {
-      return { kind: 'unavailable', code };
-    }
-    throw error;
+    return { kind: 'unavailable', code: errorCode(error) };
   }
 
-  const destinationIdentity = activeEvidenceStat(storage, destination);
-  return destinationIdentity.dev === evidence.identity.dev && destinationIdentity.ino === evidence.identity.ino
+  const destinationStat = storage.lstatSync(destination, { bigint: true });
+  return destinationStat.isFile() && sameIdentity(evidence.identity, destinationStat)
     ? { kind: 'linked' }
     : { kind: 'changed' };
 }
 
-function hashActiveContent(
+export function parkActiveEvidence(
   storage: StoragePort,
   files: ActiveEvidenceFileSet,
-  name: StoreResetEvidenceFileName,
-  before: StorageBigIntStat,
-): { readonly sha256: string; readonly bytes: number } | null {
-  const descriptor = storage.openSync(candidateForEvidence(files, name), 'r');
+  evidence: ActiveEvidence,
+  parkingDirectory: string,
+): ActiveEvidencePark {
+  const destination = parkedPath(parkingDirectory, evidence);
   try {
-    const opened = storage.fstatSync(descriptor, { bigint: true });
-    if (!opened.isFile() || !sameEvidenceIdentity(before, opened) || opened.size > BigInt(Number.MAX_SAFE_INTEGER)) {
-      return null;
-    }
-    const expectedBytes = Number(opened.size);
-    const hash = createHash('sha256');
-    const buffer = Buffer.allocUnsafe(64 * 1024);
-    let consumed = 0;
-    while (consumed < expectedBytes) {
-      const read = storage.readSync(descriptor, buffer, 0, Math.min(buffer.length, expectedBytes - consumed), null);
-      if (read <= 0) return null;
-      consumed += read;
-      hash.update(buffer.subarray(0, read));
-    }
-    if (storage.readSync(descriptor, buffer, 0, 1, null) !== 0) return null;
-    const after = storage.fstatSync(descriptor, { bigint: true });
-    return sameEvidenceIdentity(opened, after) ? { sha256: hash.digest('hex'), bytes: consumed } : null;
-  } finally {
-    storage.closeSync(descriptor);
+    storage.lstatSync(destination);
+    throw new Error('Store-reset parking destination already exists.');
+  } catch (error: unknown) {
+    if (!isNoEntryError(error)) throw error;
   }
-}
 
-export function observeActiveEvidence(
-  storage: StoragePort,
-  files: ActiveEvidenceFileSet,
-  evidence: ActiveEvidence | StoreResetEvidenceFileName,
-  expectation: ActiveEvidenceExpectation,
-): ActiveEvidenceObservation {
-  const name = typeof evidence === 'string' ? evidence : evidence.name;
-  let active: StorageBigIntStat;
   try {
-    active = activeEvidenceStat(storage, candidateForEvidence(files, name));
+    storage.renameSync(candidateForEvidence(files, evidence.name), destination);
   } catch (error: unknown) {
     return isNoEntryError(error) ? { kind: 'absent' } : { kind: 'undeterminable', cause: errorCause(error) };
   }
 
-  const expectedIdentity = expectation.kind === 'identity' ? expectation.identity : expectation.stagedIdentity;
-  if (active.dev === expectedIdentity.dev && active.ino === expectedIdentity.ino) {
-    return { kind: 'same-inode', identity: { dev: active.dev, ino: active.ino } };
-  }
-  if (expectation.kind === 'identity') return { kind: 'unmatched' };
-  if (
-    active.size !== BigInt(expectation.expected.sizeBytes) ||
-    Number(active.mtimeNs / 1_000_000n) !== expectation.expected.mtimeMs
-  ) {
-    return { kind: 'unmatched' };
-  }
-
-  try {
-    const content = hashActiveContent(storage, files, name, active);
-    return content?.bytes === expectation.expected.sizeBytes && content.sha256 === expectation.expected.sha256
-      ? { kind: 'distinct-matching' }
-      : { kind: 'unmatched' };
-  } catch (error: unknown) {
-    return isNoEntryError(error) ? { kind: 'absent' } : { kind: 'undeterminable', cause: errorCause(error) };
-  }
+  const parked = storage.lstatSync(destination, { bigint: true });
+  if (!parked.isFile()) throw new Error('Parked store-reset evidence is not a regular file.');
+  return {
+    kind: 'parked',
+    parked: {
+      evidence: {
+        ...evidence,
+        sizeBytes: Number(parked.size),
+        mtimeMs: Number(parked.mtimeNs / 1_000_000n),
+      },
+      ownership: sameIdentity(evidence.identity, parked) ? 'ours' : 'other',
+    },
+  };
 }
 
-export function removeActiveEvidence(
+export function readParkedEvidence(
+  storage: StoragePort,
+  parkingDirectory: string,
+  expected: readonly ExpectedActiveEvidence[],
+): readonly ParkedActiveEvidence[] {
+  const byName = new Map(expected.map((item) => [item.name, item.identity]));
+  const read = storage.readDirectoryBoundedSync(parkingDirectory, STORE_RESET_EVIDENCE_FILE_NAMES.length);
+  if (read.overflow || read.entries.some((name) => !byName.has(name as StoreResetEvidenceFileName))) {
+    throw new Error('Store-reset parking directory contains unexpected evidence.');
+  }
+  return read.entries.map((entry) => {
+    const name = entry as StoreResetEvidenceFileName;
+    const stat = storage.lstatSync(join(parkingDirectory, name), { bigint: true });
+    if (!stat.isFile() || stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('Parked store-reset evidence is not a regular file.');
+    }
+    const identity = byName.get(name);
+    if (identity === undefined) throw new Error('Store-reset parking identity is unavailable.');
+    return {
+      evidence: {
+        name,
+        identity,
+        sizeBytes: Number(stat.size),
+        mtimeMs: Number(stat.mtimeNs / 1_000_000n),
+      },
+      ownership: sameIdentity(identity, stat) ? 'ours' : 'other',
+    };
+  });
+}
+
+function dropParkedPath(storage: StoragePort, parkingDirectory: string, evidence: ActiveEvidence): void {
+  storage.unlinkSync(parkedPath(parkingDirectory, evidence));
+}
+
+export function dropParkedEvidence(storage: StoragePort, parkingDirectory: string, parked: ParkedActiveEvidence): void {
+  dropParkedPath(storage, parkingDirectory, parked.evidence);
+}
+
+export function restoreParkedEvidence(
   storage: StoragePort,
   files: ActiveEvidenceFileSet,
-  evidence: ActiveEvidence | StoreResetEvidenceFileName,
-  observation: ActiveEvidenceObservation,
-): ActiveEvidenceRemoval {
-  if (observation.kind === 'absent') return { kind: 'absent' };
-  if (observation.kind !== 'same-inode' && observation.kind !== 'distinct-matching') return { kind: 'left' };
-  const name = typeof evidence === 'string' ? evidence : evidence.name;
+  parkingDirectory: string,
+  parked: ParkedActiveEvidence,
+): ActiveEvidenceRestore {
   try {
-    storage.unlinkSync(candidateForEvidence(files, name));
-    return { kind: 'removed' };
+    storage.linkSync(parkedPath(parkingDirectory, parked.evidence), candidateForEvidence(files, parked.evidence.name));
   } catch (error: unknown) {
-    if (isNoEntryError(error)) return { kind: 'absent' };
+    const code = errorCode(error);
+    if (code === 'EEXIST' || code === 'EXDEV' || code === 'EPERM' || code === 'EOPNOTSUPP') {
+      return { kind: 'kept', code };
+    }
     throw error;
   }
+  dropParkedPath(storage, parkingDirectory, parked.evidence);
+  return { kind: 'restored' };
 }

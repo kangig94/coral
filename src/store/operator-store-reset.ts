@@ -7,14 +7,10 @@ import { socketPathForRunDir } from '../infra/path/index.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from './active-store-selection.js';
-import {
-  coordinateActiveStoreSelection,
-  type ActiveStoreSelectionRecoveryOutcome,
-} from './active-store-selection-coordination.js';
+import { coordinateActiveStoreSelection } from './active-store-selection-coordination.js';
 import {
   acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
-  openOrResetBackendStoreDb,
   resolveBackendStoreFileSet,
   type BackendStoreResetIncident,
 } from './backend-store-reset.js';
@@ -132,7 +128,6 @@ async function discardGeneratedStore(
       build: options.build,
     },
   );
-  let recovery: ActiveStoreSelectionRecoveryOutcome = { incident: null, resumed: false };
   const selectionResult = await coordinateActiveStoreSelection(options.runtime, authority, {
     path: paths.storeDbPath,
     storeFormat: options.storeFormat,
@@ -166,14 +161,6 @@ async function discardGeneratedStore(
         }
         return maintenance;
       },
-      openPreparedStore: (adoption, writerExclusion) =>
-        openOrResetBackendStoreDb(options.runtime, authority, adoption, writerExclusion, {
-          path: paths.storeDbPath,
-          storeFormat: options.storeFormat,
-        }),
-      recordRecoveryOutcome: (outcome) => {
-        recovery = outcome;
-      },
     },
   });
   if (selectionResult.kind === 'handoff') {
@@ -186,8 +173,11 @@ async function discardGeneratedStore(
     flavor: options.runtime.flavor,
     baseDir: paths.baseDir,
     storeDbPath: paths.storeDbPath,
-    incident: recovery.incident,
-    resumed: recovery.resumed,
+    incident:
+      selectionResult.resumedIncident ??
+      selectionResult.publications.find((publication) => publication.kind === 'preserved')?.incident ??
+      null,
+    resumed: selectionResult.resumedIncident !== null,
   };
 }
 

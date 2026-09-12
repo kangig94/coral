@@ -64,6 +64,7 @@ export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
     | (PreservedRetention & {
         readonly preservation: PreservationMechanism | 'unknown';
         readonly resumeLeftActive: boolean;
+        readonly parked: readonly string[];
       })
     | { readonly slot: 'unknown' };
   readonly storedProductVersion: string | null | 'unknown';
@@ -196,6 +197,7 @@ function listRetention(
       ...retained.retention,
       preservation: retained.incident.preservation ?? 'unknown',
       resumeLeftActive: retained.incident.resumeLeftActive,
+      parked: retained.incident.parked ?? [],
     },
     storedProductVersion:
       retained.incident.storedProductVersion === undefined ? 'unknown' : retained.incident.storedProductVersion,

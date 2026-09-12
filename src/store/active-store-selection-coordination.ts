@@ -47,15 +47,18 @@ import {
   retainTransitionFileInStoreResetQuarantine,
   STEADY_STATE_BUSY_TIMEOUT_MS,
   type BackendStoreFileSet,
+  type BackendStoreResetClassification,
   type BackendStoreResetAuthority,
   type BackendStoreResetIncident,
   type BackendStoreResetLockLease,
+  type IncidentPublication,
   type WriterExclusion,
   type NewerStoreResetPolicy,
   type OpenOrResetBackendStoreOptions,
 } from './backend-store-reset.js';
 import { classifyStoreFile, openStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification } from './format-fingerprint.js';
+import { enumerateActiveEvidence } from './reset-active-evidence.js';
 import {
   acquireGenerationAdoptionLock,
   formatLegacyGenerationIgnoredNotice,
@@ -65,27 +68,26 @@ import {
 } from './generation-mutation-coordination.js';
 
 export type ActiveStoreSelectionProtocolResult =
-  | { readonly kind: 'opened'; readonly db: Database }
+  | ({ readonly kind: 'opened' } & ActiveStoreSettlement)
   | { readonly kind: 'handoff'; readonly target: ValidatedHandoffTarget };
 
-export type ActiveStoreSelectionRecoveryOutcome = Readonly<{
-  incident: BackendStoreResetIncident | null;
-  resumed: boolean;
+export type ActiveStoreSettlement = Readonly<{
+  db: Database;
+  resumedIncident: BackendStoreResetIncident | null;
+  publications: readonly IncidentPublication[];
+  invalidTargetEvidence: InvalidTargetEvidence | null;
 }>;
 
 export type ActiveStoreSelectionStartupDependencies = Readonly<{
   kind: 'startup';
   validateSelectedTarget: ForeignTargetValidator;
   acquireWriterExclusion: () => Promise<WriterExclusion>;
-  recordInvalidTargetRecovery?: (evidence: InvalidTargetEvidence) => void;
 }>;
 
 export type ActiveStoreSelectionOperatorDependencies = Readonly<{
   kind: 'operator';
   validateSelectedTarget: ForeignTargetValidator;
   acquireStoreRecoveryLease?: () => Promise<GenerationMaintenanceLease>;
-  openPreparedStore?: (adoption: GenerationAdoptionLockLease, writerExclusion: WriterExclusion) => Database;
-  recordRecoveryOutcome?: (outcome: ActiveStoreSelectionRecoveryOutcome) => void;
 }>;
 
 export type ActiveStoreSelectionProtocolDependencies =
@@ -289,147 +291,127 @@ function inspectCurrentGeneration(runtime: Runtime, options: OpenOrResetBackendS
   }
 }
 
-function authorizeClassifiedStore(
-  runtime: Runtime,
-  authority: BackendStoreResetAuthority,
-  files: BackendStoreFileSet,
-  classification: StoreFormatClassification,
-  transition: ActiveStoreTransition | null,
-  resetLock: BackendStoreResetLockLease,
-  writerExclusion: WriterExclusion | undefined,
-): BackendStoreResetIncident | undefined {
-  const exclusion = writerExclusion ?? { kind: 'unproven', reason: 'not-attempted', blockers: null };
-  if (classification.kind === 'older-incompatible' || classification.kind === 'corrupt-or-unsupported') {
-    const publication = publishClassifiedBackendStoreResetIncident(
-      runtime,
-      authority,
-      files,
-      classification,
-      resetLock,
-      exclusion,
-    );
-    switch (publication.kind) {
-      case 'preserved':
-        return publication.incident;
-      case 'discarded':
-      case 'no-evidence':
-        return undefined;
-      default:
-        return assertNever(publication);
-    }
-  }
-  if (classification.kind === 'newer-incompatible') {
-    const publication =
-      transition === null
-        ? ({ kind: 'no-evidence', leftActive: [] } as const)
-        : publishClassifiedBackendStoreResetIncident(
-            runtime,
-            authority,
-            files,
-            classification,
-            resetLock,
-            exclusion,
-            resetPolicyForTransition(transition),
-          );
-    switch (publication.kind) {
-      case 'preserved':
-        return publication.incident;
-      case 'discarded':
-      case 'no-evidence':
-        return undefined;
-      default:
-        return assertNever(publication);
-    }
-  }
-  const { dbFile } = files;
-  refuseIncompatibleBackendStore(runtime, dbFile, classification);
-  return undefined;
+function needsStoreReset(classification: StoreFormatClassification): classification is BackendStoreResetClassification {
+  return (
+    classification.kind === 'older-incompatible' ||
+    classification.kind === 'corrupt-or-unsupported' ||
+    classification.kind === 'newer-incompatible'
+  );
 }
 
-function openProtocolStore(
-  runtime: Runtime,
+async function acquireSettlementWriterExclusion(
   options: ActiveStoreSelectionProtocolOptions,
-  files: BackendStoreFileSet,
-): Database {
-  const { dbFile } = files;
-  const db = openStoreDatabase({
-    path: dbFile,
-    storage: runtime.storage,
-    storeFormat: options.storeFormat,
-    flavor: runtime.flavor,
-    busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
-  });
-  db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS}`);
-  return db;
+): Promise<WriterExclusion> {
+  if (options.dependencies.kind === 'startup') return options.dependencies.acquireWriterExclusion();
+  const recoveryLease = await options.dependencies.acquireStoreRecoveryLease?.();
+  if (recoveryLease === undefined) {
+    throw new Error('Operator store reset requires a recovery lease.');
+  }
+  return { kind: 'proven', lease: recoveryLease };
 }
 
-function recoverActiveStoreTransition(
+async function settleActiveStore(
   runtime: Runtime,
   authority: BackendStoreResetAuthority,
   options: ActiveStoreSelectionProtocolOptions,
   initialTransition: ActiveStoreTransition | null,
   adoption: GenerationAdoptionLockLease,
-  writerExclusion: WriterExclusion | undefined,
-  initialClassification: StoreFormatClassification | null,
-): Database {
+): Promise<ActiveStoreSettlement> {
+  inspectCurrentGeneration(runtime, options);
   const files = resolveBackendStoreFileSet(runtime, options);
-  let resetLock: BackendStoreResetLockLease | null = acquireBackendStoreResetLock(runtime, files, adoption);
+  const { dbFile } = files;
+  const pending = hasPendingBackendStoreResetIncident(runtime, files);
+  const initialClassification = pending ? null : classifyStoreForProtocol(runtime, files, options);
+  let writerExclusion: WriterExclusion | undefined;
+  if (pending || (initialClassification !== null && needsStoreReset(initialClassification))) {
+    writerExclusion = await acquireSettlementWriterExclusion(options);
+  }
+  let resetLock: BackendStoreResetLockLease | null = null;
   try {
+    adoption.assertOwned();
+    if (writerExclusion?.kind === 'proven') writerExclusion.lease.assertOwned();
+    resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
     const resumed =
-      options.dependencies.kind === 'operator'
-        ? resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock)
-        : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, resetLock);
-    const classification =
-      resumed === null && initialClassification !== null && writerExclusion === undefined
-        ? initialClassification
-        : classifyStoreForProtocol(runtime, files, options);
+      writerExclusion === undefined
+        ? null
+        : options.dependencies.kind === 'operator'
+          ? resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock, writerExclusion)
+          : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, resetLock, writerExclusion);
     let transition = initialTransition;
-    if (classification.kind === 'newer-incompatible') {
-      const evidence = newerStoreEvidence(classification);
-      transition =
-        transition === null
-          ? createActiveStoreTransition(runtime, options.currentSelection, {
-              kind: 'current-selection-newer-store',
-              priorSelection: options.currentSelection,
-              newerStoreEvidence: evidence,
-            })
-          : transitionWithNewerStoreEvidence(transition, evidence);
-      publishTransitionOrRefuse(runtime, transition);
+    let lastResetClassification =
+      initialClassification !== null && needsStoreReset(initialClassification) ? initialClassification : null;
+    if (lastResetClassification === null && resumed !== null) {
+      lastResetClassification = {
+        kind: 'corrupt-or-unsupported',
+        currentFingerprint: options.storeFormat.fingerprint,
+        currentProductVersion: options.storeFormat.productVersion,
+        storedFingerprint: null,
+        storedProductVersion: null,
+        storedProductVersionState: 'absent',
+      };
+    }
+    const publications: IncidentPublication[] = [];
+    for (;;) {
+      const classification =
+        resumed === null && publications.length === 0 && initialClassification !== null
+          ? initialClassification
+          : classifyStoreForProtocol(runtime, files, options);
+      if (classification.kind === 'newer-incompatible') {
+        const evidence = newerStoreEvidence(classification);
+        transition =
+          transition === null
+            ? createActiveStoreTransition(runtime, options.currentSelection, {
+                kind: 'current-selection-newer-store',
+                priorSelection: options.currentSelection,
+                newerStoreEvidence: evidence,
+              })
+            : transitionWithNewerStoreEvidence(transition, evidence);
+        publishTransitionOrRefuse(runtime, transition);
+      }
+      const residualEvidence =
+        classification.kind === 'absent' && lastResetClassification !== null
+          ? enumerateActiveEvidence(runtime.storage, files)
+          : [];
+      const publicationClassification = needsStoreReset(classification)
+        ? classification
+        : residualEvidence.length > 0
+          ? lastResetClassification
+          : null;
+      if (publicationClassification === null) {
+        refuseIncompatibleBackendStore(runtime, dbFile, classification);
+        break;
+      }
+      if (writerExclusion === undefined) {
+        throw new Error('Store reset became necessary without writer exclusion.');
+      }
+      if (publications.length === 2) {
+        refuseIncompatibleBackendStore(runtime, dbFile, classification);
+      }
+      const publication = publishClassifiedBackendStoreResetIncident(
+        runtime,
+        authority,
+        files,
+        publicationClassification,
+        resetLock,
+        writerExclusion,
+        publicationClassification.kind === 'newer-incompatible' && transition !== null
+          ? resetPolicyForTransition(transition)
+          : undefined,
+        residualEvidence.length > 0,
+      );
+      publications.push(publication);
+      lastResetClassification = publicationClassification;
     }
 
-    if (transition?.evidence.kind === 'valid-target-invalid' && options.dependencies.kind === 'startup') {
-      options.dependencies.recordInvalidTargetRecovery?.(transition.evidence.invalidTargetEvidence);
-    }
-    const published = authorizeClassifiedStore(
-      runtime,
-      authority,
-      files,
-      classification,
-      transition,
-      resetLock,
-      writerExclusion,
-    );
-    const openPreparedStore =
-      options.dependencies.kind === 'operator' ? options.dependencies.openPreparedStore : undefined;
-    let db: Database;
-    if (openPreparedStore === undefined) {
-      db = openProtocolStore(runtime, options, files);
-    } else {
-      resetLock.release();
-      resetLock = null;
-      adoption.assertOwned();
-      db = openPreparedStore(
-        adoption,
-        writerExclusion ?? { kind: 'unproven', reason: 'not-attempted', blockers: null },
-      );
-    }
+    const db = openStoreDatabase({
+      path: dbFile,
+      storage: runtime.storage,
+      storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
+      busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
+    });
+    db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS}`);
     try {
-      if (options.dependencies.kind === 'operator') {
-        options.dependencies.recordRecoveryOutcome?.({
-          incident: resumed ?? published ?? null,
-          resumed: resumed !== null,
-        });
-      }
       if (transition !== null) {
         // The live transition is cleared only after its invalid-selection basis has been copied into the
         // reset-quarantine durability boundary. Coordinator logging is deliberately not evidence authority.
@@ -438,54 +420,19 @@ function recoverActiveStoreTransition(
           clearActiveStoreTransition(runtime, clearEvidence.sourceIdentity);
         }
       }
-      return db;
+      return {
+        db,
+        resumedIncident: resumed,
+        publications,
+        invalidTargetEvidence:
+          transition?.evidence.kind === 'valid-target-invalid' ? transition.evidence.invalidTargetEvidence : null,
+      };
     } catch (error: unknown) {
       db.close();
       throw error;
     }
   } finally {
     resetLock?.release();
-  }
-}
-
-async function recoverActiveStoreSelection(
-  runtime: Runtime,
-  authority: BackendStoreResetAuthority,
-  options: ActiveStoreSelectionProtocolOptions,
-  transition: ActiveStoreTransition | null,
-  adoption: GenerationAdoptionLockLease,
-): Promise<Database> {
-  inspectCurrentGeneration(runtime, options);
-  const files = resolveBackendStoreFileSet(runtime, options);
-  let initialClassification: StoreFormatClassification | null = null;
-  let writerExclusion: WriterExclusion | undefined;
-  if (options.dependencies.kind === 'operator') {
-    const recoveryLease = await options.dependencies.acquireStoreRecoveryLease?.();
-    if (recoveryLease !== undefined) writerExclusion = { kind: 'proven', lease: recoveryLease };
-  } else {
-    const pending = hasPendingBackendStoreResetIncident(runtime, files);
-    if (!pending) initialClassification = classifyStoreForProtocol(runtime, files, options);
-    const classificationNeedsReset =
-      initialClassification?.kind === 'older-incompatible' ||
-      initialClassification?.kind === 'corrupt-or-unsupported' ||
-      initialClassification?.kind === 'newer-incompatible';
-    if (pending || classificationNeedsReset) {
-      writerExclusion = await options.dependencies.acquireWriterExclusion();
-    }
-  }
-  try {
-    adoption.assertOwned();
-    if (writerExclusion?.kind === 'proven') writerExclusion.lease.assertOwned();
-    return recoverActiveStoreTransition(
-      runtime,
-      authority,
-      options,
-      transition,
-      adoption,
-      writerExclusion,
-      initialClassification,
-    );
-  } finally {
     if (writerExclusion?.kind === 'proven') writerExclusion.lease.release();
   }
 }
@@ -631,7 +578,7 @@ async function recoverCurrentSelectionFromEvidence(
   publishSelectionOrRefuse(runtime, options.currentSelection);
   return {
     kind: 'opened',
-    db: await recoverActiveStoreSelection(runtime, authority, options, transition, adoption),
+    ...(await settleActiveStore(runtime, authority, options, transition, adoption)),
   };
 }
 
@@ -664,7 +611,7 @@ export async function coordinateActiveStoreSelection(
         publishSelectionOrRefuse(runtime, options.currentSelection);
         return {
           kind: 'opened',
-          db: await recoverActiveStoreSelection(runtime, authority, options, transitionRead.transition, adoption),
+          ...(await settleActiveStore(runtime, authority, options, transitionRead.transition, adoption)),
         };
       }
       supersedeActiveStoreTransition(runtime, options, adoption, 'transition_current_build_mismatch');
@@ -711,7 +658,7 @@ export async function coordinateActiveStoreSelection(
       publishSelectionOrRefuse(runtime, options.currentSelection);
       return {
         kind: 'opened',
-        db: await recoverActiveStoreSelection(runtime, authority, options, null, adoption),
+        ...(await settleActiveStore(runtime, authority, options, null, adoption)),
       };
     }
 
@@ -737,7 +684,7 @@ export async function coordinateActiveStoreSelection(
     if (relation !== 'exact') {
       publishSelectionOrRefuse(runtime, options.currentSelection);
     }
-    return { kind: 'opened', db: await recoverActiveStoreSelection(runtime, authority, options, null, adoption) };
+    return { kind: 'opened', ...(await settleActiveStore(runtime, authority, options, null, adoption)) };
   } finally {
     adoption();
   }

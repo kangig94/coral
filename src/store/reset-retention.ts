@@ -14,6 +14,7 @@ import {
   parseStoreResetIncidentManifest,
   STORE_RESET_EVIDENCE_FILE_NAMES,
   STORE_RESET_MANIFEST_FILE_NAME,
+  STORE_RESET_PARKED_DIRECTORY,
   STORE_RESET_STAGING_DIRECTORY,
   type StoreResetEvidenceFileName,
   type StoreResetIncidentManifest,
@@ -39,9 +40,9 @@ export type PreservationMechanism =
       readonly kind: 'copied';
       readonly cause: {
         readonly kind: 'exclusion-unproven';
-        readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout' | 'not-attempted';
+        readonly reason: 'writer-live' | 'writer-unobservable' | 'lock-timeout';
       };
-      readonly coherence: 'torn' | 'unproven';
+      readonly coherence: 'coherent' | 'torn';
     };
 
 export type PreservedRetention =
@@ -65,6 +66,7 @@ export type StoreResetRetentionIncident = Readonly<{
   evidenceBytes: number;
   storedProductVersion?: string | null;
   preservation?: PreservationMechanism;
+  parked?: readonly StoreResetEvidenceFileName[];
   resumeLeftActive: boolean;
 }>;
 
@@ -76,6 +78,7 @@ export type StoreResetPendingIdentity = Readonly<{
 
 export type StoreResetRetentionPending = Readonly<{
   resetAt: string;
+  parkingId?: string;
   identities: readonly StoreResetPendingIdentity[];
   outcome:
     | Readonly<{
@@ -112,8 +115,18 @@ export type StoreResetRetentionSlot =
     };
 
 export type StoreResetReleaseResult =
-  | { readonly kind: 'released'; readonly incidentId: string; readonly evidenceBytes: number | null }
-  | { readonly kind: 'not-holder'; readonly incidentId: string; readonly evidenceBytes: number | null }
+  | {
+      readonly kind: 'released';
+      readonly incidentId: string;
+      readonly evidenceBytes: number | null;
+      readonly durability: 'proven' | 'unproven';
+    }
+  | {
+      readonly kind: 'not-holder';
+      readonly incidentId: string;
+      readonly evidenceBytes: number | null;
+      readonly durability: 'proven' | 'unproven';
+    }
   | { readonly kind: 'absent'; readonly incidentId: string }
   | { readonly kind: 'staged'; readonly incidentId: string }
   | { readonly kind: 'unsafe'; readonly incidentId: string }
@@ -146,18 +159,12 @@ function preservationMechanism(value: unknown): PreservationMechanism | null {
   }
   if (value.kind !== 'copied' || !isRecord(value.cause)) return null;
   const coherence = value.coherence;
-  if (coherence !== 'coherent' && coherence !== 'torn' && coherence !== 'unproven') return null;
+  if (coherence !== 'coherent' && coherence !== 'torn') return null;
   if (value.cause.kind === 'exclusion-unproven') {
     const reason = value.cause.reason;
-    if (
-      reason !== 'writer-live' &&
-      reason !== 'writer-unobservable' &&
-      reason !== 'lock-timeout' &&
-      reason !== 'not-attempted'
-    ) {
+    if (reason !== 'writer-live' && reason !== 'writer-unobservable' && reason !== 'lock-timeout') {
       return null;
     }
-    if (coherence === 'coherent') return null;
     return { kind: 'copied', cause: { kind: 'exclusion-unproven', reason }, coherence };
   }
   if (value.cause.kind !== 'link-unsupported' || typeof value.cause.code !== 'string') return null;
@@ -165,7 +172,6 @@ function preservationMechanism(value: unknown): PreservationMechanism | null {
   if (errno !== 'EXDEV' && errno !== 'EMLINK' && errno !== 'EPERM' && errno !== 'EOPNOTSUPP' && errno !== 'other') {
     return null;
   }
-  if (coherence === 'unproven') return null;
   return {
     kind: 'copied',
     cause: { kind: 'link-unsupported', errno, code: value.cause.code },
@@ -195,12 +201,22 @@ function retentionIncident(value: unknown): StoreResetRetentionIncident | null {
   }
   const preservation = value.preservation === undefined ? undefined : preservationMechanism(value.preservation);
   if (value.preservation !== undefined && preservation === null) return null;
+  const parked = value.parked === undefined ? undefined : value.parked;
+  if (
+    parked !== undefined &&
+    (!Array.isArray(parked) ||
+      parked.some((name) => !STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName)) ||
+      new Set(parked).size !== parked.length)
+  ) {
+    return null;
+  }
   return {
     incidentId: value.incidentId,
     resetAt: value.resetAt,
     evidenceBytes: value.evidenceBytes,
     ...(value.storedProductVersion === undefined ? {} : { storedProductVersion }),
     ...(preservation === null || preservation === undefined ? {} : { preservation }),
+    ...(parked === undefined ? {} : { parked: parked as StoreResetEvidenceFileName[] }),
     resumeLeftActive: value.resumeLeftActive,
   };
 }
@@ -259,6 +275,10 @@ function retentionPending(value: unknown): StoreResetRetentionPending | null {
   const identities = value.identities.map(pendingIdentity);
   if (identities.some((identity) => identity === null)) return null;
   const present = identities as StoreResetPendingIdentity[];
+  const parkingId = value.parkingId === undefined ? undefined : value.parkingId;
+  if (parkingId !== undefined && (typeof parkingId !== 'string' || !isCanonicalStoreResetIncidentId(parkingId))) {
+    return null;
+  }
   if (new Set(present.map((identity) => identity.name)).size !== present.length || !isRecord(value.outcome)) {
     return null;
   }
@@ -266,14 +286,24 @@ function retentionPending(value: unknown): StoreResetRetentionPending | null {
     const receipt = discardReceipt(value.outcome.receipt);
     return receipt === null
       ? null
-      : { resetAt: value.resetAt, identities: present, outcome: { kind: 'discard', receipt } };
+      : {
+          resetAt: value.resetAt,
+          ...(parkingId === undefined ? {} : { parkingId }),
+          identities: present,
+          outcome: { kind: 'discard', receipt },
+        };
   }
   if (value.outcome.kind !== 'preserve') return null;
   const incident = retentionIncident(value.outcome.incident);
   const retention = preservedRetention(value.outcome.retention);
   return incident === null || retention === null
     ? null
-    : { resetAt: value.resetAt, identities: present, outcome: { kind: 'preserve', incident, retention } };
+    : {
+        resetAt: value.resetAt,
+        ...(parkingId === undefined ? {} : { parkingId }),
+        identities: present,
+        outcome: { kind: 'preserve', incident, retention },
+      };
 }
 
 export function parseStoreResetRetentionLedger(text: string): StoreResetRetentionLedger | null {
@@ -478,6 +508,13 @@ function reconcilePending(
 ): StoreResetRetentionLedger {
   const pending = ledger.pending;
   if (pending === null) return ledger;
+  if (pending.parkingId !== undefined) {
+    const parkingPresence = pathPresence(
+      storage,
+      join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY, pending.parkingId),
+    );
+    if (parkingPresence !== 'absent') return ledger;
+  }
   if (pending.outcome.kind === 'discard') {
     if (activeEvidence === undefined) return ledger;
     const current = new Map(activeEvidence.map((evidence) => [evidence.name, evidence.identity]));
@@ -592,13 +629,15 @@ export function recordStoreResetResumeLeftActive(
   ledger: StoreResetRetentionLedger,
   incidentId: string,
   names: readonly StoreResetEvidenceFileName[],
+  parked: readonly StoreResetEvidenceFileName[] = [],
 ): void {
-  if (names.length === 0) return;
+  if (names.length === 0 && parked.length === 0) return;
   const update = (incident: StoreResetRetentionIncident): StoreResetRetentionIncident =>
     incident.incidentId === incidentId
       ? {
           ...incident,
           resumeLeftActive: true,
+          parked,
           ...(incident.preservation === undefined
             ? {}
             : // Unresolved active evidence means a resumed publication can no longer certify coherence.
@@ -642,29 +681,55 @@ export function releaseStoreResetIncident(
     }
   }
   if (stagingPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  const parkingPath = join(parkingRoot, incidentId);
+  const parkingPresence = pathPresence(storage, parkingPath);
+  if (parkingPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
+  if (parkingPresence === 'present') {
+    try {
+      assertContainedDirectory(storage, quarantineRoot, parkingRoot);
+      assertContainedDirectory(storage, parkingRoot, parkingPath);
+    } catch (error: unknown) {
+      return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
+    }
+  }
   const incidentPath = join(quarantineRoot, incidentId);
   const incidentPresence = pathPresence(storage, incidentPath);
-  if (incidentPresence === 'absent') return { kind: 'absent', incidentId };
+  if (incidentPresence === 'absent' && parkingPresence === 'absent') return { kind: 'absent', incidentId };
   if (incidentPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
-  try {
-    assertContainedDirectory(storage, quarantineRoot, incidentPath);
-  } catch (error: unknown) {
-    return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
+  if (incidentPresence === 'present') {
+    try {
+      assertContainedDirectory(storage, quarantineRoot, incidentPath);
+    } catch (error: unknown) {
+      return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
+    }
   }
-  const manifest = readCommittedManifest(storage, quarantineRoot, incidentId);
+  const manifest = incidentPresence === 'present' ? readCommittedManifest(storage, quarantineRoot, incidentId) : null;
 
   const slot = resolveStoreResetRetentionSlot(storage, quarantineRoot);
   const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const evidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? null;
-  storage.rmSync(incidentPath, { recursive: true });
-  if (!storage.syncDirectoryDurableSync(quarantineRoot)) {
-    throw new Error('Store-reset release directory metadata could not be synchronized.');
+  if (incidentPresence === 'present') storage.rmSync(incidentPath, { recursive: true });
+  if (parkingPresence === 'present') storage.rmSync(parkingPath, { recursive: true });
+  const quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
+  const parkingDurable = parkingPresence === 'absent' || storage.syncDirectoryDurableSync(parkingRoot);
+  const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
+  const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
+  const clearsPending = slot.ledger.pending?.parkingId === incidentId;
+  if (clearsHolder || clearsPending) {
+    writeLedger(storage, quarantineRoot, {
+      ...slot.ledger,
+      ...(clearsHolder ? { preserved: null } : {}),
+      ...(clearsPending ? { pending: null } : {}),
+    });
   }
   if (holder) {
-    if (manifest !== null) {
-      writeLedger(storage, quarantineRoot, { ...slot.ledger, preserved: null });
-    }
-    return { kind: 'released', incidentId, evidenceBytes };
+    return {
+      kind: 'released',
+      incidentId,
+      evidenceBytes: evidenceBytes ?? slot.holder.evidenceBytes,
+      durability,
+    };
   }
-  return { kind: 'not-holder', incidentId, evidenceBytes };
+  return { kind: 'not-holder', incidentId, evidenceBytes, durability };
 }

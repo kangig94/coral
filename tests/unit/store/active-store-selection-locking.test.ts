@@ -38,7 +38,6 @@ import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset
 import type { Database } from '#src/store/db.js';
 import {
   resolveGenerationBoundaryPaths,
-  type GenerationAdoptionLockLease,
   type GenerationMaintenanceLease,
 } from '#src/store/generation-mutation-coordination.js';
 import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
@@ -204,7 +203,7 @@ describe('active-store-selection locking', () => {
     },
   );
 
-  it('should publish transition then selection before taking the reset lock and opening the store', async () => {
+  it('should publish transition then selection before classifying and opening the store', async () => {
     const { runtime, currentSelection, authority } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);
     mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o755 });
@@ -224,7 +223,7 @@ describe('active-store-selection locking', () => {
     const db = fakeDatabase();
     spyOnClassifyStoreFile().mockImplementation(() => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
-      expect(existsSync(resetLock)).toBe(true);
+      expect(existsSync(resetLock)).toBe(false);
       events.push('classify');
       return { kind: 'fresh' };
     });
@@ -246,7 +245,7 @@ describe('active-store-selection locking', () => {
       },
     });
 
-    expect(result).toEqual({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened', db });
     expect(events).toEqual(['transition', 'selection-v1', 'selection', 'classify', 'open']);
     expect(existsSync(boundary.adoptionLock)).toBe(false);
     expect(existsSync(resetLock)).toBe(false);
@@ -374,7 +373,7 @@ describe('active-store-selection locking', () => {
       },
     });
 
-    expect(result).toEqual({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened', db });
     expect(recordAudit).toHaveBeenCalledWith(
       'invalid-selection-recovery',
       expect.objectContaining({ transitionId: transition.transitionId }),
@@ -429,7 +428,7 @@ describe('active-store-selection locking', () => {
         },
       });
 
-      expect(result).toEqual({ kind: 'opened', db });
+      expect(result).toMatchObject({ kind: 'opened', db });
       expect(recordAudit).toHaveBeenCalledWith(
         'active-store-transition-superseded',
         expect.objectContaining({ failureCode }),
@@ -479,7 +478,7 @@ describe('active-store-selection locking', () => {
       },
     });
 
-    expect(result).toEqual({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened', db });
     expect(existsSync(paths.transitionV1File)).toBe(false);
     const retainedFiles = readdirSync(retainedTransitionRoot(runtime));
     expect(retainedFiles).toHaveLength(1);
@@ -555,7 +554,7 @@ describe('active-store-selection locking', () => {
       },
     });
 
-    expect(result).toEqual({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened', db });
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     expect(existsSync(retainedTransitionRoot(runtime))).toBe(false);
     expect(recordAudit).toHaveBeenCalledWith(
@@ -725,7 +724,7 @@ describe('active-store-selection locking', () => {
     expect(readdirSync(retainedTransitionRoot(runtime))).toHaveLength(1);
   });
 
-  it('should await the operator recovery lease before opening the prepared store', async () => {
+  it('should await the operator recovery lease before opening a store that needs reset', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     let grantLease: (lease: GenerationMaintenanceLease) => void = () => {
@@ -738,14 +737,18 @@ describe('active-store-selection locking', () => {
     const assertOwned = vi.fn();
     const release = vi.fn();
     const db = fakeDatabase();
-    const openPreparedStore = vi.fn((adoption: GenerationAdoptionLockLease) => {
-      adoption.assertOwned();
-      return db;
+    const storeFormat = currentCoralStoreFormat();
+    const { classifyStore, openStore } = stubStoreOpen({ kind: 'fresh' }, db);
+    classifyStore.mockReturnValueOnce({
+      kind: 'older-incompatible',
+      currentFingerprint: storeFormat.fingerprint,
+      currentProductVersion: storeFormat.productVersion,
+      storedFingerprint: `sha256:${'0'.repeat(64)}`,
+      storedProductVersion: '0.0.0',
     });
-    spyOnClassifyStoreFile().mockReturnValue({ kind: 'fresh' });
 
     const coordinating = coordinateActiveStoreSelection(runtime, authority, {
-      storeFormat: currentCoralStoreFormat(),
+      storeFormat,
       currentSelection,
       dependencies: {
         kind: 'operator',
@@ -753,21 +756,20 @@ describe('active-store-selection locking', () => {
           throw new Error('validator should not run');
         },
         acquireStoreRecoveryLease,
-        openPreparedStore,
       },
     });
     await vi.waitFor(() => expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce());
-    expect(openPreparedStore).not.toHaveBeenCalled();
+    expect(openStore).not.toHaveBeenCalled();
 
     grantLease({ assertOwned, release });
-    await expect(coordinating).resolves.toEqual({ kind: 'opened', db });
-    expect(assertOwned).toHaveBeenCalledOnce();
-    expect(openPreparedStore).toHaveBeenCalledOnce();
-    expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(openPreparedStore.mock.invocationCallOrder[0]);
+    await expect(coordinating).resolves.toMatchObject({ kind: 'opened', db });
+    expect(assertOwned).toHaveBeenCalled();
+    expect(openStore).toHaveBeenCalledOnce();
+    expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(openStore.mock.invocationCallOrder[0]);
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('should authorize the classified store before invoking the prepared-store opener', async () => {
+  it('should authorize the classified store before invoking the store opener', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const storeFormat = currentCoralStoreFormat();
@@ -777,8 +779,8 @@ describe('active-store-selection locking', () => {
       currentProductVersion: currentSelection.manifest.version,
       storedFingerprint: storeFormat.fingerprint,
     });
-    const openPreparedStore = vi.fn(() => fakeDatabase());
-    const release = vi.fn();
+    const openStore = spyOnOpenStoreDatabase();
+    const acquireStoreRecoveryLease = vi.fn(async () => ({ assertOwned: vi.fn(), release: vi.fn() }));
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
@@ -789,8 +791,7 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
-          acquireStoreRecoveryLease: async () => ({ assertOwned: vi.fn(), release }),
-          openPreparedStore,
+          acquireStoreRecoveryLease,
         },
       }),
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
@@ -798,8 +799,8 @@ describe('active-store-selection locking', () => {
     // A helper that opened first and authorized later would still satisfy every source-order assertion that
     // used to cover this boundary. Observing the injected opener is the boundary itself: refusal must make it
     // unreachable, irrespective of how recovery is split across helpers.
-    expect(openPreparedStore).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledOnce();
+    expect(openStore).not.toHaveBeenCalled();
+    expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
   });
 
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {

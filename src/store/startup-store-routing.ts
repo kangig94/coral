@@ -28,7 +28,6 @@ export type RouteOrOpenBackendStoreAtStartupInput = Readonly<{
 export async function routeOrOpenBackendStoreAtStartup(
   input: RouteOrOpenBackendStoreAtStartupInput,
 ): Promise<StartupBackendStoreRoutingResult> {
-  let invalidTargetEvidence: InvalidTargetEvidence | null = null;
   const result = await coordinateActiveStoreSelection(input.runtime, input.authority, {
     ...input.options,
     dependencies: {
@@ -36,17 +35,14 @@ export async function routeOrOpenBackendStoreAtStartup(
       validateSelectedTarget: input.validateForeignTarget,
       acquireWriterExclusion: () =>
         acquireBackendStoreWriterExclusion(input.runtime, STARTUP_STORE_RESET_WRITER_EXCLUSION_TIMEOUT_MS),
-      recordInvalidTargetRecovery: (evidence) => {
-        invalidTargetEvidence = evidence;
-      },
     },
   });
 
   if (result.kind === 'handoff') {
     return { kind: 'handoff', target: result.target, source: 'active-selection' };
   }
-  if (invalidTargetEvidence !== null) {
-    return { kind: 'reset-newer-invalid', evidence: invalidTargetEvidence, db: result.db };
+  if (result.invalidTargetEvidence !== null) {
+    return { kind: 'reset-newer-invalid', evidence: result.invalidTargetEvidence, db: result.db };
   }
   return { kind: 'open', db: result.db };
 }

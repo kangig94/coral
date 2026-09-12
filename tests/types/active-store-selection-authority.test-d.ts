@@ -2,12 +2,10 @@ import type { ForeignTargetValidator } from '../../src/infra/handoff-target.js';
 import type { Runtime } from '../../src/runtime/ports.js';
 import type { ActiveStoreSelection } from '../../src/store/active-store-selection.js';
 import {
-  openOrResetBackendStoreDb,
   type BackendStoreResetAuthority,
   type OpenOrResetBackendStoreOptions,
   type WriterExclusion,
 } from '../../src/store/backend-store-reset.js';
-import type { GenerationAdoptionLockLease } from '../../src/store/generation-mutation-coordination.js';
 import type { ActiveStoreSelectionProtocolDependencies } from '../../src/store/active-store-selection-coordination.js';
 import {
   discardStoreReset,
@@ -21,16 +19,10 @@ import {
 
 declare const runtime: Runtime;
 declare const authority: BackendStoreResetAuthority;
-declare const adoption: GenerationAdoptionLockLease;
 declare const openOptions: OpenOrResetBackendStoreOptions;
 declare const writerExclusion: WriterExclusion;
 declare const selection: ActiveStoreSelection;
 declare const validator: ForeignTargetValidator;
-
-openOrResetBackendStoreDb(runtime, authority, adoption, writerExclusion, openOptions);
-
-// @ts-expect-error reset-lock acquisition is unreachable without the nominal adoption lease.
-openOrResetBackendStoreDb(runtime, authority, openOptions);
 
 const startupOptions: StartupActiveStoreSelectionOptions = {
   storeFormat: openOptions.storeFormat,
