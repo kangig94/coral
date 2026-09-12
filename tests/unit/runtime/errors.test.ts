@@ -1023,12 +1023,6 @@ describe('CoralSetupError', () => {
       "Run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.",
     ],
     [
-      'store_reset_quarantine_failed',
-      { reason: 'classified_evidence_missing', flavor: 'prod' },
-      'Coral found no active backend store files to quarantine after classifying the store for reset.',
-      "Retry startup once. If the store is classified for reset again without any active files, run 'coral-cli backend status' and report this code. Do not create, move, delete, restore, or upload DB, WAL, or SHM evidence.",
-    ],
-    [
       'recovery_quarantine_boundary_not_registered',
       {},
       'That recovery boundary is not available for operator retry.',

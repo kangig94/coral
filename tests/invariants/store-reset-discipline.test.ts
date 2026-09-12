@@ -3,6 +3,8 @@ import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
+import { DOCUMENTED_CORAL_SETUP_ERROR_CODES, documentedCoralSetupError } from '#src/runtime/errors.js';
+
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
@@ -347,15 +349,47 @@ describe('store reset discipline invariants', () => {
   it('maps expected maintenance-acquisition failures to copy dispositions', () => {
     const source = sourceFile(BACKEND_STORE_RESET_PATH);
     const acquire = findFunction(BACKEND_STORE_RESET_PATH, 'acquireBackendStoreWriterExclusion');
-    const body = withoutComments(acquire.body?.getText(source) ?? '');
+    const tryStatement = acquire.body?.statements.find(ts.isTryStatement);
+    const catchStatements = tryStatement?.catchClause?.block.statements;
+    expect(catchStatements).toHaveLength(4);
 
-    expect(body).toContain("error.code === 'legacy_source_not_quiescent'");
-    expect(body).toContain("reason: 'writer-live'");
-    expect(body).toContain("error.code === 'legacy_source_writer_observation_unknown'");
-    expect(body).toContain("reason: 'writer-unobservable'");
-    expect(body).toContain('isDirectoryLockTimeoutError(error)');
-    expect(body).toContain("reason: 'lock-timeout'");
-    expect(body.lastIndexOf('throw error')).toBeGreaterThan(body.indexOf('isDirectoryLockTimeoutError(error)'));
+    const expected = [
+      ["error instanceof CoralSetupError && error.code === 'legacy_source_not_quiescent'", 'writer-live'],
+      [
+        "error instanceof CoralSetupError && error.code === 'legacy_source_writer_observation_unknown'",
+        'writer-unobservable',
+      ],
+      ['isDirectoryLockTimeoutError(error)', 'lock-timeout'],
+    ] as const;
+    for (const [index, [condition, reason]] of expected.entries()) {
+      const statement = catchStatements?.[index];
+      expect(statement).toBeDefined();
+      if (statement === undefined) continue;
+      expect(ts.isIfStatement(statement)).toBe(true);
+      if (!ts.isIfStatement(statement)) continue;
+      expect(statement.expression.getText(source)).toBe(condition);
+      expect(statement.elseStatement).toBeUndefined();
+      expect(ts.isBlock(statement.thenStatement)).toBe(true);
+      if (!ts.isBlock(statement.thenStatement)) continue;
+      expect(statement.thenStatement.statements).toHaveLength(1);
+      const returned = statement.thenStatement.statements[0];
+      expect(ts.isReturnStatement(returned)).toBe(true);
+      if (!ts.isReturnStatement(returned) || returned.expression === undefined) continue;
+      expect(ts.isObjectLiteralExpression(returned.expression)).toBe(true);
+      if (!ts.isObjectLiteralExpression(returned.expression)) continue;
+      const reasonProperty = returned.expression.properties.find(
+        (property): property is ts.PropertyAssignment =>
+          ts.isPropertyAssignment(property) && propertyNameText(property.name) === 'reason',
+      );
+      expect(reasonProperty?.initializer.getText(source)).toBe(`'${reason}'`);
+    }
+
+    const finalStatement = catchStatements?.[3];
+    expect(finalStatement).toBeDefined();
+    if (finalStatement !== undefined) expect(ts.isThrowStatement(finalStatement)).toBe(true);
+    if (finalStatement !== undefined && ts.isThrowStatement(finalStatement)) {
+      expect(finalStatement.expression.getText(source)).toBe('error');
+    }
   });
 
   it('links only into staging before removing active evidence', () => {
@@ -374,8 +408,10 @@ describe('store reset discipline invariants', () => {
   });
 
   it('keeps destructive release out of store-reset remediation text', () => {
-    const errors = readFileSync(join(REPO_ROOT, 'src/runtime/errors.ts'), 'utf8');
-    expect(errors).not.toMatch(/store_reset_[\s\S]{0,1000}store-reset release/u);
+    for (const code of DOCUMENTED_CORAL_SETUP_ERROR_CODES.filter((candidate) => candidate.startsWith('store_reset_'))) {
+      const remediation = documentedCoralSetupError({ code }).remediation;
+      expect(remediation, code).not.toContain('store-reset release');
+    }
   });
 
   it('limits startup reset reachability to V3 resume and the two core policy causes', () => {
