@@ -682,6 +682,15 @@ function reconcilePending(
   return ledger;
 }
 
+export function settleStoreResetPending(storage: StoragePort, quarantineRoot: string): void {
+  reconcilePending(
+    storage,
+    quarantineRoot,
+    readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger(),
+    [],
+  );
+}
+
 export function resolveStoreResetRetentionSlot(
   storage: StoragePort,
   quarantineRoot: string,
@@ -864,8 +873,7 @@ export function releaseStoreResetIncident(
   const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
   const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const clearsPending =
-    slot.ledger.pending?.outcome.kind === 'preserve' &&
-    slot.ledger.pending.outcome.incident.incidentId === incidentId;
+    slot.ledger.pending?.outcome.kind === 'preserve' && slot.ledger.pending.outcome.incident.incidentId === incidentId;
   if (clearsHolder || clearsPending) {
     writeLedger(storage, quarantineRoot, {
       ...slot.ledger,

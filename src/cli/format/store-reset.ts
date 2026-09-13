@@ -3,7 +3,7 @@ import type { StoreResetIncidentListResult } from '../../store/reset-incident-re
 import type { StoreResetReleasePresentation } from '../../store/reset-retention.js';
 import { assertNever } from '../../infra/error-format.js';
 
-function constrainStoreResetRendererInput<Value>(value: Value): Value {
+export function constrainStoreResetRendererInput<Value>(value: Value): Value {
   if (typeof value === 'string') {
     return JSON.stringify(value).slice(1, -1).replaceAll('|', '\\u007c').replaceAll('`', '\\u0060') as Value;
   }

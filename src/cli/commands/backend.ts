@@ -170,6 +170,7 @@ import {
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
 import {
+  constrainStoreResetRendererInput,
   formatStoreResetList,
   formatStoreResetRelease,
   formatStoreResetReport,
@@ -515,27 +516,22 @@ type StoreResetDiscardCommandResult = Extract<
   { readonly kind: 'discarded' }
 >;
 
-function storeResetOutputField(value: string): string {
-  return JSON.stringify(value).slice(1, -1).replaceAll('|', '\\u007c').replaceAll('`', '\\u0060');
-}
-
 function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
+  result = constrainStoreResetRendererInput(result);
   const lines: string[] = [];
   if (result.resumedIncident !== null) {
-    lines.push(`Resumed store-reset incident '${storeResetOutputField(result.resumedIncident.incidentId)}'.`);
+    lines.push(`Resumed store-reset incident '${result.resumedIncident.incidentId}'.`);
   }
   for (const epoch of result.epochs) {
     switch (epoch.kind) {
       case 'described':
         switch (epoch.publication.kind) {
           case 'preserved':
-            lines.push(
-              `Preserved store-reset incident '${storeResetOutputField(epoch.publication.incident.incidentId)}'.`,
-            );
+            lines.push(`Preserved store-reset incident '${epoch.publication.incident.incidentId}'.`);
             break;
           case 'discarded':
             lines.push(
-              `Discarded ${epoch.publication.receipt.evidenceBytes} bytes of descendant evidence in deference to '${storeResetOutputField(epoch.publication.receipt.deferredTo)}'.`,
+              `Discarded ${epoch.publication.receipt.evidenceBytes} bytes of descendant evidence in deference to '${epoch.publication.receipt.deferredTo}'.`,
             );
             break;
           case 'no-evidence':
@@ -547,7 +543,7 @@ function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string
         break;
       case 'parked':
         lines.push(
-          `Parked ${epoch.cause} epoch '${storeResetOutputField(epoch.parkingId)}' (${epoch.names.map(storeResetOutputField).join(',')}; classification ${epoch.classification?.kind ?? 'none'}).`,
+          `Parked ${epoch.cause} epoch '${epoch.parkingId}' (${epoch.names.join(',')}; classification ${epoch.classification?.kind ?? 'none'}).`,
         );
         break;
       case 'adopted':
@@ -560,9 +556,7 @@ function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string
         assertNever(epoch);
     }
   }
-  lines.push(
-    `Initialized ${result.target} ${result.flavor} store at ${storeResetOutputField(result.storeDbPath)}.`,
-  );
+  lines.push(`initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.`);
   return lines.join('\n');
 }
 

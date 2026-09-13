@@ -5,6 +5,7 @@ import {
   appendFileSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -111,6 +112,7 @@ function buildIdentity(bundleHash = BUNDLE_HASH) {
 const tempRoots: string[] = [];
 
 function retainedIncidentNames(quarantineRoot: string): string[] {
+  if (!existsSync(quarantineRoot)) return [];
   return readdirSync(quarantineRoot).filter(isCanonicalStoreResetIncidentId);
 }
 
@@ -464,7 +466,7 @@ type ActiveEvidenceMutation = 'deleted' | 'replaced' | 'appended' | 'sidecar';
 function traceActivePathCalls(
   runtime: Runtime,
   activePath: string,
-  boundary: 'descriptor' | 'identity' | 'immediate',
+  boundary: 'descriptor' | 'identity' | 'second-identity' | 'immediate',
   mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation; readonly sidecarPath?: string },
 ): {
   readonly runtime: Runtime;
@@ -476,6 +478,7 @@ function traceActivePathCalls(
   const calls: string[] = [];
   let activeDescriptor: number | null = null;
   let recording = boundary === 'immediate';
+  let identityObservations = 0;
   let stopped = false;
   let applied = false;
   let injectedIdentity: { readonly dev: bigint; readonly ino: bigint } | null = null;
@@ -523,14 +526,15 @@ function traceActivePathCalls(
         }
         if (boundary === 'descriptor' && observesActiveDescriptor) recording = true;
         if (
-          boundary === 'identity' &&
+          (boundary === 'identity' || boundary === 'second-identity') &&
           (method === 'lstatSync' || method === 'statSync') &&
           touchesActivePath &&
           typeof args[1] === 'object' &&
           args[1] !== null &&
           'bigint' in args[1]
         ) {
-          recording = true;
+          identityObservations += 1;
+          recording = boundary === 'identity' || identityObservations >= 2;
         }
         return result;
       };
@@ -581,7 +585,7 @@ async function exerciseActiveEvidenceArm(
     const trace = traceActivePathCalls(
       runtime,
       dbPath,
-      'identity',
+      'second-identity',
       mutation === undefined ? undefined : { ...mutation, sidecarPath: `${dbPath}-wal` },
     );
     const db = await openReset(trace.runtime, dbPath);
@@ -1556,6 +1560,93 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
+  it('keeps a foreign parked inode even when its bytes match staged evidence', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-resume-foreign-identical-');
+    const dbPath = join(root, 'store.db');
+    const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const incidentId = basename(stagingDirectory);
+    const parkingPath = join(quarantineRoot, '.parked', incidentId, 'store.db');
+    const replacementPath = join(root, 'identical-foreign-store.db');
+    copyFileSync(join(stagingDirectory, 'store.db'), replacementPath);
+    rmSync(parkingPath);
+    renameFileSync(replacementPath, parkingPath);
+    const replacement = statSync(parkingPath, { bigint: true });
+
+    expect(resumeReset(runtime, dbPath)).not.toBeNull();
+
+    const active = statSync(dbPath, { bigint: true });
+    expect({ dev: active.dev, ino: active.ino }).toEqual({ dev: replacement.dev, ino: replacement.ino });
+  });
+
+  it('records the copy disposition before replacing the first linked staging file', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-resume-restage-disposition-');
+    const dbPath = join(root, 'store.db');
+    const { quarantineRoot } = createInterruptedReset(runtime, dbPath);
+    const openSync = runtime.storage.openSync;
+    let interrupted = false;
+    vi.spyOn(runtime.storage, 'openSync').mockImplementation((path, flags, mode) => {
+      if (!interrupted && String(path).endsWith('.restage')) {
+        interrupted = true;
+        throw errno('EIO');
+      }
+      return openSync(path, flags, mode);
+    });
+
+    const error = await captureAsyncError(() =>
+      openReset(runtime, dbPath, { kind: 'unproven', reason: 'writer-live', blockers: 'fixture writer' }),
+    );
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(interrupted).toBe(true);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.pending).toMatchObject({
+      outcome: {
+        kind: 'preserve',
+        incident: {
+          preservation: {
+            kind: 'copied',
+            cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
+          },
+        },
+      },
+    });
+  });
+
+  it('records expected identities before legacy resume parks its first active file', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-resume-pre-ledger-identities-');
+    const dbPath = join(root, 'store.db');
+    const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const incidentId = basename(stagingDirectory);
+    const parkingRoot = join(quarantineRoot, '.parked');
+    const parkingDirectory = join(parkingRoot, incidentId);
+    runtime.storage.linkSync(join(parkingDirectory, 'store.db'), dbPath);
+    rmSync(parkingDirectory, { recursive: true });
+    rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
+    const original = statSync(dbPath, { bigint: true });
+    const renameSync = runtime.storage.renameSync;
+    let interrupted = false;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+      renameSync(source, destination);
+      if (!interrupted && source === dbPath && dirname(destination) === parkingDirectory) {
+        interrupted = true;
+        throw errno('EIO');
+      }
+    });
+
+    const error = await captureAsyncError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(interrupted).toBe(true);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.pending?.identities).toContainEqual({
+      name: 'store.db',
+      dev: original.dev.toString(),
+      ino: original.ino.toString(),
+    });
+    expect(existsSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME))).toBe(true);
+  });
+
   it('discards uncommitted pre-manifest staging before classifying the active store', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-pre-manifest-resume-');
@@ -1596,6 +1687,45 @@ describe('openOrResetBackendStoreDb', () => {
     ).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
     expect(tableExists(join(outside, 'store.db'), 'sentinel_before_reset')).toBe(true);
+  });
+
+  it('rejects a symlinked parking operation before reading or removing its target', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-interrupted-parking-symlink-');
+    const dbPath = join(root, 'store.db');
+    const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const incidentId = basename(stagingDirectory);
+    const parkingPath = join(quarantineRoot, '.parked', incidentId);
+    const outside = join(root, 'outside-parking');
+    renameFileSync(parkingPath, outside);
+    symlinkSync(outside, parkingPath, 'dir');
+    const outsideEvidence = readFileSync(join(outside, 'store.db'));
+
+    const error = await captureAsyncError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(readFileSync(join(outside, 'store.db'))).toEqual(outsideEvidence);
+    expect(lstatSync(parkingPath).isSymbolicLink()).toBe(true);
+  });
+
+  it('rejects a symlinked parking root before reading or removing its target', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-interrupted-parking-root-symlink-');
+    const dbPath = join(root, 'store.db');
+    const { quarantineRoot } = createInterruptedReset(runtime, dbPath);
+    const parkingRoot = join(quarantineRoot, '.parked');
+    const outside = join(root, 'outside-parking-root');
+    renameFileSync(parkingRoot, outside);
+    symlinkSync(outside, parkingRoot, 'dir');
+    const incidentId = readdirSync(outside)[0];
+    if (incidentId === undefined) throw new Error('Expected the interrupted parking operation.');
+    const outsideEvidence = readFileSync(join(outside, incidentId, 'store.db'));
+
+    const error = await captureAsyncError(() => openReset(runtime, dbPath));
+
+    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(readFileSync(join(outside, incidentId, 'store.db'))).toEqual(outsideEvidence);
+    expect(lstatSync(parkingRoot).isSymbolicLink()).toBe(true);
   });
 
   it('rejects an oversized interrupted manifest before opening it', async () => {
@@ -1827,7 +1957,8 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = captureError(() => publishReset(runtime, dbPath));
 
-    expectSetupCode(error, 'store_reset_quarantine_failed');
+    expect(error).toBeInstanceOf(Error);
+    expect(serializeCoralSetupError(error)).toBeNull();
     expect(tableExists(target, 'sentinel_before_reset')).toBe(true);
     expect(existsSync(join(root, 'store-reset-quarantine'))).toBe(false);
   });
@@ -1975,7 +2106,7 @@ describe('openOrResetBackendStoreDb', () => {
       const trace = traceActivePathCalls(
         runtime,
         walPath,
-        'identity',
+        'second-identity',
         index === undefined ? undefined : { index, kind: 'appended' },
       );
       const db = await openReset(trace.runtime, dbPath, {
@@ -1992,7 +2123,10 @@ describe('openOrResetBackendStoreDb', () => {
         const incidents = [ledger?.preserved, ledger?.excess?.latest].filter(
           (incident): incident is NonNullable<typeof incident> => incident !== null && incident !== undefined,
         );
-        expect(incidents.some((incident) => incident.preservation?.coherence === 'torn')).toBe(true);
+        expect(
+          incidents.some((incident) => incident.preservation?.coherence === 'torn'),
+          `active-path call ${index}: ${trace.calls[index ?? -1] ?? 'trace'}`,
+        ).toBe(true);
         const reports = await Promise.all(
           retainedIncidentNames(quarantineRoot).map((incidentId) =>
             readStoreResetIncidentReport({

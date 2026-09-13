@@ -824,7 +824,17 @@ describe('operator store-reset discard', () => {
     const parkingPath = join(quarantineRoot, '.parked', discarded.incident.incidentId);
     mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
     writeFileSync(join(parkingPath, 'store.db-wal'), 'kept replacement');
-    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValue(false);
+    const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
+    const events: string[] = [];
+    const rm = runtime.storage.rmSync;
+    vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+      events.push(`remove:${path}`);
+      rm(path, options);
+    });
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      events.push(`sync:${path}`);
+      return false;
+    });
 
     const result = await releaseStoreReset({
       target: 'gen2',
@@ -836,6 +846,12 @@ describe('operator store-reset discard', () => {
     expect(existsSync(join(quarantineRoot, discarded.incident.incidentId))).toBe(false);
     expect(existsSync(parkingPath)).toBe(false);
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+    expect(events.indexOf(`remove:${parkingPath}`)).toBeLessThan(
+      events.indexOf(`sync:${join(quarantineRoot, '.parked')}`),
+    );
+    expect(events.indexOf(`sync:${join(quarantineRoot, '.parked')}`)).toBeLessThan(
+      events.indexOf(`remove:${incidentPath}`),
+    );
   });
 
   it('releases a holder with an unreadable manifest and clears its preserved record', async () => {
@@ -1072,6 +1088,131 @@ describe('backend store-reset commands', () => {
     expect(stdout).toContain(`Released non-holder store-reset incident '${INCIDENT_ID}' (42 bytes) from gen2 dev`);
     expect(stdout).not.toContain('from current');
     expect(stderr).toBe('');
+  });
+
+  it('reports an unproven release on stderr with a transient exit', async () => {
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: async (_target, flavor, incidentId) => ({
+        kind: 'parked',
+        target: 'gen2',
+        flavor,
+        incidentId,
+        evidenceBytes: 42,
+        durability: 'unproven',
+      }),
+    };
+
+    await runCommand(
+      ['backend', 'store-reset', 'release', INCIDENT_ID, '--target', 'gen2', '--flavor', 'prod'],
+      operations,
+    );
+
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`Released parked store-reset evidence '${INCIDENT_ID}'`);
+    expect(stderr).toContain('deletion durability unproven');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('renders every discard epoch disposition in order', async () => {
+    const resumedIncident = {
+      incidentId: INCIDENT_ID,
+      resetAt: '2026-09-13T00:00:00.000Z',
+      reason: 'mismatch' as const,
+      schemaVersion: 3 as const,
+      resetPolicyCause: 'older-incompatible' as const,
+      fileCount: 1,
+    };
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
+      report: async () => publicReport(),
+      release: operationsRelease,
+      discard: async () => ({
+        kind: 'discarded',
+        target: 'gen2',
+        flavor: 'prod',
+        baseDir: '/coral',
+        storeDbPath: '/coral/gen2/data/store/store.db',
+        incident: resumedIncident,
+        resumed: true,
+        resumedIncident,
+        epochs: [
+          {
+            kind: 'described',
+            publication: {
+              kind: 'discarded',
+              receipt: {
+                resetAt: '2026-09-13T00:00:01.000Z',
+                resetPolicyCause: 'older-incompatible',
+                evidenceBytes: 42,
+                deferredTo: INCIDENT_ID,
+              },
+              leftActive: [],
+            },
+          },
+          {
+            kind: 'parked',
+            parkingId: '323e4567-e89b-42d3-a456-426614174000',
+            cause: 'intruder',
+            names: ['store.db'],
+            classification: null,
+          },
+          { kind: 'claimed' },
+        ],
+      }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stdout).toContain(`Resumed store-reset incident '${INCIDENT_ID}'.`);
+    expect(stdout).toContain(`Discarded 42 bytes of descendant evidence in deference to '${INCIDENT_ID}'.`);
+    expect(stdout).toContain(
+      "Parked intruder epoch '323e4567-e89b-42d3-a456-426614174000' (store.db; classification none).",
+    );
+    expect(stdout).toContain('Claimed the active store name with fresh state.');
+  });
+
+  it('constrains all stored strings at renderer ingress', async () => {
+    const injected = 'EIO\nFORGED | ROW `CELL`';
+    const operations: StoreResetCommandOperations = {
+      list: () => ({
+        incidents: [
+          {
+            incidentId: INCIDENT_ID,
+            state: 'ready',
+            resetAt: '2026-09-13T00:00:00.000Z',
+            reason: 'mismatch',
+            schemaVersion: 3,
+            resetPolicyCause: 'older-incompatible',
+            fileCount: 1,
+            evidenceBytes: 42,
+            retention: {
+              slot: 'claimed',
+              preservation: {
+                kind: 'copied',
+                cause: { kind: 'link-unsupported', errno: 'other', code: injected },
+                coherence: 'coherent',
+              },
+              resumeLeftActive: false,
+              parked: [],
+            },
+            storedProductVersion: '0.9.15',
+          },
+        ],
+        truncated: false,
+        discarded: null,
+      }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: operationsRelease,
+    };
+
+    await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
+
+    expect(stdout).not.toContain('\nFORGED');
+    expect(stdout).toContain('EIO\\nFORGED \\u007c ROW \\u0060CELL\\u0060');
   });
 
   it.each([
@@ -1408,7 +1549,7 @@ describe('backend store-reset commands', () => {
     expect(list).toHaveBeenCalledWith('legacy');
     expect(report).toHaveBeenCalledWith('legacy', INCIDENT_ID);
     expect(discard).toHaveBeenCalledWith('gen2', 'dev');
-    expect(stdout).toContain('Initialized gen2 dev store at /coral/gen2/data-dev/store/store.db.');
+    expect(stdout).toContain('initialized gen2 dev store at /coral/gen2/data-dev/store/store.db.');
     expect(stderr).toBe('Quarantined store-reset evidence is diagnostic-only and cannot restore active state.\n');
   });
 

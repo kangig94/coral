@@ -372,7 +372,7 @@ async function settleActiveStore(
         : options.dependencies.kind === 'operator'
           ? resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock, writerExclusion)
           : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, resetLock, writerExclusion);
-    if (activeEpoch === null) activeEpoch = mintActiveStoreEpoch(runtime, files, options);
+    activeEpoch ??= mintActiveStoreEpoch(runtime, files, options);
     let transition = initialTransition;
     const publications: IncidentPublication[] = [];
     const epochs: StoreSettlementEpoch[] = [];
@@ -396,7 +396,7 @@ async function settleActiveStore(
         activeEpoch.evidence,
         activeEpoch.classification,
         resetLock,
-        writerExclusion!,
+        writerExclusion as WriterExclusion,
         activeEpoch.classification.kind === 'newer-incompatible' && transition !== null
           ? resetPolicyForTransition(transition)
           : undefined,
@@ -406,7 +406,11 @@ async function settleActiveStore(
     }
 
     let db: Database | null = null;
-    if (resumed === null && !needsStoreReset(activeEpoch.classification) && activeEpoch.classification.kind !== 'absent') {
+    if (
+      resumed === null &&
+      !needsStoreReset(activeEpoch.classification) &&
+      activeEpoch.classification.kind !== 'absent'
+    ) {
       const decision = openWritableStoreDatabase({
         path: activeEvidencePath(files, 'store.db'),
         storage: runtime.storage,

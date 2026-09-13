@@ -40,12 +40,7 @@ import {
   type GenerationAdoptionLockLease,
   type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
-import {
-  classifyStoreFile,
-  openWritableStoreDatabase,
-  type Database,
-  type WritableStoreOpenDecision,
-} from './db.js';
+import { classifyStoreFile, openWritableStoreDatabase, type Database, type WritableStoreOpenDecision } from './db.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_ACTIVE_STORE_TRANSITION_BYTES,
@@ -80,6 +75,7 @@ import {
   recordStoreResetResumeLeftActive,
   readStoreResetRetentionLedger,
   resolveStoreResetRetentionSlot,
+  settleStoreResetPending,
   writeStoreResetParkedRecord,
   type DiscardReceipt,
   type PreservationMechanism,
@@ -755,13 +751,6 @@ function removeSettledParkingDirectory(storage: StoragePort, parkingRoot: string
   return true;
 }
 
-function removeEmptyOperationDirectory(storage: StoragePort, parent: string, path: string): void {
-  const read = storage.readDirectoryBoundedSync(path, 1);
-  if (read.overflow || read.entries.length > 0) return;
-  storage.rmSync(path, { recursive: true });
-  requireDirectorySync(storage, parent);
-}
-
 function assertPrivateDirectory(storage: StoragePort, path: string, platform: string): void {
   const link = storage.lstatSync(path);
   const stat = storage.statSync(path, { bigint: true });
@@ -1030,7 +1019,7 @@ function resumeInterruptedIncident(
   if (interrupted === null) return null;
   if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
   let ledger = readStoreResetRetentionLedger(runtime.storage, interrupted.quarantineRoot);
-  let pendingEvidence = pendingActiveEvidence(ledger, interrupted.incidentId);
+  const pendingEvidence = pendingActiveEvidence(ledger, interrupted.incidentId);
   const parkingRoot = join(interrupted.quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   const parkingDirectory = join(parkingRoot, interrupted.incidentId);
   let parkingExists = validatedParkingDirectoryExists(
@@ -1044,7 +1033,7 @@ function resumeInterruptedIncident(
   if (interrupted.manifest === null) {
     const kept = restoreUncommittedParking(runtime.storage, files, parkingDirectory, parked);
     discardUncommittedStaging(runtime.storage, interrupted.stagingDirectory, interrupted.stagingRoot);
-    if (parkingExists) removeEmptyOperationDirectory(runtime.storage, parkingRoot, parkingDirectory);
+    if (parkingExists) removeSettledParkingDirectory(runtime.storage, parkingRoot, parkingDirectory);
     if (kept.length === 0 && ledger !== null)
       clearStoreResetPending(runtime.storage, interrupted.quarantineRoot, ledger);
     return null;
@@ -1095,7 +1084,6 @@ function resumeInterruptedIncident(
           retention,
         },
       });
-      pendingEvidence = legacyActive;
       parked = parkIncidentEvidence(runtime.storage, files, legacyActive, parkingDirectory, 'coherent').parked;
     }
   }
@@ -1110,7 +1098,6 @@ function resumeInterruptedIncident(
       createPrivateOperationDirectory(runtime.storage, parkingRoot, parkingDirectory, runtime.env.platform());
       parkingExists = true;
     }
-    restageEvidenceAsCopies(runtime.storage, stagingDirectory, parkingDirectory, manifest);
     if (pending?.outcome.kind === 'preserve' && ledger !== null) {
       const cause: Extract<PreservationMechanism, { readonly kind: 'copied' }>['cause'] =
         writerExclusion.kind === 'unproven'
@@ -1122,7 +1109,7 @@ function resumeInterruptedIncident(
         cause.kind === 'exclusion-unproven'
           ? { kind: 'copied', cause, coherence: 'coherent' }
           : { kind: 'copied', cause, coherence: 'coherent' };
-      ledger = recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
+      recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
         ...pending,
         outcome: {
           ...pending.outcome,
@@ -1133,6 +1120,7 @@ function resumeInterruptedIncident(
         },
       });
     }
+    restageEvidenceAsCopies(runtime.storage, stagingDirectory, parkingDirectory, manifest);
   }
 
   validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
@@ -1252,7 +1240,11 @@ function detectInterruptedIncident(
   const stagingDirectory = committed ? join(quarantineRoot, stagingName) : join(stagingRoot, stagingName);
   let stagingIdentity: StorageBigIntStat;
   try {
-    stagingIdentity = assertContainedDirectory(runtime.storage, committed ? quarantineRoot : stagingRoot, stagingDirectory);
+    stagingIdentity = assertContainedDirectory(
+      runtime.storage,
+      committed ? quarantineRoot : stagingRoot,
+      stagingDirectory,
+    );
   } catch (error: unknown) {
     throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign', error);
   }
@@ -1580,10 +1572,7 @@ function discardIncidentEvidence(
   files: BackendStoreFileSet,
   evidence: readonly ActiveEvidence[],
   parkingDirectory: string,
-): {
-  readonly leftActive: readonly StoreResetEvidenceFileName[];
-  readonly identitiesSettled: boolean;
-} {
+): { readonly leftActive: readonly StoreResetEvidenceFileName[] } {
   const parked = parkIncidentEvidence(storage, files, evidence, parkingDirectory, 'coherent');
   const leftActive = [
     ...parked.leftActive,
@@ -1595,7 +1584,7 @@ function discardIncidentEvidence(
       new Set(evidence.map((active) => active.name)),
     ),
   ];
-  return { leftActive, identitiesSettled: parked.leftActive.length === 0 };
+  return { leftActive };
 }
 
 function pendingIdentities(evidence: readonly ActiveEvidence[]): StoreResetRetentionPending['identities'] {
@@ -1688,10 +1677,8 @@ function publishIncident(
             classification: null,
           });
         }
-        if (discard.identitiesSettled) {
-          recordStoreResetDiscarded(runtime.storage, quarantineRoot, pendingLedger, receipt);
-          writeAuditEvent('store_reset_discarded', receipt, 'warn');
-        }
+        recordStoreResetDiscarded(runtime.storage, quarantineRoot, pendingLedger, receipt);
+        writeAuditEvent('store_reset_discarded', receipt, 'warn');
         removeSettledParkingDirectory(runtime.storage, parkingRoot, parkingDirectory);
         return { kind: 'discarded', receipt, leftActive: discard.leftActive };
       }
@@ -1836,13 +1823,7 @@ function publishIncident(
     runtime.storage.renameSync(stagingDirectory, finalDirectory);
     requireDirectorySync(runtime.storage, quarantineRoot, stagingRoot);
     const droppableNames = new Set(publishedEvidence.published.map(({ active }) => active.name));
-    const settledLeft = settleParkedEvidence(
-      runtime.storage,
-      files,
-      parkingDirectory,
-      parked.parked,
-      droppableNames,
-    );
+    const settledLeft = settleParkedEvidence(runtime.storage, files, parkingDirectory, parked.parked, droppableNames);
     const parkingRead = runtime.storage.readDirectoryBoundedSync(parkingDirectory, MAX_INCIDENT_DIR_ENTRIES);
     if (parkingRead.overflow) throw new Error('Store-reset parking directory exceeds its entry limit.');
     const keptParked = parkingRead.entries.filter((name): name is StoreResetEvidenceFileName =>
@@ -1998,7 +1979,7 @@ function finishOpenedClaim(
   files: BackendStoreFileSet,
   minted: MintedBackendStore,
   decision: Extract<WritableStoreOpenDecision, { readonly kind: 'opened' }>,
-): BackendStoreClaimAttempt {
+): Extract<BackendStoreClaimAttempt, { readonly kind: 'opened' }> {
   const claimed = activeNameHasIdentity(runtime.storage, files, 'store.db', minted.identity);
   const mintedRoot = dirname(minted.directory);
   runtime.storage.rmSync(minted.directory, { recursive: true });
@@ -2058,6 +2039,12 @@ export function attemptBackendStoreClaim(
     const mintedRoot = dirname(minted.directory);
     runtime.storage.rmSync(minted.directory, { recursive: true });
     requireDirectorySync(runtime.storage, mintedRoot);
+    try {
+      settleStoreResetPending(runtime.storage, quarantineRoot);
+    } catch (error: unknown) {
+      decision.db.close();
+      throw error;
+    }
     return {
       kind: 'opened',
       db: decision.db,
@@ -2091,6 +2078,12 @@ export function attemptBackendStoreClaim(
     return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
   }
   const opened = finishOpenedClaim(runtime, files, minted, decision);
+  try {
+    settleStoreResetPending(runtime.storage, quarantineRoot);
+  } catch (error: unknown) {
+    opened.db.close();
+    throw error;
+  }
   return {
     ...opened,
     epochs: [...(parkedEpoch === null ? [] : [parkedEpoch]), ...opened.epochs],

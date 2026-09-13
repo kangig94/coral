@@ -344,9 +344,9 @@ function readParkedListEntries(
               state = sidecarStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed';
             } else {
               record = parseStoreResetParkedRecord(
-                Buffer.from(readBoundedFileBytes(fs, sidecarPath, sidecarStat, MAX_RESET_PARKED_SIDECAR_BYTES)).toString(
-                  'utf-8',
-                ),
+                Buffer.from(
+                  readBoundedFileBytes(fs, sidecarPath, sidecarStat, MAX_RESET_PARKED_SIDECAR_BYTES),
+                ).toString('utf-8'),
               );
               if (record?.parkingId !== parkingId) state = 'malformed';
             }
@@ -460,8 +460,7 @@ export function listStoreResetIncidents(options: {
         readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger),
       ),
       ...parkingOnly,
-    ]
-      .sort(compareEntries),
+    ].sort(compareEntries),
     truncated: truncated || parked.truncated,
     discarded: ledger?.discarded ?? null,
   };

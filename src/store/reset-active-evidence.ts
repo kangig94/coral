@@ -249,10 +249,7 @@ export function parkCurrentEvidence(
   return parked;
 }
 
-export function activeEvidencePath(
-  files: ActiveEvidenceFileSet,
-  name: StoreResetEvidenceFileName,
-): string {
+export function activeEvidencePath(files: ActiveEvidenceFileSet, name: StoreResetEvidenceFileName): string {
   return candidateForEvidence(files, name);
 }
 
