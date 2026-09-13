@@ -46,6 +46,7 @@ import {
   isCanonicalStoreResetIncidentId,
   MAX_ACTIVE_STORE_TRANSITION_BYTES,
   MAX_INCIDENT_DIR_ENTRIES,
+  MAX_INCIDENT_ROOT_ENTRIES,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
@@ -1018,7 +1019,7 @@ function stagingUsesLinkedIdentities(
 }
 
 function resumeInterruptedIncident(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,
   writerExclusion: WriterExclusion,
@@ -1333,6 +1334,15 @@ export function hasPendingBackendStoreResetIncident(
   if (runtime.storage.existsSync(stagingRoot)) {
     const read = runtime.storage.readDirectoryBoundedSync(stagingRoot, 1);
     if (read.overflow || read.entries.length > 0) return true;
+  }
+  const mintedRoot = join(quarantineRoot, STORE_RESET_MINTED_DIRECTORY);
+  if (runtime.storage.existsSync(mintedRoot)) {
+    try {
+      const read = runtime.storage.readDirectoryBoundedSync(mintedRoot, 1);
+      if (read.overflow || read.entries.length > 0) return true;
+    } catch {
+      return true;
+    }
   }
   const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
   if (ledger?.pending !== null && ledger?.pending !== undefined) return true;
@@ -1684,12 +1694,69 @@ function terminalizeParking(
   });
 }
 
-function resumeNonPublicationParking(
-  runtime: Pick<Runtime, 'flavor' | 'storage' | 'time'>,
+function retainInterruptedMintedStores(
+  runtime: Pick<Runtime, 'env' | 'ids' | 'storage' | 'time'>,
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,
 ): void {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+  const mintedRoot = join(quarantineRoot, STORE_RESET_MINTED_DIRECTORY);
+  if (!runtime.storage.existsSync(mintedRoot)) return;
+  ensurePrivateDirectory(runtime.storage, mintedRoot, runtime.env.platform());
+  const read = runtime.storage.readDirectoryBoundedSync(mintedRoot, MAX_INCIDENT_ROOT_ENTRIES + 1);
+  const mintedIds = read.entries.slice(0, MAX_INCIDENT_ROOT_ENTRIES).filter(isCanonicalStoreResetIncidentId);
+  if (mintedIds.length === 0) return;
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  ensurePrivateDirectory(runtime.storage, parkingRoot, runtime.env.platform());
+  requireDirectorySync(runtime.storage, quarantineRoot);
+  for (const mintedId of mintedIds) {
+    const mintedDirectory = join(mintedRoot, mintedId);
+    let mintedStat: StorageBigIntStat;
+    try {
+      mintedStat = runtime.storage.lstatSync(mintedDirectory, { bigint: true });
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) continue;
+      throw error;
+    }
+    if (!mintedStat.isDirectory()) continue;
+    assertContainedDirectory(runtime.storage, mintedRoot, mintedDirectory);
+    const parkingId = runtime.storage.existsSync(join(parkingRoot, mintedId)) ? runtime.ids.uuid() : mintedId;
+    if (runtime.storage.existsSync(join(parkingRoot, parkingId))) continue;
+    const parkingDirectory = join(parkingRoot, parkingId);
+    runtime.storage.renameSync(mintedDirectory, parkingDirectory);
+    requireDirectorySync(runtime.storage, mintedRoot, parkingRoot);
+    const parkingRead = runtime.storage.readDirectoryBoundedSync(parkingDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
+    if (parkingRead.overflow) throw new Error('Interrupted minted store exceeds its entry limit.');
+    const initialNames = parkingRead.entries.filter((name): name is StoreResetEvidenceFileName =>
+      STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName),
+    );
+    const initialEntries = describeParkedEntries(runtime.storage, parkingDirectory, initialNames);
+    const parkedDb = initialEntries.find((entry) => entry.name === 'store.db');
+    const classification =
+      parkedDb?.kind === 'regular-file'
+        ? classifyParkedStore(runtime, join(parkingDirectory, 'store.db'), options)
+        : null;
+    const finalRead = runtime.storage.readDirectoryBoundedSync(parkingDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
+    if (finalRead.overflow) throw new Error('Interrupted minted store exceeds its entry limit.');
+    const finalNames = finalRead.entries.filter((name): name is StoreResetEvidenceFileName =>
+      STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName),
+    );
+    const finalEntries = describeParkedEntries(runtime.storage, parkingDirectory, finalNames);
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      terminalParkingRecord(runtime, parkingId, 'residual', finalEntries, classification),
+    );
+  }
+}
+
+function resumeNonPublicationParking(
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
+  files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
+): void {
+  const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+  retainInterruptedMintedStores(runtime, files, options);
   const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   if (discovered.truncated) throw new InterruptedStoreResetRefusal('store_reset_interrupted_ambiguous');
   const inFlight = discovered.entries.filter((entry) => entry.record?.phase === 'in-flight');
@@ -2272,10 +2339,15 @@ function finishOpenedClaim(
     if (identity.kind === 'undeterminable') throw identity.error;
     return { kind: 'retry', epochs: [] };
   }
-  const mintedRoot = dirname(minted.directory);
-  runtime.storage.rmSync(minted.directory, { recursive: true });
-  requireDirectorySync(runtime.storage, mintedRoot);
-  return { kind: 'opened', db: decision.db, epochs: [{ kind: 'claimed' }] };
+  try {
+    const mintedRoot = dirname(minted.directory);
+    runtime.storage.rmSync(minted.directory, { recursive: true });
+    requireDirectorySync(runtime.storage, mintedRoot);
+    return { kind: 'opened', db: decision.db, epochs: [{ kind: 'claimed' }] };
+  } catch (error: unknown) {
+    decision.db.close();
+    throw error;
+  }
 }
 
 export function attemptBackendStoreClaim(
@@ -2400,7 +2472,7 @@ export function publishClassifiedBackendStoreResetIncident(
 }
 
 export function resumeBackendStoreResetIncidentForOperator(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,
   resetLock: BackendStoreResetLockLease,
@@ -2516,7 +2588,7 @@ function authorizeAutomaticIncidentResume(
 }
 
 function resumeAutomaticBackendStoreReset(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,
@@ -2541,7 +2613,7 @@ function resumeAutomaticBackendStoreReset(
 }
 
 export function resumeAutomaticBackendStoreResetIncident(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,

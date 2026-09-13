@@ -448,8 +448,8 @@ async function settleActiveStore(
         break;
       }
     }
-    db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS}`);
     try {
+      db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS}`);
       if (transition !== null) {
         // The live transition is cleared only after its invalid-selection basis has been copied into the
         // reset-quarantine durability boundary. Coordinator logging is deliberately not evidence authority.

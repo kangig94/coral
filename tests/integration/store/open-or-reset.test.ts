@@ -61,6 +61,7 @@ import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import { enumerateActiveEvidence } from '#src/store/reset-active-evidence.js';
 import {
   isCanonicalStoreResetIncidentId,
+  MAX_INCIDENT_ROOT_ENTRIES,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
@@ -2777,6 +2778,90 @@ describe('openOrResetBackendStoreDb', () => {
       entries: expect.arrayContaining([expect.objectContaining({ name: 'store.db-shm', kind: 'directory' })]),
     });
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+  });
+
+  it('discovers a bounded interrupted minted store and moves it onto the operator surface', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-minted-resume-');
+    const dbPath = join(root, 'store.db');
+    const mintedId = '323e4567-e89b-42d3-a456-426614174000';
+    const mintedRoot = join(root, 'store-reset-quarantine', '.minted');
+    const mintedDirectory = join(mintedRoot, mintedId);
+    mkdirSync(mintedDirectory, { recursive: true, mode: 0o700 });
+    createCompatibleSentinelStore(runtime, join(mintedDirectory, 'store.db'));
+    runtime.storage.linkSync(join(mintedDirectory, 'store.db'), dbPath);
+    const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
+    const observedBounds: number[] = [];
+    vi.spyOn(runtime.storage, 'readDirectoryBoundedSync').mockImplementation((path, maxEntries) => {
+      if (path === mintedRoot) observedBounds.push(maxEntries);
+      return readDirectoryBoundedSync(path, maxEntries);
+    });
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(observedBounds).toContain(MAX_INCIDENT_ROOT_ENTRIES + 1);
+    expect(existsSync(mintedDirectory)).toBe(false);
+    const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, mintedId)).toMatchObject({
+      phase: 'terminal',
+      cause: 'residual',
+      incidentId: null,
+      names: expect.arrayContaining(['store.db']),
+      classification: 'compatible',
+    });
+    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+  });
+
+  it('closes the claimed database when post-open minted cleanup fails', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-claim-close-');
+    const dbPath = join(root, 'store.db');
+    const openWritableStoreDatabase = dbModule.openWritableStoreDatabase;
+    const claimedDbs: DatabaseSync[] = [];
+    vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation((options) => {
+      const decision = openWritableStoreDatabase(options);
+      if (decision.kind === 'opened') claimedDbs.push(decision.db as DatabaseSync);
+      return decision;
+    });
+    const rmSync = runtime.storage.rmSync;
+    vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+      if (String(path).includes(`${join('store-reset-quarantine', '.minted')}`)) {
+        throw errno('EIO');
+      }
+      rmSync(path, options);
+    });
+
+    await captureAsyncError(() => openReset(runtime, dbPath));
+
+    expect(claimedDbs).not.toHaveLength(0);
+    expect(claimedDbs.at(-1)?.isOpen).toBe(false);
+  });
+
+  it('closes a directly opened database when steady-state configuration fails', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-steady-state-close-');
+    const dbPath = join(root, 'store.db');
+    createCompatibleSentinelStore(runtime, dbPath);
+    const openWritableStoreDatabase = dbModule.openWritableStoreDatabase;
+    const openedDbs: DatabaseSync[] = [];
+    vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation((options) => {
+      const decision = openWritableStoreDatabase(options);
+      if (decision.kind === 'opened') {
+        openedDbs.push(decision.db as DatabaseSync);
+        const exec = decision.db.exec.bind(decision.db);
+        vi.spyOn(decision.db, 'exec').mockImplementation((sql) => {
+          if (sql.startsWith('PRAGMA busy_timeout =')) throw errno('EIO');
+          exec(sql);
+        });
+      }
+      return decision;
+    });
+
+    await captureAsyncError(() => openReset(runtime, dbPath));
+
+    expect(openedDbs).not.toHaveLength(0);
+    expect(openedDbs.at(-1)?.isOpen).toBe(false);
   });
 });
 
