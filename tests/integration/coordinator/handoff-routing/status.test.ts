@@ -1608,6 +1608,7 @@ describe('handoff-routing/status', () => {
 
     const maintenance = await acquireGenerationMaintenanceLease(discardRuntime);
     let fastNow = discardRuntime.time.now();
+    let fastMonotonicNow = discardRuntime.time.monotonicNow();
     try {
       await expect(
         discardHandoffRoutingStatus(
@@ -1617,8 +1618,10 @@ describe('handoff-routing/status', () => {
               time: {
                 ...discardRuntime.time,
                 now: () => fastNow,
+                monotonicNow: () => fastMonotonicNow,
                 sleep: async (ms: number) => {
                   fastNow += ms;
+                  fastMonotonicNow += BigInt(ms);
                 },
               },
             },
@@ -1701,6 +1704,7 @@ describe('handoff-routing/status', () => {
     const pid = baseRuntime.env.pid();
     const incarnation = testIncarnation(pid);
     let now = baseRuntime.time.now();
+    let monotonicNow = baseRuntime.time.monotonicNow();
     const writerRuntime: Runtime = {
       ...baseRuntime,
       env: {
@@ -1715,8 +1719,10 @@ describe('handoff-routing/status', () => {
       time: {
         ...baseRuntime.time,
         now: () => now,
+        monotonicNow: () => monotonicNow,
         sleep: async (milliseconds: number) => {
           now += milliseconds;
+          monotonicNow += BigInt(milliseconds);
         },
       },
     };
