@@ -1008,7 +1008,7 @@ export function releaseStoreResetIncident(
       return incomplete(error, parkingDurable);
     }
   }
-  let quarantineDurable = false;
+  let quarantineDurable: boolean;
   try {
     quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
   } catch {
