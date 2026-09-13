@@ -212,12 +212,6 @@ describe('cli errors', () => {
         1,
       ],
       [
-        'store_reset_incident_limit_exceeded',
-        'Too many retained store-reset entries to list safely.',
-        'File a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
-        1,
-      ],
-      [
         'store_reset_build_mismatch',
         'Store-reset reporting is unavailable because the installed build artifacts do not match.',
         'Reinstall or update Coral through the same install method without deleting Coral data, then retry. If it persists, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
@@ -264,9 +258,6 @@ describe('cli errors', () => {
     it.each([
       ['legacy_foreign_generation', { legacyPath: '/legacy', version: '0.9.16' }, 409],
       ['legacy_source_not_quiescent', { holder: 'install:kiwi (pid 42)', flavor: 'prod' }, 409],
-      ['store_newer_incompatible', { version: '99.0.0', flavor: 'prod' }, 409],
-      ['store_older_incompatible', { version: '0.0.1', flavor: 'prod' }, 409],
-      ['store_corrupt_or_unsupported', { flavor: 'prod' }, 409],
       ['store_not_initialized', { path: '/store/store.db' }, 409],
       ['kb_commit_corrupt_or_unsupported', { commitId: 'blocking-commit', flavor: 'prod' }, 409],
       ['kb_commit_id_invalid', { commitId: '../bad' }, 400],

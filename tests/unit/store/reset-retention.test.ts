@@ -201,7 +201,7 @@ describe('parseStoreResetRetentionLedger', () => {
     expect(parsed).toBeNull();
   });
 
-  it('accepts a pending promise without treating it as a preserved claim', () => {
+  it('accepts a pending promise without retaining obsolete parking fields', () => {
     const pendingIncident = incident({ incidentId: HOLDER_ID });
     const parsed = parse(
       ledger({
@@ -217,13 +217,11 @@ describe('parseStoreResetRetentionLedger', () => {
     );
 
     expect(parsed).toMatchObject({
-      pending: {
-        parkingId: HOLDER_ID,
-        parked: ['store.db-wal'],
-        outcome: { kind: 'preserve', incident: { incidentId: HOLDER_ID } },
-      },
+      pending: { outcome: { kind: 'preserve', incident: { incidentId: HOLDER_ID } } },
       preserved: null,
     });
+    expect(parsed?.pending).not.toHaveProperty('parkingId');
+    expect(parsed?.pending).not.toHaveProperty('parked');
   });
 
   it('normalizes a valid stored product version at ledger ingress', () => {

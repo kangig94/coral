@@ -72,6 +72,16 @@ type WritableStoreOptions = {
   readonly busyTimeoutMs?: number;
 };
 
+export type WritableStoreOpenDecision =
+  | { readonly kind: 'opened'; readonly db: Database }
+  | {
+      readonly kind: 'incompatible';
+      readonly classification: Extract<
+        StoreFormatClassification,
+        { readonly kind: 'older-incompatible' | 'newer-incompatible' | 'corrupt-or-unsupported' }
+      >;
+    };
+
 export type OpenStoreOptions = ReadonlyStoreOptions | WritableStoreOptions;
 
 export type StoreFormatClassificationTarget = Readonly<{
@@ -306,26 +316,63 @@ function raiseStoredProductVersion(db: Database, currentProductVersion: string):
   });
 }
 
-export function openStoreDatabase(options: OpenStoreOptions): Database {
-  const readonly = options.readonly ?? false;
-
-  if (readonly && options.path !== ':memory:' && !options.storage.existsSync(options.path)) {
-    throw documentedCoralSetupError('store_not_initialized', { path: options.path });
-  }
-
-  if (options.readonly !== true && options.path !== ':memory:') {
+export function openWritableStoreDatabase(options: WritableStoreOptions): WritableStoreOpenDecision {
+  if (options.path !== ':memory:') {
     options.storage.mkdirSync(dirname(options.path), { recursive: true });
   }
 
-  const db = new DatabaseSync(options.path, { readOnly: readonly }) as unknown as Database;
-
+  const db = new DatabaseSync(options.path) as unknown as Database;
   try {
-    if (readonly) {
+    const classification = classifyStoreFormat(db, options.storeFormat);
+    if (classification.kind === 'legacy-adoptable') {
+      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
+    }
+    if (classification.kind === 'compatible') {
       applyJournalPragmas(db, {
-        kind: 'readonly',
+        kind: 'writable',
         busyTimeoutMs: options.busyTimeoutMs,
       });
+      raiseStoredProductVersion(db, options.storeFormat.productVersion);
+      writeStoreFormatSidecar(options);
+      return { kind: 'opened', db };
     }
+    if (classification.kind === 'fresh' || classification.kind === 'absent') {
+      applyJournalPragmas(db, {
+        kind: 'writable',
+        busyTimeoutMs: options.busyTimeoutMs,
+      });
+      applyBundledStoreSchema(db, options.storeFormat);
+      writeStoreFormatSidecar(options);
+      return { kind: 'opened', db };
+    }
+    db.close();
+    return { kind: 'incompatible', classification };
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function openStoreDatabase(options: OpenStoreOptions): Database {
+  const readonly = options.readonly ?? false;
+
+  if (!readonly) {
+    const decision = openWritableStoreDatabase(options as WritableStoreOptions);
+    if (decision.kind === 'opened') return decision.db;
+    throw storeSchemaOutdatedError(options.path, decision.classification, options.storeFormat, options.flavor);
+  }
+
+  if (options.path !== ':memory:' && !options.storage.existsSync(options.path)) {
+    throw documentedCoralSetupError('store_not_initialized', { path: options.path });
+  }
+
+  const db = new DatabaseSync(options.path, { readOnly: true }) as unknown as Database;
+
+  try {
+    applyJournalPragmas(db, {
+      kind: 'readonly',
+      busyTimeoutMs: options.busyTimeoutMs,
+    });
 
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'legacy-adoptable') {
@@ -333,28 +380,6 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
       throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
     }
     if (classification.kind === 'compatible') {
-      if (!readonly) {
-        applyJournalPragmas(db, {
-          kind: 'writable',
-          busyTimeoutMs: options.busyTimeoutMs,
-        });
-        raiseStoredProductVersion(db, options.storeFormat.productVersion);
-      }
-      if (options.readonly !== true) writeStoreFormatSidecar(options);
-      return db;
-    }
-
-    if (readonly) {
-      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
-    }
-
-    if (classification.kind === 'fresh') {
-      applyJournalPragmas(db, {
-        kind: 'writable',
-        busyTimeoutMs: options.busyTimeoutMs,
-      });
-      applyBundledStoreSchema(db, options.storeFormat);
-      writeStoreFormatSidecar(options as WritableStoreOptions);
       return db;
     }
 

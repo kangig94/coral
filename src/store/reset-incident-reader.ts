@@ -15,6 +15,7 @@ import {
   type STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION,
   STORE_RESET_MANIFEST_FILE_NAME,
   STORE_RESET_PARKED_DIRECTORY,
+  STORE_RESET_PARKED_SIDECAR_FILE_NAME,
   StoreResetManifestDecodeError,
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentManifest,
@@ -24,6 +25,8 @@ import {
 } from './reset-incident.js';
 import {
   MAX_RESET_RETENTION_LEDGER_BYTES,
+  MAX_RESET_PARKED_SIDECAR_BYTES,
+  parseStoreResetParkedRecord,
   parseStoreResetRetentionLedger,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type PreservationMechanism,
@@ -67,7 +70,12 @@ export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
         readonly resumeLeftActive: boolean;
         readonly parked: readonly string[];
       })
-    | { readonly slot: 'pending'; readonly parked: readonly string[] }
+    | {
+        readonly slot: 'parked';
+        readonly parked: readonly string[];
+        readonly cause: 'publication' | 'discard' | 'intruder' | 'residual';
+        readonly classification: string | null;
+      }
     | { readonly slot: 'unknown' };
   readonly storedProductVersion: string | null | 'unknown';
   readonly evidenceBytes: number | 'unknown';
@@ -192,22 +200,6 @@ function listRetention(
         ? { incident: ledger.excess.latest, retention: ledger.excess.latest }
         : null;
   if (retained === null) {
-    if (ledger?.pending?.parkingId === incidentId) {
-      return {
-        retention: {
-          slot: 'pending',
-          parked: ledger.pending.parked ?? ledger.pending.identities.map((identity) => identity.name),
-        },
-        storedProductVersion:
-          ledger.pending.outcome.kind === 'preserve'
-            ? (ledger.pending.outcome.incident.storedProductVersion ?? null)
-            : null,
-        evidenceBytes:
-          ledger.pending.outcome.kind === 'preserve'
-            ? ledger.pending.outcome.incident.evidenceBytes
-            : ledger.pending.outcome.receipt.evidenceBytes,
-      };
-    }
     return { retention: { slot: 'unknown' }, storedProductVersion: 'unknown', evidenceBytes: 'unknown' };
   }
   return {
@@ -215,7 +207,7 @@ function listRetention(
       ...retained.retention,
       preservation: retained.incident.preservation ?? 'unknown',
       resumeLeftActive: retained.incident.resumeLeftActive,
-      parked: retained.incident.parked ?? [],
+      parked: [],
     },
     storedProductVersion:
       retained.incident.storedProductVersion === undefined ? 'unknown' : retained.incident.storedProductVersion,
@@ -298,6 +290,96 @@ function readListEntry(
   }
 }
 
+function readParkedListEntries(
+  fs: StoreResetInspectionFs,
+  quarantineRoot: string,
+): { readonly entries: readonly StoreResetIncidentListEntry[]; readonly truncated: boolean } {
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  const rootStat = fs.lstat(parkingRoot);
+  if (rootStat === null) return { entries: [], truncated: false };
+  if (rootStat.kind !== 'directory') {
+    return { entries: [], truncated: false };
+  }
+  const rootReal = fs.realpath(quarantineRoot);
+  const parkingReal = fs.realpath(parkingRoot);
+  if (!isContained(rootReal, parkingReal)) return { entries: [], truncated: false };
+
+  const parkingIds: string[] = [];
+  let cursor: unknown = null;
+  let truncated = false;
+  try {
+    cursor = fs.openDirectory(parkingRoot);
+    let consumed = 0;
+    while (true) {
+      const entry = fs.readDirectory(cursor);
+      if (entry === null) break;
+      consumed += 1;
+      if (consumed > MAX_INCIDENT_ROOT_ENTRIES) {
+        truncated = true;
+        break;
+      }
+      if (isCanonicalStoreResetIncidentId(entry.name)) parkingIds.push(entry.name);
+    }
+  } finally {
+    if (cursor !== null) fs.closeDirectory(cursor);
+  }
+
+  return {
+    entries: parkingIds.map((parkingId) => {
+      const parkingPath = join(parkingRoot, parkingId);
+      const parkingStat = fs.lstat(parkingPath);
+      let state: Extract<StoreResetIncidentListEntry['state'], 'parked' | 'malformed' | 'unsafe' | 'unavailable'> =
+        'parked';
+      let record: ReturnType<typeof parseStoreResetParkedRecord> = null;
+      if (parkingStat?.kind !== 'directory') {
+        state = parkingStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed';
+      } else {
+        try {
+          if (!isContained(parkingReal, fs.realpath(parkingPath))) {
+            state = 'unsafe';
+          } else {
+            const sidecarPath = join(parkingPath, STORE_RESET_PARKED_SIDECAR_FILE_NAME);
+            const sidecarStat = fs.lstat(sidecarPath);
+            if (sidecarStat?.kind !== 'file') {
+              state = sidecarStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed';
+            } else {
+              record = parseStoreResetParkedRecord(
+                Buffer.from(readBoundedFileBytes(fs, sidecarPath, sidecarStat, MAX_RESET_PARKED_SIDECAR_BYTES)).toString(
+                  'utf-8',
+                ),
+              );
+              if (record?.parkingId !== parkingId) state = 'malformed';
+            }
+          }
+        } catch (error: unknown) {
+          state = error instanceof StoreResetIncidentReadError ? error.state : 'unavailable';
+        }
+      }
+      return {
+        incidentId: parkingId,
+        state,
+        resetAt: null,
+        reason: null,
+        schemaVersion: null,
+        resetPolicyCause: null,
+        fileCount: null,
+        retention:
+          record === null
+            ? { slot: 'unknown' as const }
+            : {
+                slot: 'parked' as const,
+                parked: record.names,
+                cause: record.cause,
+                classification: record.classification,
+              },
+        storedProductVersion: 'unknown' as const,
+        evidenceBytes: 'unknown' as const,
+      };
+    }),
+    truncated,
+  };
+}
+
 function compareEntries(left: StoreResetIncidentListEntry, right: StoreResetIncidentListEntry): number {
   if (left.resetAt !== null && right.resetAt !== null && left.resetAt !== right.resetAt) {
     return right.resetAt.localeCompare(left.resetAt);
@@ -369,28 +451,18 @@ export function listStoreResetIncidents(options: {
     throw new StoreResetIncidentReadError('unavailable');
   }
 
-  const pendingParkingId = ledger?.pending?.parkingId;
-  let parkingOnlyId: string | null = null;
-  let parkingOnlyState: 'parked' | 'malformed' | 'unsafe' = 'parked';
-  if (pendingParkingId !== undefined && !incidentIds.includes(pendingParkingId)) {
-    const parkingStat = options.fs.lstat(join(options.quarantineRoot, STORE_RESET_PARKED_DIRECTORY, pendingParkingId));
-    if (parkingStat !== null) {
-      parkingOnlyId = pendingParkingId;
-      parkingOnlyState =
-        parkingStat.kind === 'directory' ? 'parked' : parkingStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed';
-      incidentIds.push(pendingParkingId);
-    }
-  }
+  const parked = readParkedListEntries(options.fs, options.quarantineRoot);
+  const parkingOnly = parked.entries.filter((entry) => !incidentIds.includes(entry.incidentId));
 
   return {
-    incidents: incidentIds
-      .map((incidentId) =>
-        incidentId === parkingOnlyId
-          ? unavailableEntry(incidentId, parkingOnlyState, ledger)
-          : readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger),
-      )
+    incidents: [
+      ...incidentIds.map((incidentId) =>
+        readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger),
+      ),
+      ...parkingOnly,
+    ]
       .sort(compareEntries),
-    truncated,
+    truncated: truncated || parked.truncated,
     discarded: ledger?.discarded ?? null,
   };
 }

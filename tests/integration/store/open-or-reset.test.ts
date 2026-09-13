@@ -57,16 +57,19 @@ import {
  */
 const FRESH_LOCK_STALENESS_WINDOW_MS = 30_000;
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
+import { enumerateActiveEvidence } from '#src/store/reset-active-evidence.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
+  STORE_RESET_PARKED_SIDECAR_FILE_NAME,
   type StoreResetIncidentManifestV2,
   type StoreResetIncidentManifestV3,
   type StoreResetPolicyCause,
 } from '#src/store/reset-incident.js';
-import { readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
+import { listStoreResetIncidents, readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
+import { formatStoreResetList } from '#src/cli/format/store-reset.js';
 import {
   readStoreResetRetentionLedger,
   resolveStoreResetRetentionSlot,
@@ -228,6 +231,16 @@ function createMismatchStore(dbPath: string, fingerprint = `sha256:${'0'.repeat(
   }
 }
 
+function createIncompatibleSentinelStore(dbPath: string, epoch: number): void {
+  createMismatchStore(dbPath);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`CREATE TABLE sentinel_epoch_${epoch} (id INTEGER PRIMARY KEY)`);
+  } finally {
+    db.close();
+  }
+}
+
 function createVersionedStore(dbPath: string, fingerprint: string, productVersion: string): void {
   createMismatchStore(dbPath, fingerprint);
   const db = new DatabaseSync(dbPath);
@@ -331,6 +344,7 @@ function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusi
       runtime,
       authorityFor(runtime, dbPath),
       files,
+      enumerateActiveEvidence(runtime.storage, files),
       classification,
       resetLock,
       exclusion,
@@ -353,6 +367,7 @@ function publishNewerReset(runtime: Runtime, dbPath: string) {
       runtime,
       authorityFor(runtime, dbPath),
       files,
+      enumerateActiveEvidence(runtime.storage, files),
       classification,
       resetLock,
       writerExclusion(),
@@ -1873,6 +1888,53 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
   });
 
+  it.each([1, 2, 3, 5])('boots after an adversary lands %i incompatible store epochs', async (epochCount) => {
+    const runtime = createRuntime();
+    const root = makeTempRoot(`coral-store-k-replacement-${epochCount}-`);
+    const dbPath = join(root, 'store.db');
+    const identities: Array<{ readonly dev: bigint; readonly ino: bigint }> = [];
+    createMismatchStore(dbPath);
+
+    const linkSync = runtime.storage.linkSync;
+    let nextEpoch = 0;
+    vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+      if (
+        destination === dbPath &&
+        String(source).includes(`${join('store-reset-quarantine', '.minted')}`) &&
+        nextEpoch < epochCount
+      ) {
+        createIncompatibleSentinelStore(dbPath, nextEpoch);
+        const replacement = statSync(dbPath, { bigint: true });
+        identities.push({ dev: replacement.dev, ino: replacement.ino });
+        nextEpoch += 1;
+      }
+      linkSync(source, destination);
+    });
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(nextEpoch).toBe(epochCount);
+    for (const identity of identities) expect(containsIdentity(root, identity)).toBe(true);
+    const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+    const parkingIds = readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId);
+    expect(parkingIds).toHaveLength(epochCount);
+    for (const parkingId of parkingIds) {
+      const sidecar = JSON.parse(
+        readFileSync(join(parkingRoot, parkingId, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 'utf-8'),
+      ) as { cause?: unknown; names?: unknown };
+      expect(sidecar).toMatchObject({ cause: 'intruder', names: ['store.db'] });
+    }
+    const listed = listStoreResetIncidents({
+      fs: createStoreResetInspectionFs(),
+      quarantineRoot: join(root, 'store-reset-quarantine'),
+      expectedBuild: buildIdentity(),
+    });
+    expect(listed.incidents.filter((entry) => entry.state === 'parked')).toHaveLength(epochCount);
+    const rendered = formatStoreResetList(listed, 'gen2');
+    for (const parkingId of parkingIds) expect(rendered).toContain(parkingId);
+  });
+
   it.each(['deleted', 'replaced', 'sidecar'] as const)(
     'conserves every injected inode when active evidence is %s at every shared-path call',
     async (kind) => {
@@ -2007,12 +2069,17 @@ describe('openOrResetBackendStoreDb', () => {
       const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
       expect(ledger?.pending).toBeNull();
       expect(readdirSync(stagingRoot)).toEqual([]);
-      const parkedNames = [ledger?.preserved, ledger?.excess?.latest].flatMap((incident) => incident?.parked ?? []);
       const parkingRoot = join(quarantineRoot, '.parked');
-      const parkedOnDisk = existsSync(parkingRoot)
-        ? readdirSync(parkingRoot).flatMap((entry) => readdirSync(join(parkingRoot, entry)))
-        : [];
-      expect(parkedOnDisk.every((name) => parkedNames.includes(name as 'store.db'))).toBe(true);
+      if (existsSync(parkingRoot)) {
+        for (const entry of readdirSync(parkingRoot)) {
+          const directory = join(parkingRoot, entry);
+          const record = JSON.parse(readFileSync(join(directory, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 'utf-8')) as {
+            names: readonly string[];
+          };
+          const evidence = readdirSync(directory).filter((name) => name !== STORE_RESET_PARKED_SIDECAR_FILE_NAME);
+          expect(evidence.every((name) => record.names.includes(name))).toBe(true);
+        }
+      }
     },
   );
 

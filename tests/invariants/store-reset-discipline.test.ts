@@ -293,7 +293,7 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('keeps one bounded settlement machine between classification and the single store open', () => {
+  it('publishes once before the unbounded claim loop', () => {
     const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
     const body = withoutComments(settlement.body?.getText(coordination) ?? '');
@@ -302,15 +302,15 @@ describe('store reset discipline invariants', () => {
     const resumeIndex = body.indexOf('resumeBackendStoreResetIncident');
     const loopIndex = body.indexOf('for (;;)');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
-    const openIndex = body.indexOf('openStoreDatabase(');
+    const openIndex = body.indexOf('openWritableStoreDatabase(');
 
     expect(acquireExclusionIndex).toBeGreaterThanOrEqual(0);
     expect(resetLockIndex).toBeGreaterThan(acquireExclusionIndex);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
-    expect(loopIndex).toBeGreaterThan(resumeIndex);
-    expect(publishIndex).toBeGreaterThan(loopIndex);
+    expect(publishIndex).toBeGreaterThan(resumeIndex);
+    expect(loopIndex).toBeGreaterThan(publishIndex);
     expect(openIndex).toBeGreaterThan(publishIndex);
-    expect(body).toContain('publications.length === 2');
+    expect(body).not.toContain('publications.length === 2');
 
     const publicationCalls = allSourcePaths().flatMap((path) =>
       collectCalls(path).filter((call) => call.callee === 'publishClassifiedBackendStoreResetIncident'),
@@ -320,7 +320,7 @@ describe('store reset discipline invariants', () => {
     expect(publicationCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
 
     const openCalls = collectCalls(ACTIVE_STORE_SELECTION_COORDINATION_PATH).filter(
-      (call) => call.callee === 'openStoreDatabase',
+      (call) => call.callee === 'openWritableStoreDatabase',
     );
     expect(openCalls).toHaveLength(1);
     expect(openCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
@@ -331,6 +331,34 @@ describe('store reset discipline invariants', () => {
     expect(source).not.toMatch(
       /\b(?:openOrResetBackendStoreDb|authorizeClassifiedStore|openProtocolStore|openPreparedStore|recordRecoveryOutcome|recordInvalidTargetRecovery)\b/u,
     );
+  });
+
+  it('keeps refusal and bound constructs outside every settlement loop body', () => {
+    const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
+    const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
+    const loops: ts.IterationStatement[] = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isForStatement(node) ||
+        ts.isForInStatement(node) ||
+        ts.isForOfStatement(node) ||
+        ts.isWhileStatement(node) ||
+        ts.isDoStatement(node)
+      ) {
+        loops.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    if (settlement.body !== undefined) visit(settlement.body);
+    expect(loops).toHaveLength(1);
+    const loopBody = withoutComments(loops[0]?.statement.getText(coordination) ?? '');
+    expect(loopBody).not.toMatch(/\bthrow\b/u);
+    expect(loopBody).not.toMatch(/\b(?:refuse|documented)[A-Za-z0-9_]*\s*\(/u);
+    expect(loopBody).not.toMatch(/\b(?:max|limit|budget|timeout)[A-Za-z0-9_]*\b/iu);
+    expect(loopBody).not.toMatch(/\.length\s*(?:===|!==|<=|>=|<|>)\s*(?!0\b)/u);
+    for (const literal of loopBody.matchAll(/\b([0-9]+)\b/gu)) {
+      expect(Number(literal[1])).toBeLessThan(2);
+    }
   });
 
   it('maps expected maintenance-acquisition failures to copy dispositions', () => {
@@ -387,9 +415,10 @@ describe('store reset discipline invariants', () => {
       findFunction(BACKEND_STORE_RESET_PATH, 'publishIncident').body?.getText(incidentSource) ?? '',
     );
 
-    expect(linkCalls).toHaveLength(2);
+    expect(linkCalls).toHaveLength(3);
     expect(linkCalls.map((call) => call.enclosingFunctions[0]).sort()).toEqual([
       'linkActiveEvidence',
+      'linkOwnedEvidenceToActive',
       'restoreParkedEvidence',
     ]);
     const stageIndex = publish.indexOf('linkIncidentEvidence(');
@@ -461,7 +490,10 @@ describe('store reset discipline invariants', () => {
     expect(sharedPathCalls.map((call) => call.callee).sort()).toEqual([
       'linkSync',
       'linkSync',
+      'linkSync',
+      'lstatSync',
       'openSync',
+      'renameSync',
       'renameSync',
     ]);
     expect(externalPathAccesses).toEqual([]);

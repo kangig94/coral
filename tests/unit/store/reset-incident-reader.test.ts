@@ -14,7 +14,10 @@ import {
   serializeStoreResetIncidentManifest,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
-import { STORE_RESET_RETENTION_LEDGER_FILE_NAME } from '#src/store/reset-retention.js';
+import {
+  STORE_RESET_PARKED_SIDECAR_VERSION,
+  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
+} from '#src/store/reset-retention.js';
 
 const ROOT = '/coral/store/store-reset-quarantine';
 const BUILD: StrictBundleManifest = {
@@ -239,33 +242,26 @@ describe('store reset incident listing', () => {
     ]);
   });
 
-  it('lists a pending parking namespace even when no incident directory was committed', () => {
+  it('lists a self-describing parking namespace even when no incident directory was committed', () => {
     const parkingId = '323e4567-e89b-42d3-a456-426614174000';
     const fs = new MemoryInspectionFs();
     fs.addRoot(['.parked']);
-    fs.stats.set(join(ROOT, '.parked', parkingId), stat('directory'));
+    const parkingRoot = join(ROOT, '.parked');
+    const parkingDirectory = join(parkingRoot, parkingId);
+    fs.stats.set(parkingRoot, stat('directory'));
+    fs.entries.set(parkingRoot, [parkingId]);
+    fs.stats.set(parkingDirectory, stat('directory'));
     fs.addFile(
-      join(ROOT, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
+      join(parkingDirectory, 'parked.v1.json'),
       JSON.stringify({
-        version: 1,
-        pending: {
-          resetAt: '2026-09-13T00:00:00.000Z',
-          parkingId,
-          parked: ['store.db-wal'],
-          identities: [{ name: 'store.db', dev: '1', ino: '2' }],
-          outcome: {
-            kind: 'discard',
-            receipt: {
-              resetAt: '2026-09-13T00:00:00.000Z',
-              resetPolicyCause: 'older-incompatible',
-              evidenceBytes: 42,
-              deferredTo: '223e4567-e89b-42d3-a456-426614174000',
-            },
-          },
-        },
-        preserved: null,
-        excess: null,
-        discarded: null,
+        version: STORE_RESET_PARKED_SIDECAR_VERSION,
+        parkingId,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'terminal',
+        cause: 'intruder',
+        incidentId: null,
+        names: ['store.db-wal'],
+        classification: 'corrupt-or-unsupported',
       }),
     );
 
@@ -278,9 +274,14 @@ describe('store reset incident listing', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
-        evidenceBytes: 42,
-        retention: { slot: 'pending', parked: ['store.db-wal'] },
-        storedProductVersion: null,
+        evidenceBytes: 'unknown',
+        retention: {
+          slot: 'parked',
+          parked: ['store.db-wal'],
+          cause: 'intruder',
+          classification: 'corrupt-or-unsupported',
+        },
+        storedProductVersion: 'unknown',
       },
     ]);
   });

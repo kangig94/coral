@@ -169,7 +169,11 @@ import {
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
 } from '../format/backend.js';
-import { formatStoreResetList, formatStoreResetRelease, formatStoreResetReport } from '../format/store-reset.js';
+import {
+  formatStoreResetList,
+  formatStoreResetRelease,
+  formatStoreResetReport,
+} from '../format/store-reset.js';
 import { clearHandoffRoutingStatusQuarantine, discardHandoffRoutingStatus } from '../routing-status-discard.js';
 import {
   createProviderProxyRoleTerminationCommandOperations,
@@ -504,6 +508,62 @@ export interface StoreResetCommandOperations {
     flavor: BuildFlavor,
     incidentId: string,
   ): ReturnType<typeof releaseStoreResetLocal>;
+}
+
+type StoreResetDiscardCommandResult = Extract<
+  Awaited<ReturnType<StoreResetCommandOperations['discard']>>,
+  { readonly kind: 'discarded' }
+>;
+
+function storeResetOutputField(value: string): string {
+  return JSON.stringify(value).slice(1, -1).replaceAll('|', '\\u007c').replaceAll('`', '\\u0060');
+}
+
+function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
+  const lines: string[] = [];
+  if (result.resumedIncident !== null) {
+    lines.push(`Resumed store-reset incident '${storeResetOutputField(result.resumedIncident.incidentId)}'.`);
+  }
+  for (const epoch of result.epochs) {
+    switch (epoch.kind) {
+      case 'described':
+        switch (epoch.publication.kind) {
+          case 'preserved':
+            lines.push(
+              `Preserved store-reset incident '${storeResetOutputField(epoch.publication.incident.incidentId)}'.`,
+            );
+            break;
+          case 'discarded':
+            lines.push(
+              `Discarded ${epoch.publication.receipt.evidenceBytes} bytes of descendant evidence in deference to '${storeResetOutputField(epoch.publication.receipt.deferredTo)}'.`,
+            );
+            break;
+          case 'no-evidence':
+            lines.push('The described epoch contained no evidence.');
+            break;
+          default:
+            assertNever(epoch.publication);
+        }
+        break;
+      case 'parked':
+        lines.push(
+          `Parked ${epoch.cause} epoch '${storeResetOutputField(epoch.parkingId)}' (${epoch.names.map(storeResetOutputField).join(',')}; classification ${epoch.classification?.kind ?? 'none'}).`,
+        );
+        break;
+      case 'adopted':
+        lines.push('Adopted a compatible epoch at the active store name.');
+        break;
+      case 'claimed':
+        lines.push('Claimed the active store name with fresh state.');
+        break;
+      default:
+        assertNever(epoch);
+    }
+  }
+  lines.push(
+    `Initialized ${result.target} ${result.flavor} store at ${storeResetOutputField(result.storeDbPath)}.`,
+  );
+  return lines.join('\n');
 }
 
 export interface KbCommitCommandOperations {
@@ -2020,14 +2080,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           }
         }
         process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
-        if (result.incident === null) {
-          process.stdout.write(`Initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`);
-          return;
-        }
-        const action = result.resumed ? 'Resumed' : 'Quarantined';
-        process.stdout.write(
-          `${action} store-reset incident '${result.incident.incidentId}' and initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.\n`,
-        );
+        process.stdout.write(`${formatStoreResetDiscard(result)}\n`);
       } catch (error: unknown) {
         if (error instanceof HandoffRunError) {
           renderHandoffPublicationIncidents(error.incidents.filter((incident) => incident.phase === 'terminal'));
@@ -2051,12 +2104,20 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       try {
         const result = await storeReset.release(options.target, options.flavor, incidentId);
         const output = `${formatStoreResetRelease(result)}\n`;
-        if (result.kind === 'released' || result.kind === 'not-holder') {
+        if (
+          (result.kind === 'released' || result.kind === 'not-holder' || result.kind === 'parked') &&
+          result.durability === 'proven'
+        ) {
           process.stdout.write(output);
           return;
         }
         process.stderr.write(output);
-        process.exitCode = result.kind === 'undeterminable' ? errorCodeToExit('transient') : 1;
+        process.exitCode =
+          result.kind === 'undeterminable' ||
+          ((result.kind === 'released' || result.kind === 'not-holder' || result.kind === 'parked') &&
+            result.durability === 'unproven')
+            ? errorCodeToExit('transient')
+            : 1;
       } catch (error: unknown) {
         emitError(boundStoreResetCliError(error));
       }

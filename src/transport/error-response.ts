@@ -32,9 +32,6 @@ function setupErrorStatusCode(code: string): number {
     case 'legacy_source_writer_observation_unknown':
     case 'active_store_coordination_invalid':
     case 'startup_bundle_unresolvable':
-    case 'store_newer_incompatible':
-    case 'store_older_incompatible':
-    case 'store_corrupt_or_unsupported':
     case 'store_not_initialized':
     case 'kb_commit_corrupt_or_unsupported':
     case 'coordinator_socket_in_use':

@@ -1731,32 +1731,6 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
-    it('formats a documented startup failure with its authored cause and remediation', () => {
-      expect(
-        formatBackendStatus({
-          status: 'recent_failure',
-          phase: 'startup_failed',
-          retryable: false,
-          setupError: {
-            kind: 'documented',
-            code: 'store_newer_incompatible',
-            userMessage:
-              'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-            remediation:
-              "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
-          },
-        }),
-      ).toBe(
-        [
-          'Coral recorded a recent coordinator failure.',
-          'Phase: startup_failed',
-          'Retryable: no',
-          'Cause: The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build. [code=store_newer_incompatible]',
-          "Next step: Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
-        ].join('\n'),
-      );
-    });
-
     it('formats an unrecognized setup-error code without printing persisted text', () => {
       expect(
         formatBackendStatus({

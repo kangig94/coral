@@ -2180,43 +2180,6 @@ describe('backend startup diagnostic classification', () => {
     });
   });
 
-  it('carries the authored cause and remediation of a documented setup failure', () => {
-    expect(
-      statusFromStartupDiagnostic(
-        {
-          schemaVersion: 1,
-          phase: 'startup_failed',
-          state: 'stopped_with_diagnostic',
-          retryable: false,
-          pid: 4242,
-          recordedAt: '2026-08-02T11:59:30.000Z',
-          exitCode: 1,
-          error: {
-            kind: 'coral_setup_error',
-            code: 'store_newer_incompatible',
-            userMessage:
-              'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
-            remediation:
-              "Use Coral 0.11.0 to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod'.",
-            context: { flavor: 'prod', version: '0.11.0' },
-          },
-        },
-        now,
-        provenSelfIdentity,
-      ),
-    ).toEqual({
-      status: 'recent_failure',
-      phase: 'startup_failed',
-      retryable: false,
-      setupError: {
-        kind: 'documented',
-        code: 'store_newer_incompatible',
-        userMessage: authored('store_newer_incompatible', { flavor: 'prod', version: '0.11.0' }).userMessage,
-        remediation: authored('store_newer_incompatible', { flavor: 'prod', version: '0.11.0' }).remediation,
-      },
-    });
-  });
-
   it('does not render credentials from a serialized diagnostic cause', async () => {
     const secret = 'sk-proj-secret-value';
     const classified = statusFromStartupDiagnostic(

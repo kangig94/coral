@@ -83,9 +83,6 @@ export type DocumentedCoralSetupErrorCode =
   | 'legacy_source_not_quiescent'
   | 'legacy_source_writer_observation_unknown'
   | 'active_store_coordination_invalid'
-  | 'store_newer_incompatible'
-  | 'store_older_incompatible'
-  | 'store_corrupt_or_unsupported'
   | 'store_open_contended'
   | 'store_open_unclassified'
   | 'store_not_initialized'
@@ -528,23 +525,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Coral cannot safely use the active-store ${stringContextValue(context, 'record', '<selection|transition>')} record.`,
     remediation: activeStoreCoordinationRemediation,
-  },
-  store_newer_incompatible: {
-    userMessage: (context) =>
-      `The current-generation store was written by newer Coral ${stringContextValue(context, 'version', '<stored-version>')} and is incompatible with this build.`,
-    remediation: (context) =>
-      `Use Coral ${stringContextValue(context, 'version', '<stored-version>')} to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
-  },
-  store_older_incompatible: {
-    userMessage: (context) =>
-      `The current-generation store was written by Coral ${stringContextValue(context, 'version', '<stored-version>')} with an older incompatible format.`,
-    remediation: (context) =>
-      `Use Coral ${stringContextValue(context, 'version', '<stored-version>')} to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
-  },
-  store_corrupt_or_unsupported: {
-    userMessage: 'The current-generation store is corrupt or uses an unsupported format.',
-    remediation: (context) =>
-      `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to quarantine it before this build initializes an empty store.`,
   },
   store_open_contended: {
     userMessage: 'The current-generation store could not be opened because it is in use.',

@@ -246,6 +246,8 @@ const operationsDiscard: StoreResetCommandOperations['discard'] = async () => ({
   storeDbPath: '/coral/gen2/data/store/store.db',
   incident: null,
   resumed: false,
+  resumedIncident: null,
+  epochs: [{ kind: 'claimed' }],
 });
 const operationsRelease: StoreResetCommandOperations['release'] = async (_target, flavor, incidentId) => ({
   kind: 'absent',
@@ -1351,6 +1353,8 @@ describe('backend store-reset commands', () => {
         storeDbPath: '/coral/gen2/data/store/store.db',
         incident: null,
         resumed: false,
+        resumedIncident: null,
+        epochs: [{ kind: 'claimed' }],
       }),
     };
 
@@ -1388,6 +1392,8 @@ describe('backend store-reset commands', () => {
       storeDbPath: '/coral/gen2/data-dev/store/store.db',
       incident: null,
       resumed: false,
+      resumedIncident: null,
+      epochs: [{ kind: 'claimed' as const }],
     }));
     const operations: StoreResetCommandOperations = { list, report, discard, release: operationsRelease };
 

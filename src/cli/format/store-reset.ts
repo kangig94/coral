@@ -3,6 +3,19 @@ import type { StoreResetIncidentListResult } from '../../store/reset-incident-re
 import type { StoreResetReleasePresentation } from '../../store/reset-retention.js';
 import { assertNever } from '../../infra/error-format.js';
 
+function constrainStoreResetRendererInput<Value>(value: Value): Value {
+  if (typeof value === 'string') {
+    return JSON.stringify(value).slice(1, -1).replaceAll('|', '\\u007c').replaceAll('`', '\\u0060') as Value;
+  }
+  if (Array.isArray(value)) return value.map(constrainStoreResetRendererInput) as Value;
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [key, constrainStoreResetRendererInput(entry)]),
+    ) as Value;
+  }
+  return value;
+}
+
 function code(value: string): string {
   return `\`${value}\``;
 }
@@ -15,8 +28,8 @@ function retention(entry: StoreResetIncidentListResult['incidents'][number]): st
   switch (entry.retention.slot) {
     case 'unknown':
       return 'unknown';
-    case 'pending':
-      return 'pending';
+    case 'parked':
+      return `parked (${entry.retention.cause}; classification ${entry.retention.classification ?? 'none'})`;
     case 'claimed':
       return 'claimed';
     case 'excess':
@@ -29,7 +42,7 @@ function retention(entry: StoreResetIncidentListResult['incidents'][number]): st
 function preservation(entry: StoreResetIncidentListResult['incidents'][number]): string {
   switch (entry.retention.slot) {
     case 'unknown':
-    case 'pending':
+    case 'parked':
       return 'unknown';
     case 'claimed':
     case 'excess': {
@@ -84,6 +97,7 @@ function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
 }
 
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
+  report = constrainStoreResetRendererInput(report);
   const lines = [
     '# Coral store-reset incident report',
     '',
@@ -138,6 +152,8 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
 }
 
 export function formatStoreResetList(result: StoreResetIncidentListResult, target: 'legacy' | 'gen2'): string {
+  result = constrainStoreResetRendererInput(result);
+  target = constrainStoreResetRendererInput(target);
   if (result.incidents.length === 0) {
     return [
       `No ${target} store-reset incidents.`,
@@ -171,6 +187,7 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
 }
 
 export function formatStoreResetRelease(result: StoreResetReleasePresentation): string {
+  result = constrainStoreResetRendererInput(result);
   switch (result.kind) {
     case 'released': {
       const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
@@ -179,6 +196,10 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
     case 'not-holder': {
       const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
       return `Released non-holder store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+    }
+    case 'parked': {
+      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
+      return `Released parked store-reset evidence '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;

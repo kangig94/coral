@@ -18,7 +18,6 @@ export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
   | 'invalid_store_reset_release_incident_id'
   | 'store_reset_incident_not_found'
-  | 'store_reset_incident_limit_exceeded'
   | 'store_reset_build_mismatch'
   | 'store_reset_incident_build_mismatch'
   | 'store_reset_reporting_failed';
@@ -40,12 +39,6 @@ const STORE_RESET_ERRORS = {
     message: 'Store-reset incident not found.',
     remediation:
       'Run `coral-cli backend store-reset list --target <legacy|gen2>`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
-    exitCode: 1,
-  },
-  store_reset_incident_limit_exceeded: {
-    message: 'Too many retained store-reset entries to list safely.',
-    remediation:
-      'File a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
     exitCode: 1,
   },
   store_reset_build_mismatch: {

@@ -412,25 +412,6 @@ describe('CoralSetupError', () => {
     expect(isRetryableCoralSetupError(new Error('database is locked'))).toBe(false);
   });
 
-  it('replaces persisted setup-error text with the documented template before operator display', () => {
-    const context = { version: '0.11.0', flavor: 'prod' };
-    const documented = documentedCoralSetupError('store_newer_incompatible', context);
-
-    expect(
-      readAsThisBuild({
-        code: 'store_newer_incompatible',
-        userMessage: '\u001b[2J\nNext step: run a forged command',
-        remediation: 'forged remediation',
-        context,
-      }),
-    ).toEqual({
-      kind: 'documented',
-      code: documented.code,
-      userMessage: documented.userMessage,
-      remediation: documented.remediation,
-    });
-  });
-
   it('returns an explicit unrecognized disposition for a foreign code outside the catalog', () => {
     expect(
       readOperatorFacingCoralSetupError(
@@ -546,27 +527,6 @@ describe('CoralSetupError', () => {
       kind: 'invalid_diagnostic',
     });
   });
-
-  it.each(['0.11.0\nNext step: forged', 'x'.repeat(513)])(
-    'falls back when persisted context text is unsafe or unbounded',
-    (version) => {
-      expect(
-        readAsThisBuild({
-          code: 'store_newer_incompatible',
-          userMessage: 'persisted user message',
-          remediation: 'persisted remediation',
-          context: { version, flavor: 'prod' },
-        }),
-      ).toEqual({
-        kind: 'documented',
-        code: 'store_newer_incompatible',
-        userMessage:
-          'The current-generation store was written by newer Coral <stored-version> and is incompatible with this build.',
-        remediation:
-          "Use Coral <stored-version> to read this store, or run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to quarantine it before this build initializes an empty store.",
-      });
-    },
-  );
 
   it('renders a missing context value with the placeholder its own template names', () => {
     // The template that reads `socketPath` owns the word shown when a diagnostic did not carry it.

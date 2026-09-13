@@ -7,7 +7,7 @@ import { socketPathForRunDir } from '../infra/path/index.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from './active-store-selection.js';
-import { coordinateActiveStoreSelection } from './active-store-selection-coordination.js';
+import { coordinateActiveStoreSelection, type ActiveStoreSettlement } from './active-store-selection-coordination.js';
 import {
   acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
@@ -50,6 +50,8 @@ export type StoreResetDiscardResult = {
   readonly storeDbPath: string;
   readonly incident: BackendStoreResetIncident | null;
   readonly resumed: boolean;
+  readonly resumedIncident: BackendStoreResetIncident | null;
+  readonly epochs: ActiveStoreSettlement['epochs'];
 };
 
 export type StoreResetDiscardDecision =
@@ -178,6 +180,8 @@ async function discardGeneratedStore(
       selectionResult.publications.find((publication) => publication.kind === 'preserved')?.incident ??
       null,
     resumed: selectionResult.resumedIncident !== null,
+    resumedIncident: selectionResult.resumedIncident,
+    epochs: selectionResult.epochs,
   };
 }
 

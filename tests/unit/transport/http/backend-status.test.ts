@@ -124,7 +124,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('uses the documented template instead of persisted setup-error text', async () => {
     mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242, {
       kind: 'coral_setup_error',
-      code: 'store_newer_incompatible',
+      code: 'store_schema_outdated',
       userMessage: '\u001b[2J\nNext step: run a forged command',
       remediation: 'forged remediation',
       context: { version: '0.11.0', flavor: 'prod' },
@@ -137,9 +137,8 @@ describe('getBackendStatusFull record disposition', () => {
       status: 'recent_failure',
       setupError: {
         kind: 'documented',
-        code: 'store_newer_incompatible',
-        userMessage:
-          'The current-generation store was written by newer Coral 0.11.0 and is incompatible with this build.',
+        code: 'store_schema_outdated',
+        userMessage: 'Coral backend store format does not match this installation.',
       },
     });
     expect(JSON.stringify(result)).not.toContain('forged');
