@@ -8,8 +8,32 @@ plugin rollback by hand. The design below removes that refusal, and the review t
 the same mistake twice more in its own drafts, so the rule it ends with is worth more than any of the
 mechanisms:
 
-> In `openOrResetBackendStoreDb`, every observation selects a **mechanism**. None of them selects a
-> **refusal**. Only a genuine filesystem failure may stop the boot.
+> **A refusal names a refused syscall. A hold names unknown evidence that proceeding would finalize.
+> A bound running out names neither, so it selects the next mechanism down — and the bottom,
+> park-and-claim, has none.**
+
+The ladders, written here so "the next mechanism down" is not the author's invention:
+
+- **For what occupies the name**: describe it — link under proven exclusion, else copy — then **park it**.
+  Park has no bound. One `rename` into an owned directory, bytes conserved, a `list` row, a `release`
+  exit. Nothing is needed beneath park because park does no work that scales with what it moves.
+- **For the name itself**: **link** a store minted in the quarantine onto it, then (on `EXDEV` only)
+  create by path. Link has no bound: `EEXIST` is the next epoch, not a failure.
+
+This replaces an earlier sentence — *"every observation selects a mechanism; none selects a refusal; only
+a genuine filesystem failure may stop the boot"* — which was the defect rather than the cure. It named
+two categories, observations of the world and filesystem failure, and **a bound running out is neither**.
+Each time, its own author reasoned that exhaustion is not an observation of the store, reached for §11's
+"a bounded retry must reach a named successor", found that a documented refusal naming `store-reset
+discard` is a successor that exists, and shipped the veto. Four times, in four different mechanisms. The
+sentence licensed that by omission.
+
+§11 was also read backwards. It governs the **exit from a hold**; it does not say when a hold may exist.
+A hold exists only where proceeding would finalize on evidence you do not have — and parking finalizes
+nothing, since every inode is conserved, named, listed and releasable. So the reset path contains no hold
+at all, and a bound that stops it is a veto wearing §11's clothes. The named successor was also empty in
+effect: `discard` runs the same machine in operator mode and, against a foreign re-creator, either cannot
+obtain its stricter lease or obtains it and parks exactly what startup would have parked.
 
 ## What happened
 
@@ -702,17 +726,111 @@ exist — replacing the `quarantineStoreFiles` ghost guard, which names a symbol
 `publishClassifiedBackendStoreResetIncident` has exactly one call expression, enclosed by the loop; and
 `openStoreDatabase` is called once in that module, after the loop.
 
+## Revision 4 — publish once, then claim the name
+
+Revision 3's settlement loop was capped at two publications, and a live foreign writer that wins the race
+twice reaches `refuseIncompatibleBackendStore`. That is a boot refusal for a non-filesystem reason, in a
+bound this document specified — the fourth instance of its own subject. The ruling is above: **the
+sentence was the defect**, and the mechanism follows from the replacement.
+
+**A fifth instance was sitting one line after the loop the whole time.** `openStoreDatabase`'s writable
+arm is create-or-inspect on a shared name and throws `storeSchemaOutdatedError` on an incompatible
+occupant (`src/store/db.ts`). So "boot anyway on the last pass" was never available: the open itself
+refuses. The writable arm gets a decision union — opened, or the occupant's classification — and it has
+exactly one caller, so the two read-only callers keep mapping to `store_schema_outdated` unchanged.
+
+**And the invariant asserted the defect's presence.** `tests/invariants/store-reset-discipline.test.ts`
+literally contains `expect(body).toContain('publications.length === 2')`. A guard that pins the bug is
+worse than none.
+
+### The machine
+
+Three phases, in order, with `publishClassifiedBackendStoreResetIncident` called **at most once** and
+enclosed by no loop.
+
+**Mint the epoch.** Enumerate, classify, enumerate again. Identities equal → that is epoch 0, bound to
+that classification. Unequal → the second enumeration is the epoch; classify it. This is the remedy for a
+stale classification authorizing a reset of an inode it never saw: `publishIncident` no longer
+re-enumerates, and `enumerateActiveEvidence` has one call site outside the owner.
+
+**Claim the name**, only when the name is to be fresh. Mint a store on an owned path under the quarantine
+root, then:
+
+```
+loop:
+  park every present name of the four into .parked/<uuid>/    sidecar written durably first
+                                                              rename ENOENT → absent; any other errno → throw
+  if store.db was parked: classify it AT ITS PARKED PATH      owned; unreadable is a value, never a throw
+      compatible | fresh → link that epoch's names back; open in place → adopted; return
+      anything else      → record the classification in the sidecar; keep
+  link(minted → dbFile)
+      EEXIST → continue                                       the occupant is the next epoch
+      other errno → throw                                     owned side, or a refused mutation
+  open dbFile; identity equals the minted one → claimed, else adopted
+  return
+```
+
+**There is no counter, and progress is structural rather than counted.** Every iteration either moves a
+new inode off the name, finds the name free, or throws on a refused syscall. An adversary can cause
+iterations only by producing new SQLite files; each costs it a whole store and costs Coral one `rename`
+and one `link`. Nothing is ever inspected on the shared name — an occupant is classified only once it
+sits on a path Coral owns, which is Revision 3's own maxim applied to the step it forgot.
+
+**A refused mutation throws.** Revision 3 softened Revision 2's rule by mapping any non-`ENOENT` rename
+errno to `undeterminable`; that clause was about *observations* and was over-applied to a mutation. An
+immovable occupant is then reported as what it is, and `store_reset_quarantine_failed`'s existing
+"check permissions" text is finally the true cause instead of a second incident of the same bytes.
+
+### Terminal disposition
+
+`ActiveStoreSettlement` carries an ordered `epochs`, each `described` (at most one, the publication),
+`parked` (with its parking id, a cause of `intruder` or `residual`, names, and any classification),
+`adopted`, or `claimed`. The last element is always `claimed` or `adopted`. **There is no refusal
+variant, and that absence is the invariant.**
+
+### Deleted
+
+The loop and its cap; `forcePreserve`; `residualEvidence` and the synthesized last classification —
+residual siblings are parked by the claim loop with cause `residual`; the `writerExclusion === undefined`
+throw, since exclusion is taken only when epoch 0 needs a reset and the claim loop publishes nothing;
+`refuseIncompatibleBackendStore`, whose only live effect was `legacy-adoptable`, which the opener already
+raises itself; and with it the three `store_*_incompatible` error codes, which nothing can throw once the
+loop is gone. Clean-slate ownership says they do not linger as dead registry entries.
+
+### Two homes for two roles
+
+`pending` stays a singleton — exactly one publication is in flight under the reset lock, which is a
+legitimate singleton — and indexes only that transaction, cleared unconditionally when it ends. **Every
+terminal parking is a self-describing directory** carrying `parked.v1.json`, additive-only with a
+tolerant reader, written durably before the first rename into it. Its existence is the obligation, which
+is the same authority this document already grants incident directories. So `parkingId` and every
+`parked` field come out of the ledger: the ledger is the slot's status, the directory is the bytes'
+status, and a `latest`-shaped record cannot index per-item obligations without orphaning all but one.
+None of it has shipped.
+
+`release` gains a `parked` result kind — today such an id is misreported as `not-holder`.
+
+### Invariants
+
+Replacing the guard that pinned the defect: `publishClassifiedBackendStoreResetIncident` has exactly one
+call expression in `src/`, enclosed by no loop; inside every loop body of the settlement function there
+is no `throw`, no call to a `refuse*` or `documented*` constructor, no numeric literal of two or more, no
+identifier matching a max/limit/budget/timeout shape, and no `.length` comparison against anything but
+zero; and in the owner, a `linkSync` destination derived from `dbFile` has its source under the minted or
+parked directories only.
+
+The behavioural backstop is a **K-replacement adversary sweep** entering through
+`coordinateActiveStoreSelection`: for each active-path call index and K in {1, 2, 3, 5}, land an
+incompatible sentinel store K times, then assert the boot succeeded, the conservation law holds, the
+parking root holds exactly K sentinel inodes each with a sidecar naming `intruder`, and `list` renders K
+rows. The reviewer's finding is literally K = 3.
+
 ## Invariants to add
 
-- No `store_reset_*` remediation contains `store-reset release`.
-- `openOrResetBackendStoreDb`'s reset branch acquires the maintenance lease before publishing.
-- Acquiring the maintenance lease cannot make `openOrResetBackendStoreDb` throw.
-- On the incident path, `linkSync` precedes `unlinkSync` and every link destination is inside the staging
-  directory.
-
-`tests/invariants/store-reset-discipline.test.ts` fails any `rmSync`/`unlinkSync` whose **call text**
-matches the store file names, so the discard path must be written through the candidate rather than
-through `files.dbFile`.
+Superseded by Revision 3's own invariant list. The entries that stood here named
+`openOrResetBackendStoreDb`, which Revision 3 deletes, so keeping them left the document asserting two
+incompatible architectures. The one that survives unchanged is: no `store_reset_*` remediation contains
+`store-reset release`, asserted against rendered remediation values rather than textual proximity.
 
 ## Blast radius
 
