@@ -727,6 +727,13 @@ async function exerciseActiveEvidenceArm(
     if (injectedIdentity !== null && mutation?.kind !== 'appended') {
       expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
     }
+    if (trace.mutationApplied() && mutation?.kind === 'appended' && (arm === 'link' || arm === 'copy')) {
+      const ledger = readStoreResetRetentionLedger(runtime.storage, join(dirname(dbPath), 'store-reset-quarantine'));
+      const incidents = [ledger?.preserved, ledger?.excess?.latest].filter(
+        (incident): incident is NonNullable<typeof incident> => incident !== null && incident !== undefined,
+      );
+      expect(incidents.some((incident) => incident.preservation?.coherence === 'torn')).toBe(true);
+    }
   } finally {
     db.close();
   }
@@ -2331,6 +2338,7 @@ describe('openOrResetBackendStoreDb', () => {
   });
 
   it('survives the generated active-evidence mutation and crash-resume cross-product', async () => {
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const traces = new Map<ActiveEvidenceArm, readonly string[]>();
     for (const arm of ACTIVE_EVIDENCE_ARMS) traces.set(arm, (await exerciseActiveEvidenceArm(arm)).calls);
 

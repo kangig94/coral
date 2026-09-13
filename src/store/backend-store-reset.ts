@@ -455,18 +455,18 @@ function describeCandidate<Name extends string>(
   try {
     const opened = storage.fstatSync(descriptor, { bigint: true });
     if (!opened.isFile() || !sameEvidenceFileStat(pathBefore, opened)) {
-      throw new Error('Store-reset evidence identity changed before hashing.');
+      throw new StoreResetEvidenceMutation('Store-reset evidence identity changed before hashing.');
     }
     const expectedSize = Number(opened.size);
     const hashed = hashExactDescriptor(storage, descriptor, expectedSize);
     if (hashed.bytesConsumed !== expectedSize || hashed.overrun) {
-      throw new Error('Store-reset evidence changed size during hashing.');
+      throw new StoreResetEvidenceMutation('Store-reset evidence changed size during hashing.');
     }
     digest = hashed.sha256;
     const openedAfter = storage.fstatSync(descriptor, { bigint: true });
     const pathAfter = stablePathStat(storage, candidate.source);
     if (!sameEvidenceFileStat(opened, openedAfter) || !sameEvidenceFileStat(opened, pathAfter)) {
-      throw new Error('Store-reset evidence identity changed during hashing.');
+      throw new StoreResetEvidenceMutation('Store-reset evidence identity changed during hashing.');
     }
   } finally {
     try {
@@ -1358,6 +1358,13 @@ class StoreResetLinkUnavailable extends Error {
   }
 }
 
+class StoreResetEvidenceMutation extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StoreResetEvidenceMutation';
+  }
+}
+
 function removeStagedEvidence(
   storage: StoragePort,
   evidence: readonly ActiveEvidence[],
@@ -1846,7 +1853,9 @@ function publishIncident(
         );
         preservation = { kind: 'linked', coherence: publishedEvidence.coherence === 'torn' ? 'torn' : 'coherent' };
       } catch (error: unknown) {
-        if (!(error instanceof StoreResetLinkUnavailable)) throw error;
+        if (!(error instanceof StoreResetLinkUnavailable) && !(error instanceof StoreResetEvidenceMutation)) {
+          throw error;
+        }
         removeStagedEvidence(runtime.storage, activeEvidence, stagingDirectory);
         requireDirectorySync(runtime.storage, stagingDirectory);
         publishedEvidence = copyIncidentEvidence(
@@ -1855,13 +1864,20 @@ function publishIncident(
           activeEvidence,
           stagingDirectory,
           stagingIdentity,
-          'coherent',
+          error instanceof StoreResetEvidenceMutation ? 'torn' : 'coherent',
         );
-        preservation = {
-          kind: 'copied',
-          cause: unsupportedLinkCause(error.code),
-          coherence: publishedEvidence.coherence,
-        };
+        preservation =
+          error instanceof StoreResetEvidenceMutation
+            ? {
+                kind: 'copied',
+                cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
+                coherence: publishedEvidence.coherence,
+              }
+            : {
+                kind: 'copied',
+                cause: unsupportedLinkCause(error.code),
+                coherence: publishedEvidence.coherence,
+              };
       }
     } else {
       publishedEvidence = copyIncidentEvidence(
