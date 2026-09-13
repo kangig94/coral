@@ -8,7 +8,10 @@ function errno(code: string): NodeJS.ErrnoException {
   return error;
 }
 
-function createLockDeps(now: () => number, monotonicNow: () => bigint = () => BigInt(now())): {
+function createLockDeps(
+  now: () => number,
+  monotonicNow: () => bigint = () => BigInt(now()),
+): {
   deps: DirectoryLockDeps;
   directories: Map<string, number>;
   files: Set<string>;

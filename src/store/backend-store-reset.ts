@@ -1462,11 +1462,7 @@ export function hasPendingBackendStoreResetIncident(
       return true;
     }
   }
-  const fixedParkingCoordinate = join(
-    quarantineRoot,
-    STORE_RESET_PARKED_DIRECTORY,
-    STORE_RESET_IN_FLIGHT_DIRECTORY,
-  );
+  const fixedParkingCoordinate = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY, STORE_RESET_IN_FLIGHT_DIRECTORY);
   try {
     runtime.storage.lstatSync(fixedParkingCoordinate);
     return true;

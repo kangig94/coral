@@ -643,11 +643,7 @@ function withPreservedOutcome(
   return { ...ledger, pending: null, preserved: incident };
 }
 
-function removeOtherCommittedIncidents(
-  storage: StoragePort,
-  quarantineRoot: string,
-  incidentId: string,
-): boolean {
+function removeOtherCommittedIncidents(storage: StoragePort, quarantineRoot: string, incidentId: string): boolean {
   while (true) {
     const read = storage.readDirectoryBoundedSync(quarantineRoot, MAX_INCIDENT_ROOT_ENTRIES);
     const removable = read.entries.filter(

@@ -1148,51 +1148,57 @@ describe('openOrResetBackendStoreDb', () => {
   it.each([
     ['without interruption', false],
     ['after cleanup is interrupted', true],
-  ] as const)('converges a ledgerless multi-incident upgrade to the new incident %s', async (_label, interruptCleanup) => {
-    const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-reset-ledgerless-upgrade-'), 'store.db');
-    createMismatchStore(dbPath);
-    const first = publishReset(runtime, dbPath);
-    if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
-    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const secondId = '423e4567-e89b-42d3-a456-426614174000';
-    const firstDirectory = join(quarantineRoot, first.incident.incidentId);
-    const secondDirectory = join(quarantineRoot, secondId);
-    cpSync(firstDirectory, secondDirectory, { recursive: true });
-    const copiedManifest = parseStoreResetIncidentManifest(
-      readFileSync(join(secondDirectory, 'reset-manifest.json')),
-    );
-    writeFileSync(
-      join(secondDirectory, 'reset-manifest.json'),
-      serializeStoreResetIncidentManifest({ ...copiedManifest, incidentId: secondId }),
-    );
-    rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
-    createMismatchStore(dbPath);
+  ] as const)(
+    'converges a ledgerless multi-incident upgrade to the new incident %s',
+    async (_label, interruptCleanup) => {
+      const runtime = createRuntime();
+      const dbPath = join(makeTempRoot('coral-store-reset-ledgerless-upgrade-'), 'store.db');
+      createMismatchStore(dbPath);
+      const first = publishReset(runtime, dbPath);
+      if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const secondId = '423e4567-e89b-42d3-a456-426614174000';
+      const firstDirectory = join(quarantineRoot, first.incident.incidentId);
+      const secondDirectory = join(quarantineRoot, secondId);
+      cpSync(firstDirectory, secondDirectory, { recursive: true });
+      const copiedManifest = parseStoreResetIncidentManifest(
+        readFileSync(join(secondDirectory, 'reset-manifest.json')),
+      );
+      writeFileSync(
+        join(secondDirectory, 'reset-manifest.json'),
+        serializeStoreResetIncidentManifest({ ...copiedManifest, incidentId: secondId }),
+      );
+      rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
+      createMismatchStore(dbPath);
 
-    if (interruptCleanup) {
-      const rm = runtime.storage.rmSync;
-      let removedPriorIncidents = 0;
-      const cleanupSpy = vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
-        if ([first.incident.incidentId, secondId].includes(basename(path))) {
-          if (removedPriorIncidents === 1) throw errno('EIO');
-          removedPriorIncidents += 1;
-        }
-        rm(path, options);
-      });
-      expectSetupCode(captureError(() => publishReset(runtime, dbPath)), 'store_reset_quarantine_failed');
-      cleanupSpy.mockRestore();
-      expect(removedPriorIncidents).toBe(1);
+      if (interruptCleanup) {
+        const rm = runtime.storage.rmSync;
+        let removedPriorIncidents = 0;
+        const cleanupSpy = vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+          if ([first.incident.incidentId, secondId].includes(basename(path))) {
+            if (removedPriorIncidents === 1) throw errno('EIO');
+            removedPriorIncidents += 1;
+          }
+          rm(path, options);
+        });
+        expectSetupCode(
+          captureError(() => publishReset(runtime, dbPath)),
+          'store_reset_quarantine_failed',
+        );
+        cleanupSpy.mockRestore();
+        expect(removedPriorIncidents).toBe(1);
 
-      const db = await openReset(runtime, dbPath);
-      db.close();
-    } else {
-      expect(publishReset(runtime, dbPath).kind).toBe('preserved');
-    }
+        const db = await openReset(runtime, dbPath);
+        db.close();
+      } else {
+        expect(publishReset(runtime, dbPath).kind).toBe('preserved');
+      }
 
-    const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
-    expect(ledger).toMatchObject({ pending: null, preserved: { incidentId: expect.any(String) } });
-    expect(retainedIncidentNames(quarantineRoot)).toEqual([ledger?.preserved?.incidentId]);
-  });
+      const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+      expect(ledger).toMatchObject({ pending: null, preserved: { incidentId: expect.any(String) } });
+      expect(retainedIncidentNames(quarantineRoot)).toEqual([ledger?.preserved?.incidentId]);
+    },
+  );
 
   it('publishes a torn copy whose recorded evidence still verifies as a match', async () => {
     const runtime = createRuntime();
