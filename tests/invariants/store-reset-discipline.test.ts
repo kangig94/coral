@@ -292,19 +292,8 @@ function calledFunctionsInNode(
 function settlementStoreClosure(overrides: ReadonlyMap<string, string> = new Map()): FunctionLocation[] {
   const root = declaredFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore', overrides);
   if (root === null) throw new Error('Missing settlement root.');
-  let loop: ts.ForStatement | undefined;
-  const findLoop = (node: ts.Node): void => {
-    if (loop !== undefined) return;
-    if (ts.isForStatement(node)) {
-      loop = node;
-      return;
-    }
-    ts.forEachChild(node, findLoop);
-  };
-  if (root.declaration.body !== undefined) findLoop(root.declaration.body);
-  if (loop === undefined) throw new Error('Missing settlement loop.');
   const closure: FunctionLocation[] = [];
-  const pending = calledFunctionsInNode(root, loop.statement, overrides);
+  const pending = [root];
   const visited = new Set<string>();
   while (pending.length > 0) {
     const next = pending.pop();
@@ -473,16 +462,14 @@ describe('store reset discipline invariants', () => {
 
   it('detects a semantic throw injected into a settlement callee', () => {
     const source = readFileSync(join(REPO_ROOT, RESET_ACTIVE_EVIDENCE_PATH), 'utf8');
-    const needle = '    const stat = storage.lstatSync(destination, { bigint: true });\n    parked.push({';
+    const needle = 'const entry = parkedEntry(storage, destination, evidence.name, parked);';
     expect(source).toContain(needle);
     const injected = source.replace(
       needle,
-      '    const stat = storage.lstatSync(destination, { bigint: true });\n' +
-        "    if (!stat.isFile()) throw new Error('injected non-regular parked evidence');\n" +
-        '    parked.push({',
+      `${needle}\n  if (!parked.isFile()) throw new Error('injected non-regular parked evidence');`,
     );
     expect(settlementSharedNameThrowViolations(new Map([[RESET_ACTIVE_EVIDENCE_PATH, injected]]))).toEqual([
-      expect.stringContaining("parkCurrentEvidence: throw new Error('injected non-regular parked evidence')"),
+      expect.stringContaining("parkActiveEvidence: throw new Error('injected non-regular parked evidence')"),
     ]);
   });
 
