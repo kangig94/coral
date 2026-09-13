@@ -1027,6 +1027,89 @@ settlement entry contains **zero** semantic refusals — every `throw` is a reth
 and until that is true it asserts a ratchet: the number may only decrease. A digest that can be updated
 proves nothing; a number that may only fall cannot be satisfied by blessing.
 
+## Revision 8 — ancestry is not compatibility, and the sweep's blind dimensions are now named
+
+Round seven brought the count from 142 to 137 and deleted the link arm — a hard link cannot make retained
+evidence immutable against a descriptor nobody registered, so incident evidence is always copied onto a
+separate inode. It also refuted one sentence of Revision 7 correctly: the shared name must be *observed*,
+since the protocol has to `lstat` and identity-check it. The boundary is that shared-name **mutations**
+are `rename` and `link` only, and a writable SQLite handle never receives a shared path.
+
+### The worst finding in this document, and it came from its own specification
+
+Revision 2 defined descent as: the live store descends from the holder's reset when its
+`storedFingerprint` equals the holder's `expectedFingerprint` and its `storedProductVersion` is at least
+the holder's `build.version`. **That establishes format compatibility, not causal ancestry.** A restored
+backup, another namespace's database, or a foreign replacement carrying the same fingerprint is
+classified a descendant and irreversibly discarded, while the holder contains none of its data.
+
+The existing test constructs an independent database with its own sentinel table, labels it a provable
+descendant, and then asserts the discard receipt rather than conservation of that database's contents.
+**The test encodes the defect.**
+
+**Fingerprint and version may no longer authorize a discard.** Without a durable causal-lineage token
+proving ancestry, lineage is `undeterminable`, and `undeterminable` preserves over the bound — the path
+that already exists. A discard is authorized only by evidence about *where the bytes came from*, never by
+evidence about *what shape they have*.
+
+### `legacy-adoptable` is silently replaced with an empty store
+
+It is excluded from incident publication, but settlement still mints and enters the claim loop, and only
+`compatible` and `fresh` can take the adoption path — so a legacy database is parked as terminal evidence
+and an empty minted store is linked into its place. The established contract raises `store_schema_outdated`
+rather than adopting implicitly. The unit test does not catch it because its helper mocks every writable
+open, and the one invocation it makes throw is the *minted* store, not the parked legacy one.
+
+Handle the classification **before** mint and claim, and make the settlement total over the whole
+`StoreFormatClassification` union rather than over the subset the reset path happens to care about.
+
+### The fixed coordinate must be total over its own states
+
+`.parked/.in-flight` is created before its sidecar and terminalized before its directory is removed, so
+two ordinary crash windows leave it present with no record or with a terminal record. Recovery selects
+only parsed `in-flight` records, so both are ignored; the next claim recreates the directory, gets
+`EEXIST`, and every restart repeats it. `list` shows the literal id `.in-flight`, which `release` rejects
+as noncanonical — a state with no operator exit.
+
+Worse, publication's cleanup recursively deletes that fixed directory on a failure path it reaches
+*before* it ever owned it, so a pre-existing coordinate's bytes are erased by an invocation that neither
+created nor validated it. **Recovery must be total over absent, malformed, unreadable, in-flight and
+terminal, and cleanup may only remove what this invocation created.**
+
+### `list` and `release` must agree about the whole directory
+
+Both compute bytes over the four canonical evidence names while `release` recursively removes everything.
+A file or subdirectory placed in an otherwise valid parking directory is invisible in the listing and in
+the result accounting, and is irreversibly deleted. The operator surface must describe everything an
+irreversible release can remove.
+
+### The classification must be bound to the inode it classified
+
+The classifier opens `store.db` by pathname without capturing the opened inode, so a foreign actor who
+swaps in an incompatible store for the classifier's open and restores the original before the second
+enumeration pairs that classification with the original's evidence — quarantining a live compatible store
+and writing a manifest that describes bytes it does not hold.
+
+### The sweep's missing dimensions, as the reviewers named them
+
+Round seven's reviewers answered sweep-reachability for every finding, and nearly every answer was
+"unreachable". Their enumeration is the specification for the next extension:
+
+- **causal lineage** — a true descendant versus a schema-identical unrelated store — with an oracle that
+  requires conservation of the discard arm's starting data;
+- **crash cuts over internal durable-state transitions**, not only active-pathname operations: sidecar
+  absent, malformed, unreadable, in-flight and terminal;
+- the **complete `StoreFormatClassification` union** at both the initial and the parked classification
+  points, `legacy-adoptable` included;
+- a **pre-existing transaction coordinate** rather than a clean quarantine;
+- **quarantine-directory content beyond the four canonical names**;
+- an **operator-release arm**;
+- **classifier-open identity observation**, and **multi-step ABA mutation** rather than one mutation per
+  cell.
+
+A sweep that traces only `runtime.storage` calls against the active pathname cannot see any of these. The
+tracer has to cover the durable records too, and the matrix has to admit more than one mutation per cell.
+
 ## Invariants to add
 
 Superseded by Revision 3's own invariant list. The entries that stood here named
