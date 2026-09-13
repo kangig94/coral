@@ -1110,6 +1110,25 @@ Round seven's reviewers answered sweep-reachability for every finding, and nearl
 A sweep that traces only `runtime.storage` calls against the active pathname cannot see any of these. The
 tracer has to cover the durable records too, and the matrix has to admit more than one mutation per cell.
 
+## Revision 9 — the rule, stated by the owner
+
+> **At the 1 GiB bound, rename and keep exactly one.**
+
+That is the whole retention policy. The revisions above accumulated lineage inference, excess
+accounting, causal tokens and preserve-over-the-bound paths on a premise the owner has now corrected
+twice: **the store matters to nobody.** The operator touches it constantly and has no reason to keep it;
+the user does not know it exists. The original position was an unconditional reset, and renaming one copy
+aside was a concession to a recommendation, not a requirement.
+
+So the ladder argument that rejected newest-wins eviction in Revision 2 rested on preserved evidence
+being valuable. It is not. Newest wins.
+
+**Delete, do not add:** lineage classification, the causal-token idea, `excess` and its counters, and the
+undeterminable-preserves-over-the-bound path. A reset preserves its own evidence and removes the previous
+preserved copy. Commit the new one durably first, so a crash can never leave zero.
+
+No further retention rules are to be introduced.
+
 ## Invariants to add
 
 Superseded by Revision 3's own invariant list. The entries that stood here named
