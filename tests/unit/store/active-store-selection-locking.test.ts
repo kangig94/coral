@@ -234,7 +234,7 @@ describe('active-store-selection locking', () => {
     const db = fakeDatabase();
     spyOnClassifyStoreFile().mockImplementation(() => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
-      expect(existsSync(resetLock)).toBe(false);
+      expect(existsSync(resetLock)).toBe(true);
       events.push('classify');
       return { kind: 'fresh' };
     });
@@ -745,6 +745,8 @@ describe('active-store-selection locking', () => {
   it('should await the operator recovery lease before opening a store that needs reset', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true, mode: 0o700 });
+    writeFileSync(runtime.paths.coral.store.dbFile, 'store requiring reset');
     let grantLease: (lease: GenerationMaintenanceLease) => void = () => {
       throw new Error('recovery lease resolver was not initialized');
     };
@@ -787,19 +789,16 @@ describe('active-store-selection locking', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('should leave the legacy-adoptable refusal with the writable opener', async () => {
+  it('should refuse a real legacy store before minting or entering the claim loop', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const storeFormat = currentCoralStoreFormat();
-    const { openStore } = stubStoreOpen({
-      kind: 'legacy-adoptable',
-      currentFingerprint: storeFormat.fingerprint,
-      currentProductVersion: currentSelection.manifest.version,
-      storedFingerprint: storeFormat.fingerprint,
-    });
-    openStore.mockImplementation(() => {
-      throw documentedCoralSetupError('store_schema_outdated');
-    });
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true, mode: 0o700 });
+    const legacy = runtime.storage.openSqliteDatabaseSync(runtime.paths.coral.store.dbFile);
+    legacy.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    legacy.prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)").run(storeFormat.fingerprint);
+    legacy.close();
+    const openStore = spyOnOpenWritableStoreDatabase();
     const acquireStoreRecoveryLease = vi.fn(async () => ({ assertOwned: vi.fn(), release: vi.fn() }));
 
     await expect(
@@ -816,7 +815,7 @@ describe('active-store-selection locking', () => {
       }),
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
 
-    expect(openStore).toHaveBeenCalledOnce();
+    expect(openStore).not.toHaveBeenCalled();
     expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
   });
 

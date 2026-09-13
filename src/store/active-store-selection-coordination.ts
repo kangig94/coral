@@ -370,6 +370,13 @@ async function settleActiveStore(
           ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
           : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
     activeEpoch ??= mintActiveStoreEpoch(runtime, files, options);
+    const publicationWriterExclusion =
+      writerExclusion ??
+      ({
+        kind: 'unproven',
+        reason: 'writer-unobservable',
+        blockers: 'active store appeared after the writer-exclusion probe',
+      } satisfies WriterExclusion);
     let transition = initialTransition;
     const publications: IncidentPublication[] = [];
     const epochs: StoreSettlementEpoch[] = [];
@@ -398,7 +405,7 @@ async function settleActiveStore(
           activeEpoch.evidence,
           activeEpoch.classification,
           resetLock,
-          writerExclusion as WriterExclusion,
+          publicationWriterExclusion,
           activeEpoch.classification.kind === 'newer-incompatible' && transition !== null
             ? resetPolicyForTransition(transition)
             : undefined,
