@@ -1187,6 +1187,19 @@ already bricked today, so rolling back never gets worse. The ledger is invisible
 creates that the ledger does not name becomes one extra retained directory on the next new-build boot,
 never a lost one.
 
+## Accepted limit — renaming an open SQLite database
+
+The `writer-live` path deliberately permits reset settlement to rename the database while another
+process may still have it open, then create a new database at the old pathname. SQLite documents this as
+undefined and potentially corrupting behaviour because rollback-journal and WAL names are derived from
+the database pathname, so the old and new database files can use the same journal or WAL
+([SQLite, “Unlinking or renaming a database file while in use”](https://www.sqlite.org/howtocorrupt.html#_unlinking_or_renaming_a_database_file_while_in_use)).
+
+This is accepted rather than converted into a probe, retry or startup refusal. The store is disposable;
+the operator has no reason to preserve it, and the only plausible foreign writer is an orphaned Coral
+daemon whose data is equally disposable. Refusing to boot would therefore preserve data that has no
+owner-visible value at the cost of reinstating the defect this design removes.
+
 ## Adjacent findings, tracked separately
 
 - **There is no store migration path, and it is the real defect behind all of this.** See
