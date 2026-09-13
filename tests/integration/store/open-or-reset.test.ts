@@ -727,7 +727,12 @@ async function exerciseActiveEvidenceArm(
     if (injectedIdentity !== null && mutation?.kind !== 'appended') {
       expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
     }
-    if (trace.mutationApplied() && mutation?.kind === 'appended' && (arm === 'link' || arm === 'copy')) {
+    if (
+      trace.mutationApplied() &&
+      mutation?.kind === 'appended' &&
+      trace.calls[mutation.index] === 'readSync' &&
+      (arm === 'link' || arm === 'copy')
+    ) {
       const ledger = readStoreResetRetentionLedger(runtime.storage, join(dirname(dbPath), 'store-reset-quarantine'));
       const incidents = [ledger?.preserved, ledger?.excess?.latest].filter(
         (incident): incident is NonNullable<typeof incident> => incident !== null && incident !== undefined,

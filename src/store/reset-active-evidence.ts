@@ -118,9 +118,10 @@ export function enumerateActiveEvidence(storage: StoragePort, files: ActiveEvide
       const path = candidateForEvidence(files, name);
       const link = storage.lstatSync(path);
       const stat = storage.lstatSync(path, { bigint: true });
-      if (!link.isFile() || link.isSymbolicLink() || !stat.isFile()) {
+      if (link.isSymbolicLink()) {
         throw new Error('Store-reset evidence is not a regular file.');
       }
+      if (!link.isFile() || !stat.isFile()) continue;
       if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new Error('Store-reset evidence cannot be represented safely.');
       }

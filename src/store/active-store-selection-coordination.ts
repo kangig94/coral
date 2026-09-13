@@ -142,6 +142,21 @@ function classifyStoreForProtocol(
   try {
     return classifyStoreFile(dbFile, runtime.storage, options.storeFormat);
   } catch (error: unknown) {
+    try {
+      const entry = runtime.storage.lstatSync(dbFile);
+      if (!entry.isFile() && !entry.isSymbolicLink()) {
+        return {
+          kind: 'corrupt-or-unsupported',
+          currentFingerprint: options.storeFormat.fingerprint,
+          currentProductVersion: options.storeFormat.productVersion,
+          storedFingerprint: null,
+          storedProductVersion: null,
+          storedProductVersionState: 'unavailable',
+        };
+      }
+    } catch {
+      // Preserve the classifier's original failure when the path cannot be inspected safely.
+    }
     const failure = classifyBackendStoreFailure(error, options.storeFormat);
     switch (failure.kind) {
       case 'corrupt-or-unsupported':
