@@ -72,9 +72,11 @@ import {
 import { listStoreResetIncidents, readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
 import { formatStoreResetList } from '#src/cli/format/store-reset.js';
 import {
+  readStoreResetParkedRecord,
   readStoreResetRetentionLedger,
   resolveStoreResetRetentionSlot,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
+  writeStoreResetParkedRecord,
 } from '#src/store/reset-retention.js';
 import { pragmaSimple } from '#tests/helpers/test-db.js';
 
@@ -1792,6 +1794,54 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(stagingDirectory)).toBe(false);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
     expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
+  });
+
+  it('terminalizes unrestorable pre-manifest parking without inventing an incident', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-pre-manifest-parking-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const interruptedId = '323e4567-e89b-42d3-a456-426614174000';
+    const quarantineRoot = join(root, 'store-reset-quarantine');
+    const stagingRoot = join(quarantineRoot, '.staging');
+    const stagingDirectory = join(stagingRoot, interruptedId);
+    const parkingRoot = join(quarantineRoot, '.parked');
+    const parkingDirectory = join(parkingRoot, interruptedId);
+    mkdirSync(stagingDirectory, { recursive: true, mode: 0o700 });
+    mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(join(stagingDirectory, 'reset-manifest.json.tmp'), 'partial manifest', 'utf-8');
+    renameFileSync(dbPath, join(parkingDirectory, 'store.db'));
+    const parkedIdentity = statSync(join(parkingDirectory, 'store.db'), { bigint: true });
+    copyFileSync(join(parkingDirectory, 'store.db'), dbPath);
+    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
+      version: 1,
+      parkingId: interruptedId,
+      parkedAt: '2026-09-13T00:00:00.000Z',
+      phase: 'in-flight',
+      cause: 'publication',
+      incidentId: interruptedId,
+      names: [],
+      entries: [],
+      transaction: {
+        kind: 'publication',
+        incidentId: interruptedId,
+        identities: [{ name: 'store.db', dev: parkedIdentity.dev.toString(), ino: parkedIdentity.ino.toString() }],
+      },
+      classification: null,
+    });
+
+    const first = await openReset(runtime, dbPath);
+    first.close();
+
+    expect(existsSync(stagingDirectory)).toBe(false);
+    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, interruptedId)).toMatchObject({
+      phase: 'terminal',
+      incidentId: null,
+      names: ['store.db'],
+    });
+    const second = await openReset(runtime, dbPath);
+    second.close();
+    expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
   it('rejects a symlinked interrupted staging directory before touching active evidence', async () => {

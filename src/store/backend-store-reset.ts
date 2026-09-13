@@ -1053,9 +1053,12 @@ function resumeInterruptedIncident(
   if (interrupted.manifest === null) {
     const kept = restoreUncommittedParking(runtime.storage, files, parkingDirectory, parked);
     discardUncommittedStaging(runtime.storage, interrupted.stagingDirectory, interrupted.stagingRoot);
-    if (parkingExists) removeSettledParkingDirectory(runtime.storage, parkingRoot, parkingDirectory);
-    if (kept.length === 0 && ledger !== null)
-      clearStoreResetPending(runtime.storage, interrupted.quarantineRoot, ledger);
+    if (parkingExists && kept.length === 0) {
+      removeSettledParkingDirectory(runtime.storage, parkingRoot, parkingDirectory);
+    } else if (parkingExists && parkedRecord !== null) {
+      terminalizeParking(runtime.storage, parkingRoot, parkedRecord, 'intruder', null);
+    }
+    if (ledger !== null) clearStoreResetPending(runtime.storage, interrupted.quarantineRoot, ledger);
     return null;
   }
 
@@ -1657,6 +1660,7 @@ function terminalizeParking(
   parkingRoot: string,
   record: StoreResetParkedRecord,
   cause: 'intruder' | 'residual',
+  incidentId: string | null = record.incidentId,
 ): void {
   const parkingDirectory = join(parkingRoot, record.parkingId);
   const read = storage.readDirectoryBoundedSync(parkingDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
@@ -1672,6 +1676,7 @@ function terminalizeParking(
     ...record,
     phase: 'terminal',
     cause,
+    incidentId,
     names,
     entries: describeParkedEntries(storage, parkingDirectory, names),
     transaction: null,
