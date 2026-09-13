@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
@@ -274,6 +275,29 @@ function settlementSharedNameThrowViolations(overrides: ReadonlyMap<string, stri
   return violations.sort();
 }
 
+function settlementThrowInventory(overrides: ReadonlyMap<string, string> = new Map()): {
+  readonly count: number;
+  readonly sha256: string;
+} {
+  const violations = settlementSharedNameThrowViolations(overrides);
+  return {
+    count: violations.length,
+    sha256: createHash('sha256').update(violations.join('\n')).digest('hex'),
+  };
+}
+
+function injectedSettlementThrow(): ReadonlyMap<string, string> {
+  const source = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
+  const needle = 'const pathBefore = stablePathStat(storage, candidate.source);';
+  expect(source).toContain(needle);
+  return new Map([
+    [
+      BACKEND_STORE_RESET_PATH,
+      source.replace(needle, `${needle}\n  throw new Error('injected imported-module failure');`),
+    ],
+  ]);
+}
+
 describe('store reset discipline invariants', () => {
   // Note: these invariants check direct call sites within the named function
   // body - transitive calls (helper-of-helper invoking a forbidden symbol)
@@ -388,17 +412,17 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('allows only unmapped errno rethrows in the settlement shared-name call closure', () => {
-    expect(settlementSharedNameThrowViolations()).toEqual([]);
+  it('guards the semantic-throw inventory of every import-reachable store module', () => {
+    const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
+    expect(settlementThrowInventory(overrides)).toEqual({
+      count: 142,
+      sha256: '27f235a0761ad7d53d969bdc7840c92f5f661a969a899d892892661aa8af4832',
+    });
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
-    const source = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
-    const needle = 'const pathBefore = stablePathStat(storage, candidate.source);';
-    expect(source).toContain(needle);
-    const injected = source.replace(needle, `${needle}\n  throw new Error('injected imported-module failure');`);
     const baseline = settlementSharedNameThrowViolations();
-    const violations = settlementSharedNameThrowViolations(new Map([[BACKEND_STORE_RESET_PATH, injected]]));
+    const violations = settlementSharedNameThrowViolations(injectedSettlementThrow());
     expect(violations).toContainEqual(
       expect.stringContaining("describeCandidate: throw new Error('injected imported-module failure')"),
     );
