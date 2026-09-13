@@ -1,12 +1,12 @@
-# TODO — a store-reset bound became a boot refusal, three times
+# TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: design settled 2026-09-13 after an implementation attempt refused it and six repairs landed.
-This document is the specification.
+**Status**: in flight. Six design revisions, five unbiased tier-1 review rounds, and seven distinct
+instances of the same defect so far. This document is the specification; read the revisions in order,
+because each one records what the previous got wrong.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
-plugin rollback by hand. The design below removes that refusal, and the review that produced it found
-the same mistake twice more in its own drafts, so the rule it ends with is worth more than any of the
-mechanisms:
+plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
+them introduced by the drafts meant to remove it, so the rule matters more than any mechanism here:
 
 > **A refusal names a refused syscall. A hold names unknown evidence that proceeding would finalize.
 > A bound running out names neither, so it selects the next mechanism down — and the bottom,
