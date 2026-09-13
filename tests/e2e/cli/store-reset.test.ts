@@ -298,7 +298,7 @@ describe('bundled store-reset CLI', () => {
 
     const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
     expect(discard.status, discard.stderr).toBe(0);
-    expect(discard.stdout).toContain('Quarantined store-reset incident');
+    expect(discard.stdout).toContain('Preserved store-reset incident');
     expect(hasPreResetTable()).toBe(false);
   });
 
