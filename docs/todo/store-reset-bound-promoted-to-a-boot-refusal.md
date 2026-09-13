@@ -825,6 +825,77 @@ incompatible sentinel store K times, then assert the boot succeeded, the conserv
 parking root holds exactly K sentinel inodes each with a sidecar naming `intruder`, and `list` renders K
 rows. The reviewer's finding is literally K = 3.
 
+## Revision 5 — prove what you opened, and make the guard semantic
+
+Revision 4 removed the cap and the fifth instance. A fourth review round found a **sixth**, and it is the
+most instructive one yet: the parking helpers `rename` successfully and *then* throw because the parked
+object is not a regular file. **No syscall was refused.** The governing sentence already forbids this —
+the rule did not fail, the implementation never consulted it.
+
+### Why it keeps escaping: the guard has always been one level too shallow
+
+Round 1's guard matched on **call text**, so `candidate.source` walked past it. Round 4's guard scans the
+**lexical loop body**, so a throw inside a callee walks past it. Each guard was written against the shape
+of the defect that had just been found, and the next defect simply sat one level further out.
+
+**The guard must follow the call graph, not the block.** Within the settlement function's reachable
+closure through the store modules, the only `throw` permitted is a rethrow of an errno the code did not
+map — a refused syscall. Anything else is a disposition. That is checkable, it is what would have caught
+the non-regular-file throw, and it does not need rewriting when the next call site moves.
+
+### A successfully parked occupant is never a refusal
+
+Enumeration may refuse a non-regular file *before anything has moved* — that is a precondition, stated
+once. After a successful `rename` the object is in owned space and nothing about it can refuse a boot: it
+is parked, recorded in its sidecar with what it actually is, and left for `list` and `release`. The
+occupant being a directory or a symlink is a fact about the intruder, not a fault of ours.
+
+### The opened handle must prove which inode it opened
+
+`openWritableStoreDatabase` opens the shared pathname, and everything after it assumes the handle
+corresponds to `store.db`. A foreign replacement between the open and the identity observation makes that
+false, and the code then deletes the minted or restored directory — the last link to the inode the handle
+holds — and reports the result as claimed or adopted. Writes to that handle vanish when it closes.
+`activeNameHasIdentity` compounds it by collapsing every non-`ENOENT` observation failure into `false`,
+so an `EIO` reads as evidence of adoption.
+
+**Retain the owned links until a post-open identity decision resolves**, and make that decision three
+answers: same, different, undeterminable. `different` closes the handle and goes round the claim loop
+again — it is the next epoch, which costs the adversary another whole store. `undeterminable` is a
+genuine observation failure and propagates. Only `same` may drop the owned link, and only then may the
+settlement call the epoch claimed or adopted.
+
+The adversary sweep did not catch this because it asserts filesystem conservation and then merely closes
+the returned database. It must additionally assert **which inode the returned handle opened**.
+
+### One durable transaction, not three
+
+Publication, discard and claim each write their own in-flight sidecar, and two of them start with
+`incidentId: null`. Recovery selects only records with a non-null incident id, while pending detection
+treats every in-flight sidecar as pending forever — so a crash after a `rename` into parking but before
+the sidecar terminalizes leaves a full store that nothing reconciles, that `list` renders as holding no
+files because it trusts `record.names`, and that `release` misreports as `not-holder`. Repeated crash
+cuts accumulate whole stores without bound, which is the retention objective inverted.
+
+Model the three as **resumable variants of one durable transaction**. The pre-rename record carries
+enough names and identities to reconcile every rename that may have succeeded, discovery consumes every
+in-flight variant rather than only publication's, and terminalizing parking happens **before** the only
+identity record is cleared — today `recordStoreResetPreserved` clears `pending` first, so a crash in
+between leaves resume with an empty expected set that rejects the real parked file, permanently.
+
+### The operator surface must not hide what release will delete
+
+A committed incident and a terminal parking directory may share an id, but committed rows hard-code an
+empty parked list and the merge drops any parked row whose id is also an incident id. So `list` shows no
+parked files while `release` deletes them. A parking-only row also tells the operator to run `report`,
+which inspects only the committed incident directory and answers `not_found`. And a `.parked` root that
+is not a directory, or escapes containment, is silently rendered as empty rather than as a refusal to
+describe it.
+
+`release` needs a partial-mutation arm: parking removal succeeding and incident removal failing is a
+destructive operation that half happened, and it currently reaches the operator as a reporting error
+whose remediation says not to delete evidence.
+
 ## Invariants to add
 
 Superseded by Revision 3's own invariant list. The entries that stood here named
