@@ -643,15 +643,26 @@ function withPreservedOutcome(
   return { ...ledger, pending: null, preserved: incident };
 }
 
-function removePreviousPreservedIncident(
+function removeOtherCommittedIncidents(
   storage: StoragePort,
   quarantineRoot: string,
-  ledger: StoreResetRetentionLedger,
   incidentId: string,
 ): boolean {
-  if (ledger.preserved === null || ledger.preserved.incidentId === incidentId) return true;
-  storage.rmSync(join(quarantineRoot, ledger.preserved.incidentId), { recursive: true, force: true });
-  return storage.syncDirectoryDurableSync(quarantineRoot);
+  while (true) {
+    const read = storage.readDirectoryBoundedSync(quarantineRoot, MAX_INCIDENT_ROOT_ENTRIES);
+    const removable = read.entries.filter(
+      (candidateId) =>
+        candidateId !== incidentId &&
+        isCanonicalStoreResetIncidentId(candidateId) &&
+        readCommittedManifest(storage, quarantineRoot, candidateId) !== null,
+    );
+    for (const candidateId of removable) {
+      storage.rmSync(join(quarantineRoot, candidateId), { recursive: true, force: true });
+    }
+    if (removable.length > 0 && !storage.syncDirectoryDurableSync(quarantineRoot)) return false;
+    if (!read.overflow) return true;
+    if (removable.length === 0) return false;
+  }
 }
 
 function reconcilePending(
@@ -665,7 +676,7 @@ function reconcilePending(
   const incidentId = pending.outcome.incident.incidentId;
   const committed = readCommittedManifest(storage, quarantineRoot, incidentId);
   if (committed !== null) {
-    if (!removePreviousPreservedIncident(storage, quarantineRoot, ledger, incidentId)) return ledger;
+    if (!removeOtherCommittedIncidents(storage, quarantineRoot, incidentId)) return ledger;
     const reconciled = withPreservedOutcome(ledger, pending.outcome.incident);
     writeLedger(storage, quarantineRoot, reconciled);
     return reconciled;
@@ -725,7 +736,7 @@ export function recordStoreResetPreserved(
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
 ): void {
-  if (!removePreviousPreservedIncident(storage, quarantineRoot, ledger, incident.incidentId)) return;
+  if (!removeOtherCommittedIncidents(storage, quarantineRoot, incident.incidentId)) return;
   writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident));
 }
 
