@@ -2192,8 +2192,8 @@ function ownedRegularEvidenceNames(storage: StoragePort, directory: string): rea
 }
 
 function ownedActiveClaimNames(storage: StoragePort, directory: string): readonly StoreResetEvidenceFileName[] {
-  return ownedRegularEvidenceNames(storage, directory).filter(
-    (name) => name === 'store.db' || name === 'store.db.format',
+  return [...ownedRegularEvidenceNames(storage, directory)].sort((left, right) =>
+    left === 'store.db' ? -1 : right === 'store.db' ? 1 : 0,
   );
 }
 

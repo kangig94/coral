@@ -2605,8 +2605,8 @@ describe('openOrResetBackendStoreDb', () => {
     const retainedShm = readFileSync(join(incidentPath, 'store.db-shm'));
     expect(retainedShm.length).toBeGreaterThan(0);
     expect(manifest.files.find((file) => file.name === 'store.db-shm')?.sha256).toBe(sha256(retainedShm));
-    expect(existsSync(walPath)).toBe(false);
-    expect(existsSync(shmPath)).toBe(false);
+    expect(readFileSync(walPath, 'utf-8')).not.toBe('dummy wal');
+    expect(readFileSync(shmPath, 'utf-8')).not.toBe('dummy shm');
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 

@@ -45,6 +45,7 @@ import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-c
 import {
   isCanonicalStoreResetIncidentId,
   parseStoreResetIncidentManifest,
+  STORE_RESET_IN_FLIGHT_DIRECTORY,
   STORE_RESET_MANIFEST_FILE_NAME,
   STORE_RESET_QUARANTINE_DIRECTORY,
 } from '#src/store/reset-incident.js';
@@ -179,6 +180,7 @@ function successfulDependencies(
     validateSelectedTarget: () => {
       throw new Error('validator should not run');
     },
+    acquireStoreRecoveryLease: async () => ({ assertOwned: () => undefined, release: () => undefined }),
     ...extra,
   };
 }
@@ -479,9 +481,10 @@ describe('active-store-selection crash cuts', () => {
     ).rejects.toMatchObject({ code: 'store_reset_quarantine_failed' });
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
     const parkingRoot = join(runtime.paths.coral.store.dbDir, STORE_RESET_QUARANTINE_DIRECTORY, '.parked');
-    const parkingId = readdirSync(parkingRoot).find(isCanonicalStoreResetIncidentId);
-    expect(parkingId).toBeDefined();
-    expect(tableExists(join(parkingRoot, parkingId ?? '', 'store.db'), 'sentinel_before_reset')).toBe(true);
+    expect(readdirSync(parkingRoot)).toContain(STORE_RESET_IN_FLIGHT_DIRECTORY);
+    expect(tableExists(join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db'), 'sentinel_before_reset')).toBe(
+      true,
+    );
     expect(readActiveStoreTransition(runtime)).toMatchObject({
       kind: 'valid',
       transition: { evidence: { storeEvidence: { kind: 'newer-incompatible' } } },
