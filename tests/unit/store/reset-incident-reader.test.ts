@@ -12,6 +12,7 @@ import type {
 import {
   MAX_INCIDENT_ROOT_ENTRIES,
   serializeStoreResetIncidentManifest,
+  STORE_RESET_IN_FLIGHT_DIRECTORY,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
 import {
@@ -228,6 +229,7 @@ describe('store reset incident listing', () => {
         resetPolicyCause: null,
         fileCount: 1,
         evidenceBytes: 'unknown',
+        parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -240,6 +242,7 @@ describe('store reset incident listing', () => {
         resetPolicyCause: null,
         fileCount: 1,
         evidenceBytes: 'unknown',
+        parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -281,6 +284,7 @@ describe('store reset incident listing', () => {
         resetPolicyCause: null,
         fileCount: null,
         evidenceBytes: 'unknown',
+        parkingEvidenceBytes: 0,
         retention: {
           slot: 'parked',
           parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
@@ -291,6 +295,41 @@ describe('store reset incident listing', () => {
         storedProductVersion: 'unknown',
       },
     ]);
+  });
+
+  it('lists the fixed in-flight coordinate even beyond the terminal scan bound', () => {
+    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
+    const fs = new MemoryInspectionFs();
+    fs.addRoot(['.parked']);
+    const parkingRoot = join(ROOT, '.parked');
+    const parkingDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
+    fs.stats.set(parkingRoot, stat('directory'));
+    fs.entries.set(parkingRoot, [
+      ...Array.from({ length: MAX_INCIDENT_ROOT_ENTRIES + 1 }, (_, index) => `ignored-${index}`),
+      STORE_RESET_IN_FLIGHT_DIRECTORY,
+    ]);
+    fs.stats.set(parkingDirectory, stat('directory'));
+    fs.addFile(
+      join(parkingDirectory, 'parked.v1.json'),
+      JSON.stringify({
+        version: STORE_RESET_PARKED_SIDECAR_VERSION,
+        parkingId,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'in-flight',
+        cause: 'residual',
+        incidentId: null,
+        names: [],
+        entries: [],
+        transaction: { kind: 'claim', names: ['store.db'] },
+        classification: null,
+      }),
+    );
+
+    const result = listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD });
+    expect(result.truncated).toBe(true);
+    expect(result.incidents).toContainEqual(
+      expect.objectContaining({ incidentId: parkingId, state: 'in-flight', parkingEvidenceBytes: 0 }),
+    );
   });
 
   it.each(['file', 'symbolic-link'] as const)('describes a %s parking root as unsafe', (kind) => {
@@ -341,6 +380,7 @@ describe('store reset incident listing', () => {
         resetPolicyCause: null,
         fileCount: null,
         evidenceBytes: 'unknown',
+        parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -353,6 +393,7 @@ describe('store reset incident listing', () => {
         resetPolicyCause: null,
         fileCount: null,
         evidenceBytes: 'unknown',
+        parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -369,6 +410,7 @@ describe('store reset incident listing', () => {
     fs.stats.set(parkingRoot, stat('directory'));
     fs.entries.set(parkingRoot, [incidentId]);
     fs.stats.set(parkingDirectory, stat('directory'));
+    fs.stats.set(join(parkingDirectory, 'store.db-wal'), stat('file', 12));
     fs.addFile(
       join(parkingDirectory, 'parked.v1.json'),
       JSON.stringify({
@@ -417,6 +459,7 @@ describe('store reset incident listing', () => {
     );
 
     const result = listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD });
+    expect(result.incidents).toHaveLength(2);
     expect(result.incidents[0]).toMatchObject({
       incidentId,
       retention: {
@@ -427,10 +470,21 @@ describe('store reset incident listing', () => {
           coherence: 'torn',
         },
         resumeLeftActive: true,
-        parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
+        parked: [],
       },
       storedProductVersion: '0.9.15',
       evidenceBytes: 17,
+      parkingEvidenceBytes: 0,
+    });
+    expect(result.incidents[1]).toMatchObject({
+      incidentId,
+      state: 'parked',
+      retention: {
+        slot: 'parked',
+        parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
+      },
+      evidenceBytes: 'unknown',
+      parkingEvidenceBytes: 12,
     });
     expect(result.discarded).toMatchObject({
       count: 2,

@@ -58,9 +58,9 @@ import {
   type NewerStoreResetPolicy,
   type OpenOrResetBackendStoreOptions,
 } from './backend-store-reset.js';
-import { classifyStoreFile, openWritableStoreDatabase, type Database } from './db.js';
+import { classifyStoreFile, type Database } from './db.js';
 import type { StoreFormatClassification } from './format-fingerprint.js';
-import { activeEvidencePath, enumerateActiveEvidence } from './reset-active-evidence.js';
+import { enumerateActiveEvidence } from './reset-active-evidence.js';
 import {
   acquireGenerationAdoptionLock,
   formatLegacyGenerationIgnoredNotice,
@@ -373,7 +373,7 @@ async function settleActiveStore(
   const pending = hasPendingBackendStoreResetIncident(runtime, files);
   let activeEpoch = pending ? null : mintActiveStoreEpoch(runtime, files, options);
   let writerExclusion: WriterExclusion | undefined;
-  if (pending || (activeEpoch !== null && needsStoreReset(activeEpoch.classification))) {
+  if (pending || (activeEpoch !== null && activeEpoch.classification.kind !== 'absent')) {
     writerExclusion = await acquireSettlementWriterExclusion(options);
   }
   let resetLock: BackendStoreResetLockLease | null = null;
@@ -420,33 +420,14 @@ async function settleActiveStore(
       epochs.push({ kind: 'described', publication });
     }
 
-    let db: Database | null = null;
-    if (
-      resumed === null &&
-      !needsStoreReset(activeEpoch.classification) &&
-      activeEpoch.classification.kind !== 'absent'
-    ) {
-      const decision = openWritableStoreDatabase({
-        path: activeEvidencePath(files, 'store.db'),
-        storage: runtime.storage,
-        storeFormat: options.storeFormat,
-        flavor: runtime.flavor,
-        busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
-      });
-      if (decision.kind === 'opened') {
-        db = decision.db;
-        epochs.push({ kind: 'adopted' });
-      }
-    }
-    if (db === null) {
-      const minted = mintBackendStoreForClaim(runtime, files, options);
-      for (;;) {
-        const attempt = attemptBackendStoreClaim(runtime, files, options, minted);
-        epochs.push(...attempt.epochs);
-        if (attempt.kind === 'retry') continue;
-        db = attempt.db;
-        break;
-      }
+    const minted = mintBackendStoreForClaim(runtime, files, options);
+    let db: Database;
+    for (;;) {
+      const attempt = attemptBackendStoreClaim(runtime, files, options, minted);
+      epochs.push(...attempt.epochs);
+      if (attempt.kind === 'retry') continue;
+      db = attempt.db;
+      break;
     }
     try {
       db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? STEADY_STATE_BUSY_TIMEOUT_MS}`);

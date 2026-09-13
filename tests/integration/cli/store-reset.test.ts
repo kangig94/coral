@@ -94,6 +94,27 @@ function root(): string {
   return value;
 }
 
+function writeTerminalParkingSidecar(
+  runtime: ReturnType<typeof createRealRuntime>,
+  parkingRoot: string,
+  incidentId: string,
+): void {
+  const parkingPath = join(parkingRoot, incidentId);
+  const parkedWal = join(parkingPath, 'store.db-wal');
+  writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
+    version: STORE_RESET_PARKED_SIDECAR_VERSION,
+    parkingId: incidentId,
+    parkedAt: '2026-09-13T00:00:00.000Z',
+    phase: 'terminal',
+    cause: 'intruder',
+    incidentId,
+    names: ['store.db-wal'],
+    entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: statSync(parkedWal).size }],
+    transaction: null,
+    classification: null,
+  });
+}
+
 function dependencies(quarantineRoot: string): StoreResetCliDependencies {
   return {
     resolveIdentity: () => ({ ok: true, manifest: BUILD }),
@@ -411,6 +432,7 @@ describe('local store-reset operations', () => {
         resetPolicyCause: null,
         fileCount: null,
         evidenceBytes: 'unknown',
+        parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
       },
@@ -829,6 +851,7 @@ describe('operator store-reset discard', () => {
     const parkingPath = join(quarantineRoot, '.parked', discarded.incident.incidentId);
     mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
     writeFileSync(join(parkingPath, 'store.db-wal'), 'kept replacement');
+    writeTerminalParkingSidecar(runtime, join(quarantineRoot, '.parked'), discarded.incident.incidentId);
     const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
     const events: string[] = [];
     const rm = runtime.storage.rmSync;
@@ -883,6 +906,7 @@ describe('operator store-reset discard', () => {
     const parkingPath = join(quarantineRoot, '.parked', discarded.incident.incidentId);
     mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
     writeFileSync(join(parkingPath, 'store.db-wal'), 'kept replacement');
+    writeTerminalParkingSidecar(runtime, join(quarantineRoot, '.parked'), discarded.incident.incidentId);
     const rm = runtime.storage.rmSync;
     vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
       if (path === incidentPath) throw Object.assign(new Error('incident remove failed'), { code: 'EIO' });
@@ -934,6 +958,7 @@ describe('operator store-reset discard', () => {
     const parkedWal = join(parkingPath, 'store.db-wal');
     mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
     writeFileSync(parkedWal, 'partially removed evidence');
+    writeTerminalParkingSidecar(runtime, join(quarantineRoot, '.parked'), discarded.incident.incidentId);
     const rm = runtime.storage.rmSync;
     vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
       if (path === parkingPath) {
@@ -1064,6 +1089,45 @@ describe('operator store-reset discard', () => {
       kind: 'in-flight',
       target: 'gen2',
     });
+    expect(existsSync(parkingPath)).toBe(true);
+  });
+
+  it('lists malformed parking separately and refuses to delete either witness', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const discarded = await discardStoreReset({
+      target: 'gen2',
+      runtime,
+      build: CURRENT_BUILD,
+      storeFormat: STORE_FORMAT,
+      acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
+    });
+    if (discarded.kind !== 'discarded' || discarded.incident === null) {
+      throw new Error('Expected a committed store-reset incident.');
+    }
+    const incidentId = discarded.incident.incidentId;
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const incidentPath = join(quarantineRoot, incidentId);
+    const parkingPath = join(quarantineRoot, '.parked', incidentId);
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db-wal'), 'unreadable parking witness');
+    writeFileSync(join(parkingPath, 'parked.v1.json'), '{');
+
+    const listed = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot));
+    expect(listed.incidents.filter((entry) => entry.incidentId === incidentId).map((entry) => entry.state)).toEqual([
+      'build_mismatch',
+      'malformed',
+    ]);
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId })).resolves.toMatchObject({
+      kind: 'undeterminable',
+    });
+    expect(existsSync(incidentPath)).toBe(true);
     expect(existsSync(parkingPath)).toBe(true);
   });
 
@@ -1282,7 +1346,8 @@ describe('backend store-reset commands', () => {
       target: 'gen2' as const,
       flavor,
       incidentId,
-      evidenceBytes: 42,
+      incidentEvidenceBytes: 42,
+      parkingEvidenceBytes: 0,
       durability: 'proven' as const,
     }));
     const operations: StoreResetCommandOperations = {
@@ -1298,7 +1363,9 @@ describe('backend store-reset commands', () => {
     );
 
     expect(release).toHaveBeenCalledWith('current', 'dev', INCIDENT_ID);
-    expect(stdout).toContain(`Released non-holder store-reset incident '${INCIDENT_ID}' (42 bytes) from gen2 dev`);
+    expect(stdout).toContain(
+      `Released non-holder store-reset incident '${INCIDENT_ID}' (incident: 42 bytes; parking: 0 bytes) from gen2 dev`,
+    );
     expect(stdout).not.toContain('from current');
     expect(stderr).toBe('');
   });
@@ -1313,7 +1380,8 @@ describe('backend store-reset commands', () => {
         target: 'gen2',
         flavor,
         incidentId,
-        evidenceBytes: 42,
+        incidentEvidenceBytes: 0,
+        parkingEvidenceBytes: 42,
         durability: 'unproven',
       }),
     };
@@ -1339,7 +1407,8 @@ describe('backend store-reset commands', () => {
         target: 'gen2',
         flavor,
         incidentId,
-        evidenceBytes: 42,
+        incidentEvidenceBytes: 42,
+        parkingEvidenceBytes: 0,
         parkingState: 'absent',
         incidentState: 'present',
         durability: 'proven',
@@ -1431,6 +1500,7 @@ describe('backend store-reset commands', () => {
             resetPolicyCause: 'older-incompatible',
             fileCount: 1,
             evidenceBytes: 42,
+            parkingEvidenceBytes: 0,
             retention: {
               slot: 'claimed',
               preservation: {
@@ -1715,6 +1785,7 @@ describe('backend store-reset commands', () => {
             resetPolicyCause: 'older-incompatible',
             fileCount: 0,
             evidenceBytes: 42,
+            parkingEvidenceBytes: 12,
             retention: {
               slot: 'claimed',
               preservation: { kind: 'linked', coherence: 'coherent' },
@@ -1744,7 +1815,7 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked (coherent) | store.db-wal (regular-file) | no | 0.9.15\n\n` +
+      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Incident bytes | Parking bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | 12 | claimed | linked (coherent) | store.db-wal (regular-file) | no | 0.9.15\n\n` +
         'Discarded descendant evidence: none.\n' +
         'States: ready produces a Markdown report; parked is owned evidence awaiting release; in-flight is a crash-recovery transaction; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
@@ -1889,6 +1960,7 @@ describe('backend store-reset commands', () => {
             },
             storedProductVersion: 'unknown',
             evidenceBytes: 'unknown',
+            parkingEvidenceBytes: 0,
           },
         ],
         truncated: false,

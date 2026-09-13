@@ -112,9 +112,7 @@ export function enumerateActiveEvidence(storage: StoragePort, files: ActiveEvide
       const path = candidateForEvidence(files, name);
       const link = storage.lstatSync(path);
       const stat = storage.lstatSync(path, { bigint: true });
-      if (link.isSymbolicLink()) {
-        throw new Error('Store-reset evidence is not a regular file.');
-      }
+      if (link.isSymbolicLink()) continue;
       if (!link.isFile() || !stat.isFile()) continue;
       if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
         throw new Error('Store-reset evidence cannot be represented safely.');
@@ -196,6 +194,7 @@ export function parkActiveEvidence(
   }
 
   try {
+    storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
     storage.renameSync(candidateForEvidence(files, evidence.name), destination);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'absent' };
@@ -247,6 +246,7 @@ export function parkCurrentEvidence(
       if (!isNoEntryError(error)) throw error;
     }
     try {
+      storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
       storage.renameSync(candidateForEvidence(files, name), destination);
     } catch (error: unknown) {
       if (isNoEntryError(error)) continue;

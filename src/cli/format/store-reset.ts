@@ -24,6 +24,10 @@ function observed(value: string | null): string {
   return value === null ? 'not observed' : code(value);
 }
 
+function evidenceBytes(value: number | null): string {
+  return value === null ? 'size unavailable' : `${value} bytes`;
+}
+
 function retention(entry: StoreResetIncidentListResult['incidents'][number]): string {
   switch (entry.retention.slot) {
     case 'unknown':
@@ -182,11 +186,11 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     ].join('\n');
   }
   return [
-    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version',
+    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Incident bytes | Parking bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`
-        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     ...parkingRootStatus(result),
     '',
@@ -213,20 +217,16 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
   result = constrainStoreResetRendererInput(result);
   switch (result.kind) {
     case 'released': {
-      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Released preserved store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}.`;
+      return `Released preserved store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}.`;
     }
     case 'not-holder': {
-      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Released non-holder store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+      return `Released non-holder store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'parked': {
-      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Released parked store-reset evidence '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+      return `Released parked store-reset evidence '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'partially-released': {
-      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Partially released store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}, and deletion durability is ${result.durability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
+      return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}, and deletion durability is ${result.durability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;

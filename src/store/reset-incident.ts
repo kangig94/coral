@@ -15,7 +15,9 @@ export const STORE_RESET_RETAINED_INCIDENT_SCHEMA_VERSION = STORE_RESET_INCIDENT
 export const STORE_RESET_QUARANTINE_DIRECTORY = 'store-reset-quarantine';
 export const STORE_RESET_STAGING_DIRECTORY = '.staging';
 export const STORE_RESET_PARKED_DIRECTORY = '.parked';
+export const STORE_RESET_IN_FLIGHT_DIRECTORY = '.in-flight';
 export const STORE_RESET_MINTED_DIRECTORY = '.minted';
+export const STORE_RESET_MINTED_STORE_DIRECTORY = 'current';
 export const STORE_RESET_PARKED_SIDECAR_FILE_NAME = 'parked.v1.json';
 export const STORE_RESET_MANIFEST_FILE_NAME = 'reset-manifest.json';
 

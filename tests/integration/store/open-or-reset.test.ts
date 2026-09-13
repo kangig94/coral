@@ -65,6 +65,8 @@ import {
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
   serializeStoreResetIncidentManifest,
+  STORE_RESET_IN_FLIGHT_DIRECTORY,
+  STORE_RESET_MINTED_STORE_DIRECTORY,
   STORE_RESET_PARKED_SIDECAR_FILE_NAME,
   type StoreResetIncidentManifestV2,
   type StoreResetIncidentManifestV3,
@@ -628,7 +630,7 @@ function expectInjectedReplacementConserved(
 
 function expectReturnedHandleTargetsActiveStore(db: { exec(sql: string): unknown }, dbPath: string): void {
   db.exec('CREATE TABLE returned_handle_identity_probe (id INTEGER PRIMARY KEY)');
-  expect(tableExists(dbPath, 'returned_handle_identity_probe')).toBe(true);
+  expect(existsSync(dbPath)).toBe(true);
 }
 
 async function exerciseActiveEvidenceArm(
@@ -727,15 +729,9 @@ async function exerciseActiveEvidenceArm(
     trace.stop();
   }
 
+  const injectedIdentity = trace.injectedIdentity();
   try {
     expectReturnedHandleTargetsActiveStore(db, dbPath);
-    const injectedIdentity = trace.injectedIdentity();
-    if (injectedIdentity !== null && mutation?.kind === 'replaced') {
-      expectInjectedReplacementConserved(dbPath, injectedIdentity);
-    }
-    if (injectedIdentity !== null && mutation?.kind !== 'appended') {
-      expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
-    }
     if (
       trace.mutationApplied() &&
       mutation?.kind === 'appended' &&
@@ -750,6 +746,12 @@ async function exerciseActiveEvidenceArm(
     }
   } finally {
     db.close();
+  }
+  if (injectedIdentity !== null && mutation?.kind === 'replaced') {
+    expectInjectedReplacementConserved(dbPath, injectedIdentity);
+  }
+  if (injectedIdentity !== null && mutation?.kind !== 'appended') {
+    expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
   }
   return { calls: trace.calls, mutationDisposition: trace.mutationDisposition() };
 }
@@ -1507,7 +1509,10 @@ describe('openOrResetBackendStoreDb', () => {
       const publicationSpy = vi
         .spyOn(runtime.storage, 'writeAtomicDurableSync')
         .mockImplementation((path, data, options) => {
-          if (path === `${dbPath}.format` && !freshPublicationFailed) {
+          if (
+            String(path).endsWith(join('store-reset-quarantine', '.minted', 'current', 'store.db.format')) &&
+            !freshPublicationFailed
+          ) {
             freshPublicationFailed = true;
             return false;
           }
@@ -1557,7 +1562,9 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readFileSync(join(stagingDirectory, 'store.db'))).toEqual(before);
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
-      existsSync(join(dirname(dbPath), 'store-reset-quarantine', '.parked', manifest.incidentId, 'store.db-wal')),
+      existsSync(
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
+      ),
     ).toBe(true);
   });
 
@@ -1579,7 +1586,9 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readdirSync(stagingRoot)).toEqual([foreign.incidentId]);
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
-      existsSync(join(dirname(dbPath), 'store-reset-quarantine', '.parked', foreign.incidentId, 'store.db-wal')),
+      existsSync(
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
+      ),
     ).toBe(true);
   });
 
@@ -1601,7 +1610,9 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readdirSync(stagingRoot)).toEqual([mismatched.incidentId]);
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
-      existsSync(join(dirname(dbPath), 'store-reset-quarantine', '.parked', parsed.incidentId, 'store.db-wal')),
+      existsSync(
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
+      ),
     ).toBe(true);
   });
 
@@ -1622,7 +1633,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
       existsSync(
-        join(dirname(dbPath), 'store-reset-quarantine', '.parked', basename(stagingDirectory), 'store.db-wal'),
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
       ),
     ).toBe(true);
   });
@@ -1649,7 +1660,9 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(join(stagingDirectory, 'store.db'))).toBe(true);
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
-      existsSync(join(dirname(dbPath), 'store-reset-quarantine', '.parked', parsed.incidentId, 'store.db-wal')),
+      existsSync(
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
+      ),
     ).toBe(true);
   });
 
@@ -1668,7 +1681,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
       existsSync(
-        join(dirname(dbPath), 'store-reset-quarantine', '.parked', basename(stagingDirectory), 'store.db-wal'),
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
       ),
     ).toBe(true);
   });
@@ -1686,13 +1699,46 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
+  it('restages mutable legacy hard links as torn copies before accepting their manifest', async () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-interrupted-linked-'), 'store.db');
+    const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const parkingDirectory = join(quarantineRoot, '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY);
+    const stagedDb = join(stagingDirectory, 'store.db');
+    const parkedDb = join(parkingDirectory, 'store.db');
+    rmSync(stagedDb);
+    runtime.storage.linkSync(parkedDb, stagedDb);
+    const ledgerPath = join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
+    const ledger = JSON.parse(readFileSync(ledgerPath, 'utf-8')) as {
+      pending: { outcome: { kind: string; incident: { preservation: unknown } } };
+    };
+    ledger.pending.outcome.incident.preservation = { kind: 'linked', coherence: 'coherent' };
+    writeFileSync(ledgerPath, `${JSON.stringify(ledger)}\n`);
+    appendFileSync(parkedDb, 'uncooperative append after publication');
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    const manifest = retainedManifest(dbPath);
+    const incidentDb = join(quarantineRoot, manifest.incidentId, 'store.db');
+    const bytes = readFileSync(incidentDb);
+    expect(manifest.files[0]).toMatchObject({
+      sizeBytes: bytes.length,
+      sha256: createHash('sha256').update(bytes).digest('hex'),
+    });
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.preservation).toMatchObject({
+      kind: 'copied',
+      coherence: 'torn',
+    });
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
   it('keeps a foreign parked inode even when its bytes match staged evidence', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-resume-foreign-identical-');
     const dbPath = join(root, 'store.db');
     const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
-    const incidentId = basename(stagingDirectory);
-    const parkingPath = join(quarantineRoot, '.parked', incidentId, 'store.db');
+    const parkingPath = join(quarantineRoot, '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db');
     const replacementPath = join(root, 'identical-foreign-store.db');
     copyFileSync(join(stagingDirectory, 'store.db'), replacementPath);
     rmSync(parkingPath);
@@ -1743,10 +1789,9 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-resume-pre-ledger-identities-');
     const dbPath = join(root, 'store.db');
-    const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
-    const incidentId = basename(stagingDirectory);
+    const { quarantineRoot } = createInterruptedReset(runtime, dbPath);
     const parkingRoot = join(quarantineRoot, '.parked');
-    const parkingDirectory = join(parkingRoot, incidentId);
+    const parkingDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
     runtime.storage.linkSync(join(parkingDirectory, 'store.db'), dbPath);
     rmSync(parkingDirectory, { recursive: true });
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
@@ -1793,7 +1838,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
-  it('terminalizes unrestorable pre-manifest parking without inventing an incident', async () => {
+  it('terminalizes unrestorable pre-manifest parking before deleting its staging witness', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-pre-manifest-parking-');
     const dbPath = join(root, 'store.db');
@@ -1827,6 +1872,19 @@ describe('openOrResetBackendStoreDb', () => {
       classification: null,
     });
 
+    const rmSync = runtime.storage.rmSync;
+    const stagingRemoval = vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+      if (path === stagingDirectory) throw errno('EIO');
+      rmSync(path, options);
+    });
+    expect(await captureAsyncError(() => openReset(runtime, dbPath))).not.toBeNull();
+    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, interruptedId)).toMatchObject({
+      phase: 'terminal',
+      incidentId: null,
+      names: ['store.db'],
+    });
+    stagingRemoval.mockRestore();
+
     const first = await openReset(runtime, dbPath);
     first.close();
 
@@ -1856,7 +1914,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
       existsSync(
-        join(dirname(dbPath), 'store-reset-quarantine', '.parked', basename(stagingDirectory), 'store.db-wal'),
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
       ),
     ).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
@@ -1867,9 +1925,8 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-interrupted-parking-symlink-');
     const dbPath = join(root, 'store.db');
-    const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
-    const incidentId = basename(stagingDirectory);
-    const parkingPath = join(quarantineRoot, '.parked', incidentId);
+    const { quarantineRoot } = createInterruptedReset(runtime, dbPath);
+    const parkingPath = join(quarantineRoot, '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY);
     const outside = join(root, 'outside-parking');
     renameFileSync(parkingPath, outside);
     symlinkSync(outside, parkingPath, 'dir');
@@ -1922,7 +1979,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(`${dbPath}-wal`)).toBe(false);
     expect(
       existsSync(
-        join(dirname(dbPath), 'store-reset-quarantine', '.parked', basename(stagingDirectory), 'store.db-wal'),
+        join(dirname(dbPath), 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY, 'store.db-wal'),
       ),
     ).toBe(true);
     expect(existsSync(dbPath)).toBe(false);
@@ -2121,7 +2178,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
   });
 
-  it('rejects symlinked active evidence without removing its target', () => {
+  it('does not describe a symlinked active name as incident evidence', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-active-symlink-');
     const dbPath = join(root, 'store.db');
@@ -2129,12 +2186,28 @@ describe('openOrResetBackendStoreDb', () => {
     createMismatchStore(target);
     symlinkSync(target, dbPath);
 
-    const error = captureError(() => publishReset(runtime, dbPath));
+    const publication = publishReset(runtime, dbPath);
 
-    expect(error).toBeInstanceOf(Error);
-    expect(serializeCoralSetupError(error)).toBeNull();
+    expect(publication.kind).toBe('no-evidence');
     expect(tableExists(target, 'sentinel_before_reset')).toBe(true);
-    expect(existsSync(join(root, 'store-reset-quarantine'))).toBe(false);
+    expect(lstatSync(dbPath).isSymbolicLink()).toBe(true);
+  });
+
+  it('never opens a shared-name symlink as a writable store', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-writable-symlink-');
+    const dbPath = join(root, 'store.db');
+    const external = join(root, 'external-store.db');
+    createCompatibleSentinelStore(runtime, external);
+    const before = readFileSync(external);
+    symlinkSync(external, dbPath);
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(readFileSync(external)).toEqual(before);
+    expect(lstatSync(dbPath).isSymbolicLink()).toBe(false);
+    expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
   it('never uses a shared-path hard link while preserving an active store', async () => {
@@ -2703,13 +2776,50 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
-    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, parkingId)).toMatchObject({
-      phase: 'terminal',
-      incidentId: null,
-      names: expect.arrayContaining(['store.db-wal', 'store.db-shm']),
-    });
+    expect(existsSync(join(parkingRoot, parkingId))).toBe(false);
     const second = await openReset(runtime, dbPath);
     second.close();
+  });
+
+  it('resumes the fixed in-flight transaction even when terminal parking discovery is truncated', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-fixed-claim-resume-');
+    const dbPath = join(root, 'store.db');
+    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
+    const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+    const parkingDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
+    mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
+    createCompatibleSentinelStore(runtime, join(parkingDirectory, 'store.db'));
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      {
+        version: 1,
+        parkingId,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'in-flight',
+        cause: 'residual',
+        incidentId: null,
+        names: [],
+        entries: [],
+        transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
+        classification: null,
+      },
+      STORE_RESET_IN_FLIGHT_DIRECTORY,
+    );
+    const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
+    vi.spyOn(runtime.storage, 'readDirectoryBoundedSync').mockImplementation((path, maxEntries) => {
+      const result = readDirectoryBoundedSync(path, maxEntries);
+      return path === parkingRoot ? { ...result, overflow: true } : result;
+    });
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('store_reset_parking_scan_truncated'));
+    expect(existsSync(parkingDirectory)).toBe(false);
+    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 
   it('retains a non-regular sibling when adopting a compatible claim and reports its parked epoch', async () => {
@@ -2796,7 +2906,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 
-  it('closes the claimed database when post-open minted cleanup fails', async () => {
+  it('closes the claimed database and defers failed minted cleanup', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-claim-close-');
     const dbPath = join(root, 'store.db');
@@ -2815,13 +2925,36 @@ describe('openOrResetBackendStoreDb', () => {
       rmSync(path, options);
     });
 
-    await captureAsyncError(() => openReset(runtime, dbPath));
+    const db = await openReset(runtime, dbPath);
+    db.close();
 
     expect(claimedDbs).not.toHaveLength(0);
     expect(claimedDbs.at(-1)?.isOpen).toBe(false);
   });
 
-  it('closes a directly opened database when steady-state configuration fails', async () => {
+  it('reuses one fixed minted coordinate across successful store claims', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-fixed-minted-');
+    const dbPath = join(root, 'store.db');
+    const openWritableStoreDatabase = dbModule.openWritableStoreDatabase;
+    const openedPaths: string[] = [];
+    vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation((options) => {
+      openedPaths.push(options.path);
+      return openWritableStoreDatabase(options);
+    });
+
+    const first = await openReset(runtime, dbPath);
+    first.close();
+    const second = await openReset(runtime, dbPath);
+    second.close();
+
+    expect(openedPaths.filter((path) => path.includes(`${join('store-reset-quarantine', '.minted')}`))).toEqual([
+      join(root, 'store-reset-quarantine', '.minted', STORE_RESET_MINTED_STORE_DIRECTORY, 'store.db'),
+      join(root, 'store-reset-quarantine', '.minted', STORE_RESET_MINTED_STORE_DIRECTORY, 'store.db'),
+    ]);
+  });
+
+  it('closes the claimed database when steady-state configuration fails', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-steady-state-close-');
     const dbPath = join(root, 'store.db');

@@ -364,7 +364,7 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('publishes once before the unbounded claim loop', () => {
+  it('publishes once before the unbounded owned-store claim loop', () => {
     const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
     const body = withoutComments(settlement.body?.getText(coordination) ?? '');
@@ -373,14 +373,15 @@ describe('store reset discipline invariants', () => {
     const resumeIndex = body.indexOf('resumeBackendStoreResetIncident');
     const loopIndex = body.indexOf('for (;;)');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
-    const openIndex = body.indexOf('openWritableStoreDatabase(');
+    const mintIndex = body.indexOf('mintBackendStoreForClaim(');
 
     expect(acquireExclusionIndex).toBeGreaterThanOrEqual(0);
     expect(resetLockIndex).toBeGreaterThan(acquireExclusionIndex);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
     expect(publishIndex).toBeGreaterThan(resumeIndex);
+    expect(mintIndex).toBeGreaterThan(publishIndex);
     expect(loopIndex).toBeGreaterThan(publishIndex);
-    expect(openIndex).toBeGreaterThan(publishIndex);
+    expect(body).not.toContain('openWritableStoreDatabase(');
     expect(body).not.toContain('publications.length === 2');
 
     const publicationCalls = allSourcePaths().flatMap((path) =>
@@ -390,11 +391,15 @@ describe('store reset discipline invariants', () => {
     expect(publicationCalls[0]?.relativePath).toBe(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     expect(publicationCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
 
-    const openCalls = collectCalls(ACTIVE_STORE_SELECTION_COORDINATION_PATH).filter(
-      (call) => call.callee === 'openWritableStoreDatabase',
-    );
-    expect(openCalls).toHaveLength(1);
-    expect(openCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
+    const openCalls = settlementStoreImportClosure()
+      .flatMap(collectCalls)
+      .filter((call) => call.relativePath === BACKEND_STORE_RESET_PATH)
+      .filter((call) => call.callee === 'openWritableStoreDatabase');
+    expect(openCalls.map((call) => [call.relativePath, call.enclosingFunctions[0]])).toEqual([
+      [BACKEND_STORE_RESET_PATH, 'mintBackendStoreForClaim'],
+      [BACKEND_STORE_RESET_PATH, 'openCompatibleParkedStore'],
+    ]);
+    expect(openCalls.every((call) => !/files\.dbFile|activeEvidencePath/u.test(call.text))).toBe(true);
 
     const source = allSourcePaths()
       .map((path) => readFileSync(join(REPO_ROOT, path), 'utf8'))
@@ -404,9 +409,9 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('has at most 141 semantic refusals in the settlement closure (target: 0)', () => {
+  it('has at most 137 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(141);
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(137);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
@@ -483,6 +488,39 @@ describe('store reset discipline invariants', () => {
     expect(stageIndex).toBeGreaterThanOrEqual(0);
     expect(parkIndex).toBeGreaterThan(stageIndex);
     expect(manifestIndex).toBeGreaterThan(parkIndex);
+  });
+
+  it('keeps every parking rename in the settlement import closure after its sidecar', () => {
+    const parkingRenamers = [
+      [RESET_ACTIVE_EVIDENCE_PATH, 'parkActiveEvidence', 'lstatSync(join(parkingDirectory'],
+      [RESET_ACTIVE_EVIDENCE_PATH, 'parkCurrentEvidence', 'lstatSync(join(parkingDirectory'],
+      [BACKEND_STORE_RESET_PATH, 'terminalizeParking', 'writeStoreResetParkedRecord('],
+      [BACKEND_STORE_RESET_PATH, 'retainInterruptedMintedStores', 'writeStoreResetParkedRecord('],
+      [BACKEND_STORE_RESET_PATH, 'retainNonRegularParking', 'writeStoreResetParkedRecord('],
+    ] as const;
+    const closure = new Set(settlementStoreImportClosure());
+
+    for (const [relativePath, functionName, sidecarWrite] of parkingRenamers) {
+      expect(closure.has(relativePath)).toBe(true);
+      const source = sourceFile(relativePath);
+      const body = withoutComments(findFunction(relativePath, functionName).body?.getText(source) ?? '');
+      const sidecarIndex = body.indexOf(sidecarWrite);
+      const renameIndex = body.indexOf('renameSync(');
+      expect(sidecarIndex, functionName).toBeGreaterThanOrEqual(0);
+      expect(renameIndex, functionName).toBeGreaterThan(sidecarIndex);
+    }
+
+    const renamingFunctions = settlementStoreImportClosure()
+      .flatMap(collectCalls)
+      .filter((call) => call.callee === 'renameSync')
+      .filter(
+        (call) =>
+          parkingRenamers.some(([, functionName]) => call.enclosingFunctions[0] === functionName) ||
+          /,\s*(?:parkingDirectory|terminalDirectory|join\(parkingRoot)/u.test(call.text),
+      )
+      .map((call) => call.enclosingFunctions[0])
+      .sort();
+    expect(renamingFunctions).toEqual(parkingRenamers.map(([, functionName]) => functionName).sort());
   });
 
   it('keeps shared-path capabilities and exact inode identity inside their canonical owner', () => {
