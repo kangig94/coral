@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseStoreResetRetentionLedger } from '#src/store/reset-retention.js';
+import { parseStoreResetParkedRecord, parseStoreResetRetentionLedger } from '#src/store/reset-retention.js';
 
 const INCIDENT_ID = '223e4567-e89b-42d3-a456-426614174000';
 const HOLDER_ID = '323e4567-e89b-42d3-a456-426614174000';
@@ -228,5 +228,63 @@ describe('parseStoreResetRetentionLedger', () => {
     expect(parse(ledger({ preserved: incident({ storedProductVersion: 'v0.9.16' }) }))?.preserved).toMatchObject({
       storedProductVersion: '0.9.16',
     });
+  });
+});
+
+describe('parseStoreResetParkedRecord', () => {
+  function parkedRecord(transaction: unknown): Record<string, unknown> {
+    const kind =
+      typeof transaction === 'object' && transaction !== null && 'kind' in transaction ? transaction.kind : null;
+    return {
+      version: 1,
+      parkingId: INCIDENT_ID,
+      parkedAt: '2026-09-13T00:00:00.000Z',
+      phase: 'in-flight',
+      cause: kind === 'discard' ? 'discard' : kind === 'claim' ? 'residual' : 'publication',
+      incidentId: kind === 'publication' ? INCIDENT_ID : null,
+      names: [],
+      entries: [],
+      transaction,
+      classification: 'corrupt-or-unsupported',
+    };
+  }
+
+  it.each([
+    { kind: 'publication', incidentId: INCIDENT_ID, identities: [{ name: 'store.db', dev: '1', ino: '2' }] },
+    { kind: 'discard', identities: [{ name: 'store.db-wal', dev: '3', ino: '4' }] },
+    { kind: 'claim', names: ['store.db', 'store.db-wal'] },
+  ])('accepts the $kind in-flight transaction variant', (transaction) => {
+    expect(parseStoreResetParkedRecord(JSON.stringify(parkedRecord(transaction)))?.transaction).toEqual(transaction);
+  });
+
+  it('accepts terminal entries that describe the parked object kinds', () => {
+    const value = {
+      ...parkedRecord(null),
+      phase: 'terminal',
+      cause: 'intruder',
+      names: ['store.db', 'store.db-wal'],
+      entries: [
+        { name: 'store.db', kind: 'directory', sizeBytes: 0 },
+        { name: 'store.db-wal', kind: 'symbolic-link', sizeBytes: 12 },
+      ],
+    };
+
+    expect(parseStoreResetParkedRecord(JSON.stringify(value))?.entries).toEqual(value.entries);
+  });
+
+  it.each([
+    ['in-flight without a transaction', parkedRecord(null)],
+    ['terminal with a transaction', { ...parkedRecord({ kind: 'claim', names: ['store.db'] }), phase: 'terminal' }],
+    [
+      'terminal names that disagree with entries',
+      {
+        ...parkedRecord(null),
+        phase: 'terminal',
+        names: ['store.db'],
+        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 1 }],
+      },
+    ],
+  ])('rejects %s', (_label, value) => {
+    expect(parseStoreResetParkedRecord(JSON.stringify(value))).toBeNull();
   });
 });

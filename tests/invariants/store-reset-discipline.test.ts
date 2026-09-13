@@ -219,6 +219,140 @@ function importClosure(roots: readonly string[]): Set<string> {
   return visited;
 }
 
+type FunctionLocation = Readonly<{
+  relativePath: string;
+  declaration: ts.FunctionDeclaration;
+}>;
+
+function sourceWithOverrides(relativePath: string, overrides: ReadonlyMap<string, string>): ts.SourceFile {
+  const override = overrides.get(relativePath);
+  return override === undefined
+    ? sourceFile(relativePath)
+    : ts.createSourceFile(relativePath, override, ts.ScriptTarget.Latest, true);
+}
+
+function declaredFunction(
+  relativePath: string,
+  name: string,
+  overrides: ReadonlyMap<string, string>,
+): FunctionLocation | null {
+  const declaration = sourceWithOverrides(relativePath, overrides).statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  return declaration === undefined ? null : { relativePath, declaration };
+}
+
+function importedFunction(
+  relativePath: string,
+  name: string,
+  overrides: ReadonlyMap<string, string>,
+): FunctionLocation | null {
+  const source = sourceWithOverrides(relativePath, overrides);
+  for (const statement of source.statements.filter(ts.isImportDeclaration)) {
+    const clause = statement.importClause;
+    if (clause === undefined || clause.namedBindings === undefined || !ts.isNamedImports(clause.namedBindings)) {
+      continue;
+    }
+    const binding = clause.namedBindings.elements.find((element) => element.name.text === name);
+    if (binding === undefined || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const importedPath = resolveSourceImport(relativePath, statement.moduleSpecifier.text);
+    if (importedPath === null || !importedPath.startsWith('src/store/')) continue;
+    return declaredFunction(importedPath, binding.propertyName?.text ?? binding.name.text, overrides);
+  }
+  return null;
+}
+
+function calledFunctions(location: FunctionLocation, overrides: ReadonlyMap<string, string>): FunctionLocation[] {
+  return calledFunctionsInNode(location, location.declaration.body, overrides);
+}
+
+function calledFunctionsInNode(
+  location: FunctionLocation,
+  node: ts.Node | undefined,
+  overrides: ReadonlyMap<string, string>,
+): FunctionLocation[] {
+  const calls = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const name = calleeName(node.expression);
+      if (name !== null) calls.add(name);
+    }
+    ts.forEachChild(node, visit);
+  };
+  if (node !== undefined) visit(node);
+  return [...calls].flatMap((name) => {
+    const target =
+      declaredFunction(location.relativePath, name, overrides) ??
+      importedFunction(location.relativePath, name, overrides);
+    return target === null ? [] : [target];
+  });
+}
+
+function settlementStoreClosure(overrides: ReadonlyMap<string, string> = new Map()): FunctionLocation[] {
+  const root = declaredFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore', overrides);
+  if (root === null) throw new Error('Missing settlement root.');
+  let loop: ts.ForStatement | undefined;
+  const findLoop = (node: ts.Node): void => {
+    if (loop !== undefined) return;
+    if (ts.isForStatement(node)) {
+      loop = node;
+      return;
+    }
+    ts.forEachChild(node, findLoop);
+  };
+  if (root.declaration.body !== undefined) findLoop(root.declaration.body);
+  if (loop === undefined) throw new Error('Missing settlement loop.');
+  const closure: FunctionLocation[] = [];
+  const pending = calledFunctionsInNode(root, loop.statement, overrides);
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const next = pending.pop();
+    if (next === undefined) continue;
+    const name = next.declaration.name?.text;
+    if (name === undefined) continue;
+    const key = `${next.relativePath}:${name}`;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    closure.push(next);
+    pending.push(...calledFunctions(next, overrides));
+  }
+  return closure;
+}
+
+function isUnmappedErrnoRethrow(statement: ts.ThrowStatement): boolean {
+  if (!ts.isIdentifier(statement.expression)) return false;
+  let current: ts.Node | undefined = statement.parent;
+  while (current !== undefined && !ts.isCatchClause(current)) current = current.parent;
+  if (current === undefined || !ts.isCatchClause(current) || current.variableDeclaration === undefined) return false;
+  return (
+    ts.isIdentifier(current.variableDeclaration.name) &&
+    current.variableDeclaration.name.text === statement.expression.text
+  );
+}
+
+function settlementSharedNameThrowViolations(overrides: ReadonlyMap<string, string> = new Map()): readonly string[] {
+  const violations: string[] = [];
+  for (const location of settlementStoreClosure(overrides)) {
+    if (
+      location.relativePath !== RESET_ACTIVE_EVIDENCE_PATH ||
+      location.declaration.name?.text === 'enumerateActiveEvidence'
+    ) {
+      continue;
+    }
+    const source = sourceWithOverrides(location.relativePath, overrides);
+    const visit = (node: ts.Node): void => {
+      if (ts.isThrowStatement(node) && !isUnmappedErrnoRethrow(node)) {
+        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+        violations.push(`${location.relativePath}:${line} ${location.declaration.name?.text}: ${node.getText(source)}`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    if (location.declaration.body !== undefined) visit(location.declaration.body);
+  }
+  return violations.sort();
+}
+
 describe('store reset discipline invariants', () => {
   // Note: these invariants check direct call sites within the named function
   // body - transitive calls (helper-of-helper invoking a forbidden symbol)
@@ -333,32 +467,23 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('keeps refusal and bound constructs outside every settlement loop body', () => {
-    const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
-    const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
-    const loops: ts.IterationStatement[] = [];
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isForStatement(node) ||
-        ts.isForInStatement(node) ||
-        ts.isForOfStatement(node) ||
-        ts.isWhileStatement(node) ||
-        ts.isDoStatement(node)
-      ) {
-        loops.push(node);
-      }
-      ts.forEachChild(node, visit);
-    };
-    if (settlement.body !== undefined) visit(settlement.body);
-    expect(loops).toHaveLength(1);
-    const loopBody = withoutComments(loops[0]?.statement.getText(coordination) ?? '');
-    expect(loopBody).not.toMatch(/\bthrow\b/u);
-    expect(loopBody).not.toMatch(/\b(?:refuse|documented)[A-Za-z0-9_]*\s*\(/u);
-    expect(loopBody).not.toMatch(/\b(?:max|limit|budget|timeout)[A-Za-z0-9_]*\b/iu);
-    expect(loopBody).not.toMatch(/\.length\s*(?:===|!==|<=|>=|<|>)\s*(?!0\b)/u);
-    for (const literal of loopBody.matchAll(/\b([0-9]+)\b/gu)) {
-      expect(Number(literal[1])).toBeLessThan(2);
-    }
+  it('allows only unmapped errno rethrows in the settlement shared-name call closure', () => {
+    expect(settlementSharedNameThrowViolations()).toEqual([]);
+  });
+
+  it('detects a semantic throw injected into a settlement callee', () => {
+    const source = readFileSync(join(REPO_ROOT, RESET_ACTIVE_EVIDENCE_PATH), 'utf8');
+    const needle = '    const stat = storage.lstatSync(destination, { bigint: true });\n    parked.push({';
+    expect(source).toContain(needle);
+    const injected = source.replace(
+      needle,
+      '    const stat = storage.lstatSync(destination, { bigint: true });\n' +
+        "    if (!stat.isFile()) throw new Error('injected non-regular parked evidence');\n" +
+        '    parked.push({',
+    );
+    expect(settlementSharedNameThrowViolations(new Map([[RESET_ACTIVE_EVIDENCE_PATH, injected]]))).toEqual([
+      expect.stringContaining("parkCurrentEvidence: throw new Error('injected non-regular parked evidence')"),
+    ]);
   });
 
   it('maps expected maintenance-acquisition failures to copy dispositions', () => {

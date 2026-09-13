@@ -2108,6 +2108,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         process.stderr.write(output);
         process.exitCode =
           result.kind === 'undeterminable' ||
+          result.kind === 'partially-released' ||
           ((result.kind === 'released' || result.kind === 'not-holder' || result.kind === 'parked') &&
             result.durability === 'unproven')
             ? errorCodeToExit('transient')

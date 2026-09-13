@@ -37,6 +37,27 @@ export type StoreResetParkedClassificationKind =
   | 'newer-incompatible'
   | 'corrupt-or-unsupported';
 
+export type StoreResetParkedEntry = Readonly<{
+  name: StoreResetEvidenceFileName;
+  kind: 'regular-file' | 'directory' | 'symbolic-link' | 'other';
+  sizeBytes: number | null;
+}>;
+
+export type StoreResetParkingTransaction =
+  | Readonly<{
+      kind: 'publication';
+      incidentId: string;
+      identities: readonly StoreResetPendingIdentity[];
+    }>
+  | Readonly<{
+      kind: 'discard';
+      identities: readonly StoreResetPendingIdentity[];
+    }>
+  | Readonly<{
+      kind: 'claim';
+      names: readonly StoreResetEvidenceFileName[];
+    }>;
+
 export type StoreResetParkedRecord = Readonly<{
   version: typeof STORE_RESET_PARKED_SIDECAR_VERSION;
   parkingId: string;
@@ -45,6 +66,8 @@ export type StoreResetParkedRecord = Readonly<{
   cause: 'publication' | 'discard' | 'intruder' | 'residual';
   incidentId: string | null;
   names: readonly StoreResetEvidenceFileName[];
+  entries: readonly StoreResetParkedEntry[];
+  transaction: StoreResetParkingTransaction | null;
   classification: StoreResetParkedClassificationKind | null;
 }>;
 
@@ -164,6 +187,13 @@ export type StoreResetReleaseResult =
       readonly incidentId: string;
       readonly evidenceBytes: number | null;
       readonly durability: 'proven' | 'unproven';
+    }
+  | {
+      readonly kind: 'partially-released';
+      readonly incidentId: string;
+      readonly evidenceBytes: number | null;
+      readonly parkingDurability: 'proven' | 'unproven';
+      readonly cause: string;
     }
   | { readonly kind: 'absent'; readonly incidentId: string }
   | { readonly kind: 'staged'; readonly incidentId: string }
@@ -296,6 +326,58 @@ function pendingIdentity(value: unknown): StoreResetPendingIdentity | null {
     return null;
   }
   return { name: value.name as StoreResetEvidenceFileName, dev: value.dev, ino: value.ino };
+}
+
+function parkingTransaction(value: unknown): StoreResetParkingTransaction | null {
+  if (!isRecord(value)) return null;
+  if (value.kind === 'claim') {
+    if (
+      !Array.isArray(value.names) ||
+      value.names.some((name) => !STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName)) ||
+      new Set(value.names).size !== value.names.length
+    ) {
+      return null;
+    }
+    return { kind: 'claim', names: value.names as StoreResetEvidenceFileName[] };
+  }
+  if ((value.kind !== 'publication' && value.kind !== 'discard') || !Array.isArray(value.identities)) return null;
+  const identities = value.identities.map(pendingIdentity);
+  if (
+    identities.some((identity) => identity === null) ||
+    new Set(identities.map((identity) => identity?.name)).size !== identities.length
+  ) {
+    return null;
+  }
+  if (value.kind === 'discard') {
+    return { kind: 'discard', identities: identities as StoreResetPendingIdentity[] };
+  }
+  if (typeof value.incidentId !== 'string' || !isCanonicalStoreResetIncidentId(value.incidentId)) {
+    return null;
+  }
+  return {
+    kind: 'publication',
+    incidentId: value.incidentId,
+    identities: identities as StoreResetPendingIdentity[],
+  };
+}
+
+function parkedEntry(value: unknown): StoreResetParkedEntry | null {
+  if (
+    !isRecord(value) ||
+    !STORE_RESET_EVIDENCE_FILE_NAMES.includes(value.name as StoreResetEvidenceFileName) ||
+    (value.kind !== 'regular-file' &&
+      value.kind !== 'directory' &&
+      value.kind !== 'symbolic-link' &&
+      value.kind !== 'other') ||
+    (value.sizeBytes !== null && !isNonNegativeInteger(value.sizeBytes))
+  ) {
+    return null;
+  }
+  return {
+    name: value.name as StoreResetEvidenceFileName,
+    kind: value.kind,
+    sizeBytes: value.sizeBytes,
+  };
 }
 
 function retentionPending(value: unknown): StoreResetRetentionPending | null {
@@ -437,7 +519,30 @@ export function parseStoreResetParkedRecord(text: string): StoreResetParkedRecor
       (typeof value.incidentId !== 'string' || !isCanonicalStoreResetIncidentId(value.incidentId))) ||
     !Array.isArray(value.names) ||
     value.names.some((name) => !STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName)) ||
-    new Set(value.names).size !== value.names.length
+    new Set(value.names).size !== value.names.length ||
+    !Array.isArray(value.entries)
+  ) {
+    return null;
+  }
+  const entries = value.entries.map(parkedEntry);
+  if (entries.some((entry) => entry === null) || new Set(entries.map((entry) => entry?.name)).size !== entries.length) {
+    return null;
+  }
+  const transaction = value.transaction === null ? null : parkingTransaction(value.transaction);
+  const transactionMatchesRecord =
+    transaction === null ||
+    (transaction.kind === 'publication'
+      ? value.cause === 'publication' && value.incidentId === transaction.incidentId
+      : transaction.kind === 'discard'
+        ? value.cause === 'discard' && value.incidentId === null
+        : value.cause === 'residual' && value.incidentId === null);
+  if (
+    (value.transaction !== null && transaction === null) ||
+    (value.phase === 'in-flight') !== (transaction !== null) ||
+    !transactionMatchesRecord ||
+    (value.phase === 'in-flight' && (value.names.length > 0 || entries.length > 0)) ||
+    (value.phase === 'terminal' && value.names.length !== entries.length) ||
+    (value.phase === 'terminal' && value.names.some((name, index) => name !== entries[index]?.name))
   ) {
     return null;
   }
@@ -451,6 +556,8 @@ export function parseStoreResetParkedRecord(text: string): StoreResetParkedRecor
     cause: value.cause,
     incidentId: value.incidentId,
     names: value.names as StoreResetEvidenceFileName[],
+    entries: entries as StoreResetParkedEntry[],
+    transaction,
     classification,
   };
 }
@@ -867,8 +974,30 @@ export function releaseStoreResetIncident(
       : null;
   const evidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? parkedEvidenceBytes;
   if (parkingPresence === 'present') storage.rmSync(parkingPath, { recursive: true });
-  const parkingDurable = parkingPresence === 'absent' || storage.syncDirectoryDurableSync(parkingRoot);
-  if (incidentPresence === 'present') storage.rmSync(incidentPath, { recursive: true });
+  let parkingDurable = parkingPresence === 'absent';
+  if (parkingPresence === 'present') {
+    try {
+      parkingDurable = storage.syncDirectoryDurableSync(parkingRoot);
+    } catch {
+      parkingDurable = false;
+    }
+  }
+  if (incidentPresence === 'present') {
+    try {
+      storage.rmSync(incidentPath, { recursive: true });
+    } catch (error: unknown) {
+      if (parkingPresence === 'present') {
+        return {
+          kind: 'partially-released',
+          incidentId,
+          evidenceBytes,
+          parkingDurability: parkingDurable ? 'proven' : 'unproven',
+          cause: error instanceof Error ? error.message : String(error),
+        };
+      }
+      return { kind: 'undeterminable', incidentId };
+    }
+  }
   const quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
   const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
   const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;

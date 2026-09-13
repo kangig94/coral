@@ -31,6 +31,7 @@ import {
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type PreservationMechanism,
   type PreservedRetention,
+  type StoreResetParkedEntry,
   type StoreResetRetentionLedger,
 } from './reset-retention.js';
 import {
@@ -68,11 +69,11 @@ export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
     | (PreservedRetention & {
         readonly preservation: PreservationMechanism | 'unknown';
         readonly resumeLeftActive: boolean;
-        readonly parked: readonly string[];
+        readonly parked: readonly StoreResetParkedEntry[];
       })
     | {
         readonly slot: 'parked';
-        readonly parked: readonly string[];
+        readonly parked: readonly StoreResetParkedEntry[];
         readonly cause: 'publication' | 'discard' | 'intruder' | 'residual';
         readonly classification: string | null;
       }
@@ -84,6 +85,7 @@ export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
 export type StoreResetIncidentListResult = {
   readonly incidents: readonly StoreResetIncidentListEntry[];
   readonly truncated: boolean;
+  readonly parkingRootState?: 'absent' | 'ready' | 'unsafe' | 'unavailable';
   readonly discarded: StoreResetRetentionLedger['discarded'];
 };
 
@@ -192,6 +194,7 @@ function buildMatches(manifest: StoreResetIncidentManifest, expected: StrictBund
 function listRetention(
   incidentId: string,
   ledger: StoreResetRetentionLedger | null,
+  parked: readonly StoreResetParkedEntry[] = [],
 ): Pick<StoreResetIncidentListEntry, 'retention' | 'storedProductVersion' | 'evidenceBytes'> {
   const retained =
     ledger?.preserved?.incidentId === incidentId
@@ -207,7 +210,7 @@ function listRetention(
       ...retained.retention,
       preservation: retained.incident.preservation ?? 'unknown',
       resumeLeftActive: retained.incident.resumeLeftActive,
-      parked: [],
+      parked,
     },
     storedProductVersion:
       retained.incident.storedProductVersion === undefined ? 'unknown' : retained.incident.storedProductVersion,
@@ -219,6 +222,7 @@ function unavailableEntry(
   incidentId: string,
   state: Exclude<StoreResetIncidentListEntry['state'], 'ready'>,
   ledger: StoreResetRetentionLedger | null,
+  parked: readonly StoreResetParkedEntry[] = [],
 ): StoreResetIncidentListEntry {
   return {
     incidentId,
@@ -228,7 +232,7 @@ function unavailableEntry(
     schemaVersion: null,
     resetPolicyCause: null,
     fileCount: null,
-    ...listRetention(incidentId, ledger),
+    ...listRetention(incidentId, ledger, parked),
   };
 }
 
@@ -238,20 +242,26 @@ function readListEntry(
   incidentId: string,
   expectedBuild: StrictBundleManifest,
   ledger: StoreResetRetentionLedger | null,
+  parked: readonly StoreResetParkedEntry[] = [],
 ): StoreResetIncidentListEntry {
   const incidentPath = join(root, incidentId);
   const incidentStat = fs.lstat(incidentPath);
   if (incidentStat === null || incidentStat.kind !== 'directory') {
-    return unavailableEntry(incidentId, incidentStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger);
+    return unavailableEntry(
+      incidentId,
+      incidentStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed',
+      ledger,
+      parked,
+    );
   }
 
   const manifestPath = join(incidentPath, STORE_RESET_MANIFEST_FILE_NAME);
   const manifestStat = fs.lstat(manifestPath);
   if (manifestStat === null) {
-    return unavailableEntry(incidentId, 'malformed', ledger);
+    return unavailableEntry(incidentId, 'malformed', ledger, parked);
   }
   if (manifestStat.kind !== 'file') {
-    return unavailableEntry(incidentId, manifestStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger);
+    return unavailableEntry(incidentId, manifestStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger, parked);
   }
 
   try {
@@ -259,10 +269,10 @@ function readListEntry(
       readBoundedFileBytes(fs, manifestPath, manifestStat, MAX_RESET_MANIFEST_BYTES),
     );
     if (manifest.incidentId !== incidentId) {
-      return unavailableEntry(incidentId, 'malformed', ledger);
+      return unavailableEntry(incidentId, 'malformed', ledger, parked);
     }
     if (!buildMatches(manifest, expectedBuild)) {
-      return unavailableEntry(incidentId, 'build_mismatch', ledger);
+      return unavailableEntry(incidentId, 'build_mismatch', ledger, parked);
     }
     return {
       incidentId,
@@ -273,36 +283,46 @@ function readListEntry(
       resetPolicyCause:
         manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
-      ...listRetention(incidentId, ledger),
+      ...listRetention(incidentId, ledger, parked),
     };
   } catch (error: unknown) {
     if (error instanceof StoreResetIncidentReadError) {
-      return unavailableEntry(incidentId, error.state, ledger);
+      return unavailableEntry(incidentId, error.state, ledger, parked);
     }
     if (error instanceof StoreResetManifestDecodeError) {
       return unavailableEntry(
         incidentId,
         error.code === 'manifest_invalid_schema' ? 'unsupported' : 'malformed',
         ledger,
+        parked,
       );
     }
-    return unavailableEntry(incidentId, 'unavailable', ledger);
+    return unavailableEntry(incidentId, 'unavailable', ledger, parked);
   }
 }
 
 function readParkedListEntries(
   fs: StoreResetInspectionFs,
   quarantineRoot: string,
-): { readonly entries: readonly StoreResetIncidentListEntry[]; readonly truncated: boolean } {
+): {
+  readonly entries: readonly StoreResetIncidentListEntry[];
+  readonly truncated: boolean;
+  readonly state: NonNullable<StoreResetIncidentListResult['parkingRootState']>;
+} {
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   const rootStat = fs.lstat(parkingRoot);
-  if (rootStat === null) return { entries: [], truncated: false };
+  if (rootStat === null) return { entries: [], truncated: false, state: 'absent' };
   if (rootStat.kind !== 'directory') {
-    return { entries: [], truncated: false };
+    return { entries: [], truncated: false, state: 'unsafe' };
   }
-  const rootReal = fs.realpath(quarantineRoot);
-  const parkingReal = fs.realpath(parkingRoot);
-  if (!isContained(rootReal, parkingReal)) return { entries: [], truncated: false };
+  let parkingReal: string;
+  try {
+    const rootReal = fs.realpath(quarantineRoot);
+    parkingReal = fs.realpath(parkingRoot);
+    if (!isContained(rootReal, parkingReal)) return { entries: [], truncated: false, state: 'unsafe' };
+  } catch {
+    return { entries: [], truncated: false, state: 'unavailable' };
+  }
 
   const parkingIds: string[] = [];
   let cursor: unknown = null;
@@ -368,7 +388,7 @@ function readParkedListEntries(
             ? { slot: 'unknown' as const }
             : {
                 slot: 'parked' as const,
-                parked: record.names,
+                parked: record.entries,
                 cause: record.cause,
                 classification: record.classification,
               },
@@ -377,6 +397,7 @@ function readParkedListEntries(
       };
     }),
     truncated,
+    state: 'ready',
   };
 }
 
@@ -396,7 +417,7 @@ export function listStoreResetIncidents(options: {
 }): StoreResetIncidentListResult {
   const rootStat = options.fs.lstat(options.quarantineRoot);
   if (rootStat === null) {
-    return { incidents: [], truncated: false, discarded: null };
+    return { incidents: [], truncated: false, parkingRootState: 'absent', discarded: null };
   }
   if (rootStat.kind !== 'directory') {
     throw new StoreResetIncidentReadError(rootStat.kind === 'symbolic-link' ? 'unsafe' : 'unavailable');
@@ -452,16 +473,27 @@ export function listStoreResetIncidents(options: {
   }
 
   const parked = readParkedListEntries(options.fs, options.quarantineRoot);
+  const parkedById = new Map(
+    parked.entries.map((entry) => [entry.incidentId, entry.retention.slot === 'parked' ? entry.retention.parked : []]),
+  );
   const parkingOnly = parked.entries.filter((entry) => !incidentIds.includes(entry.incidentId));
 
   return {
     incidents: [
       ...incidentIds.map((incidentId) =>
-        readListEntry(options.fs, options.quarantineRoot, incidentId, options.expectedBuild, ledger),
+        readListEntry(
+          options.fs,
+          options.quarantineRoot,
+          incidentId,
+          options.expectedBuild,
+          ledger,
+          parkedById.get(incidentId),
+        ),
       ),
       ...parkingOnly,
     ].sort(compareEntries),
     truncated: truncated || parked.truncated,
+    parkingRootState: parked.state,
     discarded: ledger?.discarded ?? null,
   };
 }

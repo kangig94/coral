@@ -50,6 +50,7 @@ class MemoryInspectionFs implements StoreResetInspectionFs {
   readonly entries = new Map<string, string[]>();
   readonly files = new Map<string, Uint8Array>();
   readonly stats = new Map<string, StoreResetInspectionStat>();
+  readonly realpaths = new Map<string, string>();
   closeDirectoryFails = false;
 
   lstat(path: string): StoreResetInspectionStat | null {
@@ -64,7 +65,7 @@ class MemoryInspectionFs implements StoreResetInspectionFs {
   }
 
   realpath(path: string): string {
-    return path;
+    return this.realpaths.get(path) ?? path;
   }
 
   openDirectory(path: string): StoreResetDirectoryCursor {
@@ -177,6 +178,7 @@ describe('store reset incident listing', () => {
     expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
       incidents: [],
       truncated: false,
+      parkingRootState: 'absent',
       discarded: null,
     });
   });
@@ -188,6 +190,7 @@ describe('store reset incident listing', () => {
     expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
       incidents: [],
       truncated: true,
+      parkingRootState: 'absent',
       discarded: null,
     });
   });
@@ -201,6 +204,7 @@ describe('store reset incident listing', () => {
       expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
         incidents: [],
         truncated: false,
+        parkingRootState: 'absent',
         discarded: null,
       });
     },
@@ -261,6 +265,8 @@ describe('store reset incident listing', () => {
         cause: 'intruder',
         incidentId: null,
         names: ['store.db-wal'],
+        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
+        transaction: null,
         classification: 'corrupt-or-unsupported',
       }),
     );
@@ -277,13 +283,37 @@ describe('store reset incident listing', () => {
         evidenceBytes: 'unknown',
         retention: {
           slot: 'parked',
-          parked: ['store.db-wal'],
+          parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
           cause: 'intruder',
           classification: 'corrupt-or-unsupported',
         },
         storedProductVersion: 'unknown',
       },
     ]);
+  });
+
+  it.each(['file', 'symbolic-link'] as const)('describes a %s parking root as unsafe', (kind) => {
+    const fs = new MemoryInspectionFs();
+    fs.addRoot(['.parked']);
+    fs.stats.set(join(ROOT, '.parked'), stat(kind));
+
+    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toMatchObject({
+      incidents: [],
+      parkingRootState: 'unsafe',
+    });
+  });
+
+  it('describes a parking root that escapes quarantine as unsafe', () => {
+    const fs = new MemoryInspectionFs();
+    const parkingRoot = join(ROOT, '.parked');
+    fs.addRoot(['.parked']);
+    fs.stats.set(parkingRoot, stat('directory'));
+    fs.realpaths.set(parkingRoot, '/outside/parked');
+
+    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toMatchObject({
+      incidents: [],
+      parkingRootState: 'unsafe',
+    });
   });
 
   it('returns only fixed states for malformed and mixed-build incidents', () => {
@@ -331,8 +361,28 @@ describe('store reset incident listing', () => {
   it('projects additive retention fields without deriving the stored version from the manifest', () => {
     const incidentId = '123e4567-e89b-42d3-a456-426614174000';
     const fs = new MemoryInspectionFs();
-    fs.addRoot([STORE_RESET_RETENTION_LEDGER_FILE_NAME, incidentId]);
+    fs.addRoot([STORE_RESET_RETENTION_LEDGER_FILE_NAME, incidentId, '.parked']);
     fs.addIncident(incidentId, manifest(incidentId, '2026-07-22T01:02:03.004Z'));
+    const parkingRoot = join(ROOT, '.parked');
+    const parkingDirectory = join(parkingRoot, incidentId);
+    fs.stats.set(parkingRoot, stat('directory'));
+    fs.entries.set(parkingRoot, [incidentId]);
+    fs.stats.set(parkingDirectory, stat('directory'));
+    fs.addFile(
+      join(parkingDirectory, 'parked.v1.json'),
+      JSON.stringify({
+        version: STORE_RESET_PARKED_SIDECAR_VERSION,
+        parkingId: incidentId,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'terminal',
+        cause: 'intruder',
+        incidentId,
+        names: ['store.db-wal'],
+        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
+        transaction: null,
+        classification: null,
+      }),
+    );
     fs.addFile(
       join(ROOT, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
       JSON.stringify({
@@ -376,6 +426,7 @@ describe('store reset incident listing', () => {
           coherence: 'torn',
         },
         resumeLeftActive: true,
+        parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
       },
       storedProductVersion: '0.9.15',
       evidenceBytes: 17,

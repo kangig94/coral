@@ -79,7 +79,7 @@ function parked(entry: StoreResetIncidentListResult['incidents'][number]): strin
     ? 'unknown'
     : entry.retention.parked.length === 0
       ? 'none'
-      : entry.retention.parked.join(',');
+      : entry.retention.parked.map((parkedEntry) => `${parkedEntry.name} (${parkedEntry.kind})`).join(',');
 }
 
 function discarded(result: StoreResetIncidentListResult): string {
@@ -94,6 +94,21 @@ function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
         'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>',
       ]
     : [];
+}
+
+function parkingRootStatus(result: StoreResetIncidentListResult): readonly string[] {
+  switch (result.parkingRootState) {
+    case undefined:
+    case 'absent':
+    case 'ready':
+      return [];
+    case 'unsafe':
+      return ['Parking root: unsafe; parked evidence could not be listed.'];
+    case 'unavailable':
+      return ['Parking root: unavailable; parked evidence could not be listed.'];
+    default:
+      return assertNever(result.parkingRootState);
+  }
 }
 
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
@@ -157,6 +172,7 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
   if (result.incidents.length === 0) {
     return [
       `No ${target} store-reset incidents.`,
+      ...parkingRootStatus(result),
       discarded(result),
       ...(result.truncated
         ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
@@ -172,14 +188,21 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
         ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`
         : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
+    ...parkingRootStatus(result),
     '',
     discarded(result),
     ...(result.truncated
       ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
       : []),
     'States: ready produces a Markdown report; parked is owned evidence awaiting release; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
-    `Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`,
-    'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.',
+    ...(result.incidents.some((incident) => incident.state === 'ready')
+      ? [`Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`]
+      : []),
+    ...(result.incidents.some((incident) => incident.state !== 'ready' && incident.retention.slot !== 'parked')
+      ? [
+          'For a non-ready committed incident, run the report command with its ID and paste the fixed error output into the issue form.',
+        ]
+      : []),
     'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.',
     'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.',
     ...releaseInstruction(target),
@@ -200,6 +223,10 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
     case 'parked': {
       const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
       return `Released parked store-reset evidence '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+    }
+    case 'partially-released': {
+      const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
+      return `Partially released store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}: parked evidence was removed with ${result.parkingDurability} durability, but the committed incident remains (${result.cause}). Retry this release command to remove the remaining incident.`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;

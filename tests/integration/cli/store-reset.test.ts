@@ -306,7 +306,7 @@ describe('local store-reset operations', () => {
       createDiagnosticRunner,
     });
 
-    expect(result).toEqual({ incidents: [], truncated: false, discarded: null });
+    expect(result).toEqual({ incidents: [], truncated: false, parkingRootState: 'absent', discarded: null });
     expect(createDiagnosticRunner).not.toHaveBeenCalled();
   });
 
@@ -523,6 +523,7 @@ describe('local store-reset operations', () => {
     expect(listStoreResetIncidentsLocal('gen2', targetedDependencies)).toEqual({
       incidents: [],
       truncated: false,
+      parkingRootState: 'absent',
       discarded: null,
     });
     await expect(reportStoreResetIncidentLocal('legacy', INCIDENT_ID, targetedDependencies)).resolves.toMatchObject({
@@ -854,6 +855,54 @@ describe('operator store-reset discard', () => {
     );
   });
 
+  it('reports the destructive partial state when parking is removed but incident removal fails', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const discarded = await discardStoreReset({
+      target: 'gen2',
+      runtime,
+      build: CURRENT_BUILD,
+      storeFormat: STORE_FORMAT,
+      acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
+    });
+    if (discarded.kind !== 'discarded' || discarded.incident === null) {
+      throw new Error('Expected a committed store-reset incident.');
+    }
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
+    const parkingPath = join(quarantineRoot, '.parked', discarded.incident.incidentId);
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db-wal'), 'kept replacement');
+    const rm = runtime.storage.rmSync;
+    vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+      if (path === incidentPath) throw Object.assign(new Error('incident remove failed'), { code: 'EIO' });
+      rm(path, options);
+    });
+
+    const result = await releaseStoreReset({
+      target: 'gen2',
+      runtime,
+      incidentId: discarded.incident.incidentId,
+    });
+
+    expect(result).toMatchObject({
+      kind: 'partially-released',
+      parkingDurability: 'proven',
+      cause: 'incident remove failed',
+    });
+    expect(existsSync(parkingPath)).toBe(false);
+    expect(existsSync(incidentPath)).toBe(true);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.incidentId).toBe(
+      discarded.incident.incidentId,
+    );
+  });
+
   it('releases a holder with an unreadable manifest and clears its preserved record', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
@@ -1113,6 +1162,34 @@ describe('backend store-reset commands', () => {
     expect(stdout).toBe('');
     expect(stderr).toContain(`Released parked store-reset evidence '${INCIDENT_ID}'`);
     expect(stderr).toContain('deletion durability unproven');
+    expect(process.exitCode).toBe(75);
+  });
+
+  it('reports a partial release as destructive and retryable', async () => {
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [], truncated: false, discarded: null }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: async (_target, flavor, incidentId) => ({
+        kind: 'partially-released',
+        target: 'gen2',
+        flavor,
+        incidentId,
+        evidenceBytes: 42,
+        parkingDurability: 'proven',
+        cause: 'incident remove failed',
+      }),
+    };
+
+    await runCommand(
+      ['backend', 'store-reset', 'release', INCIDENT_ID, '--target', 'gen2', '--flavor', 'prod'],
+      operations,
+    );
+
+    expect(stdout).toBe('');
+    expect(stderr).toContain(`Partially released store-reset incident '${INCIDENT_ID}'`);
+    expect(stderr).toContain('parked evidence was removed');
+    expect(stderr).toContain('Retry this release command');
     expect(process.exitCode).toBe(75);
   });
 
@@ -1475,7 +1552,7 @@ describe('backend store-reset commands', () => {
             retention: {
               slot: 'claimed',
               preservation: { kind: 'linked', coherence: 'coherent' },
-              parked: ['store.db-wal'],
+              parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
               resumeLeftActive: false,
             },
             storedProductVersion: '0.9.15',
@@ -1501,11 +1578,10 @@ describe('backend store-reset commands', () => {
 
     await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], operations);
     expect(stdout).toBe(
-      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked (coherent) | store.db-wal | no | 0.9.15\n\n` +
+      `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Evidence bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | claimed | linked (coherent) | store.db-wal (regular-file) | no | 0.9.15\n\n` +
         'Discarded descendant evidence: none.\n' +
         'States: ready produces a Markdown report; parked is owned evidence awaiting release; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
-        'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
         'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n' +
         'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.\n' +
         'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
@@ -1624,5 +1700,58 @@ describe('backend store-reset commands', () => {
     expect(stdout).toContain('store-reset release --target gen2');
     expect(stderr).toBe('');
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('does not direct a parking-only row to the committed-incident report command', async () => {
+    await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], {
+      list: () => ({
+        incidents: [
+          {
+            incidentId: INCIDENT_ID,
+            state: 'parked',
+            resetAt: null,
+            reason: null,
+            schemaVersion: null,
+            resetPolicyCause: null,
+            fileCount: null,
+            retention: {
+              slot: 'parked',
+              parked: [{ name: 'store.db', kind: 'directory', sizeBytes: 0 }],
+              cause: 'intruder',
+              classification: null,
+            },
+            storedProductVersion: 'unknown',
+            evidenceBytes: 'unknown',
+          },
+        ],
+        truncated: false,
+        parkingRootState: 'ready',
+        discarded: null,
+      }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: operationsRelease,
+    });
+
+    expect(stdout).toContain('store.db (directory)');
+    expect(stdout).not.toContain('store-reset report');
+    expect(stdout).toContain('store-reset release');
+  });
+
+  it('renders an unsafe parking root instead of an empty parking result', async () => {
+    await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], {
+      list: () => ({
+        incidents: [],
+        truncated: false,
+        parkingRootState: 'unsafe',
+        discarded: null,
+      }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: operationsRelease,
+    });
+
+    expect(stdout).toContain('Parking root: unsafe; parked evidence could not be listed.');
+    expect(stdout).not.toBe('No gen2 store-reset incidents.');
   });
 });

@@ -569,6 +569,11 @@ function expectInjectedReplacementConserved(
   expect(containsIdentity(dirname(dbPath), identity)).toBe(true);
 }
 
+function expectReturnedHandleTargetsActiveStore(db: { exec(sql: string): unknown }, dbPath: string): void {
+  db.exec('CREATE TABLE returned_handle_identity_probe (id INTEGER PRIMARY KEY)');
+  expect(tableExists(dbPath, 'returned_handle_identity_probe')).toBe(true);
+}
+
 async function exerciseActiveEvidenceArm(
   arm: ActiveEvidenceArm,
   mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation },
@@ -590,6 +595,7 @@ async function exerciseActiveEvidenceArm(
     );
     const db = await openReset(trace.runtime, dbPath);
     trace.stop();
+    expectReturnedHandleTargetsActiveStore(db, dbPath);
     const injectedIdentity = trace.injectedIdentity();
     if (injectedIdentity !== null && mutation?.kind === 'replaced') {
       expectInjectedReplacementConserved(dbPath, injectedIdentity);
@@ -609,6 +615,7 @@ async function exerciseActiveEvidenceArm(
     );
     const db = await openReset(trace.runtime, dbPath, { kind: 'unproven', reason: 'writer-live', blockers: 'resume' });
     trace.stop();
+    expectReturnedHandleTargetsActiveStore(db, dbPath);
     const injectedIdentity = trace.injectedIdentity();
     if (injectedIdentity !== null && mutation?.kind === 'replaced') {
       expectInjectedReplacementConserved(dbPath, injectedIdentity);
@@ -631,6 +638,7 @@ async function exerciseActiveEvidenceArm(
     arm === 'link' ? writerExclusion() : { kind: 'unproven', reason: 'writer-live', blockers: 'active-evidence sweep' },
   );
   trace.stop();
+  expectReturnedHandleTargetsActiveStore(db, dbPath);
   const injectedIdentity = trace.injectedIdentity();
   if (injectedIdentity !== null && mutation?.kind === 'replaced') {
     expectInjectedReplacementConserved(dbPath, injectedIdentity);
@@ -2017,6 +2025,155 @@ describe('openOrResetBackendStoreDb', () => {
     expect(replaced).toBe(true);
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
     expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
+  });
+
+  it.each(['publication', 'claim'] as const)(
+    'records a non-regular occupant parked by the %s arm and still boots',
+    async (arm) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot(`coral-store-${arm}-non-regular-`);
+      const dbPath = join(root, 'store.db');
+      createMismatchStore(dbPath);
+      let injected = false;
+
+      if (arm === 'publication') {
+        const renameSync = runtime.storage.renameSync;
+        vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+          if (source === dbPath && String(destination).includes(`${join('store-reset-quarantine', '.parked')}`)) {
+            rmSync(dbPath);
+            mkdirSync(dbPath);
+            injected = true;
+          }
+          renameSync(source, destination);
+        });
+      } else {
+        const linkSync = runtime.storage.linkSync;
+        vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+          if (
+            !injected &&
+            destination === dbPath &&
+            String(source).includes(`${join('store-reset-quarantine', '.minted')}`)
+          ) {
+            mkdirSync(dbPath);
+            injected = true;
+          }
+          linkSync(source, destination);
+        });
+      }
+
+      const db = await openReset(runtime, dbPath);
+      db.close();
+
+      expect(injected).toBe(true);
+      const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+      const records = readdirSync(parkingRoot)
+        .filter(isCanonicalStoreResetIncidentId)
+        .map((parkingId) =>
+          JSON.parse(readFileSync(join(parkingRoot, parkingId, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 'utf-8')),
+        ) as Array<{ entries?: unknown }>;
+      expect(records).toEqual([
+        expect.objectContaining({
+          entries: [expect.objectContaining({ name: 'store.db', kind: 'directory' })],
+        }),
+      ]);
+    },
+  );
+
+  it('resumes a claim transaction interrupted after parking renamed the occupant', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-claim-parking-resume-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const linkSync = runtime.storage.linkSync;
+    let injected = false;
+    vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+      if (
+        !injected &&
+        destination === dbPath &&
+        String(source).includes(`${join('store-reset-quarantine', '.minted')}`)
+      ) {
+        createIncompatibleSentinelStore(dbPath, 91);
+        injected = true;
+      }
+      linkSync(source, destination);
+    });
+    const renameSync = runtime.storage.renameSync;
+    const lstatSync = runtime.storage.lstatSync;
+    let parkedPath: string | null = null;
+    let interrupted = false;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+      renameSync(source, destination);
+      if (
+        injected &&
+        source === dbPath &&
+        String(destination).includes(`${join('store-reset-quarantine', '.parked')}`)
+      ) {
+        parkedPath = String(destination);
+      }
+    });
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      if (!interrupted && options?.bigint === true && path === parkedPath) {
+        interrupted = true;
+        throw errno('EIO');
+      }
+      return options?.bigint === true ? lstatSync(path, { bigint: true }) : lstatSync(path);
+    }) as Runtime['storage']['lstatSync']);
+
+    expect(await captureAsyncError(() => openReset(runtime, dbPath))).not.toBeNull();
+    expect(interrupted).toBe(true);
+    vi.restoreAllMocks();
+
+    const db = await openReset(runtime, dbPath);
+    expectReturnedHandleTargetsActiveStore(db, dbPath);
+    db.close();
+    const listed = listStoreResetIncidents({
+      fs: createStoreResetInspectionFs(),
+      quarantineRoot: join(root, 'store-reset-quarantine'),
+      expectedBuild: buildIdentity(),
+    });
+    expect(
+      listed.incidents.some((entry) => entry.state === 'parked'),
+      JSON.stringify(listed),
+    ).toBe(true);
+  });
+
+  it('resumes a discard transaction interrupted after parking renamed the descendant', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-discard-parking-resume-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const first = await openReset(runtime, dbPath);
+    first.close();
+    rmSync(dbPath);
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+    const renameSync = runtime.storage.renameSync;
+    const lstatSync = runtime.storage.lstatSync;
+    let parkedPath: string | null = null;
+    let interrupted = false;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+      renameSync(source, destination);
+      if (source === dbPath && String(destination).includes(`${join('store-reset-quarantine', '.parked')}`)) {
+        parkedPath = String(destination);
+      }
+    });
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      if (!interrupted && options?.bigint === true && path === parkedPath) {
+        interrupted = true;
+        throw errno('EIO');
+      }
+      return options?.bigint === true ? lstatSync(path, { bigint: true }) : lstatSync(path);
+    }) as Runtime['storage']['lstatSync']);
+
+    expect(await captureAsyncError(() => openReset(runtime, dbPath))).not.toBeNull();
+    expect(interrupted).toBe(true);
+    vi.restoreAllMocks();
+
+    const db = await openReset(runtime, dbPath);
+    expectReturnedHandleTargetsActiveStore(db, dbPath);
+    db.close();
+    const ledger = readStoreResetRetentionLedger(runtime.storage, join(root, 'store-reset-quarantine'));
+    expect(ledger?.pending).toBeNull();
+    expect(ledger?.discarded?.count).toBe(1);
   });
 
   it.each([1, 2, 3, 5])('boots after an adversary lands %i incompatible store epochs', async (epochCount) => {
