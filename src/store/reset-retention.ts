@@ -192,11 +192,14 @@ export type StoreResetReleaseResult =
       readonly kind: 'partially-released';
       readonly incidentId: string;
       readonly evidenceBytes: number | null;
-      readonly parkingDurability: 'proven' | 'unproven';
+      readonly parkingState: 'absent' | 'present' | 'undeterminable';
+      readonly incidentState: 'absent' | 'present' | 'undeterminable';
+      readonly durability: 'proven' | 'unproven';
       readonly cause: string;
     }
   | { readonly kind: 'absent'; readonly incidentId: string }
   | { readonly kind: 'staged'; readonly incidentId: string }
+  | { readonly kind: 'in-flight'; readonly incidentId: string }
   | { readonly kind: 'unsafe'; readonly incidentId: string }
   | { readonly kind: 'undeterminable'; readonly incidentId: string };
 
@@ -946,6 +949,7 @@ export function releaseStoreResetIncident(
   }
   const parkedRecord =
     parkingPresence === 'present' ? readStoreResetParkedRecord(storage, parkingRoot, incidentId) : null;
+  if (parkedRecord?.phase === 'in-flight') return { kind: 'in-flight', incidentId };
   const incidentPath = join(quarantineRoot, incidentId);
   const incidentPresence = pathPresence(storage, incidentPath);
   if (incidentPresence === 'absent' && parkingPresence === 'absent') return { kind: 'absent', incidentId };
@@ -973,7 +977,22 @@ export function releaseStoreResetIncident(
         }, 0)
       : null;
   const evidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? parkedEvidenceBytes;
-  if (parkingPresence === 'present') storage.rmSync(parkingPath, { recursive: true });
+  const incomplete = (error: unknown, durable = false): StoreResetReleaseResult => ({
+    kind: 'partially-released',
+    incidentId,
+    evidenceBytes,
+    parkingState: pathPresence(storage, parkingPath),
+    incidentState: pathPresence(storage, incidentPath),
+    durability: durable ? 'proven' : 'unproven',
+    cause: error instanceof Error ? error.message : String(error),
+  });
+  if (parkingPresence === 'present') {
+    try {
+      storage.rmSync(parkingPath, { recursive: true });
+    } catch (error: unknown) {
+      return incomplete(error);
+    }
+  }
   let parkingDurable = parkingPresence === 'absent';
   if (parkingPresence === 'present') {
     try {
@@ -986,29 +1005,29 @@ export function releaseStoreResetIncident(
     try {
       storage.rmSync(incidentPath, { recursive: true });
     } catch (error: unknown) {
-      if (parkingPresence === 'present') {
-        return {
-          kind: 'partially-released',
-          incidentId,
-          evidenceBytes,
-          parkingDurability: parkingDurable ? 'proven' : 'unproven',
-          cause: error instanceof Error ? error.message : String(error),
-        };
-      }
-      return { kind: 'undeterminable', incidentId };
+      return incomplete(error, parkingDurable);
     }
   }
-  const quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
+  let quarantineDurable = false;
+  try {
+    quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
+  } catch {
+    quarantineDurable = false;
+  }
   const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
   const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const clearsPending =
     slot.ledger.pending?.outcome.kind === 'preserve' && slot.ledger.pending.outcome.incident.incidentId === incidentId;
   if (clearsHolder || clearsPending) {
-    writeLedger(storage, quarantineRoot, {
-      ...slot.ledger,
-      ...(clearsHolder ? { preserved: null } : {}),
-      ...(clearsPending ? { pending: null } : {}),
-    });
+    try {
+      writeLedger(storage, quarantineRoot, {
+        ...slot.ledger,
+        ...(clearsHolder ? { preserved: null } : {}),
+        ...(clearsPending ? { pending: null } : {}),
+      });
+    } catch (error: unknown) {
+      return incomplete(error);
+    }
   }
   if (holder) {
     return {

@@ -194,7 +194,7 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     ...(result.truncated
       ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
       : []),
-    'States: ready produces a Markdown report; parked is owned evidence awaiting release; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
+    'States: ready produces a Markdown report; parked is owned evidence awaiting release; in-flight is a crash-recovery transaction; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
     ...(result.incidents.some((incident) => incident.state === 'ready')
       ? [`Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`]
       : []),
@@ -226,12 +226,14 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
     }
     case 'partially-released': {
       const evidence = result.evidenceBytes === null ? 'evidence size unavailable' : `${result.evidenceBytes} bytes`;
-      return `Partially released store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}: parked evidence was removed with ${result.parkingDurability} durability, but the committed incident remains (${result.cause}). Retry this release command to remove the remaining incident.`;
+      return `Partially released store-reset incident '${result.incidentId}' (${evidence}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}, and deletion durability is ${result.durability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;
     case 'staged':
       return `Store-reset incident '${result.incidentId}' is staged and belongs to crash recovery; no evidence was released. Start Coral and let crash recovery finish, then retry.`;
+    case 'in-flight':
+      return `Store-reset incident '${result.incidentId}' is an in-flight crash-recovery transaction; no evidence was released. Start Coral and let crash recovery finish, then retry.`;
     case 'unsafe':
       return `Store-reset incident '${result.incidentId}' is behind an unsafe quarantine path; no evidence was released and the preserved slot is unchanged.`;
     case 'undeterminable':

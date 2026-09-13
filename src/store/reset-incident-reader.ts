@@ -56,7 +56,14 @@ type StoreResetIncidentListBase =
     }
   | {
       readonly incidentId: string;
-      readonly state: 'parked' | 'malformed' | 'unsupported' | 'build_mismatch' | 'unsafe' | 'unavailable';
+      readonly state:
+        | 'parked'
+        | 'in-flight'
+        | 'malformed'
+        | 'unsupported'
+        | 'build_mismatch'
+        | 'unsafe'
+        | 'unavailable';
       readonly resetAt: null;
       readonly reason: null;
       readonly schemaVersion: null;
@@ -76,6 +83,7 @@ export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
         readonly parked: readonly StoreResetParkedEntry[];
         readonly cause: 'publication' | 'discard' | 'intruder' | 'residual';
         readonly classification: string | null;
+        readonly phase: 'in-flight' | 'terminal';
       }
     | { readonly slot: 'unknown' };
   readonly storedProductVersion: string | null | 'unknown';
@@ -348,8 +356,10 @@ function readParkedListEntries(
     entries: parkingIds.map((parkingId) => {
       const parkingPath = join(parkingRoot, parkingId);
       const parkingStat = fs.lstat(parkingPath);
-      let state: Extract<StoreResetIncidentListEntry['state'], 'parked' | 'malformed' | 'unsafe' | 'unavailable'> =
-        'parked';
+      let state: Extract<
+        StoreResetIncidentListEntry['state'],
+        'parked' | 'in-flight' | 'malformed' | 'unsafe' | 'unavailable'
+      > = 'parked';
       let record: ReturnType<typeof parseStoreResetParkedRecord> = null;
       if (parkingStat?.kind !== 'directory') {
         state = parkingStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed';
@@ -368,7 +378,11 @@ function readParkedListEntries(
                   readBoundedFileBytes(fs, sidecarPath, sidecarStat, MAX_RESET_PARKED_SIDECAR_BYTES),
                 ).toString('utf-8'),
               );
-              if (record?.parkingId !== parkingId) state = 'malformed';
+              if (record?.parkingId !== parkingId) {
+                state = 'malformed';
+              } else if (record.phase === 'in-flight') {
+                state = 'in-flight';
+              }
             }
           }
         } catch (error: unknown) {
@@ -391,6 +405,7 @@ function readParkedListEntries(
                 parked: record.entries,
                 cause: record.cause,
                 classification: record.classification,
+                phase: record.phase,
               },
         storedProductVersion: 'unknown' as const,
         evidenceBytes: 'unknown' as const,
