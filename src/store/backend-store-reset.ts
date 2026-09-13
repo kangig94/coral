@@ -1797,17 +1797,24 @@ function retireNonResumableFixedParking(
   }
   let parkingId = fixed.record?.parkingId ?? runtime.ids.uuid();
   while (runtime.storage.existsSync(join(parkingRoot, parkingId))) parkingId = runtime.ids.uuid();
-  terminalizeParking(
+  const names = observedStoreResetEvidenceNames(runtime.storage, fixedDirectory);
+  writeStoreResetParkedRecord(
     runtime.storage,
     parkingRoot,
     {
       ...(fixed.record ?? terminalParkingRecord(runtime, parkingId, 'residual', [], null)),
       parkingId,
+      phase: 'terminal',
+      cause: 'residual',
+      incidentId: fixed.record?.incidentId ?? null,
+      names,
+      entries: describeParkedEntries(runtime.storage, fixedDirectory, names),
+      transaction: null,
     },
-    'residual',
-    fixed.record?.incidentId ?? null,
     STORE_RESET_IN_FLIGHT_DIRECTORY,
   );
+  runtime.storage.renameSync(fixedDirectory, join(parkingRoot, parkingId));
+  requireDirectorySync(runtime.storage, parkingRoot);
   return true;
 }
 
