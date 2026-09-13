@@ -151,7 +151,7 @@ function fakeDatabase(): Database {
   return { exec: vi.fn(), close: vi.fn() } as unknown as Database;
 }
 
-// `classifyStoreFile`/`openStoreDatabase`/`writeAuditEvent` have no production-supplied override, so tests
+// `classifyStoreFile`/`openWritableStoreDatabase`/`writeAuditEvent` have no production-supplied override, so tests
 // reach them the same way production does — by spying on the real module — rather than widening the
 // operator dependency type with test-only injection seams.
 function stubStoreOpen(
@@ -160,7 +160,10 @@ function stubStoreOpen(
 ): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
   return {
     classifyStore: vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue(classification),
-    openStore: vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => database),
+    openStore: vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation(({ path }) => {
+      if (!existsSync(path)) writeFileSync(path, '');
+      return { kind: 'opened', db: database };
+    }),
   };
 }
 
@@ -495,7 +498,7 @@ describe('active-store-selection crash cuts', () => {
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
 
-  it('should continue when parking cannot move an observed active name', async () => {
+  it('should refuse a non-EEXIST failure while parking an observed active name, then resume', async () => {
     const { runtime, currentSelection, authority } = harness();
     createVersionedStore(runtime, '99.0.0');
     const originalRename = runtime.storage.renameSync.bind(runtime.storage);
@@ -508,15 +511,23 @@ describe('active-store-selection crash cuts', () => {
       originalRename(source, destination);
     };
 
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: startupDependencies(),
+      }),
+    ).rejects.toMatchObject({ code: 'store_reset_quarantine_failed' });
+    runtime.storage.renameSync = originalRename;
+
     const result = await coordinateActiveStoreSelection(runtime, authority, {
       storeFormat: currentCoralStoreFormat(),
       currentSelection,
       dependencies: startupDependencies(),
     });
-    runtime.storage.renameSync = originalRename;
     expect(result.kind).toBe('opened');
     if (result.kind === 'opened') {
-      expect(result.publications).toHaveLength(2);
+      expect(result.publications).toHaveLength(1);
       result.db.close();
     }
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(false);
@@ -525,7 +536,7 @@ describe('active-store-selection crash cuts', () => {
 
   it('should resume after initialization/open fails and after open succeeds before transition clear', async () => {
     for (const cut of ['open', 'transition-clear'] as const) {
-      // Each iteration reaches this test's shared `classifyStoreFile`/`openStoreDatabase` spies fresh: the
+      // Each iteration reaches this test's shared `classifyStoreFile`/`openWritableStoreDatabase` spies fresh: the
       // 'transition-clear' iteration relies on real classification, so a prior iteration's mock must not
       // survive into it.
       vi.restoreAllMocks();
@@ -534,7 +545,7 @@ describe('active-store-selection crash cuts', () => {
       const originalUnlink = runtime.storage.unlinkSync.bind(runtime.storage);
       if (cut === 'open') {
         stubStoreOpen();
-        vi.spyOn(dbModule, 'openStoreDatabase').mockImplementation(() => {
+        vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation(() => {
           throw new Error('crash:open');
         });
       }
