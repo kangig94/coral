@@ -962,6 +962,71 @@ retaining it as terminal evidence — and returns no parked epoch for it.
 **The database handle must be closed on every failure after it opens.** Cleanup failures after the open
 throw with the handle live, and the caller cannot close it because the assignment happens only on return.
 
+## Revision 7 — a number instead of a hope
+
+Round six produced an eighth instance and, more usefully, a measurement. The semantic-throw guard was
+implemented as a snapshot: it accepts **142 semantic refusals** in the import-reachable closure and
+freezes their count and digest. Updating the digest blesses any new one, and the guard passes while three
+of the round's blocking findings remain reachable.
+
+**142 is the honest distance between this code and its own rule**, and driving it to zero is a better
+terminal condition than "the reviewers stopped finding things". Every round so far has ended when two
+readers ran out of ideas; this one can end when a number reaches zero.
+
+### Two findings are limits, not bugs, and their answers follow from the maxim
+
+**A hard link cannot be made immutable.** The maintenance lease drains *registered* writer leases; it
+cannot prove that no uncooperative process holds a writable descriptor. So an append during the post-park
+rehash raises a mutation error that becomes `store_reset_quarantine_failed`, and an append *after* the
+rehash leaves a committed manifest that no longer describes its own evidence — staging validation checks
+entry names and count, not digests. The link arm's premise is therefore false in general. **Describing
+linked evidence must be tolerant — `torn`, never a throw — and a manifest may only claim what a separate
+inode guarantees.**
+
+**A writable SQLite handle cannot prove its inode before opening.** `DatabaseSync` opens by path, and
+`openWritableStoreDatabase` applies schema, pragmas and version metadata *before* any identity check — so
+a foreign actor who replaces `store.db` with a symlink to an external file between the link and the open
+gets that file mutated by us, outside our owned namespace, with no undo. The answer is the maxim taken to
+its conclusion: **open only owned paths.** Mint and open inside the owned directory, then `link` the
+already-proven inode into place. The shared name is touched by `rename` and `link` and by nothing else —
+not even by an open.
+
+### The rest of round six
+
+**The sidecar-before-first-rename rule is violated by the code that recovers minted stores**: it renames
+`.minted/<id>` into `.parked/<id>` and syncs before writing `parked.v1.json`, so a crash in between
+strands a complete store whose record is malformed, which recovery skips forever. The rule is already in
+this document; apply it everywhere, and let an import-closure check assert that no rename into a parking
+directory precedes its sidecar.
+
+**`list` and `release` must agree about every parking state.** Discovery distinguishes `parked`,
+`in-flight`, `malformed`, `unsafe` and `unavailable`, and the final merge then reduces a same-id row to
+its entries and suppresses it entirely when a committed incident shares the id. Release, meanwhile,
+collapses absent, malformed and unreadable sidecars to one value and blocks only a successfully parsed
+in-flight record — so a malformed sidecar is deleted while reporting `not-holder` with proven durability.
+Reproduced by a reviewer. **An unreadable record is not a terminal one**, and the operator surface must
+show everything an irreversible release can remove, with incident and parking bytes reported separately.
+
+**A second crash during pre-manifest recovery must not brick the next boot.** Recovery deletes the
+staging directory before terminalizing the parking record, so a crash between them leaves an in-flight
+sidecar that makes the next boot assume a commit, resolve a directory that never existed, and refuse
+permanently. Terminalize the transaction durably **before** deleting its last witness.
+
+**The in-flight transaction needs a fixed coordinate separate from terminal evidence.** The parking scan
+bound is currently converted into `store_reset_interrupted_ambiguous` — the eighth instance — and the
+change itself produces the state that reaches it, because every raced claim epoch and every interrupted
+mint leaves a terminal parking directory that nothing reclaims. A bound on one scan is not a bound on
+accumulated evidence. Give the singleton in-flight transaction its own address, reuse one minted
+coordinate rather than minting UUID directories forever, and make the scan's truncation a disposition
+rather than a refusal.
+
+### The guard becomes the measure
+
+Replace the snapshot with the count. The invariant asserts that the import-reachable closure from the
+settlement entry contains **zero** semantic refusals — every `throw` is a rethrow of an unmapped errno —
+and until that is true it asserts a ratchet: the number may only decrease. A digest that can be updated
+proves nothing; a number that may only fall cannot be satisfied by blessing.
+
 ## Invariants to add
 
 Superseded by Revision 3's own invariant list. The entries that stood here named
