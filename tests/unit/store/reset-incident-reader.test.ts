@@ -286,6 +286,7 @@ describe('store reset incident listing', () => {
           parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
           cause: 'intruder',
           classification: 'corrupt-or-unsupported',
+          phase: 'terminal',
         },
         storedProductVersion: 'unknown',
       },
