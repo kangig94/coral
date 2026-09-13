@@ -1200,6 +1200,110 @@ describe('openOrResetBackendStoreDb', () => {
     },
   );
 
+  it.each(['missing', 'malformed', 'unreadable'] as const)(
+    'removes a superseded incident whose manifest is %s',
+    (manifestState) => {
+      const runtime = createRuntime();
+      const dbPath = join(makeTempRoot(`coral-store-reset-unreadable-prior-${manifestState}-`), 'store.db');
+      createMismatchStore(dbPath);
+      const first = publishReset(runtime, dbPath);
+      if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const firstDirectory = join(quarantineRoot, first.incident.incidentId);
+      const manifestPath = join(firstDirectory, 'reset-manifest.json');
+      if (manifestState === 'missing') rmSync(manifestPath);
+      if (manifestState === 'malformed') writeFileSync(manifestPath, '{');
+      if (manifestState === 'unreadable') {
+        const readFileSync = runtime.storage.readFileSync;
+        vi.spyOn(runtime.storage, 'readFileSync').mockImplementation((path, options) => {
+          if (path === manifestPath) throw errno('EACCES');
+          return readFileSync(path, options);
+        });
+      }
+      createMismatchStore(dbPath);
+
+      const replacement = publishReset(runtime, dbPath);
+
+      expect(replacement.kind).toBe('preserved');
+      expect(existsSync(firstDirectory)).toBe(false);
+      expect(retainedIncidentNames(quarantineRoot)).toEqual([
+        replacement.kind === 'preserved' ? replacement.incident.incidentId : '',
+      ]);
+      vi.restoreAllMocks();
+    },
+  );
+
+  it('resumes cleanup after recursive deletion removes the prior manifest and then fails', async () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-reset-partial-prior-delete-'), 'store.db');
+    createMismatchStore(dbPath);
+    const first = publishReset(runtime, dbPath);
+    if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const firstDirectory = join(quarantineRoot, first.incident.incidentId);
+    const rm = runtime.storage.rmSync;
+    let interrupted = false;
+    vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+      if (!interrupted && path === firstDirectory) {
+        interrupted = true;
+        rm(join(firstDirectory, 'reset-manifest.json'));
+        throw errno('EIO');
+      }
+      rm(path, options);
+    });
+    createMismatchStore(dbPath);
+
+    expectSetupCode(
+      captureError(() => publishReset(runtime, dbPath)),
+      'store_reset_quarantine_failed',
+    );
+    expect(interrupted).toBe(true);
+    expect(existsSync(firstDirectory)).toBe(true);
+    expect(existsSync(join(firstDirectory, 'reset-manifest.json'))).toBe(false);
+    vi.restoreAllMocks();
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(existsSync(firstDirectory)).toBe(false);
+    const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+    expect(retainedIncidentNames(quarantineRoot)).toEqual([ledger?.preserved?.incidentId]);
+  });
+
+  it('finds superseded incidents beyond a bounded quarantine-root page', () => {
+    const runtime = createRuntime();
+    const dbPath = join(makeTempRoot('coral-store-reset-root-overflow-'), 'store.db');
+    createMismatchStore(dbPath);
+    const first = publishReset(runtime, dbPath);
+    if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const firstDirectory = join(quarantineRoot, first.incident.incidentId);
+    const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
+    const observedBounds: number[] = [];
+    vi.spyOn(runtime.storage, 'readDirectoryBoundedSync').mockImplementation((path, maxEntries) => {
+      if (path === quarantineRoot) {
+        observedBounds.push(maxEntries);
+        if (maxEntries === MAX_INCIDENT_ROOT_ENTRIES) {
+          return {
+            entries: ['.minted', '.parked', '.staging', STORE_RESET_RETENTION_LEDGER_FILE_NAME],
+            overflow: true,
+          };
+        }
+      }
+      return readDirectoryBoundedSync(path, maxEntries);
+    });
+    createMismatchStore(dbPath);
+
+    const replacement = publishReset(runtime, dbPath);
+
+    expect(replacement.kind).toBe('preserved');
+    expect(observedBounds.some((bound) => bound > MAX_INCIDENT_ROOT_ENTRIES)).toBe(true);
+    expect(existsSync(firstDirectory)).toBe(false);
+    expect(retainedIncidentNames(quarantineRoot)).toEqual([
+      replacement.kind === 'preserved' ? replacement.incident.incidentId : '',
+    ]);
+  });
+
   it('publishes a torn copy whose recorded evidence still verifies as a match', async () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-reset-torn-copy-'), 'store.db');
@@ -3054,6 +3158,43 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 
+  it.each(['absent', 'malformed', 'unreadable'] as const)(
+    'retires a fixed coordinate with an %s sidecar into releasable terminal evidence',
+    async (sidecarState) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot(`coral-store-fixed-retirement-${sidecarState}-`);
+      const dbPath = join(root, 'store.db');
+      createCompatibleSentinelStore(runtime, dbPath);
+      const quarantineRoot = join(root, 'store-reset-quarantine');
+      const parkingRoot = join(quarantineRoot, '.parked');
+      const fixedDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
+      mkdirSync(fixedDirectory, { recursive: true, mode: 0o700 });
+      writeFileSync(join(fixedDirectory, 'store.db-wal'), 'retired evidence');
+      const sidecarPath = join(fixedDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME);
+      if (sidecarState !== 'absent') writeFileSync(sidecarPath, '{');
+      if (sidecarState === 'unreadable') runtime.storage.chmodSync(sidecarPath, 0o000);
+
+      const db = await openReset(runtime, dbPath);
+      db.close();
+
+      expect(existsSync(fixedDirectory)).toBe(false);
+      const parkingIds = readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId);
+      expect(parkingIds).toHaveLength(1);
+      const parkingId = parkingIds[0];
+      expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, parkingId)).toMatchObject({
+        parkingId,
+        phase: 'terminal',
+        cause: 'residual',
+        names: ['store.db-wal'],
+        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength('retired evidence') }],
+      });
+      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId)).toMatchObject({
+        kind: 'parked',
+      });
+      expect(existsSync(join(parkingRoot, parkingId))).toBe(false);
+    },
+  );
+
   it('retains a non-regular sibling when adopting a compatible claim and reports its parked epoch', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-compatible-claim-sibling-');
@@ -3137,6 +3278,42 @@ describe('openOrResetBackendStoreDb', () => {
     });
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
+
+  it.each([STORE_RESET_MINTED_STORE_DIRECTORY, '323e4567-e89b-42d3-a456-426614174000'] as const)(
+    'parks an over-limit interrupted minted store at %s and still boots',
+    async (mintedId) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-minted-overflow-');
+      const dbPath = join(root, 'store.db');
+      const quarantineRoot = join(root, 'store-reset-quarantine');
+      const mintedRoot = join(quarantineRoot, '.minted');
+      const mintedDirectory = join(mintedRoot, mintedId);
+      mkdirSync(mintedDirectory, { recursive: true, mode: 0o700 });
+      createCompatibleSentinelStore(runtime, join(mintedDirectory, 'store.db'));
+      runtime.storage.linkSync(join(mintedDirectory, 'store.db'), dbPath);
+      for (let index = 0; index <= MAX_INCIDENT_DIR_ENTRIES; index += 1) {
+        writeFileSync(join(mintedDirectory, `extra-${index}`), 'minted evidence');
+      }
+
+      const db = await openReset(runtime, dbPath);
+      db.close();
+
+      expect(existsSync(mintedDirectory)).toBe(false);
+      const parkingRoot = join(quarantineRoot, '.parked');
+      const record = readdirSync(parkingRoot)
+        .filter(isCanonicalStoreResetIncidentId)
+        .map((parkingId) => readStoreResetParkedRecord(runtime.storage, parkingRoot, parkingId))
+        .find((candidate) => candidate?.names.includes('store.db'));
+      expect(record).toMatchObject({
+        phase: 'terminal',
+        cause: 'residual',
+        incidentId: null,
+        names: expect.arrayContaining(['store.db']),
+        classification: 'compatible',
+      });
+      expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+    },
+  );
 
   it('closes the claimed database and defers failed minted cleanup', async () => {
     const runtime = createRuntime();

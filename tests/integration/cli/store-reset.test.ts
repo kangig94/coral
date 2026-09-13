@@ -922,7 +922,8 @@ describe('operator store-reset discard', () => {
       kind: 'partially-released',
       parkingState: 'absent',
       incidentState: 'present',
-      durability: 'proven',
+      parkingDeletionDurability: 'proven',
+      incidentDeletionDurability: 'unproven',
       cause: 'incident remove failed',
     });
     expect(existsSync(parkingPath)).toBe(false);
@@ -977,7 +978,8 @@ describe('operator store-reset discard', () => {
       kind: 'partially-released',
       parkingState: 'present',
       incidentState: 'present',
-      durability: 'unproven',
+      parkingDeletionDurability: 'unproven',
+      incidentDeletionDurability: 'not-attempted',
       cause: 'parking remove failed',
     });
     expect(existsSync(parkedWal)).toBe(false);
@@ -1021,7 +1023,8 @@ describe('operator store-reset discard', () => {
       kind: 'partially-released',
       parkingState: 'absent',
       incidentState: 'present',
-      durability: 'proven',
+      parkingDeletionDurability: 'not-required',
+      incidentDeletionDurability: 'unproven',
       cause: 'incident-only remove failed',
     });
   });
@@ -1423,7 +1426,8 @@ describe('backend store-reset commands', () => {
         parkingEvidenceBytes: 0,
         parkingState: 'absent',
         incidentState: 'present',
-        durability: 'proven',
+        parkingDeletionDurability: 'proven',
+        incidentDeletionDurability: 'unproven',
         cause: 'incident remove failed',
       }),
     };
@@ -1436,6 +1440,7 @@ describe('backend store-reset commands', () => {
     expect(stdout).toBe('');
     expect(stderr).toContain(`Partially released store-reset incident '${INCIDENT_ID}'`);
     expect(stderr).toContain('parking is absent, incident is present');
+    expect(stderr).toContain('parking deletion durability is proven; incident deletion durability is unproven');
     expect(stderr).toContain('Retry this release command');
     expect(process.exitCode).toBe(75);
   });

@@ -167,7 +167,8 @@ export type StoreResetReleaseResult =
       readonly parkingEvidenceBytes: number | null;
       readonly parkingState: 'absent' | 'present' | 'undeterminable';
       readonly incidentState: 'absent' | 'present' | 'undeterminable';
-      readonly durability: 'proven' | 'unproven';
+      readonly parkingDeletionDurability: StoreResetDeletionDurability;
+      readonly incidentDeletionDurability: StoreResetDeletionDurability;
       readonly cause: string;
     }
   | { readonly kind: 'absent'; readonly incidentId: string }
@@ -180,6 +181,8 @@ export type StoreResetReleasePresentation = StoreResetReleaseResult & {
   readonly target: 'gen2';
   readonly flavor: BuildFlavor;
 };
+
+type StoreResetDeletionDurability = 'not-required' | 'not-attempted' | 'proven' | 'unproven';
 
 function emptyLedger(): StoreResetRetentionLedger {
   return {
@@ -643,21 +646,33 @@ function withPreservedOutcome(
   return { ...ledger, pending: null, preserved: incident };
 }
 
-function removeOtherCommittedIncidents(storage: StoragePort, quarantineRoot: string, incidentId: string): boolean {
+function removeOtherIncidentDirectories(storage: StoragePort, quarantineRoot: string, incidentId: string): boolean {
+  let readLimit = MAX_INCIDENT_ROOT_ENTRIES;
   while (true) {
-    const read = storage.readDirectoryBoundedSync(quarantineRoot, MAX_INCIDENT_ROOT_ENTRIES);
-    const removable = read.entries.filter(
-      (candidateId) =>
-        candidateId !== incidentId &&
-        isCanonicalStoreResetIncidentId(candidateId) &&
-        readCommittedManifest(storage, quarantineRoot, candidateId) !== null,
-    );
-    for (const candidateId of removable) {
-      storage.rmSync(join(quarantineRoot, candidateId), { recursive: true, force: true });
+    const read = storage.readDirectoryBoundedSync(quarantineRoot, readLimit);
+    let removed = false;
+    for (const candidateId of read.entries) {
+      if (candidateId === incidentId || !isCanonicalStoreResetIncidentId(candidateId)) continue;
+      const candidatePath = join(quarantineRoot, candidateId);
+      try {
+        assertContainedDirectory(storage, quarantineRoot, candidatePath);
+      } catch (error: unknown) {
+        if (error instanceof UnsafeStoreResetPath) continue;
+        if (isNoEntryError(error)) continue;
+        throw error;
+      }
+      storage.rmSync(candidatePath, { recursive: true, force: true });
+      removed = true;
     }
-    if (removable.length > 0 && !storage.syncDirectoryDurableSync(quarantineRoot)) return false;
+    if (removed && !storage.syncDirectoryDurableSync(quarantineRoot)) return false;
     if (!read.overflow) return true;
-    if (removable.length === 0) return false;
+    if (removed) {
+      readLimit = MAX_INCIDENT_ROOT_ENTRIES;
+      continue;
+    }
+    const widerLimit = Math.min(Number.MAX_SAFE_INTEGER, Math.max(readLimit + 1, readLimit * 2));
+    if (widerLimit === readLimit) return true;
+    readLimit = widerLimit;
   }
 }
 
@@ -672,7 +687,7 @@ function reconcilePending(
   const incidentId = pending.outcome.incident.incidentId;
   const committed = readCommittedManifest(storage, quarantineRoot, incidentId);
   if (committed !== null) {
-    if (!removeOtherCommittedIncidents(storage, quarantineRoot, incidentId)) return ledger;
+    if (!removeOtherIncidentDirectories(storage, quarantineRoot, incidentId)) return ledger;
     const reconciled = withPreservedOutcome(ledger, pending.outcome.incident);
     writeLedger(storage, quarantineRoot, reconciled);
     return reconciled;
@@ -732,7 +747,7 @@ export function recordStoreResetPreserved(
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
 ): void {
-  if (!removeOtherCommittedIncidents(storage, quarantineRoot, incident.incidentId)) return;
+  if (!removeOtherIncidentDirectories(storage, quarantineRoot, incident.incidentId)) return;
   writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident));
 }
 
@@ -908,14 +923,19 @@ export function releaseStoreResetIncident(
     parkingPresence === 'present' ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
   const incidentEvidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? null;
   const parkingEvidenceBytes = parkedEvidenceBytes;
-  const incomplete = (error: unknown, durable = false): StoreResetReleaseResult => ({
+  let parkingDeletionDurability: StoreResetDeletionDurability =
+    parkingPresence === 'present' ? 'unproven' : 'not-required';
+  let incidentDeletionDurability: StoreResetDeletionDurability =
+    incidentPresence === 'present' ? 'not-attempted' : 'not-required';
+  const incomplete = (error: unknown): StoreResetReleaseResult => ({
     kind: 'partially-released',
     incidentId,
     incidentEvidenceBytes,
     parkingEvidenceBytes,
     parkingState: pathPresence(storage, parkingPath),
     incidentState: pathPresence(storage, incidentPath),
-    durability: durable ? 'proven' : 'unproven',
+    parkingDeletionDurability,
+    incidentDeletionDurability,
     cause: error instanceof Error ? error.message : String(error),
   });
   if (parkingPresence === 'present') {
@@ -932,12 +952,14 @@ export function releaseStoreResetIncident(
     } catch {
       parkingDurable = false;
     }
+    parkingDeletionDurability = parkingDurable ? 'proven' : 'unproven';
   }
   if (incidentPresence === 'present') {
+    incidentDeletionDurability = 'unproven';
     try {
       storage.rmSync(incidentPath, { recursive: true });
     } catch (error: unknown) {
-      return incomplete(error, parkingDurable);
+      return incomplete(error);
     }
   }
   let quarantineDurable: boolean;
@@ -945,6 +967,9 @@ export function releaseStoreResetIncident(
     quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
   } catch {
     quarantineDurable = false;
+  }
+  if (incidentPresence === 'present') {
+    incidentDeletionDurability = quarantineDurable ? 'proven' : 'unproven';
   }
   const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
   const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;

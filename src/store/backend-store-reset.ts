@@ -1680,15 +1680,7 @@ function terminalizeParking(
   coordinate: string = record.parkingId,
 ): void {
   const parkingDirectory = join(parkingRoot, coordinate);
-  const names = STORE_RESET_EVIDENCE_FILE_NAMES.filter((name) => {
-    try {
-      storage.lstatSync(join(parkingDirectory, name));
-      return true;
-    } catch (error: unknown) {
-      if (isNoEntryError(error)) return false;
-      throw error;
-    }
-  });
+  const names = observedStoreResetEvidenceNames(storage, parkingDirectory);
   const terminalRecord: StoreResetParkedRecord = {
     ...record,
     phase: 'terminal',
@@ -1709,6 +1701,18 @@ function terminalizeParking(
     storage.renameSync(parkingDirectory, join(parkingRoot, record.parkingId));
     requireDirectorySync(storage, parkingRoot);
   }
+}
+
+function observedStoreResetEvidenceNames(storage: StoragePort, directory: string): StoreResetEvidenceFileName[] {
+  return STORE_RESET_EVIDENCE_FILE_NAMES.filter((name) => {
+    try {
+      storage.lstatSync(join(directory, name));
+      return true;
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) return false;
+      throw error;
+    }
+  });
 }
 
 function retainInterruptedMintedStores(
@@ -1747,22 +1751,14 @@ function retainInterruptedMintedStores(
         : mintedId;
     if (runtime.storage.existsSync(join(parkingRoot, parkingId))) continue;
     const parkingDirectory = join(parkingRoot, parkingId);
-    const parkingRead = runtime.storage.readDirectoryBoundedSync(mintedDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
-    if (parkingRead.overflow) throw new Error('Interrupted minted store exceeds its entry limit.');
-    const initialNames = parkingRead.entries.filter((name): name is StoreResetEvidenceFileName =>
-      STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName),
-    );
+    const initialNames = observedStoreResetEvidenceNames(runtime.storage, mintedDirectory);
     const initialEntries = describeParkedEntries(runtime.storage, mintedDirectory, initialNames);
     const parkedDb = initialEntries.find((entry) => entry.name === 'store.db');
     const classification =
       parkedDb?.kind === 'regular-file'
         ? classifyParkedStore(runtime, join(mintedDirectory, 'store.db'), options)
         : null;
-    const finalRead = runtime.storage.readDirectoryBoundedSync(mintedDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
-    if (finalRead.overflow) throw new Error('Interrupted minted store exceeds its entry limit.');
-    const finalNames = finalRead.entries.filter((name): name is StoreResetEvidenceFileName =>
-      STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName),
-    );
+    const finalNames = observedStoreResetEvidenceNames(runtime.storage, mintedDirectory);
     const finalEntries = describeParkedEntries(runtime.storage, mintedDirectory, finalNames);
     writeStoreResetParkedRecord(
       runtime.storage,
@@ -1776,7 +1772,7 @@ function retainInterruptedMintedStores(
 }
 
 function retireNonResumableFixedParking(
-  runtime: Pick<Runtime, 'ids' | 'storage'>,
+  runtime: Pick<Runtime, 'ids' | 'storage' | 'time'>,
   quarantineRoot: string,
   discovered: ReturnType<typeof discoverStoreResetParkedRecords>,
 ): boolean {
@@ -1801,8 +1797,17 @@ function retireNonResumableFixedParking(
   }
   let parkingId = fixed.record?.parkingId ?? runtime.ids.uuid();
   while (runtime.storage.existsSync(join(parkingRoot, parkingId))) parkingId = runtime.ids.uuid();
-  runtime.storage.renameSync(fixedDirectory, join(parkingRoot, parkingId));
-  requireDirectorySync(runtime.storage, parkingRoot);
+  terminalizeParking(
+    runtime.storage,
+    parkingRoot,
+    {
+      ...(fixed.record ?? terminalParkingRecord(runtime, parkingId, 'residual', [], null)),
+      parkingId,
+    },
+    'residual',
+    fixed.record?.incidentId ?? null,
+    STORE_RESET_IN_FLIGHT_DIRECTORY,
+  );
   return true;
 }
 

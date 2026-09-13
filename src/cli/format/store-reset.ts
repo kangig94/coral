@@ -203,7 +203,7 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
       return `Released parked store-reset evidence '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'partially-released': {
-      return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}, and deletion durability is ${result.durability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
+      return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}; parking deletion durability is ${result.parkingDeletionDurability}; incident deletion durability is ${result.incidentDeletionDurability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;
