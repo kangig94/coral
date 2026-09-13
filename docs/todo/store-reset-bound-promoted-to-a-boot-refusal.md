@@ -896,6 +896,72 @@ describe it.
 destructive operation that half happened, and it currently reaches the operator as a reporting error
 whose remediation says not to delete evidence.
 
+## Revision 6 — make the search exhaustive, not inspired
+
+Round five found a seventh instance: on the **link** arm, a live writer appending to the linked inode
+while it is hashed makes `describeCandidate` throw, and that becomes `store_reset_quarantine_failed`. No
+syscall was refused. Interference during hashing is a `torn` disposition, exactly as it already is on the
+copy arm.
+
+### Why the guard and the sweep keep having a hole in the same place
+
+Revision 5 asked for a guard that follows the call graph. The guard that was built computes a closure that
+ends up scanning throws in one module. The sweep, meanwhile, **omits the `appended` mutation from the link
+arm** — the single cell where the defect lives.
+
+Three rounds running, the guard and the sweep have been written by the party writing the code, shaped by
+the defect that had just been found, and the next reviewer has found the cell next to it. That is not a
+discipline problem; it is a coverage problem, and coverage is mechanisable.
+
+**The sweep becomes an exhaustive cross-product, generated rather than enumerated.** Every arm — link,
+copy, discard, claim, resume — crossed with every mutation — deleted, replaced, appended, sidecar,
+non-regular, crash — crossed with every recorded active-path call index, and crossed again with each
+mutation applied between a crash and its resume. No hand-picked subsets, no arm-specific omissions. A cell
+that is genuinely unreachable is skipped **by an assertion that it is unreachable**, not by absence from a
+list. If the matrix is generated from the arms and mutations, a missing cell becomes impossible rather
+than unlikely.
+
+**The guard's closure is computed from imports**, not from a hand-maintained module list: every module
+reachable from the settlement entry through `src/store/` is in scope, and the only `throw` permitted
+anywhere in it is a rethrow of an unmapped errno.
+
+### The remaining findings
+
+**Live mutation during hashing is `torn` on both arms.** Only a link-unavailable error currently selects
+the copy fallback; a mutation error escapes. Both arms already know how to record `torn`.
+
+**`release` must gate on the parking record's phase.** An `in-flight` parking directory is a crash-recovery
+transaction, and `list` currently collapses it to the same `parked` state as a terminal one while showing
+its still-empty entries — so an operator following the advertised command deletes the only copy of an
+epoch startup was about to resume. In-flight parking is described as such and is not releasable through
+the ordinary path.
+
+**The release union must cover partial effects inside a recursive delete.** Parking removal sits outside
+the catch entirely; an incident-only failure reports `undeterminable`, whose renderer then asserts that no
+evidence was released; and the final directory sync can throw after both trees are gone. Each is an
+irreversible effect with no truthful disposition.
+
+**An aborted pre-manifest publication must not brick the next boot.** When recovery keeps parked evidence
+it cannot restore, it leaves the in-flight record; the next boot finds a sidecar with no staging entry,
+assumes the incident committed, resolves a directory that never existed, and refuses with
+`store_reset_interrupted_foreign` — persistently.
+
+**Claim recovery must finish what the live path would have done.** Recovery terminalizes a parked epoch
+without classifying, restoring, opening or identity-verifying it, so a compatible store parked just before
+a crash is abandoned while a fresh one becomes active. The live compatible path has the mirror window: it
+writes its terminal record before restoring and proving identity.
+
+**`.minted` needs discovery and a bound.** Every claim mints a complete store in a fresh UUID directory
+and cleans up only after post-open verification, so a crash between them leaves it forever with no
+production path that reads `.minted` and no operator surface.
+
+**Adoption must not delete non-regular siblings.** The compatible branch restores only regular files and
+then recursively removes the whole parking directory, destroying a parked non-regular sibling instead of
+retaining it as terminal evidence — and returns no parked epoch for it.
+
+**The database handle must be closed on every failure after it opens.** Cleanup failures after the open
+throw with the handle live, and the caller cannot close it because the assignment happens only on return.
+
 ## Invariants to add
 
 Superseded by Revision 3's own invariant list. The entries that stood here named
