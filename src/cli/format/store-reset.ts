@@ -74,7 +74,8 @@ function parked(entry: StoreResetIncidentListResult['incidents'][number]): strin
 function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
   return target === 'gen2'
     ? [
-        'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>',
+        'To permanently remove a listed incident or parked record:',
+        'command=coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>',
       ]
     : [];
 }
@@ -177,7 +178,10 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
       : []),
     'States: ready produces a Markdown report; parked is owned evidence awaiting release; in-flight is a crash-recovery transaction; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.',
     ...(result.incidents.some((incident) => incident.state === 'ready')
-      ? [`Next: coral-cli backend store-reset report --target ${target} <ready-incident-id>`]
+      ? [
+          'Next: report the ready incident.',
+          `command=coral-cli backend store-reset report --target ${target} <ready-incident-id>`,
+        ]
       : []),
     ...(result.incidents.some((incident) => incident.state !== 'ready' && incident.retention.slot !== 'parked')
       ? [
@@ -202,11 +206,14 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
     case 'parked': {
       return `Released parked store-reset evidence '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
+    case 'released-unverified': {
+      return `Released terminal store-reset parking '${result.incidentId}' from ${result.target} ${result.flavor} without a verified sidecar; parking byte accounting is unknown and deletion durability is ${result.durability}.`;
+    }
     case 'partially-released': {
       return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}; parking deletion durability is ${result.parkingDeletionDurability}; incident deletion durability is ${result.incidentDeletionDurability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
     }
     case 'absent':
-      return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}. Next: coral-cli backend store-reset list --target ${result.target}.`;
+      return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}.\ncommand=coral-cli backend store-reset list --target ${result.target}`;
     case 'staged':
       return `Store-reset incident '${result.incidentId}' is staged and belongs to crash recovery; no evidence was released. Start Coral and let crash recovery finish, then retry.`;
     case 'in-flight':

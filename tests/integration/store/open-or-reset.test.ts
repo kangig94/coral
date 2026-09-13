@@ -36,6 +36,7 @@ import {
   acquireBackendStoreWriterExclusion,
   acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
+  mintBackendStoreForClaim,
   publishClassifiedBackendStoreResetIncident,
   resolveBackendStoreFileSet,
   resumeBackendStoreResetIncidentForOperator,
@@ -1972,11 +1973,11 @@ describe('openOrResetBackendStoreDb', () => {
     first.close();
 
     expect(existsSync(stagingDirectory)).toBe(false);
-    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, interruptedId)).toMatchObject({
-      phase: 'terminal',
-      incidentId: null,
-      names: ['store.db'],
-    });
+    expect(existsSync(parkingDirectory)).toBe(false);
+    expect([
+      ...retainedIncidentNames(quarantineRoot),
+      ...readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId),
+    ]).toHaveLength(1);
     const second = await openReset(runtime, dbPath);
     second.close();
     expect(tableExists(dbPath, 'events')).toBe(true);
@@ -2293,6 +2294,33 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
+  it.each(['directory', 'unreadable-file'] as const)(
+    'resets a shared-name symlink whose %s target cannot be opened as SQLite',
+    async (targetKind) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot(`coral-store-unopenable-symlink-${targetKind}-`);
+      const dbPath = join(root, 'store.db');
+      const target = join(root, 'external-target');
+      if (targetKind === 'directory') mkdirSync(target);
+      else {
+        writeFileSync(target, 'not a readable SQLite store');
+        runtime.storage.chmodSync(target, 0o000);
+      }
+      symlinkSync(target, dbPath);
+
+      expect(classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT)).toMatchObject({
+        kind: 'corrupt-or-unsupported',
+        storedProductVersionState: 'unavailable',
+      });
+      const db = await openReset(runtime, dbPath);
+      db.close();
+
+      expect(lstatSync(dbPath).isSymbolicLink()).toBe(false);
+      expect(tableExists(dbPath, 'events')).toBe(true);
+      expect(lstatSync(target).isDirectory()).toBe(targetKind === 'directory');
+    },
+  );
+
   it('never uses a shared-path hard link while preserving an active store', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-active-replacement-');
@@ -2519,10 +2547,13 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
 
     expect(nextEpoch).toBe(epochCount);
-    for (const identity of identities) expect(containsIdentity(root, identity)).toBe(true);
-    const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+    expect(containsIdentity(root, identities.at(-1)!)).toBe(true);
+    for (const identity of identities.slice(0, -1)) expect(containsIdentity(root, identity)).toBe(false);
+    const quarantineRoot = join(root, 'store-reset-quarantine');
+    const parkingRoot = join(quarantineRoot, '.parked');
     const parkingIds = readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId);
-    expect(parkingIds).toHaveLength(epochCount);
+    expect([...retainedIncidentNames(quarantineRoot), ...parkingIds]).toHaveLength(1);
+    expect(parkingIds).toHaveLength(1);
     for (const parkingId of parkingIds) {
       const sidecar = JSON.parse(
         readFileSync(join(parkingRoot, parkingId, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 'utf-8'),
@@ -2534,7 +2565,7 @@ describe('openOrResetBackendStoreDb', () => {
       quarantineRoot: join(root, 'store-reset-quarantine'),
       expectedBuild: buildIdentity(),
     });
-    expect(listed.incidents.filter((entry) => entry.state === 'parked')).toHaveLength(epochCount);
+    expect(listed.incidents.filter((entry) => entry.state === 'parked')).toHaveLength(1);
     const rendered = formatStoreResetList(listed, 'gen2');
     for (const parkingId of parkingIds) expect(rendered).toContain(parkingId);
   });
@@ -3339,6 +3370,31 @@ describe('openOrResetBackendStoreDb', () => {
 
     expect(claimedDbs).not.toHaveLength(0);
     expect(claimedDbs.at(-1)?.isOpen).toBe(false);
+  });
+
+  it('closes a minted database when its post-open identity inspection fails', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-minted-inspection-close-');
+    const dbPath = join(root, 'store.db');
+    const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
+    const openWritableStoreDatabase = dbModule.openWritableStoreDatabase;
+    const openedDbs: DatabaseSync[] = [];
+    vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation((options) => {
+      const decision = openWritableStoreDatabase(options);
+      if (decision.kind === 'opened') openedDbs.push(decision.db as DatabaseSync);
+      return decision;
+    });
+    const lstatSync = runtime.storage.lstatSync;
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      if (path === join(root, 'store-reset-quarantine', '.minted', STORE_RESET_MINTED_STORE_DIRECTORY, 'store.db')) {
+        throw errno('EIO');
+      }
+      return options?.bigint === true ? lstatSync(path, { bigint: true }) : lstatSync(path);
+    }) as Runtime['storage']['lstatSync']);
+
+    expect(() => mintBackendStoreForClaim(runtime, files, { path: dbPath, storeFormat: STORE_FORMAT })).toThrow();
+    expect(openedDbs).toHaveLength(1);
+    expect(openedDbs[0]?.isOpen).toBe(false);
   });
 
   it('reuses one fixed minted coordinate across successful store claims', async () => {

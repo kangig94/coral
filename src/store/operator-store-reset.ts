@@ -28,8 +28,6 @@ import type { StoreFormatDescription } from './format-fingerprint.js';
 export type StoreResetTarget = 'legacy' | 'gen2';
 export type StoreResetReleaseTarget = 'current' | 'gen2';
 
-export type StoreResetReleaseDecision = StoreResetReleasePresentation;
-
 export type StoreResetTargetPaths = {
   readonly target: StoreResetTarget;
   readonly baseDir: string;
@@ -221,7 +219,7 @@ export async function releaseStoreReset(options: {
   readonly target: StoreResetReleaseTarget;
   readonly runtime: Runtime;
   readonly incidentId: string;
-}): Promise<StoreResetReleaseDecision> {
+}): Promise<StoreResetReleasePresentation> {
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
   const files = resolveBackendStoreFileSet(options.runtime, {
     path: paths.storeDbPath,

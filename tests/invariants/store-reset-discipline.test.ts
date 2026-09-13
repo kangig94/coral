@@ -589,9 +589,11 @@ describe('store reset discipline invariants', () => {
     );
 
     const unlinkCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter((call) => call.callee === 'unlinkSync');
-    expect(unlinkCalls).toHaveLength(1);
-    expect(unlinkCalls[0]?.enclosingFunctions).toContain('dropParkedPath');
-    expect(unlinkCalls[0]?.text).toContain('parkedPath(parkingDirectory, evidence)');
+    expect(unlinkCalls.map((call) => call.enclosingFunctions[0]).sort()).toEqual([
+      'dropParkedEvidence',
+      'restoreParkedEvidence',
+    ]);
+    expect(unlinkCalls.every((call) => call.text.includes('parkedPath(parkingDirectory, parked.evidence)'))).toBe(true);
 
     const sharedPathCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter(
       (call) => call.callee !== 'candidateForEvidence' && call.text.includes('candidateForEvidence('),

@@ -342,12 +342,8 @@ export function describeParkedEntries(
   });
 }
 
-function dropParkedPath(storage: StoragePort, parkingDirectory: string, evidence: ActiveEvidence): void {
-  storage.unlinkSync(parkedPath(parkingDirectory, evidence));
-}
-
 export function dropParkedEvidence(storage: StoragePort, parkingDirectory: string, parked: ParkedActiveEvidence): void {
-  dropParkedPath(storage, parkingDirectory, parked.evidence);
+  storage.unlinkSync(parkedPath(parkingDirectory, parked.evidence));
 }
 
 export function restoreParkedEvidence(
@@ -366,6 +362,6 @@ export function restoreParkedEvidence(
     }
     throw error;
   }
-  dropParkedPath(storage, parkingDirectory, parked.evidence);
+  storage.unlinkSync(parkedPath(parkingDirectory, parked.evidence));
   return { kind: 'restored' };
 }

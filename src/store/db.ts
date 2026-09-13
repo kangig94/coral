@@ -167,7 +167,10 @@ function corruptOrUnsupported(
   };
 }
 
-export function classifyStoreFormat(db: Database, current: StoreFormatClassificationTarget): StoreFormatClassification {
+function validatedStoreFormatTarget(current: StoreFormatClassificationTarget): {
+  readonly fingerprint: StoreFormatFingerprint;
+  readonly productVersion: string;
+} {
   const currentFingerprint = current.fingerprint;
   if (!isStoreFormatFingerprint(currentFingerprint)) {
     throw new TypeError(`Invalid current store format fingerprint: ${currentFingerprint}`);
@@ -176,6 +179,12 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
   if (currentProductVersion === null) {
     throw new TypeError(`Invalid current Coral product version: ${current.productVersion}`);
   }
+  return { fingerprint: currentFingerprint, productVersion: currentProductVersion };
+}
+
+export function classifyStoreFormat(db: Database, current: StoreFormatClassificationTarget): StoreFormatClassification {
+  const { fingerprint: currentFingerprint, productVersion: currentProductVersion } =
+    validatedStoreFormatTarget(current);
 
   if (!hasUserTable(db)) return { kind: 'fresh' };
 
@@ -232,10 +241,14 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
 
 export function classifyStoreFile(
   path: string,
-  storage: Pick<StoragePort, 'existsSync' | 'openSqliteDatabaseSync'>,
+  storage: Pick<StoragePort, 'existsSync' | 'lstatSync' | 'openSqliteDatabaseSync'>,
   current: StoreFormatClassificationTarget,
 ): StoreFormatClassification {
   if (path !== ':memory:' && !storage.existsSync(path)) return { kind: 'absent' };
+  if (path !== ':memory:' && storage.lstatSync(path).isSymbolicLink()) {
+    const target = validatedStoreFormatTarget(current);
+    return corruptOrUnsupported(target.fingerprint, target.productVersion, null, null, 'unavailable');
+  }
   const db = storage.openSqliteDatabaseSync(path, { readOnly: path !== ':memory:' });
   try {
     return classifyStoreFormat(db as unknown as Database, current);

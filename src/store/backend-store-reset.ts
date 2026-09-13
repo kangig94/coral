@@ -70,6 +70,7 @@ import {
   assertQuarantineRoot,
   clearStoreResetPending,
   discoverStoreResetParkedRecords,
+  recordStoreResetParked,
   recordStoreResetPending,
   recordStoreResetPreserved,
   recordStoreResetResumeLeftActive,
@@ -858,11 +859,16 @@ function requireSameDirectory(storage: StoragePort, path: string, expected: Stor
   }
 }
 
+function requireStoreResetDurability(proven: boolean, failure: string): void {
+  if (!proven) throw new Error(failure);
+}
+
 function requireDirectorySync(storage: StoragePort, ...directories: readonly string[]): void {
   for (const directory of new Set(directories)) {
-    if (!storage.syncDirectoryDurableSync(directory)) {
-      throw new Error('Store-reset directory metadata could not be synchronized.');
-    }
+    requireStoreResetDurability(
+      storage.syncDirectoryDurableSync(directory),
+      'Store-reset directory metadata could not be synchronized.',
+    );
   }
 }
 
@@ -1678,7 +1684,7 @@ function terminalizeParking(
   cause: 'intruder' | 'residual',
   incidentId: string | null = record.incidentId,
   coordinate: string = record.parkingId,
-): void {
+): boolean {
   const parkingDirectory = join(parkingRoot, coordinate);
   const names = observedStoreResetEvidenceNames(storage, parkingDirectory);
   const terminalRecord: StoreResetParkedRecord = {
@@ -1695,12 +1701,20 @@ function terminalizeParking(
     names.length === 0 &&
     removeSettledParkingDirectory(storage, parkingRoot, parkingDirectory, terminalRecord, coordinate)
   ) {
-    return;
+    return false;
   }
   if (coordinate !== record.parkingId) {
     storage.renameSync(parkingDirectory, join(parkingRoot, record.parkingId));
     requireDirectorySync(storage, parkingRoot);
   }
+  const parkingSurvives = incidentId === null || cause === 'intruder';
+  if (parkingSurvives) {
+    requireStoreResetDurability(
+      recordStoreResetParked(storage, dirname(parkingRoot), record.parkingId),
+      'Store-reset parking retention could not be synchronized durably.',
+    );
+  }
+  return parkingSurvives;
 }
 
 function observedStoreResetEvidenceNames(storage: StoragePort, directory: string): StoreResetEvidenceFileName[] {
@@ -2076,7 +2090,7 @@ function publishIncident(
     const terminalCause = parked.parked.some((item) => keptByName.has(item.evidence.name) && item.ownership === 'other')
       ? 'intruder'
       : 'residual';
-    terminalizeParking(
+    const parkingSurvives = terminalizeParking(
       runtime.storage,
       parkingRoot,
       parkingRecord,
@@ -2084,7 +2098,9 @@ function publishIncident(
       incidentId,
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
-    recordStoreResetPreserved(runtime.storage, quarantineRoot, pendingLedger, retentionIncident);
+    if (!parkingSurvives) {
+      recordStoreResetPreserved(runtime.storage, quarantineRoot, pendingLedger, retentionIncident);
+    }
 
     recordIncidentAudit(manifest, preservation);
     return {
@@ -2143,8 +2159,13 @@ export function mintBackendStoreForClaim(
   if (decision.kind !== 'opened') {
     throw new Error('A store minted on an owned empty path was incompatible.');
   }
-  const stat = stablePathStat(runtime.storage, path);
-  return { directory, path, identity: { dev: stat.dev, ino: stat.ino }, db: decision.db };
+  try {
+    const stat = stablePathStat(runtime.storage, path);
+    return { directory, path, identity: { dev: stat.dev, ino: stat.ino }, db: decision.db };
+  } catch (error: unknown) {
+    decision.db.close();
+    throw error;
+  }
 }
 
 function unavailableParkedClassification(options: OpenOrResetBackendStoreOptions): StoreFormatClassification {

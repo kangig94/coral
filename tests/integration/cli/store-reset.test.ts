@@ -45,12 +45,15 @@ import {
   projectStoreResetPublicReport,
   isCanonicalStoreResetIncidentId,
   serializeStoreResetIncidentManifest,
+  STORE_RESET_IN_FLIGHT_DIRECTORY,
   type StoreResetIncidentLocalReport,
   type StoreResetIncidentManifestV2,
   type StoreResetIncidentManifestV3,
 } from '#src/store/reset-incident.js';
 import {
+  MAX_RESET_PARKED_SIDECAR_BYTES,
   readStoreResetRetentionLedger,
+  recordStoreResetPending,
   STORE_RESET_PARKED_SIDECAR_VERSION,
   writeStoreResetParkedRecord,
 } from '#src/store/reset-retention.js';
@@ -1094,57 +1097,91 @@ describe('operator store-reset discard', () => {
     expect(existsSync(parkingPath)).toBe(true);
   });
 
-  it('refuses to release malformed or unreadable parking and leaves both witnesses intact', async () => {
+  it('requires a canonical parking ID instead of treating .in-flight as deletion authority', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
-    const dbPath = runtime.paths.coral.store.dbFile;
-    createMismatchStore(dbPath);
-    const discarded = await discardStoreReset({
-      target: 'gen2',
-      runtime,
-      build: CURRENT_BUILD,
-      storeFormat: STORE_FORMAT,
-      acquireSocketGuard: noSocketGuard,
-      currentBundleDir: baseDir,
-      validateSelectedTarget: () => {
-        throw new Error('no selected target is expected in this case');
+    const { quarantineRoot } = resolveStoreResetTargetPaths(runtime, 'gen2');
+    const parkingRoot = join(quarantineRoot, '.parked');
+    const fixedPath = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
+    mkdirSync(fixedPath, { recursive: true, mode: 0o700 });
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      {
+        version: STORE_RESET_PARKED_SIDECAR_VERSION,
+        parkingId: INCIDENT_ID,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'terminal',
+        cause: 'residual',
+        incidentId: null,
+        names: [],
+        entries: [],
+        transaction: null,
+        classification: null,
       },
-    });
-    if (discarded.kind !== 'discarded' || discarded.incident === null) {
-      throw new Error('Expected a committed store-reset incident.');
-    }
-    const incidentId = discarded.incident.incidentId;
-    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const incidentPath = join(quarantineRoot, incidentId);
-    const parkingPath = join(quarantineRoot, '.parked', incidentId);
-    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
-    writeFileSync(join(parkingPath, 'store.db-wal'), 'unreadable parking witness');
-    writeFileSync(join(parkingPath, 'parked.v1.json'), '{');
+      STORE_RESET_IN_FLIGHT_DIRECTORY,
+    );
 
-    const listed = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot));
-    expect(listed.incidents.filter((entry) => entry.incidentId === incidentId).map((entry) => entry.state)).toEqual([
-      'build_mismatch',
-      'malformed',
-    ]);
-    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId })).resolves.toMatchObject({
-      kind: 'undeterminable',
-    });
-    expect(existsSync(incidentPath)).toBe(true);
-    expect(existsSync(parkingPath)).toBe(true);
-
-    writeTerminalParkingSidecar(runtime, join(quarantineRoot, '.parked'), incidentId);
-    const sidecarPath = join(parkingPath, 'parked.v1.json');
-    const lstat = runtime.storage.lstatSync;
-    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
-      if (path === sidecarPath) throw Object.assign(new Error('parking sidecar unreadable'), { code: 'EACCES' });
-      return options?.bigint === true ? lstat(path, { bigint: true }) : lstat(path);
-    }) as typeof runtime.storage.lstatSync);
-    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId })).resolves.toMatchObject({
-      kind: 'undeterminable',
-    });
-    expect(existsSync(incidentPath)).toBe(true);
-    expect(existsSync(parkingPath)).toBe(true);
+    expect(() => releaseStoreResetLocal('gen2', 'prod', STORE_RESET_IN_FLIGHT_DIRECTORY)).toThrow(StoreResetCliError);
+    await expect(
+      releaseStoreReset({ target: 'gen2', runtime, incidentId: STORE_RESET_IN_FLIGHT_DIRECTORY }),
+    ).resolves.toMatchObject({ kind: 'undeterminable' });
+    expect(existsSync(fixedPath)).toBe(true);
   });
+
+  it.each(['invalid', 'oversized', 'symlinked', 'unreadable'] as const)(
+    'releases terminal UUID parking whose sidecar is %s with unknown byte accounting',
+    async (sidecarState) => {
+      const baseDir = root();
+      const runtime = createRealRuntime('prod', { baseDir });
+      const dbPath = runtime.paths.coral.store.dbFile;
+      createMismatchStore(dbPath);
+      const discarded = await discardStoreReset({
+        target: 'gen2',
+        runtime,
+        build: CURRENT_BUILD,
+        storeFormat: STORE_FORMAT,
+        acquireSocketGuard: noSocketGuard,
+        currentBundleDir: baseDir,
+        validateSelectedTarget: () => {
+          throw new Error('no selected target is expected in this case');
+        },
+      });
+      if (discarded.kind !== 'discarded' || discarded.incident === null) {
+        throw new Error('Expected a committed store-reset incident.');
+      }
+      const incidentId = discarded.incident.incidentId;
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const incidentPath = join(quarantineRoot, incidentId);
+      const parkingPath = join(quarantineRoot, '.parked', incidentId);
+      const sidecarPath = join(parkingPath, 'parked.v1.json');
+      mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+      writeFileSync(join(parkingPath, 'store.db-wal'), 'unverified parking witness');
+      if (sidecarState === 'invalid') writeFileSync(sidecarPath, '{');
+      if (sidecarState === 'oversized') writeFileSync(sidecarPath, Buffer.alloc(MAX_RESET_PARKED_SIDECAR_BYTES + 1));
+      if (sidecarState === 'symlinked') {
+        const target = join(baseDir, 'outside-sidecar');
+        writeFileSync(target, '{}');
+        symlinkSync(target, sidecarPath);
+      }
+      if (sidecarState === 'unreadable') {
+        writeFileSync(sidecarPath, '{}');
+        const lstat = runtime.storage.lstatSync;
+        vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+          if (path === sidecarPath) throw Object.assign(new Error('parking sidecar unreadable'), { code: 'EACCES' });
+          return options?.bigint === true ? lstat(path, { bigint: true }) : lstat(path);
+        }) as typeof runtime.storage.lstatSync);
+      }
+
+      await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId })).resolves.toMatchObject({
+        kind: 'released-unverified',
+        parkingEvidenceBytes: null,
+      });
+      expect(existsSync(incidentPath)).toBe(false);
+      expect(existsSync(parkingPath)).toBe(false);
+      expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+    },
+  );
 
   it('releases a holder with an unreadable manifest and clears its preserved record', async () => {
     const baseDir = root();
@@ -1178,6 +1215,61 @@ describe('operator store-reset discard', () => {
     });
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
     expect(existsSync(incidentPath)).toBe(false);
+  });
+
+  it('does not retry removal after pending reconciliation already deleted the requested incident', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbPath = runtime.paths.coral.store.dbFile;
+    createMismatchStore(dbPath);
+    const discarded = await discardStoreReset({
+      target: 'gen2',
+      runtime,
+      build: CURRENT_BUILD,
+      storeFormat: STORE_FORMAT,
+      acquireSocketGuard: noSocketGuard,
+      currentBundleDir: baseDir,
+      validateSelectedTarget: () => {
+        throw new Error('no selected target is expected in this case');
+      },
+    });
+    if (discarded.kind !== 'discarded' || discarded.incident === null) {
+      throw new Error('Expected a committed store-reset incident.');
+    }
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const requestedId = discarded.incident.incidentId;
+    const requestedPath = join(quarantineRoot, requestedId);
+    const replacementId = '423e4567-e89b-42d3-a456-426614174000';
+    const manifest = JSON.parse(
+      readFileSync(join(requestedPath, 'reset-manifest.json'), 'utf-8'),
+    ) as StoreResetIncidentManifestV3;
+    const replacementManifest = { ...manifest, incidentId: replacementId };
+    mkdirSync(join(quarantineRoot, replacementId));
+    writeFileSync(
+      join(quarantineRoot, replacementId, 'reset-manifest.json'),
+      serializeStoreResetIncidentManifest(replacementManifest),
+    );
+    const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+    if (ledger === null) throw new Error('Expected a retention ledger.');
+    recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
+      resetAt: replacementManifest.resetAt,
+      identities: [],
+      outcome: {
+        kind: 'preserve',
+        incident: {
+          incidentId: replacementId,
+          resetAt: replacementManifest.resetAt,
+          evidenceBytes: replacementManifest.files.reduce((total, file) => total + file.sizeBytes, 0),
+          resumeLeftActive: false,
+        },
+      },
+    });
+
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: requestedId })).resolves.toMatchObject({
+      kind: 'absent',
+    });
+    expect(existsSync(requestedPath)).toBe(false);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.incidentId).toBe(replacementId);
   });
 
   it('reports absent, staged, non-holder, and indeterminate release outcomes from real storage', async () => {
@@ -1412,6 +1504,33 @@ describe('backend store-reset commands', () => {
     expect(process.exitCode).toBe(75);
   });
 
+  it('reports a durable unverified terminal release as completed with unknown accounting', async () => {
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [], truncated: false }),
+      report: async () => publicReport(),
+      discard: operationsDiscard,
+      release: async (_target, flavor, incidentId) => ({
+        kind: 'released-unverified',
+        target: 'gen2',
+        flavor,
+        incidentId,
+        incidentEvidenceBytes: null,
+        parkingEvidenceBytes: null,
+        durability: 'proven',
+      }),
+    };
+
+    await runCommand(
+      ['backend', 'store-reset', 'release', INCIDENT_ID, '--target', 'gen2', '--flavor', 'prod'],
+      operations,
+    );
+
+    expect(stdout).toContain(`Released terminal store-reset parking '${INCIDENT_ID}'`);
+    expect(stdout).toContain('without a verified sidecar; parking byte accounting is unknown');
+    expect(stderr).toBe('');
+    expect(process.exitCode).toBeUndefined();
+  });
+
   it('reports a partial release as destructive and retryable', async () => {
     const operations: StoreResetCommandOperations = {
       list: () => ({ incidents: [], truncated: false }),
@@ -1543,7 +1662,7 @@ describe('backend store-reset commands', () => {
   it.each([
     {
       kind: 'absent' as const,
-      expected: `Next: coral-cli backend store-reset list --target gen2.`,
+      expected: 'command=coral-cli backend store-reset list --target gen2',
     },
     {
       kind: 'staged' as const,
@@ -1828,10 +1947,12 @@ describe('backend store-reset commands', () => {
     expect(stdout).toBe(
       `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Incident bytes | Parking bytes | Preservation | Parked | Resume left active | Stored Coral version\n${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V3 | mismatch | older-incompatible | ready | 0 | 42 | 12 | linked (coherent) | store.db-wal (regular-file) | no | 0.9.15\n\n` +
         'States: ready produces a Markdown report; parked is owned evidence awaiting release; in-flight is a crash-recovery transaction; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
-        'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
+        'Next: report the ready incident.\n' +
+        'command=coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n' +
         'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.\n' +
-        'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
+        'To permanently remove a listed incident or parked record:\n' +
+        'command=coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
     );
     expect(stderr).toBe('');
 

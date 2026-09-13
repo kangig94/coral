@@ -205,10 +205,12 @@ describe('bundled store-reset CLI', () => {
         `Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Incident bytes | Parking bytes | Preservation | Parked | Resume left active | Stored Coral version\n` +
         `${INCIDENT_ID} | 2026-07-23T01:02:03.004Z | V2 | mismatch | legacy-v2 | ready | 1 | unknown | 0 | unknown | unknown | unknown | unknown\n\n` +
         'States: ready produces a Markdown report; parked is owned evidence awaiting release; in-flight is a crash-recovery transaction; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
-        'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
+        'Next: report the ready incident.\n' +
+        'command=coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
         'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n' +
         'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.\n' +
-        'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
+        'To permanently remove a listed incident or parked record:\n' +
+        'command=coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
       stderr: '',
       status: 0,
     });

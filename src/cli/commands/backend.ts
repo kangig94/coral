@@ -2094,7 +2094,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         const result = await storeReset.release(options.target, options.flavor, incidentId);
         const output = `${formatStoreResetRelease(result)}\n`;
         if (
-          (result.kind === 'released' || result.kind === 'not-holder' || result.kind === 'parked') &&
+          (result.kind === 'released' ||
+            result.kind === 'not-holder' ||
+            result.kind === 'parked' ||
+            result.kind === 'released-unverified') &&
           result.durability === 'proven'
         ) {
           process.stdout.write(output);
@@ -2104,7 +2107,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         process.exitCode =
           result.kind === 'undeterminable' ||
           result.kind === 'partially-released' ||
-          ((result.kind === 'released' || result.kind === 'not-holder' || result.kind === 'parked') &&
+          ((result.kind === 'released' ||
+            result.kind === 'not-holder' ||
+            result.kind === 'parked' ||
+            result.kind === 'released-unverified') &&
             result.durability === 'unproven')
             ? errorCodeToExit('transient')
             : 1;

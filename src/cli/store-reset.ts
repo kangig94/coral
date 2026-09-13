@@ -12,7 +12,6 @@ import {
   releaseStoreReset,
   resolveStoreResetTargetPaths,
   type StoreResetDiscardDecision,
-  type StoreResetReleaseDecision,
   type StoreResetReleaseTarget,
   type StoreResetTarget,
 } from '../store/operator-store-reset.js';
@@ -27,11 +26,8 @@ import {
   type StoreResetIncidentListResult,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
-import {
-  isCanonicalStoreResetIncidentId,
-  STORE_RESET_IN_FLIGHT_DIRECTORY,
-  type StoreResetPublicReport,
-} from '../store/reset-incident.js';
+import { isCanonicalStoreResetIncidentId, type StoreResetPublicReport } from '../store/reset-incident.js';
+import type { StoreResetReleasePresentation } from '../store/reset-retention.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import { StoreResetCliError } from './errors.js';
 import { acquireStoreResetSocketGuard } from './store-reset-socket.js';
@@ -69,7 +65,7 @@ export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal):
     target: StoreResetReleaseTarget,
     flavor: BuildFlavor,
     incidentId: string,
-  ) => Promise<StoreResetReleaseDecision>;
+  ) => Promise<StoreResetReleasePresentation>;
 } {
   const dependencies = defaultDependencies(shutdownSignal);
   return {
@@ -84,8 +80,8 @@ export function releaseStoreResetLocal(
   target: StoreResetReleaseTarget,
   flavor: BuildFlavor,
   incidentId: string,
-): Promise<StoreResetReleaseDecision> {
-  if (incidentId !== STORE_RESET_IN_FLIGHT_DIRECTORY && !isCanonicalStoreResetIncidentId(incidentId)) {
+): Promise<StoreResetReleasePresentation> {
+  if (!isCanonicalStoreResetIncidentId(incidentId)) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
   return releaseStoreReset({ target, runtime: createRealRuntime(flavor), incidentId });

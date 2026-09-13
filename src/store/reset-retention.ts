@@ -161,6 +161,13 @@ export type StoreResetReleaseResult =
       readonly durability: 'proven' | 'unproven';
     }
   | {
+      readonly kind: 'released-unverified';
+      readonly incidentId: string;
+      readonly incidentEvidenceBytes: number | null;
+      readonly parkingEvidenceBytes: null;
+      readonly durability: 'proven' | 'unproven';
+    }
+  | {
       readonly kind: 'partially-released';
       readonly incidentId: string;
       readonly incidentEvidenceBytes: number | null;
@@ -646,34 +653,62 @@ function withPreservedOutcome(
   return { ...ledger, pending: null, preserved: incident };
 }
 
-function removeOtherIncidentDirectories(storage: StoragePort, quarantineRoot: string, incidentId: string): boolean {
-  let readLimit = MAX_INCIDENT_ROOT_ENTRIES;
-  while (true) {
-    const read = storage.readDirectoryBoundedSync(quarantineRoot, readLimit);
-    let removed = false;
-    for (const candidateId of read.entries) {
-      if (candidateId === incidentId || !isCanonicalStoreResetIncidentId(candidateId)) continue;
-      const candidatePath = join(quarantineRoot, candidateId);
-      try {
-        assertContainedDirectory(storage, quarantineRoot, candidatePath);
-      } catch (error: unknown) {
-        if (error instanceof UnsafeStoreResetPath) continue;
-        if (isNoEntryError(error)) continue;
-        throw error;
+export function retainOnlyStoreResetPreservedCopy(
+  storage: StoragePort,
+  quarantineRoot: string,
+  survivor: Readonly<{ kind: 'incident' | 'parking'; id: string }>,
+): boolean {
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  const survivorRoot = survivor.kind === 'incident' ? quarantineRoot : parkingRoot;
+  if (survivor.kind === 'parking') assertContainedDirectory(storage, quarantineRoot, parkingRoot);
+  assertContainedDirectory(storage, survivorRoot, join(survivorRoot, survivor.id));
+  if (!storage.syncDirectoryDurableSync(survivorRoot)) return false;
+
+  for (const parent of [quarantineRoot, parkingRoot]) {
+    if (parent === parkingRoot) {
+      if (pathPresence(storage, parkingRoot) === 'absent') continue;
+      assertContainedDirectory(storage, quarantineRoot, parkingRoot);
+    }
+    let readLimit = MAX_INCIDENT_ROOT_ENTRIES;
+    while (true) {
+      const read = storage.readDirectoryBoundedSync(parent, readLimit);
+      let removed = false;
+      for (const candidateId of read.entries) {
+        if (!isCanonicalStoreResetIncidentId(candidateId) || (parent === survivorRoot && candidateId === survivor.id)) {
+          continue;
+        }
+        const candidatePath = join(parent, candidateId);
+        try {
+          assertContainedDirectory(storage, parent, candidatePath);
+        } catch (error: unknown) {
+          if (error instanceof UnsafeStoreResetPath) continue;
+          if (isNoEntryError(error)) continue;
+          throw error;
+        }
+        storage.rmSync(candidatePath, { recursive: true, force: true });
+        removed = true;
       }
-      storage.rmSync(candidatePath, { recursive: true, force: true });
-      removed = true;
+      if (removed && !storage.syncDirectoryDurableSync(parent)) return false;
+      if (!read.overflow) break;
+      if (removed) {
+        readLimit = MAX_INCIDENT_ROOT_ENTRIES;
+        continue;
+      }
+      const widerLimit = Math.min(Number.MAX_SAFE_INTEGER, Math.max(readLimit + 1, readLimit * 2));
+      if (widerLimit === readLimit) break;
+      readLimit = widerLimit;
     }
-    if (removed && !storage.syncDirectoryDurableSync(quarantineRoot)) return false;
-    if (!read.overflow) return true;
-    if (removed) {
-      readLimit = MAX_INCIDENT_ROOT_ENTRIES;
-      continue;
-    }
-    const widerLimit = Math.min(Number.MAX_SAFE_INTEGER, Math.max(readLimit + 1, readLimit * 2));
-    if (widerLimit === readLimit) return true;
-    readLimit = widerLimit;
   }
+  return true;
+}
+
+export function recordStoreResetParked(storage: StoragePort, quarantineRoot: string, parkingId: string): boolean {
+  if (!retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'parking', id: parkingId })) return false;
+  const ledger = readStoreResetRetentionLedger(storage, quarantineRoot);
+  if (ledger !== null && (ledger.pending !== null || ledger.preserved !== null)) {
+    writeLedger(storage, quarantineRoot, { ...ledger, pending: null, preserved: null });
+  }
+  return true;
 }
 
 function reconcilePending(
@@ -687,7 +722,9 @@ function reconcilePending(
   const incidentId = pending.outcome.incident.incidentId;
   const committed = readCommittedManifest(storage, quarantineRoot, incidentId);
   if (committed !== null) {
-    if (!removeOtherIncidentDirectories(storage, quarantineRoot, incidentId)) return ledger;
+    if (!retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'incident', id: incidentId })) {
+      return ledger;
+    }
     const reconciled = withPreservedOutcome(ledger, pending.outcome.incident);
     writeLedger(storage, quarantineRoot, reconciled);
     return reconciled;
@@ -747,7 +784,9 @@ export function recordStoreResetPreserved(
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
 ): void {
-  if (!removeOtherIncidentDirectories(storage, quarantineRoot, incident.incidentId)) return;
+  if (!retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'incident', id: incident.incidentId })) {
+    return;
+  }
   writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident));
 }
 
@@ -839,8 +878,8 @@ export function releaseStoreResetIncident(
   quarantineRoot: string,
   incidentId: string,
 ): StoreResetReleaseResult {
-  const fixedCoordinate = incidentId === STORE_RESET_IN_FLIGHT_DIRECTORY;
-  if (!fixedCoordinate && !isCanonicalStoreResetIncidentId(incidentId)) return { kind: 'absent', incidentId };
+  if (incidentId === STORE_RESET_IN_FLIGHT_DIRECTORY) return { kind: 'undeterminable', incidentId };
+  if (!isCanonicalStoreResetIncidentId(incidentId)) return { kind: 'absent', incidentId };
   const rootPresence = pathPresence(storage, quarantineRoot);
   if (rootPresence === 'absent') return { kind: 'absent', incidentId };
   if (rootPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
@@ -849,6 +888,7 @@ export function releaseStoreResetIncident(
   } catch (error: unknown) {
     return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
   }
+  const slot = resolveStoreResetRetentionSlot(storage, quarantineRoot);
   const stagingPath = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY, incidentId);
   const stagingPresence = pathPresence(storage, stagingPath);
   if (stagingPresence === 'present') {
@@ -863,10 +903,11 @@ export function releaseStoreResetIncident(
   }
   if (stagingPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
-  let parkingPath = join(parkingRoot, fixedCoordinate ? STORE_RESET_IN_FLIGHT_DIRECTORY : incidentId);
+  let parkingPath = join(parkingRoot, incidentId);
   let parkingPresence = pathPresence(storage, parkingPath);
   let parkingRecord: StoreResetParkedRecord | null = null;
-  if (!fixedCoordinate && parkingPresence === 'absent') {
+  let parkingRecordVerified = true;
+  if (parkingPresence === 'absent') {
     const inFlightPath = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
     const inFlightPresence = pathPresence(storage, inFlightPath);
     if (inFlightPresence === 'present') {
@@ -875,7 +916,7 @@ export function releaseStoreResetIncident(
         assertContainedDirectory(storage, parkingRoot, inFlightPath);
         const inFlight = readStoreResetParkedRecord(storage, parkingRoot, incidentId, STORE_RESET_IN_FLIGHT_DIRECTORY);
         if (inFlight === null) return { kind: 'undeterminable', incidentId };
-        if (inFlight?.parkingId === incidentId || inFlight?.incidentId === incidentId) {
+        if (inFlight.parkingId === incidentId || inFlight.incidentId === incidentId) {
           parkingPath = inFlightPath;
           parkingPresence = 'present';
           parkingRecord = inFlight;
@@ -892,17 +933,12 @@ export function releaseStoreResetIncident(
     try {
       assertContainedDirectory(storage, quarantineRoot, parkingRoot);
       assertContainedDirectory(storage, parkingRoot, parkingPath);
-      parkingRecord ??= readStoreResetParkedRecord(
-        storage,
-        parkingRoot,
-        incidentId,
-        fixedCoordinate ? STORE_RESET_IN_FLIGHT_DIRECTORY : incidentId,
-      );
+      parkingRecord ??= readStoreResetParkedRecord(storage, parkingRoot, incidentId, incidentId);
     } catch (error: unknown) {
       return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
     }
-    if (parkingRecord === null) return { kind: 'undeterminable', incidentId };
-    if (parkingRecord.phase === 'in-flight') return { kind: 'in-flight', incidentId };
+    parkingRecordVerified = parkingRecord !== null;
+    if (parkingRecord?.phase === 'in-flight') return { kind: 'in-flight', incidentId };
   }
   const incidentPath = join(quarantineRoot, incidentId);
   const incidentPresence = pathPresence(storage, incidentPath);
@@ -917,10 +953,9 @@ export function releaseStoreResetIncident(
   }
   const manifest = incidentPresence === 'present' ? readCommittedManifest(storage, quarantineRoot, incidentId) : null;
 
-  const slot = resolveStoreResetRetentionSlot(storage, quarantineRoot);
   const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const parkedEvidenceBytes =
-    parkingPresence === 'present' ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
+    parkingPresence === 'present' && parkingRecordVerified ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
   const incidentEvidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? null;
   const parkingEvidenceBytes = parkedEvidenceBytes;
   let parkingDeletionDurability: StoreResetDeletionDurability =
@@ -986,6 +1021,15 @@ export function releaseStoreResetIncident(
     }
   }
   if (holder) {
+    if (!parkingRecordVerified) {
+      return {
+        kind: 'released-unverified',
+        incidentId,
+        incidentEvidenceBytes: incidentEvidenceBytes ?? slot.holder.evidenceBytes,
+        parkingEvidenceBytes: null,
+        durability,
+      };
+    }
     return {
       kind: 'released',
       incidentId,
@@ -993,6 +1037,9 @@ export function releaseStoreResetIncident(
       parkingEvidenceBytes,
       durability,
     };
+  }
+  if (parkingPresence === 'present' && !parkingRecordVerified) {
+    return { kind: 'released-unverified', incidentId, incidentEvidenceBytes, parkingEvidenceBytes: null, durability };
   }
   if (incidentPresence === 'absent' && parkingPresence === 'present') {
     return { kind: 'parked', incidentId, incidentEvidenceBytes, parkingEvidenceBytes, durability };
