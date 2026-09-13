@@ -22,7 +22,6 @@ import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import {
   ACTIVE_STORE_SELECTION_VERSION,
   ACTIVE_STORE_TRANSITION_VERSION,
