@@ -207,7 +207,6 @@ describe('bundled store-reset CLI', () => {
         'Discarded descendant evidence: none.\n' +
         'States: ready produces a Markdown report; parked is owned evidence awaiting release; malformed, unsupported, build_mismatch, unsafe, and unavailable produce a fixed public-safe error.\n' +
         'Next: coral-cli backend store-reset report --target gen2 <ready-incident-id>\n' +
-        'For a non-ready incident, run the same report command with its ID and paste the fixed error output into the issue form.\n' +
         'Non-ready evidence remains retained. Do not move, restore, delete, or upload DB, WAL, or SHM files.\n' +
         'When a stored Coral version is known, install that version to inspect the preserved store with a compatible build.\n' +
         'To permanently remove a listed incident or parked record: coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <incident-id>\n',
