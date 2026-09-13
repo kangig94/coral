@@ -219,11 +219,6 @@ function importClosure(roots: readonly string[]): Set<string> {
   return visited;
 }
 
-type FunctionLocation = Readonly<{
-  relativePath: string;
-  declaration: ts.FunctionDeclaration;
-}>;
-
 function sourceWithOverrides(relativePath: string, overrides: ReadonlyMap<string, string>): ts.SourceFile {
   const override = overrides.get(relativePath);
   return override === undefined
@@ -231,82 +226,23 @@ function sourceWithOverrides(relativePath: string, overrides: ReadonlyMap<string
     : ts.createSourceFile(relativePath, override, ts.ScriptTarget.Latest, true);
 }
 
-function declaredFunction(
-  relativePath: string,
-  name: string,
-  overrides: ReadonlyMap<string, string>,
-): FunctionLocation | null {
-  const declaration = sourceWithOverrides(relativePath, overrides).statements.find(
-    (statement): statement is ts.FunctionDeclaration =>
-      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
-  );
-  return declaration === undefined ? null : { relativePath, declaration };
-}
-
-function importedFunction(
-  relativePath: string,
-  name: string,
-  overrides: ReadonlyMap<string, string>,
-): FunctionLocation | null {
-  const source = sourceWithOverrides(relativePath, overrides);
-  for (const statement of source.statements.filter(ts.isImportDeclaration)) {
-    const clause = statement.importClause;
-    if (clause === undefined || clause.namedBindings === undefined || !ts.isNamedImports(clause.namedBindings)) {
-      continue;
-    }
-    const binding = clause.namedBindings.elements.find((element) => element.name.text === name);
-    if (binding === undefined || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
-    const importedPath = resolveSourceImport(relativePath, statement.moduleSpecifier.text);
-    if (importedPath === null || !importedPath.startsWith('src/store/')) continue;
-    return declaredFunction(importedPath, binding.propertyName?.text ?? binding.name.text, overrides);
-  }
-  return null;
-}
-
-function calledFunctions(location: FunctionLocation, overrides: ReadonlyMap<string, string>): FunctionLocation[] {
-  return calledFunctionsInNode(location, location.declaration.body, overrides);
-}
-
-function calledFunctionsInNode(
-  location: FunctionLocation,
-  node: ts.Node | undefined,
-  overrides: ReadonlyMap<string, string>,
-): FunctionLocation[] {
-  const calls = new Set<string>();
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const name = calleeName(node.expression);
-      if (name !== null) calls.add(name);
-    }
-    ts.forEachChild(node, visit);
-  };
-  if (node !== undefined) visit(node);
-  return [...calls].flatMap((name) => {
-    const target =
-      declaredFunction(location.relativePath, name, overrides) ??
-      importedFunction(location.relativePath, name, overrides);
-    return target === null ? [] : [target];
-  });
-}
-
-function settlementStoreClosure(overrides: ReadonlyMap<string, string> = new Map()): FunctionLocation[] {
-  const root = declaredFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore', overrides);
-  if (root === null) throw new Error('Missing settlement root.');
-  const closure: FunctionLocation[] = [];
-  const pending = [root];
+function settlementStoreImportClosure(overrides: ReadonlyMap<string, string> = new Map()): string[] {
+  const closure: string[] = [];
+  const pending = [ACTIVE_STORE_SELECTION_COORDINATION_PATH];
   const visited = new Set<string>();
   while (pending.length > 0) {
     const next = pending.pop();
-    if (next === undefined) continue;
-    const name = next.declaration.name?.text;
-    if (name === undefined) continue;
-    const key = `${next.relativePath}:${name}`;
-    if (visited.has(key)) continue;
-    visited.add(key);
+    if (next === undefined || visited.has(next)) continue;
+    visited.add(next);
     closure.push(next);
-    pending.push(...calledFunctions(next, overrides));
+    const source = sourceWithOverrides(next, overrides);
+    for (const statement of source.statements.filter(ts.isImportDeclaration)) {
+      if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const imported = resolveSourceImport(next, statement.moduleSpecifier.text);
+      if (imported?.startsWith('src/store/')) pending.push(imported);
+    }
   }
-  return closure;
+  return closure.sort();
 }
 
 function isUnmappedErrnoRethrow(statement: ts.ThrowStatement): boolean {
@@ -322,22 +258,18 @@ function isUnmappedErrnoRethrow(statement: ts.ThrowStatement): boolean {
 
 function settlementSharedNameThrowViolations(overrides: ReadonlyMap<string, string> = new Map()): readonly string[] {
   const violations: string[] = [];
-  for (const location of settlementStoreClosure(overrides)) {
-    if (
-      location.relativePath !== RESET_ACTIVE_EVIDENCE_PATH ||
-      location.declaration.name?.text === 'enumerateActiveEvidence'
-    ) {
-      continue;
-    }
-    const source = sourceWithOverrides(location.relativePath, overrides);
+  for (const relativePath of settlementStoreImportClosure(overrides)) {
+    const source = sourceWithOverrides(relativePath, overrides);
     const visit = (node: ts.Node): void => {
       if (ts.isThrowStatement(node) && !isUnmappedErrnoRethrow(node)) {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-        violations.push(`${location.relativePath}:${line} ${location.declaration.name?.text}: ${node.getText(source)}`);
+        violations.push(
+          `${relativePath}:${line} ${enclosingFunctionNames(node)[0] ?? '<module>'}: ${node.getText(source)}`,
+        );
       }
       ts.forEachChild(node, visit);
     };
-    if (location.declaration.body !== undefined) visit(location.declaration.body);
+    visit(source);
   }
   return violations.sort();
 }
@@ -460,17 +392,17 @@ describe('store reset discipline invariants', () => {
     expect(settlementSharedNameThrowViolations()).toEqual([]);
   });
 
-  it('detects a semantic throw injected into a settlement callee', () => {
-    const source = readFileSync(join(REPO_ROOT, RESET_ACTIVE_EVIDENCE_PATH), 'utf8');
-    const needle = 'const entry = parkedEntry(storage, destination, evidence.name, parked);';
+  it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
+    const source = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
+    const needle = 'const pathBefore = stablePathStat(storage, candidate.source);';
     expect(source).toContain(needle);
-    const injected = source.replace(
-      needle,
-      `${needle}\n  if (!parked.isFile()) throw new Error('injected non-regular parked evidence');`,
+    const injected = source.replace(needle, `${needle}\n  throw new Error('injected imported-module failure');`);
+    const baseline = settlementSharedNameThrowViolations();
+    const violations = settlementSharedNameThrowViolations(new Map([[BACKEND_STORE_RESET_PATH, injected]]));
+    expect(violations).toContainEqual(
+      expect.stringContaining("describeCandidate: throw new Error('injected imported-module failure')"),
     );
-    expect(settlementSharedNameThrowViolations(new Map([[RESET_ACTIVE_EVIDENCE_PATH, injected]]))).toEqual([
-      expect.stringContaining("parkActiveEvidence: throw new Error('injected non-regular parked evidence')"),
-    ]);
+    expect(violations).toHaveLength(baseline.length + 1);
   });
 
   it('maps expected maintenance-acquisition failures to copy dispositions', () => {
