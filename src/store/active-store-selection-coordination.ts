@@ -385,8 +385,8 @@ async function settleActiveStore(
       writerExclusion === undefined
         ? null
         : options.dependencies.kind === 'operator'
-          ? resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock, writerExclusion)
-          : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, resetLock, writerExclusion);
+          ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
+          : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
     activeEpoch ??= mintActiveStoreEpoch(runtime, files, options);
     let transition = initialTransition;
     const publications: IncidentPublication[] = [];

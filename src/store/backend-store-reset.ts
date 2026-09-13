@@ -1018,8 +1018,9 @@ function stagingUsesLinkedIdentities(
 }
 
 function resumeInterruptedIncident(
-  runtime: Pick<Runtime, 'env' | 'storage'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
   files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
   writerExclusion: WriterExclusion,
   authorizeCommittedManifest?: (manifest: StoreResetIncidentManifest) => void,
 ): {
@@ -1027,7 +1028,7 @@ function resumeInterruptedIncident(
   readonly manifest: StoreResetIncidentManifest;
   readonly leftActive: readonly StoreResetEvidenceFileName[];
 } | null {
-  resumeNonPublicationParking(runtime, files);
+  resumeNonPublicationParking(runtime, files, options);
   const interrupted = detectInterruptedIncident(runtime, files);
   if (interrupted === null) return null;
   if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
@@ -1683,7 +1684,11 @@ function terminalizeParking(
   });
 }
 
-function resumeNonPublicationParking(runtime: Pick<Runtime, 'storage'>, files: BackendStoreFileSet): void {
+function resumeNonPublicationParking(
+  runtime: Pick<Runtime, 'flavor' | 'storage' | 'time'>,
+  files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
+): void {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   if (discovered.truncated) throw new InterruptedStoreResetRefusal('store_reset_interrupted_ambiguous');
@@ -1706,6 +1711,25 @@ function resumeNonPublicationParking(runtime: Pick<Runtime, 'storage'>, files: B
   if (transaction.kind === 'claim') {
     const parked = parkCurrentEvidence(runtime.storage, files, parkingDirectory);
     if (parked.length > 0) requireDirectorySync(runtime.storage, files.dbDir, parkingDirectory);
+    const parkedDb = parked.find((item) => item.name === 'store.db');
+    const classification =
+      parkedDb?.entry.kind === 'regular-file'
+        ? classifyParkedStore(runtime, join(parkingDirectory, 'store.db'), options)
+        : null;
+    if ((classification?.kind === 'compatible' || classification?.kind === 'fresh') && parkedDb !== undefined) {
+      const adoption = openCompatibleParkedStore(
+        runtime,
+        files,
+        options,
+        parkingRoot,
+        parkingDirectory,
+        record.parkingId,
+        parked,
+        classification,
+      );
+      if (adoption.kind === 'opened') adoption.db.close();
+      return;
+    }
     terminalizeParking(
       runtime.storage,
       parkingRoot,
@@ -2142,6 +2166,100 @@ function restoreCompatibleParkedStore(
   return true;
 }
 
+function openCompatibleParkedStore(
+  runtime: Pick<Runtime, 'flavor' | 'storage' | 'time'>,
+  files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
+  parkingRoot: string,
+  parkingDirectory: string,
+  parkingId: string,
+  parked: ReturnType<typeof parkCurrentEvidence>,
+  classification: Extract<StoreFormatClassification, { readonly kind: 'compatible' | 'fresh' }>,
+): BackendStoreClaimAttempt {
+  const parkedDb = parked.find((item) => item.name === 'store.db');
+  if (parkedDb === undefined) return { kind: 'retry', epochs: [] };
+  const parkedEpoch: StoreSettlementEpoch = {
+    kind: 'parked',
+    parkingId,
+    cause: 'intruder',
+    names: parked.map((item) => item.name),
+    classification,
+  };
+  const terminalize = (): void => {
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      terminalParkingRecord(
+        runtime,
+        parkingId,
+        'intruder',
+        parked.map((item) => item.entry),
+        classification,
+      ),
+    );
+  };
+  const restorableNames = parked.filter((item) => item.entry.kind === 'regular-file').map((item) => item.name);
+  if (!restoreCompatibleParkedStore(runtime, files, parkingDirectory, restorableNames)) {
+    terminalize();
+    return { kind: 'retry', epochs: [parkedEpoch] };
+  }
+  const decision = openWritableStoreDatabase({
+    path: activeEvidencePath(files, 'store.db'),
+    storage: runtime.storage,
+    storeFormat: options.storeFormat,
+    flavor: runtime.flavor,
+    busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
+  });
+  if (decision.kind === 'incompatible') {
+    terminalize();
+    return { kind: 'retry', epochs: [parkedEpoch] };
+  }
+  const identity = activeNameHasIdentity(runtime.storage, files, 'store.db', parkedDb.identity);
+  if (identity.kind !== 'same') {
+    decision.db.close();
+    if (identity.kind === 'undeterminable') throw identity.error;
+    terminalize();
+    return { kind: 'retry', epochs: [parkedEpoch] };
+  }
+  try {
+    for (const item of parked) {
+      if (item.entry.kind === 'regular-file') runtime.storage.unlinkSync(join(parkingDirectory, item.name));
+    }
+    requireDirectorySync(runtime.storage, parkingDirectory);
+    const parkingRead = runtime.storage.readDirectoryBoundedSync(parkingDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
+    if (parkingRead.overflow) throw new Error('Store-reset parking directory exceeds its entry limit.');
+    const remainingNames = parkingRead.entries.filter((name): name is StoreResetEvidenceFileName =>
+      STORE_RESET_EVIDENCE_FILE_NAMES.includes(name as StoreResetEvidenceFileName),
+    );
+    let remainingEpoch: StoreSettlementEpoch | null = null;
+    if (remainingNames.length === 0) {
+      removeSettledParkingDirectory(runtime.storage, parkingRoot, parkingDirectory);
+    } else {
+      const remainingEntries = describeParkedEntries(runtime.storage, parkingDirectory, remainingNames);
+      writeStoreResetParkedRecord(
+        runtime.storage,
+        parkingRoot,
+        terminalParkingRecord(runtime, parkingId, 'residual', remainingEntries, null),
+      );
+      remainingEpoch = {
+        kind: 'parked',
+        parkingId,
+        cause: 'residual',
+        names: remainingNames,
+        classification: null,
+      };
+    }
+    return {
+      kind: 'opened',
+      db: decision.db,
+      epochs: [...(remainingEpoch === null ? [] : [remainingEpoch]), { kind: 'adopted' }],
+    };
+  } catch (error: unknown) {
+    decision.db.close();
+    throw error;
+  }
+}
+
 function finishOpenedClaim(
   runtime: Pick<Runtime, 'storage'>,
   files: BackendStoreFileSet,
@@ -2193,54 +2311,27 @@ export function attemptBackendStoreClaim(
     names.length === 0 ? null : { kind: 'parked', parkingId, cause, names, classification };
 
   if (classification?.kind === 'compatible' || classification?.kind === 'fresh') {
-    if (parkedDb === undefined) return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
-    writeStoreResetParkedRecord(
-      runtime.storage,
+    const adoption = openCompatibleParkedStore(
+      runtime,
+      files,
+      options,
       parkingRoot,
-      terminalParkingRecord(
-        runtime,
-        parkingId,
-        cause,
-        parked.map((item) => item.entry),
-        classification,
-      ),
+      parkingDirectory,
+      parkingId,
+      parked,
+      classification,
     );
-    const restorableNames = parked.filter((item) => item.entry.kind === 'regular-file').map((item) => item.name);
-    if (!restoreCompatibleParkedStore(runtime, files, parkingDirectory, restorableNames)) {
-      return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
-    }
-    const decision = openWritableStoreDatabase({
-      path: activeEvidencePath(files, 'store.db'),
-      storage: runtime.storage,
-      storeFormat: options.storeFormat,
-      flavor: runtime.flavor,
-      busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
-    });
-    if (decision.kind === 'incompatible') {
-      return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
-    }
-    const identity = activeNameHasIdentity(runtime.storage, files, 'store.db', parkedDb.identity);
-    if (identity.kind !== 'same') {
-      decision.db.close();
-      if (identity.kind === 'undeterminable') throw identity.error;
-      return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
-    }
-    runtime.storage.rmSync(parkingDirectory, { recursive: true });
-    requireDirectorySync(runtime.storage, parkingRoot);
-    const mintedRoot = dirname(minted.directory);
-    runtime.storage.rmSync(minted.directory, { recursive: true });
-    requireDirectorySync(runtime.storage, mintedRoot);
+    if (adoption.kind === 'retry') return adoption;
     try {
+      const mintedRoot = dirname(minted.directory);
+      runtime.storage.rmSync(minted.directory, { recursive: true });
+      requireDirectorySync(runtime.storage, mintedRoot);
       settleStoreResetPending(runtime.storage, quarantineRoot);
     } catch (error: unknown) {
-      decision.db.close();
+      adoption.db.close();
       throw error;
     }
-    return {
-      kind: 'opened',
-      db: decision.db,
-      epochs: [{ kind: 'adopted' }],
-    };
+    return adoption;
   }
 
   if (parkedEpoch === null) {
@@ -2309,13 +2400,14 @@ export function publishClassifiedBackendStoreResetIncident(
 }
 
 export function resumeBackendStoreResetIncidentForOperator(
-  runtime: Pick<Runtime, 'env' | 'storage'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
   files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
   resetLock: BackendStoreResetLockLease,
   writerExclusion: WriterExclusion,
 ): BackendStoreResetIncident | null {
   resetLock.assertOwned();
-  return resumeInterruptedIncident(runtime, files, writerExclusion)?.incident ?? null;
+  return resumeInterruptedIncident(runtime, files, options, writerExclusion)?.incident ?? null;
 }
 
 export type RetainedStoreResetQuarantineFile = Readonly<{
@@ -2424,15 +2516,16 @@ function authorizeAutomaticIncidentResume(
 }
 
 function resumeAutomaticBackendStoreReset(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
   resetLock: BackendStoreResetLockLease,
   writerExclusion: WriterExclusion,
 ): ReturnType<typeof resumeInterruptedIncident> {
   resetLock.assertOwned();
   try {
-    return resumeInterruptedIncident(runtime, files, writerExclusion, (manifest) => {
+    return resumeInterruptedIncident(runtime, files, options, writerExclusion, (manifest) => {
       authorizeAutomaticIncidentResume(authority, manifest);
     });
   } catch (error: unknown) {
@@ -2448,13 +2541,16 @@ function resumeAutomaticBackendStoreReset(
 }
 
 export function resumeAutomaticBackendStoreResetIncident(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage'>,
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
   files: BackendStoreFileSet,
+  options: OpenOrResetBackendStoreOptions,
   resetLock: BackendStoreResetLockLease,
   writerExclusion: WriterExclusion,
 ): BackendStoreResetIncident | null {
-  return resumeAutomaticBackendStoreReset(runtime, authority, files, resetLock, writerExclusion)?.incident ?? null;
+  return (
+    resumeAutomaticBackendStoreReset(runtime, authority, files, options, resetLock, writerExclusion)?.incident ?? null
+  );
 }
 
 export function acquireBackendStoreResetLock(

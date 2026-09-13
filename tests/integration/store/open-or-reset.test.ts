@@ -438,7 +438,13 @@ function resumeReset(runtime: Runtime, dbPath: string) {
   });
   const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
   try {
-    return resumeBackendStoreResetIncidentForOperator(runtime, files, resetLock, writerExclusion());
+    return resumeBackendStoreResetIncidentForOperator(
+      runtime,
+      files,
+      { path: dbPath, storeFormat: STORE_FORMAT },
+      resetLock,
+      writerExclusion(),
+    );
   } finally {
     resetLock.release();
   }
@@ -2685,6 +2691,92 @@ describe('openOrResetBackendStoreDb', () => {
     for (const [index, path] of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`].entries()) {
       expect(readFileSync(path)).toEqual(before[index]);
     }
+  });
+
+  it('classifies, restores, opens, and identity-verifies a compatible interrupted claim', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-compatible-claim-resume-');
+    const dbPath = join(root, 'store.db');
+    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
+    const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+    const parkingDirectory = join(parkingRoot, parkingId);
+    mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
+    createCompatibleSentinelStore(runtime, join(parkingDirectory, 'store.db'));
+    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
+      version: 1,
+      parkingId,
+      parkedAt: '2026-09-13T00:00:00.000Z',
+      phase: 'in-flight',
+      cause: 'residual',
+      incidentId: null,
+      names: [],
+      entries: [],
+      transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
+      classification: null,
+    });
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, parkingId)).toMatchObject({
+      phase: 'terminal',
+      incidentId: null,
+      names: expect.arrayContaining(['store.db-wal', 'store.db-shm']),
+    });
+    const second = await openReset(runtime, dbPath);
+    second.close();
+  });
+
+  it('retains a non-regular sibling when adopting a compatible claim and reports its parked epoch', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-compatible-claim-sibling-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const linkSync = runtime.storage.linkSync;
+    let injected = false;
+    vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+      if (
+        !injected &&
+        destination === dbPath &&
+        String(source).includes(`${join('store-reset-quarantine', '.minted')}`)
+      ) {
+        createCompatibleSentinelStore(runtime, dbPath);
+        mkdirSync(`${dbPath}-shm`);
+        injected = true;
+      }
+      linkSync(source, destination);
+    });
+
+    const result = await coordinateActiveStoreSelection(runtime, authorityFor(runtime, dbPath), {
+      path: dbPath,
+      storeFormat: STORE_FORMAT,
+      currentSelection: activeSelection(dbPath),
+      dependencies: {
+        kind: 'startup',
+        validateSelectedTarget: () => {
+          throw new Error('The active-evidence fixture never selects a foreign target.');
+        },
+        acquireWriterExclusion: async () => writerExclusion(),
+      },
+    });
+    if (result.kind !== 'opened') throw new Error('The active-evidence fixture unexpectedly handed off.');
+    result.db.close();
+
+    expect(injected).toBe(true);
+    expect(result.epochs).toContainEqual(
+      expect.objectContaining({ kind: 'parked', cause: 'residual', names: expect.arrayContaining(['store.db-shm']) }),
+    );
+    const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+    const retained = readdirSync(parkingRoot)
+      .filter(isCanonicalStoreResetIncidentId)
+      .map((id) => readStoreResetParkedRecord(runtime.storage, parkingRoot, id))
+      .find((record) => record?.names.includes('store.db-shm'));
+    expect(retained).toMatchObject({
+      phase: 'terminal',
+      entries: expect.arrayContaining([expect.objectContaining({ name: 'store.db-shm', kind: 'directory' })]),
+    });
+    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 });
 
