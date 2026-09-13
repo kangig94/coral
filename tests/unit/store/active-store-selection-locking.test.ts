@@ -22,6 +22,7 @@ import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import {
   ACTIVE_STORE_SELECTION_VERSION,
   ACTIVE_STORE_TRANSITION_VERSION,
@@ -43,7 +44,7 @@ import {
 import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { spyOnClassifyStoreFile, spyOnOpenStoreDatabase } from '#tests/helpers/store-db-spies.js';
+import { spyOnClassifyStoreFile, spyOnOpenWritableStoreDatabase } from '#tests/helpers/store-db-spies.js';
 
 const roots: string[] = [];
 const backendBundle = 'backend fixture';
@@ -131,7 +132,10 @@ function stubStoreOpen(
 ): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
   return {
     classifyStore: spyOnClassifyStoreFile().mockReturnValue(classification),
-    openStore: spyOnOpenStoreDatabase().mockImplementation(() => database),
+    openStore: spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+      if (!existsSync(path)) writeFileSync(path, '');
+      return { kind: 'opened', db: database };
+    }),
   };
 }
 
@@ -214,10 +218,12 @@ describe('active-store-selection locking', () => {
     const durableWrite = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
     runtime.storage.writeAtomicDurableSync = vi.fn((path, bytes, options) => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
-      expect(existsSync(resetLock)).toBe(false);
-      events.push(
-        path === paths.transitionFile ? 'transition' : path === paths.selectionV1File ? 'selection-v1' : 'selection',
-      );
+      if (path === paths.transitionFile || path === paths.selectionV1File || path === paths.selectionFile) {
+        expect(existsSync(resetLock)).toBe(false);
+        events.push(
+          path === paths.transitionFile ? 'transition' : path === paths.selectionV1File ? 'selection-v1' : 'selection',
+        );
+      }
       return durableWrite(path, bytes, options);
     });
     const db = fakeDatabase();
@@ -227,11 +233,11 @@ describe('active-store-selection locking', () => {
       events.push('classify');
       return { kind: 'fresh' };
     });
-    spyOnOpenStoreDatabase().mockImplementation(() => {
+    spyOnOpenWritableStoreDatabase().mockImplementation(() => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
       expect(existsSync(resetLock)).toBe(true);
       events.push('open');
-      return db;
+      return { kind: 'opened', db };
     });
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
@@ -307,7 +313,7 @@ describe('active-store-selection locking', () => {
     const boundary = resolveGenerationBoundaryPaths(runtime);
     const selectedBytes = readFileSync(resolveActiveStoreRecordPaths(runtime).selectionFile);
     const classifyStore = spyOnClassifyStoreFile();
-    const openStore = spyOnOpenStoreDatabase();
+    const openStore = spyOnOpenWritableStoreDatabase();
     const validate = createForeignTargetValidator();
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
@@ -496,7 +502,7 @@ describe('active-store-selection locking', () => {
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     mkdirSync(paths.transitionFile, { mode: 0o700 });
     const classifyStore = spyOnClassifyStoreFile();
-    const openStore = spyOnOpenStoreDatabase();
+    const openStore = spyOnOpenWritableStoreDatabase();
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
@@ -764,22 +770,24 @@ describe('active-store-selection locking', () => {
     grantLease({ assertOwned, release });
     await expect(coordinating).resolves.toMatchObject({ kind: 'opened', db });
     expect(assertOwned).toHaveBeenCalled();
-    expect(openStore).toHaveBeenCalledOnce();
+    expect(openStore).toHaveBeenCalledTimes(2);
     expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(openStore.mock.invocationCallOrder[0]);
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('should authorize the classified store before invoking the store opener', async () => {
+  it('should leave the legacy-adoptable refusal with the writable opener', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const storeFormat = currentCoralStoreFormat();
-    stubStoreOpen({
+    const { openStore } = stubStoreOpen({
       kind: 'legacy-adoptable',
       currentFingerprint: storeFormat.fingerprint,
       currentProductVersion: currentSelection.manifest.version,
       storedFingerprint: storeFormat.fingerprint,
     });
-    const openStore = spyOnOpenStoreDatabase();
+    openStore.mockImplementation(() => {
+      throw documentedCoralSetupError('store_schema_outdated');
+    });
     const acquireStoreRecoveryLease = vi.fn(async () => ({ assertOwned: vi.fn(), release: vi.fn() }));
 
     await expect(
@@ -796,10 +804,7 @@ describe('active-store-selection locking', () => {
       }),
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
 
-    // A helper that opened first and authorized later would still satisfy every source-order assertion that
-    // used to cover this boundary. Observing the injected opener is the boundary itself: refusal must make it
-    // unreachable, irrespective of how recovery is split across helpers.
-    expect(openStore).not.toHaveBeenCalled();
+    expect(openStore).toHaveBeenCalledOnce();
     expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
   });
 

@@ -6,6 +6,6 @@ export function spyOnClassifyStoreFile(): MockInstance<typeof dbModule.classifyS
   return vi.spyOn(dbModule, 'classifyStoreFile');
 }
 
-export function spyOnOpenStoreDatabase(): MockInstance<typeof dbModule.openStoreDatabase> {
-  return vi.spyOn(dbModule, 'openStoreDatabase');
+export function spyOnOpenWritableStoreDatabase(): MockInstance<typeof dbModule.openWritableStoreDatabase> {
+  return vi.spyOn(dbModule, 'openWritableStoreDatabase');
 }

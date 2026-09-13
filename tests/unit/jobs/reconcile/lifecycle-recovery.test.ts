@@ -1743,11 +1743,13 @@ describe('lifecycle recovery', () => {
     }
 
     const removedArtifacts: string[] = [];
+    const remove = runtime.storage.rmSync;
     const storage = {
       ...runtime.storage,
-      rmSync: (path: string) => {
+      rmSync: (path: string, options?: { readonly recursive?: boolean; readonly force?: boolean }) => {
         if (path === progressStore.jobDir(faultJobId)) throw new Error('injected artifact prune failure');
-        removedArtifacts.push(path);
+        if (path === progressStore.jobDir(siblingJobId)) removedArtifacts.push(path);
+        remove(path, options);
       },
     };
     const lifecycleRuntime = { ...runtime, storage };
