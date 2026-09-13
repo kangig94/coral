@@ -469,7 +469,7 @@ async function captureAsyncError(fn: () => Promise<unknown>): Promise<unknown> {
   }
 }
 
-const ACTIVE_EVIDENCE_ARMS = ['link', 'copy', 'discard', 'claim', 'resume'] as const;
+const ACTIVE_EVIDENCE_ARMS = ['copy-proven', 'copy-unproven', 'discard', 'claim', 'resume'] as const;
 const ACTIVE_EVIDENCE_MUTATIONS = ['deleted', 'replaced', 'appended', 'sidecar', 'non-regular', 'crash'] as const;
 
 type ActiveEvidenceArm = (typeof ACTIVE_EVIDENCE_ARMS)[number];
@@ -671,9 +671,9 @@ async function exerciseActiveEvidenceArm(
       });
       boundary = 'manual';
     } else {
-      boundary = arm === 'link' ? 'identity' : 'descriptor';
+      boundary = 'descriptor';
       exclusion =
-        arm === 'link'
+        arm === 'copy-proven'
           ? writerExclusion()
           : { kind: 'unproven', reason: 'writer-live', blockers: 'active-evidence sweep' };
     }
@@ -740,7 +740,7 @@ async function exerciseActiveEvidenceArm(
       trace.mutationApplied() &&
       mutation?.kind === 'appended' &&
       trace.calls[mutation.index] === 'readSync' &&
-      (arm === 'link' || arm === 'copy')
+      (arm === 'copy-proven' || arm === 'copy-unproven')
     ) {
       const ledger = readStoreResetRetentionLedger(runtime.storage, join(dirname(dbPath), 'store-reset-quarantine'));
       const incidents = [ledger?.preserved, ledger?.excess?.latest].filter(
@@ -1015,7 +1015,7 @@ describe('openOrResetBackendStoreDb', () => {
     ).toBe(true);
   });
 
-  it('links after writer exclusion drains and copies while a writer lease is held', async () => {
+  it('copies to an immutable inode with or without proven writer exclusion', async () => {
     const drainedRuntime = createRuntime();
     const drainedPath = join(makeTempRoot('coral-store-reset-drained-'), 'store.db');
     createMismatchStore(drainedPath);
@@ -1025,12 +1025,16 @@ describe('openOrResetBackendStoreDb', () => {
     try {
       expect(publishReset(drainedRuntime, drainedPath, drained)).toMatchObject({
         kind: 'preserved',
-        preservation: { kind: 'linked' },
+        preservation: {
+          kind: 'copied',
+          cause: { kind: 'link-unsupported', errno: 'other', code: 'HARD_LINK_NOT_IMMUTABLE' },
+          coherence: 'coherent',
+        },
       });
     } finally {
       if (drained.kind === 'proven') drained.lease.release();
     }
-    expect(drainedLink).toHaveBeenCalled();
+    expect(drainedLink).not.toHaveBeenCalled();
 
     const heldRuntime = createRuntime();
     const heldPath = join(makeTempRoot('coral-store-reset-writer-held-'), 'store.db');
@@ -1057,11 +1061,11 @@ describe('openOrResetBackendStoreDb', () => {
     expect(heldLink).not.toHaveBeenCalled();
   });
 
-  it('falls back for every link failure without turning a shared-path errno into a refusal', () => {
+  it('does not attempt a hard link while publishing preserved evidence', () => {
     const fallbackRuntime = createRuntime();
     const fallbackPath = join(makeTempRoot('coral-store-reset-link-fallback-'), 'store.db');
     createMismatchStore(fallbackPath);
-    vi.spyOn(fallbackRuntime.storage, 'linkSync').mockImplementation(() => {
+    const link = vi.spyOn(fallbackRuntime.storage, 'linkSync').mockImplementation(() => {
       throw errno('EXDEV');
     });
 
@@ -1069,25 +1073,11 @@ describe('openOrResetBackendStoreDb', () => {
       kind: 'preserved',
       preservation: {
         kind: 'copied',
-        cause: { kind: 'link-unsupported', errno: 'EXDEV', code: 'EXDEV' },
+        cause: { kind: 'link-unsupported', errno: 'other', code: 'HARD_LINK_NOT_IMMUTABLE' },
         coherence: 'coherent',
       },
     });
-
-    const refusedRuntime = createRuntime();
-    const refusedPath = join(makeTempRoot('coral-store-reset-link-refused-'), 'store.db');
-    createMismatchStore(refusedPath);
-    vi.spyOn(refusedRuntime.storage, 'linkSync').mockImplementation(() => {
-      throw errno('EIO');
-    });
-    expect(publishReset(refusedRuntime, refusedPath)).toMatchObject({
-      kind: 'preserved',
-      preservation: {
-        kind: 'copied',
-        cause: { kind: 'link-unsupported', errno: 'other', code: 'EIO' },
-        coherence: 'coherent',
-      },
-    });
+    expect(link).not.toHaveBeenCalled();
   });
 
   it('adopts one orphaned committed incident when the preserved slot is vacant', () => {
@@ -1375,7 +1365,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(quarantineEntries).toHaveLength(1);
     const quarantineDir = join(quarantineRoot, quarantineEntries[0]);
     const stagingDirectory = join(quarantineRoot, '.staging', quarantineEntries[0]);
-    const dbLink = events.indexOf(`link:${dbPath}->${join(stagingDirectory, 'store.db')}`);
+    const dbCopy = events.indexOf(`open:${join(stagingDirectory, 'store.db')}:wx`);
     const manifestWrite = events.indexOf(`write:${join(stagingDirectory, 'reset-manifest.json')}`);
     const manifestSync = events.findIndex(
       (event, index) => index > manifestWrite && event === `sync:${stagingDirectory}`,
@@ -1387,8 +1377,8 @@ describe('openOrResetBackendStoreDb', () => {
     const sourceSync = events.findIndex((event, index) => index > dbParking && event === `sync:${dbDir}`);
     const finalRename = events.indexOf(`rename:${stagingDirectory}->${quarantineDir}`);
     const finalRootSync = events.findIndex((event, index) => index > finalRename && event === `sync:${quarantineRoot}`);
-    expect(dbLink).toBeGreaterThanOrEqual(0);
-    expect(dbLink).toBeLessThan(dbParking);
+    expect(dbCopy).toBeGreaterThanOrEqual(0);
+    expect(dbCopy).toBeLessThan(dbParking);
     expect(dbParking).toBeLessThan(sourceSync);
     expect(sourceSync).toBeLessThan(manifestWrite);
     expect(manifestWrite).toBeLessThan(manifestSync);
@@ -2020,7 +2010,7 @@ describe('openOrResetBackendStoreDb', () => {
     ledgerWrite.mockRestore();
     expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({
       kind: 'held',
-      holder: { preservation: { kind: 'linked', coherence: 'coherent' } },
+      holder: { preservation: { kind: 'copied', coherence: 'coherent' } },
       ledger: { pending: null },
     });
   });
@@ -2147,30 +2137,23 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(join(root, 'store-reset-quarantine'))).toBe(false);
   });
 
-  it('classifies a compatible replacement that arrives before the link claim', async () => {
+  it('never uses a shared-path hard link while preserving an active store', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-active-replacement-');
     const dbPath = join(root, 'store.db');
-    const replacement = join(root, 'replacement.db');
     createMismatchStore(dbPath);
-    createCompatibleSentinelStore(runtime, replacement);
     const linkSync = runtime.storage.linkSync;
-    let replaced = false;
+    const activeSources: string[] = [];
     vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
-      if (source === dbPath && !replaced) {
-        replaced = true;
-        rmSync(dbPath);
-        renameFileSync(replacement, dbPath);
-      }
-      return linkSync(source, destination);
+      if (source === dbPath) activeSources.push(source);
+      linkSync(source, destination);
     });
 
     const db = await openReset(runtime, dbPath);
     db.close();
 
-    expect(replaced).toBe(true);
-    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
-    expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([]);
+    expect(activeSources).toEqual([]);
+    expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
   it('classifies a compatible replacement that arrives before copy descriptor open', async () => {

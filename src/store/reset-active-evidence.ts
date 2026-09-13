@@ -43,12 +43,6 @@ export type ActiveEvidenceOpen =
   | { readonly kind: 'changed' }
   | { readonly kind: 'undeterminable'; readonly cause: string };
 
-export type ActiveEvidenceLink =
-  | { readonly kind: 'linked' }
-  | { readonly kind: 'absent' }
-  | { readonly kind: 'changed' }
-  | { readonly kind: 'unavailable'; readonly code: string };
-
 export type ParkedActiveEvidence = Readonly<{
   evidence: ActiveEvidence;
   ownership: 'ours' | 'other';
@@ -185,25 +179,6 @@ export function openActiveEvidence(
     }
     return { kind: 'undeterminable', cause: errorCause(error) };
   }
-}
-
-export function linkActiveEvidence(
-  storage: StoragePort,
-  files: ActiveEvidenceFileSet,
-  evidence: ActiveEvidence,
-  destination: string,
-): ActiveEvidenceLink {
-  try {
-    storage.linkSync(candidateForEvidence(files, evidence.name), destination);
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return { kind: 'absent' };
-    return { kind: 'unavailable', code: errorCode(error) };
-  }
-
-  const destinationStat = storage.lstatSync(destination, { bigint: true });
-  return destinationStat.isFile() && sameIdentity(evidence.identity, destinationStat)
-    ? { kind: 'linked' }
-    : { kind: 'changed' };
 }
 
 export function parkActiveEvidence(

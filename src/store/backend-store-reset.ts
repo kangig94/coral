@@ -19,7 +19,6 @@ import {
   activeEvidencePath,
   activeNameHasIdentity,
   linkOwnedEvidenceToActive,
-  linkActiveEvidence,
   openActiveEvidence,
   parkActiveEvidence,
   parkCurrentEvidence,
@@ -1361,65 +1360,11 @@ type PublishedIncidentEvidence = Readonly<{
   leftActive: readonly StoreResetEvidenceFileName[];
 }>;
 
-class StoreResetLinkUnavailable extends Error {
-  readonly code: string;
-
-  constructor(error: unknown) {
-    const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'UNKNOWN';
-    super(`Store-reset evidence could not be linked (${code}).`, { cause: error });
-    this.name = 'StoreResetLinkUnavailable';
-    this.code = code;
-  }
-}
-
 class StoreResetEvidenceMutation extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'StoreResetEvidenceMutation';
   }
-}
-
-function removeStagedEvidence(
-  storage: StoragePort,
-  evidence: readonly ActiveEvidence[],
-  stagingDirectory: string,
-): void {
-  for (const active of evidence) {
-    storage.rmSync(join(stagingDirectory, active.name), { force: true });
-  }
-}
-
-function linkIncidentEvidence(
-  storage: StoragePort,
-  files: BackendStoreFileSet,
-  activeEvidence: readonly ActiveEvidence[],
-  stagingDirectory: string,
-  stagingIdentity: StorageBigIntStat,
-): PublishedIncidentEvidence {
-  const published: Array<{ active: ActiveEvidence; file: StoreResetIncidentFile }> = [];
-  const leftActive: StoreResetEvidenceFileName[] = [];
-  for (const active of activeEvidence) {
-    requireSameDirectory(storage, stagingDirectory, stagingIdentity);
-    const destination = join(stagingDirectory, active.name);
-    const linked = linkActiveEvidence(storage, files, active, destination);
-    switch (linked.kind) {
-      case 'linked':
-        published.push({ active, file: describeCandidate(storage, { source: destination, name: active.name }, null) });
-        break;
-      case 'absent':
-        leftActive.push(active.name);
-        break;
-      case 'changed':
-        storage.rmSync(destination, { force: true });
-        leftActive.push(active.name);
-        break;
-      case 'unavailable':
-        throw new StoreResetLinkUnavailable(Object.assign(new Error(linked.code), { code: linked.code }));
-      default:
-        assertNever(linked);
-    }
-  }
-  return { published, coherence: leftActive.length === 0 ? 'coherent' : 'torn', leftActive };
 }
 
 function copyIncidentEvidence(
@@ -1446,20 +1391,6 @@ function copyIncidentEvidence(
     published.push({ active, file: copied.evidence });
   }
   return { published, coherence, leftActive };
-}
-
-function redescribeLinkedEvidence(
-  storage: StoragePort,
-  stagingDirectory: string,
-  evidence: PublishedIncidentEvidence,
-): PublishedIncidentEvidence {
-  return {
-    ...evidence,
-    published: evidence.published.map(({ active }) => ({
-      active,
-      file: describeCandidate(storage, { source: join(stagingDirectory, active.name), name: active.name }, null),
-    })),
-  };
 }
 
 type ParkedEvidenceBatch = Readonly<{
@@ -1835,16 +1766,6 @@ function resumeNonPublicationParking(
   }
 }
 
-function unsupportedLinkCause(
-  code: string,
-): Extract<
-  PreservationMechanism,
-  { readonly kind: 'copied'; readonly cause: { readonly kind: 'link-unsupported' } }
->['cause'] {
-  const errno = code === 'EXDEV' || code === 'EMLINK' || code === 'EPERM' || code === 'EOPNOTSUPP' ? code : 'other';
-  return { kind: 'link-unsupported', errno, code };
-}
-
 function publishIncident(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'storage' | 'time'>,
   authority: BackendStoreResetAuthority,
@@ -1936,60 +1857,26 @@ function publishIncident(
     requireDirectorySync(runtime.storage, stagingRoot, files.dbDir);
     const stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
 
-    let preservation: PreservationMechanism;
-    let publishedEvidence: PublishedIncidentEvidence;
-    if (writerExclusion.kind === 'proven') {
-      try {
-        publishedEvidence = linkIncidentEvidence(
-          runtime.storage,
-          files,
-          activeEvidence,
-          stagingDirectory,
-          stagingIdentity,
-        );
-        preservation = { kind: 'linked', coherence: publishedEvidence.coherence === 'torn' ? 'torn' : 'coherent' };
-      } catch (error: unknown) {
-        if (!(error instanceof StoreResetLinkUnavailable) && !(error instanceof StoreResetEvidenceMutation)) {
-          throw error;
-        }
-        removeStagedEvidence(runtime.storage, activeEvidence, stagingDirectory);
-        requireDirectorySync(runtime.storage, stagingDirectory);
-        publishedEvidence = copyIncidentEvidence(
-          runtime.storage,
-          files,
-          activeEvidence,
-          stagingDirectory,
-          stagingIdentity,
-          error instanceof StoreResetEvidenceMutation ? 'torn' : 'coherent',
-        );
-        preservation =
-          error instanceof StoreResetEvidenceMutation
-            ? {
-                kind: 'copied',
-                cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
-                coherence: publishedEvidence.coherence,
-              }
-            : {
-                kind: 'copied',
-                cause: unsupportedLinkCause(error.code),
-                coherence: publishedEvidence.coherence,
-              };
-      }
-    } else {
-      publishedEvidence = copyIncidentEvidence(
-        runtime.storage,
-        files,
-        activeEvidence,
-        stagingDirectory,
-        stagingIdentity,
-        'coherent',
-      );
-      preservation = {
-        kind: 'copied',
-        cause: { kind: 'exclusion-unproven', reason: writerExclusion.reason },
-        coherence: publishedEvidence.coherence,
-      };
-    }
+    let publishedEvidence = copyIncidentEvidence(
+      runtime.storage,
+      files,
+      activeEvidence,
+      stagingDirectory,
+      stagingIdentity,
+      'coherent',
+    );
+    let preservation: PreservationMechanism =
+      writerExclusion.kind === 'proven'
+        ? {
+            kind: 'copied',
+            cause: { kind: 'link-unsupported', errno: 'other', code: 'HARD_LINK_NOT_IMMUTABLE' },
+            coherence: publishedEvidence.coherence,
+          }
+        : {
+            kind: 'copied',
+            cause: { kind: 'exclusion-unproven', reason: writerExclusion.reason },
+            coherence: publishedEvidence.coherence,
+          };
     let manifestFiles = publishedEvidence.published.map(({ file }) => file);
     if (manifestFiles.length === 0) {
       runtime.storage.rmSync(stagingDirectory, { recursive: true, force: true });
@@ -2038,10 +1925,6 @@ function publishIncident(
       parkingDirectory,
       publishedEvidence.coherence,
     );
-    if (preservation.kind === 'linked') {
-      publishedEvidence = redescribeLinkedEvidence(runtime.storage, stagingDirectory, publishedEvidence);
-      manifestFiles = publishedEvidence.published.map(({ file }) => file);
-    }
     if (parked.coherence !== publishedEvidence.coherence) {
       preservation = { ...preservation, coherence: 'torn' };
       retentionIncident = {

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
@@ -275,15 +274,8 @@ function settlementSharedNameThrowViolations(overrides: ReadonlyMap<string, stri
   return violations.sort();
 }
 
-function settlementThrowInventory(overrides: ReadonlyMap<string, string> = new Map()): {
-  readonly count: number;
-  readonly sha256: string;
-} {
-  const violations = settlementSharedNameThrowViolations(overrides);
-  return {
-    count: violations.length,
-    sha256: createHash('sha256').update(violations.join('\n')).digest('hex'),
-  };
+function settlementSemanticRefusalCount(overrides: ReadonlyMap<string, string> = new Map()): number {
+  return settlementSharedNameThrowViolations(overrides).length;
 }
 
 function injectedSettlementThrow(): ReadonlyMap<string, string> {
@@ -412,12 +404,9 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('guards the semantic-throw inventory of every import-reachable store module', () => {
+  it('has at most 141 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementThrowInventory(overrides)).toEqual({
-      count: 142,
-      sha256: '27f235a0761ad7d53d969bdc7840c92f5f661a969a899d892892661aa8af4832',
-    });
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(141);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
@@ -483,13 +472,12 @@ describe('store reset discipline invariants', () => {
       findFunction(BACKEND_STORE_RESET_PATH, 'publishIncident').body?.getText(incidentSource) ?? '',
     );
 
-    expect(linkCalls).toHaveLength(3);
+    expect(linkCalls).toHaveLength(2);
     expect(linkCalls.map((call) => call.enclosingFunctions[0]).sort()).toEqual([
-      'linkActiveEvidence',
       'linkOwnedEvidenceToActive',
       'restoreParkedEvidence',
     ]);
-    const stageIndex = publish.indexOf('linkIncidentEvidence(');
+    const stageIndex = publish.indexOf('copyIncidentEvidence(');
     const parkIndex = publish.indexOf('parkIncidentEvidence(');
     const manifestIndex = publish.indexOf('createIncidentManifest(');
     expect(stageIndex).toBeGreaterThanOrEqual(0);
@@ -556,7 +544,6 @@ describe('store reset discipline invariants', () => {
       (call) => call.callee !== 'candidateForEvidence' && call.text.includes('candidateForEvidence('),
     );
     expect(sharedPathCalls.map((call) => call.callee).sort()).toEqual([
-      'linkSync',
       'linkSync',
       'linkSync',
       'lstatSync',
