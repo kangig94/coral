@@ -304,32 +304,30 @@ export function readParkedEvidence(
   expected: readonly ExpectedActiveEvidence[],
 ): { readonly kind: 'read'; readonly parked: readonly ParkedActiveEvidence[] } | { readonly kind: 'unexpected' } {
   const byName = new Map(expected.map((item) => [item.name, item.identity]));
-  const read = storage.readDirectoryBoundedSync(parkingDirectory, STORE_RESET_EVIDENCE_FILE_NAMES.length + 1);
-  const evidenceEntries = read.entries.filter((name) => name !== STORE_RESET_PARKED_SIDECAR_FILE_NAME);
-  if (read.overflow || evidenceEntries.some((name) => !byName.has(name as StoreResetEvidenceFileName))) {
-    return { kind: 'unexpected' };
-  }
-  const parked = evidenceEntries.flatMap((entryName) => {
-    const name = entryName as StoreResetEvidenceFileName;
+  const parked: ParkedActiveEvidence[] = [];
+  for (const name of STORE_RESET_EVIDENCE_FILE_NAMES) {
     const path = join(parkingDirectory, name);
-    const stat = storage.lstatSync(path, { bigint: true });
+    let stat: StorageBigIntStat;
+    try {
+      stat = storage.lstatSync(path, { bigint: true });
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) continue;
+      throw error;
+    }
     const entry = parkedEntry(storage, path, name, stat);
     const identity = byName.get(name);
-    if (identity === undefined) return [];
-    return [
-      {
-        evidence: {
-          name,
-          identity,
-          sizeBytes: entry.sizeBytes ?? 0,
-          mtimeMs: entry.kind === 'regular-file' ? Number(stat.mtimeNs / 1_000_000n) : 0,
-        },
-        ownership:
-          entry.kind === 'regular-file' && sameIdentity(identity, stat) ? ('ours' as const) : ('other' as const),
-        entry,
+    if (identity === undefined) return { kind: 'unexpected' };
+    parked.push({
+      evidence: {
+        name,
+        identity,
+        sizeBytes: entry.sizeBytes ?? 0,
+        mtimeMs: entry.kind === 'regular-file' ? Number(stat.mtimeNs / 1_000_000n) : 0,
       },
-    ];
-  });
+      ownership: entry.kind === 'regular-file' && sameIdentity(identity, stat) ? 'ours' : 'other',
+      entry,
+    });
+  }
   return { kind: 'read', parked };
 }
 

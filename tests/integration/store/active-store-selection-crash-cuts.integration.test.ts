@@ -302,38 +302,27 @@ describe('active-store-selection crash cuts', () => {
     }
   });
 
-  it.each(evidenceArms)(
-    'should resume %s intent after current selection publication and reset-lock failure',
-    async (arm) => {
-      const { runtime, currentSelection, authority } = harness();
-      const evidenceDependencies = prepareEvidence(arm, runtime, currentSelection);
-      stubStoreOpen();
-      const resetLock = join(runtime.paths.coral.store.dbDir, 'store.db.reset.lock');
-      mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
-      const releaseReset = acquireDirectoryLockSync(resetLock, 1_000);
-      try {
-        await expect(
-          coordinateActiveStoreSelection(runtime, authority, {
-            storeFormat: currentCoralStoreFormat(),
-            currentSelection,
-            dependencies: successfulDependencies(evidenceDependencies),
-          }),
-        ).rejects.toMatchObject({ code: 'store_reset_lock_contended' });
-      } finally {
-        releaseReset();
-      }
-
-      expect(readActiveStoreTransition(runtime).kind).toBe('valid');
-      expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
-      const resumed = await coordinateActiveStoreSelection(runtime, authority, {
+  it.each(evidenceArms)('should settle %s intent without taking the contended reset lock', async (arm) => {
+    const { runtime, currentSelection, authority } = harness();
+    const evidenceDependencies = prepareEvidence(arm, runtime, currentSelection);
+    stubStoreOpen();
+    const resetLock = join(runtime.paths.coral.store.dbDir, 'store.db.reset.lock');
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
+    const releaseReset = acquireDirectoryLockSync(resetLock, 1_000);
+    try {
+      const settled = await coordinateActiveStoreSelection(runtime, authority, {
         storeFormat: currentCoralStoreFormat(),
         currentSelection,
-        dependencies: successfulDependencies(),
+        dependencies: successfulDependencies(evidenceDependencies),
       });
-      expect(resumed.kind).toBe('opened');
-      expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
-    },
-  );
+      if (settled.kind === 'opened') settled.db.close();
+    } finally {
+      releaseReset();
+    }
+
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+  });
 
   it('should serialize a concurrent coordinator behind the adoption lock', async () => {
     const { runtime, currentSelection, authority } = harness();
@@ -406,7 +395,7 @@ describe('active-store-selection crash cuts', () => {
       });
       expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     }
-    expect(classifyStore).toHaveBeenCalledTimes(2);
+    expect(classifyStore).toHaveBeenCalledTimes(4);
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
   });
 

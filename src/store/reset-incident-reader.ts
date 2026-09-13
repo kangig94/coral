@@ -31,7 +31,6 @@ import {
   parseStoreResetRetentionLedger,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type PreservationMechanism,
-  type PreservedRetention,
   type StoreResetParkedEntry,
   type StoreResetRetentionLedger,
 } from './reset-retention.js';
@@ -78,15 +77,16 @@ export type StoreResetListedParkedEntry = Omit<StoreResetParkedEntry, 'name'> & 
 
 export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
   readonly retention:
-    | (PreservedRetention & {
+    | {
+        readonly slot: 'claimed';
         readonly preservation: PreservationMechanism | 'unknown';
         readonly resumeLeftActive: boolean;
         readonly parked: readonly StoreResetListedParkedEntry[];
-      })
+      }
     | {
         readonly slot: 'parked';
         readonly parked: readonly StoreResetListedParkedEntry[];
-        readonly cause: 'publication' | 'discard' | 'intruder' | 'residual';
+        readonly cause: 'publication' | 'intruder' | 'residual';
         readonly classification: string | null;
         readonly phase: 'in-flight' | 'terminal';
       }
@@ -100,7 +100,6 @@ export type StoreResetIncidentListResult = {
   readonly incidents: readonly StoreResetIncidentListEntry[];
   readonly truncated: boolean;
   readonly parkingRootState?: 'absent' | 'ready' | 'unsafe' | 'unavailable';
-  readonly discarded: StoreResetRetentionLedger['discarded'];
 };
 
 export type StoreResetIncidentReportFailure =
@@ -212,9 +211,7 @@ function listRetention(
   const retained =
     ledger?.preserved?.incidentId === incidentId
       ? { incident: ledger.preserved, retention: { slot: 'claimed' as const } }
-      : ledger?.excess?.latest.incidentId === incidentId
-        ? { incident: ledger.excess.latest, retention: ledger.excess.latest }
-        : null;
+      : null;
   if (retained === null) {
     return {
       retention: { slot: 'unknown' },
@@ -505,7 +502,7 @@ export function listStoreResetIncidents(options: {
 }): StoreResetIncidentListResult {
   const rootStat = options.fs.lstat(options.quarantineRoot);
   if (rootStat === null) {
-    return { incidents: [], truncated: false, parkingRootState: 'absent', discarded: null };
+    return { incidents: [], truncated: false, parkingRootState: 'absent' };
   }
   if (rootStat.kind !== 'directory') {
     throw new StoreResetIncidentReadError(rootStat.kind === 'symbolic-link' ? 'unsafe' : 'unavailable');
@@ -570,7 +567,6 @@ export function listStoreResetIncidents(options: {
     ].sort(compareEntries),
     truncated: truncated || parked.truncated,
     parkingRootState: parked.state,
-    discarded: ledger?.discarded ?? null,
   };
 }
 

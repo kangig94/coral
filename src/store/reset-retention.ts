@@ -6,7 +6,6 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { validateProductVersion } from '../infra/product-version.js';
-import type { ActiveEvidence } from './reset-active-evidence.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -21,7 +20,6 @@ import {
   STORE_RESET_STAGING_DIRECTORY,
   type StoreResetEvidenceFileName,
   type StoreResetIncidentManifest,
-  type StoreResetPolicyCause,
 } from './reset-incident.js';
 
 export const STORE_RESET_RETENTION_LEDGER_VERSION = 1 as const;
@@ -52,10 +50,6 @@ export type StoreResetParkingTransaction =
       identities: readonly StoreResetPendingIdentity[];
     }>
   | Readonly<{
-      kind: 'discard';
-      identities: readonly StoreResetPendingIdentity[];
-    }>
-  | Readonly<{
       kind: 'claim';
       names: readonly StoreResetEvidenceFileName[];
     }>;
@@ -65,7 +59,7 @@ export type StoreResetParkedRecord = Readonly<{
   parkingId: string;
   parkedAt: string;
   phase: 'in-flight' | 'terminal';
-  cause: 'publication' | 'discard' | 'intruder' | 'residual';
+  cause: 'publication' | 'intruder' | 'residual';
   incidentId: string | null;
   names: readonly StoreResetEvidenceFileName[];
   entries: readonly StoreResetParkedEntry[];
@@ -105,21 +99,6 @@ export type PreservationMechanism =
       readonly coherence: 'coherent' | 'torn';
     };
 
-export type PreservedRetention =
-  | { readonly slot: 'claimed' }
-  | {
-      readonly slot: 'excess';
-      readonly holder: string;
-      readonly lineage: 'unrelated' | 'undeterminable';
-    };
-
-export type DiscardReceipt = Readonly<{
-  resetAt: string;
-  resetPolicyCause: StoreResetPolicyCause;
-  evidenceBytes: number;
-  deferredTo: string;
-}>;
-
 export type StoreResetRetentionIncident = Readonly<{
   incidentId: string;
   resetAt: string;
@@ -138,29 +117,16 @@ export type StoreResetPendingIdentity = Readonly<{
 export type StoreResetRetentionPending = Readonly<{
   resetAt: string;
   identities: readonly StoreResetPendingIdentity[];
-  outcome:
-    | Readonly<{
-        kind: 'preserve';
-        incident: StoreResetRetentionIncident;
-        retention: PreservedRetention;
-      }>
-    | Readonly<{ kind: 'discard'; receipt: DiscardReceipt }>;
+  outcome: Readonly<{
+    kind: 'preserve';
+    incident: StoreResetRetentionIncident;
+  }>;
 }>;
 
 export type StoreResetRetentionLedger = Readonly<{
   version: typeof STORE_RESET_RETENTION_LEDGER_VERSION;
   pending: StoreResetRetentionPending | null;
   preserved: StoreResetRetentionIncident | null;
-  excess: Readonly<{
-    count: number;
-    evidenceBytes: number;
-    latest: StoreResetRetentionIncident & Extract<PreservedRetention, { readonly slot: 'excess' }>;
-  }> | null;
-  discarded: Readonly<{
-    count: number;
-    evidenceBytes: number;
-    latest: DiscardReceipt;
-  }> | null;
 }>;
 
 export type StoreResetRetentionSlot =
@@ -220,8 +186,6 @@ function emptyLedger(): StoreResetRetentionLedger {
     version: STORE_RESET_RETENTION_LEDGER_VERSION,
     pending: null,
     preserved: null,
-    excess: null,
-    discarded: null,
   };
 }
 
@@ -289,41 +253,6 @@ function retentionIncident(value: unknown): StoreResetRetentionIncident | null {
   };
 }
 
-function preservedRetention(value: unknown): PreservedRetention | null {
-  if (!isRecord(value)) return null;
-  if (value.slot === 'claimed') return { slot: 'claimed' };
-  if (
-    value.slot !== 'excess' ||
-    typeof value.holder !== 'string' ||
-    !isCanonicalStoreResetIncidentId(value.holder) ||
-    (value.lineage !== 'unrelated' && value.lineage !== 'undeterminable')
-  ) {
-    return null;
-  }
-  return { slot: 'excess', holder: value.holder, lineage: value.lineage };
-}
-
-function discardReceipt(value: unknown): DiscardReceipt | null {
-  if (
-    !isRecord(value) ||
-    typeof value.resetAt !== 'string' ||
-    !isNonNegativeInteger(value.evidenceBytes) ||
-    typeof value.deferredTo !== 'string' ||
-    !isCanonicalStoreResetIncidentId(value.deferredTo) ||
-    (value.resetPolicyCause !== 'older-incompatible' &&
-      value.resetPolicyCause !== 'corrupt-or-unsupported' &&
-      value.resetPolicyCause !== 'newer-incompatible-invalid-target')
-  ) {
-    return null;
-  }
-  return {
-    resetAt: value.resetAt,
-    resetPolicyCause: value.resetPolicyCause,
-    evidenceBytes: value.evidenceBytes,
-    deferredTo: value.deferredTo,
-  };
-}
-
 function pendingIdentity(value: unknown): StoreResetPendingIdentity | null {
   if (
     !isRecord(value) ||
@@ -350,16 +279,13 @@ function parkingTransaction(value: unknown): StoreResetParkingTransaction | null
     }
     return { kind: 'claim', names: value.names as StoreResetEvidenceFileName[] };
   }
-  if ((value.kind !== 'publication' && value.kind !== 'discard') || !Array.isArray(value.identities)) return null;
+  if (value.kind !== 'publication' || !Array.isArray(value.identities)) return null;
   const identities = value.identities.map(pendingIdentity);
   if (
     identities.some((identity) => identity === null) ||
     new Set(identities.map((identity) => identity?.name)).size !== identities.length
   ) {
     return null;
-  }
-  if (value.kind === 'discard') {
-    return { kind: 'discard', identities: identities as StoreResetPendingIdentity[] };
   }
   if (typeof value.incidentId !== 'string' || !isCanonicalStoreResetIncidentId(value.incidentId)) {
     return null;
@@ -398,25 +324,14 @@ function retentionPending(value: unknown): StoreResetRetentionPending | null {
   if (new Set(present.map((identity) => identity.name)).size !== present.length || !isRecord(value.outcome)) {
     return null;
   }
-  if (value.outcome.kind === 'discard') {
-    const receipt = discardReceipt(value.outcome.receipt);
-    return receipt === null
-      ? null
-      : {
-          resetAt: value.resetAt,
-          identities: present,
-          outcome: { kind: 'discard', receipt },
-        };
-  }
   if (value.outcome.kind !== 'preserve') return null;
   const incident = retentionIncident(value.outcome.incident);
-  const retention = preservedRetention(value.outcome.retention);
-  return incident === null || retention === null
+  return incident === null
     ? null
     : {
         resetAt: value.resetAt,
         identities: present,
-        outcome: { kind: 'preserve', incident, retention },
+        outcome: { kind: 'preserve', incident },
       };
 }
 
@@ -435,40 +350,7 @@ export function parseStoreResetRetentionLedger(text: string): StoreResetRetentio
   const preserved = value.preserved === null ? null : retentionIncident(value.preserved);
   if (value.preserved !== null && preserved === null) return null;
 
-  let excess: StoreResetRetentionLedger['excess'] = null;
-  if (value.excess !== null) {
-    if (
-      !isRecord(value.excess) ||
-      !isNonNegativeInteger(value.excess.count) ||
-      !isNonNegativeInteger(value.excess.evidenceBytes)
-    ) {
-      return null;
-    }
-    const incident = retentionIncident(value.excess.latest);
-    const retention = preservedRetention(value.excess.latest);
-    if (incident === null || retention?.slot !== 'excess') return null;
-    excess = {
-      count: value.excess.count,
-      evidenceBytes: value.excess.evidenceBytes,
-      latest: { ...incident, ...retention },
-    };
-  }
-
-  let discarded: StoreResetRetentionLedger['discarded'] = null;
-  if (value.discarded !== null) {
-    if (
-      !isRecord(value.discarded) ||
-      !isNonNegativeInteger(value.discarded.count) ||
-      !isNonNegativeInteger(value.discarded.evidenceBytes)
-    ) {
-      return null;
-    }
-    const latest = discardReceipt(value.discarded.latest);
-    if (latest === null) return null;
-    discarded = { count: value.discarded.count, evidenceBytes: value.discarded.evidenceBytes, latest };
-  }
-
-  return { version: STORE_RESET_RETENTION_LEDGER_VERSION, pending, preserved, excess, discarded };
+  return { version: STORE_RESET_RETENTION_LEDGER_VERSION, pending, preserved };
 }
 
 export function readStoreResetRetentionLedger(
@@ -521,10 +403,7 @@ export function parseStoreResetParkedRecord(text: string): StoreResetParkedRecor
     typeof value.parkedAt !== 'string' ||
     /[\r\n]/u.test(value.parkedAt) ||
     (value.phase !== 'in-flight' && value.phase !== 'terminal') ||
-    (value.cause !== 'publication' &&
-      value.cause !== 'discard' &&
-      value.cause !== 'intruder' &&
-      value.cause !== 'residual') ||
+    (value.cause !== 'publication' && value.cause !== 'intruder' && value.cause !== 'residual') ||
     (value.incidentId !== null &&
       (typeof value.incidentId !== 'string' || !isCanonicalStoreResetIncidentId(value.incidentId))) ||
     !Array.isArray(value.names) ||
@@ -543,9 +422,7 @@ export function parseStoreResetParkedRecord(text: string): StoreResetParkedRecor
     transaction === null ||
     (transaction.kind === 'publication'
       ? value.cause === 'publication' && value.incidentId === transaction.incidentId
-      : transaction.kind === 'discard'
-        ? value.cause === 'discard' && value.incidentId === null
-        : value.cause === 'residual' && value.incidentId === null);
+      : value.cause === 'residual' && value.incidentId === null);
   if (
     (value.transaction !== null && transaction === null) ||
     (value.phase === 'in-flight') !== (transaction !== null) ||
@@ -762,57 +639,34 @@ function incidentFromManifest(manifest: StoreResetIncidentManifest): StoreResetR
 function withPreservedOutcome(
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
-  retention: PreservedRetention,
 ): StoreResetRetentionLedger {
-  if (retention.slot === 'claimed') return { ...ledger, pending: null, preserved: incident };
-  return {
-    ...ledger,
-    pending: null,
-    excess: {
-      count: (ledger.excess?.count ?? 0) + 1,
-      evidenceBytes: (ledger.excess?.evidenceBytes ?? 0) + incident.evidenceBytes,
-      latest: { ...incident, ...retention },
-    },
-  };
+  return { ...ledger, pending: null, preserved: incident };
 }
 
-function withDiscardedOutcome(ledger: StoreResetRetentionLedger, receipt: DiscardReceipt): StoreResetRetentionLedger {
-  return {
-    ...ledger,
-    pending: null,
-    discarded: {
-      count: (ledger.discarded?.count ?? 0) + 1,
-      evidenceBytes: (ledger.discarded?.evidenceBytes ?? 0) + receipt.evidenceBytes,
-      latest: receipt,
-    },
-  };
+function removePreviousPreservedIncident(
+  storage: StoragePort,
+  quarantineRoot: string,
+  ledger: StoreResetRetentionLedger,
+  incidentId: string,
+): boolean {
+  if (ledger.preserved === null || ledger.preserved.incidentId === incidentId) return true;
+  storage.rmSync(join(quarantineRoot, ledger.preserved.incidentId), { recursive: true, force: true });
+  return storage.syncDirectoryDurableSync(quarantineRoot);
 }
 
 function reconcilePending(
   storage: StoragePort,
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
-  activeEvidence: readonly ActiveEvidence[] | undefined,
 ): StoreResetRetentionLedger {
   const pending = ledger.pending;
   if (pending === null) return ledger;
-  if (pending.outcome.kind === 'discard') {
-    if (activeEvidence === undefined) return ledger;
-    const current = new Map(activeEvidence.map((evidence) => [evidence.name, evidence.identity]));
-    const fulfilled = pending.identities.every((identity) => {
-      const observed = current.get(identity.name);
-      return observed === undefined || observed.dev !== BigInt(identity.dev) || observed.ino !== BigInt(identity.ino);
-    });
-    if (!fulfilled) return ledger;
-    const reconciled = withDiscardedOutcome(ledger, pending.outcome.receipt);
-    writeLedger(storage, quarantineRoot, reconciled);
-    return reconciled;
-  }
 
   const incidentId = pending.outcome.incident.incidentId;
   const committed = readCommittedManifest(storage, quarantineRoot, incidentId);
   if (committed !== null) {
-    const reconciled = withPreservedOutcome(ledger, pending.outcome.incident, pending.outcome.retention);
+    if (!removePreviousPreservedIncident(storage, quarantineRoot, ledger, incidentId)) return ledger;
+    const reconciled = withPreservedOutcome(ledger, pending.outcome.incident);
     writeLedger(storage, quarantineRoot, reconciled);
     return reconciled;
   }
@@ -827,24 +681,14 @@ function reconcilePending(
 }
 
 export function settleStoreResetPending(storage: StoragePort, quarantineRoot: string): void {
-  reconcilePending(
-    storage,
-    quarantineRoot,
-    readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger(),
-    [],
-  );
+  reconcilePending(storage, quarantineRoot, readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger());
 }
 
-export function resolveStoreResetRetentionSlot(
-  storage: StoragePort,
-  quarantineRoot: string,
-  activeEvidence?: readonly ActiveEvidence[],
-): StoreResetRetentionSlot {
+export function resolveStoreResetRetentionSlot(storage: StoragePort, quarantineRoot: string): StoreResetRetentionSlot {
   const ledger = reconcilePending(
     storage,
     quarantineRoot,
     readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger(),
-    activeEvidence,
   );
   if (ledger.preserved !== null) {
     const holderPath = join(quarantineRoot, ledger.preserved.incidentId);
@@ -880,18 +724,9 @@ export function recordStoreResetPreserved(
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
-  retention: PreservedRetention,
 ): void {
-  writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident, retention));
-}
-
-export function recordStoreResetDiscarded(
-  storage: StoragePort,
-  quarantineRoot: string,
-  ledger: StoreResetRetentionLedger,
-  receipt: DiscardReceipt,
-): void {
-  writeLedger(storage, quarantineRoot, withDiscardedOutcome(ledger, receipt));
+  if (!removePreviousPreservedIncident(storage, quarantineRoot, ledger, incident.incidentId)) return;
+  writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident));
 }
 
 export function recordStoreResetPending(
@@ -935,10 +770,6 @@ export function recordStoreResetResumeLeftActive(
   writeLedger(storage, quarantineRoot, {
     ...ledger,
     preserved: ledger.preserved === null ? null : update(ledger.preserved),
-    excess:
-      ledger.excess === null
-        ? null
-        : { ...ledger.excess, latest: { ...ledger.excess.latest, ...update(ledger.excess.latest) } },
   });
 }
 
@@ -1012,6 +843,7 @@ export function releaseStoreResetIncident(
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   let parkingPath = join(parkingRoot, fixedCoordinate ? STORE_RESET_IN_FLIGHT_DIRECTORY : incidentId);
   let parkingPresence = pathPresence(storage, parkingPath);
+  let parkingRecord: StoreResetParkedRecord | null = null;
   if (!fixedCoordinate && parkingPresence === 'absent') {
     const inFlightPath = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
     const inFlightPresence = pathPresence(storage, inFlightPath);
@@ -1024,6 +856,7 @@ export function releaseStoreResetIncident(
         if (inFlight?.parkingId === incidentId || inFlight?.incidentId === incidentId) {
           parkingPath = inFlightPath;
           parkingPresence = 'present';
+          parkingRecord = inFlight;
         }
       } catch (error: unknown) {
         return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
@@ -1037,9 +870,17 @@ export function releaseStoreResetIncident(
     try {
       assertContainedDirectory(storage, quarantineRoot, parkingRoot);
       assertContainedDirectory(storage, parkingRoot, parkingPath);
+      parkingRecord ??= readStoreResetParkedRecord(
+        storage,
+        parkingRoot,
+        incidentId,
+        fixedCoordinate ? STORE_RESET_IN_FLIGHT_DIRECTORY : incidentId,
+      );
     } catch (error: unknown) {
       return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
     }
+    if (parkingRecord === null) return { kind: 'undeterminable', incidentId };
+    if (parkingRecord.phase === 'in-flight') return { kind: 'in-flight', incidentId };
   }
   const incidentPath = join(quarantineRoot, incidentId);
   const incidentPresence = pathPresence(storage, incidentPath);
@@ -1100,8 +941,7 @@ export function releaseStoreResetIncident(
   }
   const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
   const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
-  const clearsPending =
-    slot.ledger.pending?.outcome.kind === 'preserve' && slot.ledger.pending.outcome.incident.incidentId === incidentId;
+  const clearsPending = slot.ledger.pending?.outcome.incident.incidentId === incidentId;
   if (clearsHolder || clearsPending) {
     try {
       writeLedger(storage, quarantineRoot, {

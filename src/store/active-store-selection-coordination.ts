@@ -353,7 +353,15 @@ async function settleActiveStore(
   const files = resolveBackendStoreFileSet(runtime, options);
   const { dbFile } = files;
   const pending = hasPendingBackendStoreResetIncident(runtime, files);
-  let activeEpoch: MintedActiveStoreEpoch | null = null;
+  const initialClassification = classifyStoreForProtocol(runtime, files, options);
+  if (initialClassification.kind === 'legacy-adoptable') {
+    return refuseLegacyStore(dbFile, initialClassification, options.storeFormat, runtime.flavor);
+  }
+  const resetNeeded =
+    pending ||
+    initialClassification.kind === 'older-incompatible' ||
+    initialClassification.kind === 'corrupt-or-unsupported' ||
+    initialClassification.kind === 'newer-incompatible';
   let writerExclusion: WriterExclusion | undefined;
   if (pending || runtime.storage.existsSync(dbFile)) {
     writerExclusion = await acquireSettlementWriterExclusion(options);
@@ -362,14 +370,7 @@ async function settleActiveStore(
   try {
     adoption.assertOwned();
     if (writerExclusion?.kind === 'proven') writerExclusion.lease.assertOwned();
-    resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
-    const resumed =
-      writerExclusion === undefined
-        ? null
-        : options.dependencies.kind === 'operator'
-          ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
-          : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
-    activeEpoch ??= mintActiveStoreEpoch(runtime, files, options);
+    let resumed: BackendStoreResetIncident | null = null;
     const publicationWriterExclusion =
       writerExclusion ??
       ({
@@ -380,46 +381,56 @@ async function settleActiveStore(
     let transition = initialTransition;
     const publications: IncidentPublication[] = [];
     const epochs: StoreSettlementEpoch[] = [];
-    switch (activeEpoch.classification.kind) {
-      case 'legacy-adoptable':
-        return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
-      case 'older-incompatible':
-      case 'corrupt-or-unsupported':
-      case 'newer-incompatible': {
-        if (activeEpoch.classification.kind === 'newer-incompatible') {
-          const evidence = newerStoreEvidence(activeEpoch.classification);
-          transition =
-            transition === null
-              ? createActiveStoreTransition(runtime, options.currentSelection, {
-                  kind: 'current-selection-newer-store',
-                  priorSelection: options.currentSelection,
-                  newerStoreEvidence: evidence,
-                })
-              : transitionWithNewerStoreEvidence(transition, evidence);
-          publishTransitionOrRefuse(runtime, transition);
+    if (resetNeeded) {
+      resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
+      resumed =
+        writerExclusion === undefined
+          ? null
+          : options.dependencies.kind === 'operator'
+            ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
+            : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
+      const activeEpoch = mintActiveStoreEpoch(runtime, files, options);
+      switch (activeEpoch.classification.kind) {
+        case 'legacy-adoptable':
+          return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
+        case 'older-incompatible':
+        case 'corrupt-or-unsupported':
+        case 'newer-incompatible': {
+          if (activeEpoch.classification.kind === 'newer-incompatible') {
+            const evidence = newerStoreEvidence(activeEpoch.classification);
+            transition =
+              transition === null
+                ? createActiveStoreTransition(runtime, options.currentSelection, {
+                    kind: 'current-selection-newer-store',
+                    priorSelection: options.currentSelection,
+                    newerStoreEvidence: evidence,
+                  })
+                : transitionWithNewerStoreEvidence(transition, evidence);
+            publishTransitionOrRefuse(runtime, transition);
+          }
+          const publication = publishClassifiedBackendStoreResetIncident(
+            runtime,
+            authority,
+            files,
+            activeEpoch.evidence,
+            activeEpoch.classification,
+            resetLock,
+            publicationWriterExclusion,
+            activeEpoch.classification.kind === 'newer-incompatible' && transition !== null
+              ? resetPolicyForTransition(transition)
+              : undefined,
+          );
+          publications.push(publication);
+          epochs.push({ kind: 'described', publication });
+          break;
         }
-        const publication = publishClassifiedBackendStoreResetIncident(
-          runtime,
-          authority,
-          files,
-          activeEpoch.evidence,
-          activeEpoch.classification,
-          resetLock,
-          publicationWriterExclusion,
-          activeEpoch.classification.kind === 'newer-incompatible' && transition !== null
-            ? resetPolicyForTransition(transition)
-            : undefined,
-        );
-        publications.push(publication);
-        epochs.push({ kind: 'described', publication });
-        break;
+        case 'absent':
+        case 'fresh':
+        case 'compatible':
+          break;
+        default:
+          assertNever(activeEpoch.classification);
       }
-      case 'absent':
-      case 'fresh':
-      case 'compatible':
-        break;
-      default:
-        assertNever(activeEpoch.classification);
     }
 
     const minted = mintBackendStoreForClaim(runtime, files, options);

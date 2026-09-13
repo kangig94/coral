@@ -368,17 +368,21 @@ describe('store reset discipline invariants', () => {
     const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
     const body = withoutComments(settlement.body?.getText(coordination) ?? '');
+    const classifyIndex = body.indexOf('classifyStoreForProtocol(');
     const acquireExclusionIndex = body.indexOf('acquireSettlementWriterExclusion(');
     const resetLockIndex = body.indexOf('acquireBackendStoreResetLock(');
     const resumeIndex = body.indexOf('resumeBackendStoreResetIncident');
     const loopIndex = body.indexOf('for (;;)');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
+    const stageIndex = body.indexOf('mintActiveStoreEpoch(');
     const mintIndex = body.indexOf('mintBackendStoreForClaim(');
 
-    expect(acquireExclusionIndex).toBeGreaterThanOrEqual(0);
+    expect(classifyIndex).toBeGreaterThanOrEqual(0);
+    expect(acquireExclusionIndex).toBeGreaterThan(classifyIndex);
     expect(resetLockIndex).toBeGreaterThan(acquireExclusionIndex);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
-    expect(publishIndex).toBeGreaterThan(resumeIndex);
+    expect(stageIndex).toBeGreaterThan(resumeIndex);
+    expect(publishIndex).toBeGreaterThan(stageIndex);
     expect(mintIndex).toBeGreaterThan(publishIndex);
     expect(loopIndex).toBeGreaterThan(publishIndex);
     expect(body).not.toContain('openWritableStoreDatabase(');
@@ -409,9 +413,9 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('has at most 137 semantic refusals in the settlement closure (target: 0)', () => {
+  it('has at most 135 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(137);
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(135);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {

@@ -40,7 +40,7 @@ import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/re
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const storeReset: StoreResetCommandOperations = {
-  list: () => ({ incidents: [], truncated: false, discarded: null }),
+  list: () => ({ incidents: [], truncated: false }),
   report: async () => {
     throw new Error('not used');
   },

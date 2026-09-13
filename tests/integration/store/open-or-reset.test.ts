@@ -51,16 +51,11 @@ import {
   type GenerationAdoptionLockLease,
 } from '#src/store/generation-mutation-coordination.js';
 
-/**
- * Mirrors `STALE_LOCK_MS` in `src/infra/fs-lock.ts`. Restated rather than exported from production: the value a
- * test bounds against is a property of the contention behaviour it asserts, and importing it would let a
- * production change silently move the assertion with it.
- */
-const FRESH_LOCK_STALENESS_WINDOW_MS = 30_000;
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import { enumerateActiveEvidence } from '#src/store/reset-active-evidence.js';
 import {
   isCanonicalStoreResetIncidentId,
+  MAX_INCIDENT_DIR_ENTRIES,
   MAX_INCIDENT_ROOT_ENTRIES,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
@@ -77,7 +72,6 @@ import { formatStoreResetList } from '#src/cli/format/store-reset.js';
 import {
   readStoreResetParkedRecord,
   readStoreResetRetentionLedger,
-  recordStoreResetPending,
   releaseStoreResetIncident,
   resolveStoreResetRetentionSlot,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
@@ -364,42 +358,6 @@ function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusi
       classification,
       resetLock,
       exclusion,
-    );
-  } finally {
-    resetLock.release();
-  }
-}
-
-function publishNewerReset(runtime: Runtime, dbPath: string) {
-  const options = { path: dbPath, storeFormat: STORE_FORMAT };
-  const files = resolveBackendStoreFileSet(runtime, options);
-  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
-  try {
-    const classification = classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT);
-    if (classification.kind !== 'newer-incompatible') {
-      throw new Error(`Test fixture is not newer-incompatible: ${classification.kind}`);
-    }
-    return publishClassifiedBackendStoreResetIncident(
-      runtime,
-      authorityFor(runtime, dbPath),
-      files,
-      enumerateActiveEvidence(runtime.storage, files),
-      classification,
-      resetLock,
-      writerExclusion(),
-      {
-        cause: 'newer-incompatible-invalid-target',
-        evidence: {
-          validationFailure: { code: 'target_hash_mismatch' },
-          observedTarget: {
-            version: null,
-            buildSetId: null,
-            bundleHash: null,
-            flavor: null,
-            storeFormatFingerprint: null,
-          },
-        },
-      },
     );
   } finally {
     resetLock.release();
@@ -762,7 +720,7 @@ async function exerciseActiveEvidenceArm(
       (arm === 'copy-proven' || arm === 'copy-unproven')
     ) {
       const ledger = readStoreResetRetentionLedger(runtime.storage, join(dirname(dbPath), 'store-reset-quarantine'));
-      const incidents = [ledger?.preserved, ledger?.excess?.latest].filter(
+      const incidents = [ledger?.preserved].filter(
         (incident): incident is NonNullable<typeof incident> => incident !== null && incident !== undefined,
       );
       expect(incidents.some((incident) => incident.preservation?.coherence === 'torn')).toBe(true);
@@ -1142,9 +1100,9 @@ describe('openOrResetBackendStoreDb', () => {
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
   });
 
-  it('keeps an invalid stored version as undeterminable lineage and boots', async () => {
+  it('replaces preserved evidence for an invalid stored version and boots', async () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-reset-invalid-lineage-version-'), 'store.db');
+    const dbPath = join(makeTempRoot('coral-store-reset-invalid-version-'), 'store.db');
     createMismatchStore(dbPath);
     const holder = publishReset(runtime, dbPath);
     if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
@@ -1156,102 +1114,35 @@ describe('openOrResetBackendStoreDb', () => {
       storedProductVersionState: 'invalid',
     });
 
-    expect(publishReset(runtime, dbPath)).toMatchObject({
-      kind: 'preserved',
-      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
+    const replacement = publishReset(runtime, dbPath);
+    if (replacement.kind !== 'preserved') throw new Error('Expected replacement evidence.');
+    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    expect(retainedIncidentNames(quarantineRoot)).toEqual([replacement.incident.incidentId]);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toMatchObject({
+      incidentId: replacement.incident.incidentId,
     });
     const db = await openReset(runtime, dbPath);
     db.close();
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
-  it('preserves a schema-identical independent store because format compatibility does not prove ancestry', () => {
+  it('keeps exactly the newest preserved incident', () => {
     const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-reset-descendant-'), 'store.db');
-    createMismatchStore(dbPath);
-    const holder = publishReset(runtime, dbPath);
-    if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
-    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
-    const independent = new DatabaseSync(dbPath);
-    independent.exec('CREATE TABLE sentinel_independent_store (id INTEGER PRIMARY KEY)');
-    independent.close();
-
-    const excess = publishNewerReset(runtime, dbPath);
-
-    expect(excess).toMatchObject({
-      kind: 'preserved',
-      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
-    });
-    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    expect(retainedIncidentContainsTable(dirname(dbPath), 'sentinel_independent_store')).toBe(true);
-    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
-      preserved: { incidentId: holder.incident.incidentId },
-      excess: { count: 1, latest: { lineage: 'undeterminable' } },
-      discarded: null,
-    });
-  });
-
-  it('reconciles a pending discard written by an older build only after every promised identity is gone', () => {
-    const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-reset-pending-discard-'), 'store.db');
-    createMismatchStore(dbPath);
-    const holder = publishReset(runtime, dbPath);
-    if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
-    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
-    if (ledger === null) throw new Error('Expected the holder ledger.');
-    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
-    const identity = statSync(dbPath, { bigint: true });
-    recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
-      resetAt: '2026-09-13T00:00:00.000Z',
-      identities: [{ name: 'store.db', dev: identity.dev.toString(), ino: identity.ino.toString() }],
-      outcome: {
-        kind: 'discard',
-        receipt: {
-          resetAt: '2026-09-13T00:00:00.000Z',
-          resetPolicyCause: 'newer-incompatible-invalid-target',
-          evidenceBytes: Number(identity.size),
-          deferredTo: holder.incident.incidentId,
-        },
-      },
-    });
-    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
-      pending: { outcome: { kind: 'discard' } },
-      discarded: null,
-      preserved: { incidentId: holder.incident.incidentId },
-    });
-
-    rmSync(dbPath);
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, [])).toMatchObject({
-      kind: 'held',
-      ledger: { pending: null, discarded: { count: 1 } },
-      holder: { incidentId: holder.incident.incidentId },
-    });
-  });
-
-  it('preserves unrelated evidence over the bound without replacing the slot holder', () => {
-    const runtime = createRuntime();
-    const dbPath = join(makeTempRoot('coral-store-reset-excess-'), 'store.db');
+    const dbPath = join(makeTempRoot('coral-store-reset-newest-'), 'store.db');
     createMismatchStore(dbPath);
     const holder = publishReset(runtime, dbPath);
     if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
     createMismatchStore(dbPath);
 
-    const excess = publishReset(runtime, dbPath);
-
-    expect(excess).toMatchObject({
-      kind: 'preserved',
-      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
-    });
-    if (excess.kind !== 'preserved') throw new Error('Expected excess preservation.');
+    const replacement = publishReset(runtime, dbPath);
+    if (replacement.kind !== 'preserved') throw new Error('Expected replacement preservation.');
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    expect(retainedIncidentNames(quarantineRoot)).toEqual(
-      expect.arrayContaining([holder.incident.incidentId, excess.incident.incidentId]),
-    );
+    expect(retainedIncidentNames(quarantineRoot)).toEqual([replacement.incident.incidentId]);
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
-      preserved: { incidentId: holder.incident.incidentId },
-      excess: { count: 1, latest: { incidentId: excess.incident.incidentId, lineage: 'undeterminable' } },
+      pending: null,
+      preserved: { incidentId: replacement.incident.incidentId },
     });
+    expect(existsSync(join(quarantineRoot, holder.incident.incidentId))).toBe(false);
   });
 
   it('publishes a torn copy whose recorded evidence still verifies as a match', async () => {
@@ -1868,7 +1759,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
-  it('terminalizes unrestorable pre-manifest parking before deleting its staging witness', async () => {
+  it('terminalizes an over-limit unrestorable parking directory before deleting its staging witness', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-pre-manifest-parking-');
     const dbPath = join(root, 'store.db');
@@ -1885,6 +1776,9 @@ describe('openOrResetBackendStoreDb', () => {
     renameFileSync(dbPath, join(parkingDirectory, 'store.db'));
     const parkedIdentity = statSync(join(parkingDirectory, 'store.db'), { bigint: true });
     copyFileSync(join(parkingDirectory, 'store.db'), dbPath);
+    for (let index = 0; index <= MAX_INCIDENT_DIR_ENTRIES; index += 1) {
+      writeFileSync(join(parkingDirectory, `extra-${index}`), 'parking evidence');
+    }
     writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
       version: 1,
       parkingId: interruptedId,
@@ -2435,8 +2329,8 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
     const ledger = readStoreResetRetentionLedger(runtime.storage, join(root, 'store-reset-quarantine'));
     expect(ledger?.pending).toBeNull();
-    expect(ledger?.discarded).toBeNull();
-    expect(ledger?.excess?.count).toBe(1);
+    expect(ledger?.preserved).not.toBeNull();
+    expect(retainedIncidentNames(join(root, 'store-reset-quarantine'))).toEqual([ledger?.preserved?.incidentId]);
   });
 
   it.each([1, 2, 3, 5])('boots after an adversary lands %i incompatible store epochs', async (epochCount) => {
@@ -2552,46 +2446,6 @@ describe('openOrResetBackendStoreDb', () => {
       const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
       failures.push(`${label}: ${cause}`);
     };
-
-    await runCell('causal-lineage/schema-identical-unrelated', () => {
-      const runtime = createRuntime();
-      const root = makeTempRoot('coral-store-revision8-lineage-');
-      const dbPath = join(root, 'store.db');
-      createMismatchStore(dbPath);
-      const holder = publishReset(runtime, dbPath);
-      if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
-      createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
-      const unrelated = new DatabaseSync(dbPath);
-      unrelated.exec('CREATE TABLE sentinel_unrelated_namespace (id INTEGER PRIMARY KEY)');
-      unrelated.close();
-
-      expect(publishNewerReset(runtime, dbPath)).toMatchObject({
-        kind: 'preserved',
-        retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
-      });
-      expect(retainedIncidentContainsTable(root, 'sentinel_unrelated_namespace')).toBe(true);
-    });
-
-    await runCell('causal-lineage/true-descendant-without-token', async () => {
-      const runtime = createRuntime();
-      const root = makeTempRoot('coral-store-revision8-lineage-descendant-');
-      const dbPath = join(root, 'store.db');
-      createMismatchStore(dbPath);
-      const opened = await openReset(runtime, dbPath);
-      opened.exec(`
-        CREATE TABLE sentinel_true_descendant (id INTEGER PRIMARY KEY);
-        UPDATE meta SET value = '99.0.0' WHERE key = 'store_product_version';
-      `);
-      opened.close();
-      const holder = readStoreResetRetentionLedger(runtime.storage, join(root, 'store-reset-quarantine'))?.preserved;
-      if (holder === null || holder === undefined) throw new Error('Expected a preserved slot holder.');
-
-      expect(publishNewerReset(runtime, dbPath)).toMatchObject({
-        kind: 'preserved',
-        retention: { slot: 'excess', holder: holder.incidentId, lineage: 'undeterminable' },
-      });
-      expect(retainedIncidentContainsTable(root, 'sentinel_true_descendant')).toBe(true);
-    });
 
     for (const kind of [
       'absent',
@@ -2820,11 +2674,10 @@ describe('openOrResetBackendStoreDb', () => {
       );
       expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, STORE_RESET_IN_FLIGHT_DIRECTORY)).toMatchObject(
         {
-          kind: 'parked',
-          parkingEvidenceBytes: Buffer.byteLength('nested-evidence'),
+          kind: 'undeterminable',
         },
       );
-      expect(existsSync(coordinate)).toBe(false);
+      expect(existsSync(coordinate)).toBe(true);
     });
 
     expect(failures, `${failures.length} extended sweep cells failed`).toEqual([]);
@@ -2872,8 +2725,8 @@ describe('openOrResetBackendStoreDb', () => {
     const db = await openReset(runtime, dbPath);
     db.close();
 
-    expect(existsSync(join(quarantineRoot, stagedManifest.incidentId, 'store.db'))).toBe(true);
-    expect(retainedIncidentNames(quarantineRoot)).toHaveLength(2);
+    expect(existsSync(join(quarantineRoot, stagedManifest.incidentId))).toBe(false);
+    expect(retainedIncidentNames(quarantineRoot)).toHaveLength(1);
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
@@ -2935,25 +2788,23 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('fails fast on fresh reset lock contention and leaves a fresh lock in place', async () => {
-    const runtime = createRuntime();
-    const dbDir = makeTempRoot('coral-store-lock-contention-');
-    const dbPath = join(dbDir, 'store.db');
-    const lockDir = join(dbDir, 'store.db.reset.lock');
-    mkdirSync(lockDir);
+  it.each(['absent', 'compatible'] as const)(
+    'opens an %s store without taking a contended reset lock',
+    async (kind) => {
+      const runtime = createRuntime();
+      const dbDir = makeTempRoot(`coral-store-${kind}-lock-contention-`);
+      const dbPath = join(dbDir, 'store.db');
+      if (kind === 'compatible') createCompatibleSentinelStore(runtime, dbPath);
+      const lockDir = join(dbDir, 'store.db.reset.lock');
+      mkdirSync(lockDir);
 
-    const started = Date.now();
-    const error = await captureAsyncError(() => openReset(runtime, dbPath));
-    const elapsed = Date.now() - started;
+      const db = await openReset(runtime, dbPath);
+      db.close();
 
-    expectSetupCode(error, 'store_reset_lock_contended');
-    // The property is "did not sit out the staleness window", not "finished inside an arbitrary second". A
-    // fresh lock must be refused immediately, whereas waiting for it to go stale would cost STALE_LOCK_MS
-    // (30s). Bounding against that instead of a round number keeps this from failing under suite load — it
-    // measured 2623ms on a loaded machine while the call itself was nowhere near the wait path.
-    expect(elapsed).toBeLessThan(FRESH_LOCK_STALENESS_WINDOW_MS / 2);
-    expect(existsSync(lockDir)).toBe(true);
-  });
+      expect(existsSync(lockDir)).toBe(true);
+      expect(tableExists(dbPath, 'events')).toBe(true);
+    },
+  );
 
   it('prevents two openers from publishing or resuming the same reset concurrently', async () => {
     const runtime = createRuntime();
@@ -2985,6 +2836,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const dbDir = makeTempRoot('coral-store-stale-lock-');
     const dbPath = join(dbDir, 'store.db');
+    createMismatchStore(dbPath);
     const lockDir = join(dbDir, 'store.db.reset.lock');
     mkdirSync(lockDir);
     const oldDate = new Date(Date.now() - 31_000);

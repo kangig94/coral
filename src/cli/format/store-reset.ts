@@ -28,28 +28,12 @@ function evidenceBytes(value: number | null): string {
   return value === null ? 'size unavailable' : `${value} bytes`;
 }
 
-function retention(entry: StoreResetIncidentListResult['incidents'][number]): string {
-  switch (entry.retention.slot) {
-    case 'unknown':
-      return 'unknown';
-    case 'parked':
-      return `parked (${entry.retention.cause}; classification ${entry.retention.classification ?? 'none'})`;
-    case 'claimed':
-      return 'claimed';
-    case 'excess':
-      return `excess (${entry.retention.lineage}; holder ${entry.retention.holder})`;
-    default:
-      return assertNever(entry.retention);
-  }
-}
-
 function preservation(entry: StoreResetIncidentListResult['incidents'][number]): string {
   switch (entry.retention.slot) {
     case 'unknown':
     case 'parked':
       return 'unknown';
-    case 'claimed':
-    case 'excess': {
+    case 'claimed': {
       const mechanism = entry.retention.preservation;
       if (mechanism === 'unknown') return 'unknown';
       switch (mechanism.kind) {
@@ -85,12 +69,6 @@ function parked(entry: StoreResetIncidentListResult['incidents'][number]): strin
     : entries.length === 0
       ? 'none'
       : entries.map((parkedEntry) => `${parkedEntry.name} (${parkedEntry.kind})`).join(',');
-}
-
-function discarded(result: StoreResetIncidentListResult): string {
-  if (result.discarded === null) return 'Discarded descendant evidence: none.';
-  const latest = result.discarded.latest;
-  return `Discarded descendant evidence: count=${result.discarded.count} bytes=${result.discarded.evidenceBytes} latest_reset_at=${latest.resetAt} latest_cause=${latest.resetPolicyCause} deferred_to=${latest.deferredTo}.`;
 }
 
 function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
@@ -178,7 +156,6 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     return [
       `No ${target} store-reset incidents.`,
       ...parkingRootStatus(result),
-      discarded(result),
       ...(result.truncated
         ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
         : []),
@@ -187,15 +164,14 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     ].join('\n');
   }
   return [
-    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Incident bytes | Parking bytes | Retention | Preservation | Parked | Resume left active | Stored Coral version',
+    'Incident ID | Reset at | Schema | Reason | Reset policy | State | Files | Incident bytes | Parking bytes | Preservation | Parked | Resume left active | Stored Coral version',
     ...result.incidents.map((incident) =>
       incident.state === 'ready'
-        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`
-        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${retention(incident)} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' || incident.retention.slot === 'excess' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
+        ? `${incident.incidentId} | ${incident.resetAt} | V${incident.schemaVersion} | ${incident.reason} | ${incident.resetPolicyCause ?? 'legacy-v2'} | ${incident.state} | ${incident.fileCount} | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`
+        : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     ...parkingRootStatus(result),
     '',
-    discarded(result),
     ...(result.truncated
       ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
       : []),

@@ -529,11 +529,6 @@ function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string
           case 'preserved':
             lines.push(`Preserved store-reset incident '${epoch.publication.incident.incidentId}'.`);
             break;
-          case 'discarded':
-            lines.push(
-              `Discarded ${epoch.publication.receipt.evidenceBytes} bytes of descendant evidence in deference to '${epoch.publication.receipt.deferredTo}'.`,
-            );
-            break;
           case 'no-evidence':
             lines.push('The described epoch contained no evidence.');
             break;

@@ -180,7 +180,6 @@ describe('store reset incident listing', () => {
       incidents: [],
       truncated: false,
       parkingRootState: 'absent',
-      discarded: null,
     });
   });
 
@@ -192,7 +191,6 @@ describe('store reset incident listing', () => {
       incidents: [],
       truncated: true,
       parkingRootState: 'absent',
-      discarded: null,
     });
   });
 
@@ -206,7 +204,6 @@ describe('store reset incident listing', () => {
         incidents: [],
         truncated: false,
         parkingRootState: 'absent',
-        discarded: null,
       });
     },
   );
@@ -446,17 +443,6 @@ describe('store reset incident listing', () => {
           resumeLeftActive: true,
           futureIncidentField: true,
         },
-        excess: null,
-        discarded: {
-          count: 2,
-          evidenceBytes: 23,
-          latest: {
-            resetAt: '2026-07-23T01:02:03.004Z',
-            resetPolicyCause: 'newer-incompatible-invalid-target',
-            evidenceBytes: 6,
-            deferredTo: incidentId,
-          },
-        },
         futureLedgerField: true,
       }),
     );
@@ -488,11 +474,6 @@ describe('store reset incident listing', () => {
       },
       evidenceBytes: 'unknown',
       parkingEvidenceBytes: 12,
-    });
-    expect(result.discarded).toMatchObject({
-      count: 2,
-      evidenceBytes: 23,
-      latest: { deferredTo: incidentId, evidenceBytes: 6 },
     });
   });
 

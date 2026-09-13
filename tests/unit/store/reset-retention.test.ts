@@ -22,8 +22,6 @@ function ledger(overrides: Record<string, unknown> = {}): Record<string, unknown
     version: 1,
     pending: null,
     preserved: incident(),
-    excess: null,
-    discarded: null,
     ...overrides,
   };
 }
@@ -37,7 +35,7 @@ describe('parseStoreResetRetentionLedger', () => {
     ['invalid JSON', '{'],
     ['non-object root', []],
     ['unknown version', ledger({ version: 2 })],
-    ['missing preserved disposition', { version: 1, excess: null, discarded: null }],
+    ['missing preserved disposition', { version: 1, pending: null }],
     ['invalid incident id', ledger({ preserved: incident({ incidentId: 'not-an-id' }) })],
     ['invalid reset time', ledger({ preserved: incident({ resetAt: 4 }) })],
     ['negative evidence bytes', ledger({ preserved: incident({ evidenceBytes: -1 }) })],
@@ -51,7 +49,7 @@ describe('parseStoreResetRetentionLedger', () => {
         pending: {
           resetAt: '2026-09-13T00:00:00.000Z',
           identities: [{ name: 'store.db', dev: '-1', ino: '2' }],
-          outcome: { kind: 'preserve', incident: incident(), retention: { slot: 'claimed' } },
+          outcome: { kind: 'preserve', incident: incident() },
         },
       }),
     ],
@@ -64,15 +62,7 @@ describe('parseStoreResetRetentionLedger', () => {
             { name: 'store.db', dev: '1', ino: '2' },
             { name: 'store.db', dev: '1', ino: '3' },
           ],
-          outcome: {
-            kind: 'discard',
-            receipt: {
-              resetAt: 'now',
-              resetPolicyCause: 'older-incompatible',
-              evidenceBytes: 1,
-              deferredTo: HOLDER_ID,
-            },
-          },
+          outcome: { kind: 'preserve', incident: incident() },
         },
       }),
     ],
@@ -113,32 +103,6 @@ describe('parseStoreResetRetentionLedger', () => {
         }),
       }),
     ],
-    ['invalid excess aggregate', ledger({ excess: { count: -1, evidenceBytes: 42, latest: {} } })],
-    [
-      'non-excess latest retention',
-      ledger({ excess: { count: 1, evidenceBytes: 42, latest: { ...incident(), slot: 'claimed' } } }),
-    ],
-    [
-      'invalid excess holder',
-      ledger({
-        excess: {
-          count: 1,
-          evidenceBytes: 42,
-          latest: { ...incident(), slot: 'excess', holder: 'not-an-id', lineage: 'unrelated' },
-        },
-      }),
-    ],
-    ['invalid discarded aggregate', ledger({ discarded: { count: 1, evidenceBytes: -1, latest: {} } })],
-    [
-      'invalid discarded receipt',
-      ledger({
-        discarded: {
-          count: 1,
-          evidenceBytes: 42,
-          latest: { resetAt: 'now', resetPolicyCause: 'unknown', evidenceBytes: 42, deferredTo: HOLDER_ID },
-        },
-      }),
-    ],
   ])('rejects %s', (_label, value) => {
     const result = typeof value === 'string' ? parseStoreResetRetentionLedger(value) : parse(value);
     expect(result).toBeNull();
@@ -151,37 +115,11 @@ describe('parseStoreResetRetentionLedger', () => {
         futureIncident: true,
         preservation: { kind: 'linked', coherence: 'coherent', futureMechanism: true },
       }),
-      excess: {
-        count: 1,
-        evidenceBytes: 42,
-        futureAggregate: true,
-        latest: {
-          ...incident({ incidentId: '423e4567-e89b-42d3-a456-426614174000' }),
-          slot: 'excess',
-          holder: HOLDER_ID,
-          lineage: 'undeterminable',
-          futureRetention: true,
-        },
-      },
-      discarded: {
-        count: 1,
-        evidenceBytes: 7,
-        futureAggregate: true,
-        latest: {
-          resetAt: '2026-09-13T00:00:00.000Z',
-          resetPolicyCause: 'older-incompatible',
-          evidenceBytes: 7,
-          deferredTo: HOLDER_ID,
-          futureReceipt: true,
-        },
-      },
     });
 
     expect(parse(value)).toMatchObject({
       version: 1,
       preserved: { incidentId: INCIDENT_ID },
-      excess: { count: 1, latest: { holder: HOLDER_ID, lineage: 'undeterminable' } },
-      discarded: { count: 1, latest: { deferredTo: HOLDER_ID } },
     });
   });
 
@@ -211,7 +149,7 @@ describe('parseStoreResetRetentionLedger', () => {
           parkingId: HOLDER_ID,
           parked: ['store.db-wal'],
           identities: [{ name: 'store.db', dev: '1', ino: '2' }],
-          outcome: { kind: 'preserve', incident: pendingIncident, retention: { slot: 'claimed' } },
+          outcome: { kind: 'preserve', incident: pendingIncident },
         },
       }),
     );
@@ -240,7 +178,7 @@ describe('parseStoreResetParkedRecord', () => {
       parkingId: INCIDENT_ID,
       parkedAt: '2026-09-13T00:00:00.000Z',
       phase: 'in-flight',
-      cause: kind === 'discard' ? 'discard' : kind === 'claim' ? 'residual' : 'publication',
+      cause: kind === 'claim' ? 'residual' : 'publication',
       incidentId: kind === 'publication' ? INCIDENT_ID : null,
       names: [],
       entries: [],
@@ -251,7 +189,6 @@ describe('parseStoreResetParkedRecord', () => {
 
   it.each([
     { kind: 'publication', incidentId: INCIDENT_ID, identities: [{ name: 'store.db', dev: '1', ino: '2' }] },
-    { kind: 'discard', identities: [{ name: 'store.db-wal', dev: '3', ino: '4' }] },
     { kind: 'claim', names: ['store.db', 'store.db-wal'] },
   ])('accepts the $kind in-flight transaction variant', (transaction) => {
     expect(parseStoreResetParkedRecord(JSON.stringify(parkedRecord(transaction)))?.transaction).toEqual(transaction);

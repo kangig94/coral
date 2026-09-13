@@ -211,7 +211,7 @@ describe('active-store-selection locking', () => {
     },
   );
 
-  it('should publish transition then selection before classifying and opening the store', async () => {
+  it('should publish transition then selection before classifying and opening without a reset lock', async () => {
     const { runtime, currentSelection, authority } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);
     mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o755 });
@@ -233,13 +233,13 @@ describe('active-store-selection locking', () => {
     const db = fakeDatabase();
     spyOnClassifyStoreFile().mockImplementation(() => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
-      expect(existsSync(resetLock)).toBe(true);
+      expect(existsSync(resetLock)).toBe(false);
       events.push('classify');
       return { kind: 'fresh' };
     });
     spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
-      expect(existsSync(resetLock)).toBe(true);
+      expect(existsSync(resetLock)).toBe(false);
       expect(path).not.toBe(runtime.paths.coral.store.dbFile);
       writeFileSync(path, '');
       events.push('open');
@@ -758,13 +758,14 @@ describe('active-store-selection locking', () => {
     const db = fakeDatabase();
     const storeFormat = currentCoralStoreFormat();
     const { classifyStore, openStore } = stubStoreOpen({ kind: 'fresh' }, db);
-    classifyStore.mockReturnValueOnce({
+    const resetClassification = {
       kind: 'older-incompatible',
       currentFingerprint: storeFormat.fingerprint,
       currentProductVersion: storeFormat.productVersion,
       storedFingerprint: `sha256:${'0'.repeat(64)}`,
       storedProductVersion: '0.0.0',
-    });
+    } as const;
+    classifyStore.mockReturnValueOnce(resetClassification).mockReturnValueOnce(resetClassification);
 
     const coordinating = coordinateActiveStoreSelection(runtime, authority, {
       storeFormat,
@@ -815,7 +816,7 @@ describe('active-store-selection locking', () => {
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
 
     expect(openStore).not.toHaveBeenCalled();
-    expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
+    expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
   });
 
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {
