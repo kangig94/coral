@@ -460,8 +460,11 @@ export async function acquireGenerationMaintenanceLease(
 ): Promise<GenerationMaintenanceLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
   ensureCoordinationRoot(runtime, paths);
-  const deadline = runtime.time.now() + timeoutMs;
-  const remainingBudget = (): number => Math.max(0, deadline - runtime.time.now());
+  const deadline = runtime.time.monotonicNow() + BigInt(timeoutMs);
+  const remainingBudget = (): number => {
+    const remaining = deadline - runtime.time.monotonicNow();
+    return remaining > 0n ? Number(remaining) : 0;
+  };
   const releaseAdmission = await acquireDirectoryLock(
     paths.admissionLock,
     directoryLockDeps(runtime),
@@ -482,7 +485,7 @@ export async function acquireGenerationMaintenanceLease(
     while (true) {
       const blockers = removeDeadWriterLeases(runtime, paths);
       if (blockers.length === 0) break;
-      if (runtime.time.now() >= deadline) {
+      if (runtime.time.monotonicNow() >= deadline) {
         throw generationNotQuiescentError(
           runtime,
           blockers.map((blocker) => blocker.description).join(', '),

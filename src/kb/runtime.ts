@@ -758,6 +758,7 @@ class KbRuntimeImpl implements KbRuntime {
         storage: this.storagePort,
         time: {
           now: () => this.time.now(),
+          monotonicNow: () => this.time.monotonicNow(),
           sleep: this.sleep.bind(this),
           ['setInterval']: this.time.setInterval.bind(this.time),
           ['clearInterval']: this.time.clearInterval.bind(this.time),

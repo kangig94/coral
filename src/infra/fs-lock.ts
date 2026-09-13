@@ -12,7 +12,7 @@ export type DirectoryLockDeps = {
     StoragePort,
     'mkdirSync' | 'readdirSync' | 'renameSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'
   >;
-  time: Pick<TimePort, 'now' | 'sleep' | 'setInterval' | 'clearInterval'>;
+  time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
   heartbeatMs?: number;
   signal?: AbortSignal;
@@ -68,6 +68,7 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
     },
     time: {
       now: () => new Date().getTime(),
+      monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
       sleep: (ms) =>
         new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, ms);
@@ -509,9 +510,9 @@ export async function acquireDirectoryLock(
 ): Promise<DirectoryLockLease> {
   const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
   const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
-  const deadline = deps.time.now() + effectiveTimeoutMs;
+  const deadline = deps.time.monotonicNow() + BigInt(effectiveTimeoutMs);
 
-  while (deps.time.now() < deadline) {
+  while (deps.time.monotonicNow() < deadline) {
     throwIfDirectoryLockAborted(deps);
     const lease = tryCreateDirectoryLock(lockDir, deps);
     if (lease !== null) {
@@ -542,9 +543,9 @@ export function acquireDirectoryLockSync(
 ): DirectoryLockLease {
   const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
   const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
-  const deadline = deps.time.now() + effectiveTimeoutMs;
+  const deadline = deps.time.monotonicNow() + BigInt(effectiveTimeoutMs);
 
-  while (deps.time.now() < deadline) {
+  while (deps.time.monotonicNow() < deadline) {
     const lease = tryCreateDirectoryLock(lockDir, deps);
     if (lease !== null) {
       return lease;

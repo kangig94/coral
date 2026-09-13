@@ -8,7 +8,7 @@ function errno(code: string): NodeJS.ErrnoException {
   return error;
 }
 
-function createLockDeps(now: () => number): {
+function createLockDeps(now: () => number, monotonicNow: () => bigint = () => BigInt(now())): {
   deps: DirectoryLockDeps;
   directories: Map<string, number>;
   files: Set<string>;
@@ -183,6 +183,7 @@ function createLockDeps(now: () => number): {
     },
     time: {
       now,
+      monotonicNow,
       sleep: vi.fn(async () => {}),
       setInterval: vi.fn(() => ({})),
       clearInterval: vi.fn(),
@@ -368,5 +369,25 @@ describe('directory fs lock', () => {
 
     await expect(promise).rejects.toBe(reason);
     expect(directories.has('/locks/busy-session')).toBe(true);
+  });
+
+  it('bounds a busy lock wait with monotonic time when wall time moves backward', async () => {
+    let wallTime = 10_000;
+    let monotonicTime = 0n;
+    const fixture = createLockDeps(
+      () => wallTime,
+      () => {
+        const observed = monotonicTime;
+        monotonicTime += 50n;
+        wallTime -= 1_000;
+        return observed;
+      },
+    );
+    fixture.directories.set('/locks/backward-wall-clock', wallTime);
+
+    await expect(acquireDirectoryLock('/locks/backward-wall-clock', fixture.deps, 100)).rejects.toThrow(
+      /Directory lock timeout/u,
+    );
+    expect(wallTime).toBeLessThan(10_000);
   });
 });
