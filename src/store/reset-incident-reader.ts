@@ -72,21 +72,25 @@ type StoreResetIncidentListBase =
       readonly fileCount: null;
     };
 
+export type StoreResetListedParkedEntry = Omit<StoreResetParkedEntry, 'name'> & {
+  readonly name: string;
+};
+
 export type StoreResetIncidentListEntry = StoreResetIncidentListBase & {
   readonly retention:
     | (PreservedRetention & {
         readonly preservation: PreservationMechanism | 'unknown';
         readonly resumeLeftActive: boolean;
-        readonly parked: readonly StoreResetParkedEntry[];
+        readonly parked: readonly StoreResetListedParkedEntry[];
       })
     | {
         readonly slot: 'parked';
-        readonly parked: readonly StoreResetParkedEntry[];
+        readonly parked: readonly StoreResetListedParkedEntry[];
         readonly cause: 'publication' | 'discard' | 'intruder' | 'residual';
         readonly classification: string | null;
         readonly phase: 'in-flight' | 'terminal';
       }
-    | { readonly slot: 'unknown' };
+    | { readonly slot: 'unknown'; readonly parked?: readonly StoreResetListedParkedEntry[] | 'unknown' };
   readonly storedProductVersion: string | null | 'unknown';
   readonly evidenceBytes: number | 'unknown';
   readonly parkingEvidenceBytes: number | 'unknown';
@@ -308,6 +312,65 @@ function readListEntry(
   }
 }
 
+function inspectParkingDirectory(
+  fs: StoreResetInspectionFs,
+  parkingDirectory: string,
+): {
+  readonly evidenceBytes: number | 'unknown';
+  readonly entries: readonly StoreResetListedParkedEntry[] | 'unknown';
+} {
+  const directories = [parkingDirectory];
+  const observed: StoreResetListedParkedEntry[] = [];
+  let total = 0;
+  let entries = 0;
+  try {
+    while (directories.length > 0) {
+      const directory = directories.pop();
+      if (directory === undefined) break;
+      let cursor: unknown = null;
+      try {
+        cursor = fs.openDirectory(directory);
+        while (true) {
+          const entry = fs.readDirectory(cursor);
+          if (entry === null) break;
+          entries += 1;
+          if (entries > MAX_INCIDENT_ROOT_ENTRIES * MAX_INCIDENT_DIR_ENTRIES) {
+            return { evidenceBytes: 'unknown', entries: 'unknown' };
+          }
+          const path = join(directory, entry.name);
+          const stat = fs.lstat(path);
+          if (stat === null) return { evidenceBytes: 'unknown', entries: 'unknown' };
+          const isSidecar = directory === parkingDirectory && entry.name === STORE_RESET_PARKED_SIDECAR_FILE_NAME;
+          if (!isSidecar) {
+            observed.push({
+              name: relative(parkingDirectory, path),
+              kind: stat.kind === 'file' ? 'regular-file' : stat.kind,
+              sizeBytes:
+                stat.kind === 'file' && stat.size >= 0n && stat.size <= BigInt(Number.MAX_SAFE_INTEGER)
+                  ? Number(stat.size)
+                  : null,
+            });
+          }
+          if (stat.kind === 'directory') {
+            directories.push(path);
+            continue;
+          }
+          if (isSidecar || stat.kind !== 'file') continue;
+          if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER - total)) {
+            return { evidenceBytes: 'unknown', entries: 'unknown' };
+          }
+          total += Number(stat.size);
+        }
+      } finally {
+        if (cursor !== null) fs.closeDirectory(cursor);
+      }
+    }
+  } catch {
+    return { evidenceBytes: 'unknown', entries: 'unknown' };
+  }
+  return { evidenceBytes: total, entries: observed };
+}
+
 function readParkedListEntries(
   fs: StoreResetInspectionFs,
   quarantineRoot: string,
@@ -397,13 +460,7 @@ function readParkedListEntries(
         }
       }
       const incidentId = record?.parkingId ?? coordinate;
-      const parkingEvidenceBytes = STORE_RESET_EVIDENCE_FILE_NAMES.reduce<number | 'unknown'>((total, name) => {
-        if (total === 'unknown') return total;
-        const stat = fs.lstat(join(parkingPath, name));
-        if (stat === null) return total;
-        if (stat.kind !== 'file' || stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) return 'unknown';
-        return total + Number(stat.size);
-      }, 0);
+      const parkingContents = inspectParkingDirectory(fs, parkingPath);
       return {
         incidentId,
         state,
@@ -414,17 +471,17 @@ function readParkedListEntries(
         fileCount: null,
         retention:
           record === null
-            ? { slot: 'unknown' as const }
+            ? { slot: 'unknown' as const, parked: parkingContents.entries }
             : {
                 slot: 'parked' as const,
-                parked: record.entries,
+                parked: parkingContents.entries === 'unknown' ? record.entries : parkingContents.entries,
                 cause: record.cause,
                 classification: record.classification,
                 phase: record.phase,
               },
         storedProductVersion: 'unknown' as const,
         evidenceBytes: 'unknown' as const,
-        parkingEvidenceBytes,
+        parkingEvidenceBytes: parkingContents.evidenceBytes,
       };
     }),
     truncated,

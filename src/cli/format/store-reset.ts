@@ -79,11 +79,12 @@ function preservation(entry: StoreResetIncidentListResult['incidents'][number]):
 }
 
 function parked(entry: StoreResetIncidentListResult['incidents'][number]): string {
-  return entry.retention.slot === 'unknown'
+  const entries = entry.retention.parked;
+  return entries === undefined || entries === 'unknown'
     ? 'unknown'
-    : entry.retention.parked.length === 0
+    : entries.length === 0
       ? 'none'
-      : entry.retention.parked.map((parkedEntry) => `${parkedEntry.name} (${parkedEntry.kind})`).join(',');
+      : entries.map((parkedEntry) => `${parkedEntry.name} (${parkedEntry.kind})`).join(',');
 }
 
 function discarded(result: StoreResetIncidentListResult): string {

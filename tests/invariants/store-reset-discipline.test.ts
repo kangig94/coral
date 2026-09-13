@@ -490,7 +490,7 @@ describe('store reset discipline invariants', () => {
     expect(manifestIndex).toBeGreaterThan(parkIndex);
   });
 
-  it('keeps every parking rename in the settlement import closure after its sidecar', () => {
+  it('keeps parking creation renames after their sidecar and recovery relocation after discovery', () => {
     const parkingRenamers = [
       [RESET_ACTIVE_EVIDENCE_PATH, 'parkActiveEvidence', 'lstatSync(join(parkingDirectory'],
       [RESET_ACTIVE_EVIDENCE_PATH, 'parkCurrentEvidence', 'lstatSync(join(parkingDirectory'],
@@ -510,6 +510,15 @@ describe('store reset discipline invariants', () => {
       expect(renameIndex, functionName).toBeGreaterThan(sidecarIndex);
     }
 
+    const recoveryRelocation = withoutComments(
+      findFunction(BACKEND_STORE_RESET_PATH, 'retireNonResumableFixedParking').body?.getText(
+        sourceFile(BACKEND_STORE_RESET_PATH),
+      ) ?? '',
+    );
+    expect(recoveryRelocation.indexOf('renameSync(')).toBeGreaterThan(
+      recoveryRelocation.indexOf('discovered.entries.find('),
+    );
+
     const renamingFunctions = settlementStoreImportClosure()
       .flatMap(collectCalls)
       .filter((call) => call.callee === 'renameSync')
@@ -520,7 +529,9 @@ describe('store reset discipline invariants', () => {
       )
       .map((call) => call.enclosingFunctions[0])
       .sort();
-    expect(renamingFunctions).toEqual(parkingRenamers.map(([, functionName]) => functionName).sort());
+    expect(renamingFunctions).toEqual(
+      [...parkingRenamers.map(([, functionName]) => functionName), 'retireNonResumableFixedParking'].sort(),
+    );
   });
 
   it('keeps shared-path capabilities and exact inode identity inside their canonical owner', () => {
@@ -599,18 +610,25 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('keeps all resettable classifications in the settlement loop', () => {
+  it('keeps the complete store classification union in the settlement loop', () => {
     const source = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
-    const resettable = withoutComments(
-      findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'needsStoreReset').body?.getText(source) ?? '',
-    );
     const settlement = withoutComments(
       findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore').body?.getText(source) ?? '',
     );
 
-    expect(resettable).toContain("classification.kind === 'older-incompatible'");
-    expect(resettable).toContain("classification.kind === 'corrupt-or-unsupported'");
-    expect(resettable).toContain("classification.kind === 'newer-incompatible'");
+    for (const kind of [
+      'absent',
+      'fresh',
+      'compatible',
+      'legacy-adoptable',
+      'older-incompatible',
+      'newer-incompatible',
+      'corrupt-or-unsupported',
+    ]) {
+      expect(settlement).toContain(`case '${kind}'`);
+    }
+    expect(settlement).toContain('default:');
+    expect(settlement).toContain('assertNever(activeEpoch.classification)');
     expect(settlement).toContain('resumeAutomaticBackendStoreResetIncident(');
     expect(settlement).toContain('resumeBackendStoreResetIncidentForOperator(');
     expect(settlement).toContain('publications.push(publication)');

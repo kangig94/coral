@@ -9,6 +9,7 @@ import { validateProductVersion } from '../infra/product-version.js';
 import type { ActiveEvidence } from './reset-active-evidence.js';
 import {
   isCanonicalStoreResetIncidentId,
+  MAX_INCIDENT_DIR_ENTRIES,
   MAX_INCIDENT_ROOT_ENTRIES,
   MAX_RESET_MANIFEST_BYTES,
   parseStoreResetIncidentManifest,
@@ -941,12 +942,52 @@ export function recordStoreResetResumeLeftActive(
   });
 }
 
+function parkingDirectoryEvidenceBytes(storage: StoragePort, parkingDirectory: string): number | null {
+  const directories = [parkingDirectory];
+  let total = 0;
+  let entries = 0;
+  while (directories.length > 0) {
+    const directory = directories.pop();
+    if (directory === undefined) break;
+    let read: ReturnType<StoragePort['readDirectoryBoundedSync']>;
+    try {
+      read = storage.readDirectoryBoundedSync(directory, MAX_INCIDENT_DIR_ENTRIES + 1);
+    } catch {
+      return null;
+    }
+    if (read.overflow) return null;
+    for (const name of read.entries) {
+      entries += 1;
+      if (entries > MAX_INCIDENT_ROOT_ENTRIES * MAX_INCIDENT_DIR_ENTRIES) return null;
+      const path = join(directory, name);
+      try {
+        const link = storage.lstatSync(path);
+        if (link.isSymbolicLink()) continue;
+        if (link.isDirectory()) {
+          directories.push(path);
+          continue;
+        }
+        if (!link.isFile() || (directory === parkingDirectory && name === STORE_RESET_PARKED_SIDECAR_FILE_NAME)) {
+          continue;
+        }
+        const stat = storage.lstatSync(path, { bigint: true });
+        if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER - total)) return null;
+        total += Number(stat.size);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return total;
+}
+
 export function releaseStoreResetIncident(
   storage: StoragePort,
   quarantineRoot: string,
   incidentId: string,
 ): StoreResetReleaseResult {
-  if (!isCanonicalStoreResetIncidentId(incidentId)) return { kind: 'absent', incidentId };
+  const fixedCoordinate = incidentId === STORE_RESET_IN_FLIGHT_DIRECTORY;
+  if (!fixedCoordinate && !isCanonicalStoreResetIncidentId(incidentId)) return { kind: 'absent', incidentId };
   const rootPresence = pathPresence(storage, quarantineRoot);
   if (rootPresence === 'absent') return { kind: 'absent', incidentId };
   if (rootPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
@@ -969,10 +1010,9 @@ export function releaseStoreResetIncident(
   }
   if (stagingPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
-  let parkingPath = join(parkingRoot, incidentId);
+  let parkingPath = join(parkingRoot, fixedCoordinate ? STORE_RESET_IN_FLIGHT_DIRECTORY : incidentId);
   let parkingPresence = pathPresence(storage, parkingPath);
-  let parkedRecord: StoreResetParkedRecord | null = null;
-  if (parkingPresence === 'absent') {
+  if (!fixedCoordinate && parkingPresence === 'absent') {
     const inFlightPath = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
     const inFlightPresence = pathPresence(storage, inFlightPath);
     if (inFlightPresence === 'present') {
@@ -984,7 +1024,6 @@ export function releaseStoreResetIncident(
         if (inFlight?.parkingId === incidentId || inFlight?.incidentId === incidentId) {
           parkingPath = inFlightPath;
           parkingPresence = 'present';
-          parkedRecord = inFlight;
         }
       } catch (error: unknown) {
         return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
@@ -1002,9 +1041,6 @@ export function releaseStoreResetIncident(
       return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
     }
   }
-  parkedRecord ??= parkingPresence === 'present' ? readStoreResetParkedRecord(storage, parkingRoot, incidentId) : null;
-  if (parkingPresence === 'present' && parkedRecord === null) return { kind: 'undeterminable', incidentId };
-  if (parkedRecord?.phase === 'in-flight') return { kind: 'in-flight', incidentId };
   const incidentPath = join(quarantineRoot, incidentId);
   const incidentPresence = pathPresence(storage, incidentPath);
   if (incidentPresence === 'absent' && parkingPresence === 'absent') return { kind: 'absent', incidentId };
@@ -1021,16 +1057,7 @@ export function releaseStoreResetIncident(
   const slot = resolveStoreResetRetentionSlot(storage, quarantineRoot);
   const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const parkedEvidenceBytes =
-    parkingPresence === 'present'
-      ? STORE_RESET_EVIDENCE_FILE_NAMES.reduce((total, name) => {
-          try {
-            const stat = storage.lstatSync(join(parkingPath, name), { bigint: true });
-            return stat.isFile() && stat.size <= BigInt(Number.MAX_SAFE_INTEGER) ? total + Number(stat.size) : total;
-          } catch {
-            return total;
-          }
-        }, 0)
-      : null;
+    parkingPresence === 'present' ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
   const incidentEvidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? null;
   const parkingEvidenceBytes = parkedEvidenceBytes;
   const incomplete = (error: unknown, durable = false): StoreResetReleaseResult => ({
@@ -1095,7 +1122,7 @@ export function releaseStoreResetIncident(
       durability,
     };
   }
-  if (incidentPresence === 'absent' && parkedRecord?.phase === 'terminal') {
+  if (incidentPresence === 'absent' && parkingPresence === 'present') {
     return { kind: 'parked', incidentId, incidentEvidenceBytes, parkingEvidenceBytes, durability };
   }
   return { kind: 'not-holder', incidentId, incidentEvidenceBytes, parkingEvidenceBytes, durability };

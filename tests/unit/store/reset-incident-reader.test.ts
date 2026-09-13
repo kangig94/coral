@@ -258,6 +258,8 @@ describe('store reset incident listing', () => {
     fs.stats.set(parkingRoot, stat('directory'));
     fs.entries.set(parkingRoot, [parkingId]);
     fs.stats.set(parkingDirectory, stat('directory'));
+    fs.entries.set(parkingDirectory, ['parked.v1.json', 'store.db-wal']);
+    fs.addFile(join(parkingDirectory, 'store.db-wal'), '123456789012');
     fs.addFile(
       join(parkingDirectory, 'parked.v1.json'),
       JSON.stringify({
@@ -284,7 +286,7 @@ describe('store reset incident listing', () => {
         resetPolicyCause: null,
         fileCount: null,
         evidenceBytes: 'unknown',
-        parkingEvidenceBytes: 0,
+        parkingEvidenceBytes: 12,
         retention: {
           slot: 'parked',
           parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
@@ -410,6 +412,7 @@ describe('store reset incident listing', () => {
     fs.stats.set(parkingRoot, stat('directory'));
     fs.entries.set(parkingRoot, [incidentId]);
     fs.stats.set(parkingDirectory, stat('directory'));
+    fs.entries.set(parkingDirectory, ['parked.v1.json', 'store.db-wal']);
     fs.stats.set(join(parkingDirectory, 'store.db-wal'), stat('file', 12));
     fs.addFile(
       join(parkingDirectory, 'parked.v1.json'),

@@ -27,7 +27,11 @@ import {
   type StoreResetIncidentListResult,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
-import { isCanonicalStoreResetIncidentId, type StoreResetPublicReport } from '../store/reset-incident.js';
+import {
+  isCanonicalStoreResetIncidentId,
+  STORE_RESET_IN_FLIGHT_DIRECTORY,
+  type StoreResetPublicReport,
+} from '../store/reset-incident.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import { StoreResetCliError } from './errors.js';
 import { acquireStoreResetSocketGuard } from './store-reset-socket.js';
@@ -81,7 +85,7 @@ export function releaseStoreResetLocal(
   flavor: BuildFlavor,
   incidentId: string,
 ): Promise<StoreResetReleaseDecision> {
-  if (!isCanonicalStoreResetIncidentId(incidentId)) {
+  if (incidentId !== STORE_RESET_IN_FLIGHT_DIRECTORY && !isCanonicalStoreResetIncidentId(incidentId)) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
   return releaseStoreReset({ target, runtime: createRealRuntime(flavor), incidentId });

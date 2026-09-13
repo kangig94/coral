@@ -1063,7 +1063,7 @@ describe('operator store-reset discard', () => {
     expect(existsSync(join(quarantineRoot, discarded.incident.incidentId))).toBe(false);
   });
 
-  it('lists an in-flight parking transaction and refuses ordinary release', async () => {
+  it('lists an in-flight parking transaction and gives the operator an explicit release exit', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const { quarantineRoot } = resolveStoreResetTargetPaths(runtime, 'gen2');
@@ -1086,13 +1086,13 @@ describe('operator store-reset discard', () => {
     const listed = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot));
     expect(listed.incidents).toContainEqual(expect.objectContaining({ incidentId: INCIDENT_ID, state: 'in-flight' }));
     await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: INCIDENT_ID })).resolves.toMatchObject({
-      kind: 'in-flight',
+      kind: 'parked',
       target: 'gen2',
     });
-    expect(existsSync(parkingPath)).toBe(true);
+    expect(existsSync(parkingPath)).toBe(false);
   });
 
-  it('lists malformed parking separately and refuses to delete either witness', async () => {
+  it('lists malformed parking separately and lets the operator release both witnesses', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
@@ -1125,10 +1125,10 @@ describe('operator store-reset discard', () => {
       'malformed',
     ]);
     await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId })).resolves.toMatchObject({
-      kind: 'undeterminable',
+      kind: 'released',
     });
-    expect(existsSync(incidentPath)).toBe(true);
-    expect(existsSync(parkingPath)).toBe(true);
+    expect(existsSync(incidentPath)).toBe(false);
+    expect(existsSync(parkingPath)).toBe(false);
   });
 
   it('releases a holder with an unreadable manifest and clears its preserved record', async () => {

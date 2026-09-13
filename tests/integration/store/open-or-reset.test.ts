@@ -18,7 +18,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
@@ -77,6 +77,8 @@ import { formatStoreResetList } from '#src/cli/format/store-reset.js';
 import {
   readStoreResetParkedRecord,
   readStoreResetRetentionLedger,
+  recordStoreResetPending,
+  releaseStoreResetIncident,
   resolveStoreResetRetentionSlot,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   writeStoreResetParkedRecord,
@@ -193,6 +195,13 @@ function tableExists(dbPath: string, name: string): boolean {
   } finally {
     db.close();
   }
+}
+
+function retainedIncidentContainsTable(root: string, name: string): boolean {
+  const quarantineRoot = join(root, 'store-reset-quarantine');
+  return retainedIncidentNames(quarantineRoot).some((incidentId) =>
+    tableExists(join(quarantineRoot, incidentId, 'store.db'), name),
+  );
 }
 
 function readFormatFingerprint(dbPath: string): string | null {
@@ -471,7 +480,7 @@ async function captureAsyncError(fn: () => Promise<unknown>): Promise<unknown> {
   }
 }
 
-const ACTIVE_EVIDENCE_ARMS = ['copy-proven', 'copy-unproven', 'discard', 'claim', 'resume'] as const;
+const ACTIVE_EVIDENCE_ARMS = ['copy-proven', 'copy-unproven', 'over-bound', 'claim', 'resume'] as const;
 const ACTIVE_EVIDENCE_MUTATIONS = ['deleted', 'replaced', 'appended', 'sidecar', 'non-regular', 'crash'] as const;
 
 type ActiveEvidenceArm = (typeof ACTIVE_EVIDENCE_ARMS)[number];
@@ -486,6 +495,7 @@ function traceActivePathCalls(
 ): {
   readonly runtime: Runtime;
   readonly calls: readonly string[];
+  readonly durableCalls: readonly string[];
   readonly mutationApplied: () => boolean;
   readonly mutationDisposition: () => MutationDisposition | null;
   readonly injectedIdentity: () => { readonly dev: bigint; readonly ino: bigint } | null;
@@ -493,6 +503,8 @@ function traceActivePathCalls(
   readonly stop: () => void;
 } {
   const calls: string[] = [];
+  const durableCalls: string[] = [];
+  const durableRoot = join(dirname(activePath), 'store-reset-quarantine');
   const activeDescriptors = new Set<number>();
   const activeIdentities: Array<{ readonly dev: bigint; readonly ino: bigint }> = [];
   const rememberActiveIdentity = () => {
@@ -527,7 +539,12 @@ function traceActivePathCalls(
         );
         const touchesActiveAlias = args.some(pathHasActiveIdentity);
         const touchesActiveEvidence = touchesActivePath || touchesActiveDescriptor || touchesActiveAlias;
+        const touchesDurableRecord = args.some(
+          (argument) =>
+            typeof argument === 'string' && (argument === durableRoot || argument.startsWith(`${durableRoot}${sep}`)),
+        );
         const observesActiveDescriptor = method === 'fstatSync' && touchesActiveDescriptor;
+        if (!stopped && touchesDurableRecord) durableCalls.push(method);
         if (!stopped && recording && touchesActiveEvidence) {
           const index = calls.length;
           calls.push(method);
@@ -592,6 +609,7 @@ function traceActivePathCalls(
   return {
     runtime: { ...runtime, storage },
     calls,
+    durableCalls,
     mutationApplied: () => applied,
     mutationDisposition: () =>
       applied
@@ -637,19 +655,23 @@ async function exerciseActiveEvidenceArm(
   arm: ActiveEvidenceArm,
   mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation },
   afterCrashMutation?: ActiveEvidenceMutation,
-): Promise<{ readonly calls: readonly string[]; readonly mutationDisposition: MutationDisposition | null }> {
+): Promise<{
+  readonly calls: readonly string[];
+  readonly durableCalls: readonly string[];
+  readonly mutationDisposition: MutationDisposition | null;
+}> {
   const runtime = createRuntime();
   const dbPath = join(makeTempRoot(`coral-store-active-${arm}-sweep-`), 'store.db');
   let boundary: Parameters<typeof traceActivePathCalls>[2];
   let exclusion: WriterExclusion | undefined;
   let startClaimTrace: () => void = () => undefined;
-  if (arm === 'discard') {
+  if (arm === 'over-bound') {
     createMismatchStore(dbPath);
     const holder = await openReset(runtime, dbPath);
     holder.close();
     rmSync(dbPath);
     createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
-    boundary = 'second-identity';
+    boundary = 'identity';
   } else if (arm === 'resume') {
     createInterruptedCopyReset(runtime, dbPath);
     boundary = 'immediate';
@@ -702,6 +724,7 @@ async function exerciseActiveEvidenceArm(
       completed?.close();
       return {
         calls: trace.calls,
+        durableCalls: trace.durableCalls,
         mutationDisposition: {
           kind: 'unreachable',
           reason: 'the injected syscall failure is absorbed by the link-to-copy fallback before a crash boundary',
@@ -753,7 +776,7 @@ async function exerciseActiveEvidenceArm(
   if (injectedIdentity !== null && mutation?.kind !== 'appended') {
     expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
   }
-  return { calls: trace.calls, mutationDisposition: trace.mutationDisposition() };
+  return { calls: trace.calls, durableCalls: trace.durableCalls, mutationDisposition: trace.mutationDisposition() };
 }
 
 function applyMutationBetweenCrashAndResume(
@@ -1142,56 +1165,63 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
-  it('discards a provable descendant in deference to the preserved slot holder', () => {
+  it('preserves a schema-identical independent store because format compatibility does not prove ancestry', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-reset-descendant-'), 'store.db');
     createMismatchStore(dbPath);
     const holder = publishReset(runtime, dbPath);
     if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
     createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+    const independent = new DatabaseSync(dbPath);
+    independent.exec('CREATE TABLE sentinel_independent_store (id INTEGER PRIMARY KEY)');
+    independent.close();
 
-    const descendant = publishNewerReset(runtime, dbPath);
+    const excess = publishNewerReset(runtime, dbPath);
 
-    expect(descendant).toMatchObject({
-      kind: 'discarded',
-      receipt: { deferredTo: holder.incident.incidentId },
+    expect(excess).toMatchObject({
+      kind: 'preserved',
+      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
     });
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    expect(retainedIncidentNames(quarantineRoot)).toEqual([holder.incident.incidentId]);
+    expect(retainedIncidentContainsTable(dirname(dbPath), 'sentinel_independent_store')).toBe(true);
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
       preserved: { incidentId: holder.incident.incidentId },
-      discarded: { count: 1, latest: { deferredTo: holder.incident.incidentId } },
+      excess: { count: 1, latest: { lineage: 'undeterminable' } },
+      discarded: null,
     });
   });
 
-  it('reconciles a pending discard only after every promised identity is gone', () => {
+  it('reconciles a pending discard written by an older build only after every promised identity is gone', () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-reset-pending-discard-'), 'store.db');
     createMismatchStore(dbPath);
     const holder = publishReset(runtime, dbPath);
     if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
-    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
-    const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
-    let discardLedgerWrites = 0;
-    const ledgerWrite = vi
-      .spyOn(runtime.storage, 'writeAtomicDurableSync')
-      .mockImplementation((path, data, options) => {
-        if (!path.endsWith(STORE_RESET_RETENTION_LEDGER_FILE_NAME)) {
-          return writeAtomicDurableSync(path, data, options);
-        }
-        discardLedgerWrites += 1;
-        return discardLedgerWrites === 1 ? writeAtomicDurableSync(path, data, options) : false;
-      });
-
-    expect(publishNewerReset(runtime, dbPath)).toMatchObject({ kind: 'discarded' });
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+    const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+    if (ledger === null) throw new Error('Expected the holder ledger.');
+    createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+    const identity = statSync(dbPath, { bigint: true });
+    recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
+      resetAt: '2026-09-13T00:00:00.000Z',
+      identities: [{ name: 'store.db', dev: identity.dev.toString(), ino: identity.ino.toString() }],
+      outcome: {
+        kind: 'discard',
+        receipt: {
+          resetAt: '2026-09-13T00:00:00.000Z',
+          resetPolicyCause: 'newer-incompatible-invalid-target',
+          evidenceBytes: Number(identity.size),
+          deferredTo: holder.incident.incidentId,
+        },
+      },
+    });
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
       pending: { outcome: { kind: 'discard' } },
       discarded: null,
       preserved: { incidentId: holder.incident.incidentId },
     });
 
-    ledgerWrite.mockRestore();
+    rmSync(dbPath);
     expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, [])).toMatchObject({
       kind: 'held',
       ledger: { pending: null, discarded: { count: 1 } },
@@ -1211,7 +1241,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     expect(excess).toMatchObject({
       kind: 'preserved',
-      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'unrelated' },
+      retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
     });
     if (excess.kind !== 'preserved') throw new Error('Expected excess preservation.');
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
@@ -1220,7 +1250,7 @@ describe('openOrResetBackendStoreDb', () => {
     );
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
       preserved: { incidentId: holder.incident.incidentId },
-      excess: { count: 1, latest: { incidentId: excess.incident.incidentId, lineage: 'unrelated' } },
+      excess: { count: 1, latest: { incidentId: excess.incident.incidentId, lineage: 'undeterminable' } },
     });
   });
 
@@ -2369,7 +2399,7 @@ describe('openOrResetBackendStoreDb', () => {
     ).toBe(true);
   });
 
-  it('resumes a discard transaction interrupted after parking renamed the descendant', async () => {
+  it('resumes preservation after parking a schema-identical store over the bound', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-discard-parking-resume-');
     const dbPath = join(root, 'store.db');
@@ -2405,7 +2435,8 @@ describe('openOrResetBackendStoreDb', () => {
     db.close();
     const ledger = readStoreResetRetentionLedger(runtime.storage, join(root, 'store-reset-quarantine'));
     expect(ledger?.pending).toBeNull();
-    expect(ledger?.discarded?.count).toBe(1);
+    expect(ledger?.discarded).toBeNull();
+    expect(ledger?.excess?.count).toBe(1);
   });
 
   it.each([1, 2, 3, 5])('boots after an adversary lands %i incompatible store epochs', async (epochCount) => {
@@ -2458,7 +2489,12 @@ describe('openOrResetBackendStoreDb', () => {
   it('survives the generated active-evidence mutation and crash-resume cross-product', async () => {
     vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
     const traces = new Map<ActiveEvidenceArm, readonly string[]>();
-    for (const arm of ACTIVE_EVIDENCE_ARMS) traces.set(arm, (await exerciseActiveEvidenceArm(arm)).calls);
+    const durableTraces = new Map<ActiveEvidenceArm, readonly string[]>();
+    for (const arm of ACTIVE_EVIDENCE_ARMS) {
+      const trace = await exerciseActiveEvidenceArm(arm);
+      traces.set(arm, trace.calls);
+      durableTraces.set(arm, trace.durableCalls);
+    }
 
     const liveCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
       ACTIVE_EVIDENCE_MUTATIONS.flatMap((mutation) =>
@@ -2471,6 +2507,9 @@ describe('openOrResetBackendStoreDb', () => {
       ),
     );
     for (const arm of ACTIVE_EVIDENCE_ARMS) expect(traces.get(arm)?.length ?? 0, arm).toBeGreaterThan(0);
+    for (const arm of ACTIVE_EVIDENCE_ARMS) {
+      expect(durableTraces.get(arm)?.length ?? 0, `${arm} durable records`).toBeGreaterThan(0);
+    }
 
     const failures: string[] = [];
     const runCell = async (label: string, run: () => Promise<MutationDisposition | null>) => {
@@ -2504,6 +2543,292 @@ describe('openOrResetBackendStoreDb', () => {
 
     expect(failures, `${failures.length} generated sweep cells failed`).toEqual([]);
   }, 120_000);
+
+  it('survives the generated Revision 8 state-space extensions', async () => {
+    const failures: string[] = [];
+    const runCell = async (label: string, run: () => Promise<void> | void) => {
+      const error = await captureAsyncError(async () => run());
+      if (error === null) return;
+      const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
+      failures.push(`${label}: ${cause}`);
+    };
+
+    await runCell('causal-lineage/schema-identical-unrelated', () => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision8-lineage-');
+      const dbPath = join(root, 'store.db');
+      createMismatchStore(dbPath);
+      const holder = publishReset(runtime, dbPath);
+      if (holder.kind !== 'preserved') throw new Error('Expected a preserved slot holder.');
+      createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+      const unrelated = new DatabaseSync(dbPath);
+      unrelated.exec('CREATE TABLE sentinel_unrelated_namespace (id INTEGER PRIMARY KEY)');
+      unrelated.close();
+
+      expect(publishNewerReset(runtime, dbPath)).toMatchObject({
+        kind: 'preserved',
+        retention: { slot: 'excess', holder: holder.incident.incidentId, lineage: 'undeterminable' },
+      });
+      expect(retainedIncidentContainsTable(root, 'sentinel_unrelated_namespace')).toBe(true);
+    });
+
+    await runCell('causal-lineage/true-descendant-without-token', async () => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision8-lineage-descendant-');
+      const dbPath = join(root, 'store.db');
+      createMismatchStore(dbPath);
+      const opened = await openReset(runtime, dbPath);
+      opened.exec(`
+        CREATE TABLE sentinel_true_descendant (id INTEGER PRIMARY KEY);
+        UPDATE meta SET value = '99.0.0' WHERE key = 'store_product_version';
+      `);
+      opened.close();
+      const holder = readStoreResetRetentionLedger(runtime.storage, join(root, 'store-reset-quarantine'))?.preserved;
+      if (holder === null || holder === undefined) throw new Error('Expected a preserved slot holder.');
+
+      expect(publishNewerReset(runtime, dbPath)).toMatchObject({
+        kind: 'preserved',
+        retention: { slot: 'excess', holder: holder.incidentId, lineage: 'undeterminable' },
+      });
+      expect(retainedIncidentContainsTable(root, 'sentinel_true_descendant')).toBe(true);
+    });
+
+    for (const kind of [
+      'absent',
+      'fresh',
+      'compatible',
+      'legacy-adoptable',
+      'older-incompatible',
+      'newer-incompatible',
+      'corrupt-or-unsupported',
+    ] as const) {
+      await runCell(`classification/initial/${kind}`, async () => {
+        const runtime = createRuntime();
+        const root = makeTempRoot(`coral-store-revision8-initial-${kind}-`);
+        const dbPath = join(root, 'store.db');
+        if (kind === 'fresh') new DatabaseSync(dbPath).close();
+        if (kind === 'compatible') createCompatibleSentinelStore(runtime, dbPath);
+        if (kind === 'legacy-adoptable') createMismatchStore(dbPath, STORE_FORMAT.fingerprint);
+        if (kind === 'older-incompatible') createVersionedStore(dbPath, `sha256:${'0'.repeat(64)}`, '0.0.1');
+        if (kind === 'newer-incompatible') createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+        if (kind === 'corrupt-or-unsupported') createMismatchStore(dbPath);
+        const before = existsSync(dbPath) ? statSync(dbPath, { bigint: true }) : null;
+
+        const error = await captureAsyncError(async () => {
+          const db = await openReset(runtime, dbPath);
+          db.close();
+        });
+
+        if (kind === 'legacy-adoptable') {
+          expectSetupCode(error, 'store_schema_outdated');
+          expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+          const after = statSync(dbPath, { bigint: true });
+          expect({ dev: after.dev, ino: after.ino }).toEqual({ dev: before?.dev, ino: before?.ino });
+        } else {
+          expect(error).toBeNull();
+          if (before !== null && kind !== 'fresh' && kind !== 'compatible') {
+            expect(retainedIncidentContainsTable(root, 'sentinel_before_reset')).toBe(true);
+          }
+        }
+      });
+    }
+
+    for (const kind of [
+      'absent',
+      'fresh',
+      'compatible',
+      'legacy-adoptable',
+      'older-incompatible',
+      'newer-incompatible',
+      'corrupt-or-unsupported',
+    ] as const) {
+      await runCell(`classification/parked/${kind}`, async () => {
+        const runtime = createRuntime();
+        const root = makeTempRoot(`coral-store-revision8-parked-${kind}-`);
+        const dbPath = join(root, 'store.db');
+        createMismatchStore(dbPath);
+        const classifyStore = dbModule.classifyStoreFile;
+        vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation((path, storage, current) =>
+          kind === 'absent' && String(path).includes(`${join('store-reset-quarantine', '.parked')}`)
+            ? { kind: 'absent' }
+            : classifyStore(path, storage, current),
+        );
+        const linkSync = runtime.storage.linkSync;
+        let occupant: { readonly dev: bigint; readonly ino: bigint } | null = null;
+        let injected = false;
+        vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+          if (
+            !injected &&
+            destination === dbPath &&
+            String(source).includes(`${join('store-reset-quarantine', '.minted')}`)
+          ) {
+            if (kind === 'fresh') new DatabaseSync(dbPath).close();
+            else if (kind === 'compatible') createCompatibleSentinelStore(runtime, dbPath);
+            else if (kind === 'legacy-adoptable') createMismatchStore(dbPath, STORE_FORMAT.fingerprint);
+            else if (kind === 'older-incompatible') createVersionedStore(dbPath, `sha256:${'0'.repeat(64)}`, '0.0.1');
+            else if (kind === 'newer-incompatible') createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
+            else createMismatchStore(dbPath);
+            const observed = statSync(dbPath, { bigint: true });
+            occupant = { dev: observed.dev, ino: observed.ino };
+            injected = true;
+          }
+          linkSync(source, destination);
+        });
+
+        const error = await captureAsyncError(async () => {
+          const db = await openReset(runtime, dbPath);
+          db.close();
+        });
+        vi.restoreAllMocks();
+
+        expect(injected).toBe(true);
+        expect(occupant).not.toBeNull();
+        if (kind === 'legacy-adoptable') {
+          expectSetupCode(error, 'store_schema_outdated');
+          expect(containsIdentity(root, occupant!)).toBe(true);
+          const active = statSync(dbPath, { bigint: true });
+          expect({ dev: active.dev, ino: active.ino }).toEqual(occupant);
+        } else {
+          expect(error).toBeNull();
+          expect(containsIdentity(root, occupant!)).toBe(true);
+        }
+      });
+    }
+
+    for (const state of ['absent', 'sidecar-absent', 'malformed', 'unreadable', 'in-flight', 'terminal'] as const) {
+      await runCell(`durable-coordinate/${state}`, async () => {
+        const runtime = createRuntime();
+        const root = makeTempRoot(`coral-store-revision8-${state}-`);
+        const dbPath = join(root, 'store.db');
+        createMismatchStore(dbPath);
+        const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+        const coordinate = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
+        if (state === 'absent') {
+          const db = await openReset(runtime, dbPath);
+          db.close();
+          return;
+        }
+        mkdirSync(coordinate, { recursive: true, mode: 0o700 });
+        const markerPath = join(coordinate, 'pre-existing-marker');
+        writeFileSync(markerPath, state);
+        const marker = statSync(markerPath, { bigint: true });
+        if (state === 'malformed' || state === 'unreadable') {
+          writeFileSync(join(coordinate, STORE_RESET_PARKED_SIDECAR_FILE_NAME), '{');
+          if (state === 'unreadable') {
+            runtime.storage.chmodSync(join(coordinate, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 0o000);
+          }
+        } else if (state === 'terminal' || state === 'in-flight') {
+          writeStoreResetParkedRecord(
+            runtime.storage,
+            parkingRoot,
+            {
+              version: 1,
+              parkingId: '323e4567-e89b-42d3-a456-426614174000',
+              parkedAt: '2026-09-13T00:00:00.000Z',
+              phase: state === 'terminal' ? 'terminal' : 'in-flight',
+              cause: 'residual',
+              incidentId: null,
+              names: [],
+              entries: [],
+              transaction:
+                state === 'terminal'
+                  ? null
+                  : { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
+              classification: null,
+            },
+            STORE_RESET_IN_FLIGHT_DIRECTORY,
+          );
+        }
+
+        const first = await captureAsyncError(() => openReset(runtime, dbPath));
+        if (first !== null) {
+          const second = await openReset(runtime, dbPath);
+          second.close();
+        }
+        expect(containsIdentity(root, { dev: marker.dev, ino: marker.ino })).toBe(true);
+      });
+    }
+
+    await runCell('classifier-open/multi-step-aba', async () => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision8-classifier-aba-');
+      const dbPath = join(root, 'store.db');
+      const originalPath = join(root, 'original.db');
+      const foreignPath = join(root, 'foreign.db');
+      createCompatibleSentinelStore(runtime, dbPath);
+      const exists = runtime.storage.existsSync;
+      const lstat = runtime.storage.lstatSync;
+      let phase: 'waiting' | 'foreign' | 'restored' = 'waiting';
+      vi.spyOn(runtime.storage, 'existsSync').mockImplementation((path) => {
+        if (phase === 'waiting' && path === dbPath) {
+          renameFileSync(dbPath, originalPath);
+          createMismatchStore(dbPath);
+          phase = 'foreign';
+        }
+        return exists(path);
+      });
+      vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+        if (phase === 'foreign' && path === dbPath) {
+          renameFileSync(dbPath, foreignPath);
+          renameFileSync(originalPath, dbPath);
+          phase = 'restored';
+        }
+        return options?.bigint === true ? lstat(path, { bigint: true }) : lstat(path);
+      }) as Runtime['storage']['lstatSync']);
+
+      const db = await openReset(runtime, dbPath);
+      db.close();
+      vi.restoreAllMocks();
+
+      expect(phase === 'waiting' || phase === 'restored').toBe(true);
+      expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+      if (existsSync(foreignPath)) expect(tableExists(foreignPath, 'sentinel_before_reset')).toBe(true);
+    });
+
+    await runCell('operator-release/fixed-coordinate-and-extra-tree', () => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision8-release-');
+      const quarantineRoot = join(root, 'store-reset-quarantine');
+      const parkingRoot = join(quarantineRoot, '.parked');
+      const coordinate = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
+      const nested = join(coordinate, 'extra', 'nested');
+      mkdirSync(nested, { recursive: true, mode: 0o700 });
+      writeFileSync(join(nested, 'evidence.bin'), 'nested-evidence');
+
+      const listed = listStoreResetIncidents({
+        fs: createStoreResetInspectionFs(),
+        quarantineRoot,
+        expectedBuild: buildIdentity(),
+      });
+      expect(listed.incidents).toContainEqual(
+        expect.objectContaining({
+          incidentId: STORE_RESET_IN_FLIGHT_DIRECTORY,
+          parkingEvidenceBytes: Buffer.byteLength('nested-evidence'),
+          retention: {
+            slot: 'unknown',
+            parked: expect.arrayContaining([
+              { name: 'extra', kind: 'directory', sizeBytes: null },
+              { name: join('extra', 'nested'), kind: 'directory', sizeBytes: null },
+              {
+                name: join('extra', 'nested', 'evidence.bin'),
+                kind: 'regular-file',
+                sizeBytes: Buffer.byteLength('nested-evidence'),
+              },
+            ]),
+          },
+        }),
+      );
+      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, STORE_RESET_IN_FLIGHT_DIRECTORY)).toMatchObject(
+        {
+          kind: 'parked',
+          parkingEvidenceBytes: Buffer.byteLength('nested-evidence'),
+        },
+      );
+      expect(existsSync(coordinate)).toBe(false);
+    });
+
+    expect(failures, `${failures.length} extended sweep cells failed`).toEqual([]);
+  });
 
   it('finishes a torn copy publication when an active name disappears before parking', async () => {
     const runtime = createRuntime();

@@ -232,13 +232,13 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
 
 export function classifyStoreFile(
   path: string,
-  storage: Pick<StoragePort, 'existsSync'>,
+  storage: Pick<StoragePort, 'existsSync' | 'openSqliteDatabaseSync'>,
   current: StoreFormatClassificationTarget,
 ): StoreFormatClassification {
   if (path !== ':memory:' && !storage.existsSync(path)) return { kind: 'absent' };
-  const db = new DatabaseSync(path, { readOnly: path !== ':memory:' }) as unknown as Database;
+  const db = storage.openSqliteDatabaseSync(path, { readOnly: path !== ':memory:' });
   try {
-    return classifyStoreFormat(db, current);
+    return classifyStoreFormat(db as unknown as Database, current);
   } finally {
     db.close();
   }
@@ -257,7 +257,7 @@ function writeStoreFormatSidecar(options: WritableStoreOptions): void {
   }
 }
 
-function storeSchemaOutdatedError(
+export function storeSchemaOutdatedError(
   path: string,
   classification: StoreFormatClassification,
   current: StoreFormatDescription,
@@ -274,6 +274,15 @@ function storeSchemaOutdatedError(
     currentProductVersion: current.productVersion,
     classification: classification.kind,
   });
+}
+
+export function refuseLegacyStore(
+  path: string,
+  classification: Extract<StoreFormatClassification, { readonly kind: 'legacy-adoptable' }>,
+  storeFormat: StoreFormatDescription,
+  flavor?: BuildFlavor,
+): never {
+  throw storeSchemaOutdatedError(path, classification, storeFormat, flavor);
 }
 
 export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDescription): void {
@@ -325,7 +334,7 @@ export function openWritableStoreDatabase(options: WritableStoreOptions): Writab
   try {
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'legacy-adoptable') {
-      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
+      refuseLegacyStore(options.path, classification, options.storeFormat, options.flavor);
     }
     if (classification.kind === 'compatible') {
       applyJournalPragmas(db, {
@@ -377,7 +386,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'legacy-adoptable') {
       // Only explicit adoption may stamp legacy metadata.
-      throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
+      refuseLegacyStore(options.path, classification, options.storeFormat, options.flavor);
     }
     if (classification.kind === 'compatible') {
       return db;
