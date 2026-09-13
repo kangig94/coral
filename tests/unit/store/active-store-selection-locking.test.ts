@@ -143,6 +143,10 @@ function stubAudit(): ReturnType<typeof vi.spyOn> {
   return vi.spyOn(auditLogModule, 'writeAuditEvent').mockImplementation(() => undefined);
 }
 
+async function immediateRecoveryLease(): Promise<GenerationMaintenanceLease> {
+  return { assertOwned: () => undefined, release: () => undefined };
+}
+
 function supersededTransition(currentSelection: ActiveStoreSelection): ActiveStoreTransition {
   return {
     version: ACTIVE_STORE_TRANSITION_VERSION,
@@ -198,6 +202,7 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
+          acquireStoreRecoveryLease: immediateRecoveryLease,
         },
       });
 
@@ -233,9 +238,11 @@ describe('active-store-selection locking', () => {
       events.push('classify');
       return { kind: 'fresh' };
     });
-    spyOnOpenWritableStoreDatabase().mockImplementation(() => {
+    spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
       expect(existsSync(resetLock)).toBe(true);
+      expect(path).not.toBe(runtime.paths.coral.store.dbFile);
+      writeFileSync(path, '');
       events.push('open');
       return { kind: 'opened', db };
     });
@@ -248,10 +255,11 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
+        acquireStoreRecoveryLease: immediateRecoveryLease,
       },
     });
 
-    expect(result).toMatchObject({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened' });
     expect(events).toEqual(['transition', 'selection-v1', 'selection', 'classify', 'open']);
     expect(existsSync(boundary.adoptionLock)).toBe(false);
     expect(existsSync(resetLock)).toBe(false);
@@ -376,10 +384,11 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
+        acquireStoreRecoveryLease: immediateRecoveryLease,
       },
     });
 
-    expect(result).toMatchObject({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened' });
     expect(recordAudit).toHaveBeenCalledWith(
       'invalid-selection-recovery',
       expect.objectContaining({ transitionId: transition.transitionId }),
@@ -431,10 +440,11 @@ describe('active-store-selection locking', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
+          acquireStoreRecoveryLease: immediateRecoveryLease,
         },
       });
 
-      expect(result).toMatchObject({ kind: 'opened', db });
+      expect(result).toMatchObject({ kind: 'opened' });
       expect(recordAudit).toHaveBeenCalledWith(
         'active-store-transition-superseded',
         expect.objectContaining({ failureCode }),
@@ -481,10 +491,11 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
+        acquireStoreRecoveryLease: immediateRecoveryLease,
       },
     });
 
-    expect(result).toMatchObject({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened' });
     expect(existsSync(paths.transitionV1File)).toBe(false);
     const retainedFiles = readdirSync(retainedTransitionRoot(runtime));
     expect(retainedFiles).toHaveLength(1);
@@ -557,10 +568,11 @@ describe('active-store-selection locking', () => {
         validateSelectedTarget: () => {
           throw new Error('validator should not run');
         },
+        acquireStoreRecoveryLease: immediateRecoveryLease,
       },
     });
 
-    expect(result).toMatchObject({ kind: 'opened', db });
+    expect(result).toMatchObject({ kind: 'opened' });
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     expect(existsSync(retainedTransitionRoot(runtime))).toBe(false);
     expect(recordAudit).toHaveBeenCalledWith(
@@ -768,9 +780,9 @@ describe('active-store-selection locking', () => {
     expect(openStore).not.toHaveBeenCalled();
 
     grantLease({ assertOwned, release });
-    await expect(coordinating).resolves.toMatchObject({ kind: 'opened', db });
+    await expect(coordinating).resolves.toMatchObject({ kind: 'opened' });
     expect(assertOwned).toHaveBeenCalled();
-    expect(openStore).toHaveBeenCalledTimes(2);
+    expect(openStore).toHaveBeenCalledOnce();
     expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(openStore.mock.invocationCallOrder[0]);
     expect(release).toHaveBeenCalledOnce();
   });
@@ -805,7 +817,7 @@ describe('active-store-selection locking', () => {
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
 
     expect(openStore).toHaveBeenCalledOnce();
-    expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
+    expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
   });
 
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {
