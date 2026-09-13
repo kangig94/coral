@@ -1462,6 +1462,17 @@ export function hasPendingBackendStoreResetIncident(
       return true;
     }
   }
+  const fixedParkingCoordinate = join(
+    quarantineRoot,
+    STORE_RESET_PARKED_DIRECTORY,
+    STORE_RESET_IN_FLIGHT_DIRECTORY,
+  );
+  try {
+    runtime.storage.lstatSync(fixedParkingCoordinate);
+    return true;
+  } catch (error: unknown) {
+    if (!isNoEntryError(error)) throw error;
+  }
   const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
   if (ledger?.pending !== null && ledger?.pending !== undefined) return true;
   try {

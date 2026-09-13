@@ -2554,7 +2554,7 @@ describe('openOrResetBackendStoreDb', () => {
         const runtime = createRuntime();
         const root = makeTempRoot(`coral-store-revision8-${state}-`);
         const dbPath = join(root, 'store.db');
-        createMismatchStore(dbPath);
+        createCompatibleSentinelStore(runtime, dbPath);
         const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
         const coordinate = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
         if (state === 'absent') {
@@ -2594,11 +2594,11 @@ describe('openOrResetBackendStoreDb', () => {
           );
         }
 
-        const first = await captureAsyncError(() => openReset(runtime, dbPath));
-        if (first !== null) {
-          const second = await openReset(runtime, dbPath);
-          second.close();
-        }
+        const first = await captureAsyncError(async () => {
+          const db = await openReset(runtime, dbPath);
+          db.close();
+        });
+        expect(first).toBeNull();
         expect(containsIdentity(root, { dev: marker.dev, ino: marker.ino })).toBe(true);
       });
     }
