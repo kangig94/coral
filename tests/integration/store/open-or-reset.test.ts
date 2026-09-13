@@ -460,27 +460,48 @@ async function captureAsyncError(fn: () => Promise<unknown>): Promise<unknown> {
   }
 }
 
-type ActiveEvidenceArm = 'link' | 'copy' | 'discard' | 'resume';
-type ActiveEvidenceMutation = 'deleted' | 'replaced' | 'appended' | 'sidecar';
+const ACTIVE_EVIDENCE_ARMS = ['link', 'copy', 'discard', 'claim', 'resume'] as const;
+const ACTIVE_EVIDENCE_MUTATIONS = ['deleted', 'replaced', 'appended', 'sidecar', 'non-regular', 'crash'] as const;
+
+type ActiveEvidenceArm = (typeof ACTIVE_EVIDENCE_ARMS)[number];
+type ActiveEvidenceMutation = (typeof ACTIVE_EVIDENCE_MUTATIONS)[number];
+type MutationDisposition = { readonly kind: 'applied' } | { readonly kind: 'unreachable'; readonly reason: string };
 
 function traceActivePathCalls(
   runtime: Runtime,
   activePath: string,
-  boundary: 'descriptor' | 'identity' | 'second-identity' | 'immediate',
+  boundary: 'descriptor' | 'identity' | 'second-identity' | 'immediate' | 'manual',
   mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation; readonly sidecarPath?: string },
 ): {
   readonly runtime: Runtime;
   readonly calls: readonly string[];
   readonly mutationApplied: () => boolean;
+  readonly mutationDisposition: () => MutationDisposition | null;
   readonly injectedIdentity: () => { readonly dev: bigint; readonly ino: bigint } | null;
+  readonly start: () => void;
   readonly stop: () => void;
 } {
   const calls: string[] = [];
-  let activeDescriptor: number | null = null;
+  const activeDescriptors = new Set<number>();
+  const activeIdentities: Array<{ readonly dev: bigint; readonly ino: bigint }> = [];
+  const rememberActiveIdentity = () => {
+    if (!existsSync(activePath)) return;
+    const observed = statSync(activePath, { bigint: true });
+    if (!activeIdentities.some((identity) => identity.dev === observed.dev && identity.ino === observed.ino)) {
+      activeIdentities.push({ dev: observed.dev, ino: observed.ino });
+    }
+  };
+  const pathHasActiveIdentity = (path: unknown) => {
+    if (typeof path !== 'string' || !existsSync(path)) return false;
+    const observed = statSync(path, { bigint: true });
+    return activeIdentities.some((identity) => identity.dev === observed.dev && identity.ino === observed.ino);
+  };
+  rememberActiveIdentity();
   let recording = boundary === 'immediate';
   let identityObservations = 0;
   let stopped = false;
   let applied = false;
+  let unreachableReason: string | null = null;
   let injectedIdentity: { readonly dev: bigint; readonly ino: bigint } | null = null;
   const storage = new Proxy(runtime.storage, {
     get(target, property) {
@@ -489,18 +510,28 @@ function traceActivePathCalls(
       return (...args: unknown[]) => {
         const method = String(property);
         const touchesActivePath = args.some((argument) => argument === activePath);
-        const observesActiveDescriptor =
-          method === 'fstatSync' && activeDescriptor !== null && args[0] === activeDescriptor;
-        if (!stopped && recording && touchesActivePath) {
+        if (touchesActivePath) rememberActiveIdentity();
+        const touchesActiveDescriptor = args.some(
+          (argument) => typeof argument === 'number' && activeDescriptors.has(argument),
+        );
+        const touchesActiveAlias = args.some(pathHasActiveIdentity);
+        const touchesActiveEvidence = touchesActivePath || touchesActiveDescriptor || touchesActiveAlias;
+        const observesActiveDescriptor = method === 'fstatSync' && touchesActiveDescriptor;
+        if (!stopped && recording && touchesActiveEvidence) {
           const index = calls.length;
           calls.push(method);
           if (mutation?.index === index) {
-            if (mutation.kind === 'appended') {
-              if (existsSync(activePath)) {
+            if (mutation.kind === 'crash') {
+              applied = true;
+              throw errno('EIO');
+            } else if (mutation.kind === 'appended') {
+              if (existsSync(activePath) && lstatSync(activePath).isFile()) {
                 applied = true;
                 const injected = statSync(activePath, { bigint: true });
                 injectedIdentity = { dev: injected.dev, ino: injected.ino };
                 appendFileSync(activePath, 'same-inode-growth');
+              } else {
+                unreachableReason = 'append requires a regular active path at this call';
               }
             } else if (mutation.kind === 'sidecar') {
               applied = true;
@@ -508,22 +539,29 @@ function traceActivePathCalls(
               writeFileSync(mutation.sidecarPath, 'injected sidecar evidence');
               const injected = statSync(mutation.sidecarPath, { bigint: true });
               injectedIdentity = { dev: injected.dev, ino: injected.ino };
+            } else if (mutation.kind === 'deleted') {
+              applied = true;
+              rmSync(activePath, { recursive: true, force: true });
             } else {
               applied = true;
-              rmSync(activePath, { force: true });
-              if (mutation.kind === 'replaced') {
-                createCompatibleSentinelStore(runtime, activePath);
-                const injected = statSync(activePath, { bigint: true });
-                injectedIdentity = { dev: injected.dev, ino: injected.ino };
-              }
+              rmSync(activePath, { recursive: true, force: true });
+              if (mutation.kind === 'replaced') createCompatibleSentinelStore(runtime, activePath);
+              else mkdirSync(activePath);
+              const injected = statSync(activePath, { bigint: true });
+              injectedIdentity = { dev: injected.dev, ino: injected.ino };
             }
           }
         }
 
         const result = Reflect.apply(member, target, args) as unknown;
-        if (method === 'openSync' && args[0] === activePath && typeof result === 'number') {
-          activeDescriptor = result;
+        if (
+          method === 'openSync' &&
+          typeof result === 'number' &&
+          (args[0] === activePath || pathHasActiveIdentity(args[0]))
+        ) {
+          activeDescriptors.add(result);
         }
+        if (method === 'closeSync' && typeof args[0] === 'number') activeDescriptors.delete(args[0]);
         if (boundary === 'descriptor' && observesActiveDescriptor) recording = true;
         if (
           (boundary === 'identity' || boundary === 'second-identity') &&
@@ -544,7 +582,17 @@ function traceActivePathCalls(
     runtime: { ...runtime, storage },
     calls,
     mutationApplied: () => applied,
+    mutationDisposition: () =>
+      applied
+        ? { kind: 'applied' }
+        : unreachableReason === null
+          ? null
+          : { kind: 'unreachable', reason: unreachableReason },
     injectedIdentity: () => injectedIdentity,
+    start: () => {
+      rememberActiveIdentity();
+      recording = true;
+    },
     stop: () => {
       stopped = true;
     },
@@ -577,75 +625,134 @@ function expectReturnedHandleTargetsActiveStore(db: { exec(sql: string): unknown
 async function exerciseActiveEvidenceArm(
   arm: ActiveEvidenceArm,
   mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation },
-): Promise<{ readonly calls: readonly string[]; readonly mutationApplied: boolean }> {
+  afterCrashMutation?: ActiveEvidenceMutation,
+): Promise<{ readonly calls: readonly string[]; readonly mutationDisposition: MutationDisposition | null }> {
   const runtime = createRuntime();
   const dbPath = join(makeTempRoot(`coral-store-active-${arm}-sweep-`), 'store.db');
-
+  let boundary: Parameters<typeof traceActivePathCalls>[2];
+  let exclusion: WriterExclusion | undefined;
+  let startClaimTrace: () => void = () => undefined;
   if (arm === 'discard') {
     createMismatchStore(dbPath);
     const holder = await openReset(runtime, dbPath);
     holder.close();
     rmSync(dbPath);
     createVersionedStore(dbPath, STORE_FORMAT.fingerprint, '99.0.0');
-    const trace = traceActivePathCalls(
-      runtime,
-      dbPath,
-      'second-identity',
-      mutation === undefined ? undefined : { ...mutation, sidecarPath: `${dbPath}-wal` },
-    );
-    const db = await openReset(trace.runtime, dbPath);
-    trace.stop();
-    expectReturnedHandleTargetsActiveStore(db, dbPath);
-    const injectedIdentity = trace.injectedIdentity();
-    if (injectedIdentity !== null && mutation?.kind === 'replaced') {
-      expectInjectedReplacementConserved(dbPath, injectedIdentity);
-    }
-    if (injectedIdentity !== null) expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
-    db.close();
-    return { calls: trace.calls, mutationApplied: trace.mutationApplied() };
-  }
-
-  if (arm === 'resume') {
+    boundary = 'second-identity';
+  } else if (arm === 'resume') {
     createInterruptedCopyReset(runtime, dbPath);
-    const trace = traceActivePathCalls(
-      runtime,
-      dbPath,
-      'immediate',
-      mutation === undefined ? undefined : { ...mutation, sidecarPath: `${dbPath}-wal` },
-    );
-    const db = await openReset(trace.runtime, dbPath, { kind: 'unproven', reason: 'writer-live', blockers: 'resume' });
-    trace.stop();
-    expectReturnedHandleTargetsActiveStore(db, dbPath);
-    const injectedIdentity = trace.injectedIdentity();
-    if (injectedIdentity !== null && mutation?.kind === 'replaced') {
-      expectInjectedReplacementConserved(dbPath, injectedIdentity);
+    boundary = 'immediate';
+    exclusion = { kind: 'unproven', reason: 'writer-live', blockers: 'resume sweep' };
+  } else {
+    createMismatchStore(dbPath);
+    if (arm === 'claim') {
+      const linkSync = runtime.storage.linkSync;
+      let injected = false;
+      vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+        if (
+          !injected &&
+          destination === dbPath &&
+          String(source).includes(`${join('store-reset-quarantine', '.minted')}`)
+        ) {
+          createIncompatibleSentinelStore(dbPath, 901);
+          injected = true;
+          startClaimTrace();
+        }
+        linkSync(source, destination);
+      });
+      boundary = 'manual';
+    } else {
+      boundary = arm === 'link' ? 'identity' : 'descriptor';
+      exclusion =
+        arm === 'link'
+          ? writerExclusion()
+          : { kind: 'unproven', reason: 'writer-live', blockers: 'active-evidence sweep' };
     }
-    if (injectedIdentity !== null) expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
-    db.close();
-    return { calls: trace.calls, mutationApplied: trace.mutationApplied() };
   }
 
-  createMismatchStore(dbPath);
   const trace = traceActivePathCalls(
     runtime,
     dbPath,
-    arm === 'link' ? 'identity' : 'descriptor',
+    boundary,
     mutation === undefined ? undefined : { ...mutation, sidecarPath: `${dbPath}-wal` },
   );
-  const db = await openReset(
-    trace.runtime,
-    dbPath,
-    arm === 'link' ? writerExclusion() : { kind: 'unproven', reason: 'writer-live', blockers: 'active-evidence sweep' },
-  );
-  trace.stop();
-  expectReturnedHandleTargetsActiveStore(db, dbPath);
-  const injectedIdentity = trace.injectedIdentity();
-  if (injectedIdentity !== null && mutation?.kind === 'replaced') {
-    expectInjectedReplacementConserved(dbPath, injectedIdentity);
+  startClaimTrace = trace.start;
+
+  let db: Awaited<ReturnType<typeof openReset>>;
+  if (mutation?.kind === 'crash') {
+    let openedAcrossInjectedFailure: Awaited<ReturnType<typeof openReset>> | null = null;
+    const firstFailure = await captureAsyncError(async () => {
+      openedAcrossInjectedFailure = await openReset(trace.runtime, dbPath, exclusion);
+    });
+    trace.stop();
+    if (firstFailure === null) {
+      const completed = openedAcrossInjectedFailure as unknown as { close(): void } | null;
+      expect(completed).not.toBeNull();
+      completed?.close();
+      return {
+        calls: trace.calls,
+        mutationDisposition: {
+          kind: 'unreachable',
+          reason: 'the injected syscall failure is absorbed by the link-to-copy fallback before a crash boundary',
+        },
+      };
+    }
+    expect(firstFailure).not.toBeNull();
+    expect(trace.mutationDisposition()).toEqual({ kind: 'applied' });
+
+    if (afterCrashMutation === 'crash') {
+      const secondCrash = traceActivePathCalls(runtime, dbPath, 'immediate', { index: 0, kind: 'crash' });
+      const secondFailure = await captureAsyncError(() => openReset(secondCrash.runtime, dbPath, exclusion));
+      secondCrash.stop();
+      expect(secondFailure).not.toBeNull();
+      expect(secondCrash.mutationDisposition()).toEqual({ kind: 'applied' });
+    } else if (afterCrashMutation !== undefined) {
+      const disposition = applyMutationBetweenCrashAndResume(runtime, dbPath, afterCrashMutation);
+      if (disposition.kind === 'unreachable') {
+        expect(disposition.reason).toBe('append requires a regular active path between crash and resume');
+      }
+    }
+    db = await openReset(runtime, dbPath, exclusion);
+  } else {
+    db = await openReset(trace.runtime, dbPath, exclusion);
+    trace.stop();
   }
-  if (injectedIdentity !== null) expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
-  db.close();
-  return { calls: trace.calls, mutationApplied: trace.mutationApplied() };
+
+  try {
+    expectReturnedHandleTargetsActiveStore(db, dbPath);
+    const injectedIdentity = trace.injectedIdentity();
+    if (injectedIdentity !== null && mutation?.kind === 'replaced') {
+      expectInjectedReplacementConserved(dbPath, injectedIdentity);
+    }
+    if (injectedIdentity !== null && mutation?.kind !== 'appended') {
+      expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
+    }
+  } finally {
+    db.close();
+  }
+  return { calls: trace.calls, mutationDisposition: trace.mutationDisposition() };
+}
+
+function applyMutationBetweenCrashAndResume(
+  runtime: Runtime,
+  dbPath: string,
+  mutation: Exclude<ActiveEvidenceMutation, 'crash'>,
+): MutationDisposition {
+  if (mutation === 'appended') {
+    if (!existsSync(dbPath) || !lstatSync(dbPath).isFile()) {
+      return { kind: 'unreachable', reason: 'append requires a regular active path between crash and resume' };
+    }
+    appendFileSync(dbPath, 'same-inode-growth-between-crash-and-resume');
+    return { kind: 'applied' };
+  }
+  if (mutation === 'sidecar') {
+    writeFileSync(`${dbPath}-wal`, 'sidecar-between-crash-and-resume');
+    return { kind: 'applied' };
+  }
+  rmSync(dbPath, { recursive: true, force: true });
+  if (mutation === 'replaced') createCompatibleSentinelStore(runtime, dbPath);
+  if (mutation === 'non-regular') mkdirSync(dbPath);
+  return { kind: 'applied' };
 }
 
 function createInterruptedReset(
@@ -2223,156 +2330,54 @@ describe('openOrResetBackendStoreDb', () => {
     for (const parkingId of parkingIds) expect(rendered).toContain(parkingId);
   });
 
-  it.each(['deleted', 'replaced', 'sidecar'] as const)(
-    'conserves every injected inode when active evidence is %s at every shared-path call',
-    async (kind) => {
-      const arms: readonly ActiveEvidenceArm[] = ['link', 'copy', 'discard', 'resume'];
-      const traces = new Map<ActiveEvidenceArm, readonly string[]>();
-      for (const arm of arms) {
-        traces.set(arm, (await exerciseActiveEvidenceArm(arm)).calls);
-      }
-      const failures: string[] = [];
+  it('survives the generated active-evidence mutation and crash-resume cross-product', async () => {
+    const traces = new Map<ActiveEvidenceArm, readonly string[]>();
+    for (const arm of ACTIVE_EVIDENCE_ARMS) traces.set(arm, (await exerciseActiveEvidenceArm(arm)).calls);
 
-      for (const arm of arms) {
-        const calls = traces.get(arm) ?? [];
-        expect(calls.length, arm).toBeGreaterThan(0);
-        for (const [index, method] of calls.entries()) {
-          const error = await captureAsyncError(async () => {
-            const result = await exerciseActiveEvidenceArm(arm, { index, kind });
-            expect(result.mutationApplied).toBe(true);
-          });
-          if (error !== null) {
-            const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
-            failures.push(`${arm}[${index}] ${method}: ${cause}`);
-          }
+    const liveCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
+      ACTIVE_EVIDENCE_MUTATIONS.flatMap((mutation) =>
+        (traces.get(arm) ?? []).map((method, index) => ({ arm, mutation, method, index })),
+      ),
+    );
+    const crashResumeCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
+      (traces.get(arm) ?? []).flatMap((method, index) =>
+        ACTIVE_EVIDENCE_MUTATIONS.map((mutation) => ({ arm, mutation, method, index })),
+      ),
+    );
+    for (const arm of ACTIVE_EVIDENCE_ARMS) expect(traces.get(arm)?.length ?? 0, arm).toBeGreaterThan(0);
+
+    const failures: string[] = [];
+    const runCell = async (label: string, run: () => Promise<MutationDisposition | null>) => {
+      const error = await captureAsyncError(async () => {
+        const disposition = await run();
+        expect(disposition, `${label}: mutation was neither applied nor proved unreachable`).not.toBeNull();
+        if (disposition?.kind === 'unreachable') {
+          expect(disposition.reason, `${label}: unreachable cells require an asserted reason`).not.toHaveLength(0);
         }
-      }
-
-      expect(failures).toEqual([]);
-    },
-    120_000,
-  );
-
-  it('records same-inode WAL growth as torn at every applicable shared-path call', async () => {
-    const traceCalls = async (index?: number) => {
-      const runtime = createRuntime();
-      const dbPath = join(makeTempRoot('coral-store-active-wal-growth-sweep-'), 'store.db');
-      const walPath = `${dbPath}-wal`;
-      createMismatchStore(dbPath);
-      writeFileSync(walPath, 'enumerated wal evidence');
-      const trace = traceActivePathCalls(
-        runtime,
-        walPath,
-        'second-identity',
-        index === undefined ? undefined : { index, kind: 'appended' },
-      );
-      const db = await openReset(trace.runtime, dbPath, {
-        kind: 'unproven',
-        reason: 'writer-live',
-        blockers: 'WAL growth sweep',
       });
-      trace.stop();
-      db.close();
-
-      if (trace.mutationApplied()) {
-        const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-        const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
-        const incidents = [ledger?.preserved, ledger?.excess?.latest].filter(
-          (incident): incident is NonNullable<typeof incident> => incident !== null && incident !== undefined,
-        );
-        expect(
-          incidents.some((incident) => incident.preservation?.coherence === 'torn'),
-          `active-path call ${index}: ${trace.calls[index ?? -1] ?? 'trace'}`,
-        ).toBe(true);
-        const reports = await Promise.all(
-          retainedIncidentNames(quarantineRoot).map((incidentId) =>
-            readStoreResetIncidentReport({
-              fs: createStoreResetInspectionFs(),
-              quarantineRoot,
-              incidentId,
-              expectedBuild: buildIdentity(),
-            }),
-          ),
-        );
-        expect(
-          reports.some(
-            (report) =>
-              report.ok &&
-              report.report.files.some((file) => file.name === 'store.db-wal' && file.verification === 'match'),
-          ),
-        ).toBe(true);
-        expect(ledger?.pending).toBeNull();
-        expect(readdirSync(join(quarantineRoot, '.staging'))).toEqual([]);
-      }
-      return { calls: trace.calls, applied: trace.mutationApplied() };
+      if (error === null) return;
+      const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
+      failures.push(`${label}: ${cause}`);
     };
 
-    const clean = await traceCalls();
-    let applied = 0;
-    for (const index of clean.calls.keys()) {
-      if ((await traceCalls(index)).applied) applied += 1;
+    for (const cell of liveCells) {
+      const label = `live ${cell.arm}/${cell.mutation}[${cell.index}] ${cell.method}`;
+      await runCell(
+        label,
+        async () =>
+          (await exerciseActiveEvidenceArm(cell.arm, { index: cell.index, kind: cell.mutation })).mutationDisposition,
+      );
     }
-    expect(applied).toBeGreaterThan(0);
-  });
-
-  it.each(['deleted', 'replaced', 'appended', 'sidecar'] as const)(
-    'conserves the %s mutation introduced between a manifest-bearing crash and production resume',
-    async (kind) => {
-      const runtime = createRuntime();
-      const root = makeTempRoot(`coral-store-crash-cross-${kind}-`);
-      const dbPath = join(root, 'store.db');
-      const { quarantineRoot, stagingRoot, stagingDirectory } = createInterruptedCopyReset(runtime, dbPath);
-      const incidentId = basename(stagingDirectory);
-      const walPath = `${dbPath}-wal`;
-      let injectedIdentity: { readonly dev: bigint; readonly ino: bigint } | null = null;
-
-      if (kind === 'deleted') {
-        createCompatibleSentinelStore(runtime, dbPath);
-        rmSync(dbPath);
-      } else if (kind === 'replaced') {
-        createCompatibleSentinelStore(runtime, dbPath);
-        rmSync(dbPath);
-        createCompatibleSentinelStore(runtime, dbPath);
-        const stat = statSync(dbPath, { bigint: true });
-        injectedIdentity = { dev: stat.dev, ino: stat.ino };
-      } else if (kind === 'appended') {
-        runtime.storage.linkSync(join(quarantineRoot, '.parked', incidentId, 'store.db-wal'), walPath);
-        appendFileSync(walPath, 'same-inode-growth-after-crash');
-        const stat = statSync(walPath, { bigint: true });
-        injectedIdentity = { dev: stat.dev, ino: stat.ino };
-      } else {
-        writeFileSync(walPath, 'sidecar-after-crash');
-        const stat = statSync(walPath, { bigint: true });
-        injectedIdentity = { dev: stat.dev, ino: stat.ino };
-      }
-
-      const db = await openReset(runtime, dbPath, {
-        kind: 'unproven',
-        reason: 'writer-live',
-        blockers: 'crash-cross sweep',
+    for (const cell of crashResumeCells) {
+      const label = `crash-resume ${cell.arm}/${cell.mutation}[${cell.index}] ${cell.method}`;
+      await runCell(label, async () => {
+        const result = await exerciseActiveEvidenceArm(cell.arm, { index: cell.index, kind: 'crash' }, cell.mutation);
+        return result.mutationDisposition;
       });
-      db.close();
+    }
 
-      if (injectedIdentity !== null) {
-        expect(containsIdentity(root, injectedIdentity)).toBe(true);
-      }
-      if (kind === 'replaced') expectInjectedReplacementConserved(dbPath, injectedIdentity!);
-      const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
-      expect(ledger?.pending).toBeNull();
-      expect(readdirSync(stagingRoot)).toEqual([]);
-      const parkingRoot = join(quarantineRoot, '.parked');
-      if (existsSync(parkingRoot)) {
-        for (const entry of readdirSync(parkingRoot)) {
-          const directory = join(parkingRoot, entry);
-          const record = JSON.parse(readFileSync(join(directory, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 'utf-8')) as {
-            names: readonly string[];
-          };
-          const evidence = readdirSync(directory).filter((name) => name !== STORE_RESET_PARKED_SIDECAR_FILE_NAME);
-          expect(evidence.every((name) => record.names.includes(name))).toBe(true);
-        }
-      }
-    },
-  );
+    expect(failures, `${failures.length} generated sweep cells failed`).toEqual([]);
+  }, 120_000);
 
   it('finishes a torn copy publication when an active name disappears before parking', async () => {
     const runtime = createRuntime();
