@@ -71,7 +71,8 @@ import {
   type StoreResetPolicyCause,
 } from '#src/store/reset-incident.js';
 import { listStoreResetIncidents, readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
-import { formatStoreResetList } from '#src/cli/format/store-reset.js';
+import { formatStoreResetList, formatStoreResetRelease } from '#src/cli/format/store-reset.js';
+import { releaseStoreReset } from '#src/store/operator-store-reset.js';
 import {
   readStoreResetParkedRecord,
   readStoreResetRetentionLedger,
@@ -529,7 +530,15 @@ async function captureAsyncError(fn: () => Promise<unknown>): Promise<unknown> {
 }
 
 const ACTIVE_EVIDENCE_ARMS = ['copy-proven', 'copy-unproven', 'over-bound', 'claim', 'resume'] as const;
-const ACTIVE_EVIDENCE_MUTATIONS = ['deleted', 'replaced', 'appended', 'sidecar', 'non-regular', 'crash'] as const;
+const ACTIVE_EVIDENCE_MUTATIONS = [
+  'deleted',
+  'replaced',
+  'symlink-aba',
+  'appended',
+  'sidecar',
+  'non-regular',
+  'crash',
+] as const;
 
 type ActiveEvidenceArm = (typeof ACTIVE_EVIDENCE_ARMS)[number];
 type ActiveEvidenceMutation = (typeof ACTIVE_EVIDENCE_MUTATIONS)[number];
@@ -560,6 +569,12 @@ function assertMutationDisposition(label: string, disposition: MutationDispositi
   if (disposition?.kind === 'unreachable') {
     expect(disposition.reason, `${label}: unreachable cells require an asserted reason`).not.toHaveLength(0);
   }
+}
+
+function replaceActiveStoreWithExternalLegacySymlink(runtime: Runtime, activePath: string): void {
+  const externalPath = `${activePath}.external-legacy`;
+  createMismatchStore(externalPath, STORE_FORMAT.fingerprint);
+  symlinkSync(externalPath, activePath);
 }
 
 function traceActivePathCalls(
@@ -675,7 +690,11 @@ function traceActivePathCalls(
             applied = true;
             rmSync(activePath, { recursive: true, force: true });
             if (mutation.kind === 'replaced') createCompatibleSentinelStore(runtime, activePath);
-            else mkdirSync(activePath);
+            else if (mutation.kind === 'symlink-aba') {
+              replaceActiveStoreWithExternalLegacySymlink(runtime, activePath);
+            } else {
+              mkdirSync(activePath);
+            }
             const injected = statSync(activePath, { bigint: true });
             injectedIdentity = { dev: injected.dev, ino: injected.ino };
           }
@@ -769,6 +788,7 @@ async function exerciseActiveEvidenceArm(
     readonly surface?: 'active' | 'durable';
   },
   afterCrashMutation?: ActiveEvidenceMutation,
+  boundaryOverride?: Parameters<typeof traceActivePathCalls>[2],
 ): Promise<{
   readonly calls: readonly TracePoint[];
   readonly durableCalls: readonly TracePoint[];
@@ -821,7 +841,7 @@ async function exerciseActiveEvidenceArm(
   const trace = traceActivePathCalls(
     runtime,
     dbPath,
-    boundary,
+    boundaryOverride ?? boundary,
     mutation === undefined ? undefined : { ...mutation, sidecarPath: `${dbPath}-wal` },
   );
   startClaimTrace = trace.start;
@@ -925,6 +945,7 @@ function applyMutationBetweenCrashAndResume(
   }
   rmSync(dbPath, { recursive: true, force: true });
   if (mutation === 'replaced') createCompatibleSentinelStore(runtime, dbPath);
+  if (mutation === 'symlink-aba') replaceActiveStoreWithExternalLegacySymlink(runtime, dbPath);
   if (mutation === 'non-regular') mkdirSync(dbPath);
   return { kind: 'applied' };
 }
@@ -3018,6 +3039,14 @@ describe('openOrResetBackendStoreDb', () => {
       expect(durableTraces.get(arm)?.length ?? 0, `${arm} durable records`).toBeGreaterThan(0);
     }
 
+    const initialTrace = await exerciseActiveEvidenceArm('copy-proven', undefined, undefined, 'immediate');
+    const initialClassificationKeys = initialTrace.calls.filter(
+      (key) => key.method === 'existsSync' || key.method === 'lstatSync' || key.method === 'openSqliteDatabaseSync',
+    );
+    expect(initialClassificationKeys.some((key) => key.method === 'existsSync')).toBe(true);
+    expect(initialClassificationKeys.some((key) => key.method === 'lstatSync')).toBe(true);
+    expect(initialClassificationKeys.some((key) => key.method === 'openSqliteDatabaseSync')).toBe(false);
+
     const failures: string[] = [];
     const runCell = async (label: string, run: () => Promise<MutationDisposition | null>) => {
       const error = await captureAsyncError(async () => {
@@ -3036,6 +3065,23 @@ describe('openOrResetBackendStoreDb', () => {
         async () =>
           (await exerciseActiveEvidenceArm(cell.arm, { key: cell.key, kind: cell.mutation })).mutationDisposition,
       );
+    }
+    for (const mutation of ['deleted', 'symlink-aba'] as const) {
+      for (const key of initialClassificationKeys) {
+        const label = `initial-path ${mutation} ${formatTracePoint(key)}`;
+        await runCell(
+          label,
+          async () =>
+            (
+              await exerciseActiveEvidenceArm(
+                'copy-proven',
+                { key, kind: mutation },
+                undefined,
+                'immediate',
+              )
+            ).mutationDisposition,
+        );
+      }
     }
     for (const cell of crashResumeCells) {
       const label = `crash-resume ${cell.arm}/${cell.mutation} ${formatTracePoint(cell.key)}`;
@@ -3262,6 +3308,53 @@ describe('openOrResetBackendStoreDb', () => {
       expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
       if (existsSync(foreignPath)) expect(tableExists(foreignPath, 'sentinel_before_reset')).toBe(true);
     });
+
+    for (const parkingState of ['absent', 'unverified'] as const) {
+      for (const ledgerWrite of ['written', 'rejected', 'thrown'] as const) {
+        await runCell(`operator-release/${parkingState}/${ledgerWrite}`, async () => {
+          const runtime = createRuntime();
+          const dbPath = runtime.paths.coral.store.dbFile;
+          createMismatchStore(dbPath);
+          const settlement = await settleReset(runtime, dbPath);
+          settlement.db.close();
+          const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+          const [incidentId] = retainedIncidentNames(quarantineRoot);
+          if (incidentId === undefined) throw new Error('Expected a retained incident for operator release.');
+          if (parkingState === 'unverified') {
+            const parkingPath = join(quarantineRoot, '.parked', incidentId);
+            mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+            writeFileSync(join(parkingPath, 'store.db-wal'), 'unverified release evidence');
+            writeFileSync(join(parkingPath, STORE_RESET_PARKED_SIDECAR_FILE_NAME), '{');
+          }
+          const ledgerPath = join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
+          const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
+          vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, data, options) => {
+            if (path !== ledgerPath || ledgerWrite === 'written') {
+              return writeAtomicDurableSync(path, data, options);
+            }
+            if (ledgerWrite === 'thrown') throw errno('EIO');
+            return false;
+          });
+
+          const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId });
+          const rendered = formatStoreResetRelease(result);
+          if (ledgerWrite === 'written') {
+            expect(result.kind).toBe(
+              parkingState === 'absent' ? 'released' : 'released-with-unverified-parking',
+            );
+            expect(rendered).toMatch(/^Released /u);
+            expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+          } else {
+            expect(result).toMatchObject({ kind: 'partially-released' });
+            expect(rendered).toMatch(/^Partially released /u);
+            expect(rendered).toContain('retry this release command');
+            expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.incidentId).toBe(
+              incidentId,
+            );
+          }
+        });
+      }
+    }
 
     await runCell('operator-release/fixed-coordinate-and-extra-tree', () => {
       const runtime = createRuntime();
