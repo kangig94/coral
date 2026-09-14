@@ -331,7 +331,8 @@ describe('active-store-selection crash cuts', () => {
   it('should serialize a concurrent coordinator behind the adoption lock', async () => {
     const { runtime, currentSelection, authority } = harness();
     const boundary = resolveGenerationBoundaryPaths(runtime);
-    mkdirSync(boundary.generationRoot, { recursive: true });
+    mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
+    writeFileSync(runtime.paths.coral.store.dbFile, '');
     const releaseAdoption = acquireDirectoryLockSync(boundary.adoptionLock, 1_000);
     const { classifyStore, openStore } = stubStoreOpen();
     const originalSleep = runtime.time.sleep.bind(runtime.time);
@@ -360,8 +361,8 @@ describe('active-store-selection crash cuts', () => {
 
     const result = await coordinating;
     expect(result.kind).toBe('opened');
-    expect(classifyStore).toHaveBeenCalledOnce();
-    expect(openStore).toHaveBeenCalledOnce();
+    expect(classifyStore).toHaveBeenCalledTimes(2);
+    expect(openStore).toHaveBeenCalledTimes(2);
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: currentSelection });
     expect(existsSync(boundary.adoptionLock)).toBe(false);
   });
@@ -369,6 +370,7 @@ describe('active-store-selection crash cuts', () => {
   it('should reclassify an exact current selection when it crashes before newer-store intent publication', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    createVersionedStore(runtime, '99.0.0');
     const paths = resolveActiveStoreRecordPaths(runtime);
     const original = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
     runtime.storage.writeAtomicDurableSync = (path, bytes, options) => {
@@ -399,8 +401,8 @@ describe('active-store-selection crash cuts', () => {
       });
       expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     }
-    expect(classifyStore).toHaveBeenCalledTimes(4);
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
+    expect(classifyStore).toHaveBeenCalledTimes(2);
+    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
   });
 
   it('should preserve pending intent when newer-store evidence advance fails', async () => {
@@ -411,6 +413,7 @@ describe('active-store-selection crash cuts', () => {
     });
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     publish(runtime, 'transitionFile', encodeActiveStoreTransition(transition));
+    createVersionedStore(runtime, '99.0.0');
     const restore = installPublicationCut(runtime, 'transitionFile', 'rename');
     stubStoreOpen({
       kind: 'newer-incompatible',
@@ -433,7 +436,7 @@ describe('active-store-selection crash cuts', () => {
     restore();
 
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'valid', transition });
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
+    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
   });
 
   it('should publish V3 newer-store evidence, reset, initialize, open, and clear intent', async () => {

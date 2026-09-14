@@ -493,6 +493,7 @@ describe('active-store selection recovery', () => {
   it('should refuse an unclassified store-open failure without declaring corruption', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    createCurrentStore(runtime);
     const failure = Object.assign(new Error('EACCES: permission denied while opening store.db'), { code: 'EACCES' });
     vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
       throw failure;
@@ -507,6 +508,11 @@ describe('active-store selection recovery', () => {
           validateSelectedTarget: () => {
             throw new Error('validator should not run');
           },
+          acquireStoreRecoveryLease: async () => ({
+            assertOwned: () => undefined,
+            maintain: () => undefined,
+            release: () => undefined,
+          }),
         },
       }),
     ).rejects.toMatchObject({
