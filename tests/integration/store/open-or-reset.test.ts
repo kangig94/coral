@@ -2888,6 +2888,58 @@ describe('openOrResetBackendStoreDb', () => {
     for (const parkingId of parkingIds) expect(rendered).toContain(parkingId);
   });
 
+  it.each([
+    ['equal', 1],
+    ['equal', 3],
+    ['equal', 5],
+    ['regressing', 1],
+    ['regressing', 3],
+    ['regressing', 5],
+  ] as const)(
+    'recovers the newest crash-cut replacement when parkedAt is %s across %i replacements',
+    async (clockState, replacementCount) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot(`coral-store-parking-order-${clockState}-${replacementCount}-`);
+      const dbPath = join(root, 'store.db');
+      const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
+      const parkingIds = Array.from(
+        { length: replacementCount + 1 },
+        (_, index) => `${9 - index}23e4567-e89b-42d3-a456-426614174000`,
+      );
+      for (const [index, parkingId] of parkingIds.entries()) {
+        const evidence = `parking-${index}`;
+        const parkingDirectory = join(parkingRoot, parkingId);
+        mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
+        writeFileSync(join(parkingDirectory, 'store.db-wal'), evidence);
+        writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
+          version: 1,
+          parkingId,
+          parkedAt:
+            clockState === 'equal'
+              ? '2026-09-13T00:00:00.000Z'
+              : `2026-09-${String(13 - index).padStart(2, '0')}T00:00:00.000Z`,
+          parkingOrder: String(index + 1),
+          phase: 'terminal',
+          cause: 'residual',
+          incidentId: null,
+          names: ['store.db-wal'],
+          entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(evidence) }],
+          transaction: null,
+          classification: null,
+        });
+      }
+
+      const db = await openReset(runtime, dbPath);
+      db.close();
+
+      const expectedId = parkingIds.at(-1)!;
+      expect(readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId)).toEqual([expectedId]);
+      expect(readFileSync(join(parkingRoot, expectedId, 'store.db-wal'), 'utf-8')).toBe(
+        `parking-${replacementCount}`,
+      );
+    },
+  );
+
   it('fails a shifted replay until the expected semantic key is encountered', () => {
     const expected = { method: 'renameSync', occurrence: 1, phase: 'before' } as const;
     const shiftedTrace: TracePoint[] = [];

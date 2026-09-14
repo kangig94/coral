@@ -71,6 +71,7 @@ import {
   assertQuarantineRoot,
   clearStoreResetPending,
   discoverStoreResetParkedRecords,
+  nextStoreResetParkingOrder,
   recordStoreResetParked,
   recordStoreResetPending,
   recordStoreResetPreserved,
@@ -1762,20 +1763,24 @@ function commitTerminalParking(
   populate: () => void = () => undefined,
 ): boolean {
   const parkingDirectory = join(sourceRoot, coordinate);
-  writeStoreResetParkedRecord(storage, sourceRoot, record, coordinate);
+  const committedRecord =
+    record.parkingOrder === undefined
+      ? { ...record, parkingOrder: nextStoreResetParkingOrder(storage, dirname(parkingRoot)) }
+      : record;
+  writeStoreResetParkedRecord(storage, sourceRoot, committedRecord, coordinate);
   populate();
   if (
-    record.names.length === 0 &&
-    removeSettledParkingDirectory(storage, sourceRoot, parkingDirectory, record, coordinate)
+    committedRecord.names.length === 0 &&
+    removeSettledParkingDirectory(storage, sourceRoot, parkingDirectory, committedRecord, coordinate)
   ) {
     return false;
   }
-  if (sourceRoot !== parkingRoot || coordinate !== record.parkingId) {
-    storage.renameSync(parkingDirectory, join(parkingRoot, record.parkingId));
+  if (sourceRoot !== parkingRoot || coordinate !== committedRecord.parkingId) {
+    storage.renameSync(parkingDirectory, join(parkingRoot, committedRecord.parkingId));
     requireDirectorySync(storage, sourceRoot, parkingRoot);
   }
   requireStoreResetDurability(
-    recordStoreResetParked(storage, dirname(parkingRoot), record.parkingId),
+    recordStoreResetParked(storage, dirname(parkingRoot), committedRecord.parkingId),
     'Store-reset parking retention could not be synchronized durably.',
   );
   return true;
@@ -1798,6 +1803,9 @@ function resumeTerminalParkingCommit(
         : [];
     })
     .sort((left, right) => {
+      const leftOrder = BigInt(left.record.parkingOrder ?? '0');
+      const rightOrder = BigInt(right.record.parkingOrder ?? '0');
+      if (leftOrder !== rightOrder) return leftOrder < rightOrder ? -1 : 1;
       const byTime = left.record.parkedAt.localeCompare(right.record.parkedAt);
       return byTime === 0 ? left.coordinate.localeCompare(right.coordinate) : byTime;
     })

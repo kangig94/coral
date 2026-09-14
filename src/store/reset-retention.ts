@@ -58,6 +58,7 @@ export type StoreResetParkedRecord = Readonly<{
   version: typeof STORE_RESET_PARKED_SIDECAR_VERSION;
   parkingId: string;
   parkedAt: string;
+  parkingOrder?: string;
   phase: 'in-flight' | 'terminal';
   cause: 'publication' | 'intruder' | 'residual';
   incidentId: string | null;
@@ -427,6 +428,8 @@ export function parseStoreResetParkedRecord(text: string): StoreResetParkedRecor
     !isCanonicalStoreResetIncidentId(value.parkingId) ||
     typeof value.parkedAt !== 'string' ||
     /[\r\n]/u.test(value.parkedAt) ||
+    (value.parkingOrder !== undefined &&
+      (typeof value.parkingOrder !== 'string' || !/^[1-9]\d*$/u.test(value.parkingOrder))) ||
     (value.phase !== 'in-flight' && value.phase !== 'terminal') ||
     (value.cause !== 'publication' && value.cause !== 'intruder' && value.cause !== 'residual') ||
     (value.incidentId !== null &&
@@ -464,6 +467,7 @@ export function parseStoreResetParkedRecord(text: string): StoreResetParkedRecor
     version: STORE_RESET_PARKED_SIDECAR_VERSION,
     parkingId: value.parkingId,
     parkedAt: value.parkedAt,
+    ...(value.parkingOrder === undefined ? {} : { parkingOrder: value.parkingOrder }),
     phase: value.phase,
     cause: value.cause,
     incidentId: value.incidentId,
@@ -568,6 +572,15 @@ export function discoverStoreResetParkedRecords(
     }
   }
   return { entries, truncated: read.overflow || terminalIds.length > MAX_INCIDENT_ROOT_ENTRIES };
+}
+
+export function nextStoreResetParkingOrder(storage: StoragePort, quarantineRoot: string): string {
+  const discovered = discoverStoreResetParkedRecords(storage, quarantineRoot);
+  const latest = discovered.entries.reduce((highest, entry) => {
+    const order = entry.record?.parkingOrder;
+    return order === undefined ? highest : highest > BigInt(order) ? highest : BigInt(order);
+  }, 0n);
+  return String(latest + 1n);
 }
 
 function writeLedger(storage: StoragePort, quarantineRoot: string, ledger: StoreResetRetentionLedger): boolean {
