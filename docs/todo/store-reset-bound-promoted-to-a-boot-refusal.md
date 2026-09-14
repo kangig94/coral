@@ -1,6 +1,6 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twelve design revisions, nineteen unbiased tier-1 review rounds, and nineteen
+**Status**: in flight. Thirteen design revisions, twenty unbiased tier-1 review rounds, and twenty-one
 distinct instances of the same defect so far. This document is the specification; read the revisions in order,
 because each one records what the previous got wrong.
 
@@ -1439,6 +1439,106 @@ keyed by the identity it can be acted on with, not a line that scrolls away.
 One canonical home: an additive field on the retention ledger, carrying the disposition, its cause, and
 the survivor it failed to isolate — cleared when a later rotation converges, surfaced by `list`. Additive
 and tolerantly read, per §10.
+
+## Revision 13 — revoke the resource; stop enumerating the acts
+
+Round 20's reviewers agreed on two blocking findings, found two more separately, and the guard failed for
+the sixth consecutive round.
+
+| round | the guard | the carrier it missed |
+|---|---|---|
+| 5 | call text in a module | the lexical loop body |
+| 6 | the lexical loop body | a second module |
+| 7 | a single module | the import-reachable closure |
+| 18 | a list of function names | the function nobody listed |
+| 19 | a derived closure **and** a derived member set | what the supplied proof proved |
+| 20 | an unexported constructor and a lease-owned actuator | **SQL, which is not a syscall at all** |
+
+`openWritableStoreDatabase` proves authority once through `held.makeDirectory` (`src/store/db.ts:347`),
+then opens a `DatabaseSync` and commits DDL and metadata rows with no further check; the next actuator
+call notices the lost lease long after the transaction committed. Both reviewers reproduced it. The guard
+cannot see it because it derives protected names from `StorageMutationPort`, and `DatabaseSync.exec`,
+statement `run`, `openSync` and `openSqliteDatabaseSync` are all outside that vocabulary. A reviewer also
+escaped the authority by reflection — `Object.getOwnPropertyDescriptor(authority.actuator, 'unlink').value`
+returns the raw lease-scoped function, because a `get`-only Proxy is not a membrane.
+
+Six rounds is enough to name the mistake in the method rather than in each guard:
+
+> **Proving that every act is authorized requires enumerating acts, and acts are unbounded in kind. Make
+> the act impossible instead: authority gates the resource, not the call.**
+
+An `unlink` needs a path. A `COMMIT` needs a database handle. A carrier nobody has thought of still needs
+the thing it operates on. So the authority's job is to own what its work runs on and to take it away the
+moment it is no longer the owner.
+
+### The authority revokes
+
+`hold()` failing once kills the authority permanently. Every actuator it minted throws from then on, and
+**every database handle it opened is closed**. A lost lease therefore does not merely fail the next
+checked call — it removes the handle the unchecked carrier would have used, and `db.exec` fails because
+the connection is gone. SQL never has to be modeled.
+
+Two consequences to get right rather than discover later. Releasing leases must still work after
+revocation: giving up ownership is not an act on contested state, and `finally` blocks must not throw.
+And the settled database is **transferred out** of the authority's ownership at the moment settlement
+decides to return it — transfer requires a successful `hold()`, and after it the handle is no longer
+revocable, which is what lets settlement release its leases and hand back a live store.
+
+The membrane stops being a Proxy. An explicitly constructed object whose methods close over the weaker
+actuator has no reflective surface to walk, so `getOwnPropertyDescriptor` and inherited methods have
+nothing to hand back.
+
+And the invariant stops enumerating. It asserts one behaviour — **after a failed `hold()`, every actuator
+operation and every minted handle throws** — which has no surface to be one level off from. What remains
+of the AST check is structural and small: the constructor is unexported, and no Proxy stands between a
+caller and a capability.
+
+### Retirement must be recoverable, or rotation can still reach zero
+
+Rotation re-proves the survivor's identity before each superseded removal, and both reviewers still drove
+it to zero copies: the survivor can vanish between the proof and the `remove`, or during the final parent
+sync, after which it returns `complete` with nothing on disk. A final re-proof stops the false `complete`
+and cannot restore what was already deleted.
+
+So the deletion stops being irreversible. A superseded coordinate is **renamed aside within the owned
+quarantine**, the survivor is re-proved, and only then is the retired copy removed; a failed re-proof
+renames it back. At every instant at least one copy exists under a name this build can find, which is
+what "keep exactly one" has to mean when the adversary is concurrent — and it is the park-and-claim
+ladder this document already uses, applied to retention.
+
+### A database error is not a filesystem failure
+
+`openCompatibleParkedStore` catches only `StoreFormatChangedDuringAdoptionError` and rethrows everything
+else (`backend-store-reset.ts:2668`, `:2682`). A reviewer verified against Node's SQLite that a live
+writer overwriting the parked inode's header yields `ERR_SQLITE_ERROR: file is not a database`, and an
+exclusive transaction yields `database is locked`; either escapes settlement and stops the boot. That is
+Revision 12's own adoption path producing the defect this document is about, one round after it was
+written.
+
+Any error from the writable re-open descends: terminalize the parking and claim afresh. Nothing about a
+database's contents or its locks is a refused syscall.
+
+### One home for the disposition, and a disposition that can be cleared
+
+`discard` says an incomplete rotation's survivor "remains on disk" (`cli/commands/backend.ts:520`) for a
+disposition that explicitly covers a survivor that disappeared, while a second formatter already words it
+truthfully (`cli/format/store-reset.ts:98`). Two homes for one sentence, drifting, which is §7 exactly:
+delete the local wording and call the formatter.
+
+And an incomplete rotation naming a survivor that no longer exists is retried forever and cannot be
+cleared — releasing the absent id returns `absent` before reaching the code that would clear it.
+Reconciliation derives its status from the coordinates that actually exist: exactly one remaining updates
+the holder and clears the rotation; several remaining keep a disposition keyed to coordinates an operator
+can act on.
+
+### A lease may not advertise a capability its dependencies cannot back
+
+`createDirectoryLockLease` casts a partial `DirectoryLockDeps.storage` — eight methods — to a full
+`StoragePort` to build the actuator it advertises (`src/infra/fs-lock.ts:503`), so
+`lease.actuator.syncDirectory(...)` throws for any conforming minimal dependency object, after proving
+ownership. Settlement happens to pass a full runtime storage, so nothing fails today and the exported
+contract is still false. Widen the dependency to what the actuator needs, or do not put an actuator on a
+lease that cannot back one.
 
 ## Invariants to add
 
