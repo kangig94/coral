@@ -4,7 +4,8 @@ import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
-import { classifyStoreFile, openWritableStoreDatabase, type Database } from './db.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
+import { classifyStoreFile, openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
@@ -86,10 +87,31 @@ export function resolveCurrentStoreEpoch(storage: Pick<StoragePort, 'readdirSync
 }
 
 export function resolveCurrentStorePath(runtime: Pick<Runtime, 'paths' | 'storage'>, path?: string): string {
-  if (path === ':memory:') return path;
-  const dbDir = resolveStoreDbDir(runtime, path);
+  if (path !== undefined) return path;
+  const dbDir = resolveStoreDbDir(runtime);
   if (!runtime.storage.existsSync(dbDir)) return epochPath(dbDir, 0);
   return epochPath(dbDir, resolveCurrentStoreEpoch(runtime.storage, dbDir));
+}
+
+export function openWritableStoreDbNoReset(
+  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
+  options: {
+    readonly path?: string;
+    readonly busyTimeoutMs?: number;
+    readonly storeFormat: StoreFormatDescription;
+  },
+): Database {
+  const storeDbPath = resolveCurrentStorePath(runtime, options.path);
+  if (storeDbPath === ':memory:' || !runtime.storage.existsSync(storeDbPath)) {
+    throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
+  }
+  return openStoreDatabase({
+    path: storeDbPath,
+    storage: runtime.storage,
+    storeFormat: options.storeFormat,
+    flavor: runtime.flavor,
+    busyTimeoutMs: options.busyTimeoutMs,
+  });
 }
 
 export function isGarbageStoreEpoch(current: number, candidate: number): boolean {

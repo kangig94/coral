@@ -401,7 +401,10 @@ describe('CoralSetupError', () => {
   });
 
   it('owns documented exit and retryability policy in the setup-error registry', () => {
-    const contended = documentedCoralSetupError('kb_unavailable');
+    const contended = documentedCoralSetupError('handoff_fresh_discovery_changed', {
+      stage: 'before-signal',
+      pid: 42,
+    });
 
     expect(documentedCoralSetupErrorExitCode(contended.code)).toBe(75);
     expect(isRetryableCoralSetupError(contended)).toBe(true);

@@ -18,7 +18,7 @@ Commands:
   provider-host        Inspect and evict provider hosts
   provider-proxy-set   Contain or abandon one exact held provider-proxy set, or
                        act on one exact enforcer role
-  store-reset          Inspect retained store-reset incidents
+  store-reset          Inspect and operate on store epochs
   kb-commit            Operate on retained blocking KB commit evidence
   help [command]       display help for command
 "

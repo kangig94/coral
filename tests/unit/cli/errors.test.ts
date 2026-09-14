@@ -186,14 +186,14 @@ describe('cli errors', () => {
     it.each([
       [
         'invalid_store_reset_incident_id',
-        'Incident ID must be a canonical lowercase UUID.',
-        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.',
+        'Report target must be a numeric epoch or canonical lowercase legacy incident UUID.',
+        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
         2,
       ],
       [
         'store_reset_incident_not_found',
-        'Store-reset incident not found.',
-        'Run `coral-cli backend store-reset list --target <legacy|gen2>`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+        'Store-reset report target not found.',
+        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and retry with a listed epoch or legacy incident.',
         1,
       ],
       [

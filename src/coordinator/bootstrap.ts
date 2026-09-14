@@ -129,7 +129,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
   try {
     const storePath = argv[pathIdx + 1];
-    const { openWritableStoreDbNoReset } = await import('../store/db.js');
+    const { openWritableStoreDbNoReset } = await import('../store/epoch.js');
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
     const writerLease = await generationMutationCoordinationSeam.acquireWriterLease(runtime, {
       kind: 'routing-status',

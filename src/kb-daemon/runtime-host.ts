@@ -54,7 +54,8 @@ import {
 } from '../kb/capability/constants.js';
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
-import { openWritableStoreDbNoReset, type Database } from '../store/db.js';
+import type { Database } from '../store/db.js';
+import { openWritableStoreDbNoReset } from '../store/epoch.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
 import { cleanupRetiredExpansion } from './expansion/retirement.js';

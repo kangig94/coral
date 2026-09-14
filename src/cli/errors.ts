@@ -24,21 +24,21 @@ export type StoreResetCliErrorCode =
 
 const STORE_RESET_ERRORS = {
   invalid_store_reset_incident_id: {
-    message: 'Incident ID must be a canonical lowercase UUID.',
+    message: 'Report target must be a numeric epoch or canonical lowercase legacy incident UUID.',
     remediation:
-      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use the ID of an incident in the `ready` state.',
+      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
     exitCode: 2,
   },
   invalid_store_reset_release_incident_id: {
-    message: 'Release incident ID must be a canonical lowercase UUID.',
+    message: 'Release epoch must be a non-negative integer.',
     remediation:
-      'Run `coral-cli backend store-reset list --target <current|gen2>` and use the ID of the incident to remove, regardless of its state.',
+      'Run `coral-cli backend store-reset list --target <current|gen2>` and use the number of a non-current epoch.',
     exitCode: 2,
   },
   store_reset_incident_not_found: {
-    message: 'Store-reset incident not found.',
+    message: 'Store-reset report target not found.',
     remediation:
-      'Run `coral-cli backend store-reset list --target <legacy|gen2>`. If no incident is retained, file a Store-reset incident issue with this complete fixed error output; do not attach DB, WAL, SHM, or raw logs.',
+      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and retry with a listed epoch or legacy incident.',
     exitCode: 1,
   },
   store_reset_build_mismatch: {

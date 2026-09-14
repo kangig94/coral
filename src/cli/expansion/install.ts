@@ -9,7 +9,7 @@ import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import { documentedCoralSetupError } from '../../runtime/errors.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { openWritableStoreDbNoReset } from '../../store/db.js';
+import { openWritableStoreDbNoReset } from '../../store/epoch.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
 import { acquirePackageOperationLock } from '../../expansion/package-lock.js';

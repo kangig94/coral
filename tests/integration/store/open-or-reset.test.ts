@@ -13,6 +13,7 @@ import {
   discardCurrentStoreEpoch,
   epochPath,
   listStoreEpochs,
+  openWritableStoreDbNoReset,
   resolveCurrentStoreEpoch,
   settleStoreEpoch,
   STORE_EPOCH_METADATA_FILE_NAME,
@@ -106,6 +107,19 @@ afterEach(() => {
 });
 
 describe('write-once store epochs', () => {
+  it('opens an explicit nonstandard database path without applying epoch discovery', () => {
+    const runtime = harness();
+    const fixturePath = join(runtime.paths.coral.store.dbDir, 'fixture.db');
+    createCompatibleStore(fixturePath, 'explicit-fixture');
+    createCompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 3), 'unrelated-current');
+
+    const db = openWritableStoreDbNoReset(runtime, { path: fixturePath, storeFormat });
+    const row = db.prepare('SELECT value FROM rollback_sentinel').get() as { value: string };
+    db.close();
+
+    expect(row.value).toBe('explicit-fixture');
+  });
+
   it('leaves epoch zero untouched for a v0.10.9-shaped reader after a newer epoch exists', () => {
     const runtime = harness();
     const flatPath = epochPath(runtime.paths.coral.store.dbDir, 0);
@@ -119,6 +133,7 @@ describe('write-once store epochs', () => {
     oldReader.close();
     expect(row.value).toBe('v0.10.9-data');
     expect(resolveCurrentStoreEpoch(runtime.storage, runtime.paths.coral.store.dbDir)).toBe(1);
+    console.log('rollback-cell epoch0=untouched reader=booted value=v0.10.9-data current=1');
   });
 
   it('adopts the winner when two publishers mint the same next epoch', () => {
@@ -138,6 +153,7 @@ describe('write-once store epochs', () => {
     settled.db.close();
     expect(collisionInjected).toBe(true);
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
+    console.log('concurrent-publish-cell publishers=2 winner=epoch-1 loser=adopted-on-ENOTEMPTY current=1');
   });
 
   it('re-mints when another process sweeps its private mint', () => {
@@ -177,6 +193,7 @@ describe('write-once store epochs', () => {
       [count, 'preserved'],
     ]);
     expect(rows.filter((row) => row.role === 'garbage')).toEqual([]);
+    console.log(`K-replacement-cell K=${count} non-garbage=${count + 1}:current,${count}:preserved garbage=0`);
   });
 
   it.each(['empty-mint', 'opened-mint', 'described-mint', 'published-epoch'])(

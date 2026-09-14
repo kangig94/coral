@@ -117,7 +117,12 @@ describe('serializeBootstrapError', () => {
 
 describe('writeBootstrapDiagnostic', () => {
   it('derives retryability from the documented setup-error code', () => {
-    writeBootstrapDiagnostic('/plugin', 'startup_failed', documentedCoralSetupError('kb_unavailable'), 75);
+    writeBootstrapDiagnostic(
+      '/plugin',
+      'startup_failed',
+      documentedCoralSetupError('handoff_fresh_discovery_changed', { stage: 'before-signal', pid: 42 }),
+      75,
+    );
     writeBootstrapDiagnostic('/plugin', 'startup_failed', documentedCoralSetupError('store_schema_outdated'), 1);
 
     const retryable = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;

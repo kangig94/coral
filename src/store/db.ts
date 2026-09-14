@@ -4,10 +4,8 @@ import { dirname } from 'node:path';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../infra/port-types.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
-import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
-import { resolveCurrentStorePath } from './epoch.js';
 import {
   isStoreFormatFingerprint,
   STORE_FORMAT_FINGERPRINT_META_KEY,
@@ -429,37 +427,6 @@ export function openMemoryStoreDatabase(storeFormat: StoreFormatDescription, bus
     db.close();
     throw error;
   }
-}
-
-type BackendStorePathOptions = {
-  readonly path?: string;
-  readonly busyTimeoutMs?: number;
-  readonly storeFormat: StoreFormatDescription;
-};
-
-function resolveStoreDbPath(runtime: Pick<Runtime, 'paths' | 'storage'>, options: BackendStorePathOptions): string {
-  return resolveCurrentStorePath(runtime, options.path);
-}
-
-export function openWritableStoreDbNoReset(
-  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
-  options: BackendStorePathOptions,
-): Database {
-  const storeDbPath = resolveStoreDbPath(runtime, options);
-  // An absent store is not an outdated one: only the coordinator creates it, so
-  // a non-daemon opener that creates it here would satisfy adoption's
-  // "generation tree has no store" guard and strand the legacy tree forever.
-  if (storeDbPath === ':memory:' || !runtime.storage.existsSync(storeDbPath)) {
-    throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
-  }
-
-  return openStoreDatabase({
-    path: storeDbPath,
-    storage: runtime.storage,
-    storeFormat: options.storeFormat,
-    flavor: runtime.flavor,
-    busyTimeoutMs: options.busyTimeoutMs,
-  });
 }
 
 /**

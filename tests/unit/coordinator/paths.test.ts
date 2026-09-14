@@ -58,9 +58,6 @@ describe('composeCoralPaths', () => {
   it('storePaths accepts an explicit baseDir', () => {
     expect(storePaths('prod', { baseDir: '/tmp/coral-root' })).toEqual({
       dbDir: join('/tmp/coral-root', 'gen2', 'data', 'store'),
-      dbFile: join('/tmp/coral-root', 'gen2', 'data', 'store', 'store.db'),
-      walFile: join('/tmp/coral-root', 'gen2', 'data', 'store', 'store.db-wal'),
-      shmFile: join('/tmp/coral-root', 'gen2', 'data', 'store', 'store.db-shm'),
     });
   });
 

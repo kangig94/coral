@@ -292,13 +292,13 @@ The daemon-independent operator commands require `--flavor` because the stopped 
 coral-cli backend store-reset discard --target <current|gen2> --flavor <prod|dev>
 coral-cli backend kb-commit quarantine --flavor <prod|dev> --commit <commit-id>
 coral-cli backend store-reset list --target <legacy|current>
-coral-cli backend store-reset report --target <legacy|current> <incident-id>
+coral-cli backend store-reset report --target <legacy|current> <epoch-or-legacy-incident-id>
 coral-cli backend store-reset release <epoch> --target <current|gen2> --flavor <prod|dev>
 ```
 
 - `store-reset discard` is the explicit offline path that publishes the next epoch regardless of the current epoch's classification. `current` maps to the internal `gen2` generation; `legacy` is inspection-only and a discard request always refuses before path resolution or socket binding.
 - `kb-commit quarantine` accepts the exact safe single-segment commit ID from `kb_commit_corrupt_or_unsupported` and moves only that commit plus matching index evidence.
-- `store-reset list` reads and classifies every visible epoch without opening it writable. Each row includes epoch number, `current | preserved | garbage` role, recursive store-file bytes or `null`, classification, stored product version, and parsed `epoch.json`. While the old `store-reset-quarantine/` root exists, legacy incident rows are appended through the bounded legacy reader. `store-reset report` remains the UUID-addressed public-safe diagnostic for those legacy rows.
+- `store-reset list` reads and classifies every visible epoch without opening it writable. Each row includes epoch number, `current | preserved | garbage` role, recursive store-file bytes or `null`, classification, stored product version, and parsed `epoch.json`. While the old `store-reset-quarantine/` root exists, legacy incident rows are appended through the bounded legacy reader. `store-reset report <epoch>` runs the bounded read-only SQLite diagnostic directly against that epoch; a legacy incident UUID still routes through the legacy reader.
 - `store-reset release` permanently removes one numeric epoch, refusing only when it is current. Its complete result vocabulary is `released | current | absent | partially-released`. It may take the adoption lock, but settlement correctness does not depend on that lock.
 
 `store-reset release` does not require shutdown because it never removes the current epoch and does not open the store. `store-reset discard` still uses the operator socket guard before publishing a new epoch.

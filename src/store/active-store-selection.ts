@@ -668,28 +668,6 @@ export function publishActiveStoreTransition(
   publishActiveStoreRecord(runtime, paths.transitionFile, currentBytes, 'Active-store transition', actuator);
 }
 
-function activeStoreTransitionIdentity(
-  runtime: Runtime,
-  path: string,
-  expectedIdentity?: StorageBigIntStat,
-): StorageBigIntStat | null {
-  if (!runtime.storage.existsSync(path)) return null;
-  const link = runtime.storage.lstatSync(path);
-  const stat = runtime.storage.statSync(path, { bigint: true });
-  if (
-    !link.isFile() ||
-    link.isSymbolicLink() ||
-    !stat.isFile() ||
-    (expectedIdentity !== undefined && !sameIdentity(stat, expectedIdentity))
-  ) {
-    throw new ActiveStoreCoordinationWriteError(
-      'record_changed',
-      'Active-store transition changed before durable clear.',
-    );
-  }
-  return stat;
-}
-
 type BoundedRecordReadResult =
   | { readonly kind: 'absent' }
   | { readonly kind: 'bytes'; readonly bytes: Uint8Array; readonly overLimit: boolean }

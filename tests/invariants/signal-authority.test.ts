@@ -26,7 +26,6 @@ const EXACT_CALL_ALLOWLIST = new Map<string, string>([
     'the process port that forwards kill(); it has no recorded identity of its own to check',
   ],
   ['src/cli/run.ts:process.kill(process.pid)', 'signals its own pid to re-raise a handoff signal'],
-  ['src/cli/commands/backend.ts:process.kill(process.pid)', 'signals its own pid to re-raise a continuation signal'],
   [
     'src/runtime/durable-cli-wrapper.ts:process.kill(-process.pid)',
     'signals the process group led by its own live process',

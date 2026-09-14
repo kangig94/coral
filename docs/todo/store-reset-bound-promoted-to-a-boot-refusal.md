@@ -1523,7 +1523,7 @@ database's contents or its locks is a refused syscall.
 
 `formatStoreResetDiscard` in `src/cli/commands/backend.ts` says an incomplete rotation's survivor "remains on disk" for a
 disposition that explicitly covers a survivor that disappeared, while a second formatter already words it
-truthfully through `incompleteRotationStatus` in `src/cli/format/store-reset.ts`. Two homes for one sentence, drifting, which is §7 exactly:
+truthfully through the then-current `incompleteRotationStatus` formatter. Two homes for one sentence, drifting, which is §7 exactly:
 delete the local wording and call the formatter.
 
 And an incomplete rotation naming a survivor that no longer exists is retried forever and cannot be
@@ -1680,6 +1680,11 @@ The reset test matrix is reduced to dimensions the epoch design still has: concu
 mint sweep, adversarial epoch chains, seeded process-death cuts, rollback visibility of untouched epoch
 zero, and sweep failure. Tests for staging, parking, copy/hash selection, retention rotation, resume
 classification, and settlement lease revocation are deleted with the machinery they described.
+
+The operator surface addresses epochs by number: `list` classifies each epoch read-only, `report <K>`
+runs the existing bounded SQLite diagnostic child directly against that epoch, `release <K>` removes a
+non-current epoch through the sweep owner, and `discard` publishes the next epoch. A UUID report remains
+only as compatibility for rows found by the legacy quarantine reader; no new legacy manifest is written.
 
 Gates: `format:check`, `lint`, `typecheck:tests`, `knip`, `build`, `npm test`, `test:integration`,
 `test:store-reset:integration`, `verify:store-reset-build`, `test:e2e:build`, `test:e2e:lifecycle`.

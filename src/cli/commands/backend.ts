@@ -170,6 +170,7 @@ import {
 } from '../format/backend.js';
 import {
   constrainStoreResetRendererInput,
+  formatStoreEpochReport,
   formatStoreResetList,
   formatStoreResetRelease,
   formatStoreResetReport,
@@ -469,7 +470,7 @@ import {
   boundStoreResetCliError,
   discardStoreResetLocal,
   listStoreResetIncidentsLocal,
-  reportStoreResetIncidentLocal,
+  reportStoreResetLocal,
   releaseStoreResetLocal,
 } from '../store-reset.js';
 
@@ -501,7 +502,7 @@ const STORE_RESET_EVIDENCE_WARNING =
 
 export interface StoreResetCommandOperations {
   list(target: StoreResetTarget): ReturnType<typeof listStoreResetIncidentsLocal>;
-  report(target: StoreResetTarget, incidentId: string): ReturnType<typeof reportStoreResetIncidentLocal>;
+  report(target: StoreResetTarget, reference: string): ReturnType<typeof reportStoreResetLocal>;
   discard(target: StoreResetTarget, flavor: BuildFlavor): ReturnType<typeof discardStoreResetLocal>;
   release(
     target: StoreResetReleaseTarget,
@@ -1496,7 +1497,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const {
     storeReset = {
       list: listStoreResetIncidentsLocal,
-      report: reportStoreResetIncidentLocal,
+      report: reportStoreResetLocal,
       discard: discardStoreResetLocal,
       release: releaseStoreResetLocal,
     },
@@ -1967,16 +1968,19 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('report')
-    .description('Generate a public-safe store-reset incident report')
-    .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
+    .description('Run a bounded read-only epoch diagnostic or report a legacy incident')
+    .argument('<epoch-or-legacy-incident-id>', 'Numeric epoch or canonical legacy incident UUID shown by the list')
     .requiredOption(
       '--target <target>',
       'Store generation to inspect (legacy or current; gen2 also accepted)',
       parseStoreResetTarget,
     )
-    .action(async (incidentId: string, options: { target: StoreResetTarget }) => {
+    .action(async (reference: string, options: { target: StoreResetTarget }) => {
       try {
-        process.stdout.write(formatStoreResetReport(await storeReset.report(options.target, incidentId)));
+        const result = await storeReset.report(options.target, reference);
+        process.stdout.write(
+          result.kind === 'epoch' ? formatStoreEpochReport(result) : formatStoreResetReport(result.report),
+        );
       } catch (error: unknown) {
         emitError(boundStoreResetCliError(error));
       }

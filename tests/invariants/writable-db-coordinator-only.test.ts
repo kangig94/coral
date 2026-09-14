@@ -24,6 +24,9 @@ const EXPLICIT_ALLOWLIST = new Set([
   'src/store/db.ts:openWritableStoreDatabase',
   // Epoch settlement is the single owner of direct writable publication opens.
   'src/store/epoch.ts:openWritableStoreDatabase',
+  // Non-daemon writers resolve the current epoch at their own start, then use
+  // the ordinary opener only after proving that published store exists.
+  'src/store/epoch.ts:openStoreDatabase',
   // CLI install path persists the installed-expansion manifest catalog after
   // installer success using the no-reset catalog writer.
   'src/cli/expansion/install.ts:openWritableStoreDbNoReset',

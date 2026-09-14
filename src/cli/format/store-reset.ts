@@ -1,6 +1,6 @@
 import type { StoreResetPublicReport } from '../../store/reset-incident.js';
 import type { StoreResetReleasePresentation } from '../../store/operator-store-reset.js';
-import type { StoreResetListResult } from '../store-reset.js';
+import type { StoreResetListResult, StoreResetReportResult } from '../store-reset.js';
 import { assertNever } from '../../infra/error-format.js';
 
 export function constrainStoreResetRendererInput<Value>(value: Value): Value {
@@ -88,6 +88,29 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
   return lines.join('\n');
 }
 
+export function formatStoreEpochReport(result: Extract<StoreResetReportResult, { readonly kind: 'epoch' }>): string {
+  result = constrainStoreResetRendererInput(result);
+  return [
+    '# Coral store epoch report',
+    '',
+    `- Epoch: ${code(String(result.epoch.epoch))}`,
+    `- Role: ${code(result.epoch.role)}`,
+    `- Bytes: ${result.epoch.bytes ?? 'unknown'}`,
+    `- Classification: ${code(result.epoch.classification.kind)}`,
+    `- Stored Coral version: ${result.epoch.storedProductVersion === null ? 'not observed' : code(result.epoch.storedProductVersion)}`,
+    `- Epoch metadata: ${result.epoch.epochJson === null ? 'legacy-epoch-0' : code(JSON.stringify(result.epoch.epochJson))}`,
+    '',
+    '## SQLite diagnostic',
+    '',
+    `- Integrity: ${code(result.diagnostic.integrity)}`,
+    `- Termination: ${code(result.diagnostic.termination)}`,
+    `- Cleanup: ${code(result.diagnostic.cleanup)}`,
+    '',
+    'No file was uploaded. Do not attach DB, WAL, SHM, raw logs, credentials, settings, or environment files.',
+    '',
+  ].join('\n');
+}
+
 export function formatStoreResetList(result: StoreResetListResult, target: 'legacy' | 'gen2'): string {
   result = constrainStoreResetRendererInput(result);
   target = constrainStoreResetRendererInput(target);
@@ -116,6 +139,12 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
       ? [
           'Legacy ready incidents remain reportable.',
           `command=coral-cli backend store-reset report --target ${target} <ready-incident-id>`,
+        ]
+      : []),
+    ...(target === 'gen2' && result.epochs.length > 0
+      ? [
+          'To run the bounded read-only diagnostic for an epoch:',
+          'command=coral-cli backend store-reset report --target gen2 <epoch>',
         ]
       : []),
     ...releaseInstruction(target),
