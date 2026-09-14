@@ -10,7 +10,7 @@ import {
 import type { StoreResetParkedEntry } from './reset-retention.js';
 import type { SettlementAuthority } from './backend-store-reset.js';
 
-type SettlementHeld = ReturnType<SettlementAuthority['hold']>;
+type SettlementHeld = SettlementAuthority;
 
 export type ActiveEvidenceFileSet = Readonly<{
   dbFile: string;
@@ -27,7 +27,7 @@ export type ActiveEvidenceIdentity = Readonly<{
 export type ActiveEvidence = Readonly<{
   name: StoreResetEvidenceFileName;
   identity: ActiveEvidenceIdentity;
-  sizeBytes: number;
+  sizeBytes: number | null;
   mtimeMs: number;
 }>;
 
@@ -117,13 +117,10 @@ export function enumerateActiveEvidence(storage: StoragePort, files: ActiveEvide
       const stat = storage.lstatSync(path, { bigint: true });
       if (link.isSymbolicLink()) continue;
       if (!link.isFile() || !stat.isFile()) continue;
-      if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER)) {
-        throw new Error('Store-reset evidence cannot be represented safely.');
-      }
       evidence.push({
         name,
         identity: { dev: stat.dev, ino: stat.ino },
-        sizeBytes: Number(stat.size),
+        sizeBytes: stat.size >= 0n && stat.size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(stat.size) : null,
         mtimeMs: Number(stat.mtimeNs / 1_000_000n),
       });
     } catch (error: unknown) {
@@ -199,8 +196,7 @@ export function parkActiveEvidence(
 
   try {
     storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
-    held();
-    storage.renameSync(candidateForEvidence(files, evidence.name), destination);
+    held.rename(candidateForEvidence(files, evidence.name), destination);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'absent' };
     throw error;
@@ -208,7 +204,7 @@ export function parkActiveEvidence(
 
   const parked = storage.lstatSync(destination, { bigint: true });
   const entry = parkedEntry(storage, destination, evidence.name, parked);
-  const regular = entry.kind === 'regular-file' && entry.sizeBytes !== null;
+  const regular = entry.kind === 'regular-file';
   return {
     kind: 'parked',
     parked: {
@@ -253,8 +249,7 @@ export function parkCurrentEvidence(
     }
     try {
       storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
-      held();
-      storage.renameSync(candidateForEvidence(files, name), destination);
+      held.rename(candidateForEvidence(files, name), destination);
     } catch (error: unknown) {
       if (isNoEntryError(error)) continue;
       throw error;
@@ -279,8 +274,7 @@ export function linkOwnedEvidenceToActive(
   held: SettlementHeld,
 ): ActiveNameClaim {
   try {
-    held();
-    storage.linkSync(source, candidateForEvidence(files, name));
+    held.link(source, candidateForEvidence(files, name));
     return { kind: 'claimed' };
   } catch (error: unknown) {
     if (errorCode(error) === 'EEXIST') return { kind: 'occupied' };
@@ -307,6 +301,23 @@ export function activeNameHasIdentity(
   }
 }
 
+export function dropActiveEvidenceIfOwned(
+  storage: StoragePort,
+  files: ActiveEvidenceFileSet,
+  parked: ClaimedParkedEvidence,
+  held: SettlementHeld,
+): boolean {
+  const identity = activeNameHasIdentity(storage, files, parked.name, parked.identity);
+  if (identity.kind !== 'same') return false;
+  try {
+    held.unlink(candidateForEvidence(files, parked.name));
+    return true;
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return false;
+    throw error;
+  }
+}
+
 export function readParkedEvidence(
   storage: StoragePort,
   parkingDirectory: string,
@@ -330,7 +341,7 @@ export function readParkedEvidence(
       evidence: {
         name,
         identity,
-        sizeBytes: entry.sizeBytes ?? 0,
+        sizeBytes: entry.sizeBytes,
         mtimeMs: entry.kind === 'regular-file' ? Number(stat.mtimeNs / 1_000_000n) : 0,
       },
       ownership: entry.kind === 'regular-file' && sameIdentity(identity, stat) ? 'ours' : 'other',
@@ -351,8 +362,8 @@ export function describeParkedEntries(
   });
 }
 
-export function dropParkedEvidence(storage: StoragePort, parkingDirectory: string, parked: ParkedActiveEvidence): void {
-  storage.unlinkSync(parkedPath(parkingDirectory, parked.evidence));
+export function dropParkedEvidence(parkingDirectory: string, parked: ParkedActiveEvidence, held: SettlementHeld): void {
+  held.unlink(parkedPath(parkingDirectory, parked.evidence));
 }
 
 export function restoreParkedEvidence(
@@ -364,8 +375,7 @@ export function restoreParkedEvidence(
 ): ActiveEvidenceRestore {
   if (parked.entry.kind !== 'regular-file') return { kind: 'kept', code: 'NON_REGULAR' };
   try {
-    held();
-    storage.linkSync(parkedPath(parkingDirectory, parked.evidence), candidateForEvidence(files, parked.evidence.name));
+    held.link(parkedPath(parkingDirectory, parked.evidence), candidateForEvidence(files, parked.evidence.name));
   } catch (error: unknown) {
     const code = errorCode(error);
     if (code === 'EEXIST' || code === 'EXDEV' || code === 'EPERM' || code === 'EOPNOTSUPP') {
@@ -373,6 +383,6 @@ export function restoreParkedEvidence(
     }
     throw error;
   }
-  storage.unlinkSync(parkedPath(parkingDirectory, parked.evidence));
+  held.unlink(parkedPath(parkingDirectory, parked.evidence));
   return { kind: 'restored' };
 }

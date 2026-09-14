@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../infra/port-types.js';
+import { createStorageActuator, type StorageActuator } from '../infra/storage-actuator.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -71,6 +72,8 @@ type WritableStoreOptions = {
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
 };
+
+type AuthorizedWritableStoreOptions = WritableStoreOptions & { readonly held: StorageActuator };
 
 export type WritableStoreOpenDecision =
   | { readonly kind: 'opened'; readonly db: Database }
@@ -257,11 +260,11 @@ export function classifyStoreFile(
   }
 }
 
-function writeStoreFormatSidecar(options: WritableStoreOptions): void {
+function writeStoreFormatSidecar(options: AuthorizedWritableStoreOptions): void {
   if (options.path === ':memory:') return;
   const sidecarPath = `${options.path}${STORE_FORMAT_SIDECAR_SUFFIX}`;
   if (
-    !options.storage.writeAtomicDurableSync(sidecarPath, `${options.storeFormat.fingerprint}\n`, {
+    !options.held.writeWholeFileDurable(sidecarPath, `${options.storeFormat.fingerprint}\n`, {
       encoding: 'utf-8',
       mode: 0o600,
     })
@@ -338,9 +341,9 @@ function raiseStoredProductVersion(db: Database, currentProductVersion: string):
   });
 }
 
-export function openWritableStoreDatabase(options: WritableStoreOptions): WritableStoreOpenDecision {
+export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
   if (options.path !== ':memory:') {
-    options.storage.mkdirSync(dirname(options.path), { recursive: true });
+    options.held.makeDirectory(dirname(options.path), { recursive: true });
   }
 
   const db = new DatabaseSync(options.path) as unknown as Database;
@@ -379,7 +382,11 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
   const readonly = options.readonly ?? false;
 
   if (!readonly) {
-    const decision = openWritableStoreDatabase(options as WritableStoreOptions);
+    const writable = options as WritableStoreOptions;
+    const decision = openWritableStoreDatabase({
+      ...writable,
+      held: createStorageActuator(writable.storage, () => undefined),
+    });
     if (decision.kind === 'opened') return decision.db;
     throw storeSchemaOutdatedError(options.path, decision.classification, options.storeFormat, options.flavor);
   }

@@ -9,7 +9,6 @@ const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
 const RESET_ACTIVE_EVIDENCE_PATH = 'src/store/reset-active-evidence.ts';
-const RESET_RETENTION_PATH = 'src/store/reset-retention.ts';
 const ACTIVE_STORE_SELECTION_PATH = 'src/store/active-store-selection.ts';
 const ACTIVE_STORE_SELECTION_COORDINATION_PATH = 'src/store/active-store-selection-coordination.ts';
 const STARTUP_STORE_ROUTING_PATH = 'src/store/startup-store-routing.ts';
@@ -17,6 +16,8 @@ const READ_PORT_PATH = 'src/store/read-port.ts';
 const KB_QUERY_RUNTIME_PATH = 'src/read-model/kb-query-runtime.ts';
 const GENERATION_MUTATION_COORDINATION_PATH = 'src/store/generation-mutation-coordination.ts';
 const EXPANSION_INSTALL_PATH = 'src/cli/expansion/install.ts';
+const STORAGE_PORT_TYPES_PATH = 'src/infra/port-types.ts';
+const STORAGE_ACTUATOR_PATH = 'src/infra/storage-actuator.ts';
 
 type CallHit = {
   relativePath: string;
@@ -247,6 +248,44 @@ function settlementStoreImportClosure(overrides: ReadonlyMap<string, string> = n
   return closure.sort();
 }
 
+function protectedStoragePortMembers(): Set<string> {
+  const source = sourceFile(STORAGE_PORT_TYPES_PATH);
+  const protectedInterfaces = new Set(['StorageWholeFilePort', 'StorageMutationPort']);
+  return new Set(
+    source.statements
+      .flatMap((statement) =>
+        ts.isInterfaceDeclaration(statement) && protectedInterfaces.has(statement.name.text)
+          ? statement.members.flatMap((member) =>
+              ts.isMethodSignature(member) && member.name !== undefined ? [propertyNameText(member.name)] : [],
+            )
+          : [],
+      )
+      .filter((name): name is string => name !== null),
+  );
+}
+
+function directProtectedStorageCalls(relativePaths: readonly string[]): string[] {
+  const protectedMembers = protectedStoragePortMembers();
+  const violations: string[] = [];
+  for (const relativePath of relativePaths) {
+    const source = sourceFile(relativePath);
+    const visit = (node: ts.Node): void => {
+      const member = ts.isPropertyAccessExpression(node)
+        ? node.name.text
+        : ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression)
+          ? node.argumentExpression.text
+          : null;
+      if (member !== null && protectedMembers.has(member)) {
+        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+        violations.push(`${relativePath}:${line} ${node.getText(source)}`);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return violations.sort();
+}
+
 function isUnmappedErrnoRethrow(statement: ts.ThrowStatement): boolean {
   if (!ts.isIdentifier(statement.expression)) return false;
   let current: ts.Node | undefined = statement.parent;
@@ -427,134 +466,54 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('makes Held a single private constructor and a required argument at settlement acts', () => {
-    const heldAliases = allSourcePaths().flatMap((relativePath) =>
-      sourceFile(relativePath).statements.flatMap((statement) =>
-        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'Held' ? [{ relativePath, statement }] : [],
-      ),
-    );
-    expect(heldAliases).toHaveLength(1);
-    const heldAlias = heldAliases[0];
-    expect(heldAlias?.relativePath).toBe(BACKEND_STORE_RESET_PATH);
-    expect(
-      heldAlias?.statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false,
-    ).toBe(false);
+  it('derives protected storage acts and excludes them from the import-reachable settlement closure', () => {
+    const protectedMembers = protectedStoragePortMembers();
+    expect(protectedMembers.size).toBeGreaterThan(0);
+    expect(settlementStoreImportClosure()).toContain(BACKEND_STORE_RESET_PATH);
+    expect(directProtectedStorageCalls(settlementStoreImportClosure())).toEqual([]);
 
-    const backend = sourceFile(BACKEND_STORE_RESET_PATH);
-    let heldAssertions = 0;
-    let heldBrandAssignments = 0;
-    const visitConstructor = (node: ts.Node): void => {
-      if (ts.isAsExpression(node) && node.type.getText(backend) === 'Held') heldAssertions += 1;
+    const actuator = sourceFile(STORAGE_ACTUATOR_PATH);
+    const ownedMembers = new Map<string, number>();
+    const proofViolations: string[] = [];
+    const visit = (node: ts.Node): void => {
       if (
-        ts.isPropertyAssignment(node) &&
-        ts.isComputedPropertyName(node.name) &&
-        node.name.expression.getText(backend) === 'HELD_BRAND' &&
-        node.initializer.getText(backend) === 'true as const'
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'storage' &&
+        protectedMembers.has(node.name.text)
       ) {
-        heldBrandAssignments += 1;
-      }
-      ts.forEachChild(node, visitConstructor);
-    };
-    visitConstructor(backend);
-    expect(heldAssertions).toBe(1);
-    expect(heldBrandAssignments).toBe(1);
-
-    const settlementAuthority = backend.statements.find(
-      (statement): statement is ts.TypeAliasDeclaration =>
-        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'SettlementAuthority',
-    );
-    expect(settlementAuthority).toBeDefined();
-    const authorityType =
-      settlementAuthority !== undefined &&
-      ts.isTypeReferenceNode(settlementAuthority.type) &&
-      settlementAuthority.type.typeName.getText(backend) === 'Readonly'
-        ? settlementAuthority.type.typeArguments?.[0]
-        : settlementAuthority?.type;
-    const authorityMethods =
-      authorityType !== undefined && ts.isTypeLiteralNode(authorityType)
-        ? authorityType.members.filter(ts.isMethodSignature).map((member) => member.name.getText(backend))
-        : [];
-    expect(authorityMethods).toEqual(['hold']);
-
-    let heldParameterCount = 0;
-    const defaultedOrOptional: string[] = [];
-    for (const relativePath of [BACKEND_STORE_RESET_PATH, RESET_ACTIVE_EVIDENCE_PATH, RESET_RETENTION_PATH]) {
-      const parsed = sourceFile(relativePath);
-      const visitParameters = (node: ts.Node): void => {
-        if (ts.isParameter(node) && ['Held', 'SettlementHeld'].includes(node.type?.getText(parsed) ?? '')) {
-          heldParameterCount += 1;
-          if (node.initializer !== undefined || node.questionToken !== undefined) {
-            const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
-            defaultedOrOptional.push(`${relativePath}:${line} ${node.getText(parsed)}`);
-          }
+        ownedMembers.set(node.name.text, (ownedMembers.get(node.name.text) ?? 0) + 1);
+        let statement: ts.Node = node;
+        while (statement.parent !== undefined && !ts.isBlock(statement.parent)) statement = statement.parent;
+        const block = statement.parent;
+        const index =
+          block !== undefined && ts.isBlock(block) ? block.statements.indexOf(statement as ts.Statement) : -1;
+        if (
+          block === undefined ||
+          !ts.isBlock(block) ||
+          index < 1 ||
+          block.statements[index - 1]?.getText(actuator) !== 'prove();'
+        ) {
+          const line = actuator.getLineAndCharacterOfPosition(node.getStart(actuator)).line + 1;
+          proofViolations.push(`${STORAGE_ACTUATOR_PATH}:${line} ${node.getText(actuator)}`);
         }
-        ts.forEachChild(node, visitParameters);
-      };
-      visitParameters(parsed);
-    }
-    expect(heldParameterCount).toBeGreaterThan(20);
-    expect(defaultedOrOptional).toEqual([]);
-
-    const guardedFunctions = new Map<string, readonly string[]>([
-      [
-        BACKEND_STORE_RESET_PATH,
-        [
-          'hashExactDescriptor',
-          'writeExactDescriptor',
-          'describeCandidate',
-          'copyPathCandidateForPublication',
-          'copyActiveEvidenceForPublication',
-          'evidenceMatches',
-          'createParkingOperation',
-          'removeSettledParkingDirectory',
-          'resumeInterruptedIncident',
-          'terminalizeParking',
-          'commitTerminalParking',
-          'cloneParkedStoreForClaim',
-          'retainNonRegularParking',
-          'publishIncident',
-          'attemptBackendStoreClaim',
-        ],
-      ],
-      [
-        RESET_ACTIVE_EVIDENCE_PATH,
-        ['parkActiveEvidence', 'parkCurrentEvidence', 'linkOwnedEvidenceToActive', 'restoreParkedEvidence'],
-      ],
-      [
-        RESET_RETENTION_PATH,
-        [
-          'writeStoreResetParkedRecord',
-          'retainOnlyStoreResetPreservedCopy',
-          'recordStoreResetParked',
-          'settleStoreResetPending',
-          'resolveStoreResetRetentionSlot',
-          'recordStoreResetPreserved',
-          'recordStoreResetPending',
-          'clearStoreResetPending',
-          'recordStoreResetResumeLeftActive',
-          'releaseStoreResetIncident',
-        ],
-      ],
-    ]);
-    for (const [relativePath, functionNames] of guardedFunctions) {
-      const parsed = sourceFile(relativePath);
-      for (const name of functionNames) {
-        const declaration = findFunction(relativePath, name);
-        expect(
-          declaration.parameters.some((parameter) =>
-            ['Held', 'SettlementHeld'].includes(parameter.type?.getText(parsed) ?? ''),
-          ),
-          `${relativePath}:${name}`,
-        ).toBe(true);
       }
-    }
+      ts.forEachChild(node, visit);
+    };
+    visit(actuator);
+    expect([...ownedMembers.keys()].sort()).toEqual([...protectedMembers].sort());
+    expect([...ownedMembers.values()].every((count) => count === 1)).toBe(true);
+    expect(proofViolations).toEqual([]);
 
-    expect(readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8')).not.toContain('maintainLease');
+    const backend = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
+    expect(backend).toContain('StorageActuator &');
+    expect(backend).toContain('createStorageActuator(storage, hold)');
+    expect(backend).not.toContain('guardedFunctions');
   });
 
-  it('has at most 130 semantic refusals in the settlement closure (target: 0)', () => {
+  it('has at most 129 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(130);
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(129);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
@@ -614,7 +573,7 @@ describe('store reset discipline invariants', () => {
 
   it('parks active evidence before publishing the manifest', () => {
     const calls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH);
-    const linkCalls = calls.filter((call) => call.callee === 'linkSync');
+    const linkCalls = calls.filter((call) => call.callee === 'link');
     const incidentSource = sourceFile(BACKEND_STORE_RESET_PATH);
     const publish = withoutComments(
       findFunction(BACKEND_STORE_RESET_PATH, 'publishIncident').body?.getText(incidentSource) ?? '',
@@ -639,8 +598,8 @@ describe('store reset discipline invariants', () => {
       findFunction(BACKEND_STORE_RESET_PATH, 'commitTerminalParking').body?.getText(source) ?? '',
     );
     expect(transition.indexOf('writeStoreResetParkedRecord(')).toBeLessThan(transition.indexOf('populate();'));
-    expect(transition.indexOf('populate();')).toBeLessThan(transition.indexOf('renameSync('));
-    expect(transition.indexOf('renameSync(')).toBeLessThan(transition.indexOf('recordStoreResetParked('));
+    expect(transition.indexOf('populate();')).toBeLessThan(transition.indexOf('held.rename('));
+    expect(transition.indexOf('held.rename(')).toBeLessThan(transition.indexOf('recordStoreResetParked('));
 
     for (const [functionName, transitionCall] of [
       ['terminalizeParking', 'commitTerminalParking('],
@@ -709,23 +668,31 @@ describe('store reset discipline invariants', () => {
       false,
     );
 
-    const unlinkCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter((call) => call.callee === 'unlinkSync');
+    const unlinkCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter((call) => call.callee === 'unlink');
     expect(unlinkCalls.map((call) => call.enclosingFunctions[0]).sort()).toEqual([
+      'dropActiveEvidenceIfOwned',
       'dropParkedEvidence',
       'restoreParkedEvidence',
     ]);
-    expect(unlinkCalls.every((call) => call.text.includes('parkedPath(parkingDirectory, parked.evidence)'))).toBe(true);
+    expect(
+      unlinkCalls.every((call) =>
+        call.enclosingFunctions.includes('dropActiveEvidenceIfOwned')
+          ? call.text.includes('candidateForEvidence(files, parked.name)')
+          : call.text.includes('parkedPath(parkingDirectory, parked.evidence)'),
+      ),
+    ).toBe(true);
 
     const sharedPathCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter(
       (call) => call.callee !== 'candidateForEvidence' && call.text.includes('candidateForEvidence('),
     );
     expect(sharedPathCalls.map((call) => call.callee).sort()).toEqual([
-      'linkSync',
-      'linkSync',
+      'link',
+      'link',
       'lstatSync',
       'openSync',
-      'renameSync',
-      'renameSync',
+      'rename',
+      'rename',
+      'unlink',
     ]);
     expect(externalPathAccesses).toEqual([]);
   });

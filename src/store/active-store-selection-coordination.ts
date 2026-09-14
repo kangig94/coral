@@ -100,11 +100,12 @@ function finalStoreResetSurvivor(
   settlementAuthority: SettlementAuthority,
 ): ActiveStoreSettlementSurvivor {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  const parking = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot).entries.find(
+  const parking = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, settlementAuthority).entries.find(
     (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',
   );
   if (parking !== undefined) return { kind: 'parking', parkingId: parking.coordinate };
-  const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, settlementAuthority.hold());
+  settlementAuthority.hold();
+  const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, settlementAuthority);
   if (slot.kind === 'held' && slot.manifest !== null) {
     const manifest = slot.manifest;
     return {
@@ -448,7 +449,7 @@ async function settleActiveStore(
     if (resetNeeded) {
       resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
     }
-    const settlementAuthority = createSettlementAuthority(adoption, writerExclusion, resetLock);
+    const settlementAuthority = createSettlementAuthority(runtime.storage, adoption, writerExclusion, resetLock);
     if (resetNeeded) {
       resumed =
         writerExclusion === undefined
@@ -502,10 +503,10 @@ async function settleActiveStore(
       }
     }
 
-    let claimCandidate = mintBackendStoreForClaim(runtime, files, options);
+    let claimCandidate = mintBackendStoreForClaim(runtime, files, options, settlementAuthority);
     let db: Database;
     for (;;) {
-      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate, settlementAuthority.hold());
+      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate, settlementAuthority);
       epochs.push(...attempt.epochs);
       for (const epoch of attempt.epochs) {
         if (epoch.kind === 'described' && epoch.publication.kind === 'preserved') {
@@ -618,7 +619,7 @@ function supersedeActiveStoreTransition(
   const retained = retainActiveStoreTransition(
     runtime,
     options,
-    createSettlementAuthority(adoption, undefined, null),
+    createSettlementAuthority(runtime.storage, adoption, undefined, null),
     transitionFile,
   );
   if (retained !== null) {

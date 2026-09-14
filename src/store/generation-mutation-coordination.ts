@@ -11,6 +11,7 @@ import {
 } from '../infra/fs-lock.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import { validateProductVersion } from '../infra/product-version.js';
+import { createStorageActuator, type StorageActuator } from '../infra/storage-actuator.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFile } from './db.js';
@@ -196,7 +197,7 @@ export function generationNotQuiescentError(
 }
 
 function ensureCoordinationRoot(runtime: Runtime, paths: GenerationBoundaryPaths): void {
-  runtime.storage.mkdirSync(paths.writersRoot, { recursive: true });
+  createStorageActuator(runtime.storage, () => undefined).makeDirectory(paths.writersRoot, { recursive: true });
 }
 
 export async function acquireGenerationAdoptionLock(
@@ -204,7 +205,7 @@ export async function acquireGenerationAdoptionLock(
   timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<GenerationAdoptionLockLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
-  runtime.storage.mkdirSync(paths.generationRoot, { recursive: true });
+  createStorageActuator(runtime.storage, () => undefined).makeDirectory(paths.generationRoot, { recursive: true });
   try {
     const lease = await acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
     Object.defineProperty(lease, GENERATION_ADOPTION_LOCK_BRAND, { value: true });
@@ -262,6 +263,7 @@ function writerHolder(
   runtime: Runtime,
   paths: GenerationBoundaryPaths,
   entry: string,
+  held: StorageActuator,
 ): { readonly identity: RecordedProcessIdentity; readonly description: string } | null {
   const match = /^(\d+)-(install|update|uninstall|kb-child|routing-status)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
   if (match === null) return null;
@@ -275,7 +277,7 @@ function writerHolder(
   }
   try {
     const parsed = recordedProcessIdentitySchema.safeParse(
-      JSON.parse(runtime.storage.readFileSync(join(paths.writersRoot, entry, WRITER_IDENTITY_FILE), 'utf-8')),
+      JSON.parse(held.readWholeFile(join(paths.writersRoot, entry, WRITER_IDENTITY_FILE), 'utf-8')),
     );
     if (!parsed.success || parsed.data.pid !== pid) return null;
     return { identity: parsed.data, description: `${match[2]}:${name} (pid ${pid})` };
@@ -302,8 +304,8 @@ type GenerationWriterBlocker = Readonly<{
   observation: 'alive' | 'unknown';
 }>;
 
-function removeWriterLease(runtime: Runtime, paths: GenerationBoundaryPaths, entry: string): void {
-  runtime.storage.rmSync(join(paths.writersRoot, entry), { recursive: true, force: true });
+function removeWriterLease(paths: GenerationBoundaryPaths, entry: string, held: StorageActuator): void {
+  held.remove(join(paths.writersRoot, entry), { recursive: true, force: true });
 }
 
 function reclaimStaleWriterLease(runtime: Runtime, paths: GenerationBoundaryPaths, entry: string): boolean {
@@ -313,10 +315,14 @@ function reclaimStaleWriterLease(runtime: Runtime, paths: GenerationBoundaryPath
   return true;
 }
 
-function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths): GenerationWriterBlocker[] {
+function removeDeadWriterLeases(
+  runtime: Runtime,
+  paths: GenerationBoundaryPaths,
+  held: StorageActuator,
+): GenerationWriterBlocker[] {
   const blockers: GenerationWriterBlocker[] = [];
   for (const entry of writerEntries(runtime, paths)) {
-    const holder = writerHolder(runtime, paths, entry);
+    const holder = writerHolder(runtime, paths, entry, held);
     if (holder === null) {
       if (!reclaimStaleWriterLease(runtime, paths, entry)) {
         blockers.push({ description: `${entry} (identity unreadable)`, observation: 'unknown' });
@@ -332,7 +338,7 @@ function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths
         runtime.env.platform() as NodeJS.Platform,
       );
       if (incarnation !== null && incarnation !== holder.identity.incarnation) {
-        removeWriterLease(runtime, paths, entry);
+        removeWriterLease(paths, entry, held);
         continue;
       }
       liveness = runtime.process.observeLiveness(holder.identity.pid);
@@ -342,7 +348,7 @@ function removeDeadWriterLeases(runtime: Runtime, paths: GenerationBoundaryPaths
 
     switch (liveness) {
       case 'absent':
-        removeWriterLease(runtime, paths, entry);
+        removeWriterLease(paths, entry, held);
         continue;
       case 'alive':
         if (incarnation === holder.identity.incarnation) {
@@ -378,13 +384,14 @@ function acquireWriterLeaseUnderAdmission(
   const releaseWriter = tryAcquireDirectoryLock(leasePath, directoryLockDeps(runtime));
   if (releaseWriter === null) return { kind: 'contended' };
   const identityPath = join(leasePath, WRITER_IDENTITY_FILE);
+  const held = createStorageActuator(runtime.storage, releaseWriter.assertOwned);
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
     try {
       releaseWriter.assertOwned();
-      runtime.storage.unlinkSync(identityPath);
+      held.unlink(identityPath);
     } catch {
       // Ownership is the authority to remove identity.json; the path may belong to a successor after loss.
     }
@@ -395,7 +402,7 @@ function acquireWriterLeaseUnderAdmission(
     }
   };
   try {
-    runtime.storage.writeFileSync(identityPath, JSON.stringify(identity), {
+    held.writeWholeFile(identityPath, JSON.stringify(identity), {
       encoding: 'utf-8',
       mode: 0o600,
     });
@@ -483,8 +490,12 @@ export async function acquireGenerationMaintenanceLease(
   }
 
   try {
+    const held = createStorageActuator(runtime.storage, () => {
+      releaseMaintenance.maintain();
+      releaseMaintenance.assertOwned();
+    });
     while (true) {
-      const blockers = removeDeadWriterLeases(runtime, paths);
+      const blockers = removeDeadWriterLeases(runtime, paths, held);
       if (blockers.length === 0) break;
       if (runtime.time.monotonicNow() >= deadline) {
         throw generationNotQuiescentError(

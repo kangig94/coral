@@ -466,6 +466,7 @@ export function handoffPublicationIncidentsExitContribution(
 
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetReleaseTarget, StoreResetTarget } from '../../store/operator-store-reset.js';
+import type { StoreResetRetentionRotation } from '../../store/reset-retention.js';
 import {
   boundStoreResetCliError,
   discardStoreResetLocal,
@@ -516,6 +517,11 @@ type StoreResetDiscardCommandResult = Extract<
   { readonly kind: 'discarded' }
 >;
 
+function formatIncompleteStoreResetRotation(rotation: StoreResetRetentionRotation): string | null {
+  if (rotation.kind === 'complete') return null;
+  return `Retention rotation is incomplete; ${rotation.survivor.kind} '${rotation.survivor.id}' remains on disk (${rotation.cause}).`;
+}
+
 function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
   result = constrainStoreResetRendererInput(result);
   const lines: string[] = [];
@@ -528,10 +534,9 @@ function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string
         switch (epoch.publication.kind) {
           case 'preserved':
             lines.push(`Preserved store-reset incident '${epoch.publication.incident.incidentId}'.`);
-            if (epoch.publication.rotation.kind === 'incomplete') {
-              lines.push(
-                `Retention rotation is incomplete; ${epoch.publication.rotation.survivor.kind} '${epoch.publication.rotation.survivor.id}' remains on disk (${epoch.publication.rotation.cause}).`,
-              );
+            {
+              const rotation = formatIncompleteStoreResetRotation(epoch.publication.rotation);
+              if (rotation !== null) lines.push(rotation);
             }
             break;
           case 'no-evidence':
@@ -545,6 +550,10 @@ function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string
         lines.push(
           `Parked ${epoch.cause} epoch '${epoch.parkingId}' (${epoch.names.join(',')}; classification ${epoch.classification?.kind ?? 'none'}).`,
         );
+        {
+          const rotation = formatIncompleteStoreResetRotation(epoch.rotation);
+          if (rotation !== null) lines.push(rotation);
+        }
         break;
       case 'adopted':
         lines.push('Adopted a compatible epoch at the active store name.');

@@ -232,7 +232,7 @@ export async function releaseStoreReset(options: {
   let resetLock: ReturnType<typeof acquireBackendStoreResetLock> | null = null;
   try {
     resetLock = acquireBackendStoreResetLock(options.runtime, files, adoption);
-    const held = createSettlementAuthority(adoption, undefined, resetLock).hold();
+    const held = createSettlementAuthority(options.runtime.storage, adoption, undefined, resetLock);
     return {
       ...releaseStoreResetIncident(options.runtime.storage, paths.quarantineRoot, options.incidentId, held),
       target: 'gen2',

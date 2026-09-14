@@ -7,6 +7,7 @@ import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { manifestsMatch, type InvalidTargetEvidence, type InvalidTargetFailure } from '../infra/handoff-target.js';
 import type { StorageBigIntStat, StorageEntryKind, StoragePort } from '../infra/port-types.js';
+import { createStorageActuator } from '../infra/storage-actuator.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
@@ -576,9 +577,10 @@ function sameIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolea
 }
 
 function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
+  const held = createStorageActuator(runtime.storage, () => undefined);
   const { coordinationRoot } = resolveActiveStoreRecordPaths(runtime);
   if (!runtime.storage.existsSync(coordinationRoot)) {
-    runtime.storage.mkdirSync(coordinationRoot, { recursive: true });
+    held.makeDirectory(coordinationRoot, { recursive: true });
     const created = runtime.storage.lstatSync(coordinationRoot);
     if (created.isSymbolicLink()) {
       throw new ActiveStoreCoordinationWriteError(
@@ -592,7 +594,7 @@ function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
         'Active-store coordination directory could not be created safely: path is not a directory.',
       );
     }
-    runtime.storage.chmodSync(coordinationRoot, 0o700);
+    held.setMode(coordinationRoot, 0o700);
   }
   const link = runtime.storage.lstatSync(coordinationRoot);
   if (link.isSymbolicLink()) {
@@ -613,7 +615,7 @@ function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
       'Active-store coordination directory is not canonical.',
     );
   }
-  runtime.storage.chmodSync(coordinationRoot, 0o700);
+  held.setMode(coordinationRoot, 0o700);
   const stat = runtime.storage.statSync(coordinationRoot, { bigint: true });
   if (!stat.isDirectory()) {
     throw new ActiveStoreCoordinationWriteError(
@@ -634,7 +636,7 @@ function ensureActiveStoreCoordinationDirectory(runtime: Runtime): void {
 
 function publishActiveStoreRecord(runtime: Runtime, path: string, bytes: Uint8Array, record: string): void {
   ensureActiveStoreCoordinationDirectory(runtime);
-  if (!runtime.storage.writeAtomicDurableSync(path, bytes, { mode: 0o600 })) {
+  if (!createStorageActuator(runtime.storage, () => undefined).writeWholeFileDurable(path, bytes, { mode: 0o600 })) {
     throw new ActiveStoreCoordinationWriteError('record_unavailable', `${record} could not be published durably.`);
   }
 }
@@ -678,9 +680,10 @@ function activeStoreTransitionIdentity(
 function clearActiveStoreTransitionFile(runtime: Runtime, path: string, expectedIdentity?: StorageBigIntStat): void {
   const identity = activeStoreTransitionIdentity(runtime, path, expectedIdentity);
   if (identity === null) return;
-  runtime.storage.unlinkSync(path);
+  const held = createStorageActuator(runtime.storage, () => undefined);
+  held.unlink(path);
   const coordinationRoot = resolveActiveStoreRecordPaths(runtime).coordinationRoot;
-  if (!runtime.storage.syncDirectoryDurableSync(coordinationRoot)) {
+  if (!held.syncDirectory(coordinationRoot)) {
     throw new ActiveStoreCoordinationWriteError(
       'record_unavailable',
       'Active-store transition clear could not be synchronized durably.',
@@ -818,6 +821,7 @@ function readBoundedRecord(
   path: string,
   maxBytes: number,
 ): BoundedRecordReadResult {
+  const held = createStorageActuator(storage, () => undefined);
   const coordination = inspectCoordinationDirectory(storage, coordinationRoot);
   if (coordination.kind !== 'present') return coordination;
 
@@ -847,7 +851,7 @@ function readBoundedRecord(
       return { kind: 'rejected', failureCode: 'record_mode' };
     }
     try {
-      storage.chmodSync(path, Number(PRIVATE_FILE_MODE));
+      held.setMode(path, Number(PRIVATE_FILE_MODE));
       pathBefore = storage.statSync(path, { bigint: true });
     } catch {
       return { kind: 'rejected', failureCode: 'record_mode' };

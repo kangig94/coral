@@ -155,7 +155,7 @@ function seedPreExistingTerminalSurvivor(runtime: Runtime, dbPath: string): stri
       transaction: null,
       classification: null,
     },
-    fixtureHeld(),
+    fixtureHeld(runtime.storage),
   );
   return PRE_EXISTING_SURVIVOR_ID;
 }
@@ -381,8 +381,8 @@ function adoptionLease(): GenerationAdoptionLockLease {
   } as unknown as GenerationAdoptionLockLease;
 }
 
-function fixtureHeld() {
-  return createSettlementAuthority(adoptionLease(), undefined, null).hold();
+function fixtureHeld(storage: Runtime['storage']) {
+  return createSettlementAuthority(storage, adoptionLease(), undefined, null);
 }
 
 function writerExclusion(): WriterExclusion {
@@ -456,7 +456,7 @@ function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusi
   const files = resolveBackendStoreFileSet(runtime, options);
   const adoption = adoptionLease();
   const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
-  const settlementAuthority = createSettlementAuthority(adoption, exclusion, resetLock);
+  const settlementAuthority = createSettlementAuthority(runtime.storage, adoption, exclusion, resetLock);
   try {
     const classification = classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT);
     if (classification.kind !== 'older-incompatible' && classification.kind !== 'corrupt-or-unsupported') {
@@ -521,7 +521,7 @@ function resumeReset(runtime: Runtime, dbPath: string) {
   const adoption = adoptionLease();
   const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
   const exclusion = writerExclusion();
-  const settlementAuthority = createSettlementAuthority(adoption, exclusion, resetLock);
+  const settlementAuthority = createSettlementAuthority(runtime.storage, adoption, exclusion, resetLock);
   try {
     return resumeBackendStoreResetIncidentForOperator(
       runtime,
@@ -1286,7 +1286,7 @@ describe('openOrResetBackendStoreDb', () => {
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
 
-    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld());
+    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage));
 
     expect(slot).toMatchObject({
       kind: 'held',
@@ -1310,9 +1310,11 @@ describe('openOrResetBackendStoreDb', () => {
       overflow: true,
     });
 
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld())).toMatchObject({
-      kind: 'vacant',
-    });
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage))).toMatchObject(
+      {
+        kind: 'vacant',
+      },
+    );
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
   });
 
@@ -2221,7 +2223,7 @@ describe('openOrResetBackendStoreDb', () => {
         },
         classification: null,
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
     );
 
     const rmSync = runtime.storage.rmSync;
@@ -2417,11 +2419,13 @@ describe('openOrResetBackendStoreDb', () => {
     });
 
     ledgerWrite.mockRestore();
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld())).toMatchObject({
-      kind: 'held',
-      holder: { preservation: { kind: 'copied', coherence: 'coherent' } },
-      ledger: { pending: null },
-    });
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage))).toMatchObject(
+      {
+        kind: 'held',
+        holder: { preservation: { kind: 'copied', coherence: 'coherent' } },
+        ledger: { pending: null },
+      },
+    );
   });
 
   it('returns an adopted slot when its bookkeeping write fails', () => {
@@ -2434,10 +2438,12 @@ describe('openOrResetBackendStoreDb', () => {
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
     vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
 
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld())).toMatchObject({
-      kind: 'held',
-      holder: { incidentId: publication.incident.incidentId },
-    });
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage))).toMatchObject(
+      {
+        kind: 'held',
+        holder: { incidentId: publication.incident.incidentId },
+      },
+    );
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
   });
 
@@ -2721,12 +2727,7 @@ describe('openOrResetBackendStoreDb', () => {
   it('does not drop a fixed-coordinate occupant installed after the ownership decision', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-revision11-stale-drop-');
-    const parkingDirectory = join(
-      root,
-      'store-reset-quarantine',
-      '.parked',
-      STORE_RESET_IN_FLIGHT_DIRECTORY,
-    );
+    const parkingDirectory = join(root, 'store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY);
     const parkedPath = join(parkingDirectory, 'store.db');
     mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
     writeFileSync(parkedPath, 'process-a-evidence');
@@ -2742,13 +2743,83 @@ describe('openOrResetBackendStoreDb', () => {
       entry: { name: 'store.db' as const, kind: 'regular-file' as const, sizeBytes: Number(original.size) },
     };
 
-    rmSync(parkedPath);
-    writeFileSync(parkedPath, 'process-b-evidence');
-    dropParkedEvidence(runtime.storage, parkingDirectory, parked);
+    let reused = false;
+    const held = createSettlementAuthority(
+      runtime.storage,
+      {
+        maintain() {
+          rmSync(parkedPath);
+          writeFileSync(parkedPath, 'process-b-evidence');
+          reused = true;
+        },
+        assertOwned() {
+          throw new Error('process A lost the settlement authority');
+        },
+      },
+      undefined,
+      null,
+    );
+    expect(() => dropParkedEvidence(parkingDirectory, parked, held)).toThrow(/lost the settlement authority/u);
 
+    expect(reused).toBe(true);
     expect(existsSync(parkedPath)).toBe(true);
     expect(readFileSync(parkedPath, 'utf8')).toBe('process-b-evidence');
   });
+
+  it.each(['unlink', 'rename', 'link', 'remove', 'writeWholeFile', 'readWholeFile'] as const)(
+    're-proves authority at %s when a competing claimant reuses the fixed coordinate',
+    (act) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot(`coral-store-revision11-${act}-`);
+      const fixedPath = join(root, STORE_RESET_IN_FLIGHT_DIRECTORY);
+      const outputPath = join(root, 'operation-output');
+      writeFileSync(fixedPath, 'process-a-evidence');
+      let armed = false;
+      let reused = false;
+      const held = createSettlementAuthority(
+        runtime.storage,
+        {
+          maintain() {
+            if (!armed) return;
+            rmSync(fixedPath, { recursive: true, force: true });
+            writeFileSync(fixedPath, 'process-b-evidence');
+            reused = true;
+          },
+          assertOwned() {
+            if (armed) throw new Error('process A lost the settlement authority');
+          },
+        },
+        undefined,
+        null,
+      );
+      held.hold();
+      armed = true;
+
+      const operation = (): unknown => {
+        switch (act) {
+          case 'unlink':
+            return held.unlink(fixedPath);
+          case 'rename':
+            return held.rename(fixedPath, outputPath);
+          case 'link':
+            return held.link(fixedPath, outputPath);
+          case 'remove':
+            return held.remove(fixedPath, { force: true });
+          case 'writeWholeFile':
+            return held.writeWholeFile(fixedPath, 'process-a-write');
+          case 'readWholeFile':
+            return held.readWholeFile(fixedPath, 'utf-8');
+          default:
+            throw new Error(`Unhandled authority act: ${act satisfies never}`);
+        }
+      };
+
+      expect(operation).toThrow(/lost the settlement authority/u);
+      expect(reused).toBe(true);
+      expect(readFileSync(fixedPath, 'utf8')).toBe('process-b-evidence');
+      expect(existsSync(outputPath)).toBe(false);
+    },
+  );
 
   it('parks and claims when restored legacy evidence no longer matches its routed classification', async () => {
     const runtime = createRuntime();
@@ -2778,6 +2849,31 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
+  it('parks and claims when restored legacy evidence cannot be reclassified', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision11-legacy-reproof-unavailable-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath, STORE_FORMAT.fingerprint);
+    const openSqliteDatabaseSync = runtime.storage.openSqliteDatabaseSync;
+    let activeClassifications = 0;
+    let reproofUnavailable = false;
+    vi.spyOn(runtime.storage, 'openSqliteDatabaseSync').mockImplementation((path, options) => {
+      if (path === dbPath && ++activeClassifications === 2) {
+        reproofUnavailable = true;
+        throw errno('EIO');
+      }
+      return openSqliteDatabaseSync(path, options);
+    });
+
+    const error = await captureAsyncError(async () => {
+      const db = await openReset(runtime, dbPath);
+      db.close();
+    });
+    expect(reproofUnavailable).toBe(true);
+    expect(error).toBeNull();
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
   it('omits an active-evidence size that cannot be represented safely', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-revision11-unrepresentable-size-');
@@ -2790,7 +2886,9 @@ describe('openOrResetBackendStoreDb', () => {
       return path === dbPath && options?.bigint === true
         ? new Proxy(observed, {
             get(target, property, receiver) {
-              return property === 'size' ? BigInt(Number.MAX_SAFE_INTEGER) + 1n : Reflect.get(target, property, receiver);
+              return property === 'size'
+                ? BigInt(Number.MAX_SAFE_INTEGER) + 1n
+                : Reflect.get(target, property, receiver);
             },
           })
         : observed;
@@ -2799,6 +2897,31 @@ describe('openOrResetBackendStoreDb', () => {
     expect(enumerateActiveEvidence(runtime.storage, files)).toEqual([
       expect.objectContaining({ name: 'store.db', sizeBytes: null }),
     ]);
+  });
+
+  it('boots without reporting an active-evidence size that cannot be represented safely', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision11-unrepresentable-size-boot-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const lstat = runtime.storage.lstatSync;
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      const observed = options?.bigint === true ? lstat(path, { bigint: true }) : lstat(path);
+      return path === dbPath && options?.bigint === true
+        ? new Proxy(observed, {
+            get(target, property, receiver) {
+              return property === 'size'
+                ? BigInt(Number.MAX_SAFE_INTEGER) + 1n
+                : Reflect.get(target, property, receiver);
+            },
+          })
+        : observed;
+    }) as Runtime['storage']['lstatSync']);
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
   it('revalidates adoption ownership after opening and before returning the writable handle', async () => {
@@ -3236,7 +3359,7 @@ describe('openOrResetBackendStoreDb', () => {
             transaction: null,
             classification: null,
           },
-          fixtureHeld(),
+          fixtureHeld(runtime.storage),
         );
       }
 
@@ -3516,7 +3639,7 @@ describe('openOrResetBackendStoreDb', () => {
                   : { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
               classification: null,
             },
-            fixtureHeld(),
+            fixtureHeld(runtime.storage),
             STORE_RESET_IN_FLIGHT_DIRECTORY,
           );
         }
@@ -3645,7 +3768,12 @@ describe('openOrResetBackendStoreDb', () => {
         }),
       );
       expect(
-        releaseStoreResetIncident(runtime.storage, quarantineRoot, STORE_RESET_IN_FLIGHT_DIRECTORY, fixtureHeld()),
+        releaseStoreResetIncident(
+          runtime.storage,
+          quarantineRoot,
+          STORE_RESET_IN_FLIGHT_DIRECTORY,
+          fixtureHeld(runtime.storage),
+        ),
       ).toMatchObject({
         kind: 'undeterminable',
       });
@@ -3923,7 +4051,7 @@ describe('openOrResetBackendStoreDb', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
         classification: null,
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
     );
 
     const db = await openReset(runtime, dbPath);
@@ -3959,7 +4087,7 @@ describe('openOrResetBackendStoreDb', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
         classification: null,
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
     const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
@@ -4010,7 +4138,9 @@ describe('openOrResetBackendStoreDb', () => {
         names: ['store.db-wal'],
         entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength('retired evidence') }],
       });
-      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId, fixtureHeld())).toMatchObject({
+      expect(
+        releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime.storage)),
+      ).toMatchObject({
         kind: 'parked',
       });
       expect(existsSync(join(parkingRoot, parkingId))).toBe(false);
@@ -4200,7 +4330,14 @@ describe('openOrResetBackendStoreDb', () => {
       return options?.bigint === true ? lstatSync(path, { bigint: true }) : lstatSync(path);
     }) as Runtime['storage']['lstatSync']);
 
-    expect(() => mintBackendStoreForClaim(runtime, files, { path: dbPath, storeFormat: STORE_FORMAT })).toThrow();
+    expect(() =>
+      mintBackendStoreForClaim(
+        runtime,
+        files,
+        { path: dbPath, storeFormat: STORE_FORMAT },
+        createSettlementAuthority(runtime.storage, adoptionLease(), undefined, null),
+      ),
+    ).toThrow();
     expect(openedDbs).toHaveLength(1);
     expect(openedDbs[0]?.isOpen).toBe(false);
   });
@@ -4261,7 +4398,7 @@ describe('retainTransitionFileInStoreResetQuarantine', () => {
       runtime,
       files,
       sourcePath,
-      createSettlementAuthority(adoptionLease(), undefined, null),
+      createSettlementAuthority(runtime.storage, adoptionLease(), undefined, null),
     );
   }
 

@@ -63,6 +63,7 @@ import {
   writeStoreResetParkedRecord,
 } from '#src/store/reset-retention.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import type { StoragePort } from '#src/infra/port-types.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 const mockState = vi.hoisted(() => ({
@@ -102,8 +103,13 @@ function root(): string {
   return value;
 }
 
-function fixtureHeld() {
-  return createSettlementAuthority({ maintain: () => undefined, assertOwned: () => undefined }, undefined, null).hold();
+function fixtureHeld(storage: StoragePort) {
+  return createSettlementAuthority(
+    storage,
+    { maintain: () => undefined, assertOwned: () => undefined },
+    undefined,
+    null,
+  );
 }
 
 function writeTerminalParkingSidecar(
@@ -128,7 +134,7 @@ function writeTerminalParkingSidecar(
       transaction: null,
       classification: null,
     },
-    fixtureHeld(),
+    fixtureHeld(runtime.storage),
   );
 }
 
@@ -1160,7 +1166,7 @@ describe('operator store-reset discard', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm'] },
         classification: null,
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
     );
 
     const listed = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot));
@@ -1194,7 +1200,7 @@ describe('operator store-reset discard', () => {
         transaction: null,
         classification: null,
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
 
@@ -1590,7 +1596,7 @@ describe('operator store-reset discard', () => {
           },
         },
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
     );
     const parkingRoot = join(quarantineRoot, '.parked');
     const parkingPath = join(parkingRoot, pendingId);
@@ -1612,7 +1618,7 @@ describe('operator store-reset discard', () => {
         transaction: null,
         classification: null,
       },
-      fixtureHeld(),
+      fixtureHeld(runtime.storage),
     );
     const pendingLedger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
     const unrelatedId = '623e4567-e89b-42d3-a456-426614174000';
@@ -1984,6 +1990,10 @@ describe('backend store-reset commands', () => {
             cause: 'intruder',
             names: ['store.db'],
             classification: null,
+            rotation: {
+              kind: 'complete',
+              survivor: { kind: 'parking', id: '323e4567-e89b-42d3-a456-426614174000' },
+            },
           },
           { kind: 'claimed' },
         ],
@@ -2001,6 +2011,58 @@ describe('backend store-reset commands', () => {
       "Parked intruder epoch '323e4567-e89b-42d3-a456-426614174000' (store.db; classification none).",
     );
     expect(stdout).toContain('Claimed the active store name with fresh state.');
+  });
+
+  it.each([
+    ['complete', 'incident'],
+    ['complete', 'parking'],
+    ['incomplete', 'incident'],
+    ['incomplete', 'parking'],
+  ] as const)('renders a %s rotation with an %s survivor from a parked epoch', async (rotationKind, survivorKind) => {
+    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
+    const survivorId = survivorKind === 'incident' ? INCIDENT_ID : parkingId;
+    const cause = 'superseded coordinate changed before pruning';
+    const rotation =
+      rotationKind === 'complete'
+        ? { kind: rotationKind, survivor: { kind: survivorKind, id: survivorId } }
+        : { kind: rotationKind, survivor: { kind: survivorKind, id: survivorId }, cause };
+    const operations: StoreResetCommandOperations = {
+      list: () => ({ incidents: [], truncated: false }),
+      report: async () => publicReport(),
+      release: operationsRelease,
+      discard: async () => ({
+        kind: 'discarded',
+        target: 'gen2',
+        flavor: 'prod',
+        baseDir: '/coral',
+        storeDbPath: '/coral/gen2/data/store/store.db',
+        incident: null,
+        resumed: false,
+        resumedIncident: null,
+        epochs: [
+          {
+            kind: 'parked',
+            parkingId,
+            cause: 'intruder',
+            names: ['store.db'],
+            classification: null,
+            rotation,
+          },
+          { kind: 'claimed' },
+        ],
+      }),
+    };
+
+    await runCommand(['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', 'prod'], operations);
+
+    expect(stdout).toContain(`Parked intruder epoch '${parkingId}'`);
+    if (rotationKind === 'incomplete') {
+      expect(stdout).toContain(
+        `Retention rotation is incomplete; ${survivorKind} '${survivorId}' remains on disk (${cause}).`,
+      );
+    } else {
+      expect(stdout).not.toContain('Retention rotation is incomplete');
+    }
   });
 
   it('constrains all stored strings at renderer ingress', async () => {
