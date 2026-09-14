@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -107,6 +107,52 @@ afterEach(() => {
 });
 
 describe('write-once store epochs', () => {
+  it('does not treat an epoch symlink to the store root as a published epoch', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const flatPath = epochPath(dbDir, 0);
+    createCompatibleStore(flatPath, 'flat-epoch-zero');
+    symlinkSync('.', join(dbDir, 'epoch-1'));
+
+    const settled = settleStoreEpoch(runtime, options());
+    settled.db.exec("INSERT INTO rollback_sentinel (value) VALUES ('settled-write')");
+    settled.db.close();
+
+    const flat = new DatabaseSync(flatPath, { readOnly: true });
+    const values = flat.prepare('SELECT value FROM rollback_sentinel ORDER BY rowid').all() as { value: string }[];
+    flat.close();
+    expect(settled.epoch).toBe(0);
+    expect(values.map(({ value }) => value)).toEqual(['flat-epoch-zero', 'settled-write']);
+    console.log('symlink-cell alias=epoch-1->. selected=epoch-0 flat-write=visible');
+  });
+
+  it('does not let a regular file named as an epoch authorize deletion of epoch zero', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const flatPath = epochPath(dbDir, 0);
+    createCompatibleStore(flatPath, 'flat-epoch-zero');
+    writeFileSync(join(dbDir, 'epoch-1'), 'not a directory');
+
+    const settled = settleStoreEpoch(runtime, options());
+    settled.db.close();
+
+    expect(settled.epoch).toBe(0);
+    expect(existsSync(flatPath)).toBe(true);
+    console.log('regular-file-cell entry=epoch-1 selected=epoch-0 flat-store=preserved');
+  });
+
+  it('does not recognize an epoch number without a representable successor', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat-epoch-zero');
+    publishAdversarialEpoch(join(dbDir, `epoch-${Number.MAX_SAFE_INTEGER}`), true);
+
+    const current = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+
+    expect(current).toBe(0);
+    console.log(`max-safe-integer-cell entry=${Number.MAX_SAFE_INTEGER} selected=epoch-${current}`);
+  });
+
   it('opens an explicit nonstandard database path without applying epoch discovery', () => {
     const runtime = harness();
     const fixturePath = join(runtime.paths.coral.store.dbDir, 'fixture.db');
