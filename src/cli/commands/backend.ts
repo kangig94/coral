@@ -2097,7 +2097,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           (result.kind === 'released' ||
             result.kind === 'not-holder' ||
             result.kind === 'parked' ||
-            result.kind === 'released-unverified') &&
+            result.kind === 'released-with-unverified-parking' ||
+            result.kind === 'not-holder-with-unverified-parking' ||
+            result.kind === 'parked-unverified') &&
           result.durability === 'proven'
         ) {
           process.stdout.write(output);
@@ -2110,7 +2112,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           ((result.kind === 'released' ||
             result.kind === 'not-holder' ||
             result.kind === 'parked' ||
-            result.kind === 'released-unverified') &&
+            result.kind === 'released-with-unverified-parking' ||
+            result.kind === 'not-holder-with-unverified-parking' ||
+            result.kind === 'parked-unverified') &&
             result.durability === 'unproven')
             ? errorCodeToExit('transient')
             : 1;

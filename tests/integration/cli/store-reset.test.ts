@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerBackendCommands, type StoreResetCommandOperations } from '#src/cli/commands/backend.js';
 import { StoreResetCliError } from '#src/cli/errors.js';
-import { formatStoreResetReport } from '#src/cli/format/store-reset.js';
+import { formatStoreResetRelease, formatStoreResetReport } from '#src/cli/format/store-reset.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import {
@@ -435,7 +435,7 @@ describe('local store-reset operations', () => {
         schemaVersion: null,
         resetPolicyCause: null,
         fileCount: null,
-        evidenceBytes: 'unknown',
+        evidenceBytes: evidence.length,
         parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
@@ -1212,6 +1212,9 @@ describe('operator store-reset discard', () => {
       const incidentPath = join(quarantineRoot, incidentId);
       const parkingPath = join(quarantineRoot, '.parked', incidentId);
       const sidecarPath = join(parkingPath, 'parked.v1.json');
+      const incidentEvidenceBytes = parseStoreResetIncidentManifest(
+        readFileSync(join(incidentPath, 'reset-manifest.json')),
+      ).files.reduce((total, file) => total + file.sizeBytes, 0);
       mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
       writeFileSync(join(parkingPath, 'store.db-wal'), 'unverified parking witness');
       if (sidecarState === 'invalid') writeFileSync(sidecarPath, '{');
@@ -1230,17 +1233,44 @@ describe('operator store-reset discard', () => {
         }) as typeof runtime.storage.lstatSync);
       }
 
-      await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId })).resolves.toMatchObject({
-        kind: 'released-unverified',
+      const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId });
+      expect(result).toMatchObject({
+        kind: 'released-with-unverified-parking',
+        incidentEvidenceBytes,
         parkingEvidenceBytes: null,
       });
+      const rendered = formatStoreResetRelease(result);
+      expect(rendered).toContain(`preserved store-reset incident '${incidentId}' and its same-ID terminal parking`);
+      expect(rendered).toContain(`incident: ${incidentEvidenceBytes} bytes; parking: unknown`);
+      expect(rendered).toContain('without a verified parking sidecar');
       expect(existsSync(incidentPath)).toBe(false);
       expect(existsSync(parkingPath)).toBe(false);
       expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
     },
   );
 
-  it('releases a holder with an unreadable manifest and clears its preserved record', async () => {
+  it('separates parking-only deletion with an unverifiable sidecar', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const { quarantineRoot } = resolveStoreResetTargetPaths(runtime, 'gen2');
+    const parkingPath = join(quarantineRoot, '.parked', INCIDENT_ID);
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db-wal'), 'parking-only evidence');
+    writeFileSync(join(parkingPath, 'parked.v1.json'), '{');
+
+    const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId: INCIDENT_ID });
+
+    expect(result).toMatchObject({
+      kind: 'parked-unverified',
+      incidentEvidenceBytes: null,
+      parkingEvidenceBytes: null,
+      durability: 'proven',
+    });
+    expect(formatStoreResetRelease(result)).toContain(`terminal store-reset parking '${INCIDENT_ID}'`);
+    expect(existsSync(parkingPath)).toBe(false);
+  });
+
+  it('separates a non-holder incident deleted with unverifiable same-ID parking', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
@@ -1260,19 +1290,117 @@ describe('operator store-reset discard', () => {
       throw new Error('Expected a committed store-reset incident.');
     }
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
-    writeFileSync(join(incidentPath, 'reset-manifest.json'), '{');
+    const preservedBefore = readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved;
+    const incidentPath = join(quarantineRoot, INCIDENT_ID);
+    const incidentEvidence = 'non-holder evidence';
+    mkdirSync(incidentPath);
+    writeFileSync(join(incidentPath, 'store.db'), incidentEvidence);
+    writeFileSync(
+      join(incidentPath, 'reset-manifest.json'),
+      serializeStoreResetIncidentManifest(manifestWithPlaceholderEvidence(incidentManifest())),
+    );
+    const parkingPath = join(quarantineRoot, '.parked', INCIDENT_ID);
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db-wal'), 'unverified parking');
+    writeFileSync(join(parkingPath, 'parked.v1.json'), '{');
 
-    await expect(
-      releaseStoreReset({ target: 'current', runtime, incidentId: discarded.incident.incidentId }),
-    ).resolves.toMatchObject({
-      kind: 'released',
-      target: 'gen2',
-      durability: 'proven',
+    const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId: INCIDENT_ID });
+
+    expect(result).toMatchObject({
+      kind: 'not-holder-with-unverified-parking',
+      incidentEvidenceBytes: Buffer.byteLength(incidentEvidence),
+      parkingEvidenceBytes: null,
     });
-    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+    expect(formatStoreResetRelease(result)).toContain(
+      `non-holder store-reset incident '${INCIDENT_ID}' and its same-ID terminal parking`,
+    );
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toEqual(preservedBefore);
     expect(existsSync(incidentPath)).toBe(false);
+    expect(existsSync(parkingPath)).toBe(false);
   });
+
+  it.each(
+    (['valid', 'malformed', 'unreadable'] as const).flatMap((manifestState) =>
+      (['manifest-only', 'nested-evidence'] as const).map((contentState) => ({ manifestState, contentState })),
+    ),
+  )(
+    'accounts recursive bytes while listing and releasing a $manifestState incident with $contentState',
+    async ({ manifestState, contentState }) => {
+      const baseDir = root();
+      const runtime = createRealRuntime('prod', { baseDir });
+      const dbPath = runtime.paths.coral.store.dbFile;
+      createMismatchStore(dbPath);
+      const discarded = await discardStoreReset({
+        target: 'gen2',
+        runtime,
+        build: CURRENT_BUILD,
+        storeFormat: STORE_FORMAT,
+        acquireSocketGuard: noSocketGuard,
+        currentBundleDir: baseDir,
+        validateSelectedTarget: () => {
+          throw new Error('no selected target is expected in this case');
+        },
+      });
+      if (discarded.kind !== 'discarded' || discarded.incident === null) {
+        throw new Error('Expected a committed store-reset incident.');
+      }
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const incidentPath = join(quarantineRoot, discarded.incident.incidentId);
+      const manifestPath = join(incidentPath, 'reset-manifest.json');
+      const manifestEvidenceBytes = parseStoreResetIncidentManifest(readFileSync(manifestPath)).files.reduce(
+        (total, file) => total + file.sizeBytes,
+        0,
+      );
+      const nestedEvidence = contentState === 'nested-evidence' ? 'extra nested evidence' : '';
+      if (contentState === 'nested-evidence') {
+        const nestedDirectory = join(incidentPath, 'extra', 'nested');
+        mkdirSync(nestedDirectory, { recursive: true, mode: 0o700 });
+        writeFileSync(join(nestedDirectory, 'evidence.bin'), nestedEvidence);
+      }
+      if (manifestState === 'malformed') writeFileSync(manifestPath, '{');
+
+      const inspection = createStoreResetInspectionFs();
+      const listed = listStoreResetIncidentsLocal('gen2', {
+        ...dependencies(quarantineRoot),
+        createInspectionFs: () =>
+          manifestState === 'unreadable'
+            ? {
+                ...inspection,
+                open(path, flags, mode) {
+                  if (path === manifestPath) throw Object.assign(new Error('manifest unreadable'), { code: 'EACCES' });
+                  return inspection.open(path, flags, mode);
+                },
+              }
+            : inspection,
+        resolveIdentity: () => ({ ok: true, manifest: CURRENT_BUILD }),
+      });
+
+      if (manifestState === 'unreadable') {
+        const readFile = runtime.storage.readFileSync;
+        vi.spyOn(runtime.storage, 'readFileSync').mockImplementation((path, encoding) => {
+          if (path === manifestPath) throw Object.assign(new Error('manifest unreadable'), { code: 'EACCES' });
+          return readFile(path, encoding);
+        });
+      }
+      const released = await releaseStoreReset({
+        target: 'current',
+        runtime,
+        incidentId: discarded.incident.incidentId,
+      });
+      const expectedEvidenceBytes = manifestEvidenceBytes + Buffer.byteLength(nestedEvidence);
+
+      expect({
+        listedEvidenceBytes: listed.incidents[0]?.evidenceBytes,
+        releasedEvidenceBytes: 'incidentEvidenceBytes' in released ? released.incidentEvidenceBytes : undefined,
+      }).toEqual({
+        listedEvidenceBytes: expectedEvidenceBytes,
+        releasedEvidenceBytes: expectedEvidenceBytes,
+      });
+      expect(released).toMatchObject({ kind: 'released', target: 'gen2', durability: 'proven' });
+      expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
+      expect(existsSync(incidentPath)).toBe(false);
+    },
+  );
 
   it('does not retry removal after pending reconciliation already deleted the requested incident', async () => {
     const baseDir = root();
@@ -1567,12 +1695,13 @@ describe('backend store-reset commands', () => {
       report: async () => publicReport(),
       discard: operationsDiscard,
       release: async (_target, flavor, incidentId) => ({
-        kind: 'released-unverified',
+        kind: 'parked-unverified',
         target: 'gen2',
         flavor,
         incidentId,
         incidentEvidenceBytes: null,
         parkingEvidenceBytes: null,
+        clearedPreservedSlot: false,
         durability: 'proven',
       }),
     };

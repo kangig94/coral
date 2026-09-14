@@ -238,6 +238,7 @@ function unavailableEntry(
   incidentId: string,
   state: Exclude<StoreResetIncidentListEntry['state'], 'ready'>,
   ledger: StoreResetRetentionLedger | null,
+  evidenceBytes: StoreResetIncidentListEntry['evidenceBytes'],
 ): StoreResetIncidentListEntry {
   return {
     incidentId,
@@ -248,6 +249,7 @@ function unavailableEntry(
     resetPolicyCause: null,
     fileCount: null,
     ...listRetention(incidentId, ledger),
+    evidenceBytes,
   };
 }
 
@@ -261,16 +263,27 @@ function readListEntry(
   const incidentPath = join(root, incidentId);
   const incidentStat = fs.lstat(incidentPath);
   if (incidentStat === null || incidentStat.kind !== 'directory') {
-    return unavailableEntry(incidentId, incidentStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger);
+    return unavailableEntry(
+      incidentId,
+      incidentStat?.kind === 'symbolic-link' ? 'unsafe' : 'malformed',
+      ledger,
+      'unknown',
+    );
   }
+  const inspection = inspectDirectory(fs, incidentPath, STORE_RESET_MANIFEST_FILE_NAME);
 
   const manifestPath = join(incidentPath, STORE_RESET_MANIFEST_FILE_NAME);
   const manifestStat = fs.lstat(manifestPath);
   if (manifestStat === null) {
-    return unavailableEntry(incidentId, 'malformed', ledger);
+    return unavailableEntry(incidentId, 'malformed', ledger, inspection.evidenceBytes);
   }
   if (manifestStat.kind !== 'file') {
-    return unavailableEntry(incidentId, manifestStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed', ledger);
+    return unavailableEntry(
+      incidentId,
+      manifestStat.kind === 'symbolic-link' ? 'unsafe' : 'malformed',
+      ledger,
+      inspection.evidenceBytes,
+    );
   }
 
   try {
@@ -278,10 +291,10 @@ function readListEntry(
       readBoundedFileBytes(fs, manifestPath, manifestStat, MAX_RESET_MANIFEST_BYTES),
     );
     if (manifest.incidentId !== incidentId) {
-      return unavailableEntry(incidentId, 'malformed', ledger);
+      return unavailableEntry(incidentId, 'malformed', ledger, inspection.evidenceBytes);
     }
     if (!buildMatches(manifest, expectedBuild)) {
-      return unavailableEntry(incidentId, 'build_mismatch', ledger);
+      return unavailableEntry(incidentId, 'build_mismatch', ledger, inspection.evidenceBytes);
     }
     const retention = listRetention(incidentId, ledger);
     return {
@@ -294,20 +307,21 @@ function readListEntry(
         manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
       ...retention,
-      evidenceBytes: inspectDirectory(fs, incidentPath, STORE_RESET_MANIFEST_FILE_NAME).evidenceBytes,
+      evidenceBytes: inspection.evidenceBytes,
     };
   } catch (error: unknown) {
     if (error instanceof StoreResetIncidentReadError) {
-      return unavailableEntry(incidentId, error.state, ledger);
+      return unavailableEntry(incidentId, error.state, ledger, inspection.evidenceBytes);
     }
     if (error instanceof StoreResetManifestDecodeError) {
       return unavailableEntry(
         incidentId,
         error.code === 'manifest_invalid_schema' ? 'unsupported' : 'malformed',
         ledger,
+        inspection.evidenceBytes,
       );
     }
-    return unavailableEntry(incidentId, 'unavailable', ledger);
+    return unavailableEntry(incidentId, 'unavailable', ledger, inspection.evidenceBytes);
   }
 }
 

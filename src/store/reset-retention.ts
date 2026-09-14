@@ -161,10 +161,25 @@ export type StoreResetReleaseResult =
       readonly durability: 'proven' | 'unproven';
     }
   | {
-      readonly kind: 'released-unverified';
+      readonly kind: 'released-with-unverified-parking';
       readonly incidentId: string;
       readonly incidentEvidenceBytes: number | null;
       readonly parkingEvidenceBytes: null;
+      readonly durability: 'proven' | 'unproven';
+    }
+  | {
+      readonly kind: 'not-holder-with-unverified-parking';
+      readonly incidentId: string;
+      readonly incidentEvidenceBytes: number | null;
+      readonly parkingEvidenceBytes: null;
+      readonly durability: 'proven' | 'unproven';
+    }
+  | {
+      readonly kind: 'parked-unverified';
+      readonly incidentId: string;
+      readonly incidentEvidenceBytes: null;
+      readonly parkingEvidenceBytes: null;
+      readonly clearedPreservedSlot: boolean;
       readonly durability: 'proven' | 'unproven';
     }
   | {
@@ -959,13 +974,11 @@ export function releaseStoreResetIncident(
       return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
     }
   }
-  const manifest = incidentPresence === 'present' ? readCommittedManifest(storage, quarantineRoot, incidentId) : null;
-
   const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const parkedEvidenceBytes =
     parkingPresence === 'present' && parkingRecordVerified ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
   const incidentEvidenceBytes =
-    incidentPresence === 'present' && manifest !== null ? incidentDirectoryEvidenceBytes(storage, incidentPath) : null;
+    incidentPresence === 'present' ? incidentDirectoryEvidenceBytes(storage, incidentPath) : null;
   const parkingEvidenceBytes = parkedEvidenceBytes;
   let parkingDeletionDurability: StoreResetDeletionDurability =
     parkingPresence === 'present' ? 'unproven' : 'not-required';
@@ -1029,26 +1042,42 @@ export function releaseStoreResetIncident(
       return incomplete(error);
     }
   }
-  if (holder) {
-    if (!parkingRecordVerified) {
+  if (parkingPresence === 'present' && !parkingRecordVerified) {
+    if (incidentPresence === 'present' && holder) {
       return {
-        kind: 'released-unverified',
+        kind: 'released-with-unverified-parking',
         incidentId,
-        incidentEvidenceBytes: incidentEvidenceBytes ?? slot.holder.evidenceBytes,
+        incidentEvidenceBytes,
+        parkingEvidenceBytes: null,
+        durability,
+      };
+    }
+    if (incidentPresence === 'present') {
+      return {
+        kind: 'not-holder-with-unverified-parking',
+        incidentId,
+        incidentEvidenceBytes,
         parkingEvidenceBytes: null,
         durability,
       };
     }
     return {
-      kind: 'released',
+      kind: 'parked-unverified',
       incidentId,
-      incidentEvidenceBytes: incidentEvidenceBytes ?? slot.holder.evidenceBytes,
-      parkingEvidenceBytes,
+      incidentEvidenceBytes: null,
+      parkingEvidenceBytes: null,
+      clearedPreservedSlot: clearsHolder,
       durability,
     };
   }
-  if (parkingPresence === 'present' && !parkingRecordVerified) {
-    return { kind: 'released-unverified', incidentId, incidentEvidenceBytes, parkingEvidenceBytes: null, durability };
+  if (holder) {
+    return {
+      kind: 'released',
+      incidentId,
+      incidentEvidenceBytes,
+      parkingEvidenceBytes,
+      durability,
+    };
   }
   if (incidentPresence === 'absent' && parkingPresence === 'present') {
     return { kind: 'parked', incidentId, incidentEvidenceBytes, parkingEvidenceBytes, durability };
