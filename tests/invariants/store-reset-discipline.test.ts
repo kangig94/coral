@@ -264,17 +264,16 @@ function protectedStoragePortMembers(): Set<string> {
   );
 }
 
-function directProtectedStorageCalls(relativePaths: readonly string[]): string[] {
+function directProtectedStorageMentions(
+  relativePaths: readonly string[],
+  overrides: ReadonlyMap<string, string> = new Map(),
+): string[] {
   const protectedMembers = protectedStoragePortMembers();
   const violations: string[] = [];
   for (const relativePath of relativePaths) {
-    const source = sourceFile(relativePath);
+    const source = sourceWithOverrides(relativePath, overrides);
     const visit = (node: ts.Node): void => {
-      const member = ts.isPropertyAccessExpression(node)
-        ? node.name.text
-        : ts.isElementAccessExpression(node) && ts.isStringLiteral(node.argumentExpression)
-          ? node.argumentExpression.text
-          : null;
+      const member = ts.isIdentifier(node) || ts.isStringLiteral(node) ? node.text : null;
       if (member !== null && protectedMembers.has(member)) {
         const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
         violations.push(`${relativePath}:${line} ${node.getText(source)}`);
@@ -470,7 +469,17 @@ describe('store reset discipline invariants', () => {
     const protectedMembers = protectedStoragePortMembers();
     expect(protectedMembers.size).toBeGreaterThan(0);
     expect(settlementStoreImportClosure()).toContain(BACKEND_STORE_RESET_PATH);
-    expect(directProtectedStorageCalls(settlementStoreImportClosure())).toEqual([]);
+    expect(directProtectedStorageMentions(settlementStoreImportClosure())).toEqual([]);
+
+    const destructuredAccess = new Map([
+      [
+        BACKEND_STORE_RESET_PATH,
+        `${readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8')}\nconst { unlinkSync } = storage; unlinkSync('/shared');`,
+      ],
+    ]);
+    expect(
+      directProtectedStorageMentions(settlementStoreImportClosure(destructuredAccess), destructuredAccess),
+    ).toContainEqual(expect.stringContaining('unlinkSync'));
 
     const actuator = sourceFile(STORAGE_ACTUATOR_PATH);
     const ownedMembers = new Map<string, number>();
