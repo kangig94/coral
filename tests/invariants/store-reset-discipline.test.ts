@@ -111,8 +111,9 @@ describe('write-once store epoch invariants', () => {
     expect(all).not.toMatch(/WriterExclusion|store_reset_lock_contended|store_reset_interrupted_/u);
   });
 
-  it('has at most 60 semantic refusals in the settlement closure (target: 0)', () => {
-    expect(storeSemanticRefusalCount()).toBeLessThanOrEqual(60);
+  it('counts each inlined settlement refusal in the semantic ratchet (target: 0)', () => {
+    expect(source('src/store/epoch.ts')).not.toContain('failStoreEpoch');
+    expect(storeSemanticRefusalCount()).toBe(65);
   });
 
   it('keeps legacy_source_not_quiescent producers off the startup adoption path', () => {

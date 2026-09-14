@@ -9,6 +9,8 @@ import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { resolveCurrentStoreEpoch } from '#src/store/epoch.js';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { resolveCurrentStoreDbPath } from '../../clients/hooks/lib/store-epoch.mjs';
 
@@ -149,6 +151,113 @@ describe('self-contained client path parity', () => {
       expect(resolveCurrentStoreDbPath(dbDir)).toBe(join(published, 'store.db'));
     } finally {
       rmSync(dbDir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs both epoch selectors over the same proof-state corpus', () => {
+    const validMetadata = JSON.stringify({
+      supersedes: 0,
+      classification: { kind: 'unavailable' },
+      build: {
+        version: '0.10.9',
+        buildSetId: 'build-set',
+        bundleHash: 'bundle-hash',
+        flavor: 'prod',
+        storeFormatFingerprint: 'store-format',
+      },
+      publishedAt: '2026-09-15T00:00:00.000Z',
+    });
+    const corpus = [
+      {
+        name: 'legacy flat file',
+        expected: '0',
+        arrange(dbDir: string) {
+          writeFileSync(join(dbDir, 'store.db'), 'flat');
+        },
+      },
+      {
+        name: 'published epoch above a symlink',
+        expected: '1',
+        arrange(dbDir: string) {
+          const published = join(dbDir, 'epoch-1');
+          mkdirSync(published);
+          writeFileSync(join(published, 'store.db'), 'published');
+          writeFileSync(join(published, 'epoch.json'), validMetadata);
+          symlinkSync('.', join(dbDir, 'epoch-2'));
+        },
+      },
+      {
+        name: 'regular-file blocker above a published epoch',
+        expected: '1',
+        arrange(dbDir: string) {
+          const published = join(dbDir, 'epoch-1');
+          mkdirSync(published);
+          writeFileSync(join(published, 'store.db'), 'published');
+          writeFileSync(join(published, 'epoch.json'), validMetadata);
+          writeFileSync(join(dbDir, 'epoch-2'), 'blocker');
+        },
+      },
+      {
+        name: 'missing metadata above a published epoch',
+        expected: '1',
+        arrange(dbDir: string) {
+          for (const epoch of ['1', '2']) {
+            mkdirSync(join(dbDir, `epoch-${epoch}`));
+            writeFileSync(join(dbDir, `epoch-${epoch}`, 'store.db'), epoch);
+          }
+          writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
+        },
+      },
+      {
+        name: 'malformed metadata above a published epoch',
+        expected: '1',
+        arrange(dbDir: string) {
+          for (const epoch of ['1', '2']) {
+            mkdirSync(join(dbDir, `epoch-${epoch}`));
+            writeFileSync(join(dbDir, `epoch-${epoch}`, 'store.db'), epoch);
+          }
+          writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
+          writeFileSync(join(dbDir, 'epoch-2', 'epoch.json'), '{');
+        },
+      },
+      {
+        name: 'contained symlink above a published epoch',
+        expected: '1',
+        arrange(dbDir: string) {
+          const published = join(dbDir, 'epoch-1');
+          mkdirSync(published);
+          writeFileSync(join(published, 'store.db'), 'published');
+          writeFileSync(join(published, 'epoch.json'), validMetadata);
+          symlinkSync('epoch-1', join(dbDir, 'epoch-2'));
+        },
+      },
+      {
+        name: 'epoch above the safe-integer ceiling',
+        expected: '123456789012345678901234567890',
+        arrange(dbDir: string) {
+          const published = join(dbDir, 'epoch-123456789012345678901234567890');
+          mkdirSync(published);
+          writeFileSync(join(published, 'store.db'), 'published');
+          writeFileSync(join(published, 'epoch.json'), validMetadata);
+        },
+      },
+    ];
+
+    for (const fixture of corpus) {
+      const dbDir = mkdtempSync(join(tmpdir(), 'coral-client-epoch-corpus-'));
+      try {
+        fixture.arrange(dbDir);
+        const backendEpoch = resolveCurrentStoreEpoch(createRealRuntime('prod').storage, dbDir);
+        const backendPath =
+          backendEpoch === 0 ? join(dbDir, 'store.db') : join(dbDir, `epoch-${backendEpoch}`, 'store.db');
+        const expectedPath =
+          fixture.expected === '0' ? join(dbDir, 'store.db') : join(dbDir, `epoch-${fixture.expected}`, 'store.db');
+
+        expect(backendPath, `backend: ${fixture.name}`).toBe(expectedPath);
+        expect(resolveCurrentStoreDbPath(dbDir), `hook: ${fixture.name}`).toBe(expectedPath);
+      } finally {
+        rmSync(dbDir, { recursive: true, force: true });
+      }
     }
   });
 
