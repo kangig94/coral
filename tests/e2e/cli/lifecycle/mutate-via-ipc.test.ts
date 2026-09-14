@@ -23,7 +23,7 @@ import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { storePaths } from '#src/infra/path/store.js';
+import { resolveCurrentStorePath } from '#src/store/epoch.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
@@ -327,10 +327,10 @@ async function waitForCliGate(run: CliRun, check: () => boolean, label: string):
 }
 
 function readDurableOperation(fixture: Fixture, jobId: string): ProviderOperationRecord | null {
-  const runtime = createRealRuntime('prod');
+  const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: join(storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir, 'store.db'),
+    path: resolveCurrentStorePath(runtime),
     storage: runtime.storage,
     readonly: true,
   });
@@ -439,10 +439,10 @@ describe('mutating commands via IPC', () => {
       visibleTerminal.indexOf(`provider-host inspect ${encodedHostRef}`),
     );
 
-    const runtime = createRealRuntime('prod');
+    const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
     const db = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
-      path: join(storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir, 'store.db'),
+      path: resolveCurrentStorePath(runtime),
       storage: runtime.storage,
       readonly: true,
     });
@@ -571,10 +571,10 @@ describe('mutating commands via IPC', () => {
     expect(observeProcessLiveness(discovery.record.pid)).toBe('alive');
     expect(discovery.record.socketPath).toContain('.sock');
 
-    const runtime = createRealRuntime('prod');
+    const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
     const db = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
-      path: join(storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir, 'store.db'),
+      path: resolveCurrentStorePath(runtime),
       storage: runtime.storage,
       readonly: true,
     });
