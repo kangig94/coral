@@ -14,7 +14,6 @@ import type { Runtime } from '../runtime/ports.js';
 import { ACTIVE_STORE_TRANSITION_VERSION } from './active-store-selection.js';
 import {
   dropParkedEvidence,
-  dropActiveEvidenceIfOwned,
   describeParkedEntries,
   enumerateActiveEvidence,
   activeNameHasIdentity,
@@ -38,7 +37,6 @@ import {
 } from './format-fingerprint.js';
 import {
   acquireGenerationMaintenanceLease,
-  type GenerationAdoptionLockLease,
   type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
 import {
@@ -1544,7 +1542,6 @@ function detectInterruptedIncident(
 export function hasPendingBackendStoreResetIncident(
   runtime: Pick<Runtime, 'storage'>,
   files: BackendStoreFileSet,
-  held: Held,
 ): boolean {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const stagingRoot = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY);
@@ -1821,7 +1818,7 @@ function commitTerminalParking(
   const parkingDirectory = join(sourceRoot, coordinate);
   const committedRecord =
     record.parkingOrder === undefined
-      ? { ...record, parkingOrder: nextStoreResetParkingOrder(storage, dirname(parkingRoot), held) }
+      ? { ...record, parkingOrder: nextStoreResetParkingOrder(storage, dirname(parkingRoot)) }
       : record;
   writeStoreResetParkedRecord(storage, sourceRoot, committedRecord, held, coordinate);
   populate();
@@ -1986,7 +1983,6 @@ function resumeNonPublicationParking(
   options: OpenOrResetBackendStoreOptions,
   held: Held,
 ): void {
-  const { dbFile } = files;
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   let discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   resumeTerminalParkingCommit(runtime.storage, quarantineRoot, discovered, held);
@@ -2817,7 +2813,6 @@ export function attemptBackendStoreClaim(
   minted: MintedBackendStore,
   held: Held,
 ): BackendStoreClaimAttempt {
-  const { dbFile } = files;
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   ensurePrivateDirectory(runtime.storage, parkingRoot, runtime.env.platform(), held);

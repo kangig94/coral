@@ -44,7 +44,7 @@ import {
   type GenerationMaintenanceLease,
 } from '#src/store/generation-mutation-coordination.js';
 import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
-import { STORE_RESET_MINTED_STORE_DIRECTORY, STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
+import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { spyOnClassifyStoreFile, spyOnOpenWritableStoreDatabase } from '#tests/helpers/store-db-spies.js';
 

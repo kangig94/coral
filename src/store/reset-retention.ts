@@ -613,7 +613,7 @@ export function discoverStoreResetParkedRecords(
   return { entries, truncated: read.overflow || terminalIds.length > MAX_INCIDENT_ROOT_ENTRIES };
 }
 
-export function nextStoreResetParkingOrder(storage: StoragePort, quarantineRoot: string, held: SettlementHeld): string {
+export function nextStoreResetParkingOrder(storage: StoragePort, quarantineRoot: string): string {
   const discovered = discoverStoreResetParkedRecords(storage, quarantineRoot);
   const latest = discovered.entries.reduce((highest, entry) => {
     const order = entry.record?.parkingOrder;

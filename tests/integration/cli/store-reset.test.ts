@@ -64,7 +64,6 @@ import {
   writeStoreResetParkedRecord,
 } from '#src/store/reset-retention.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import type { StoragePort } from '#src/infra/port-types.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 

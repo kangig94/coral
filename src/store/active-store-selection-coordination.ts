@@ -24,7 +24,7 @@ import {
   encodeActiveStoreSelection,
   publishActiveStoreSelection,
   publishActiveStoreTransition,
-  readActiveStoreSelectionForCoordination,
+  type readActiveStoreSelectionForCoordination,
   readActiveStoreSelectionForSettlement,
   readActiveStoreTransitionForSettlement,
   readActiveStoreTransitionV1ForSettlement,
@@ -422,8 +422,7 @@ async function settleActiveStore(
   inspectCurrentGeneration(runtime, options);
   const files = resolveBackendStoreFileSet(runtime, options);
   const { dbFile } = files;
-  const observationAuthority = createSettlementAuthority(adoption, undefined, null);
-  const pending = hasPendingBackendStoreResetIncident(runtime, files, observationAuthority);
+  const pending = hasPendingBackendStoreResetIncident(runtime, files);
   const activeStoreObserved = runtime.storage.existsSync(dbFile);
   let writerExclusion: WriterExclusion | undefined;
   if (pending || activeStoreObserved) {
