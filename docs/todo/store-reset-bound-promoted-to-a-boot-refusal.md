@@ -1231,7 +1231,7 @@ as such by the CLI and carried in durable status.
 ### Say what was established, not what was hoped
 
 `release` renders unverified parking as terminal: "Released **terminal** store-reset parking … without a
-verified sidecar" (`cli/format/store-reset.ts:231`), and twice more at `:222` and `:225`. The sidecar is
+verified sidecar" (`formatStoreResetRelease` in `src/cli/format/store-reset.ts`). The sidecar is
 precisely what establishes the phase, and it was unreadable. The operator's authority to delete parking
 they cannot verify is not authority to be told it was terminal. Three sites, so fix the class: the phase
 word derives from the result kind, and a kind carrying `unverified` cannot render one.

@@ -42,7 +42,7 @@ import {
   type GenerationMaintenanceLease,
 } from '#src/store/generation-mutation-coordination.js';
 import type { StoreFormatClassification } from '#src/store/format-fingerprint.js';
-import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
+import { STORE_RESET_MINTED_STORE_DIRECTORY, STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { spyOnClassifyStoreFile, spyOnOpenWritableStoreDatabase } from '#tests/helpers/store-db-spies.js';
 
@@ -785,8 +785,10 @@ describe('active-store-selection locking', () => {
     grantLease({ assertOwned, maintain: () => undefined, release });
     await expect(coordinating).resolves.toMatchObject({ kind: 'opened' });
     expect(assertOwned).toHaveBeenCalled();
-    expect(openStore).toHaveBeenCalledOnce();
-    expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(openStore.mock.invocationCallOrder[0]);
+    expect(openStore).toHaveBeenCalledTimes(2);
+    for (const callOrder of openStore.mock.invocationCallOrder) {
+      expect(assertOwned.mock.invocationCallOrder[0]).toBeLessThan(callOrder);
+    }
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -895,7 +897,7 @@ describe('active-store-selection locking', () => {
     externalAfter.close();
   });
 
-  it('should refuse a real legacy store after acquiring recovery exclusion and classifying a snapshot', async () => {
+  it('should refuse a real legacy store after recovery exclusion and parked-inode classification', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const storeFormat = currentCoralStoreFormat();
@@ -921,7 +923,18 @@ describe('active-store-selection locking', () => {
       }),
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
 
-    expect(openStore).not.toHaveBeenCalled();
+    expect(openStore).toHaveBeenCalledOnce();
+    expect(openStore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: join(
+          runtime.paths.coral.store.dbDir,
+          'store-reset-quarantine',
+          '.minted',
+          STORE_RESET_MINTED_STORE_DIRECTORY,
+          'store.db',
+        ),
+      }),
+    );
     expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
   });
 
