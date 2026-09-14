@@ -1,9 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Fifteen design revisions, twenty-two unbiased tier-1 review rounds, and
-twenty-six distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited and deleted more than it added; Revision 15 is the correction round its
-reviewers earned.
+**Status**: in flight. Sixteen design revisions, twenty-three unbiased tier-1 review rounds, and thirty
+distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen earlier
+revisions inherited; 15 and 16 are the correction rounds its reviewers earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -1756,6 +1755,110 @@ after the first reset it reads the preserved store and after epoch 0 is swept it
 an ordinary miss. What is not ordinary is that `tests/invariants/client-path-parity.test.ts` was
 **edited to affirm the obsolete flat path** rather than failing. An invariant that is changed to match the
 code it was written to constrain has been deleted, whatever the diff says.
+
+## Revision 16 — the third answer, in the four places it was collapsed
+
+Round 23's reviewers reproduced five and seven blocking failures respectively, and after deduplication
+**four of them are one mistake**, made once per site:
+
+> "Not proven" was collapsed into whichever binary each site already had.
+
+| site | the third answer became |
+|---|---|
+| `currentProvenEpoch()` (`src/store/epoch.ts:96`, `:139`) | **epoch 0 is proven** — the accumulator is initialised to `0`, so "nothing proven" and "epoch 0 proven" are the same value |
+| the sweep (`:302`, `:485`) | **garbage, delete it** — `missing`, `malformed` and `unreadable` all reduce to `proven: false` |
+| liveness (`:257`) | **nobody is live** — a missing `coordinator.json` reads as `absent`, which permits deletion |
+| the settle loop (`:442`) | **no progress, refuse** — an unobservable entry blocks the rename and the loop throws |
+
+This is `design-philosophy.md` §11 verbatim — *"the recurring defect is collapsing it into whichever
+binary the site already had"* — in a document that has quoted that rule since Revision 1. What each
+collapse produced, all reproduced by a reviewer in an isolated directory:
+
+- A flat `store.db` that is a **symlink to an external compatible database** is not proven, so epoch 0 is
+  selected anyway, and writable pragmas and version stamps land in that external database. An insert
+  through the returned handle appeared outside `<dbDir>`.
+- Epoch 1 is valid and published, but reading its `epoch.json` returns `EACCES` or a transient `EIO`, so
+  the sweep classifies it unproven and **recursively removes a live published epoch** — in the `EIO` case
+  while settlement still holds it open.
+- An incompatible epoch 0 beside a non-empty malformed `epoch-1/` publishes onto `epoch-1`, gets
+  `ENOTEMPTY`, never advances, and **refuses the boot**: `Store epoch settlement made no progress beyond
+  epoch 0.` A regular file named `epoch-1` gives `ENOTDIR`, which is not even handled and escapes.
+
+So the distinction is three-valued, and the dispositions differ in every direction:
+
+> **`proven` authorizes opening and counts toward `current`. `disproven` — a regular file, a symlink, a
+> directory with no `store.db`, a name Coral could not have written — is garbage: it may be deleted and
+> it may be renamed over. `unobservable` is neither: it never counts, it is never deleted, and it never
+> blocks progress.**
+
+That last clause is what makes the loop terminate. The successor is not `current + 1`; it is **the lowest
+valid number above `current` whose name is free or disproven**. An unobservable `epoch-1` is stepped over
+to `epoch-2` rather than contended against forever.
+
+### The namespace must be closed under successor
+
+Both reviewers found the numeric ceiling from opposite sides: `epoch-<MAX_SAFE_INTEGER>` is rejected by
+the parser but publishable, and `epoch-<MAX_SAFE_INTEGER−1>` is accepted while its successor is not, so
+the loop publishes a directory it will then ignore and refuse beside. Any finite cap has this shape one
+below it.
+
+> **If `N` is a valid epoch number then `N + 1` is a valid epoch number.**
+
+Which forces the representation: epoch numbers are decimal strings compared as `bigint`. There is no
+ceiling, no unrepresentable successor, and no state where publication succeeds into a name discovery
+cannot see.
+
+### Proof must bind to the object that is opened
+
+Positive epochs are proved by `lstat` and `realpath` on a pathname, and `DatabaseSync` then opens that
+pathname again (`:105`, `:130`, `:418`, `db.ts:349`). A same-user process that swaps the directory for a
+symlink in between reaches the substituted database, and restoring the original afterwards lets
+re-verification pass while the descriptor stays bound to the substitute.
+
+A proof about a name is not a proof about an object. Prove the object: open with no-follow where the
+platform allows it, and after the database is open re-`lstat` the proven path and compare `{dev, ino}`
+with what was proved — a mismatch closes the handle and iterates. Iterating is free here, which is the
+whole reason this design can afford to check.
+
+### Liveness needs evidence, and a missing record is not evidence
+
+`coordinator.json` absent reads as "nobody is live", but publication can return without writing on
+`ENOENT` while the daemon declares itself ready (`infra/backend-discovery.ts:90`, `:214`), and
+`store-reset report <K>` opens an epoch in a **child that publishes no record at all**
+(`cli/store-reset.ts:75`). A reviewer deleted a flat epoch-0 database out from under a live child, and
+another deleted an epoch beneath the `report` diagnostic.
+
+Absent is unobservable, so the sweep skips — which costs nothing, because the sweep was never a boot
+dependency. And a process this system spawns to hold an epoch open registers that it holds it; the
+`report` child is ours, so it can say so.
+
+### Three more, each small and each a promise the code does not keep
+
+**The sweep has no durability barrier.** Operator release syncs `<dbDir>`; the boot sweep removes and
+returns without one (`:270`, `:294`, `:428`). A power loss resurrects the entries, the next publication's
+pre-sweep sync makes them durable beside the new epoch, and K repetitions accumulate K old epochs.
+"Exactly one" is not crash-safe until the sweep syncs its parent.
+
+**`release` deletes against a stale `current`.** It resolves `current` once and passes the number into
+the sweep, which reasserts the lease but never recomputes (`operator-store-reset.ts:162`, `:165`,
+`epoch.ts:270`). A transient `EIO` on epoch 2's metadata makes `current` fall back to 1, and `release 2`
+then removes the real current epoch and reports `released`. The re-read must be inside the same proof
+that authorizes the delete.
+
+**`failStoreEpoch()` is a one-line helper that hides `throw new Error(message)`** (`epoch.ts:212`). It
+violates §9, and worse, its six call sites collapse into a single AST `ThrowStatement`, so the
+semantic-refusal ratchet counts six startup refusals as one and a seventh would not move it. **A guard
+that can be disarmed by extracting a helper was disarmed by extracting a helper.** Inline the throws.
+
+### One selector, not two
+
+`clients/hooks/lib/store-epoch.mjs` reimplements the epoch grammar, the numeric bound, the metadata
+schema, containment, the regular-file proof and highest-epoch selection, all of which `src/store/epoch.ts`
+owns. Hooks may not import from `src/`, and that constraint does not make a second canonical home
+acceptable under §7 — it makes it a build problem. Either the hook's copy is generated from the owner at
+build time, or the parity invariant runs both implementations over one shared corpus of proof states so
+drift fails rather than passes. The current parity test supplies one valid epoch and one symlink, which
+is not a corpus.
 
 ## Invariants to add
 
