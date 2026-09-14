@@ -68,6 +68,8 @@ export type StorageBigIntStat = {
 /** What a non-following observation reports about a path, without describing what it may resolve to. */
 export type StorageEntryKind = { isDirectory(): boolean; isFile(): boolean; isSymbolicLink(): boolean };
 
+export type StorageAsyncEntry = StorageEntryKind & { readonly size: number };
+
 /**
  * Whether this process may traverse a directory — the permission a child's `chdir` needs, which neither
  * existence nor readability implies: measured on Node v26.3.1, `statSync` succeeds on a `chmod 000`
@@ -123,6 +125,7 @@ export interface StorageMutationPort {
 export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
   assertReadableSync(path: string): void;
   observeDirectoryTraversabilitySync(path: string): DirectoryTraversability;
+  readdir(path: string): Promise<string[]>;
   readdirSync(path: string): string[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
   readDirectoryBoundedSync(
@@ -134,11 +137,15 @@ export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
   fstatSync(fd: number, options: { bigint: true }): StorageBigIntStat;
   lstatSync(path: string): StorageEntryKind;
   lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  lstat(path: string): Promise<StorageAsyncEntry>;
   realpathSync(path: string): string;
   existsSync(path: string): boolean;
   openSync(path: string, flags: string, mode?: number): number;
   readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
   closeSync(fd: number): void;
+  rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
+  unlink(path: string): Promise<void>;
+  syncDirectoryDurable(path: string): Promise<boolean>;
   openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort;
 }
 

@@ -1970,12 +1970,12 @@ epoch design had not yet been asked: who knows which epoch is open, and where th
 
 ### The decision is made once and then re-derived by everyone
 
-`settleStoreEpoch` returns the exact `{db, epoch, path}` it opened and coordination preserves it
-(`src/store/active-store-selection-coordination.ts:47`, `:194`), and then
+`settleStoreEpoch` returns the exact `{db, epoch, path}` it opened and `coordinateActiveStoreSelection`
+preserves it (`src/store/active-store-selection-coordination.ts`), and then
 `routeOrOpenBackendStoreAtStartup` **drops `epoch` and `path` and returns only `db`**
-(`src/store/startup-store-routing.ts:9`, `:38`). Three consumers therefore re-derive it independently:
-the post-ready sweep (`coordinator/composition/index.ts:1736`), the KB daemon
-(`kb-daemon/runtime-host.ts:363`), and `release`.
+(`src/store/startup-store-routing.ts`). Three consumers therefore re-derive it independently: the
+post-ready sweep in `scheduleStoreEpochSweepFn` (`src/coordinator/composition/index.ts`), the KB daemon in
+`createKbDaemonWriteRuntimeHost` (`src/kb-daemon/runtime-host.ts`), and `release`.
 
 A reviewer walked it through: epoch 3's `epoch.json` returns a transient `EIO`, so it is unobservable and
 startup opens the older compatible epoch 1; the metadata becomes readable a moment later; the sweep
@@ -1997,12 +1997,12 @@ refuse any epoch a live coordinator has open rather than only the one it compute
 
 ### A sweep that blocks the event loop is this document's subject in a new costume
 
-The post-ready sweep is scheduled with `setTimeout(0)` and then performs the entire pass
-**synchronously**: recursive `rmSync`, a full scan, and a durable directory sync
-(`coordinator/composition/index.ts:1736`, `epoch.ts:319`, `:524`, `:560`). Both reviewers reached the
-same place — a large or deep accidental `epoch-*` tree blocks the coordinator's event loop, the waiting
-client's authenticated health request times out (`transport/ipc/ensure.ts:739`), and signal-driven
-shutdown waits too.
+The post-ready sweep is scheduled with `setTimeout(0)` in `scheduleStoreEpochSweepFn`
+(`src/coordinator/composition/index.ts`) and then performs the entire pass **synchronously**: recursive
+`rmSync`, a full scan, and a durable directory sync (`epoch.ts:319`, `:524`, `:560`). Both reviewers
+reached the same place — a large or deep accidental `epoch-*` tree blocks the coordinator's event loop,
+the waiting client's authenticated health request in `waitForBackendReady` (`src/transport/ipc/ensure.ts`)
+times out, and signal-driven shutdown waits too.
 
 A coordinator that cannot answer because it is deleting a big directory is the coordinator that could not
 start because it was hashing a big file. The mechanism changed; the shape did not.
@@ -2012,15 +2012,16 @@ start because it was hashing a big file. The mechanism changed; the shape did no
 
 ### The holder must name the process that holds
 
-The holder record names `runtime.env.pid()` — the CLI parent — while SQLite is opened by a spawned
-diagnostic child (`cli/store-reset.ts:99`, `store/reset-incident-diagnostic.ts:78`). Two consequences,
+The holder record names `runtime.env.pid()` in `diagnoseHeldEpoch` (`src/cli/store-reset.ts`) — the CLI
+parent — while SQLite is opened by the child spawned in `superviseStoreResetDiagnosticChild`
+(`src/store/reset-incident-diagnostic.ts`). Two consequences,
 both reproduced: a parent killed with SIGKILL leaves a record naming a dead PID while its child still
 holds the database, and the next sweep reaps the record as stale and unlinks underneath it; and on
-`termination_unconfirmed` the child is **detached while possibly still live** and the parent removes the
-marker anyway in `finally` (`reset-incident-diagnostic.ts:126`, `cli/store-reset.ts:116`).
+`termination_unconfirmed` the child is **detached while possibly still live** in
+`superviseStoreResetDiagnosticChild` and the parent removes the marker anyway in `diagnoseHeldEpoch`.
 
-The second is §11 exactly — unknown authorizing finalization — and
-`tests/integration/cli/store-reset.test.ts:144` currently requires it. The record names the process that
+The second is §11 exactly — unknown authorizing finalization — and the test in
+`tests/integration/cli/store-reset.test.ts` currently requires it. The record names the process that
 opens the database, and an unconfirmed termination leaves the protection in place; the record's own
 staleness is then decided by that PID, not by its parent's.
 

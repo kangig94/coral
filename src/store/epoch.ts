@@ -1,4 +1,3 @@
-import { lstat, open, readFile, readdir, rm, unlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
@@ -586,9 +585,9 @@ async function yieldSweepTurn(): Promise<void> {
   await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
 }
 
-async function observeRegularFileAsync(path: string): Promise<StoreEpochProof> {
+async function observeRegularFileAsync(storage: StoragePort, path: string): Promise<StoreEpochProof> {
   try {
-    const entry = await lstat(path);
+    const entry = await storage.lstat(path);
     return entry.isFile() && !entry.isSymbolicLink() ? { kind: 'proven' } : { kind: 'disproven' };
   } catch (error: unknown) {
     return errorCode(error) === 'ENOENT'
@@ -597,11 +596,11 @@ async function observeRegularFileAsync(path: string): Promise<StoreEpochProof> {
   }
 }
 
-async function readEpochMetadataAsync(directory: string): Promise<StoreEpochMetadataDisposition> {
+async function readEpochMetadataAsync(storage: StoragePort, directory: string): Promise<StoreEpochMetadataDisposition> {
   const metadataPath = join(directory, STORE_EPOCH_METADATA_FILE_NAME);
   try {
-    const entry = await lstat(metadataPath, { bigint: true });
-    if (!entry.isFile() || entry.isSymbolicLink() || entry.size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) {
+    const entry = await storage.lstat(metadataPath);
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.size > MAX_STORE_EPOCH_METADATA_BYTES) {
       return { kind: 'malformed' };
     }
   } catch (error: unknown) {
@@ -610,7 +609,7 @@ async function readEpochMetadataAsync(directory: string): Promise<StoreEpochMeta
       : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
   }
   try {
-    const parsed = parseStoreEpochMetadata(JSON.parse(await readFile(metadataPath, 'utf-8')));
+    const parsed = parseStoreEpochMetadata(JSON.parse(await storage.readFile(metadataPath, 'utf-8')));
     return parsed === null ? { kind: 'malformed' } : { kind: 'valid', value: parsed };
   } catch (error: unknown) {
     return error instanceof SyntaxError
@@ -619,12 +618,16 @@ async function readEpochMetadataAsync(directory: string): Promise<StoreEpochMeta
   }
 }
 
-async function observeStoreEpochAsync(dbDir: string, entry: string): Promise<StoreEpochObservation | null> {
+async function observeStoreEpochAsync(
+  storage: StoragePort,
+  dbDir: string,
+  entry: string,
+): Promise<StoreEpochObservation | null> {
   const epoch = epochNumber(entry);
   if (epoch === null || epoch === '0') return null;
   const directory = join(dbDir, entry);
   try {
-    const container = await lstat(directory);
+    const container = await storage.lstat(directory);
     if (!container.isDirectory() || container.isSymbolicLink()) {
       return { epoch, proof: { kind: 'disproven' }, epochJson: { kind: 'malformed' } };
     }
@@ -633,17 +636,17 @@ async function observeStoreEpochAsync(dbDir: string, entry: string): Promise<Sto
     const cause = error instanceof Error ? error.message : String(error);
     return { epoch, proof: { kind: 'unobservable', cause }, epochJson: { kind: 'unreadable', cause } };
   }
-  const epochJson = await readEpochMetadataAsync(directory);
+  const epochJson = await readEpochMetadataAsync(storage, directory);
   if (epochJson.kind === 'unreadable') {
     return { epoch, proof: { kind: 'unobservable', cause: epochJson.cause }, epochJson };
   }
-  const database = await observeRegularFileAsync(epochPath(dbDir, epoch));
+  const database = await observeRegularFileAsync(storage, epochPath(dbDir, epoch));
   return { epoch, proof: epochJson.kind === 'valid' ? database : { kind: 'disproven' }, epochJson };
 }
 
-async function observeEpochZeroAsync(dbDir: string): Promise<StoreEpochObservation | null> {
+async function observeEpochZeroAsync(storage: StoragePort, dbDir: string): Promise<StoreEpochObservation | null> {
   try {
-    const entry = await lstat(epochPath(dbDir, '0'));
+    const entry = await storage.lstat(epochPath(dbDir, '0'));
     const proof =
       entry.isFile() && !entry.isSymbolicLink() ? ({ kind: 'proven' } as const) : ({ kind: 'disproven' } as const);
     return { epoch: '0', proof, epochJson: { kind: 'legacy-epoch-0' } };
@@ -674,9 +677,9 @@ async function observeStoreEpochHolderAsync(
     removable,
   });
   try {
-    const kind = await lstat(path);
+    const kind = await runtime.storage.lstat(path);
     if (!kind.isFile() || kind.isSymbolicLink()) return unobservable(true);
-    const value: unknown = JSON.parse(await readFile(path, 'utf-8'));
+    const value: unknown = JSON.parse(await runtime.storage.readFile(path, 'utf-8'));
     if (
       !isRecord(value) ||
       typeof value.epoch !== 'string' ||
@@ -703,13 +706,13 @@ async function observeStoreEpochHolderAsync(
   }
 }
 
-async function removeDuringPostReadySweep(path: string): Promise<boolean> {
+async function removeDuringPostReadySweep(storage: StoragePort, path: string): Promise<boolean> {
   try {
-    const observed = await lstat(path);
+    const observed = await storage.lstat(path);
     if (observed.isDirectory() && !observed.isSymbolicLink()) {
-      await rm(path, { recursive: true, force: true });
+      await storage.rm(path, { recursive: true, force: true });
     } else {
-      await unlink(path);
+      await storage.unlink(path);
     }
     return true;
   } catch (error: unknown) {
@@ -719,17 +722,12 @@ async function removeDuringPostReadySweep(path: string): Promise<boolean> {
   }
 }
 
-async function syncDirectoryDurable(path: string): Promise<boolean> {
-  let directory: Awaited<ReturnType<typeof open>> | null = null;
+async function syncDirectoryDurable(storage: StoragePort, path: string): Promise<boolean> {
   try {
-    directory = await open(path, 'r');
-    await directory.sync();
-    return true;
+    return await storage.syncDirectoryDurable(path);
   } catch (error: unknown) {
     auditSweepFailure(path, error);
     return false;
-  } finally {
-    await directory?.close().catch((error: unknown) => auditSweepFailure(path, error));
   }
 }
 
@@ -740,7 +738,7 @@ export async function sweepStoreEpochsPostReady(
 ): Promise<StoreEpochSweepResult> {
   let entries: readonly string[];
   try {
-    entries = await readdir(dbDir);
+    entries = await runtime.storage.readdir(dbDir);
   } catch (error: unknown) {
     auditSweepFailure(dbDir, error);
     return 'unobservable-metadata';
@@ -752,17 +750,19 @@ export async function sweepStoreEpochsPostReady(
     const holder = await observeStoreEpochHolderAsync(runtime, dbDir, entry);
     if (holder?.state === 'live') return 'live-holder';
     if (holder?.state === 'unobservable' && !holder.removable) return 'unobservable-holder';
-    if (holder !== null && !(await removeDuringPostReadySweep(holder.path))) return 'deletion-failed';
+    if (holder !== null && !(await removeDuringPostReadySweep(runtime.storage, holder.path))) {
+      return 'deletion-failed';
+    }
     holdersChanged ||= holder !== null;
     await yieldSweepTurn();
   }
-  if (holdersChanged && !(await syncDirectoryDurable(dbDir))) return 'durability-sync-failed';
+  if (holdersChanged && !(await syncDirectoryDurable(runtime.storage, dbDir))) return 'durability-sync-failed';
 
   const observations: StoreEpochObservation[] = [];
-  const epochZero = await observeEpochZeroAsync(dbDir);
+  const epochZero = await observeEpochZeroAsync(runtime.storage, dbDir);
   if (epochZero !== null) observations.push(epochZero);
   for (const entry of entries) {
-    const observation = await observeStoreEpochAsync(dbDir, entry);
+    const observation = await observeStoreEpochAsync(runtime.storage, dbDir, entry);
     if (observation !== null) observations.push(observation);
     await yieldSweepTurn();
   }
@@ -776,13 +776,14 @@ export async function sweepStoreEpochsPostReady(
     const disprovenEpochEntry = observation?.proof.kind === 'disproven';
     const garbageEpoch = observation?.proof.kind === 'proven' && isGarbageStoreEpoch(openEpoch, observation.epoch);
     if (abandonedMint || invalidEpochEntry || (epoch !== openEpoch && (disprovenEpochEntry || garbageEpoch))) {
-      complete = (await removeDuringPostReadySweep(join(dbDir, entry))) && complete;
+      complete = (await removeDuringPostReadySweep(runtime.storage, join(dbDir, entry))) && complete;
     }
     await yieldSweepTurn();
   }
 
   if (compareEpoch(openEpoch, '1') >= 0) {
-    complete = (await removeDuringPostReadySweep(join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY))) && complete;
+    complete =
+      (await removeDuringPostReadySweep(runtime.storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY))) && complete;
   }
   if (compareEpoch(openEpoch, '2') >= 0 && epochZero?.proof.kind !== 'unobservable') {
     for (const name of [
@@ -791,12 +792,12 @@ export async function sweepStoreEpochsPostReady(
       `${STORE_DATABASE_FILE_NAME}${STORE_FORMAT_SIDECAR_SUFFIX}`,
       STORE_DATABASE_FILE_NAME,
     ]) {
-      complete = (await removeDuringPostReadySweep(join(dbDir, name))) && complete;
+      complete = (await removeDuringPostReadySweep(runtime.storage, join(dbDir, name))) && complete;
       await yieldSweepTurn();
     }
   }
   if (!complete) return 'deletion-failed';
-  return (await syncDirectoryDurable(dbDir)) ? 'complete' : 'durability-sync-failed';
+  return (await syncDirectoryDurable(runtime.storage, dbDir)) ? 'complete' : 'durability-sync-failed';
 }
 
 function cleanupMint(storage: StoragePort, mint: string): void {

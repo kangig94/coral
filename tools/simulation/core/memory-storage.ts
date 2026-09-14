@@ -277,6 +277,10 @@ export class InMemoryStorage implements StoragePort {
     return this.readFileSync(path, encoding);
   }
 
+  async readdir(path: string): Promise<string[]> {
+    return this.readdirSync(path);
+  }
+
   readFileSync(path: string, encoding: 'utf-8'): string {
     const normalized = normalizePathForStorage(path);
     const file = this.fileNode(normalized);
@@ -532,6 +536,10 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(normalized === '/' ? '/' : parentPath(normalized));
   }
 
+  async rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void> {
+    this.rmSync(path, options);
+  }
+
   rmdirSync(path: string): void {
     this.rmSync(path);
   }
@@ -594,6 +602,12 @@ export class InMemoryStorage implements StoragePort {
       };
     }
     throw createErrnoError('ENOENT', normalized);
+  }
+
+  async lstat(path: string): Promise<StorageEntryKind & { readonly size: number }> {
+    const kind = this.lstatSync(path);
+    const stats = this.statSync(path);
+    return { ...kind, size: stats.size };
   }
 
   realpathSync(path: string): string {
@@ -879,6 +893,10 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(parentPath(normalized));
   }
 
+  async unlink(path: string): Promise<void> {
+    this.unlinkSync(path);
+  }
+
   tryExclusiveWriteSync(
     path: string,
     data: StorageData,
@@ -950,6 +968,10 @@ export class InMemoryStorage implements StoragePort {
 
   syncDirectoryDurableSync(path: string): boolean {
     return this.directories.has(normalizePathForStorage(path));
+  }
+
+  async syncDirectoryDurable(path: string): Promise<boolean> {
+    return this.syncDirectoryDurableSync(path);
   }
 
   chmodSync(path: string, mode: number): void {

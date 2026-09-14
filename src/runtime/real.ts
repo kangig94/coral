@@ -28,7 +28,14 @@ import {
   writeSync,
   constants as fsConstants,
 } from 'node:fs';
-import { readFile as readFileAsync } from 'node:fs/promises';
+import {
+  lstat as lstatAsync,
+  open as openAsync,
+  readFile as readFileAsync,
+  readdir as readdirAsync,
+  rm as rmAsync,
+  unlink as unlinkAsync,
+} from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -293,6 +300,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       }
     },
     readFile: (path, encoding) => readFileAsync(path, encoding),
+    readdir: (path) => readdirAsync(path),
     readFileSync: (path, encoding) => readFileSync(path, encoding),
     writeFileSync: (path, data, options) => writeFileSync(path, data, options),
     renameSync: (oldPath, newPath) => renameSync(oldPath, newPath),
@@ -349,6 +357,15 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         isSymbolicLink: () => stats.isSymbolicLink(),
       };
     }) as StoragePort['lstatSync'],
+    lstat: async (path) => {
+      const stats = await lstatAsync(path);
+      return {
+        size: stats.size,
+        isDirectory: () => stats.isDirectory(),
+        isFile: () => stats.isFile(),
+        isSymbolicLink: () => stats.isSymbolicLink(),
+      };
+    },
     realpathSync: (path) => realpathSync(path),
     statSync: ((path: string, options?: { bigint: true }) => {
       if (options?.bigint === true) {
@@ -393,6 +410,8 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     writeSync: (fd, buffer, offset, length, position) => writeSync(fd, buffer, offset, length, position),
     fdatasyncSync: (fd) => fdatasyncSync(fd),
     closeSync: (fd) => closeSync(fd),
+    rm: (path, options) => rmAsync(path, options),
+    unlink: (path) => unlinkAsync(path),
     appendFileSync: (path, data) => appendFileSync(path, data),
     appendFileDurableSync: (path, data) => appendFileDurableSyncNode(path, data),
     appendFileWithCanonicalCheckSync: (path, data, options) =>
@@ -404,6 +423,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     writeAtomicSync: (path, data, options) => writeAtomicSyncNode(path, data, options),
     writeAtomicDurableSync: (path, data, options) => writeAtomicDurableSyncNode(path, data, options),
     syncDirectoryDurableSync: (path) => syncDirectoryDurable(path),
+    syncDirectoryDurable: (path) => syncDirectoryDurableAsync(path),
     chmodSync: (path, mode) => chmodSync(path, mode),
     openSqliteDatabaseSync,
   };
@@ -1442,5 +1462,18 @@ function syncDirectoryDurable(path: string): boolean {
         /* best effort */
       }
     }
+  }
+}
+
+async function syncDirectoryDurableAsync(path: string): Promise<boolean> {
+  let directory: Awaited<ReturnType<typeof openAsync>> | null = null;
+  try {
+    directory = await openAsync(path, 'r');
+    await directory.sync();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await directory?.close().catch(() => {});
   }
 }
