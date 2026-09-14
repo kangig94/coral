@@ -5,13 +5,14 @@ import { assertNever } from '../infra/error-format.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import {
   acquireDirectoryLock,
+  createDirectoryLockParent,
   isDirectoryLockTimeoutError,
   tryAcquireDirectoryLock,
   type DirectoryLockLease,
 } from '../infra/fs-lock.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import { validateProductVersion } from '../infra/product-version.js';
-import { createStorageActuator, type StorageActuator } from '../infra/storage-actuator.js';
+import type { StorageActuator } from '../infra/storage-actuator.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { classifyStoreFile } from './db.js';
@@ -24,6 +25,7 @@ export interface GenerationReadinessCompletion {
 }
 
 export interface GenerationWriterLease {
+  readonly directoryLock: DirectoryLockLease;
   assertOwned(): void;
   release(): void;
 }
@@ -197,7 +199,7 @@ export function generationNotQuiescentError(
 }
 
 function ensureCoordinationRoot(runtime: Runtime, paths: GenerationBoundaryPaths): void {
-  createStorageActuator(runtime.storage, () => undefined).makeDirectory(paths.writersRoot, { recursive: true });
+  createDirectoryLockParent(runtime.storage, paths.writersRoot);
 }
 
 export async function acquireGenerationAdoptionLock(
@@ -205,7 +207,7 @@ export async function acquireGenerationAdoptionLock(
   timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<GenerationAdoptionLockLease> {
   const paths = resolveGenerationBoundaryPaths(runtime);
-  createStorageActuator(runtime.storage, () => undefined).makeDirectory(paths.generationRoot, { recursive: true });
+  createDirectoryLockParent(runtime.storage, paths.generationRoot);
   try {
     const lease = await acquireDirectoryLock(paths.adoptionLock, directoryLockDeps(runtime), timeoutMs);
     Object.defineProperty(lease, GENERATION_ADOPTION_LOCK_BRAND, { value: true });
@@ -263,7 +265,6 @@ function writerHolder(
   runtime: Runtime,
   paths: GenerationBoundaryPaths,
   entry: string,
-  held: StorageActuator,
 ): { readonly identity: RecordedProcessIdentity; readonly description: string } | null {
   const match = /^(\d+)-(install|update|uninstall|kb-child|routing-status)-(.+)\.lease-[^.]+\.lock$/u.exec(entry);
   if (match === null) return null;
@@ -277,7 +278,7 @@ function writerHolder(
   }
   try {
     const parsed = recordedProcessIdentitySchema.safeParse(
-      JSON.parse(held.readWholeFile(join(paths.writersRoot, entry, WRITER_IDENTITY_FILE), 'utf-8')),
+      JSON.parse(runtime.storage.readFileSync(join(paths.writersRoot, entry, WRITER_IDENTITY_FILE), 'utf-8')),
     );
     if (!parsed.success || parsed.data.pid !== pid) return null;
     return { identity: parsed.data, description: `${match[2]}:${name} (pid ${pid})` };
@@ -322,7 +323,7 @@ function removeDeadWriterLeases(
 ): GenerationWriterBlocker[] {
   const blockers: GenerationWriterBlocker[] = [];
   for (const entry of writerEntries(runtime, paths)) {
-    const holder = writerHolder(runtime, paths, entry, held);
+    const holder = writerHolder(runtime, paths, entry);
     if (holder === null) {
       if (!reclaimStaleWriterLease(runtime, paths, entry)) {
         blockers.push({ description: `${entry} (identity unreadable)`, observation: 'unknown' });
@@ -384,7 +385,7 @@ function acquireWriterLeaseUnderAdmission(
   const releaseWriter = tryAcquireDirectoryLock(leasePath, directoryLockDeps(runtime));
   if (releaseWriter === null) return { kind: 'contended' };
   const identityPath = join(leasePath, WRITER_IDENTITY_FILE);
-  const held = createStorageActuator(runtime.storage, releaseWriter.assertOwned);
+  const held = releaseWriter.actuator;
   let released = false;
   const release = () => {
     if (released) return;
@@ -413,6 +414,7 @@ function acquireWriterLeaseUnderAdmission(
   return {
     kind: 'acquired',
     lease: {
+      directoryLock: releaseWriter,
       assertOwned: releaseWriter.assertOwned,
       release,
     },
@@ -490,10 +492,7 @@ export async function acquireGenerationMaintenanceLease(
   }
 
   try {
-    const held = createStorageActuator(runtime.storage, () => {
-      releaseMaintenance.maintain();
-      releaseMaintenance.assertOwned();
-    });
+    const held = releaseMaintenance.actuator;
     while (true) {
       const blockers = removeDeadWriterLeases(runtime, paths, held);
       if (blockers.length === 0) break;

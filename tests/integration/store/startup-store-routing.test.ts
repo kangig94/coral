@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { createForeignTargetValidator, type ForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -33,6 +34,15 @@ const cliBundle = 'startup routing cli';
 const claudeAppserverBundle = 'startup routing claude appserver';
 const durableWrapperBundle = 'startup routing durable wrapper';
 const storeFormat = currentCoralStoreFormat();
+
+function publicationActuator(runtime: Runtime) {
+  const lockRoot = mkdtempSync(join(tmpdir(), 'coral-startup-selection-publish-'));
+  roots.push(lockRoot);
+  return acquireDirectoryLockSync(join(lockRoot, 'lease.lock'), {
+    storage: runtime.storage,
+    time: runtime.time,
+  }).actuator;
+}
 
 function manifest(version: string, buildSetId: string): StrictBundleManifest {
   return {
@@ -131,7 +141,7 @@ describe('startup-store-routing', () => {
         relation === 'exact'
           ? current
           : selection(selectedManifest, createBundle(dirname(current.bundleDir), selectedManifest));
-      publishActiveStoreSelection(runtime, selected);
+      publishActiveStoreSelection(runtime, selected, publicationActuator(runtime));
       const validator = validatorThatMustNotRun();
 
       const routing = await route(runtime, authority, current, validator);
@@ -147,7 +157,7 @@ describe('startup-store-routing', () => {
     const { runtime, current, authority } = harness('1.0.0');
     const selectedManifest = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
     const selected = selection(selectedManifest, createBundle(dirname(current.bundleDir), selectedManifest));
-    publishActiveStoreSelection(runtime, selected);
+    publishActiveStoreSelection(runtime, selected, publicationActuator(runtime));
 
     const routing = await route(runtime, authority, current, createForeignTargetValidator());
 
@@ -162,7 +172,7 @@ describe('startup-store-routing', () => {
       manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000'),
       join(dirname(current.bundleDir), 'missing-selected-bundle'),
     );
-    publishActiveStoreSelection(runtime, selected);
+    publishActiveStoreSelection(runtime, selected, publicationActuator(runtime));
 
     const routing = await route(runtime, authority, current, createForeignTargetValidator());
 
@@ -181,7 +191,7 @@ describe('startup-store-routing', () => {
 
   it('should classify exact-selection store bytes and durably reset a newer store', async () => {
     const { runtime, current, authority } = harness('1.0.0');
-    publishActiveStoreSelection(runtime, current);
+    publishActiveStoreSelection(runtime, current, publicationActuator(runtime));
     const dbPath = runtime.paths.coral.store.dbFile;
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = new DatabaseSync(dbPath);

@@ -24,7 +24,7 @@ import {
 import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from '#src/cli/format/discuss.js';
 import { formatWaitProgress, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
@@ -321,7 +321,7 @@ function makeJobDetailResponse(): JobDetailResponse {
 function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,

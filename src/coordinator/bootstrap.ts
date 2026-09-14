@@ -25,6 +25,7 @@ import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
 import { runProviderRoleMain } from '../provider-proxy/role-main.js';
 import { currentCoralStoreFormat } from '../store-format.js';
+import { generationMutationCoordinationSeam } from '../store/generation-mutation-coordination.js';
 import {
   processIncarnationProbeRegistrySize,
   snapshotProcessIncarnationProbeSubjects,
@@ -130,27 +131,40 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     const storePath = argv[pathIdx + 1];
     const { openWritableStoreDbNoReset } = await import('../store/db.js');
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-    const db = openWritableStoreDbNoReset(runtime, {
-      path: storePath,
-      storeFormat: currentCoralStoreFormat(),
+    const writerLease = await generationMutationCoordinationSeam.acquireWriterLease(runtime, {
+      kind: 'routing-status',
+      name: 'smoke-open-store',
     });
 
     try {
-      db.exec('BEGIN IMMEDIATE');
-      db.exec('CREATE TEMP TABLE coral_smoke_open_store (ok INTEGER NOT NULL CHECK (ok = 1))');
-      db.exec('INSERT INTO coral_smoke_open_store (ok) VALUES (1)');
-      const readBack = db.prepare<[], { ok: number }>('SELECT ok FROM coral_smoke_open_store').get();
-      db.exec('DROP TABLE coral_smoke_open_store');
-      db.exec('COMMIT');
-      if (readBack?.ok !== 1) {
-        backendLog.error('smoke read-back failed');
-        return 1;
-      }
+      const db = openWritableStoreDbNoReset(
+        runtime,
+        {
+          path: storePath,
+          storeFormat: currentCoralStoreFormat(),
+        },
+        writerLease.directoryLock.actuator,
+      );
 
-      process.stdout.write('ok\n');
-      return 0;
+      try {
+        db.exec('BEGIN IMMEDIATE');
+        db.exec('CREATE TEMP TABLE coral_smoke_open_store (ok INTEGER NOT NULL CHECK (ok = 1))');
+        db.exec('INSERT INTO coral_smoke_open_store (ok) VALUES (1)');
+        const readBack = db.prepare<[], { ok: number }>('SELECT ok FROM coral_smoke_open_store').get();
+        db.exec('DROP TABLE coral_smoke_open_store');
+        db.exec('COMMIT');
+        if (readBack?.ok !== 1) {
+          backendLog.error('smoke read-back failed');
+          return 1;
+        }
+
+        process.stdout.write('ok\n');
+        return 0;
+      } finally {
+        db.close();
+      }
     } finally {
-      db.close();
+      writerLease.release();
     }
   } catch (error: unknown) {
     const message = errorMessage(error);

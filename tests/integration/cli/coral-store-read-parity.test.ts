@@ -9,7 +9,7 @@ import type * as MainMod from '#src/cli/program.js';
 
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const REPO_ROOT = process.cwd();
 // Keep this fixed clock aligned with the snapshot's relative-time offsets vs. seeded `created_at` values.
@@ -65,7 +65,7 @@ Make the contract explicit first.
 
 function seedStore(projectRoot: string): void {
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,

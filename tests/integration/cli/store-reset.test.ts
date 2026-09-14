@@ -65,6 +65,7 @@ import {
 } from '#src/store/reset-retention.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { StoragePort } from '#src/infra/port-types.js';
+import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 
 const mockState = vi.hoisted(() => ({
@@ -104,13 +105,12 @@ function root(): string {
   return value;
 }
 
-function fixtureHeld(storage: StoragePort) {
-  return createSettlementAuthority(
-    storage,
-    { maintain: () => undefined, assertOwned: () => undefined },
-    undefined,
-    null,
-  );
+function fixtureHeld(runtime: ReturnType<typeof createRealRuntime>) {
+  const lease = acquireDirectoryLockSync(join(root(), 'held.lock'), {
+    storage: runtime.storage,
+    time: runtime.time,
+  });
+  return createSettlementAuthority(lease, undefined, null);
 }
 
 function writeTerminalParkingSidecar(
@@ -135,7 +135,7 @@ function writeTerminalParkingSidecar(
       transaction: null,
       classification: null,
     },
-    fixtureHeld(runtime.storage),
+    fixtureHeld(runtime),
   );
 }
 
@@ -373,7 +373,7 @@ describe('local store-reset operations', () => {
     writeFileSync(join(priorPath, 'store.db'), 'prior survivor');
     const syncDirectory = runtime.storage.syncDirectoryDurableSync;
     let removed = false;
-    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+    const syncSpy = vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
       if (!removed && path === dirname(parkingPath)) {
         removed = true;
         rmSync(parkingPath, { recursive: true });
@@ -381,13 +381,11 @@ describe('local store-reset operations', () => {
       return syncDirectory(path);
     });
 
-    expect(
-      recordStoreResetParked(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime.storage)),
-    ).toMatchObject({
+    expect(recordStoreResetParked(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime))).toMatchObject({
       kind: 'incomplete',
       survivor: { kind: 'parking', id: parkingId },
     });
-    vi.restoreAllMocks();
+    syncSpy.mockRestore();
 
     const restartedRuntime = createRealRuntime('prod', { baseDir });
     const restarted = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot)) as ReturnType<
@@ -413,6 +411,13 @@ describe('local store-reset operations', () => {
     });
 
     expect(stdout).toContain(`Retention rotation is incomplete; parking '${parkingId}'`);
+
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db'), 'replacement survivor');
+    expect(recordStoreResetParked(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime))).toMatchObject({
+      kind: 'complete',
+    });
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.rotation).toBeNull();
   });
 
   it('validates the incident ID before build identity or filesystem access', async () => {
@@ -1223,7 +1228,7 @@ describe('operator store-reset discard', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm'] },
         classification: null,
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
     );
 
     const listed = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot));
@@ -1257,7 +1262,7 @@ describe('operator store-reset discard', () => {
         transaction: null,
         classification: null,
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
 
@@ -1653,7 +1658,7 @@ describe('operator store-reset discard', () => {
           },
         },
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
     );
     const parkingRoot = join(quarantineRoot, '.parked');
     const parkingPath = join(parkingRoot, pendingId);
@@ -1675,7 +1680,7 @@ describe('operator store-reset discard', () => {
         transaction: null,
         classification: null,
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
     );
     const pendingLedger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
     const unrelatedId = '623e4567-e89b-42d3-a456-426614174000';

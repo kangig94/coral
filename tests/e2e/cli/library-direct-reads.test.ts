@@ -20,7 +20,7 @@ import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { memoDir } from '#src/kb/paths.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { formatJobsList, renderJobsList } from '#src/cli/format/jobs.js';
@@ -194,7 +194,7 @@ Second line
 
 function seedStore(fixture: Fixture): void {
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,
@@ -291,7 +291,7 @@ function runCliSubprocess(
 
 async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Promise<string> {
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,

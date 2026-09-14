@@ -14,6 +14,7 @@ import { currentCoralStoreFormat } from '../../store-format.js';
 import { isDirectoryLockTimeoutError } from '../../infra/fs-lock.js';
 import { acquirePackageOperationLock } from '../../expansion/package-lock.js';
 import { PACKAGE_OPERATION_LOCK_TIMEOUT_MS } from '../../infra/package-operation-lock.js';
+import type { StorageActuator } from '../../infra/storage-actuator.js';
 import {
   acquireGenerationWriterLeaseAfterReadiness,
   generationMutationCoordinationSeam,
@@ -84,6 +85,7 @@ async function applyPostInstallCatalogActions(
   runtime: Runtime,
   name: string,
   assertLockOwned: () => void,
+  actuator: StorageActuator,
 ): Promise<InstallResponse> {
   if (!('postInstall' in result) || result.postInstall === undefined) {
     return result;
@@ -114,7 +116,7 @@ async function applyPostInstallCatalogActions(
     throw new Error(`Expansion package '${name}' returned a manifest path outside its target directory`);
   }
 
-  const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
+  const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() }, actuator);
   try {
     const catalog = createExpansionManifestCatalog({ db });
     const manifest = parseEngineManifest(JSON.parse(runtime.storage.readFileSync(manifestPath, 'utf-8')) as unknown);
@@ -146,7 +148,7 @@ async function runGenerationCoordinatedMutation(
   kind: GenerationMutationKind,
   generationCoordination: GenerationMutationCoordination,
   lockTimeoutMs: number | undefined,
-  mutate: (assertLocksOwned: () => void) => Promise<InstallResponse>,
+  mutate: (assertLocksOwned: () => void, actuator: StorageActuator) => Promise<InstallResponse>,
 ): Promise<InstallResponse> {
   const writerLease = await acquireGenerationWriterLeaseAfterReadiness(
     generationCoordination,
@@ -176,7 +178,7 @@ async function runGenerationCoordinatedMutation(
         releasePackageLock.assertOwned();
       };
       assertLocksOwned();
-      const result = await mutate(assertLocksOwned);
+      const result = await mutate(assertLocksOwned, writerLease.directoryLock.actuator);
       assertLocksOwned();
       return result;
     } finally {
@@ -201,7 +203,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
     kind,
     opts.generationCoordination ?? generationMutationCoordinationSeam,
     opts.lockTimeoutMs,
-    async (assertLocksOwned) => {
+    async (assertLocksOwned, actuator) => {
       const result = installResponseSchema.parse(
         await pkg.installer.install({
           name,
@@ -215,7 +217,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
         }),
       );
       assertCanonicalInstallerTarget(result, runtime, name);
-      return applyPostInstallCatalogActions(result, runtime, name, assertLocksOwned);
+      return applyPostInstallCatalogActions(result, runtime, name, assertLocksOwned, actuator);
     },
   );
 }

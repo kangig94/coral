@@ -37,7 +37,7 @@ import {
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { classifyBackendStoreFailure, createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import * as dbModule from '#src/store/db.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import {
   isCanonicalStoreResetIncidentId,
   parseStoreResetIncidentManifest,
@@ -169,7 +169,7 @@ function publish(runtime: Runtime, record: 'selectionFile' | 'transitionFile', b
 }
 
 function createCurrentStore(runtime: Runtime): void {
-  openStoreDatabase({
+  openTestStoreDatabase({
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
     storeFormat,

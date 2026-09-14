@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../infra/port-types.js';
-import { createStorageActuator, type StorageActuator } from '../infra/storage-actuator.js';
+import type { StorageActuator } from '../infra/storage-actuator.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -71,9 +71,10 @@ type WritableStoreOptions = {
   readonly flavor?: BuildFlavor;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
+  readonly held: StorageActuator;
 };
 
-type AuthorizedWritableStoreOptions = WritableStoreOptions & { readonly held: StorageActuator };
+type AuthorizedWritableStoreOptions = WritableStoreOptions;
 
 export type WritableStoreOpenDecision =
   | { readonly kind: 'opened'; readonly db: Database }
@@ -292,22 +293,13 @@ export function storeSchemaOutdatedError(
   });
 }
 
-export function refuseLegacyStore(
-  path: string,
-  classification: Extract<StoreFormatClassification, { readonly kind: 'legacy-adoptable' }>,
-  storeFormat: StoreFormatDescription,
-  flavor?: BuildFlavor,
-): never {
-  throw storeSchemaOutdatedError(path, classification, storeFormat, flavor);
-}
-
 export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDescription): void {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.exec(storeFormat.manifest.ddl);
     const existing = stringMetadataValue(readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY));
     if (existing !== null && existing !== storeFormat.fingerprint) {
-      throw new Error(`Refusing to apply schema over store format '${existing}'.`);
+      throw new StoreFormatChangedDuringAdoptionError(existing);
     }
     db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
       STORE_FORMAT_FINGERPRINT_META_KEY,
@@ -325,6 +317,17 @@ export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDe
       // Preserve the original schema-application failure.
     }
     throw error;
+  }
+}
+
+export class StoreFormatChangedDuringAdoptionError extends Error {
+  readonly storedFingerprint: string;
+
+  constructor(storedFingerprint: string) {
+    super(`Store format changed during adoption to '${storedFingerprint}'.`);
+    this.name = 'StoreFormatChangedDuringAdoptionError';
+    this.storedFingerprint = storedFingerprint;
+    Object.setPrototypeOf(this, StoreFormatChangedDuringAdoptionError.prototype);
   }
 }
 
@@ -349,9 +352,6 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
   const db = new DatabaseSync(options.path) as unknown as Database;
   try {
     const classification = classifyStoreFormat(db, options.storeFormat);
-    if (classification.kind === 'legacy-adoptable') {
-      refuseLegacyStore(options.path, classification, options.storeFormat, options.flavor);
-    }
     if (classification.kind === 'compatible') {
       applyJournalPragmas(db, {
         kind: 'writable',
@@ -361,7 +361,11 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
       writeStoreFormatSidecar(options);
       return { kind: 'opened', db };
     }
-    if (classification.kind === 'fresh' || classification.kind === 'absent') {
+    if (
+      classification.kind === 'fresh' ||
+      classification.kind === 'absent' ||
+      classification.kind === 'legacy-adoptable'
+    ) {
       applyJournalPragmas(db, {
         kind: 'writable',
         busyTimeoutMs: options.busyTimeoutMs,
@@ -383,10 +387,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
 
   if (!readonly) {
     const writable = options as WritableStoreOptions;
-    const decision = openWritableStoreDatabase({
-      ...writable,
-      held: createStorageActuator(writable.storage, () => undefined),
-    });
+    const decision = openWritableStoreDatabase(writable);
     if (decision.kind === 'opened') return decision.db;
     throw storeSchemaOutdatedError(options.path, decision.classification, options.storeFormat, options.flavor);
   }
@@ -404,16 +405,24 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     });
 
     const classification = classifyStoreFormat(db, options.storeFormat);
-    if (classification.kind === 'legacy-adoptable') {
-      // Only explicit adoption may stamp legacy metadata.
-      refuseLegacyStore(options.path, classification, options.storeFormat, options.flavor);
-    }
-    if (classification.kind === 'compatible') {
+    if (classification.kind === 'compatible' || classification.kind === 'legacy-adoptable') {
       return db;
     }
 
     throw storeSchemaOutdatedError(options.path, classification, options.storeFormat, options.flavor);
   } catch (error) {
+    db.close();
+    throw error;
+  }
+}
+
+export function openMemoryStoreDatabase(storeFormat: StoreFormatDescription, busyTimeoutMs?: number): Database {
+  const db = new DatabaseSync(':memory:') as unknown as Database;
+  try {
+    applyJournalPragmas(db, { kind: 'writable', busyTimeoutMs });
+    applyBundledStoreSchema(db, storeFormat);
+    return db;
+  } catch (error: unknown) {
     db.close();
     throw error;
   }
@@ -436,6 +445,7 @@ function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendSto
 export function openWritableStoreDbNoReset(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: BackendStorePathOptions,
+  held: StorageActuator,
 ): Database {
   const storeDbPath = resolveStoreDbPath(runtime, options);
   // An absent store is not an outdated one: only the coordinator creates it, so
@@ -451,6 +461,7 @@ export function openWritableStoreDbNoReset(
     storeFormat: options.storeFormat,
     flavor: runtime.flavor,
     busyTimeoutMs: options.busyTimeoutMs,
+    held,
   });
 }
 

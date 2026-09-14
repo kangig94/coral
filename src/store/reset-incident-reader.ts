@@ -31,6 +31,7 @@ import {
   parseStoreResetRetentionLedger,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
   type PreservationMechanism,
+  type StoreResetIncompleteRotation,
   type StoreResetParkedEntry,
   type StoreResetRetentionLedger,
 } from './reset-retention.js';
@@ -100,6 +101,7 @@ export type StoreResetIncidentListResult = {
   readonly incidents: readonly StoreResetIncidentListEntry[];
   readonly truncated: boolean;
   readonly parkingRootState?: 'absent' | 'ready' | 'unsafe' | 'unavailable';
+  readonly rotation?: StoreResetIncompleteRotation;
 };
 
 export type StoreResetIncidentReportFailure =
@@ -584,6 +586,7 @@ export function listStoreResetIncidents(options: {
     ].sort(compareEntries),
     truncated: truncated || parked.truncated,
     parkingRootState: parked.state,
+    ...(ledger?.rotation === null || ledger?.rotation === undefined ? {} : { rotation: ledger.rotation }),
   };
 }
 

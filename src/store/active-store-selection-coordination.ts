@@ -10,6 +10,7 @@ import {
 import { assertNever } from '../infra/error-format.js';
 import type { ForeignTargetValidator, InvalidTargetEvidence, ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { StorageBigIntStat } from '../infra/port-types.js';
+import type { StorageActuator } from '../infra/storage-actuator.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
@@ -24,8 +25,9 @@ import {
   publishActiveStoreSelection,
   publishActiveStoreTransition,
   readActiveStoreSelectionForCoordination,
-  readActiveStoreTransition,
-  readActiveStoreTransitionV1,
+  readActiveStoreSelectionForSettlement,
+  readActiveStoreTransitionForSettlement,
+  readActiveStoreTransitionV1ForSettlement,
   resolveActiveStoreSelectionV1,
   resolveActiveStoreRecordPaths,
   type ActiveStoreRecordReadFailureCode,
@@ -100,7 +102,7 @@ function finalStoreResetSurvivor(
   settlementAuthority: SettlementAuthority,
 ): ActiveStoreSettlementSurvivor {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  const parking = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, settlementAuthority).entries.find(
+  const parking = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot).entries.find(
     (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',
   );
   if (parking !== undefined) return { kind: 'parking', parkingId: parking.coordinate };
@@ -420,7 +422,7 @@ async function settleActiveStore(
   inspectCurrentGeneration(runtime, options);
   const files = resolveBackendStoreFileSet(runtime, options);
   const { dbFile } = files;
-  const observationAuthority = createSettlementAuthority(runtime.storage, adoption, undefined, null);
+  const observationAuthority = createSettlementAuthority(adoption, undefined, null);
   const pending = hasPendingBackendStoreResetIncident(runtime, files, observationAuthority);
   const activeStoreObserved = runtime.storage.existsSync(dbFile);
   let writerExclusion: WriterExclusion | undefined;
@@ -450,7 +452,7 @@ async function settleActiveStore(
     if (resetNeeded) {
       resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
     }
-    const settlementAuthority = createSettlementAuthority(runtime.storage, adoption, writerExclusion, resetLock);
+    const settlementAuthority = createSettlementAuthority(adoption, writerExclusion, resetLock);
     if (resetNeeded) {
       resumed =
         writerExclusion === undefined
@@ -497,7 +499,7 @@ async function settleActiveStore(
                     newerStoreEvidence: evidence,
                   })
                 : transitionWithNewerStoreEvidence(transition, evidence);
-            publishTransitionOrRefuse(runtime, transition);
+            publishTransitionOrRefuse(runtime, transition, settlementAuthority.actuator);
           }
         }
         epochs.push({ kind: 'described', publication });
@@ -529,7 +531,7 @@ async function settleActiveStore(
         // reset-quarantine durability boundary. Coordinator logging is deliberately not evidence authority.
         const clearEvidence = retainInvalidSelectionRecovery(runtime, options, transition, settlementAuthority);
         if (clearEvidence.kind === 'clear') {
-          clearActiveStoreTransition(runtime, clearEvidence.sourceIdentity);
+          clearActiveStoreTransition(runtime, settlementAuthority.actuator, clearEvidence.sourceIdentity);
         }
       }
       const settlement = {
@@ -578,9 +580,9 @@ function coordinationWriteFailureCode(error: unknown): ActiveStoreCoordinationFa
 // Coordination-directory creation and durable-write failures originate deep in active-store-selection.ts
 // (`ensureActiveStoreCoordinationDirectory` / `publishActiveStoreRecord`); without this translation they would
 // bubble up as unremediated `internal` errors instead of the documented `active_store_coordination_invalid` code.
-function publishSelectionOrRefuse(runtime: Runtime, selection: ActiveStoreSelection): void {
+function publishSelectionOrRefuse(runtime: Runtime, selection: ActiveStoreSelection, actuator: StorageActuator): void {
   try {
-    publishActiveStoreSelection(runtime, selection);
+    publishActiveStoreSelection(runtime, selection, actuator);
   } catch (error: unknown) {
     refuseActiveStoreCoordination(
       runtime,
@@ -591,9 +593,13 @@ function publishSelectionOrRefuse(runtime: Runtime, selection: ActiveStoreSelect
   }
 }
 
-function publishTransitionOrRefuse(runtime: Runtime, transition: ActiveStoreTransition): void {
+function publishTransitionOrRefuse(
+  runtime: Runtime,
+  transition: ActiveStoreTransition,
+  actuator: StorageActuator,
+): void {
   try {
-    publishActiveStoreTransition(runtime, transition);
+    publishActiveStoreTransition(runtime, transition, actuator);
   } catch (error: unknown) {
     refuseActiveStoreCoordination(
       runtime,
@@ -617,18 +623,14 @@ function supersedeActiveStoreTransition(
 ): void {
   const paths = resolveActiveStoreRecordPaths(runtime);
   const transitionFile = generation === 'current' ? paths.transitionFile : paths.transitionV1File;
-  const retained = retainActiveStoreTransition(
-    runtime,
-    options,
-    createSettlementAuthority(runtime.storage, adoption, undefined, null),
-    transitionFile,
-  );
+  const settlementAuthority = createSettlementAuthority(adoption, undefined, null);
+  const retained = retainActiveStoreTransition(runtime, options, settlementAuthority, transitionFile);
   if (retained !== null) {
     try {
       if (generation === 'current') {
-        clearActiveStoreTransition(runtime, retained.sourceIdentity);
+        clearActiveStoreTransition(runtime, settlementAuthority.actuator, retained.sourceIdentity);
       } else {
-        clearActiveStoreTransitionV1(runtime, retained.sourceIdentity);
+        clearActiveStoreTransitionV1(runtime, settlementAuthority.actuator, retained.sourceIdentity);
       }
     } catch (error: unknown) {
       refuseActiveStoreCoordination(
@@ -693,8 +695,8 @@ async function recoverCurrentSelectionFromEvidence(
   transition: ActiveStoreTransition,
   adoption: GenerationAdoptionLockLease,
 ): Promise<Extract<ActiveStoreSelectionProtocolResult, { kind: 'opened' }>> {
-  publishTransitionOrRefuse(runtime, transition);
-  publishSelectionOrRefuse(runtime, options.currentSelection);
+  publishTransitionOrRefuse(runtime, transition, adoption.actuator);
+  publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
   return {
     kind: 'opened',
     ...(await settleActiveStore(runtime, authority, options, transition, adoption)),
@@ -714,7 +716,7 @@ export async function coordinateActiveStoreSelection(
   const adoption = await acquireGenerationAdoptionLock(runtime);
   try {
     adoption.assertOwned();
-    const transitionV1Read = readActiveStoreTransitionV1(runtime);
+    const transitionV1Read = readActiveStoreTransitionV1ForSettlement(runtime, adoption.actuator);
     if (transitionV1Read.kind === 'legacy') {
       supersedeActiveStoreTransition(runtime, options, adoption, 'transition_current_build_mismatch', 'v1');
     } else if (transitionV1Read.kind === 'rejected') {
@@ -724,10 +726,10 @@ export async function coordinateActiveStoreSelection(
         refuseActiveStoreCoordination(runtime, 'transition', transitionV1Read.failureCode);
       }
     }
-    const transitionRead = readActiveStoreTransition(runtime);
+    const transitionRead = readActiveStoreTransitionForSettlement(runtime, adoption.actuator);
     if (transitionRead.kind === 'valid') {
       if (transitionMatchesCurrent(transitionRead.transition, options.currentSelection)) {
-        publishSelectionOrRefuse(runtime, options.currentSelection);
+        publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
         return {
           kind: 'opened',
           ...(await settleActiveStore(runtime, authority, options, transitionRead.transition, adoption)),
@@ -744,7 +746,7 @@ export async function coordinateActiveStoreSelection(
       }
     }
 
-    const selection = readActiveStoreSelectionForCoordination(runtime);
+    const selection = readActiveStoreSelectionForSettlement(runtime, adoption.actuator);
     if (selection.kind === 'rejected') {
       refuseActiveStoreCoordination(runtime, 'selection', selection.failureCode);
     }
@@ -774,7 +776,7 @@ export async function coordinateActiveStoreSelection(
         );
         return await recoverCurrentSelectionFromEvidence(runtime, authority, options, transition, adoption);
       }
-      publishSelectionOrRefuse(runtime, options.currentSelection);
+      publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
       return {
         kind: 'opened',
         ...(await settleActiveStore(runtime, authority, options, null, adoption)),
@@ -801,7 +803,7 @@ export async function coordinateActiveStoreSelection(
     }
 
     if (relation !== 'exact') {
-      publishSelectionOrRefuse(runtime, options.currentSelection);
+      publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
     }
     return { kind: 'opened', ...(await settleActiveStore(runtime, authority, options, null, adoption)) };
   } finally {

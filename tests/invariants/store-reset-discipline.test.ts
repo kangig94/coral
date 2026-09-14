@@ -251,15 +251,15 @@ function settlementStoreImportClosure(overrides: ReadonlyMap<string, string> = n
 
 function protectedStoragePortMembers(): Set<string> {
   const source = sourceFile(STORAGE_PORT_TYPES_PATH);
-  const protectedInterfaces = new Set(['StorageWholeFilePort', 'StorageMutationPort']);
+  const declaration = source.statements.find(
+    (statement): statement is ts.InterfaceDeclaration =>
+      ts.isInterfaceDeclaration(statement) && statement.name.text === 'StorageMutationPort',
+  );
+  if (declaration === undefined) return new Set();
   return new Set(
-    source.statements
-      .flatMap((statement) =>
-        ts.isInterfaceDeclaration(statement) && protectedInterfaces.has(statement.name.text)
-          ? statement.members.flatMap((member) =>
-              ts.isMethodSignature(member) && member.name !== undefined ? [propertyNameText(member.name)] : [],
-            )
-          : [],
+    declaration.members
+      .flatMap((member) =>
+        ts.isMethodSignature(member) && member.name !== undefined ? [propertyNameText(member.name)] : [],
       )
       .filter((name): name is string => name !== null),
   );
@@ -442,10 +442,11 @@ describe('store reset discipline invariants', () => {
 
     const backendSource = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
     expect(backendSource).not.toContain('stageBackendStoreClassification');
-    expect(backendSource.match(/\brefuseLegacyStore\(/gu)).toHaveLength(1);
-    expect(readFileSync(join(REPO_ROOT, ACTIVE_STORE_SELECTION_COORDINATION_PATH), 'utf8')).not.toContain(
-      'refuseLegacyStore',
-    );
+    expect(
+      allSourcePaths()
+        .map((path) => readFileSync(join(REPO_ROOT, path), 'utf8'))
+        .join('\n'),
+    ).not.toContain('refuseLegacyStore');
 
     const openCalls = settlementStoreImportClosure()
       .flatMap(collectCalls)
@@ -536,7 +537,7 @@ describe('store reset discipline invariants', () => {
       }
       ts.forEachChild(node, visit);
     };
-    visit(actuator);
+    visit(declaration);
     expect([...ownedMembers.keys()].sort()).toEqual([...protectedMembers].sort());
     expect([...ownedMembers.values()].every((count) => count === 1)).toBe(true);
     expect(proofViolations).toEqual([]);
@@ -550,9 +551,9 @@ describe('store reset discipline invariants', () => {
     expect(backend).not.toContain('guardedFunctions');
   });
 
-  it('has at most 129 semantic refusals in the settlement closure (target: 0)', () => {
+  it('has at most 127 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(129);
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(127);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
@@ -637,8 +638,8 @@ describe('store reset discipline invariants', () => {
       findFunction(BACKEND_STORE_RESET_PATH, 'commitTerminalParking').body?.getText(source) ?? '',
     );
     expect(transition.indexOf('writeStoreResetParkedRecord(')).toBeLessThan(transition.indexOf('populate();'));
-    expect(transition.indexOf('populate();')).toBeLessThan(transition.indexOf('held.rename('));
-    expect(transition.indexOf('held.rename(')).toBeLessThan(transition.indexOf('recordStoreResetParked('));
+    expect(transition.indexOf('populate();')).toBeLessThan(transition.indexOf('held.actuator.rename('));
+    expect(transition.indexOf('held.actuator.rename(')).toBeLessThan(transition.indexOf('recordStoreResetParked('));
 
     for (const [functionName, transitionCall] of [
       ['terminalizeParking', 'commitTerminalParking('],

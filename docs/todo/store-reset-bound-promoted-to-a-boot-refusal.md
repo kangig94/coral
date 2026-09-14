@@ -1396,7 +1396,7 @@ produced the same unclosable window — a reviewer showed that `classifyStoreFil
 returning, so no amount of moving the re-proof closer to the `throw` removes the gap — and that is the
 signal that the refusal, not its placement, is the defect. The classification itself says so:
 `legacy-adoptable` means **the stored fingerprint equals the current fingerprint** and only the
-`store_product_version` metadata row is absent (`src/store/db.ts:213`-`:225`). The schema is identical.
+`store_product_version` metadata row is absent (`src/store/db.ts`). The schema is identical.
 This build can read and write that store. It refuses to start on it, with an error code that says
 `store_schema_outdated` about a schema that is not outdated.
 
@@ -1429,7 +1429,7 @@ outcome the owner's rule forbids in both directions.
 ### The incomplete disposition needs a durable home
 
 The rotation union carries `complete | incomplete` correctly and the discard command renders both
-(`cli/commands/backend.ts:520`), but nothing stores it: the parked sidecar has no field
+(`cli/commands/backend.ts`), but nothing stores it: the parked sidecar has no field
 (`reset-retention.ts:61`), the ledger has only `pending` and `preserved` (`:131`), terminal parking writes
 an audit event and returns (`backend-store-reset.ts:1801`), the list contract cannot express it
 (`reset-incident-reader.ts:78`), and startup discards `result.epochs` (`startup-store-routing.ts:28`).

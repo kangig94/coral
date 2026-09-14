@@ -1,8 +1,9 @@
-import type { StorageData, StoragePort } from './port-types.js';
+import type { StorageData } from './port-types.js';
+
+declare const STORAGE_ACTUATOR_BRAND: unique symbol;
 
 export type StorageActuator = Readonly<{
-  readWholeFile(path: string, encoding: 'utf-8'): string;
-  readWholeFileAsync(path: string, encoding: 'utf-8'): Promise<string>;
+  readonly [STORAGE_ACTUATOR_BRAND]: true;
   writeWholeFile(
     path: string,
     data: StorageData,
@@ -39,92 +40,3 @@ export type StorageActuator = Readonly<{
   syncDirectory(path: string): boolean;
   setMode(path: string, mode: number): void;
 }>;
-
-export function createStorageActuator(storage: StoragePort, prove: () => void): StorageActuator {
-  return {
-    readWholeFile(path, encoding) {
-      prove();
-      return storage.readFileSync(path, encoding);
-    },
-    readWholeFileAsync(path, encoding) {
-      prove();
-      return storage.readFile(path, encoding);
-    },
-    writeWholeFile(path, data, options) {
-      prove();
-      storage.writeFileSync(path, data, options);
-    },
-    rename(oldPath, newPath) {
-      prove();
-      storage.renameSync(oldPath, newPath);
-    },
-    link(existingPath, newPath) {
-      prove();
-      storage.linkSync(existingPath, newPath);
-    },
-    makeDirectory(path, options) {
-      prove();
-      storage.mkdirSync(path, options);
-    },
-    remove(path, options) {
-      prove();
-      storage.rmSync(path, options);
-    },
-    createFile(path, flags, mode) {
-      prove();
-      return storage.openSync(path, flags, mode);
-    },
-    read(fd, buffer, offset, length, position) {
-      prove();
-      return storage.readSync(fd, buffer, offset, length, position);
-    },
-    write(fd, buffer, offset, length, position) {
-      prove();
-      return storage.writeSync(fd, buffer, offset, length, position);
-    },
-    syncFile(fd) {
-      prove();
-      storage.fdatasyncSync(fd);
-    },
-    appendWholeFile(path, data) {
-      prove();
-      storage.appendFileSync(path, data);
-    },
-    appendWholeFileDurable(path, data) {
-      prove();
-      return storage.appendFileDurableSync(path, data);
-    },
-    appendWholeFileCanonical(path, data, options) {
-      prove();
-      return storage.appendFileWithCanonicalCheckSync(path, data, options);
-    },
-    removeDirectory(path) {
-      prove();
-      storage.rmdirSync(path);
-    },
-    unlink(path) {
-      prove();
-      storage.unlinkSync(path);
-    },
-    tryCreateWholeFile(path, data, options) {
-      prove();
-      return storage.tryExclusiveWriteSync(path, data, options);
-    },
-    writeWholeFileAtomic(path, data, options) {
-      prove();
-      return storage.writeAtomicSync(path, data, options);
-    },
-    writeWholeFileDurable(path, data, options) {
-      prove();
-      return storage.writeAtomicDurableSync(path, data, options);
-    },
-    syncDirectory(path) {
-      prove();
-      return storage.syncDirectoryDurableSync(path);
-    },
-    setMode(path, mode) {
-      prove();
-      storage.chmodSync(path, mode);
-    },
-  };
-}

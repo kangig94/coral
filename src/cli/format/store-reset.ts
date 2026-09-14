@@ -95,6 +95,15 @@ function parkingRootStatus(result: StoreResetIncidentListResult): readonly strin
   }
 }
 
+function incompleteRotationStatus(result: StoreResetIncidentListResult): readonly string[] {
+  const rotation = result.rotation;
+  return rotation === undefined
+    ? []
+    : [
+        `Retention rotation is incomplete; ${rotation.survivor.kind} '${rotation.survivor.id}' failed to become the only retained copy (${rotation.cause}).`,
+      ];
+}
+
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
   report = constrainStoreResetRendererInput(report);
   const lines = [
@@ -157,6 +166,7 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
     return [
       `No ${target} store-reset incidents.`,
       ...parkingRootStatus(result),
+      ...incompleteRotationStatus(result),
       ...(result.truncated
         ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']
         : []),
@@ -172,6 +182,7 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
         : `${incident.incidentId} | - | - | - | - | ${incident.state} | - | ${incident.evidenceBytes} | ${incident.parkingEvidenceBytes} | ${preservation(incident)} | ${parked(incident)} | ${incident.retention.slot === 'claimed' ? (incident.retention.resumeLeftActive ? 'yes' : 'no') : 'unknown'} | ${incident.storedProductVersion ?? 'none'}`,
     ),
     ...parkingRootStatus(result),
+    ...incompleteRotationStatus(result),
     '',
     ...(result.truncated
       ? ['Listing truncated at the incident-root safety bound; release a listed incident, then list again.']

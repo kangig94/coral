@@ -123,6 +123,28 @@ describe('parseStoreResetRetentionLedger', () => {
     });
   });
 
+  it('tolerates an absent rotation field and reads an additive incomplete disposition', () => {
+    expect(parse(ledger())).toMatchObject({ rotation: null });
+    expect(
+      parse(
+        ledger({
+          rotation: {
+            kind: 'incomplete',
+            survivor: { kind: 'parking', id: HOLDER_ID, futureSurvivor: true },
+            cause: 'survivor changed',
+            futureRotation: true,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      rotation: {
+        kind: 'incomplete',
+        survivor: { kind: 'parking', id: HOLDER_ID },
+        cause: 'survivor changed',
+      },
+    });
+  });
+
   it('rejects the obsolete unattempted and unproven Revision 2 vocabulary', () => {
     const parsed = parse(
       ledger({

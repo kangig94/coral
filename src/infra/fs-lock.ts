@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { StoragePort, TimePort, TimerHandle } from './port-types.js';
+import type { StorageActuator } from './storage-actuator.js';
 
 const LOCK_RETRY_INTERVAL_MS = 50;
 const STALE_LOCK_MS = 30_000;
@@ -35,9 +36,94 @@ export class DirectoryLockOwnershipLostError extends Error {
 }
 
 export type DirectoryLockLease = (() => void) & {
+  readonly actuator: StorageActuator;
   assertOwned(): void;
   maintain(): void;
 };
+
+type StorageActuatorOperations = Pick<StorageActuator, Extract<keyof StorageActuator, string>>;
+
+function createStorageActuator(storage: StoragePort, prove: () => void): StorageActuator {
+  const actuator: StorageActuatorOperations = {
+    writeWholeFile(path, data, options) {
+      prove();
+      storage.writeFileSync(path, data, options);
+    },
+    rename(oldPath, newPath) {
+      prove();
+      storage.renameSync(oldPath, newPath);
+    },
+    link(existingPath, newPath) {
+      prove();
+      storage.linkSync(existingPath, newPath);
+    },
+    makeDirectory(path, options) {
+      prove();
+      storage.mkdirSync(path, options);
+    },
+    remove(path, options) {
+      prove();
+      storage.rmSync(path, options);
+    },
+    createFile(path, flags, mode) {
+      prove();
+      return storage.openSync(path, flags, mode);
+    },
+    read(fd, buffer, offset, length, position) {
+      prove();
+      return storage.readSync(fd, buffer, offset, length, position);
+    },
+    write(fd, buffer, offset, length, position) {
+      prove();
+      return storage.writeSync(fd, buffer, offset, length, position);
+    },
+    syncFile(fd) {
+      prove();
+      storage.fdatasyncSync(fd);
+    },
+    appendWholeFile(path, data) {
+      prove();
+      storage.appendFileSync(path, data);
+    },
+    appendWholeFileDurable(path, data) {
+      prove();
+      return storage.appendFileDurableSync(path, data);
+    },
+    appendWholeFileCanonical(path, data, options) {
+      prove();
+      return storage.appendFileWithCanonicalCheckSync(path, data, options);
+    },
+    removeDirectory(path) {
+      prove();
+      storage.rmdirSync(path);
+    },
+    unlink(path) {
+      prove();
+      storage.unlinkSync(path);
+    },
+    tryCreateWholeFile(path, data, options) {
+      prove();
+      return storage.tryExclusiveWriteSync(path, data, options);
+    },
+    writeWholeFileAtomic(path, data, options) {
+      prove();
+      return storage.writeAtomicSync(path, data, options);
+    },
+    writeWholeFileDurable(path, data, options) {
+      prove();
+      return storage.writeAtomicDurableSync(path, data, options);
+    },
+    syncDirectory(path) {
+      prove();
+      return storage.syncDirectoryDurableSync(path);
+    },
+    setMode(path, mode) {
+      prove();
+      storage.chmodSync(path, mode);
+    },
+  };
+  return actuator as StorageActuator;
+}
 
 function waitSync(ms: number): void {
   Atomics.wait(syncWaitState, 0, 0, ms);
@@ -49,6 +135,10 @@ function isDirectoryLockDeps(value: DirectoryLockDeps | number | undefined): val
 
 export function isDirectoryLockTimeoutError(error: unknown): error is DirectoryLockTimeoutError {
   return error instanceof DirectoryLockTimeoutError;
+}
+
+export function createDirectoryLockParent(storage: Pick<StoragePort, 'mkdirSync'>, path: string): void {
+  storage.mkdirSync(path, { recursive: true });
 }
 
 function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
@@ -421,7 +511,15 @@ function createDirectoryLockLease(
     owned = false;
   };
   const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, identity, deps, loseOwnership);
-  return releaseDirectoryLock(lockDir, deps, ownerToken, identity, heartbeat, () => owned, loseOwnership);
+  const lease = releaseDirectoryLock(lockDir, deps, ownerToken, identity, heartbeat, () => owned, loseOwnership);
+  Object.defineProperty(lease, 'actuator', {
+    value: createStorageActuator(deps.storage as unknown as StoragePort, () => {
+      lease.maintain();
+      lease.assertOwned();
+    }),
+    enumerable: true,
+  });
+  return lease;
 }
 
 function isAlreadyExistsError(error: unknown): boolean {

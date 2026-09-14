@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
 import { readProgressLog, readStatusRecord } from '#tests/helpers/persistence-readers.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 
@@ -24,8 +24,8 @@ const PROGRESS_TIMING = {
 } as const;
 const nodeStoreStorage = createRealRuntime('prod').storage;
 
-function withWritableStore(write: (db: ReturnType<typeof openStoreDatabase>) => void): void {
-  const db = openStoreDatabase({
+function withWritableStore(write: (db: ReturnType<typeof openTestStoreDatabase>) => void): void {
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths(resolveBuildFlavor(process.env)).dbFile,
     storage: nodeStoreStorage,
@@ -61,7 +61,7 @@ function makeLaunchBody(overrides: Record<string, unknown> = {}): Record<string,
 }
 
 function insertJobEvent(
-  db: ReturnType<typeof openStoreDatabase>,
+  db: ReturnType<typeof openTestStoreDatabase>,
   {
     jobId = testJobId,
     type,

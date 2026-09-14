@@ -27,7 +27,7 @@ import {
 import { observeProcessLiveness } from '#src/infra/node-process.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import {
@@ -307,7 +307,7 @@ async function waitForCliGate(run: CliRun, check: () => boolean, label: string):
 
 function readDurableOperation(fixture: Fixture, jobId: string): ProviderOperationRecord | null {
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,

@@ -53,7 +53,8 @@ import {
 import { ACTIVE_STORE_SELECTION_VERSION, type ActiveStoreSelection } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import * as dbModule from '#src/store/db.js';
-import { classifyStoreFile, openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
+import { classifyStoreFile, openWritableStoreDbNoReset } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import {
   generationMutationCoordinationSeam,
   resolveGenerationBoundaryPaths,
@@ -156,7 +157,7 @@ function seedPreExistingTerminalSurvivor(runtime: Runtime, dbPath: string): stri
       transaction: null,
       classification: null,
     },
-    fixtureHeld(runtime.storage),
+    fixtureHeld(runtime),
   );
   return PRE_EXISTING_SURVIVOR_ID;
 }
@@ -261,7 +262,7 @@ function createRuntime(home = makeTempRoot('coral-store-open-reset-home-')): Run
 }
 
 function createCurrentStore(runtime: Runtime, path = runtime.paths.coral.store.dbFile): void {
-  openStoreDatabase({ path, storage: runtime.storage, storeFormat: STORE_FORMAT }).close();
+  openTestStoreDatabase({ path, storage: runtime.storage, storeFormat: STORE_FORMAT }).close();
 }
 
 function createCompatibleSentinelStore(runtime: Runtime, dbPath: string): void {
@@ -375,15 +376,15 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
   );
 }
 
-function adoptionLease(): GenerationAdoptionLockLease {
-  return {
-    assertOwned: () => undefined,
-    maintain: () => undefined,
-  } as unknown as GenerationAdoptionLockLease;
+function adoptionLease(runtime: Runtime): GenerationAdoptionLockLease {
+  return acquireDirectoryLockSync(join(makeTempRoot('coral-test-adoption-'), 'lease.lock'), {
+    storage: runtime.storage,
+    time: runtime.time,
+  }) as GenerationAdoptionLockLease;
 }
 
-function fixtureHeld(storage: Runtime['storage']) {
-  return createSettlementAuthority(storage, adoptionLease(), undefined, null);
+function fixtureHeld(runtime: Runtime) {
+  return createSettlementAuthority(adoptionLease(runtime), undefined, null);
 }
 
 function writerExclusion(): WriterExclusion {
@@ -455,9 +456,9 @@ function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusi
     storeFormat: STORE_FORMAT,
   };
   const files = resolveBackendStoreFileSet(runtime, options);
-  const adoption = adoptionLease();
+  const adoption = adoptionLease(runtime);
   const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
-  const settlementAuthority = createSettlementAuthority(runtime.storage, adoption, exclusion, resetLock);
+  const settlementAuthority = createSettlementAuthority(adoption, exclusion, resetLock);
   try {
     const classification = classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT);
     if (classification.kind !== 'older-incompatible' && classification.kind !== 'corrupt-or-unsupported') {
@@ -519,10 +520,10 @@ function resumeReset(runtime: Runtime, dbPath: string) {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
-  const adoption = adoptionLease();
+  const adoption = adoptionLease(runtime);
   const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
   const exclusion = writerExclusion();
-  const settlementAuthority = createSettlementAuthority(runtime.storage, adoption, exclusion, resetLock);
+  const settlementAuthority = createSettlementAuthority(adoption, exclusion, resetLock);
   try {
     return resumeBackendStoreResetIncidentForOperator(
       runtime,
@@ -1063,7 +1064,7 @@ describe('acquireBackendStoreResetLock', () => {
     const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
     const monotonicNowSpy = vi.spyOn(runtime.time, 'monotonicNow');
 
-    const lease = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+    const lease = acquireBackendStoreResetLock(runtime, files, adoptionLease(runtime));
     try {
       expect(monotonicNowSpy).toHaveBeenCalled();
     } finally {
@@ -1103,7 +1104,7 @@ describe('openOrResetBackendStoreDb', () => {
       expect(readFileSync(`${dbPath}-wal`).length).toBeGreaterThan(32);
       expect(existsSync(dbPath)).toBe(false);
 
-      const db = openStoreDatabase({ path: dbPath, storage: runtime.storage, storeFormat: STORE_FORMAT });
+      const db = openTestStoreDatabase({ path: dbPath, storage: runtime.storage, storeFormat: STORE_FORMAT });
       db.close();
 
       expect(existsSync(`${dbPath}-wal`)).toBe(false);
@@ -1287,7 +1288,7 @@ describe('openOrResetBackendStoreDb', () => {
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
 
-    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage));
+    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime));
 
     expect(slot).toMatchObject({
       kind: 'held',
@@ -1311,11 +1312,9 @@ describe('openOrResetBackendStoreDb', () => {
       overflow: true,
     });
 
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage))).toMatchObject(
-      {
-        kind: 'vacant',
-      },
-    );
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime))).toMatchObject({
+      kind: 'vacant',
+    });
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
   });
 
@@ -1389,7 +1388,7 @@ describe('openOrResetBackendStoreDb', () => {
       runtime.storage,
       quarantineRoot,
       { kind: 'incident', id: survivorId },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
     );
 
     expect(removed).toBe(true);
@@ -2261,7 +2260,7 @@ describe('openOrResetBackendStoreDb', () => {
         },
         classification: null,
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
     );
 
     const rmSync = runtime.storage.rmSync;
@@ -2457,13 +2456,11 @@ describe('openOrResetBackendStoreDb', () => {
     });
 
     ledgerWrite.mockRestore();
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage))).toMatchObject(
-      {
-        kind: 'held',
-        holder: { preservation: { kind: 'copied', coherence: 'coherent' } },
-        ledger: { pending: null },
-      },
-    );
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime))).toMatchObject({
+      kind: 'held',
+      holder: { preservation: { kind: 'copied', coherence: 'coherent' } },
+      ledger: { pending: null },
+    });
   });
 
   it('returns an adopted slot when its bookkeeping write fails', () => {
@@ -2476,12 +2473,10 @@ describe('openOrResetBackendStoreDb', () => {
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
     vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
 
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime.storage))).toMatchObject(
-      {
-        kind: 'held',
-        holder: { incidentId: publication.incident.incidentId },
-      },
-    );
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime))).toMatchObject({
+      kind: 'held',
+      holder: { incidentId: publication.incident.incidentId },
+    });
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
   });
 
@@ -2781,30 +2776,21 @@ describe('openOrResetBackendStoreDb', () => {
       entry: { name: 'store.db' as const, kind: 'regular-file' as const, sizeBytes: Number(original.size) },
     };
 
-    let reused = false;
-    const held = createSettlementAuthority(
-      runtime.storage,
-      {
-        maintain() {
-          rmSync(parkedPath);
-          writeFileSync(parkedPath, 'process-b-evidence');
-          reused = true;
-        },
-        assertOwned() {
-          throw new Error('process A lost the settlement authority');
-        },
-      },
-      undefined,
-      null,
-    );
-    expect(() => dropParkedEvidence(parkingDirectory, parked, held)).toThrow(/lost the settlement authority/u);
+    const lockRoot = makeTempRoot('coral-store-revision11-authority-');
+    const lockPath = join(lockRoot, 'lease.lock');
+    const lease = acquireDirectoryLockSync(lockPath, { storage: runtime.storage, time: runtime.time });
+    const held = createSettlementAuthority(lease, undefined, null);
+    rmSync(lockPath, { recursive: true });
+    mkdirSync(lockPath);
+    rmSync(parkedPath);
+    writeFileSync(parkedPath, 'process-b-evidence');
+    expect(() => dropParkedEvidence(parkingDirectory, parked, held)).toThrow(/ownership lost/u);
 
-    expect(reused).toBe(true);
     expect(existsSync(parkedPath)).toBe(true);
     expect(readFileSync(parkedPath, 'utf8')).toBe('process-b-evidence');
   });
 
-  it.each(['unlink', 'rename', 'link', 'remove', 'writeWholeFile', 'readWholeFile'] as const)(
+  it.each(['unlink', 'rename', 'link', 'remove', 'writeWholeFile'] as const)(
     're-proves authority at %s when a competing claimant reuses the fixed coordinate',
     (act) => {
       const runtime = createRuntime();
@@ -2812,48 +2798,34 @@ describe('openOrResetBackendStoreDb', () => {
       const fixedPath = join(root, STORE_RESET_IN_FLIGHT_DIRECTORY);
       const outputPath = join(root, 'operation-output');
       writeFileSync(fixedPath, 'process-a-evidence');
-      let armed = false;
-      let reused = false;
-      const held = createSettlementAuthority(
-        runtime.storage,
-        {
-          maintain() {
-            if (!armed) return;
-            rmSync(fixedPath, { recursive: true, force: true });
-            writeFileSync(fixedPath, 'process-b-evidence');
-            reused = true;
-          },
-          assertOwned() {
-            if (armed) throw new Error('process A lost the settlement authority');
-          },
-        },
-        undefined,
-        null,
-      );
+      const lockRoot = makeTempRoot('coral-store-revision11-authority-');
+      const lockPath = join(lockRoot, 'lease.lock');
+      const lease = acquireDirectoryLockSync(lockPath, { storage: runtime.storage, time: runtime.time });
+      const held = createSettlementAuthority(lease, undefined, null);
       held.hold();
-      armed = true;
+      rmSync(lockPath, { recursive: true });
+      mkdirSync(lockPath);
+      rmSync(fixedPath, { recursive: true, force: true });
+      writeFileSync(fixedPath, 'process-b-evidence');
 
       const operation = (): unknown => {
         switch (act) {
           case 'unlink':
-            return held.unlink(fixedPath);
+            return held.actuator.unlink(fixedPath);
           case 'rename':
-            return held.rename(fixedPath, outputPath);
+            return held.actuator.rename(fixedPath, outputPath);
           case 'link':
-            return held.link(fixedPath, outputPath);
+            return held.actuator.link(fixedPath, outputPath);
           case 'remove':
-            return held.remove(fixedPath, { force: true });
+            return held.actuator.remove(fixedPath, { force: true });
           case 'writeWholeFile':
-            return held.writeWholeFile(fixedPath, 'process-a-write');
-          case 'readWholeFile':
-            return held.readWholeFile(fixedPath, 'utf-8');
+            return held.actuator.writeWholeFile(fixedPath, 'process-a-write');
           default:
             throw new Error(`Unhandled authority act: ${act satisfies never}`);
         }
       };
 
-      expect(operation).toThrow(/lost the settlement authority/u);
-      expect(reused).toBe(true);
+      expect(operation).toThrow(/ownership lost/u);
       expect(readFileSync(fixedPath, 'utf8')).toBe('process-b-evidence');
       expect(existsSync(outputPath)).toBe(false);
     },
@@ -2887,29 +2859,29 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
-  it('parks and claims when restored legacy evidence cannot be reclassified', async () => {
+  it('parks and claims when a legacy store changes fingerprint during schema adoption', async () => {
     const runtime = createRuntime();
-    const root = makeTempRoot('coral-store-revision11-legacy-reproof-unavailable-');
+    const root = makeTempRoot('coral-store-revision12-legacy-adoption-change-');
     const dbPath = join(root, 'store.db');
     createMismatchStore(dbPath, STORE_FORMAT.fingerprint);
-    const openSqliteDatabaseSync = runtime.storage.openSqliteDatabaseSync;
-    let activeClassifications = 0;
-    let reproofUnavailable = false;
-    vi.spyOn(runtime.storage, 'openSqliteDatabaseSync').mockImplementation((path, options) => {
-      if (path === dbPath && ++activeClassifications === 2) {
-        reproofUnavailable = true;
-        throw errno('EIO');
-      }
-      return openSqliteDatabaseSync(path, options);
-    });
+    const before = statSync(dbPath, { bigint: true });
+    const changedFingerprint = `sha256:${'1'.repeat(64)}`;
+    const changingFormat = {
+      ...STORE_FORMAT,
+      manifest: {
+        ...STORE_FORMAT.manifest,
+        ddl: `${STORE_FORMAT.manifest.ddl}\nUPDATE meta SET value = '${changedFingerprint}' WHERE key = 'store_format_fingerprint';`,
+      },
+    };
 
     const error = await captureAsyncError(async () => {
-      const db = await openReset(runtime, dbPath);
+      const db = await openReset(runtime, dbPath, writerExclusion(), { storeFormat: changingFormat });
       db.close();
     });
-    expect(reproofUnavailable).toBe(true);
+
     expect(error).toBeNull();
     expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(containsIdentity(root, { dev: before.dev, ino: before.ino })).toBe(true);
   });
 
   it('omits an active-evidence size that cannot be represented safely', () => {
@@ -3397,7 +3369,7 @@ describe('openOrResetBackendStoreDb', () => {
             transaction: null,
             classification: null,
           },
-          fixtureHeld(runtime.storage),
+          fixtureHeld(runtime),
         );
       }
 
@@ -3672,7 +3644,7 @@ describe('openOrResetBackendStoreDb', () => {
                   : { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
               classification: null,
             },
-            fixtureHeld(runtime.storage),
+            fixtureHeld(runtime),
             STORE_RESET_IN_FLIGHT_DIRECTORY,
           );
         }
@@ -3805,7 +3777,7 @@ describe('openOrResetBackendStoreDb', () => {
           runtime.storage,
           quarantineRoot,
           STORE_RESET_IN_FLIGHT_DIRECTORY,
-          fixtureHeld(runtime.storage),
+          fixtureHeld(runtime),
         ),
       ).toMatchObject({
         kind: 'undeterminable',
@@ -3951,7 +3923,7 @@ describe('openOrResetBackendStoreDb', () => {
       if (source === dbPath && !contenderAttempted) {
         contenderAttempted = true;
         const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
-        contenderError = captureError(() => acquireBackendStoreResetLock(runtime, files, adoptionLease()));
+        contenderError = captureError(() => acquireBackendStoreResetLock(runtime, files, adoptionLease(runtime)));
       }
       renameSync(source, destination);
     });
@@ -4084,7 +4056,7 @@ describe('openOrResetBackendStoreDb', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
         classification: null,
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
     );
 
     const db = await openReset(runtime, dbPath);
@@ -4120,7 +4092,7 @@ describe('openOrResetBackendStoreDb', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
         classification: null,
       },
-      fixtureHeld(runtime.storage),
+      fixtureHeld(runtime),
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
     const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
@@ -4171,11 +4143,11 @@ describe('openOrResetBackendStoreDb', () => {
         names: ['store.db-wal'],
         entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength('retired evidence') }],
       });
-      expect(
-        releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime.storage)),
-      ).toMatchObject({
-        kind: 'parked',
-      });
+      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime))).toMatchObject(
+        {
+          kind: 'parked',
+        },
+      );
       expect(existsSync(join(parkingRoot, parkingId))).toBe(false);
     },
   );
@@ -4368,7 +4340,7 @@ describe('openOrResetBackendStoreDb', () => {
         runtime,
         files,
         { path: dbPath, storeFormat: STORE_FORMAT },
-        createSettlementAuthority(runtime.storage, adoptionLease(), undefined, null),
+        createSettlementAuthority(adoptionLease(runtime), undefined, null),
       ),
     ).toThrow();
     expect(openedDbs).toHaveLength(1);
@@ -4431,7 +4403,7 @@ describe('retainTransitionFileInStoreResetQuarantine', () => {
       runtime,
       files,
       sourcePath,
-      createSettlementAuthority(runtime.storage, adoptionLease(), undefined, null),
+      createSettlementAuthority(adoptionLease(runtime), undefined, null),
     );
   }
 
@@ -4503,7 +4475,7 @@ describe('read-only store access', () => {
       openReadOnlyStoreDatabase(runtime, { storeFormat: STORE_FORMAT, path: dbPath }),
     );
     const sharedError = captureError(() =>
-      openStoreDatabase({
+      openTestStoreDatabase({
         path: dbPath,
         storage: runtime.storage,
         storeFormat: STORE_FORMAT,
@@ -4633,7 +4605,7 @@ describe('openWritableStoreDbNoReset', () => {
     const dbPath = join(parent, 'store.db');
 
     const absentError = captureError(() =>
-      openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath }),
+      openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath }, fixtureHeld(runtime).actuator),
     );
     // An absent store is not an outdated one — store_schema_outdated's remediation
     // offers to discard history, which is meaningless and misleading here.
@@ -4643,7 +4615,11 @@ describe('openWritableStoreDbNoReset', () => {
 
     createCurrentStore(runtime, dbPath);
     const marker = readFormatFingerprint(dbPath);
-    const current = openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath });
+    const current = openWritableStoreDbNoReset(
+      runtime,
+      { storeFormat: STORE_FORMAT, path: dbPath },
+      fixtureHeld(runtime).actuator,
+    );
     current.close();
 
     expect(marker).toBe(STORE_FORMAT.fingerprint);
@@ -4658,11 +4634,23 @@ describe('openWritableStoreDbNoReset', () => {
     createMismatchStore(mismatchPath);
 
     expectSetupCode(
-      captureError(() => openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: missingPath })),
+      captureError(() =>
+        openWritableStoreDbNoReset(
+          runtime,
+          { storeFormat: STORE_FORMAT, path: missingPath },
+          fixtureHeld(runtime).actuator,
+        ),
+      ),
       'store_schema_outdated',
     );
     expectSetupCode(
-      captureError(() => openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: mismatchPath })),
+      captureError(() =>
+        openWritableStoreDbNoReset(
+          runtime,
+          { storeFormat: STORE_FORMAT, path: mismatchPath },
+          fixtureHeld(runtime).actuator,
+        ),
+      ),
       'store_schema_outdated',
     );
 
@@ -4676,7 +4664,9 @@ describe('openWritableStoreDbNoReset', () => {
     createCorruptStore(dbPath);
     const before = readFileSync(dbPath, 'utf-8');
 
-    const error = captureError(() => openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath }));
+    const error = captureError(() =>
+      openWritableStoreDbNoReset(runtime, { storeFormat: STORE_FORMAT, path: dbPath }, fixtureHeld(runtime).actuator),
+    );
 
     expect(error).toBeInstanceOf(Error);
     expect(readFileSync(dbPath, 'utf-8')).toBe(before);

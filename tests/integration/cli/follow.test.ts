@@ -10,7 +10,7 @@ import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
@@ -178,7 +178,7 @@ function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixtur
   );
 
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
     storage: runtime.storage,

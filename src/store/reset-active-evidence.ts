@@ -196,7 +196,7 @@ export function parkActiveEvidence(
 
   try {
     storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
-    held.rename(candidateForEvidence(files, evidence.name), destination);
+    held.actuator.rename(candidateForEvidence(files, evidence.name), destination);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'absent' };
     throw error;
@@ -249,7 +249,7 @@ export function parkCurrentEvidence(
     }
     try {
       storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
-      held.rename(candidateForEvidence(files, name), destination);
+      held.actuator.rename(candidateForEvidence(files, name), destination);
     } catch (error: unknown) {
       if (isNoEntryError(error)) continue;
       throw error;
@@ -274,7 +274,7 @@ export function linkOwnedEvidenceToActive(
   held: SettlementHeld,
 ): ActiveNameClaim {
   try {
-    held.link(source, candidateForEvidence(files, name));
+    held.actuator.link(source, candidateForEvidence(files, name));
     return { kind: 'claimed' };
   } catch (error: unknown) {
     if (errorCode(error) === 'EEXIST') return { kind: 'occupied' };
@@ -310,7 +310,7 @@ export function dropActiveEvidenceIfOwned(
   const identity = activeNameHasIdentity(storage, files, parked.name, parked.identity);
   if (identity.kind !== 'same') return false;
   try {
-    held.unlink(candidateForEvidence(files, parked.name));
+    held.actuator.unlink(candidateForEvidence(files, parked.name));
     return true;
   } catch (error: unknown) {
     if (isNoEntryError(error)) return false;
@@ -363,7 +363,7 @@ export function describeParkedEntries(
 }
 
 export function dropParkedEvidence(parkingDirectory: string, parked: ParkedActiveEvidence, held: SettlementHeld): void {
-  held.unlink(parkedPath(parkingDirectory, parked.evidence));
+  held.actuator.unlink(parkedPath(parkingDirectory, parked.evidence));
 }
 
 export function restoreParkedEvidence(
@@ -375,7 +375,10 @@ export function restoreParkedEvidence(
 ): ActiveEvidenceRestore {
   if (parked.entry.kind !== 'regular-file') return { kind: 'kept', code: 'NON_REGULAR' };
   try {
-    held.link(parkedPath(parkingDirectory, parked.evidence), candidateForEvidence(files, parked.evidence.name));
+    held.actuator.link(
+      parkedPath(parkingDirectory, parked.evidence),
+      candidateForEvidence(files, parked.evidence.name),
+    );
   } catch (error: unknown) {
     const code = errorCode(error);
     if (code === 'EEXIST' || code === 'EXDEV' || code === 'EPERM' || code === 'EOPNOTSUPP') {
@@ -383,6 +386,6 @@ export function restoreParkedEvidence(
     }
     throw error;
   }
-  held.unlink(parkedPath(parkingDirectory, parked.evidence));
+  held.actuator.unlink(parkedPath(parkingDirectory, parked.evidence));
   return { kind: 'restored' };
 }

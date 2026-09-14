@@ -29,7 +29,8 @@ import { createUnreadableProviderOperationDiscardService } from '#src/coordinato
 import { sha256Hex } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { applyBundledStoreSchema, classifyStoreFile, openStoreDatabase } from '#src/store/db.js';
+import { applyBundledStoreSchema, classifyStoreFile } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
 import { encodeProviderOperationRecord } from '#src/store/provider-operation-record.js';
@@ -109,7 +110,7 @@ describe('backend recovery-quarantine commands', () => {
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
     mkdirSync(dirname(dbPath), { recursive: true });
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       path: dbPath,
       storage: runtime.storage,
       storeFormat: currentCoralStoreFormat(),
@@ -179,7 +180,7 @@ describe('backend recovery-quarantine commands', () => {
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
     mkdirSync(dirname(dbPath), { recursive: true });
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       path: dbPath,
       storage: runtime.storage,
       storeFormat: currentCoralStoreFormat(),
@@ -311,7 +312,7 @@ describe('backend recovery-quarantine commands', () => {
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
     mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       path: runtime.paths.coral.store.dbFile,
       storage: runtime.storage,
       storeFormat: currentCoralStoreFormat(),
@@ -369,7 +370,7 @@ describe('backend recovery-quarantine commands', () => {
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
     mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       path: runtime.paths.coral.store.dbFile,
       storage: runtime.storage,
       storeFormat: currentCoralStoreFormat(),
@@ -711,7 +712,7 @@ describe('backend recovery-quarantine commands', () => {
       productVersion: '0.0.0-0',
       fingerprint: `sha256:${'0'.repeat(64)}`,
     };
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       path: runtime.paths.coral.store.dbFile,
       storage: runtime.storage,
       storeFormat: olderFormat,
@@ -738,7 +739,7 @@ describe('backend recovery-quarantine commands', () => {
       ...current,
       fingerprint: `sha256:${'0'.repeat(64)}`,
     };
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       path: runtime.paths.coral.store.dbFile,
       storage: runtime.storage,
       storeFormat: unsupportedFormat,

@@ -13,7 +13,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import {
   formatLegacyGenerationIgnoredNotice,
   generationMutationCoordinationSeam,
@@ -99,7 +99,7 @@ function createForeignLegacyStore(runtime: Runtime, productVersion?: string): st
 function createSameGenerationLegacyStore(runtime: Runtime): string {
   const paths = resolveGenerationBoundaryPaths(runtime);
   const dbFile = join(paths.legacyFlavorRoot, 'store', 'store.db');
-  openStoreDatabase({ path: dbFile, storage: runtime.storage, storeFormat: STORE_FORMAT }).close();
+  openTestStoreDatabase({ path: dbFile, storage: runtime.storage, storeFormat: STORE_FORMAT }).close();
   const db = new DatabaseSync(dbFile);
   try {
     db.exec(`

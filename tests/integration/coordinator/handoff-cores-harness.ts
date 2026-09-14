@@ -23,7 +23,7 @@ import type {
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { composeReducers } from '#src/store/reducers.js';
@@ -117,7 +117,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
     process.env.HOME = previousHome;
   }
 
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,

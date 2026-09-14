@@ -10,7 +10,10 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { resolveInstallOnlyManifest } from '#src/expansion/install-only.js';
 import { installResponseSchema } from '#src/expansion/rpc-contract.js';
 import { inspectExpansionInstallState, installExpansion, uninstallExpansion } from '#src/cli/expansion/install.js';
-import type { GenerationMutationCoordination } from '#src/store/generation-mutation-coordination.js';
+import type {
+  GenerationMutationCoordination,
+  GenerationWriterLease,
+} from '#src/store/generation-mutation-coordination.js';
 import { createDeferred } from '#tools/testing/deferred.js';
 
 const PACKAGE = 'codebase-memory';
@@ -106,6 +109,7 @@ function recordGenerationCoordination(events: string[]): GenerationMutationCoord
       events.push(`writer:${mutation.kind}`);
       let owned = true;
       return {
+        directoryLock: {} as GenerationWriterLease['directoryLock'],
         assertOwned() {
           if (!owned) throw new Error('test writer lease released early');
         },

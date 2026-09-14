@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const CURRENT_FINGERPRINT = currentCoralStoreFormat().fingerprint;
 const tempRoots: string[] = [];
@@ -101,7 +101,7 @@ describe('store format product-version interleaving', () => {
       expect(Atomics.wait(state, 0, 0, 5_000)).not.toBe('timed-out');
       expect(Atomics.load(state, 0)).toBe(1);
 
-      openStoreDatabase({
+      openTestStoreDatabase({
         path: dbPath,
         storage: runtime.storage,
         storeFormat: { ...currentCoralStoreFormat(), productVersion: '1.1.0' },

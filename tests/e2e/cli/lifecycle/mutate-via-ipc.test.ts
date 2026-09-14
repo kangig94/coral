@@ -21,7 +21,7 @@ import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-
 import { readBuildFlavor } from '#src/infra/bundle-manifest.js';
 import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
@@ -328,7 +328,7 @@ async function waitForCliGate(run: CliRun, check: () => boolean, label: string):
 
 function readDurableOperation(fixture: Fixture, jobId: string): ProviderOperationRecord | null {
   const runtime = createRealRuntime('prod');
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
     storage: runtime.storage,
@@ -440,7 +440,7 @@ describe('mutating commands via IPC', () => {
     );
 
     const runtime = createRealRuntime('prod');
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
       path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
       storage: runtime.storage,
@@ -572,7 +572,7 @@ describe('mutating commands via IPC', () => {
     expect(discovery.record.socketPath).toContain('.sock');
 
     const runtime = createRealRuntime('prod');
-    const db = openStoreDatabase({
+    const db = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
       path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
       storage: runtime.storage,

@@ -14,7 +14,7 @@ import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -78,7 +78,7 @@ function createPluginFixture(): {
   tempRoots.push(scratchCwd);
   const smokeDbPath = join(scratchCwd, 'fixture.db');
   const smokeRuntime = createRealRuntime(sourceManifest.flavor);
-  openStoreDatabase({
+  openTestStoreDatabase({
     path: smokeDbPath,
     storage: smokeRuntime.storage,
     storeFormat: currentCoralStoreFormat(),
@@ -116,7 +116,7 @@ function seedCompletedJobs(
     mkdirSync(projectRoot, { recursive: true });
   }
   const runtime = createRealRuntime(sourceManifest.flavor);
-  const db = openStoreDatabase({
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: storePath,
     storage: runtime.storage,

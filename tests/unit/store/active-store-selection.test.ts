@@ -18,6 +18,7 @@ import { z } from 'zod';
 
 import { hashStableAdjacentBundle, type StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { compareProductVersions } from '#src/infra/product-version.js';
+import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -34,6 +35,7 @@ import {
   publishActiveStoreSelection,
   readActiveStoreSelection,
   readActiveStoreSelectionForCoordination,
+  readActiveStoreSelectionForSettlement,
   readActiveStoreTransition,
   resolveActiveStoreRecordPaths,
   type ActiveStoreSelection,
@@ -45,6 +47,15 @@ import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-c
 
 const roots: string[] = [];
 const encoder = new TextEncoder();
+
+function publicationActuator(runtime: Runtime) {
+  const lockRoot = mkdtempSync(join(tmpdir(), 'coral-selection-publish-'));
+  roots.push(lockRoot);
+  return acquireDirectoryLockSync(join(lockRoot, 'lease.lock'), {
+    storage: runtime.storage,
+    time: runtime.time,
+  }).actuator;
+}
 const v0109ManifestSchema = z
   .object({
     version: z
@@ -286,7 +297,7 @@ describe('active-store-selection', () => {
   it('should publish a v1 selection that the v0.10.9 decoder understands for routing', () => {
     const { runtime, selection: emptyTargetSelection } = harness();
     const selection = installV0109TargetBundle(emptyTargetSelection);
-    publishActiveStoreSelection(runtime, selection);
+    publishActiveStoreSelection(runtime, selection, publicationActuator(runtime));
 
     const releasedRecord = readFileSync(resolveActiveStoreRecordPaths(runtime).selectionV1File);
     const decoded = decodeV0109ActiveStoreSelection(releasedRecord);
@@ -319,21 +330,25 @@ describe('active-store-selection', () => {
     (_case, stale) => {
       const { runtime, selection } = harness();
       if (stale) {
-        publishActiveStoreSelection(runtime, {
-          ...selection,
-          manifest: {
-            ...selection.manifest,
-            version: '1.0.0',
-            buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+        publishActiveStoreSelection(
+          runtime,
+          {
+            ...selection,
+            manifest: {
+              ...selection.manifest,
+              version: '1.0.0',
+              buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+            },
           },
-        });
+          publicationActuator(runtime),
+        );
       }
       const paths = resolveActiveStoreRecordPaths(runtime);
       const write = runtime.storage.writeAtomicDurableSync.bind(runtime.storage);
       runtime.storage.writeAtomicDurableSync = (path, bytes, options) =>
         path === paths.selectionFile ? false : write(path, bytes, options);
 
-      expect(() => publishActiveStoreSelection(runtime, selection)).toThrow();
+      expect(() => publishActiveStoreSelection(runtime, selection, publicationActuator(runtime))).toThrow();
       runtime.storage.writeAtomicDurableSync = write;
 
       expect(readActiveStoreSelectionForCoordination(runtime)).toMatchObject({
@@ -418,12 +433,18 @@ describe('active-store-selection', () => {
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'rejected', failureCode });
   });
 
-  it('should repair a wrong-mode record owned by the current user before reading it', () => {
+  it('should reject a wrong-mode record during observation and repair it during settlement', () => {
     const { runtime, selection } = harness();
     const path = publishRecord(runtime, 'selectionFile', encodeActiveStoreSelection(selection));
     chmodSync(path, 0o755);
 
-    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection });
+    expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'rejected', failureCode: 'record_mode' });
+    expect(statSync(path).mode & 0o777).toBe(0o755);
+
+    expect(readActiveStoreSelectionForSettlement(runtime, publicationActuator(runtime))).toEqual({
+      kind: 'valid',
+      selection,
+    });
     expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 

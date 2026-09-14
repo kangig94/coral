@@ -9,7 +9,7 @@ const SRC_ROOT = join(REPO_ROOT, 'src');
 type DbOpenCall = {
   relativePath: string;
   line: number;
-  callee: 'openStoreDatabase' | 'openBackendStoreDb' | 'openWritableStoreDbNoReset';
+  callee: 'openStoreDatabase' | 'openMemoryStoreDatabase' | 'openBackendStoreDb' | 'openWritableStoreDbNoReset';
   staticallyReadOnlyOrMemory: boolean;
 };
 
@@ -118,6 +118,7 @@ function collectDbOpenCalls(): DbOpenCall[] {
         const callee = node.expression.text;
         if (
           callee === 'openStoreDatabase' ||
+          callee === 'openMemoryStoreDatabase' ||
           callee === 'openBackendStoreDb' ||
           callee === 'openWritableStoreDbNoReset'
         ) {
@@ -128,11 +129,13 @@ function collectDbOpenCalls(): DbOpenCall[] {
             line: position.line + 1,
             callee,
             staticallyReadOnlyOrMemory:
-              callee === 'openStoreDatabase'
-                ? staticallyReadOnlyOrMemory(optionsArg)
-                : callee === 'openWritableStoreDbNoReset'
+              callee === 'openMemoryStoreDatabase'
+                ? true
+                : callee === 'openStoreDatabase'
                   ? staticallyReadOnlyOrMemory(optionsArg)
-                  : false,
+                  : callee === 'openWritableStoreDbNoReset'
+                    ? staticallyReadOnlyOrMemory(optionsArg)
+                    : false,
           });
         }
       }
@@ -159,11 +162,11 @@ describe('writable DB opens stay coordinator-owned', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps read-store as the canonical static-proof in-memory fallback example', () => {
+  it('keeps read-store on the dedicated in-memory fallback opener', () => {
     const readStoreCalls = collectDbOpenCalls().filter((call) => call.relativePath === 'src/cli/read-store.ts');
 
     expect(readStoreCalls).toEqual([
-      expect.objectContaining({ callee: 'openStoreDatabase', staticallyReadOnlyOrMemory: true }),
+      expect.objectContaining({ callee: 'openMemoryStoreDatabase', staticallyReadOnlyOrMemory: true }),
     ]);
   });
 

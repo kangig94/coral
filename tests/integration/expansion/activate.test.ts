@@ -9,7 +9,7 @@ import type * as IpcClientModule from '#src/transport/ipc/client.js';
 import type { CoordinatorDiscoveryRecord, DiscoveryRead } from '#src/infra/backend-discovery.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const mockState = vi.hoisted(() => ({
   ensure: vi.fn(),
@@ -66,7 +66,7 @@ function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}
 }
 
 function createCurrentStore(runtime: ReturnType<typeof createRealRuntime>): void {
-  openStoreDatabase({
+  openTestStoreDatabase({
     path: runtime.paths.coral.store.dbFile,
     storage: runtime.storage,
     storeFormat: currentCoralStoreFormat(),

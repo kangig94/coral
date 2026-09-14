@@ -24,7 +24,7 @@ vi.mock('node:os', async () => {
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { commit, type AppendedEvent, type CommitEventsFn } from '#src/store/append.js';
-import { openStoreDatabase } from '#src/store/db.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { discussRegistry } from '#src/discuss/event-registry.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -37,14 +37,14 @@ import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { TEST_CODEX_BINDING } from '#tests/helpers/provider-credentials.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
-const openDbs: Array<ReturnType<typeof openStoreDatabase>> = [];
+const openDbs: Array<ReturnType<typeof openTestStoreDatabase>> = [];
 
 function resolveScopeKey(projectRoot: string): string {
   return pluginRootNamespace(projectRoot);
 }
 
-function openSessionDb(): ReturnType<typeof openStoreDatabase> {
-  const db = openStoreDatabase({
+function openSessionDb(): ReturnType<typeof openTestStoreDatabase> {
+  const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
     path: ':memory:',
     storage: runtime.storage,
@@ -81,7 +81,7 @@ describe('sessions shell store', () => {
   }
 
   function setupWithJournal(projectName: string): {
-    db: ReturnType<typeof openStoreDatabase>;
+    db: ReturnType<typeof openTestStoreDatabase>;
     mgr: SessionManager;
     workDir: string;
     coordinatorCommit: CommitEventsFn;
@@ -641,12 +641,12 @@ describe('sessions shell store', () => {
     const workDir = join(tmpHome, 'checkpoint-cross-connection-cas');
     mkdirSync(workDir, { recursive: true });
     const dbPath = join(tmpHome, 'checkpoint-cross-connection-cas.db');
-    const dbA = openStoreDatabase({
+    const dbA = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
       path: dbPath,
       storage: runtime.storage,
     });
-    const dbB = openStoreDatabase({
+    const dbB = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
       path: dbPath,
       storage: runtime.storage,

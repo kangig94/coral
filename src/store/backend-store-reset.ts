@@ -8,7 +8,7 @@ import { errorNumber } from '../infra/error-number.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { acquireDirectoryLockSync, isDirectoryLockTimeoutError, type DirectoryLockLease } from '../infra/fs-lock.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
-import { createStorageActuator, type StorageActuator } from '../infra/storage-actuator.js';
+import type { StorageActuator } from '../infra/storage-actuator.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { ACTIVE_STORE_TRANSITION_VERSION } from './active-store-selection.js';
@@ -41,7 +41,12 @@ import {
   type GenerationAdoptionLockLease,
   type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
-import { classifyStoreFile, openWritableStoreDatabase, refuseLegacyStore, type Database } from './db.js';
+import {
+  classifyStoreFile,
+  openWritableStoreDatabase,
+  StoreFormatChangedDuringAdoptionError,
+  type Database,
+} from './db.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_ACTIVE_STORE_TRANSITION_BYTES,
@@ -141,11 +146,11 @@ class SettlementAuthorityLost extends Error {
   }
 }
 
-export type SettlementAuthority = StorageActuator &
-  Readonly<{
-    hold(): void;
-    [SETTLEMENT_AUTHORITY_BRAND]: true;
-  }>;
+export type SettlementAuthority = Readonly<{
+  readonly actuator: StorageActuator;
+  hold(): void;
+  [SETTLEMENT_AUTHORITY_BRAND]: true;
+}>;
 
 type Held = SettlementAuthority;
 
@@ -156,8 +161,7 @@ export type BackendStoreResetLockLease = Readonly<{
 }>;
 
 export function createSettlementAuthority(
-  storage: StoragePort,
-  adoption: Pick<GenerationAdoptionLockLease, 'maintain' | 'assertOwned'>,
+  adoption: DirectoryLockLease,
   writerExclusion: WriterExclusion | undefined,
   resetLock: BackendStoreResetLockLease | null,
 ): SettlementAuthority {
@@ -180,8 +184,18 @@ export function createSettlementAuthority(
       throw new SettlementAuthorityLost(error);
     }
   };
+  const actuator = new Proxy(adoption.actuator, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value !== 'function') return value;
+      return (...args: unknown[]) => {
+        hold();
+        return Reflect.apply(value, target, args);
+      };
+    },
+  });
   return {
-    ...createStorageActuator(storage, hold),
+    actuator,
     hold,
     [SETTLEMENT_AUTHORITY_BRAND]: true,
   };
@@ -476,14 +490,14 @@ function hashExactDescriptor(
   while (total < expectedSize) {
     held.hold();
     const requested = Math.min(buffer.length, expectedSize - total);
-    const bytesRead = held.read(descriptor, buffer, 0, requested, null);
+    const bytesRead = held.actuator.read(descriptor, buffer, 0, requested, null);
     if (bytesRead === 0) break;
     if (bytesRead < 0 || bytesRead > requested) throw new Error('Store-reset evidence read failed.');
     consume?.(buffer, bytesRead);
     total += bytesRead;
     hash.update(buffer.subarray(0, bytesRead));
   }
-  const overrunBytes = held.read(descriptor, buffer, 0, 1, null);
+  const overrunBytes = held.actuator.read(descriptor, buffer, 0, 1, null);
   if (overrunBytes < 0 || overrunBytes > 1) throw new Error('Store-reset evidence read failed.');
   if (overrunBytes === 1) {
     consume?.(buffer, 1);
@@ -503,7 +517,7 @@ function writeExactDescriptor(
   let written = 0;
   while (written < length) {
     held.hold();
-    const bytesWritten = held.write(descriptor, buffer, written, length - written, null);
+    const bytesWritten = held.actuator.write(descriptor, buffer, written, length - written, null);
     if (bytesWritten <= 0 || bytesWritten > length - written) {
       throw new Error('Store-reset evidence write failed during publication.');
     }
@@ -591,7 +605,7 @@ function copyPathCandidateForPublication<Name extends string>(
     if (!sourceOpened.isFile() || !sameEvidenceFileStat(pathBefore, sourceOpened)) {
       throw new Error('Store-reset evidence identity changed before publication.');
     }
-    const openedDestination = held.createFile(destination, 'wx', 0o600);
+    const openedDestination = held.actuator.createFile(destination, 'wx', 0o600);
     destinationDescriptor = openedDestination;
 
     const expectedSize = Number(sourceOpened.size);
@@ -614,7 +628,7 @@ function copyPathCandidateForPublication<Name extends string>(
         ? 'coherent'
         : 'torn';
 
-    held.syncFile(destinationDescriptor);
+    held.actuator.syncFile(destinationDescriptor);
     const destinationOpened = storage.fstatSync(destinationDescriptor, { bigint: true });
     if (!destinationOpened.isFile() || destinationOpened.size !== BigInt(hashed.bytesConsumed)) {
       throw new Error('Published store-reset evidence has an unexpected size.');
@@ -640,7 +654,7 @@ function copyPathCandidateForPublication<Name extends string>(
     }
     if (result === null || closeFailure) {
       try {
-        held.unlink(destination);
+        held.actuator.unlink(destination);
       } catch {
         // The primary publication failure remains authoritative.
       }
@@ -671,7 +685,7 @@ function copyActiveEvidenceForPublication(
   let closeFailure = false;
   let result: PublishedEvidenceCopy<StoreResetEvidenceFileName> | null = null;
   try {
-    const openedDestination = held.createFile(destination, 'wx', 0o600);
+    const openedDestination = held.actuator.createFile(destination, 'wx', 0o600);
     destinationDescriptor = openedDestination;
     const expectedSize = source.sizeBytes;
     const hashed = hashExactDescriptor(
@@ -693,7 +707,7 @@ function copyActiveEvidenceForPublication(
         ? 'coherent'
         : 'torn';
 
-    held.syncFile(destinationDescriptor);
+    held.actuator.syncFile(destinationDescriptor);
     const destinationOpened = storage.fstatSync(destinationDescriptor, { bigint: true });
     if (!destinationOpened.isFile() || destinationOpened.size !== BigInt(hashed.bytesConsumed)) {
       throw new Error('Published store-reset evidence has an unexpected size.');
@@ -723,7 +737,7 @@ function copyActiveEvidenceForPublication(
     }
     if (result === null || closeFailure) {
       try {
-        held.unlink(destination);
+        held.actuator.unlink(destination);
       } catch {
         // The primary publication failure remains authoritative.
       }
@@ -760,14 +774,14 @@ function readManifestBounded(storage: StoragePort, path: string, held: Held): Bu
     let offset = 0;
     while (offset < expectedSize) {
       held.hold();
-      const read = held.read(descriptor, bytes, offset, expectedSize - offset, null);
+      const read = held.actuator.read(descriptor, bytes, offset, expectedSize - offset, null);
       if (read <= 0 || read > expectedSize - offset) {
         throw new Error('Interrupted store-reset manifest read failed.');
       }
       offset += read;
     }
     const probe = Buffer.allocUnsafe(1);
-    if (held.read(descriptor, probe, 0, 1, null) !== 0) {
+    if (held.actuator.read(descriptor, probe, 0, 1, null) !== 0) {
       throw new Error('Interrupted store-reset manifest grew during reading.');
     }
     const openedAfter = storage.fstatSync(descriptor, { bigint: true });
@@ -791,9 +805,9 @@ function readManifestBounded(storage: StoragePort, path: string, held: Held): Bu
 
 function ensureQuarantineRoot(storage: StoragePort, root: string, platform: string, held: Held): void {
   if (!storage.existsSync(root)) {
-    held.makeDirectory(root);
+    held.actuator.makeDirectory(root);
     if (platform !== 'win32') {
-      held.setMode(root, 0o700);
+      held.actuator.setMode(root, 0o700);
     }
   }
   assertQuarantineRoot(storage, root);
@@ -801,9 +815,9 @@ function ensureQuarantineRoot(storage: StoragePort, root: string, platform: stri
 
 function ensurePrivateDirectory(storage: StoragePort, path: string, platform: string, held: Held): void {
   if (!storage.existsSync(path)) {
-    held.makeDirectory(path);
+    held.actuator.makeDirectory(path);
     if (platform !== 'win32') {
-      held.setMode(path, 0o700);
+      held.actuator.setMode(path, 0o700);
     }
   }
   assertPrivateDirectory(storage, path, platform);
@@ -817,9 +831,9 @@ function createPrivateOperationDirectory(
   held: Held,
   onCreated: () => void = () => undefined,
 ): StorageBigIntStat {
-  held.makeDirectory(path);
+  held.actuator.makeDirectory(path);
   onCreated();
-  if (platform !== 'win32') held.setMode(path, 0o700);
+  if (platform !== 'win32') held.actuator.setMode(path, 0o700);
   requireDirectorySync(held, parent);
   return assertContainedDirectory(storage, parent, path);
 }
@@ -859,9 +873,9 @@ function removeSettledParkingDirectory(
   coordinate: string,
   held: Held,
 ): boolean {
-  held.unlink(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
+  held.actuator.unlink(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
   try {
-    held.removeDirectory(parkingDirectory);
+    held.actuator.removeDirectory(parkingDirectory);
     requireDirectorySync(held, parkingRoot);
     return true;
   } catch (error: unknown) {
@@ -899,7 +913,7 @@ function requireStoreResetDurability(proven: boolean, failure: string): void {
 function requireDirectorySync(held: Held, ...directories: readonly string[]): void {
   for (const directory of new Set(directories)) {
     requireStoreResetDurability(
-      held.syncDirectory(directory),
+      held.actuator.syncDirectory(directory),
       'Store-reset directory metadata could not be synchronized.',
     );
   }
@@ -938,7 +952,7 @@ function validateStagingEntries(
 
 function removeAtomicManifestTemp(storage: StoragePort, stagingDirectory: string, held: Held): void {
   try {
-    held.unlink(join(stagingDirectory, `${STORE_RESET_MANIFEST_FILE_NAME}.tmp`));
+    held.actuator.unlink(join(stagingDirectory, `${STORE_RESET_MANIFEST_FILE_NAME}.tmp`));
   } catch (error: unknown) {
     if (isNoEntryError(error)) return;
     throw error;
@@ -961,7 +975,7 @@ function discardUncommittedStaging(
   if (read.entries.some((entry) => !preManifestNames.has(entry))) {
     throw new Error('Interrupted store-reset publication has unexpected pre-manifest content.');
   }
-  held.remove(stagingDirectory, { recursive: true, force: true });
+  held.actuator.remove(stagingDirectory, { recursive: true, force: true });
   requireDirectorySync(held, stagingRoot);
 }
 
@@ -1099,7 +1113,7 @@ function restageEvidenceAsCopies(
   for (const expected of manifest.files) {
     const stagedPath = join(stagingDirectory, expected.name);
     const restagedPath = join(parkingDirectory, `${expected.name}.restage`);
-    held.remove(restagedPath, { force: true });
+    held.actuator.remove(restagedPath, { force: true });
     const copied = copyPathCandidateForPublication(
       storage,
       { source: stagedPath, name: expected.name },
@@ -1114,7 +1128,7 @@ function restageEvidenceAsCopies(
     if (!matchesManifest && !tolerateMutableLinks) {
       throw new InterruptedStoreResetRefusal('store_reset_interrupted_mismatched');
     }
-    held.rename(restagedPath, stagedPath);
+    held.actuator.rename(restagedPath, stagedPath);
     requireDirectorySync(held, stagingDirectory, parkingDirectory);
     files.push(copied.evidence);
   }
@@ -1175,13 +1189,9 @@ function resumeInterruptedIncident(
   const interrupted = detectInterruptedIncident(runtime, files, held);
   if (interrupted === null) return null;
   held.hold();
-  let ledger = readStoreResetRetentionLedger(runtime.storage, interrupted.quarantineRoot, held);
+  let ledger = readStoreResetRetentionLedger(runtime.storage, interrupted.quarantineRoot);
   const parkingRoot = join(interrupted.quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
-  const matchingParking = discoverStoreResetParkedRecords(
-    runtime.storage,
-    interrupted.quarantineRoot,
-    held,
-  ).entries.find(
+  const matchingParking = discoverStoreResetParkedRecords(runtime.storage, interrupted.quarantineRoot).entries.find(
     (entry) =>
       entry.coordinate === STORE_RESET_IN_FLIGHT_DIRECTORY ||
       entry.record?.parkingId === interrupted.incidentId ||
@@ -1196,7 +1206,7 @@ function resumeInterruptedIncident(
     parkingDirectory,
   );
   const parkedRecord = parkingExists
-    ? readStoreResetParkedRecord(runtime.storage, parkingRoot, interrupted.incidentId, parkingCoordinate, held)
+    ? readStoreResetParkedRecord(runtime.storage, parkingRoot, interrupted.incidentId, parkingCoordinate)
     : null;
   const pendingEvidence = pendingActiveEvidence(ledger, interrupted.incidentId, parkedRecord);
   const parkedRead = parkingExists ? readParkedEvidence(runtime.storage, parkingDirectory, pendingEvidence) : null;
@@ -1345,7 +1355,7 @@ function resumeInterruptedIncident(
     if (mutableLinkedEvidence) {
       manifest = { ...manifest, files: restagedFiles };
       held.hold();
-      const rewritten = held.writeWholeFileDurable(
+      const rewritten = held.actuator.writeWholeFileDurable(
         join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME),
         serializeStoreResetIncidentManifest(manifest),
         { encoding: 'utf-8', mode: 0o600 },
@@ -1361,7 +1371,7 @@ function resumeInterruptedIncident(
   requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
   if (!interrupted.committed) {
     held.hold();
-    held.rename(stagingDirectory, join(quarantineRoot, manifest.incidentId));
+    held.actuator.rename(stagingDirectory, join(quarantineRoot, manifest.incidentId));
     requireDirectorySync(held, quarantineRoot, stagingRoot);
   }
   const settledLeftActive = parkingExists
@@ -1469,7 +1479,7 @@ function detectInterruptedIncident(
   let committed = false;
   let parkingCoordinate: string | null = null;
   if (stagingName === null) {
-    const parked = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, held);
+    const parked = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
     if (parked.truncated) {
       writeAuditEvent('store_reset_parking_scan_truncated', { disposition: 'terminal-evidence-deferred' }, 'warn');
     }
@@ -1558,10 +1568,10 @@ export function hasPendingBackendStoreResetIncident(
   } catch (error: unknown) {
     if (!isNoEntryError(error)) throw error;
   }
-  const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot, held);
+  const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
   if (ledger?.pending !== null && ledger?.pending !== undefined) return true;
   try {
-    const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, held);
+    const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
     if (discovered.entries.some((entry) => entry.record?.phase === 'in-flight')) return true;
     const terminal = discovered.entries.filter(
       (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',
@@ -1822,7 +1832,7 @@ function commitTerminalParking(
     return { survives: false, rotation: null };
   }
   if (sourceRoot !== parkingRoot || coordinate !== committedRecord.parkingId) {
-    held.rename(parkingDirectory, join(parkingRoot, committedRecord.parkingId));
+    held.actuator.rename(parkingDirectory, join(parkingRoot, committedRecord.parkingId));
     requireDirectorySync(held, sourceRoot, parkingRoot);
   }
   const rotation = recordStoreResetParked(storage, dirname(parkingRoot), committedRecord.parkingId, held);
@@ -1842,7 +1852,7 @@ function resumeTerminalParkingCommit(
   discovered: ReturnType<typeof discoverStoreResetParkedRecords>,
   held: Held,
 ): boolean {
-  const pendingIncidentId = readStoreResetRetentionLedger(storage, quarantineRoot, held)?.pending?.outcome.incident
+  const pendingIncidentId = readStoreResetRetentionLedger(storage, quarantineRoot)?.pending?.outcome.incident
     .incidentId;
   const newest = discovered.entries
     .flatMap((entry) => {
@@ -1978,15 +1988,15 @@ function resumeNonPublicationParking(
 ): void {
   const { dbFile } = files;
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  let discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, held);
+  let discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   resumeTerminalParkingCommit(runtime.storage, quarantineRoot, discovered, held);
   retainInterruptedMintedStores(runtime, files, options, held);
-  discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, held);
+  discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   if (discovered.truncated) {
     writeAuditEvent('store_reset_parking_scan_truncated', { disposition: 'terminal-evidence-deferred' }, 'warn');
   }
   if (retireNonResumableFixedParking(runtime, quarantineRoot, discovered, held)) {
-    discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, held);
+    discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   }
   const inFlight = discovered.entries.filter((entry) => entry.record?.phase === 'in-flight');
   if (inFlight.length > 1) throw new InterruptedStoreResetRefusal('store_reset_interrupted_ambiguous');
@@ -2015,45 +2025,7 @@ function resumeNonPublicationParking(
         : null;
     if (classification !== null && parkedDb !== undefined) {
       switch (classification.kind) {
-        case 'legacy-adoptable': {
-          const restoration = restoreLegacyParkedStore(
-            runtime,
-            files,
-            parkingRoot,
-            parkingDirectory,
-            record,
-            parked,
-            held,
-          );
-          if (!restoration.restored) {
-            dropRestoredLegacyActiveNames(runtime, files, restoration.restorable, held);
-            break;
-          }
-          if (!restoredLegacyClassificationStillApplies(runtime, dbFile, classification, options.storeFormat)) {
-            dropRestoredLegacyActiveNames(runtime, files, restoration.restorable, held);
-            terminalizeParking(
-              runtime.storage,
-              parkingRoot,
-              { ...record, classification: classification.kind },
-              held,
-              'intruder',
-              record.incidentId,
-              discoveredTransaction.coordinate,
-            );
-            return;
-          }
-          settleRestoredLegacyParking(
-            runtime,
-            parkingRoot,
-            parkingDirectory,
-            record,
-            discoveredTransaction.coordinate,
-            classification,
-            restoration.restorable,
-            held,
-          );
-          return refuseRestoredLegacyStore(dbFile, classification, options.storeFormat, runtime.flavor);
-        }
+        case 'legacy-adoptable':
         case 'compatible':
         case 'fresh': {
           if (!parkedDatabaseHasPrivateInode(runtime.storage, join(parkingDirectory, 'store.db'), parkedDb.identity)) {
@@ -2138,10 +2110,10 @@ function publishIncident(
     const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, held);
     ensurePrivateDirectory(runtime.storage, stagingRoot, runtime.env.platform(), held);
     requireDirectorySync(held, quarantineRoot);
-    held.makeDirectory(stagingDirectory);
+    held.actuator.makeDirectory(stagingDirectory);
     stagingOwned = true;
     if (runtime.env.platform() !== 'win32') {
-      held.setMode(stagingDirectory, 0o700);
+      held.actuator.setMode(stagingDirectory, 0o700);
     }
     requireDirectorySync(held, stagingRoot, files.dbDir);
     const stagingIdentity = assertContainedDirectory(runtime.storage, stagingRoot, stagingDirectory);
@@ -2172,7 +2144,7 @@ function publishIncident(
       case 'fresh':
       case 'compatible':
       case 'legacy-adoptable':
-        held.remove(stagingDirectory, { recursive: true, force: true });
+        held.actuator.remove(stagingDirectory, { recursive: true, force: true });
         requireDirectorySync(held, stagingRoot);
         return { kind: 'no-evidence', leftActive: publishedEvidence.leftActive };
       default:
@@ -2192,7 +2164,7 @@ function publishIncident(
           };
     const manifestFiles = publishedEvidence.published.map(({ file }) => file);
     if (manifestFiles.length === 0) {
-      held.remove(stagingDirectory, { recursive: true, force: true });
+      held.actuator.remove(stagingDirectory, { recursive: true, force: true });
       requireDirectorySync(held, stagingRoot);
       return { kind: 'no-evidence', leftActive: publishedEvidence.leftActive };
     }
@@ -2275,7 +2247,7 @@ function publishIncident(
       newerStorePolicy,
     );
     held.hold();
-    const published = held.writeWholeFileDurable(
+    const published = held.actuator.writeWholeFileDurable(
       join(stagingDirectory, STORE_RESET_MANIFEST_FILE_NAME),
       serializeStoreResetIncidentManifest(manifest),
       { encoding: 'utf-8', mode: 0o600 },
@@ -2287,7 +2259,7 @@ function publishIncident(
     validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
     requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
     held.hold();
-    held.rename(stagingDirectory, finalDirectory);
+    held.actuator.rename(stagingDirectory, finalDirectory);
     requireDirectorySync(held, quarantineRoot, stagingRoot);
     const droppableNames = new Set(publishedEvidence.published.map(({ active }) => active.name));
     const settledLeft = settleParkedEvidence(
@@ -2349,8 +2321,8 @@ function publishIncident(
   } catch (error: unknown) {
     if (error instanceof SettlementAuthorityLost) throw error;
     if (!parkingStarted) {
-      if (stagingOwned) held.remove(stagingDirectory, { recursive: true, force: true });
-      if (parkingOwned) held.remove(parkingDirectory, { recursive: true, force: true });
+      if (stagingOwned) held.actuator.remove(stagingDirectory, { recursive: true, force: true });
+      if (parkingOwned) held.actuator.remove(parkingDirectory, { recursive: true, force: true });
       if (pendingLedger !== null) clearStoreResetPending(runtime.storage, quarantineRoot, pendingLedger, held);
       try {
         requireDirectorySync(held, stagingRoot, parkingRoot);
@@ -2374,7 +2346,7 @@ export function mintBackendStoreForClaim(
 ): MintedBackendStore {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const mintedRoot = join(quarantineRoot, STORE_RESET_MINTED_DIRECTORY);
-  held.makeDirectory(files.dbDir, { recursive: true });
+  held.actuator.makeDirectory(files.dbDir, { recursive: true });
   ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform(), held);
   ensurePrivateDirectory(runtime.storage, mintedRoot, runtime.env.platform(), held);
   requireDirectorySync(held, quarantineRoot);
@@ -2386,7 +2358,7 @@ export function mintBackendStoreForClaim(
     storage: runtime.storage,
     storeFormat: options.storeFormat,
     busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
-    held,
+    held: held.actuator,
   });
   if (decision.kind !== 'opened') {
     throw new Error('A store minted on an owned empty path was incompatible.');
@@ -2422,7 +2394,7 @@ function cloneParkedStoreForClaim(
       }
     }
     try {
-      held.remove(directory, { recursive: true, force: true });
+      held.actuator.remove(directory, { recursive: true, force: true });
       requireDirectorySync(held, mintedRoot);
     } catch {
       // The fixed minted store remains the safe claim candidate.
@@ -2452,7 +2424,7 @@ function cloneParkedStoreForClaim(
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
-      held,
+      held: held.actuator,
     });
     if (decision.kind !== 'opened') return abandonClone();
     const stat = stablePathStat(runtime.storage, path);
@@ -2470,7 +2442,7 @@ function cloneParkedStoreForClaim(
       // The original close failure remains authoritative.
     }
     try {
-      held.remove(directory, { recursive: true, force: true });
+      held.actuator.remove(directory, { recursive: true, force: true });
       requireDirectorySync(held, mintedRoot);
     } catch {
       // The close failure remains authoritative.
@@ -2478,7 +2450,7 @@ function cloneParkedStoreForClaim(
     throw error;
   }
   try {
-    held.remove(minted.directory, { recursive: true });
+    held.actuator.remove(minted.directory, { recursive: true });
     requireDirectorySync(held, mintedRoot);
   } catch (error: unknown) {
     writeAuditEvent(
@@ -2606,7 +2578,7 @@ function retainNonRegularParking(
     parkingRoot,
     () => {
       for (const item of retained) {
-        held.rename(join(parkingDirectory, item.name), join(terminalDirectory, item.name));
+        held.actuator.rename(join(parkingDirectory, item.name), join(terminalDirectory, item.name));
         requireDirectorySync(held, parkingDirectory, terminalDirectory);
       }
     },
@@ -2617,34 +2589,6 @@ function retainNonRegularParking(
     parkingId: terminalParkingId,
     rotation: commit.rotation,
   };
-}
-
-function restoredLegacyClassificationStillApplies(
-  runtime: Pick<Runtime, 'storage'>,
-  dbFile: string,
-  routed: Extract<StoreFormatClassification, { readonly kind: 'legacy-adoptable' }>,
-  storeFormat: StoreFormatDescription,
-): boolean {
-  try {
-    const restored = classifyStoreFile(dbFile, runtime.storage, storeFormat);
-    return (
-      restored.kind === 'legacy-adoptable' &&
-      restored.currentFingerprint === routed.currentFingerprint &&
-      restored.currentProductVersion === routed.currentProductVersion &&
-      restored.storedFingerprint === routed.storedFingerprint
-    );
-  } catch {
-    return false;
-  }
-}
-
-function refuseRestoredLegacyStore(
-  dbFile: string,
-  classification: Extract<StoreFormatClassification, { readonly kind: 'legacy-adoptable' }>,
-  storeFormat: StoreFormatDescription,
-  flavor: Runtime['flavor'],
-): never {
-  return refuseLegacyStore(dbFile, classification, storeFormat, flavor);
 }
 
 function withCloseTimeSettlementAuthority(
@@ -2670,87 +2614,11 @@ function withCloseTimeSettlementAuthority(
       250,
     );
     resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
-    act(createSettlementAuthority(runtime.storage, adoption, undefined, resetLock));
+    act(createSettlementAuthority(adoption, undefined, resetLock));
   } finally {
     resetLock?.release();
     adoption?.();
   }
-}
-
-function restoreLegacyParkedStore(
-  runtime: Pick<Runtime, 'env' | 'ids' | 'storage'>,
-  files: BackendStoreFileSet,
-  parkingRoot: string,
-  parkingDirectory: string,
-  parkingRecord: StoreResetParkedRecord,
-  parked: ReturnType<typeof parkCurrentEvidence>,
-  held: Held,
-): Readonly<{
-  restored: boolean;
-  epochs: readonly StoreSettlementEpoch[];
-  restorable: readonly ReturnType<typeof parkCurrentEvidence>[number][];
-}> {
-  const parkedDb = parked.find((item) => item.name === 'store.db');
-  if (parkedDb === undefined) return { restored: false, epochs: [], restorable: [] };
-  const retained = retainNonRegularParking(runtime, parkingRoot, parkingDirectory, parkingRecord, parked, held);
-  const epochs: readonly StoreSettlementEpoch[] =
-    retained.parkingId === null
-      ? []
-      : [
-          {
-            kind: 'parked',
-            parkingId: retained.parkingId,
-            cause: 'residual',
-            names: retained.names,
-            classification: null,
-            rotation: retained.rotation,
-          },
-        ];
-  const restorableNames = ownedActiveClaimNames(runtime.storage, parkingDirectory);
-  const restorable = restorableNames.flatMap((name) => {
-    const item = parked.find((candidate) => candidate.name === name);
-    return item === undefined ? [] : [item];
-  });
-  if (!restoreCompatibleParkedStore(runtime, files, parkingDirectory, restorableNames, held)) {
-    return { restored: false, epochs, restorable };
-  }
-  const identity = activeNameHasIdentity(runtime.storage, files, 'store.db', parkedDb.identity);
-  if (identity.kind === 'undeterminable') throw identity.error;
-  if (identity.kind !== 'same') return { restored: false, epochs, restorable };
-  return { restored: true, epochs, restorable };
-}
-
-function settleRestoredLegacyParking(
-  runtime: Pick<Runtime, 'storage'>,
-  parkingRoot: string,
-  parkingDirectory: string,
-  parkingRecord: StoreResetParkedRecord,
-  parkingCoordinate: string,
-  classification: Extract<StoreFormatClassification, { readonly kind: 'legacy-adoptable' }>,
-  restorable: readonly ReturnType<typeof parkCurrentEvidence>[number][],
-  held: Held,
-): void {
-  for (const item of restorable) held.unlink(join(parkingDirectory, item.name));
-  requireDirectorySync(held, parkingDirectory);
-  terminalizeParking(
-    runtime.storage,
-    parkingRoot,
-    { ...parkingRecord, classification: classification.kind },
-    held,
-    'residual',
-    parkingRecord.incidentId,
-    parkingCoordinate,
-  );
-}
-
-function dropRestoredLegacyActiveNames(
-  runtime: Pick<Runtime, 'storage'>,
-  files: BackendStoreFileSet,
-  restorable: readonly ReturnType<typeof parkCurrentEvidence>[number][],
-  held: Held,
-): void {
-  for (const item of restorable) dropActiveEvidenceIfOwned(runtime.storage, files, item, held);
-  requireDirectorySync(held, files.dbDir);
 }
 
 function openCompatibleParkedStore(
@@ -2762,7 +2630,7 @@ function openCompatibleParkedStore(
   parkingRecord: StoreResetParkedRecord,
   parkingCoordinate: string,
   parked: ReturnType<typeof parkCurrentEvidence>,
-  classification: Extract<StoreFormatClassification, { readonly kind: 'compatible' | 'fresh' }>,
+  classification: Extract<StoreFormatClassification, { readonly kind: 'compatible' | 'fresh' | 'legacy-adoptable' }>,
   held: Held,
 ): ParkedStoreAdoptionAttempt {
   const parkedDb = parked.find((item) => item.name === 'store.db');
@@ -2801,14 +2669,22 @@ function openCompatibleParkedStore(
     parked,
     held,
   );
-  const decision = openWritableStoreDatabase({
-    path: join(parkingDirectory, 'store.db'),
-    storage: runtime.storage,
-    storeFormat: options.storeFormat,
-    flavor: runtime.flavor,
-    busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
-    held,
-  });
+  let decision: ReturnType<typeof openWritableStoreDatabase>;
+  try {
+    decision = openWritableStoreDatabase({
+      path: join(parkingDirectory, 'store.db'),
+      storage: runtime.storage,
+      storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
+      busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
+      held: held.actuator,
+    });
+  } catch (error: unknown) {
+    if (error instanceof StoreFormatChangedDuringAdoptionError) {
+      return { kind: 'retry', epochs: terminalize() };
+    }
+    throw error;
+  }
   if (decision.kind === 'incompatible') {
     return { kind: 'retry', epochs: terminalize() };
   }
@@ -2847,7 +2723,7 @@ function openCompatibleParkedStore(
             withCloseTimeSettlementAuthority(runtime, files, held, (closeHeld) => {
               for (const name of ownedRegularEvidenceNames(runtime.storage, parkingDirectory)) {
                 try {
-                  closeHeld.unlink(join(parkingDirectory, name));
+                  closeHeld.actuator.unlink(join(parkingDirectory, name));
                 } catch (error: unknown) {
                   if (!isNoEntryError(error)) throw error;
                 }
@@ -2899,7 +2775,7 @@ function databaseWithMintedCleanup(
           target.close();
           try {
             withCloseTimeSettlementAuthority(runtime, files, held, (closeHeld) => {
-              closeHeld.remove(minted.directory, { recursive: true });
+              closeHeld.actuator.remove(minted.directory, { recursive: true });
               requireDirectorySync(closeHeld, dirname(minted.directory));
             });
           } catch (error: unknown) {
@@ -2991,40 +2867,7 @@ export function attemptBackendStoreClaim(
 
   if (classification !== null && parkedDb !== undefined) {
     switch (classification.kind) {
-      case 'legacy-adoptable': {
-        const restoration = restoreLegacyParkedStore(
-          runtime,
-          files,
-          parkingRoot,
-          parkingDirectory,
-          parkingOperation.record,
-          parked,
-          held,
-        );
-        preliminaryEpochs.push(...restoration.epochs);
-        if (!restoration.restored) {
-          dropRestoredLegacyActiveNames(runtime, files, restoration.restorable, held);
-          break;
-        }
-        if (!restoredLegacyClassificationStillApplies(runtime, dbFile, classification, options.storeFormat)) {
-          dropRestoredLegacyActiveNames(runtime, files, restoration.restorable, held);
-          break;
-        }
-        settleRestoredLegacyParking(
-          runtime,
-          parkingRoot,
-          parkingDirectory,
-          parkingOperation.record,
-          STORE_RESET_IN_FLIGHT_DIRECTORY,
-          classification,
-          restoration.restorable,
-          held,
-        );
-        minted.db.close();
-        held.remove(minted.directory, { recursive: true });
-        requireDirectorySync(held, dirname(minted.directory));
-        return refuseRestoredLegacyStore(dbFile, classification, options.storeFormat, runtime.flavor);
-      }
+      case 'legacy-adoptable':
       case 'compatible':
       case 'fresh': {
         if (!parkedDatabaseHasPrivateInode(runtime.storage, join(parkingDirectory, 'store.db'), parkedDb.identity)) {
@@ -3047,7 +2890,7 @@ export function attemptBackendStoreClaim(
         try {
           minted.db.close();
           const mintedRoot = dirname(minted.directory);
-          held.remove(minted.directory, { recursive: true });
+          held.actuator.remove(minted.directory, { recursive: true });
           requireDirectorySync(held, mintedRoot);
           settleStoreResetPending(runtime.storage, quarantineRoot, held);
         } catch (error: unknown) {
@@ -3162,7 +3005,7 @@ export function retainTransitionFileInStoreResetQuarantine(
   const evidencePath = join(evidenceRoot, evidenceName);
   const stagingPath = `${evidencePath}${RETAINED_TRANSITION_STAGING_SUFFIX}`;
 
-  held.makeDirectory(files.dbDir, { recursive: true });
+  held.actuator.makeDirectory(files.dbDir, { recursive: true });
   ensureQuarantineRoot(runtime.storage, quarantineRoot, runtime.env.platform(), held);
   ensurePrivateDirectory(runtime.storage, evidenceRoot, runtime.env.platform(), held);
   requireDirectorySync(held, quarantineRoot);
@@ -3194,7 +3037,7 @@ export function retainTransitionFileInStoreResetQuarantine(
   }
 
   // Only a complete staged copy may become visible at the content-addressed evidence path.
-  held.remove(stagingPath, { force: true });
+  held.actuator.remove(stagingPath, { force: true });
   const copied = copyPathCandidateForPublication(
     runtime.storage,
     { source: sourcePath, name: evidenceName },
@@ -3207,7 +3050,7 @@ export function retainTransitionFileInStoreResetQuarantine(
   }
   requireDirectorySync(held, evidenceRoot);
   held.hold();
-  held.rename(stagingPath, evidencePath);
+  held.actuator.rename(stagingPath, evidencePath);
   requireDirectorySync(held, evidenceRoot);
   return {
     evidencePath,
@@ -3280,10 +3123,10 @@ export function resumeAutomaticBackendStoreResetIncident(
 export function acquireBackendStoreResetLock(
   runtime: Pick<Runtime, 'storage' | 'time'>,
   files: BackendStoreFileSet,
-  adoption: Pick<DirectoryLockLease, 'assertOwned'>,
+  adoption: DirectoryLockLease,
 ): BackendStoreResetLockLease {
   adoption.assertOwned();
-  createStorageActuator(runtime.storage, adoption.assertOwned).makeDirectory(files.dbDir, { recursive: true });
+  adoption.actuator.makeDirectory(files.dbDir, { recursive: true });
   const lockPath = join(files.dbDir, 'store.db.reset.lock');
   let directoryLock: DirectoryLockLease;
   try {

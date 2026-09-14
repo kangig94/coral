@@ -1,7 +1,7 @@
 import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
-import { openStoreDatabase, type Database } from '../store/db.js';
+import { openMemoryStoreDatabase, type Database } from '../store/db.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
@@ -107,12 +107,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
     ? (openReadOnlyStoreDatabase(runtime, {
         storeFormat: currentCoralStoreFormat(),
       }) as unknown as Database)
-    : openStoreDatabase({
-        path: ':memory:',
-        storage: runtime.storage,
-        storeFormat: currentCoralStoreFormat(),
-        flavor: runtime.flavor,
-      });
+    : openMemoryStoreDatabase(currentCoralStoreFormat());
 
   return {
     store: new CoralStore(db, createDefaultStoreReadContext(), {

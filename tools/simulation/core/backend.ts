@@ -60,7 +60,7 @@ import * as discussRecovery from '../../../src/discuss/shell/recovery.js';
 import { ExecutionService } from '../../../src/coordinator/execution-service.js';
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { createFailedWorkflowDescendantReleaser } from '../../../src/coordinator/services/workflow-recovery-descendants.js';
-import { openStoreDatabase } from '../../../src/store/db.js';
+import { openMemoryStoreDatabase } from '../../../src/store/db.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
@@ -575,7 +575,7 @@ export type SimulationBackend = {
 export type SimulationWorldCarryOver = Readonly<{
   runtimeRoot: string;
   runtime: SimulationRuntime;
-  storeDb: ReturnType<typeof openStoreDatabase>;
+  storeDb: ReturnType<typeof openMemoryStoreDatabase>;
 }>;
 
 export function createSimulationBackend(
@@ -608,13 +608,7 @@ export function createSimulationBackend(
   providerRegistry.register(fakeProvider);
   const storeFormat = describeCoralStoreFormat(providerRegistry);
   const providerScope = simulationProviderScope(fakeProvider.name);
-  const storeDb =
-    inherited?.storeDb ??
-    openStoreDatabase({
-      path: ':memory:',
-      storage: runtime.storage,
-      storeFormat,
-    });
+  const storeDb = inherited?.storeDb ?? openMemoryStoreDatabase(storeFormat);
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {
     eventBus,
     db: storeDb,
