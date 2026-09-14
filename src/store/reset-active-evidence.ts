@@ -8,7 +8,7 @@ import {
   type StoreResetEvidenceFileName,
 } from './reset-incident.js';
 import type { StoreResetParkedEntry } from './reset-retention.js';
-import type { SettlementAuthority } from './backend-store-reset.js';
+import type { SettlementAuthority } from './settlement-authority.js';
 
 type SettlementHeld = SettlementAuthority;
 

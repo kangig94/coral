@@ -97,8 +97,6 @@ import {
   type SettlementAuthority,
 } from './settlement-authority.js';
 
-export type { SettlementAuthority } from './settlement-authority.js';
-
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
 const TRANSITION_EVIDENCE_SUFFIX = `.active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}.json`;

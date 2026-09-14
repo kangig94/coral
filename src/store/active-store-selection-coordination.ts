@@ -60,11 +60,11 @@ import {
   type WriterExclusion,
   type NewerStoreResetPolicy,
   type OpenOrResetBackendStoreOptions,
-  type SettlementAuthority,
 } from './backend-store-reset.js';
 import { classifyStoreFile, type Database } from './db.js';
 import { enumerateActiveEvidence } from './reset-active-evidence.js';
 import type { StoreFormatClassification } from './format-fingerprint.js';
+import type { SettlementAuthority } from './settlement-authority.js';
 import {
   acquireGenerationAdoptionLock,
   formatLegacyGenerationIgnoredNotice,

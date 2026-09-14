@@ -6,7 +6,7 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { validateProductVersion } from '../infra/product-version.js';
-import type { SettlementAuthority } from './backend-store-reset.js';
+import type { SettlementAuthority } from './settlement-authority.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,

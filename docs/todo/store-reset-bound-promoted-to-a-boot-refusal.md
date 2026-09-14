@@ -1454,7 +1454,7 @@ the sixth consecutive round.
 | 19 | a derived closure **and** a derived member set | what the supplied proof proved |
 | 20 | an unexported constructor and a lease-owned actuator | **SQL, which is not a syscall at all** |
 
-`openWritableStoreDatabase` proves authority once through `held.makeDirectory` (`src/store/db.ts:347`),
+`openWritableStoreDatabase` in `src/store/db.ts` proves authority once through `held.makeDirectory`,
 then opens a `DatabaseSync` and commits DDL and metadata rows with no further check; the next actuator
 call notices the lost lease long after the transaction committed. Both reviewers reproduced it. The guard
 cannot see it because it derives protected names from `StorageMutationPort`, and `DatabaseSync.exec`,
@@ -1520,9 +1520,9 @@ database's contents or its locks is a refused syscall.
 
 ### One home for the disposition, and a disposition that can be cleared
 
-`discard` says an incomplete rotation's survivor "remains on disk" (`cli/commands/backend.ts:520`) for a
+`formatStoreResetDiscard` in `src/cli/commands/backend.ts` says an incomplete rotation's survivor "remains on disk" for a
 disposition that explicitly covers a survivor that disappeared, while a second formatter already words it
-truthfully (`cli/format/store-reset.ts:98`). Two homes for one sentence, drifting, which is §7 exactly:
+truthfully through `incompleteRotationStatus` in `src/cli/format/store-reset.ts`. Two homes for one sentence, drifting, which is §7 exactly:
 delete the local wording and call the formatter.
 
 And an incomplete rotation naming a survivor that no longer exists is retried forever and cannot be
@@ -1533,8 +1533,8 @@ can act on.
 
 ### A lease may not advertise a capability its dependencies cannot back
 
-`createDirectoryLockLease` casts a partial `DirectoryLockDeps.storage` — eight methods — to a full
-`StoragePort` to build the actuator it advertises (`src/infra/fs-lock.ts:503`), so
+`createDirectoryLockLease` in `src/infra/fs-lock.ts` casts a partial `DirectoryLockDeps.storage` — eight methods — to a full
+`StoragePort` to build the actuator it advertises, so
 `lease.actuator.syncDirectory(...)` throws for any conforming minimal dependency object, after proving
 ownership. Settlement happens to pass a full runtime storage, so nothing fails today and the exported
 contract is still false. Widen the dependency to what the actuator needs, or do not put an actuator on a

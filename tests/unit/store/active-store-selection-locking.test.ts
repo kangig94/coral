@@ -134,9 +134,9 @@ function stubStoreOpen(
 ): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
   return {
     classifyStore: spyOnClassifyStoreFile().mockReturnValue(classification),
-    openStore: spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+    openStore: spyOnOpenWritableStoreDatabase().mockImplementation(({ path, owner }) => {
       if (!existsSync(path)) writeFileSync(path, '');
-      return { kind: 'opened', db: database };
+      return { kind: 'opened', db: owner?.openDatabase(() => database) ?? database };
     }),
   };
 }
@@ -273,13 +273,13 @@ describe('active-store-selection locking', () => {
       events.push('classify');
       return { kind: 'fresh' };
     });
-    spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+    spyOnOpenWritableStoreDatabase().mockImplementation(({ path, owner }) => {
       expect(existsSync(boundary.adoptionLock)).toBe(true);
       expect(existsSync(resetLock)).toBe(false);
       expect(path).not.toBe(runtime.paths.coral.store.dbFile);
       writeFileSync(path, '');
       events.push('open');
-      return { kind: 'opened', db };
+      return { kind: 'opened', db: owner?.openDatabase(() => db) ?? db };
     });
 
     const result = await coordinateActiveStoreSelection(runtime, authority, {
@@ -849,9 +849,9 @@ describe('active-store-selection locking', () => {
     }
     runtime.storage.lstatSync = deleteStoreAfterInitialStat;
     const db = fakeDatabase();
-    const openStore = spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+    const openStore = spyOnOpenWritableStoreDatabase().mockImplementation(({ path, owner }) => {
       if (!existsSync(path)) writeFileSync(path, '');
-      return { kind: 'opened', db };
+      return { kind: 'opened', db: owner?.openDatabase(() => db) ?? db };
     });
     const acquireStoreRecoveryLease = vi.fn(immediateRecoveryLease);
 
@@ -902,9 +902,9 @@ describe('active-store-selection locking', () => {
     }
     runtime.storage.lstatSync = swapStoreAfterInitialStat;
     const db = fakeDatabase();
-    const openStore = spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+    const openStore = spyOnOpenWritableStoreDatabase().mockImplementation(({ path, owner }) => {
       if (!existsSync(path)) writeFileSync(path, '');
-      return { kind: 'opened', db };
+      return { kind: 'opened', db: owner?.openDatabase(() => db) ?? db };
     });
     const acquireStoreRecoveryLease = vi.fn(immediateRecoveryLease);
 
