@@ -1250,9 +1250,9 @@ Revision 10 said the type was the guard and that "there is no level beneath it t
 reviewers found the level beneath it independently, and they found the same one.
 
 `dropParkedEvidence` unlinks a shared parking name and takes no authority at all
-(`src/store/reset-active-evidence.ts:354`). `restoreParkedEvidence` holds before its `linkSync` and then
+(`src/store/reset-active-evidence.ts`). `restoreParkedEvidence` holds before its `linkSync` and then
 unlinks without re-holding (`:367`, `:376`). The invariant passed anyway, because what it checks is a
-**hand-written list of twenty-nine function names** (`tests/invariants/store-reset-discipline.test.ts:498`)
+**hand-written list of twenty-nine function names** (`tests/invariants/store-reset-discipline.test.ts`)
 — and `dropParkedEvidence` is not on it.
 
 Reachable, and both reviewers reached it the same way: process A decides a parked entry is its own and
@@ -1325,7 +1325,7 @@ should refuse at all remains the migration entry's question.
 `commitTerminalParking` computes and returns `incomplete` (`backend-store-reset.ts:1812`), and
 `attemptBackendStoreClaim` drops the result on both terminalization branches (`:2929`). The `parked`
 epoch carries no rotation field (`:244`), so the CLI can render an incomplete rotation for a `described`
-incident and never for terminal parking (`cli/commands/backend.ts:527`, `:544`). Startup then finishes
+incident and never for terminal parking (`cli/commands/backend.ts`). Startup then finishes
 successfully with two retained coordinates and says only "Parked …", with the honest disposition alive
 solely in an audit event that scrolls away — §11's "a refusal is visible as durable status, not only as a
 log line", and `decision-union-results.md` besides. The rotation reaches the epoch, and the CLI renders
