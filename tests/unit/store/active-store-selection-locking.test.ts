@@ -24,6 +24,7 @@ import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
+  publishActiveStoreSelection,
   ACTIVE_STORE_SELECTION_VERSION,
   ACTIVE_STORE_TRANSITION_VERSION,
   encodeActiveStoreSelection,
@@ -38,6 +39,7 @@ import { coordinateActiveStoreSelection } from '#src/store/active-store-selectio
 import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import type { Database } from '#src/store/db.js';
 import {
+  acquireGenerationAdoptionLock,
   resolveGenerationBoundaryPaths,
   type GenerationMaintenanceLease,
 } from '#src/store/generation-mutation-coordination.js';
@@ -173,6 +175,39 @@ afterEach(() => {
 });
 
 describe('active-store-selection locking', () => {
+  it('does not publish through an adoption lease after a successor has claimed the coordinate', async () => {
+    const { root, runtime, currentSelection } = harness();
+    const firstSelection = {
+      ...currentSelection,
+      manifest: {
+        ...currentSelection.manifest,
+        buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+      },
+    };
+    const secondManifest = manifest('1.0.0', '323e4567-e89b-42d3-a456-426614174000');
+    const secondSelection = selection(secondManifest, createBundle(root, secondManifest));
+    const publishWithAuthority = publishActiveStoreSelection as unknown as (
+      runtime: Runtime,
+      selection: ActiveStoreSelection,
+      actuator: unknown,
+    ) => void;
+    const first = await acquireGenerationAdoptionLock(runtime);
+    const wallNow = runtime.time.now.bind(runtime.time);
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => wallNow() + 11 * 60 * 1_000);
+    const second = await acquireGenerationAdoptionLock(runtime);
+
+    try {
+      publishWithAuthority(runtime, secondSelection, (second as { actuator?: unknown }).actuator);
+      expect(() => publishWithAuthority(runtime, firstSelection, (first as { actuator?: unknown }).actuator)).toThrow(
+        /ownership lost/u,
+      );
+      expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: secondSelection });
+    } finally {
+      first();
+      second();
+    }
+  });
+
   it.each([
     { relation: 'exact', version: '1.0.0', buildSetId: '123e4567-e89b-42d3-a456-426614174000', writes: 0 },
     { relation: 'advance', version: '0.9.0', buildSetId: '223e4567-e89b-42d3-a456-426614174000', writes: 1 },
@@ -895,47 +930,6 @@ describe('active-store-selection locking', () => {
       value: storeFormat.fingerprint,
     });
     externalAfter.close();
-  });
-
-  it('should refuse a real legacy store after recovery exclusion and parked-inode classification', async () => {
-    const { runtime, currentSelection, authority } = harness();
-    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
-    const storeFormat = currentCoralStoreFormat();
-    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true, mode: 0o700 });
-    const legacy = runtime.storage.openSqliteDatabaseSync(runtime.paths.coral.store.dbFile);
-    legacy.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    legacy.prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)").run(storeFormat.fingerprint);
-    legacy.close();
-    const openStore = spyOnOpenWritableStoreDatabase();
-    const acquireStoreRecoveryLease = vi.fn(immediateRecoveryLease);
-
-    await expect(
-      coordinateActiveStoreSelection(runtime, authority, {
-        storeFormat,
-        currentSelection,
-        dependencies: {
-          kind: 'operator',
-          validateSelectedTarget: () => {
-            throw new Error('validator should not run');
-          },
-          acquireStoreRecoveryLease,
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'store_schema_outdated' });
-
-    expect(openStore).toHaveBeenCalledOnce();
-    expect(openStore).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: join(
-          runtime.paths.coral.store.dbDir,
-          'store-reset-quarantine',
-          '.minted',
-          STORE_RESET_MINTED_STORE_DIRECTORY,
-          'store.db',
-        ),
-      }),
-    );
-    expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
   });
 
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {

@@ -18,6 +18,7 @@ const GENERATION_MUTATION_COORDINATION_PATH = 'src/store/generation-mutation-coo
 const EXPANSION_INSTALL_PATH = 'src/cli/expansion/install.ts';
 const STORAGE_PORT_TYPES_PATH = 'src/infra/port-types.ts';
 const STORAGE_ACTUATOR_PATH = 'src/infra/storage-actuator.ts';
+const FS_LOCK_PATH = 'src/infra/fs-lock.ts';
 
 type CallHit = {
   relativePath: string;
@@ -481,7 +482,33 @@ describe('store reset discipline invariants', () => {
       directProtectedStorageMentions(settlementStoreImportClosure(destructuredAccess), destructuredAccess),
     ).toContainEqual(expect.stringContaining('unlinkSync'));
 
-    const actuator = sourceFile(STORAGE_ACTUATOR_PATH);
+    const actuatorDeclarations = allSourcePaths().flatMap((relativePath) => {
+      const source = sourceFile(relativePath);
+      return source.statements.flatMap((statement) =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'createStorageActuator'
+          ? [{ relativePath, source, declaration: statement }]
+          : [],
+      );
+    });
+    expect(actuatorDeclarations).toHaveLength(1);
+    const actuatorDeclaration = actuatorDeclarations[0];
+    expect(actuatorDeclaration).toBeDefined();
+    if (actuatorDeclaration === undefined) return;
+    const { relativePath: actuatorPath, source: actuator, declaration } = actuatorDeclaration;
+    expect(declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false).toBe(
+      false,
+    );
+
+    const actuatorCalls = allSourcePaths()
+      .flatMap(collectCalls)
+      .filter((call) => call.callee === 'createStorageActuator');
+    expect(actuatorCalls).toEqual([
+      expect.objectContaining({
+        relativePath: FS_LOCK_PATH,
+        enclosingFunctions: expect.arrayContaining(['createDirectoryLockLease']),
+      }),
+    ]);
+
     const ownedMembers = new Map<string, number>();
     const proofViolations: string[] = [];
     const visit = (node: ts.Node): void => {
@@ -504,7 +531,7 @@ describe('store reset discipline invariants', () => {
           block.statements[index - 1]?.getText(actuator) !== 'prove();'
         ) {
           const line = actuator.getLineAndCharacterOfPosition(node.getStart(actuator)).line + 1;
-          proofViolations.push(`${STORAGE_ACTUATOR_PATH}:${line} ${node.getText(actuator)}`);
+          proofViolations.push(`${actuatorPath}:${line} ${node.getText(actuator)}`);
         }
       }
       ts.forEachChild(node, visit);
@@ -514,9 +541,12 @@ describe('store reset discipline invariants', () => {
     expect([...ownedMembers.values()].every((count) => count === 1)).toBe(true);
     expect(proofViolations).toEqual([]);
 
+    const actuatorType = readFileSync(join(REPO_ROOT, STORAGE_ACTUATOR_PATH), 'utf8');
+    expect(actuatorType).not.toMatch(/readWholeFile(?:Async)?\s*\(/u);
+
     const backend = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
-    expect(backend).toContain('StorageActuator &');
-    expect(backend).toContain('createStorageActuator(storage, hold)');
+    expect(backend).toContain('readonly actuator: StorageActuator');
+    expect(backend).not.toContain('createStorageActuator');
     expect(backend).not.toContain('guardedFunctions');
   });
 

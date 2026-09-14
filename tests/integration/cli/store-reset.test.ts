@@ -57,6 +57,7 @@ import {
   MAX_RESET_PARKED_SIDECAR_BYTES,
   MAX_RESET_RETENTION_LEDGER_BYTES,
   readStoreResetRetentionLedger,
+  recordStoreResetParked,
   recordStoreResetPending,
   STORE_RESET_PARKED_SIDECAR_VERSION,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
@@ -356,6 +357,62 @@ describe('local store-reset operations', () => {
 
     expect(result).toEqual({ incidents: [], truncated: false, parkingRootState: 'absent' });
     expect(createDiagnosticRunner).not.toHaveBeenCalled();
+  });
+
+  it('reads an incomplete retention rotation from the ledger after process restart', async () => {
+    const baseDir = root();
+    const runtime = createRealRuntime('prod', { baseDir });
+    const quarantineRoot = join(baseDir, 'store-reset-quarantine');
+    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
+    const priorId = '423e4567-e89b-42d3-a456-426614174000';
+    const parkingPath = join(quarantineRoot, '.parked', parkingId);
+    const priorPath = join(quarantineRoot, priorId);
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    mkdirSync(priorPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db'), 'new survivor');
+    writeFileSync(join(priorPath, 'store.db'), 'prior survivor');
+    const syncDirectory = runtime.storage.syncDirectoryDurableSync;
+    let removed = false;
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      if (!removed && path === dirname(parkingPath)) {
+        removed = true;
+        rmSync(parkingPath, { recursive: true });
+      }
+      return syncDirectory(path);
+    });
+
+    expect(
+      recordStoreResetParked(runtime.storage, quarantineRoot, parkingId, fixtureHeld(runtime.storage)),
+    ).toMatchObject({
+      kind: 'incomplete',
+      survivor: { kind: 'parking', id: parkingId },
+    });
+    vi.restoreAllMocks();
+
+    const restartedRuntime = createRealRuntime('prod', { baseDir });
+    const restarted = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot)) as ReturnType<
+      typeof listStoreResetIncidentsLocal
+    > & {
+      readonly rotation?: {
+        readonly kind: 'incomplete';
+        readonly survivor: { readonly kind: 'parking'; readonly id: string };
+        readonly cause: string;
+      } | null;
+    };
+    expect(restartedRuntime.storage.existsSync(priorPath)).toBe(true);
+    expect(restarted.rotation).toMatchObject({
+      kind: 'incomplete',
+      survivor: { kind: 'parking', id: parkingId },
+    });
+
+    await runCommand(['backend', 'store-reset', 'list', '--target', 'gen2'], {
+      list: () => restarted,
+      report: async () => publicReport(),
+      release: operationsRelease,
+      discard: operationsDiscard,
+    });
+
+    expect(stdout).toContain(`Retention rotation is incomplete; parking '${parkingId}'`);
   });
 
   it('validates the incident ID before build identity or filesystem access', async () => {

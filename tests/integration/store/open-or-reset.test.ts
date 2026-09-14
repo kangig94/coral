@@ -82,6 +82,7 @@ import { releaseStoreReset } from '#src/store/operator-store-reset.js';
 import {
   readStoreResetParkedRecord,
   readStoreResetRetentionLedger,
+  retainOnlyStoreResetPreservedCopy,
   releaseStoreResetIncident,
   resolveStoreResetRetentionSlot,
   STORE_RESET_RETENTION_LEDGER_FILE_NAME,
@@ -1361,6 +1362,43 @@ describe('openOrResetBackendStoreDb', () => {
       preserved: { incidentId: replacement.incident.incidentId },
     });
     expect(existsSync(join(quarantineRoot, holder.incident.incidentId))).toBe(false);
+  });
+
+  it('leaves the prior copy when the chosen survivor disappears before its removal', () => {
+    const runtime = createRuntime();
+    const quarantineRoot = makeTempRoot('coral-store-reset-survivor-disappears-');
+    const priorId = '223e4567-e89b-42d3-a456-426614174000';
+    const survivorId = '323e4567-e89b-42d3-a456-426614174000';
+    const priorPath = join(quarantineRoot, priorId);
+    const survivorPath = join(quarantineRoot, survivorId);
+    mkdirSync(priorPath);
+    mkdirSync(survivorPath);
+    writeFileSync(join(priorPath, 'store.db'), 'prior evidence');
+    writeFileSync(join(survivorPath, 'store.db'), 'new evidence');
+    const syncDirectory = runtime.storage.syncDirectoryDurableSync;
+    let removed = false;
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      if (!removed && path === quarantineRoot) {
+        removed = true;
+        rmSync(survivorPath, { recursive: true });
+      }
+      return syncDirectory(path);
+    });
+
+    const rotation = retainOnlyStoreResetPreservedCopy(
+      runtime.storage,
+      quarantineRoot,
+      { kind: 'incident', id: survivorId },
+      fixtureHeld(runtime.storage),
+    );
+
+    expect(removed).toBe(true);
+    expect(rotation).toMatchObject({
+      kind: 'incomplete',
+      survivor: { kind: 'incident', id: survivorId },
+    });
+    expect(existsSync(priorPath)).toBe(true);
+    expect(existsSync(survivorPath)).toBe(false);
   });
 
   it.each([
@@ -3522,16 +3560,13 @@ describe('openOrResetBackendStoreDb', () => {
           db.close();
         });
 
+        expect(error).toBeNull();
         if (kind === 'legacy-adoptable') {
-          expectSetupCode(error, 'store_schema_outdated');
           expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
           const after = statSync(dbPath, { bigint: true });
           expect({ dev: after.dev, ino: after.ino }).toEqual({ dev: before?.dev, ino: before?.ino });
-        } else {
-          expect(error).toBeNull();
-          if (before !== null && kind !== 'fresh' && kind !== 'compatible') {
-            expect(retainedIncidentContainsTable(root, 'sentinel_before_reset')).toBe(true);
-          }
+        } else if (before !== null && kind !== 'fresh' && kind !== 'compatible') {
+          expect(retainedIncidentContainsTable(root, 'sentinel_before_reset')).toBe(true);
         }
       });
     }
@@ -3586,14 +3621,12 @@ describe('openOrResetBackendStoreDb', () => {
 
         expect(injected).toBe(true);
         expect(occupant).not.toBeNull();
+        expect(error).toBeNull();
+        expect(containsIdentity(root, occupant!)).toBe(true);
         if (kind === 'legacy-adoptable') {
-          expectSetupCode(error, 'store_schema_outdated');
-          expect(containsIdentity(root, occupant!)).toBe(true);
           const active = statSync(dbPath, { bigint: true });
           expect({ dev: active.dev, ino: active.ino }).toEqual(occupant);
-        } else {
-          expect(error).toBeNull();
-          expect(containsIdentity(root, occupant!)).toBe(true);
+          expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
         }
       });
     }
