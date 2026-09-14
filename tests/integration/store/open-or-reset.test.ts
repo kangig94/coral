@@ -2477,11 +2477,16 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
-  it.each(['private', 'externally-linked'] as const)(
-    'opens a fresh %s claim through a private active inode',
-    async (topology) => {
+  it.each([
+    ['private', 'uncontended'],
+    ['private', 'replaced'],
+    ['externally-linked', 'uncontended'],
+    ['externally-linked', 'replaced'],
+  ] as const)(
+    'opens a fresh %s claim through a private active inode when the pathname is %s',
+    async (topology, pathnameState) => {
       const runtime = createRuntime();
-      const root = makeTempRoot(`coral-store-writable-${topology}-`);
+      const root = makeTempRoot(`coral-store-writable-${topology}-${pathnameState}-`);
       const dbPath = join(root, 'store.db');
       const externalPath = join(root, 'external-store.db');
       new DatabaseSync(dbPath).close();
@@ -2489,17 +2494,29 @@ describe('openOrResetBackendStoreDb', () => {
       const before = readFileSync(dbPath);
       const parkedIdentity = statSync(dbPath, { bigint: true });
       expect(parkedIdentity.nlink).toBe(topology === 'private' ? 1n : 2n);
+      const linkSync = runtime.storage.linkSync;
+      let replacementIdentity: { readonly dev: bigint; readonly ino: bigint } | null = null;
+      vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+        if (pathnameState === 'replaced' && replacementIdentity === null && destination === dbPath) {
+          createIncompatibleSentinelStore(dbPath, 0);
+          const replacement = statSync(dbPath, { bigint: true });
+          replacementIdentity = { dev: replacement.dev, ino: replacement.ino };
+        }
+        linkSync(source, destination);
+      });
 
       const db = await openReset(runtime, dbPath);
       expectReturnedHandleTargetsActiveStore(db, dbPath);
       db.close();
 
+      expect(replacementIdentity === null).toBe(pathnameState === 'uncontended');
+      if (replacementIdentity !== null) expect(containsIdentity(root, replacementIdentity)).toBe(true);
       const activeIdentity = statSync(dbPath, { bigint: true });
       if (topology === 'private') {
-        expect({ dev: activeIdentity.dev, ino: activeIdentity.ino }).toEqual({
-          dev: parkedIdentity.dev,
-          ino: parkedIdentity.ino,
-        });
+        const active = { dev: activeIdentity.dev, ino: activeIdentity.ino };
+        const initial = { dev: parkedIdentity.dev, ino: parkedIdentity.ino };
+        if (pathnameState === 'uncontended') expect(active).toEqual(initial);
+        else expect(active).not.toEqual(initial);
         return;
       }
       expect(readFileSync(externalPath)).toEqual(before);

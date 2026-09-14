@@ -484,10 +484,10 @@ async function settleActiveStore(
       }
     }
 
-    const minted = mintBackendStoreForClaim(runtime, files, options);
+    let claimCandidate = mintBackendStoreForClaim(runtime, files, options);
     let db: Database;
     for (;;) {
-      const attempt = attemptBackendStoreClaim(runtime, files, options, minted);
+      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate);
       epochs.push(...attempt.epochs);
       for (const epoch of attempt.epochs) {
         if (epoch.kind === 'described' && epoch.publication.kind === 'preserved') {
@@ -495,7 +495,10 @@ async function settleActiveStore(
         }
         if (epoch.kind === 'parked') survivor = { kind: 'parking', parkingId: epoch.parkingId };
       }
-      if (attempt.kind === 'retry') continue;
+      if (attempt.kind === 'retry') {
+        claimCandidate = attempt.candidate;
+        continue;
+      }
       db = attempt.db;
       break;
     }

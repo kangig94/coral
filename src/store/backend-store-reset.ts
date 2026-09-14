@@ -204,6 +204,14 @@ export type MintedBackendStore = Readonly<{
 }>;
 
 export type BackendStoreClaimAttempt =
+  | {
+      readonly kind: 'retry';
+      readonly candidate: MintedBackendStore;
+      readonly epochs: readonly StoreSettlementEpoch[];
+    }
+  | { readonly kind: 'opened'; readonly db: Database; readonly epochs: readonly StoreSettlementEpoch[] };
+
+type ParkedStoreAdoptionAttempt =
   | { readonly kind: 'retry'; readonly epochs: readonly StoreSettlementEpoch[] }
   | { readonly kind: 'opened'; readonly db: Database; readonly epochs: readonly StoreSettlementEpoch[] };
 
@@ -2316,7 +2324,9 @@ function cloneParkedStoreForClaim(
   return cloned;
 }
 
-function unavailableStoreClassification(current: StoreFormatDescription): StoreFormatClassification {
+function unavailableStoreClassification(
+  current: StoreFormatDescription,
+): Extract<StoreFormatClassification, { readonly kind: 'corrupt-or-unsupported' }> {
   return {
     kind: 'corrupt-or-unsupported',
     currentFingerprint: current.fingerprint,
@@ -2472,7 +2482,7 @@ function openCompatibleParkedStore(
   parkingCoordinate: string,
   parked: ReturnType<typeof parkCurrentEvidence>,
   classification: Extract<StoreFormatClassification, { readonly kind: 'compatible' | 'fresh' }>,
-): BackendStoreClaimAttempt {
+): ParkedStoreAdoptionAttempt {
   const parkingId = parkingRecord.parkingId;
   const parkedDb = parked.find((item) => item.name === 'store.db');
   if (parkedDb === undefined) return { kind: 'retry', epochs: [] };
@@ -2615,7 +2625,7 @@ function finishOpenedClaim(
       minted.db.close();
       throw identity.error;
     }
-    return { kind: 'retry', epochs: [] };
+    return { kind: 'retry', candidate: minted, epochs: [] };
   }
   return { kind: 'opened', db: databaseWithMintedCleanup(runtime.storage, minted), epochs: [{ kind: 'claimed' }] };
 }
@@ -2678,7 +2688,7 @@ export function attemptBackendStoreClaim(
             null,
             STORE_RESET_IN_FLIGHT_DIRECTORY,
           );
-          return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
+          return { kind: 'retry', candidate: minted, epochs: parkedEpoch === null ? [] : [parkedEpoch] };
         }
         minted.db.close();
         runtime.storage.rmSync(minted.directory, { recursive: true });
@@ -2701,7 +2711,7 @@ export function attemptBackendStoreClaim(
           parked,
           classification,
         );
-        if (adoption.kind === 'retry') return adoption;
+        if (adoption.kind === 'retry') return { ...adoption, candidate: minted };
         try {
           minted.db.close();
           const mintedRoot = dirname(minted.directory);
@@ -2747,7 +2757,7 @@ export function attemptBackendStoreClaim(
   for (const name of ownedActiveClaimNames(runtime.storage, claimStore.directory)) {
     const claim = linkOwnedEvidenceToActive(runtime.storage, files, join(claimStore.directory, name), name);
     if (claim.kind === 'occupied') {
-      return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
+      return { kind: 'retry', candidate: claimStore, epochs: parkedEpoch === null ? [] : [parkedEpoch] };
     }
   }
   requireDirectorySync(runtime.storage, files.dbDir);
@@ -2755,6 +2765,7 @@ export function attemptBackendStoreClaim(
   if (opened.kind === 'retry') {
     return {
       kind: 'retry',
+      candidate: opened.candidate,
       epochs: [...(parkedEpoch === null ? [] : [parkedEpoch]), ...opened.epochs],
     };
   }
