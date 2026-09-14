@@ -3515,7 +3515,7 @@ describe('openOrResetBackendStoreDb', () => {
     expectOneTerminalSurvivor(dbPath);
     expectReturnedSurvivorExists(dbPath, settlement.survivor);
     expect(tableExists(dbPath, 'events')).toBe(true);
-    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(false);
+    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 
   it.each([STORE_RESET_MINTED_STORE_DIRECTORY, '323e4567-e89b-42d3-a456-426614174000'] as const)(
@@ -3551,7 +3551,7 @@ describe('openOrResetBackendStoreDb', () => {
         classification: 'compatible',
       });
       expect(tableExists(dbPath, 'events')).toBe(true);
-      expect(tableExists(dbPath, 'sentinel_replacement')).toBe(false);
+      expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
     },
   );
 

@@ -2218,6 +2218,83 @@ export function mintBackendStoreForClaim(
   }
 }
 
+function cloneParkedStoreForClaim(
+  runtime: Pick<Runtime, 'env' | 'flavor' | 'storage'>,
+  options: OpenOrResetBackendStoreOptions,
+  minted: MintedBackendStore,
+  parkingDirectory: string,
+  parked: ReturnType<typeof parkCurrentEvidence>,
+  cloneId: string,
+): MintedBackendStore {
+  const mintedRoot = dirname(minted.directory);
+  const directory = join(mintedRoot, cloneId);
+  let decision: ReturnType<typeof openWritableStoreDatabase> | null = null;
+  let cloned: MintedBackendStore;
+  try {
+    createPrivateOperationDirectory(runtime.storage, mintedRoot, directory, runtime.env.platform());
+    let coherent = true;
+    for (const item of parked) {
+      if (item.entry.kind !== 'regular-file') continue;
+      const copied = copyPathCandidateForPublication(
+        runtime.storage,
+        { source: join(parkingDirectory, item.name), name: item.name },
+        join(directory, item.name),
+        null,
+      );
+      if (copied.coherence !== 'coherent') coherent = false;
+    }
+    requireDirectorySync(runtime.storage, directory);
+    if (!coherent) throw new Error('The aliased store changed while it was copied to a private inode.');
+    const path = join(directory, 'store.db');
+    decision = openWritableStoreDatabase({
+      path,
+      storage: runtime.storage,
+      storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
+      busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
+    });
+    if (decision.kind !== 'opened') throw new Error('The private store copy was incompatible.');
+    const stat = stablePathStat(runtime.storage, path);
+    cloned = { directory, path, identity: { dev: stat.dev, ino: stat.ino }, db: decision.db };
+  } catch {
+    if (decision?.kind === 'opened') decision.db.close();
+    try {
+      runtime.storage.rmSync(directory, { recursive: true, force: true });
+      requireDirectorySync(runtime.storage, mintedRoot);
+    } catch {
+      // The fixed minted store remains the safe claim candidate.
+    }
+    return minted;
+  }
+  try {
+    minted.db.close();
+  } catch (error: unknown) {
+    try {
+      cloned.db.close();
+    } catch {
+      // The original close failure remains authoritative.
+    }
+    try {
+      runtime.storage.rmSync(directory, { recursive: true, force: true });
+      requireDirectorySync(runtime.storage, mintedRoot);
+    } catch {
+      // The close failure remains authoritative.
+    }
+    throw error;
+  }
+  try {
+    runtime.storage.rmSync(minted.directory, { recursive: true });
+    requireDirectorySync(runtime.storage, mintedRoot);
+  } catch (error: unknown) {
+    writeAuditEvent(
+      'store_reset_minted_cleanup_deferred',
+      { cause: error instanceof Error ? error.message : String(error) },
+      'warn',
+    );
+  }
+  return cloned;
+}
+
 function unavailableParkedClassification(options: OpenOrResetBackendStoreOptions): StoreFormatClassification {
   return {
     kind: 'corrupt-or-unsupported',
@@ -2555,6 +2632,7 @@ export function attemptBackendStoreClaim(
       : null;
   const parkedEpoch: StoreSettlementEpoch | null =
     names.length === 0 ? null : { kind: 'parked', parkingId, cause, names, classification };
+  let claimStore = minted;
 
   if (classification !== null && parkedDb !== undefined) {
     switch (classification.kind) {
@@ -2588,6 +2666,7 @@ export function attemptBackendStoreClaim(
       case 'compatible':
       case 'fresh': {
         if (!parkedDatabaseHasPrivateInode(runtime.storage, join(parkingDirectory, 'store.db'), parkedDb.identity)) {
+          claimStore = cloneParkedStoreForClaim(runtime, options, minted, parkingDirectory, parked, parkingId);
           break;
         }
         const adoption = openCompatibleParkedStore(
@@ -2644,14 +2723,14 @@ export function attemptBackendStoreClaim(
     );
   }
 
-  for (const name of ownedActiveClaimNames(runtime.storage, minted.directory)) {
-    const claim = linkOwnedEvidenceToActive(runtime.storage, files, join(minted.directory, name), name);
+  for (const name of ownedActiveClaimNames(runtime.storage, claimStore.directory)) {
+    const claim = linkOwnedEvidenceToActive(runtime.storage, files, join(claimStore.directory, name), name);
     if (claim.kind === 'occupied') {
       return { kind: 'retry', epochs: parkedEpoch === null ? [] : [parkedEpoch] };
     }
   }
   requireDirectorySync(runtime.storage, files.dbDir);
-  const opened = finishOpenedClaim(runtime, files, minted);
+  const opened = finishOpenedClaim(runtime, files, claimStore);
   if (opened.kind === 'retry') {
     return {
       kind: 'retry',
