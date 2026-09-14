@@ -515,6 +515,7 @@ describe('active-store selection recovery', () => {
       },
     });
     expect(result.kind).toBe('opened');
+    if (result.kind !== 'opened') throw new Error('Expected the owned-classification path to open the store.');
     expect(result.epochs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
