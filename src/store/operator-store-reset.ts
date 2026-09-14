@@ -50,7 +50,7 @@ export type StoreResetReleasePresentation =
   | { readonly kind: 'current'; readonly epoch: number; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | { readonly kind: 'absent'; readonly epoch: number; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | {
-      readonly kind: 'partially-released';
+      readonly kind: 'release-unproven';
       readonly epoch: number;
       readonly target: 'gen2';
       readonly flavor: BuildFlavor;
@@ -154,17 +154,19 @@ export async function releaseStoreReset(options: {
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
   const adoption = await acquireGenerationAdoptionLock(options.runtime);
   try {
-    const current = resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir);
     const base = { epoch: options.epoch, target: 'gen2' as const, flavor: options.runtime.flavor };
-    if (options.epoch === current) return { kind: 'current', ...base };
     const coordinate = options.epoch === 0 ? epochPath(paths.dbDir, 0) : epochDirectory(paths.dbDir, options.epoch);
     if (!options.runtime.storage.existsSync(coordinate)) {
       return { kind: 'absent', ...base };
     }
-    const complete = sweepStoreEpochs(options.runtime.storage, paths.dbDir, current, {
+    const current = resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir);
+    adoption.assertOwned();
+    if (options.epoch === current) return { kind: 'current', ...base };
+    const complete = sweepStoreEpochs(options.runtime, paths.dbDir, current, {
       releaseEpoch: options.epoch,
+      assertOwned: adoption.assertOwned,
     });
-    return { kind: complete ? 'released' : 'partially-released', ...base };
+    return { kind: complete ? 'released' : 'release-unproven', ...base };
   } finally {
     adoption();
   }

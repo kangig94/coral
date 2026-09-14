@@ -206,6 +206,16 @@ export async function acquireGenerationAdoptionLock(
   runtime: Runtime,
   timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<GenerationAdoptionLockLease> {
+  const lease = await tryAcquireGenerationAdoptionLock(runtime, timeoutMs);
+  if (lease !== null) return lease;
+  const paths = resolveGenerationBoundaryPaths(runtime);
+  throw generationNotQuiescentError(runtime, `adoption lock at ${paths.adoptionLock}`, 'writer-live');
+}
+
+export async function tryAcquireGenerationAdoptionLock(
+  runtime: Runtime,
+  timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
+): Promise<GenerationAdoptionLockLease | null> {
   const paths = resolveGenerationBoundaryPaths(runtime);
   createDirectoryLockParent(runtime.storage, paths.generationRoot);
   try {
@@ -213,9 +223,7 @@ export async function acquireGenerationAdoptionLock(
     Object.defineProperty(lease, GENERATION_ADOPTION_LOCK_BRAND, { value: true });
     return lease as GenerationAdoptionLockLease;
   } catch (error: unknown) {
-    if (isDirectoryLockTimeoutError(error)) {
-      throw generationNotQuiescentError(runtime, `adoption lock at ${paths.adoptionLock}`, 'writer-live');
-    }
+    if (isDirectoryLockTimeoutError(error)) return null;
     throw error;
   }
 }

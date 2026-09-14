@@ -1,7 +1,8 @@
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
+import { probeCoordinator } from '../infra/backend-discovery.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -45,8 +46,15 @@ export type StoreEpochListEntry = Readonly<{
   bytes: number | null;
   classification: StoreEpochClassification;
   storedProductVersion: string | null;
-  epochJson: StoreEpochMetadata | null;
+  epochJson: StoreEpochMetadataDisposition;
 }>;
+
+export type StoreEpochMetadataDisposition =
+  | Readonly<{ kind: 'legacy-epoch-0' }>
+  | Readonly<{ kind: 'valid'; value: StoreEpochMetadata }>
+  | Readonly<{ kind: 'missing' }>
+  | Readonly<{ kind: 'malformed' }>
+  | Readonly<{ kind: 'unreadable'; cause: string }>;
 
 export type StoreEpochOptions = Readonly<{
   path?: string;
@@ -60,7 +68,7 @@ function epochNumber(name: string): number | null {
   const match = EPOCH_DIRECTORY_PATTERN.exec(name);
   if (match === null) return null;
   const value = Number(match[1]);
-  return Number.isSafeInteger(value) ? value : null;
+  return Number.isSafeInteger(value) && value < Number.MAX_SAFE_INTEGER ? value : null;
 }
 
 export function epochDirectory(dbDir: string, epoch: number): string {
@@ -77,13 +85,65 @@ export function resolveStoreDbDir(runtime: Pick<Runtime, 'paths'>, path?: string
   return resolve(path, '..');
 }
 
-export function resolveCurrentStoreEpoch(storage: Pick<StoragePort, 'readdirSync'>, dbDir: string): number {
-  let current = 0;
-  for (const entry of storage.readdirSync(dbDir)) {
-    const epoch = epochNumber(entry);
-    if (epoch !== null && epoch > current) current = epoch;
+type StoreEpochDiscoveryStorage = Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync' | 'realpathSync'>;
+
+type StoreEpochObservation = Readonly<{
+  epoch: number;
+  proven: boolean;
+  epochJson: StoreEpochMetadataDisposition;
+}>;
+
+function isRegularFile(storage: Pick<StoragePort, 'lstatSync'>, path: string): boolean {
+  try {
+    const entry = storage.lstatSync(path);
+    return entry.isFile() && !entry.isSymbolicLink();
+  } catch {
+    return false;
   }
-  return current;
+}
+
+function isContainedDirectory(storage: Pick<StoragePort, 'lstatSync' | 'realpathSync'>, dbDir: string, path: string) {
+  try {
+    const entry = storage.lstatSync(path);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) return false;
+    const relativePath = relative(storage.realpathSync(dbDir), storage.realpathSync(path));
+    return (
+      relativePath !== '' && relativePath !== '..' && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function observeStoreEpochs(
+  storage: StoreEpochDiscoveryStorage,
+  dbDir: string,
+  entries: readonly string[] = storage.readdirSync(dbDir),
+): readonly StoreEpochObservation[] {
+  const observations: StoreEpochObservation[] = [];
+  if (isRegularFile(storage, epochPath(dbDir, 0))) {
+    observations.push({ epoch: 0, proven: true, epochJson: { kind: 'legacy-epoch-0' } });
+  }
+  for (const entry of entries) {
+    const epoch = epochNumber(entry);
+    if (epoch === null || epoch === 0) continue;
+    const directory = join(dbDir, entry);
+    const contained = isContainedDirectory(storage, dbDir, directory);
+    const epochJson = contained ? readEpochMetadata(storage, directory) : { kind: 'malformed' as const };
+    const proven = contained && isRegularFile(storage, epochPath(directory, 0)) && epochJson.kind === 'valid';
+    observations.push({ epoch, proven, epochJson });
+  }
+  return observations;
+}
+
+function currentProvenEpoch(observations: readonly StoreEpochObservation[]): number {
+  return observations.reduce((current, observation) => {
+    return observation.proven && observation.epoch > current ? observation.epoch : current;
+  }, 0);
+}
+
+export function resolveCurrentStoreEpoch(storage: StoreEpochDiscoveryStorage, dbDir: string): number {
+  return currentProvenEpoch(observeStoreEpochs(storage, dbDir));
 }
 
 export function resolveCurrentStorePath(runtime: Pick<Runtime, 'paths' | 'storage'>, path?: string): string {
@@ -149,6 +209,10 @@ function metadataFor(
   };
 }
 
+function failStoreEpoch(message: string): never {
+  throw new Error(message);
+}
+
 function writeEpochMetadata(storage: StoragePort, mint: string, metadata: StoreEpochMetadata): void {
   if (
     !storage.writeAtomicDurableSync(join(mint, STORE_EPOCH_METADATA_FILE_NAME), `${JSON.stringify(metadata)}\n`, {
@@ -156,10 +220,10 @@ function writeEpochMetadata(storage: StoragePort, mint: string, metadata: StoreE
       mode: 0o600,
     })
   ) {
-    throw new Error(`Failed to publish ${STORE_EPOCH_METADATA_FILE_NAME} in '${mint}'.`);
+    failStoreEpoch(`Failed to publish ${STORE_EPOCH_METADATA_FILE_NAME} in '${mint}'.`);
   }
   if (!storage.syncDirectoryDurableSync(mint)) {
-    throw new Error(`Failed to durably sync store mint '${mint}'.`);
+    failStoreEpoch(`Failed to durably sync store mint '${mint}'.`);
   }
 }
 
@@ -184,25 +248,47 @@ function removeDuringSweep(storage: StoragePort, path: string, recursive: boolea
 }
 
 export function sweepStoreEpochs(
-  storage: StoragePort,
+  runtime: Runtime,
   dbDir: string,
   current: number,
-  options: { readonly releaseEpoch?: number } = {},
+  options: { readonly assertOwned?: () => void; readonly releaseEpoch?: number } = {},
 ): boolean {
+  const { storage } = runtime;
+  try {
+    const coordinator = probeCoordinator(runtime);
+    if (
+      coordinator.kind === 'unobservable' ||
+      (coordinator.kind === 'live' && (coordinator.record.pid !== runtime.env.pid() || options.releaseEpoch === 0))
+    ) {
+      return false;
+    }
+  } catch (error: unknown) {
+    auditSweepFailure(dbDir, error);
+    return false;
+  }
+
   if (options.releaseEpoch !== undefined) {
+    options.assertOwned?.();
+    let released: boolean;
     if (options.releaseEpoch !== 0) {
-      return removeDuringSweep(storage, epochDirectory(dbDir, options.releaseEpoch), true);
+      released = removeDuringSweep(storage, epochDirectory(dbDir, options.releaseEpoch), true);
+    } else {
+      released = true;
+      for (const name of [
+        STORE_DATABASE_FILE_NAME,
+        `${STORE_DATABASE_FILE_NAME}-wal`,
+        `${STORE_DATABASE_FILE_NAME}-shm`,
+        `${STORE_DATABASE_FILE_NAME}${STORE_FORMAT_SIDECAR_SUFFIX}`,
+      ]) {
+        released = removeDuringSweep(storage, join(dbDir, name), false) && released;
+      }
     }
-    let released = true;
-    for (const name of [
-      STORE_DATABASE_FILE_NAME,
-      `${STORE_DATABASE_FILE_NAME}-wal`,
-      `${STORE_DATABASE_FILE_NAME}-shm`,
-      `${STORE_DATABASE_FILE_NAME}${STORE_FORMAT_SIDECAR_SUFFIX}`,
-    ]) {
-      released = removeDuringSweep(storage, join(dbDir, name), false) && released;
+    try {
+      return storage.syncDirectoryDurableSync(dbDir) && released;
+    } catch (error: unknown) {
+      auditSweepFailure(dbDir, error);
+      return false;
     }
-    return released;
   }
 
   let entries: readonly string[];
@@ -213,10 +299,14 @@ export function sweepStoreEpochs(
     return false;
   }
 
+  const observations = observeStoreEpochs(storage, dbDir, entries);
+  const byEpoch = new Map(observations.map((observation) => [observation.epoch, observation]));
   let complete = true;
   for (const entry of entries) {
     const epoch = epochNumber(entry);
-    if ((epoch !== null && isGarbageStoreEpoch(current, epoch)) || entry.startsWith(MINT_DIRECTORY_PREFIX)) {
+    const observation = epoch === null ? undefined : byEpoch.get(epoch);
+    const unprovenEpochEntry = EPOCH_DIRECTORY_PATTERN.test(entry) && observation?.proven !== true;
+    if (unprovenEpochEntry || (observation?.proven === true && isGarbageStoreEpoch(current, observation.epoch))) {
       complete = removeDuringSweep(storage, join(dbDir, entry), true) && complete;
     }
   }
@@ -329,11 +419,31 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     const path = epochPath(dbDir, current);
     const opened = tryOpenCurrentEpoch(runtime, options, path);
     if (opened.kind === 'opened') {
+      const verified = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+      if (verified !== current) {
+        opened.db.close();
+        if (verified > current) continue;
+        failStoreEpoch(`Store epoch settlement regressed from ${current} to ${verified}.`);
+      }
+      if (current > 0 && !runtime.storage.syncDirectoryDurableSync(dbDir)) {
+        opened.db.close();
+        failStoreEpoch(`Failed to durably adopt store epoch ${current} in '${dbDir}'.`);
+      }
+      sweepStoreEpochs(runtime, dbDir, current);
+      const settled = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+      if (settled !== current) {
+        opened.db.close();
+        if (settled > current) continue;
+        failStoreEpoch(`Store epoch settlement regressed from ${current} to ${settled}.`);
+      }
       opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-      sweepStoreEpochs(runtime.storage, dbDir, current);
       return { db: opened.db, epoch: current, path };
     }
     mintNextEpoch(runtime, options, dbDir, current, opened.classification);
+    const advanced = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+    if (advanced <= current) {
+      failStoreEpoch(`Store epoch settlement made no progress beyond epoch ${current}.`);
+    }
   }
 }
 
@@ -372,26 +482,48 @@ export function parseStoreEpochMetadata(value: unknown): StoreEpochMetadata | nu
   return value as StoreEpochMetadata;
 }
 
-function readEpochMetadata(storage: StoragePort, dbDir: string, epoch: number): StoreEpochMetadata | null {
-  if (epoch === 0) return null;
+function readEpochMetadata(
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
+  directory: string,
+): StoreEpochMetadataDisposition {
+  const metadataPath = join(directory, STORE_EPOCH_METADATA_FILE_NAME);
   try {
-    return parseStoreEpochMetadata(
-      JSON.parse(storage.readFileSync(join(epochDirectory(dbDir, epoch), STORE_EPOCH_METADATA_FILE_NAME), 'utf-8')),
-    );
-  } catch {
-    return null;
+    const entry = storage.lstatSync(metadataPath);
+    if (!entry.isFile() || entry.isSymbolicLink()) return { kind: 'malformed' };
+  } catch (error: unknown) {
+    return errorCode(error) === 'ENOENT'
+      ? { kind: 'missing' }
+      : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
+  }
+  try {
+    const parsed = parseStoreEpochMetadata(JSON.parse(storage.readFileSync(metadataPath, 'utf-8')));
+    return parsed === null ? { kind: 'malformed' } : { kind: 'valid', value: parsed };
+  } catch (error: unknown) {
+    return error instanceof SyntaxError
+      ? { kind: 'malformed' }
+      : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
   }
 }
 
 function epochBytes(storage: StoragePort, dbDir: string, epoch: number): number | null {
-  const path = epochPath(dbDir, epoch);
   let total = 0;
+  const inventory = (path: string): boolean => {
+    const entry = storage.lstatSync(path, { bigint: true });
+    if (entry.isDirectory()) {
+      for (const child of storage.readdirSync(path)) {
+        if (!inventory(join(path, child))) return false;
+      }
+      return true;
+    }
+    if (entry.size < 0n || entry.size > BigInt(Number.MAX_SAFE_INTEGER - total)) return false;
+    total += Number(entry.size);
+    return true;
+  };
   try {
+    if (epoch > 0) return inventory(epochDirectory(dbDir, epoch)) ? total : null;
+    const path = epochPath(dbDir, 0);
     for (const file of [path, `${path}-wal`, `${path}-shm`, `${path}${STORE_FORMAT_SIDECAR_SUFFIX}`]) {
-      if (!storage.existsSync(file)) continue;
-      const size = storage.statSync(file, { bigint: true }).size;
-      if (size < 0n || size > BigInt(Number.MAX_SAFE_INTEGER - total)) return null;
-      total += Number(size);
+      if (storage.existsSync(file) && !inventory(file)) return null;
     }
     return total;
   } catch {
@@ -405,30 +537,36 @@ export function listStoreEpochs(
 ): readonly StoreEpochListEntry[] {
   const dbDir = runtime.paths.coral.store.dbDir;
   if (!runtime.storage.existsSync(dbDir)) return [];
-  const entries = runtime.storage.readdirSync(dbDir);
-  const current = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-  const epochs = entries.flatMap((entry) => {
-    const epoch = epochNumber(entry);
-    return epoch === null ? [] : [epoch];
-  });
-  if (runtime.storage.existsSync(epochPath(dbDir, 0))) epochs.push(0);
+  const observations = observeStoreEpochs(runtime.storage, dbDir);
+  if (!observations.some(({ proven }) => proven)) return [];
+  const current = currentProvenEpoch(observations);
 
-  return [...new Set(epochs)]
-    .sort((left, right) => right - left)
-    .map((epoch) => {
+  return [...observations]
+    .sort((left, right) => right.epoch - left.epoch)
+    .map((observation) => {
+      const { epoch } = observation;
       let classification: StoreEpochClassification;
-      try {
-        classification = classifyStoreFile(epochPath(dbDir, epoch), runtime.storage, storeFormat);
-      } catch (error: unknown) {
-        classification = unavailableClassification(error);
+      if (!observation.proven) {
+        classification = unavailableClassification(new Error('Epoch entry is not proven.'));
+      } else {
+        try {
+          classification = classifyStoreFile(epochPath(dbDir, epoch), runtime.storage, storeFormat);
+        } catch (error: unknown) {
+          classification = unavailableClassification(error);
+        }
       }
       return {
         epoch,
-        role: epoch === current ? 'current' : epoch === current - 1 ? 'preserved' : 'garbage',
+        role:
+          observation.proven && epoch === current
+            ? 'current'
+            : observation.proven && epoch === current - 1
+              ? 'preserved'
+              : 'garbage',
         bytes: epochBytes(runtime.storage, dbDir, epoch),
         classification,
         storedProductVersion: 'storedProductVersion' in classification ? classification.storedProductVersion : null,
-        epochJson: readEpochMetadata(runtime.storage, dbDir, epoch),
+        epochJson: observation.epochJson,
       };
     });
 }

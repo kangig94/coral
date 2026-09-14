@@ -1,20 +1,77 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, normalize, relative, resolve } from 'node:path';
 
+import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
 import { isGarbageStoreEpoch } from '#src/store/epoch.js';
 
 const ROOT = process.cwd();
+const STORE_ROOT = join(ROOT, 'src/store');
 
 function source(path: string): string {
   return readFileSync(join(ROOT, path), 'utf-8');
 }
 
 function storeSources(): readonly string[] {
-  return readdirSync(join(ROOT, 'src/store'))
+  return readdirSync(STORE_ROOT)
     .filter((name) => name.endsWith('.ts'))
     .map((name) => `src/store/${name}`);
+}
+
+function storeSemanticRefusalCount(): number {
+  const paths = new Set(storeSources());
+  const parsed = new Map<string, ts.SourceFile>();
+  const sourceFile = (path: string): ts.SourceFile => {
+    const cached = parsed.get(path);
+    if (cached !== undefined) return cached;
+    const value = ts.createSourceFile(path, source(path), ts.ScriptTarget.Latest, true);
+    parsed.set(path, value);
+    return value;
+  };
+  const resolveImport = (from: string, specifier: string): string | null => {
+    if (!specifier.startsWith('.')) return null;
+    const candidate = relative(ROOT, normalize(resolve(ROOT, dirname(from), specifier)))
+      .replace(/\.js$/u, '.ts')
+      .replaceAll('\\', '/');
+    if (paths.has(candidate)) return candidate;
+    const index = candidate.replace(/\/?$/u, '/index.ts');
+    return paths.has(index) ? index : null;
+  };
+  const closure = new Set<string>();
+  const pending = ['src/store/active-store-selection-coordination.ts'];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (path === undefined || closure.has(path)) continue;
+    closure.add(path);
+    for (const statement of sourceFile(path).statements.filter(ts.isImportDeclaration)) {
+      if (!ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      const imported = resolveImport(path, statement.moduleSpecifier.text);
+      if (imported?.startsWith('src/store/')) pending.push(imported);
+    }
+  }
+
+  let count = 0;
+  for (const path of closure) {
+    const parsedSource = sourceFile(path);
+    const visit = (node: ts.Node): void => {
+      if (ts.isThrowStatement(node)) {
+        let catchClause: ts.Node | undefined = node.parent;
+        while (catchClause !== undefined && !ts.isCatchClause(catchClause)) catchClause = catchClause.parent;
+        const rethrowsCaughtValue =
+          ts.isIdentifier(node.expression) &&
+          catchClause !== undefined &&
+          ts.isCatchClause(catchClause) &&
+          catchClause.variableDeclaration !== undefined &&
+          ts.isIdentifier(catchClause.variableDeclaration.name) &&
+          catchClause.variableDeclaration.name.text === node.expression.text;
+        if (!rethrowsCaughtValue) count += 1;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parsedSource);
+  }
+  return count;
 }
 
 describe('write-once store epoch invariants', () => {
@@ -52,5 +109,9 @@ describe('write-once store epoch invariants', () => {
     );
     const all = storeSources().map(source).join('\n');
     expect(all).not.toMatch(/WriterExclusion|store_reset_lock_contended|store_reset_interrupted_/u);
+  });
+
+  it('has at most 60 semantic refusals in the settlement closure (target: 0)', () => {
+    expect(storeSemanticRefusalCount()).toBeLessThanOrEqual(60);
   });
 });

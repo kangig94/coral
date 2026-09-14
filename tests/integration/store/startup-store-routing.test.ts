@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -125,8 +125,18 @@ describe('startup store routing', () => {
     const { runtime, current } = harness('1.0.0');
     const newer = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
     publish(runtime, selection(newer, join(dirname(current.bundleDir), 'missing-bundle')));
+    const syncedDirectories: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): boolean => {
+          syncedDirectories.push(path);
+          return subject.syncDirectoryDurableSync(path);
+        };
+      },
+    });
 
-    const result = await route(runtime, current);
+    const result = await route({ ...runtime, storage }, current);
 
     expect(result.kind).toBe('reset-newer-invalid');
     if (result.kind === 'reset-newer-invalid') result.db.close();
@@ -135,6 +145,55 @@ describe('startup store routing', () => {
       'retained-active-store-transitions',
     );
     expect(readdirSync(retainedRoot)).toHaveLength(1);
+    expect(syncedDirectories).toContain(retainedRoot);
+    expect(syncedDirectories).toContain(resolveGenerationBoundaryPaths(runtime).coordinationRoot);
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: current });
   });
+
+  it('rejects retained transition success when its destination sync is unproven', async () => {
+    const { runtime, current } = harness('1.0.0');
+    const newer = manifest('2.0.0', '223e4567-e89b-42d3-a456-426614174000');
+    publish(runtime, selection(newer, join(dirname(current.bundleDir), 'missing-bundle')));
+    const retainedRoot = join(
+      resolveGenerationBoundaryPaths(runtime).coordinationRoot,
+      'retained-active-store-transitions',
+    );
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): boolean => (path === retainedRoot ? false : subject.syncDirectoryDurableSync(path));
+      },
+    });
+
+    await expect(route({ ...runtime, storage }, current)).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: { cause: expect.stringContaining('Failed to durably retain active-store transition') },
+    });
+  });
+
+  it('boots through the startup route when another process holds the adoption lock', async () => {
+    const { runtime, current } = harness();
+    const { adoptionLock } = resolveGenerationBoundaryPaths(runtime);
+    mkdirSync(dirname(adoptionLock), { recursive: true });
+    const lease = acquireDirectoryLockSync(adoptionLock, { storage: runtime.storage, time: runtime.time });
+    try {
+      const result = await route(runtime, current);
+
+      expect(result.kind).toBe('open');
+      if (result.kind === 'open') result.db.close();
+    } finally {
+      lease();
+    }
+  }, 10_000);
+
+  it('boots through the startup route when a dead owner leaves a fresh markerless adoption lock', async () => {
+    const { runtime, current } = harness();
+    const { adoptionLock } = resolveGenerationBoundaryPaths(runtime);
+    mkdirSync(adoptionLock, { recursive: true });
+
+    const result = await route(runtime, current);
+
+    expect(result.kind).toBe('open');
+    if (result.kind === 'open') result.db.close();
+  }, 10_000);
 });

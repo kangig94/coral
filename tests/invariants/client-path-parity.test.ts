@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import ts from 'typescript';
@@ -8,6 +9,8 @@ import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
+// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+import { resolveCurrentStoreDbPath } from '../../clients/hooks/lib/store-epoch.mjs';
 
 const REPO_ROOT = process.cwd();
 const HOME_DIR = join(REPO_ROOT, '.client-path-parity-home');
@@ -81,9 +84,9 @@ function loadMirrorFunction<T extends (...args: never[]) => string>(relativePath
   }) as unknown as T;
 }
 
-const mirroredStoreDbPath = loadMirrorFunction<(flavor: BuildFlavor, stateRoot: string) => string>(
+const mirroredStoreDbDir = loadMirrorFunction<(flavor: BuildFlavor, stateRoot: string) => string>(
   'clients/hooks/pre-compact.mjs',
-  'storeDbPath',
+  'storeDbDir',
 );
 const mirroredStoreDiscardRemediation = loadMirrorFunction<(flavor: BuildFlavor) => string>(
   'clients/hooks/pre-compact.mjs',
@@ -108,7 +111,7 @@ describe('self-contained client path parity', () => {
     const engine = enginePaths(flavor, opts);
     const coordinator = coordinatorPaths(flavor, opts);
 
-    expect(mirroredStoreDbPath(flavor, STATE_ROOT)).toBe(join(store.dbDir, 'store.db'));
+    expect(mirroredStoreDbDir(flavor, STATE_ROOT)).toBe(store.dbDir);
 
     const runDir = mirroredCoordinatorRunDir(flavor, STATE_ROOT);
     expect(runDir).toBe(coordinator.runDir);
@@ -118,6 +121,35 @@ describe('self-contained client path parity', () => {
       join(engine.dataDir('codebase-memory'), 'codebase-memory-mcp'),
     );
     expect(mirroredCoordinatorInfoPath(HOME_DIR, flavor)).toBe(coordinator.infoFile);
+  });
+
+  it('selects the highest validated epoch after publication', () => {
+    const dbDir = mkdtempSync(join(tmpdir(), 'coral-client-epoch-parity-'));
+    try {
+      const published = join(dbDir, 'epoch-1');
+      mkdirSync(published);
+      writeFileSync(join(published, 'store.db'), 'published');
+      writeFileSync(
+        join(published, 'epoch.json'),
+        JSON.stringify({
+          supersedes: 0,
+          classification: { kind: 'unavailable' },
+          build: {
+            version: '0.10.9',
+            buildSetId: 'build-set',
+            bundleHash: 'bundle-hash',
+            flavor: 'prod',
+            storeFormatFingerprint: 'store-format',
+          },
+          publishedAt: '2026-09-15T00:00:00.000Z',
+        }),
+      );
+      symlinkSync('.', join(dbDir, 'epoch-2'));
+
+      expect(resolveCurrentStoreDbPath(dbDir)).toBe(join(published, 'store.db'));
+    } finally {
+      rmSync(dbDir, { recursive: true, force: true });
+    }
   });
 
   it.each(FLAVORS)('renders the explicit %s pre-compact discard remediation', (flavor) => {

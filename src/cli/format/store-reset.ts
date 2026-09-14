@@ -1,5 +1,6 @@
 import type { StoreResetPublicReport } from '../../store/reset-incident.js';
 import type { StoreResetReleasePresentation } from '../../store/operator-store-reset.js';
+import type { StoreEpochMetadataDisposition } from '../../store/epoch.js';
 import type { StoreResetListResult, StoreResetReportResult } from '../store-reset.js';
 import { assertNever } from '../../infra/error-format.js';
 
@@ -22,6 +23,21 @@ function code(value: string): string {
 
 function observed(value: string | null): string {
   return value === null ? 'not observed' : code(value);
+}
+
+function formatEpochMetadata(disposition: StoreEpochMetadataDisposition): string {
+  switch (disposition.kind) {
+    case 'legacy-epoch-0':
+    case 'missing':
+    case 'malformed':
+      return disposition.kind;
+    case 'unreadable':
+      return `unreadable: ${disposition.cause}`;
+    case 'valid':
+      return JSON.stringify(disposition.value);
+    default:
+      return assertNever(disposition);
+  }
 }
 
 function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
@@ -98,7 +114,7 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
     `- Bytes: ${result.epoch.bytes ?? 'unknown'}`,
     `- Classification: ${code(result.epoch.classification.kind)}`,
     `- Stored Coral version: ${result.epoch.storedProductVersion === null ? 'not observed' : code(result.epoch.storedProductVersion)}`,
-    `- Epoch metadata: ${result.epoch.epochJson === null ? 'legacy-epoch-0' : code(JSON.stringify(result.epoch.epochJson))}`,
+    `- Epoch metadata: ${code(formatEpochMetadata(result.epoch.epochJson))}`,
     '',
     '## SQLite diagnostic',
     '',
@@ -121,7 +137,7 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     'Epoch | Role | Bytes | Classification | Stored Coral version | Epoch metadata',
     ...result.epochs.map(
       (epoch) =>
-        `${epoch.epoch} | ${epoch.role} | ${epoch.bytes ?? 'unknown'} | ${epoch.classification.kind} | ${epoch.storedProductVersion ?? 'none'} | ${epoch.epochJson === null ? 'legacy-epoch-0' : JSON.stringify(epoch.epochJson)}`,
+        `${epoch.epoch} | ${epoch.role} | ${epoch.bytes ?? 'unknown'} | ${epoch.classification.kind} | ${epoch.storedProductVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`,
     ),
     ...(result.legacyIncidents.length === 0
       ? []
@@ -156,8 +172,8 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
   switch (result.kind) {
     case 'released':
       return `Released store epoch ${result.epoch} from ${result.target} ${result.flavor}.`;
-    case 'partially-released':
-      return `Store epoch ${result.epoch} was only partially released from ${result.target} ${result.flavor}; retry the release command.`;
+    case 'release-unproven':
+      return `Store epoch ${result.epoch} release is unproven for ${result.target} ${result.flavor}; retry after confirming no coordinator holds it.`;
     case 'absent':
       return `Store epoch ${result.epoch} is absent from ${result.target} ${result.flavor}.`;
     case 'current':

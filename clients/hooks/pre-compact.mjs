@@ -17,14 +17,15 @@ import {
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
 import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { resolveCurrentStoreDbPath } from './lib/store-epoch.mjs';
 
 exitIfChildProcess();
 exitIfWrongFlavor();
 
 // Self-contained mirror of the path authority in src/infra/path/store.ts.
-function storeDbPath(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
+function storeDbDir(flavor = buildFlavor(), stateRoot = coralStateRoot()) {
   const dataDir = flavor === 'dev' ? 'data-dev' : 'data';
-  return join(stateRoot, 'gen2', dataDir, 'store', 'store.db');
+  return join(stateRoot, 'gen2', dataDir, 'store');
 }
 
 function storeDiscardRemediation(flavor = buildFlavor()) {
@@ -53,7 +54,7 @@ await failOpen(async () => {
   const snapshotDir = snapshotDirForProject(projectDir);
   sweepStale(snapshotDir, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS);
 
-  const dbPath = storeDbPath();
+  const dbPath = resolveCurrentStoreDbPath(storeDbDir());
   if (!existsSync(dbPath)) {
     logNoRelevantJobs(projectDir);
     return;
@@ -99,11 +100,7 @@ await failOpen(async () => {
         .prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint' LIMIT 1")
         .get()?.value;
       if (storedFingerprint !== expectedFingerprint) {
-        logSnapshotSkipped(
-          projectDir,
-          'store format fingerprint mismatch',
-          storeDiscardRemediation(),
-        );
+        logSnapshotSkipped(projectDir, 'store format fingerprint mismatch', storeDiscardRemediation());
         return;
       }
     } catch (error) {

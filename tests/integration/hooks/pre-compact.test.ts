@@ -7,10 +7,11 @@ import { PRE_COMPACT_HOOK, cleanupFixtures, createFixture, runHook } from '#test
 
 afterEach(cleanupFixtures);
 
-function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jobId = 'job-live'): void {
+function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jobId = 'job-live', epoch = 0): void {
   const storeDir = join(homeDir, '.coral', 'gen2', 'data', 'store');
-  mkdirSync(storeDir, { recursive: true });
-  const db = newRawDatabase(join(storeDir, 'store.db'));
+  const epochDir = epoch === 0 ? storeDir : join(storeDir, `epoch-${epoch}`);
+  mkdirSync(epochDir, { recursive: true });
+  const db = newRawDatabase(join(epochDir, 'store.db'));
   try {
     db.exec(`
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -31,7 +32,25 @@ function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jo
   } finally {
     db.close();
   }
-  writeFileSync(join(storeDir, 'store.db.format'), `${fingerprint}\n`, 'utf8');
+  writeFileSync(join(epochDir, 'store.db.format'), `${fingerprint}\n`, 'utf8');
+  if (epoch > 0) {
+    writeFileSync(
+      join(epochDir, 'epoch.json'),
+      JSON.stringify({
+        supersedes: epoch - 1,
+        classification: { kind: 'unavailable', cause: 'hook-test' },
+        build: {
+          version: '0.10.9',
+          buildSetId: 'hook-test',
+          bundleHash: 'hook-test',
+          flavor: 'prod',
+          storeFormatFingerprint: fingerprint,
+        },
+        publishedAt: '2026-09-15T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+  }
 }
 
 function seedPluginManifest(pluginRoot: string, fingerprint: string): string {
@@ -190,6 +209,32 @@ describe('pre-compact.mjs', () => {
       message: 'captured job snapshot',
       count: 1,
     });
+  });
+
+  it('reads the highest validated epoch after publication', () => {
+    const fixture = createFixture();
+    const fingerprint = 'sha256:7777777777777777777777777777777777777777777777777777777777777777';
+    const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
+    seedStore(fixture.root, fixture.projectRoot, fingerprint, 'flat-job');
+    seedStore(fixture.root, fixture.projectRoot, fingerprint, 'published-job', 1);
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-published', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    const snapshotDir = join(fixture.snapshotDir, 'hooks');
+    const snapshots = readdirSync(snapshotDir);
+    expect(snapshots).toHaveLength(1);
+    expect(readFileSync(join(snapshotDir, snapshots[0]), 'utf8')).toContain('published-job');
+    expect(readFileSync(join(snapshotDir, snapshots[0]), 'utf8')).not.toContain('flat-job');
   });
 
   it('does not prescribe a destructive store reset for one unsafe projected job ID', () => {

@@ -2027,7 +2027,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           return;
         }
         process.stderr.write(output);
-        process.exitCode = result.kind === 'partially-released' ? errorCodeToExit('transient') : 1;
+        process.exitCode = result.kind === 'release-unproven' ? errorCodeToExit('transient') : 1;
       } catch (error: unknown) {
         emitError(boundStoreResetCliError(error));
       }

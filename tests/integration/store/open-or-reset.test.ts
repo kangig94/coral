@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -6,11 +7,13 @@ import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import {
   discardCurrentStoreEpoch,
+  epochDirectory,
   epochPath,
   listStoreEpochs,
   openWritableStoreDbNoReset,
@@ -19,6 +22,7 @@ import {
   STORE_EPOCH_METADATA_FILE_NAME,
 } from '#src/store/epoch.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { releaseStoreReset } from '#src/store/operator-store-reset.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
@@ -102,6 +106,55 @@ function publishAdversarialEpoch(destination: string, compatible = false): void 
   );
 }
 
+async function withLiveSqliteDescriptor<T>(
+  paths: string | readonly string[],
+  run: (pid: number) => Promise<T>,
+): Promise<T> {
+  const descriptorPaths = typeof paths === 'string' ? [paths] : paths;
+  const child = spawn(
+    process.execPath,
+    [
+      '--no-warnings',
+      '-e',
+      "const { DatabaseSync } = require('node:sqlite'); const dbs = process.argv.slice(1).map((path) => new DatabaseSync(path)); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);",
+      ...descriptorPaths,
+    ],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  try {
+    await new Promise<void>((resolveReady, reject) => {
+      child.stdout.once('data', () => resolveReady());
+      child.once('error', reject);
+      child.once('exit', (code) => reject(new Error(`SQLite descriptor child exited before ready (${code}).`)));
+    });
+    if (child.pid === undefined) throw new Error('SQLite descriptor child has no pid.');
+    return await run(child.pid);
+  } finally {
+    if (child.exitCode === null) {
+      child.kill('SIGTERM');
+      await new Promise<void>((resolveExit) => child.once('exit', () => resolveExit()));
+    }
+  }
+}
+
+function publishLiveCoordinator(runtime: Runtime, pid: number): void {
+  writeDiscoveryRecord(
+    {
+      pid,
+      port: 1,
+      socketPath: join(runtime.paths.coral.coordinator.runDir, 'live.sock'),
+      bundleHash: 'live-descriptor-test',
+      flavor: runtime.flavor,
+      namespace: 'live-descriptor-test',
+      startedAt: Date.now(),
+      token: 'live-descriptor-test',
+      bootToken: 'live-descriptor-test',
+      version: '0.10.9',
+    },
+    runtime,
+  );
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -153,11 +206,105 @@ describe('write-once store epochs', () => {
     console.log(`max-safe-integer-cell entry=${Number.MAX_SAFE_INTEGER} selected=epoch-${current}`);
   });
 
+  it.each([
+    ['empty directory', (directory: string) => mkdirSync(directory)],
+    [
+      'directory without epoch.json',
+      (directory: string) => createCompatibleStore(join(directory, 'store.db'), 'missing-metadata'),
+    ],
+    [
+      'directory with malformed epoch.json',
+      (directory: string) => {
+        createCompatibleStore(join(directory, 'store.db'), 'malformed-metadata');
+        writeFileSync(join(directory, STORE_EPOCH_METADATA_FILE_NAME), '{');
+      },
+    ],
+  ])('does not select an %s', (_description, arrange) => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat-epoch-zero');
+    arrange(join(dbDir, 'epoch-2'));
+
+    expect(resolveCurrentStoreEpoch(runtime.storage, dbDir)).toBe(0);
+  });
+
+  it('does not select an epoch symlink to an external directory', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const external = join(dbDir, '..', 'external-epoch');
+    createCompatibleStore(epochPath(dbDir, 0), 'flat-epoch-zero');
+    publishAdversarialEpoch(external, true);
+    symlinkSync(external, join(dbDir, 'epoch-2'));
+
+    const settled = settleStoreEpoch(runtime, options());
+    settled.db.close();
+
+    expect(settled.epoch).toBe(0);
+    expect(existsSync(join(external, 'store.db'))).toBe(true);
+  });
+
+  it('selects the highest proven epoch across numbering gaps and rejects the numeric ceiling', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat-epoch-zero');
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    publishAdversarialEpoch(join(dbDir, `epoch-${Number.MAX_SAFE_INTEGER - 1}`), true);
+    publishAdversarialEpoch(join(dbDir, `epoch-${Number.MAX_SAFE_INTEGER}`), true);
+
+    expect(resolveCurrentStoreEpoch(runtime.storage, dbDir)).toBe(Number.MAX_SAFE_INTEGER - 1);
+  });
+
+  it('lists missing, malformed, and unreadable epoch metadata without losing the current row', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat-epoch-zero');
+    createCompatibleStore(join(dbDir, 'epoch-2', 'store.db'), 'missing');
+    createCompatibleStore(join(dbDir, 'epoch-3', 'store.db'), 'malformed');
+    writeFileSync(join(dbDir, 'epoch-3', STORE_EPOCH_METADATA_FILE_NAME), '{');
+    publishAdversarialEpoch(join(dbDir, 'epoch-4'), true);
+    const unreadableMetadata = join(dbDir, 'epoch-4', STORE_EPOCH_METADATA_FILE_NAME);
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'readFileSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string, encoding: 'utf-8'): string => {
+          if (path === unreadableMetadata)
+            throw Object.assign(new Error('injected unreadable metadata'), { code: 'EACCES' });
+          return subject.readFileSync(path, encoding);
+        };
+      },
+    });
+
+    const rows = listStoreEpochs(withStorage(runtime, storage), storeFormat);
+
+    expect(rows.filter(({ role }) => role === 'current').map(({ epoch }) => epoch)).toEqual([0]);
+    expect(Object.fromEntries(rows.map(({ epoch, epochJson }) => [epoch, epochJson.kind]))).toEqual({
+      0: 'legacy-epoch-0',
+      2: 'missing',
+      3: 'malformed',
+      4: 'unreadable',
+    });
+  });
+
+  it('inventories every file recursively removed with a directory epoch', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    const before = listStoreEpochs(runtime, storeFormat)[0]?.bytes;
+    mkdirSync(join(dbDir, 'epoch-1', 'nested'));
+    writeFileSync(join(dbDir, 'epoch-1', 'extra.bin'), '12345');
+    writeFileSync(join(dbDir, 'epoch-1', 'nested', 'extra.bin'), '678');
+
+    const after = listStoreEpochs(runtime, storeFormat)[0]?.bytes;
+
+    expect(before).not.toBeNull();
+    expect(after).toBe((before ?? 0) + 8);
+  });
+
   it('opens an explicit nonstandard database path without applying epoch discovery', () => {
     const runtime = harness();
     const fixturePath = join(runtime.paths.coral.store.dbDir, 'fixture.db');
     createCompatibleStore(fixturePath, 'explicit-fixture');
-    createCompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 3), 'unrelated-current');
+    publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-3'), true);
 
     const db = openWritableStoreDbNoReset(runtime, { path: fixturePath, storeFormat });
     const row = db.prepare('SELECT value FROM rollback_sentinel').get() as { value: string };
@@ -202,7 +349,31 @@ describe('write-once store epochs', () => {
     console.log('concurrent-publish-cell publishers=2 winner=epoch-1 loser=adopted-on-ENOTEMPTY current=1');
   });
 
-  it('re-mints when another process sweeps its private mint', () => {
+  it('closes a displaced compatible epoch and adopts the newly proven current epoch', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'displaced');
+    let reads = 0;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'readdirSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): string[] => {
+          reads += 1;
+          if (path === dbDir && reads === 2) publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+          return subject.readdirSync(path);
+        };
+      },
+    });
+
+    const settled = settleStoreEpoch(withStorage(runtime, storage), options());
+    const row = settled.db.prepare('SELECT value FROM rollback_sentinel').get() as { value: string };
+
+    expect(settled.epoch).toBe(1);
+    expect(row.value).toBe('concurrent-winner');
+    settled.db.close();
+  });
+
+  it('reports an anomaly when another process removes its private mint', () => {
     const runtime = harness();
     createIncompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 0));
     let swept = false;
@@ -212,10 +383,9 @@ describe('write-once store epochs', () => {
       rmSync(source, { recursive: true, force: true });
     });
 
-    const settled = settleStoreEpoch(withStorage(runtime, storage), options());
-
-    expect(settled.epoch).toBe(1);
-    settled.db.close();
+    expect(() => settleStoreEpoch(withStorage(runtime, storage), options())).toThrow(
+      'Store epoch settlement made no progress beyond epoch 0.',
+    );
     expect(swept).toBe(true);
   });
 
@@ -242,28 +412,165 @@ describe('write-once store epochs', () => {
     console.log(`K-replacement-cell K=${count} non-garbage=${count + 1}:current,${count}:preserved garbage=0`);
   });
 
-  it.each(['empty-mint', 'opened-mint', 'described-mint', 'published-epoch'])(
-    'boots after process death seeded at %s',
+  it.each(['empty-mint', 'opened-mint', 'described-mint'])(
+    'boots without deleting an unowned mint after process death seeded at %s',
     (cut) => {
       const runtime = harness();
       createIncompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 0));
       const mint = join(runtime.paths.coral.store.dbDir, '.mint-dead-process');
-      if (cut !== 'published-epoch') mkdirSync(mint, { recursive: true });
+      mkdirSync(mint, { recursive: true });
       if (cut === 'opened-mint' || cut === 'described-mint') createCompatibleStore(join(mint, 'store.db'), cut);
       if (cut === 'described-mint') writeFileSync(join(mint, STORE_EPOCH_METADATA_FILE_NAME), '{}');
-      if (cut === 'published-epoch') publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-1'));
 
       const settled = settleStoreEpoch(runtime, options());
 
       settled.db.close();
-      expect(readdirSync(runtime.paths.coral.store.dbDir).some((name) => name.startsWith('.mint-'))).toBe(false);
+      expect(existsSync(mint)).toBe(true);
     },
   );
 
+  it('boots after process death following epoch publication', () => {
+    const runtime = harness();
+    createIncompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 0));
+    publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-1'), true);
+
+    const settled = settleStoreEpoch(runtime, options());
+
+    expect(settled.epoch).toBe(1);
+    settled.db.close();
+  });
+
+  it('does not sweep a mint whose database is held by a live foreign coordinator', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat');
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const mintPath = join(dbDir, '.mint-live-publisher', 'store.db');
+    createCompatibleStore(mintPath, 'live-mint');
+    const oldPath = epochPath(dbDir, 1);
+
+    await withLiveSqliteDescriptor([mintPath, oldPath], async (pid) => {
+      publishLiveCoordinator(runtime, pid);
+      const settled = settleStoreEpoch(runtime, options());
+      settled.db.close();
+
+      expect(existsSync(mintPath)).toBe(true);
+      expect(existsSync(oldPath)).toBe(true);
+      console.log(
+        'live-descriptor-sweep-cell targets=.mint-live-publisher/store.db,epoch-1/store.db current=3 descriptors=live removed=false',
+      );
+    });
+  });
+
+  it('does not release epoch zero while a v0.10.9-shaped coordinator is live', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const flatPath = epochPath(dbDir, 0);
+    createCompatibleStore(flatPath, 'v0.10.9-live');
+    publishAdversarialEpoch(join(dbDir, 'epoch-2'), true);
+
+    await withLiveSqliteDescriptor(flatPath, async (pid) => {
+      publishLiveCoordinator(runtime, pid);
+      const released = await releaseStoreReset({ target: 'gen2', runtime, epoch: 0 });
+
+      expect(released.kind).toBe('release-unproven');
+      expect(existsSync(flatPath)).toBe(true);
+    });
+  });
+
+  it('re-reads current before a stale release can delete a concurrently published epoch', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat');
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    let published = false;
+    const target = epochDirectory(dbDir, 2);
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'existsSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): boolean => {
+          if (path === target && !published) {
+            published = true;
+            publishAdversarialEpoch(target, true);
+          }
+          return subject.existsSync(path);
+        };
+      },
+    });
+
+    const released = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: 2 });
+
+    expect(released.kind).toBe('current');
+    expect(existsSync(epochPath(dbDir, 2))).toBe(true);
+  });
+
+  it('reports release as unproven when the deletion parent cannot be synced', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat');
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): boolean => (path === dbDir ? false : subject.syncDirectoryDurableSync(path));
+      },
+    });
+
+    const released = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: 1 });
+
+    expect(released.kind).toBe('release-unproven');
+    expect(existsSync(epochDirectory(dbDir, 1))).toBe(false);
+  });
+
+  it('durably syncs an epoch adopted after its publisher died following rename', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createIncompatibleStore(epochPath(dbDir, 0));
+    let rootSyncs = 0;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): boolean => {
+          if (path !== dbDir) return subject.syncDirectoryDurableSync(path);
+          rootSyncs += 1;
+          return rootSyncs > 1;
+        };
+      },
+    });
+    const interruptedRuntime = withStorage(runtime, storage);
+
+    expect(() => settleStoreEpoch(interruptedRuntime, options())).toThrow('Failed to durably sync store epoch root');
+    const adopted = settleStoreEpoch(interruptedRuntime, options());
+
+    expect(adopted.epoch).toBe(1);
+    adopted.db.close();
+    expect(rootSyncs).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not release an old epoch whose database is held by a live foreign coordinator', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(epochPath(dbDir, 0), 'flat');
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const oldPath = epochPath(dbDir, 1);
+
+    await withLiveSqliteDescriptor(oldPath, async (pid) => {
+      publishLiveCoordinator(runtime, pid);
+      const released = await releaseStoreReset({ target: 'gen2', runtime, epoch: 1 });
+
+      expect(released.kind).toBe('release-unproven');
+      expect(existsSync(oldPath)).toBe(true);
+      console.log('live-descriptor-release-cell target=epoch-1/store.db current=3 descriptor=live removed=false');
+    });
+  });
+
   it('boots when sweeping a garbage epoch fails', () => {
     const runtime = harness();
-    createCompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 2), 'current');
-    createCompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 1), 'preserved');
+    publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-2'), true);
+    publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-1'), true);
     createCompatibleStore(epochPath(runtime.paths.coral.store.dbDir, 0), 'garbage');
     const garbagePath = epochPath(runtime.paths.coral.store.dbDir, 0);
     const storage = new Proxy(runtime.storage, {

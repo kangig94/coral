@@ -34,9 +34,9 @@ import type { Database } from './db.js';
 import { settleStoreEpoch } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import {
-  acquireGenerationAdoptionLock,
   formatLegacyGenerationIgnoredNotice,
   inspectGenerationReadiness,
+  tryAcquireGenerationAdoptionLock,
   type GenerationAdoptionLockLease,
 } from './generation-mutation-coordination.js';
 
@@ -124,7 +124,16 @@ function retainActiveStoreTransition(
   const evidencePath = join(retainedRoot, `${runtime.ids.uuid()}.json`);
   actuator.makeDirectory(retainedRoot, { recursive: true, mode: 0o700 });
   actuator.rename(transitionFile, evidencePath);
-  actuator.syncDirectory(retainedRoot);
+  const retainedSynced = actuator.syncDirectory(retainedRoot);
+  const sourceSynced = actuator.syncDirectory(coordinationRoot);
+  if (!retainedSynced || !sourceSynced) {
+    refuseActiveStoreCoordination(
+      runtime,
+      'transition',
+      'record_unavailable',
+      `Failed to durably retain active-store transition at '${evidencePath}'.`,
+    );
+  }
   return {
     evidencePath,
     evidenceByteLength: sourceIdentity.size <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(sourceIdentity.size) : null,
@@ -179,7 +188,7 @@ async function settleActiveStore(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
   initialTransition: ActiveStoreTransition | null,
-  adoption: GenerationAdoptionLockLease,
+  adoption: GenerationAdoptionLockLease | null,
 ): Promise<ActiveStoreSettlement> {
   inspectCurrentGeneration(runtime, options);
   const settled = settleStoreEpoch(runtime, {
@@ -190,7 +199,7 @@ async function settleActiveStore(
     steadyStateBusyTimeoutMs: options.steadyStateBusyTimeoutMs,
   });
   try {
-    if (initialTransition !== null) {
+    if (initialTransition !== null && adoption !== null) {
       retainInvalidSelectionRecovery(runtime, initialTransition, adoption.actuator);
     }
     return {
@@ -345,7 +354,10 @@ export async function coordinateActiveStoreSelection(
     throw new Error('Active-store selection coordination requires a real filesystem store path.');
   }
   encodeActiveStoreSelection(options.currentSelection);
-  const adoption = await acquireGenerationAdoptionLock(runtime);
+  const adoption = await tryAcquireGenerationAdoptionLock(runtime);
+  if (adoption === null) {
+    return { kind: 'opened', ...(await settleActiveStore(runtime, options, null, null)) };
+  }
   try {
     adoption.assertOwned();
     const transitionV1Read = readActiveStoreTransitionV1ForSettlement(runtime, adoption.actuator);

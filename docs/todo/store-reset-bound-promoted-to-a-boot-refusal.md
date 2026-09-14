@@ -1671,7 +1671,8 @@ failures, all in the two places where the new design still trusts something it h
 ### Discovery trusts a filename
 
 `resolveCurrentStoreEpoch` selects by basename alone — no entry kind, no containment, no `epoch.json`, no
-database (`src/store/epoch.ts:59`, `:80`) — and the selected name is composed straight into a writable
+database (`epochNumber` and `resolveCurrentStoreEpoch` in `src/store/epoch.ts`) — and the selected name is
+composed straight into a writable
 SQLite path (`:66`, `:328`). Three reproductions followed:
 
 - A regular file named `epoch-1` beside a valid flat store: startup selects it, gets `ENOTDIR`, publishes
@@ -1752,7 +1753,7 @@ And `retainActiveStoreTransition` ignores `syncDirectory`'s boolean and audits s
 
 `clients/hooks/pre-compact.mjs` still opens the flat `<dbDir>/store.db` (`:24`, `:56`, `:70`, `:91`), so
 after the first reset it reads the preserved store and after epoch 0 is swept it reports nothing. That is
-an ordinary miss. What is not ordinary is that `tests/invariants/client-path-parity.test.ts:104` was
+an ordinary miss. What is not ordinary is that `tests/invariants/client-path-parity.test.ts` was
 **edited to affirm the obsolete flat path** rather than failing. An invariant that is changed to match the
 code it was written to constrain has been deleted, whatever the diff says.
 
