@@ -294,8 +294,23 @@ describe('bundled store-reset CLI', () => {
     expect(discard.stdout).toContain('Discarded store epoch 1; initialized epoch 2');
     expect(storeHasTable(epochOnePath, 'private_pre_reset')).toBe(true);
     expect(storeHasTable(epochStorePath(home, build, 2), 'private_pre_reset')).toBe(false);
-    expect(existsSync(epochStorePath(home, build, 0))).toBe(false);
+    expect(existsSync(epochStorePath(home, build, 0))).toBe(true);
 
+    writeFileSync(
+      discovery,
+      JSON.stringify({
+        pid: 999_999_991,
+        port: 1,
+        socketPath: join(home, 'tmp', 'absent-coordinator.sock'),
+        bundleHash: build.bundleHash,
+        flavor: build.flavor,
+        namespace: 'default',
+        startedAt: Date.now(),
+        token: 'absent-coordinator-token',
+        bootToken: 'absent-coordinator-boot-token',
+      }),
+      { mode: 0o600 },
+    );
     const release = runCli(home, [
       'backend',
       'store-reset',
