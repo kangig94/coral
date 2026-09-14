@@ -258,7 +258,10 @@ describe('namespace coexistence integration', () => {
     const firstJobId = `coexist-first-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const secondJobId = `coexist-second-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const projectRoot = join(firstHome, 'shared-project');
-    const sharedStorePath = storePaths(sourceManifest.flavor, { baseDir: join(firstHome, '.coral') }).dbFile;
+    const sharedStorePath = join(
+      storePaths(sourceManifest.flavor, { baseDir: join(firstHome, '.coral') }).dbDir,
+      'store.db',
+    );
     seedCompletedJobs(sharedStorePath, sourceManifest.bundleHash, [
       { jobId: firstJobId, namespace: firstNamespace, projectRoot },
       { jobId: secondJobId, namespace: secondNamespace, projectRoot },

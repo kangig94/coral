@@ -134,21 +134,6 @@ describe('cli errors', () => {
       });
     });
 
-    it('drops documented setup-error context from the CLI envelope', () => {
-      const error = documentedCoralSetupError('store_reset_interrupted_foreign', {
-        flavor: 'prod',
-        cause: 'raw filesystem failure that must stay private',
-      });
-
-      expect(buildErrorEnvelope(error).envelope).toEqual({
-        error: true,
-        code: 'store_reset_interrupted_foreign',
-        message: 'Coral found an unrecognized entry in the interrupted backend store-reset staging area.',
-        remediation:
-          "Run 'coral-cli backend store-reset discard --target gen2 --flavor prod' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.",
-      });
-    });
-
     it('prints a provider preflight fault cause from a structured transport error before dropping its context', () => {
       const cause = 'preflight implementation failed';
       const error = documentedCoralSetupError('provider_preflight_faulted', { provider: 'codex', cause });
@@ -304,46 +289,6 @@ describe('cli errors', () => {
     });
 
     it.each([
-      ['store_open_contended', 503, 75, 'The current-generation store could not be opened because it is in use.'],
-      [
-        'store_open_unclassified',
-        500,
-        70,
-        'Coral could not classify why the current-generation store could not be opened.',
-      ],
-    ] as const)(
-      'preserves the %s refusal and exit class through IPC and HTTP',
-      (code, statusCode, exitCode, message) => {
-        const context = { path: '/store/store.db', flavor: 'prod', cause: 'EACCES: permission denied' };
-        const setupError = documentedCoralSetupError(code, context);
-        const serialized = serializeCoralSetupError(setupError);
-        if (serialized === null) throw new Error(`Expected ${code} to serialize`);
-        const response = buildTransportErrorResponse(setupError);
-
-        expect(serialized.userMessage).toBe(message);
-        expect(serialized.userMessage).not.toContain('EACCES');
-        expect(serialized.context).toEqual(context);
-        expect(serialized.remediation).toContain(context.path);
-        expect(serialized.remediation).not.toContain(context.cause);
-        expect(serialized.remediation).not.toContain('store-reset discard');
-        expect(response.statusCode).toBe(statusCode);
-        expect(buildErrorEnvelope(setupError).exitCode).toBe(exitCode);
-        expect(
-          buildErrorEnvelope(
-            new IpcRpcError({
-              code: -32603,
-              message: serialized.userMessage,
-              data: serialized,
-            }),
-          ).exitCode,
-        ).toBe(exitCode);
-        expect(
-          buildErrorEnvelope(new BackendToolHttpError(response.message, response.statusCode, response.body)).exitCode,
-        ).toBe(exitCode);
-      },
-    );
-
-    it.each([
       ['busy', 'All provider workers are busy'],
       ['backend_recovering', 'Backend recovery is still in progress'],
       ['kb_disabled', 'KB daemon supervisor is disabled: disabled (CORAL_KB_ENABLE=0)'],
@@ -393,7 +338,6 @@ describe('cli errors', () => {
       ['kb_offline', undefined, 75],
       ['kb_unavailable', undefined, 75],
       ['kb_unavailable', 503, 75],
-      ['store_open_contended', undefined, 75],
       ['provider_host_inventory_unavailable', undefined, 75],
       ['backend_error', 503, 75],
       ['backend_unreachable', undefined, 69],
@@ -401,7 +345,6 @@ describe('cli errors', () => {
       ['child_credentials_incomplete', undefined, 77],
       ['internal', undefined, 70],
       ['internal_error', undefined, 70],
-      ['store_open_unclassified', undefined, 70],
       ['backend_error', 500, 70],
       ['unauthorized', 401, 1],
       ['session_not_found', 404, 1],

@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 import type { StoragePort } from '#src/infra/port-types.js';
 import { resolveBuildFlavor } from '#src/infra/build-flavor.js';
@@ -17,7 +18,7 @@ const nodeStoreReaderStorage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 're
 };
 
 function withReadonlyStore<T>(read: (db: Database) => T, fallback: T): T {
-  const dbPath = storePaths(resolveBuildFlavor(process.env)).dbFile;
+  const dbPath = join(storePaths(resolveBuildFlavor(process.env)).dbDir, 'store.db');
   if (!existsSync(dbPath)) {
     return fallback;
   }

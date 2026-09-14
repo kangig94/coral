@@ -1,28 +1,22 @@
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import { listStoreResetIncidents } from '#src/store/reset-incident-reader.js';
-import type {
-  StoreResetDirectoryCursor,
-  StoreResetFileDescriptor,
-  StoreResetInspectionFs,
-  StoreResetInspectionStat,
-} from '#src/store/reset-incident-inspection-fs.js';
+import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
+import { listLegacyStoreResetIncidents } from '#src/store/reset-incident-reader.js';
 import {
-  MAX_INCIDENT_ROOT_ENTRIES,
   serializeStoreResetIncidentManifest,
-  STORE_RESET_IN_FLIGHT_DIRECTORY,
+  STORE_RESET_MANIFEST_FILE_NAME,
   type StoreResetIncidentManifestV2,
 } from '#src/store/reset-incident.js';
-import {
-  STORE_RESET_PARKED_SIDECAR_VERSION,
-  STORE_RESET_RETENTION_LEDGER_FILE_NAME,
-} from '#src/store/reset-retention.js';
 
-const ROOT = '/coral/store/store-reset-quarantine';
-const BUILD: StrictBundleManifest = {
-  version: '0.9.16',
+const roots: string[] = [];
+const build: StrictBundleManifest = {
+  version: '0.10.9',
   buildSetId: '123e4567-e89b-42d3-a456-426614174000',
   bundleHash: '0123456789abcdef',
   cliBundleHash: '123456789abcdef0',
@@ -32,467 +26,70 @@ const BUILD: StrictBundleManifest = {
   storeFormatFingerprint: `sha256:${'f'.repeat(64)}`,
 };
 
-type Cursor = { readonly entries: readonly string[]; offset: number };
-type Descriptor = { readonly path: string };
+afterEach(() => {
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
 
-function stat(kind: StoreResetInspectionStat['kind'], size = 0): StoreResetInspectionStat {
-  return {
-    dev: 1n,
-    ino: BigInt(size + 1),
-    size: BigInt(size),
-    mtimeNs: 123n,
-    mode: kind === 'directory' ? 0o40700n : 0o100600n,
-    kind,
-  };
-}
-
-class MemoryInspectionFs implements StoreResetInspectionFs {
-  readonly openFlags = { readOnly: 0, createExclusiveWrite: 1 };
-  readonly entries = new Map<string, string[]>();
-  readonly files = new Map<string, Uint8Array>();
-  readonly stats = new Map<string, StoreResetInspectionStat>();
-  readonly realpaths = new Map<string, string>();
-  closeDirectoryFails = false;
-
-  lstat(path: string): StoreResetInspectionStat | null {
-    return this.stats.get(path) ?? null;
-  }
-
-  fstat(descriptor: StoreResetFileDescriptor): StoreResetInspectionStat {
-    const path = (descriptor as Descriptor).path;
-    const value = this.stats.get(path);
-    if (value === undefined) throw new Error('missing');
-    return value;
-  }
-
-  realpath(path: string): string {
-    return this.realpaths.get(path) ?? path;
-  }
-
-  openDirectory(path: string): StoreResetDirectoryCursor {
-    return { entries: this.entries.get(path) ?? [], offset: 0 } satisfies Cursor;
-  }
-
-  readDirectory(cursor: StoreResetDirectoryCursor) {
-    const value = cursor as Cursor;
-    const name = value.entries[value.offset];
-    value.offset += 1;
-    return name === undefined ? null : { name };
-  }
-
-  closeDirectory(_cursor: StoreResetDirectoryCursor): void {
-    if (this.closeDirectoryFails) throw new Error('close sentinel');
-  }
-
-  open(path: string, _flags: number, _mode?: number): StoreResetFileDescriptor {
-    if (!this.files.has(path)) throw new Error('missing');
-    return { path } satisfies Descriptor;
-  }
-
-  read(
-    descriptor: StoreResetFileDescriptor,
-    buffer: Uint8Array,
-    offset: number,
-    length: number,
-    position: number,
-  ): number {
-    const source = this.files.get((descriptor as Descriptor).path);
-    if (source === undefined) throw new Error('missing');
-    const available = Math.max(0, Math.min(length, source.length - position));
-    buffer.set(source.subarray(position, position + available), offset);
-    return available;
-  }
-
-  write(): number {
-    throw new Error('unused');
-  }
-
-  close(_descriptor: StoreResetFileDescriptor): void {}
-
-  mkdtemp(): string {
-    throw new Error('unused');
-  }
-
-  removeTreeGuarded(): boolean {
-    throw new Error('unused');
-  }
-
-  addRoot(entries: readonly string[]): void {
-    this.stats.set(ROOT, stat('directory'));
-    this.entries.set(ROOT, [...entries]);
-  }
-
-  addIncident(id: string, value: StoreResetIncidentManifestV2 | string): void {
-    const directory = join(ROOT, id);
-    const manifestPath = join(directory, 'reset-manifest.json');
-    const contents = new TextEncoder().encode(
-      typeof value === 'string' ? value : serializeStoreResetIncidentManifest(value),
-    );
-    this.stats.set(directory, stat('directory'));
-    this.entries.set(directory, [
-      'reset-manifest.json',
-      ...(typeof value === 'string' ? [] : value.files.map((file) => file.name)),
-    ]);
-    this.stats.set(manifestPath, stat('file', contents.length));
-    this.files.set(manifestPath, contents);
-    if (typeof value !== 'string') {
-      for (const file of value.files) {
-        this.stats.set(join(directory, file.name), stat('file', file.sizeBytes));
-      }
-    }
-  }
-
-  addFile(path: string, value: string): void {
-    const contents = new TextEncoder().encode(value);
-    this.stats.set(path, stat('file', contents.length));
-    this.files.set(path, contents);
-  }
-}
-
-function manifest(id: string, resetAt: string, build: StrictBundleManifest = BUILD): StoreResetIncidentManifestV2 {
-  return {
-    schemaVersion: 2,
-    incidentId: id,
-    resetAt,
-    reason: 'mismatch',
-    storedFingerprint: `sha256:${'a'.repeat(64)}`,
-    expectedFingerprint: build.storeFormatFingerprint,
-    build: {
-      version: build.version,
-      buildSetId: build.buildSetId,
-      backendBundleHash: build.bundleHash,
-      flavor: build.flavor,
-    },
-    runtime: {
-      namespace: 'test',
-      nodeVersion: 'v24.7.0',
-      platform: 'linux',
-      architecture: 'x64',
-      processId: 42,
-    },
-    handoff: { acquiredViaHandoff: false },
-    files: [
-      {
-        name: 'store.db',
-        sizeBytes: 1,
-        mtimeMs: 1,
-        sha256: 'b'.repeat(64),
-      },
-    ],
-  };
-}
-
-describe('store reset incident listing', () => {
-  it('treats a missing root as an empty local success', () => {
-    const fs = new MemoryInspectionFs();
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
-      incidents: [],
-      truncated: false,
-      parkingRootState: 'absent',
-    });
-  });
-
-  it('returns the bounded prefix and marks root overflow', () => {
-    const fs = new MemoryInspectionFs();
-    fs.addRoot(Array.from({ length: MAX_INCIDENT_ROOT_ENTRIES + 1 }, (_, index) => `ignored-${index}`));
-
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
-      incidents: [],
-      truncated: true,
-      parkingRootState: 'absent',
-    });
-  });
-
-  it.each([MAX_INCIDENT_ROOT_ENTRIES - 1, MAX_INCIDENT_ROOT_ENTRIES])(
-    'accepts a bounded root containing %i non-incident entries',
-    (entryCount) => {
-      const fs = new MemoryInspectionFs();
-      fs.addRoot(Array.from({ length: entryCount }, (_, index) => `ignored-${index}`));
-
-      expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toEqual({
-        incidents: [],
-        truncated: false,
-        parkingRootState: 'absent',
-      });
-    },
-  );
-
-  it('sorts current-build incidents newest-first and ignores non-UUID staging entries', () => {
-    const older = '123e4567-e89b-42d3-a456-426614174000';
-    const newer = '223e4567-e89b-42d3-a456-426614174000';
-    const fs = new MemoryInspectionFs();
-    fs.addRoot([older, `${newer}.tmp`, newer]);
-    fs.addIncident(older, manifest(older, '2026-07-22T01:02:03.004Z'));
-    fs.addIncident(newer, manifest(newer, '2026-07-23T01:02:03.004Z'));
-
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD }).incidents).toEqual([
-      {
-        incidentId: newer,
-        state: 'ready',
-        resetAt: '2026-07-23T01:02:03.004Z',
-        reason: 'mismatch',
-        schemaVersion: 2,
-        resetPolicyCause: null,
-        fileCount: 1,
-        evidenceBytes: 1,
-        parkingEvidenceBytes: 0,
-        retention: { slot: 'unknown' },
-        storedProductVersion: 'unknown',
-      },
-      {
-        incidentId: older,
-        state: 'ready',
-        resetAt: '2026-07-22T01:02:03.004Z',
-        reason: 'mismatch',
-        schemaVersion: 2,
-        resetPolicyCause: null,
-        fileCount: 1,
-        evidenceBytes: 1,
-        parkingEvidenceBytes: 0,
-        retention: { slot: 'unknown' },
-        storedProductVersion: 'unknown',
-      },
-    ]);
-  });
-
-  it('lists a self-describing parking namespace even when no incident directory was committed', () => {
-    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
-    const fs = new MemoryInspectionFs();
-    fs.addRoot(['.parked']);
-    const parkingRoot = join(ROOT, '.parked');
-    const parkingDirectory = join(parkingRoot, parkingId);
-    fs.stats.set(parkingRoot, stat('directory'));
-    fs.entries.set(parkingRoot, [parkingId]);
-    fs.stats.set(parkingDirectory, stat('directory'));
-    fs.entries.set(parkingDirectory, ['parked.v1.json', 'store.db-wal']);
-    fs.addFile(join(parkingDirectory, 'store.db-wal'), '123456789012');
-    fs.addFile(
-      join(parkingDirectory, 'parked.v1.json'),
-      JSON.stringify({
-        version: STORE_RESET_PARKED_SIDECAR_VERSION,
-        parkingId,
-        parkedAt: '2026-09-13T00:00:00.000Z',
-        phase: 'terminal',
-        cause: 'intruder',
-        incidentId: null,
-        names: ['store.db-wal'],
-        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
-        transaction: null,
-        classification: 'corrupt-or-unsupported',
-      }),
-    );
-
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD }).incidents).toEqual([
-      {
-        incidentId: parkingId,
-        state: 'parked',
-        resetAt: null,
-        reason: null,
-        schemaVersion: null,
-        resetPolicyCause: null,
-        fileCount: null,
-        evidenceBytes: 'unknown',
-        parkingEvidenceBytes: 12,
-        retention: {
-          slot: 'parked',
-          parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
-          cause: 'intruder',
-          classification: 'corrupt-or-unsupported',
-          phase: 'terminal',
-        },
-        storedProductVersion: 'unknown',
-      },
-    ]);
-  });
-
-  it('lists the fixed in-flight coordinate even beyond the terminal scan bound', () => {
-    const parkingId = '323e4567-e89b-42d3-a456-426614174000';
-    const fs = new MemoryInspectionFs();
-    fs.addRoot(['.parked']);
-    const parkingRoot = join(ROOT, '.parked');
-    const parkingDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
-    fs.stats.set(parkingRoot, stat('directory'));
-    fs.entries.set(parkingRoot, [
-      ...Array.from({ length: MAX_INCIDENT_ROOT_ENTRIES + 1 }, (_, index) => `ignored-${index}`),
-      STORE_RESET_IN_FLIGHT_DIRECTORY,
-    ]);
-    fs.stats.set(parkingDirectory, stat('directory'));
-    fs.addFile(
-      join(parkingDirectory, 'parked.v1.json'),
-      JSON.stringify({
-        version: STORE_RESET_PARKED_SIDECAR_VERSION,
-        parkingId,
-        parkedAt: '2026-09-13T00:00:00.000Z',
-        phase: 'in-flight',
-        cause: 'residual',
-        incidentId: null,
-        names: [],
-        entries: [],
-        transaction: { kind: 'claim', names: ['store.db'] },
-        classification: null,
-      }),
-    );
-
-    const result = listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD });
-    expect(result.truncated).toBe(true);
-    expect(result.incidents).toContainEqual(
-      expect.objectContaining({ incidentId: parkingId, state: 'in-flight', parkingEvidenceBytes: 0 }),
-    );
-  });
-
-  it.each(['file', 'symbolic-link'] as const)('describes a %s parking root as unsafe', (kind) => {
-    const fs = new MemoryInspectionFs();
-    fs.addRoot(['.parked']);
-    fs.stats.set(join(ROOT, '.parked'), stat(kind));
-
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toMatchObject({
-      incidents: [],
-      parkingRootState: 'unsafe',
-    });
-  });
-
-  it('describes a parking root that escapes quarantine as unsafe', () => {
-    const fs = new MemoryInspectionFs();
-    const parkingRoot = join(ROOT, '.parked');
-    fs.addRoot(['.parked']);
-    fs.stats.set(parkingRoot, stat('directory'));
-    fs.realpaths.set(parkingRoot, '/outside/parked');
-
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toMatchObject({
-      incidents: [],
-      parkingRootState: 'unsafe',
-    });
-  });
-
-  it('returns only fixed states for malformed and mixed-build incidents', () => {
-    const malformed = '123e4567-e89b-42d3-a456-426614174000';
-    const mixed = '223e4567-e89b-42d3-a456-426614174000';
-    const fs = new MemoryInspectionFs();
-    fs.addRoot([malformed, mixed]);
-    fs.addIncident(malformed, '{not-json');
-    fs.addIncident(
-      mixed,
-      manifest(mixed, '2026-07-23T01:02:03.004Z', {
-        ...BUILD,
-        buildSetId: '323e4567-e89b-42d3-a456-426614174000',
-      }),
-    );
-
-    expect(listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD }).incidents).toEqual([
-      {
-        incidentId: malformed,
-        state: 'malformed',
-        resetAt: null,
-        reason: null,
-        schemaVersion: null,
-        resetPolicyCause: null,
-        fileCount: null,
-        evidenceBytes: 0,
-        parkingEvidenceBytes: 0,
-        retention: { slot: 'unknown' },
-        storedProductVersion: 'unknown',
-      },
-      {
-        incidentId: mixed,
-        state: 'build_mismatch',
-        resetAt: null,
-        reason: null,
-        schemaVersion: null,
-        resetPolicyCause: null,
-        fileCount: null,
-        evidenceBytes: 1,
-        parkingEvidenceBytes: 0,
-        retention: { slot: 'unknown' },
-        storedProductVersion: 'unknown',
-      },
-    ]);
-  });
-
-  it('projects additive retention fields without deriving the stored version from the manifest', () => {
+describe('legacy store-reset incident listing', () => {
+  it('keeps a shipped quarantine incident visible while the legacy root exists', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-legacy-reset-reader-'));
+    roots.push(root);
     const incidentId = '123e4567-e89b-42d3-a456-426614174000';
-    const fs = new MemoryInspectionFs();
-    fs.addRoot([STORE_RESET_RETENTION_LEDGER_FILE_NAME, incidentId, '.parked']);
-    fs.addIncident(incidentId, manifest(incidentId, '2026-07-22T01:02:03.004Z'));
-    const parkingRoot = join(ROOT, '.parked');
-    const parkingDirectory = join(parkingRoot, incidentId);
-    fs.stats.set(parkingRoot, stat('directory'));
-    fs.entries.set(parkingRoot, [incidentId]);
-    fs.stats.set(parkingDirectory, stat('directory'));
-    fs.entries.set(parkingDirectory, ['parked.v1.json', 'store.db-wal']);
-    fs.stats.set(join(parkingDirectory, 'store.db-wal'), stat('file', 12));
-    fs.addFile(
-      join(parkingDirectory, 'parked.v1.json'),
-      JSON.stringify({
-        version: STORE_RESET_PARKED_SIDECAR_VERSION,
-        parkingId: incidentId,
-        parkedAt: '2026-09-13T00:00:00.000Z',
-        phase: 'terminal',
-        cause: 'intruder',
-        incidentId,
-        names: ['store.db-wal'],
-        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
-        transaction: null,
-        classification: null,
-      }),
-    );
-    fs.addFile(
-      join(ROOT, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
-      JSON.stringify({
-        version: 1,
-        preserved: {
-          incidentId,
-          resetAt: '2026-07-22T01:02:03.004Z',
-          evidenceBytes: 17,
-          storedProductVersion: '0.9.15',
-          preservation: {
-            kind: 'copied',
-            cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
-            coherence: 'torn',
-          },
-          resumeLeftActive: true,
-          futureIncidentField: true,
+    const incident = join(root, incidentId);
+    const evidence = Buffer.from('legacy evidence');
+    mkdirSync(incident);
+    writeFileSync(join(incident, 'store.db'), evidence);
+    const manifest: StoreResetIncidentManifestV2 = {
+      schemaVersion: 2,
+      incidentId,
+      resetAt: '2026-09-15T00:00:00.000Z',
+      reason: 'mismatch',
+      storedFingerprint: null,
+      expectedFingerprint: build.storeFormatFingerprint,
+      build: {
+        version: build.version,
+        buildSetId: build.buildSetId,
+        backendBundleHash: build.bundleHash,
+        flavor: build.flavor,
+      },
+      runtime: {
+        namespace: 'test',
+        nodeVersion: process.version,
+        platform: process.platform,
+        architecture: process.arch,
+        processId: process.pid,
+      },
+      handoff: { acquiredViaHandoff: false },
+      files: [
+        {
+          name: 'store.db',
+          sizeBytes: evidence.byteLength,
+          mtimeMs: 0,
+          sha256: createHash('sha256').update(evidence).digest('hex'),
         },
-        futureLedgerField: true,
-      }),
-    );
+      ],
+    };
+    writeFileSync(join(incident, STORE_RESET_MANIFEST_FILE_NAME), serializeStoreResetIncidentManifest(manifest));
 
-    const result = listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD });
-    expect(result.incidents).toHaveLength(2);
-    expect(result.incidents[0]).toMatchObject({
-      incidentId,
-      retention: {
-        slot: 'claimed',
-        preservation: {
-          kind: 'copied',
-          cause: { kind: 'exclusion-unproven', reason: 'writer-live' },
-          coherence: 'torn',
-        },
-        resumeLeftActive: true,
-        parked: [],
-      },
-      storedProductVersion: '0.9.15',
-      evidenceBytes: 1,
-      parkingEvidenceBytes: 0,
+    const result = listLegacyStoreResetIncidents({
+      fs: createStoreResetInspectionFs(),
+      quarantineRoot: root,
+      expectedBuild: build,
     });
-    expect(result.incidents[1]).toMatchObject({
-      incidentId,
-      state: 'parked',
-      retention: {
-        slot: 'parked',
-        parked: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: 12 }],
-      },
-      evidenceBytes: 'unknown',
-      parkingEvidenceBytes: 12,
+
+    expect(result).toMatchObject({
+      truncated: false,
+      incidents: [{ source: 'legacy-quarantine', incidentId, state: 'ready', fileCount: 1 }],
     });
   });
 
-  it('fails closed when the bounded directory cursor cannot close', () => {
-    const fs = new MemoryInspectionFs();
-    fs.addRoot([]);
-    fs.closeDirectoryFails = true;
-
-    expect(() => listStoreResetIncidents({ fs, quarantineRoot: ROOT, expectedBuild: BUILD })).toThrow(
-      'Store reset incident could not be read safely.',
-    );
+  it('returns an empty list for an absent legacy root', () => {
+    expect(
+      listLegacyStoreResetIncidents({
+        fs: createStoreResetInspectionFs(),
+        quarantineRoot: join(tmpdir(), 'coral-absent-legacy-reset-root'),
+        expectedBuild: build,
+      }),
+    ).toEqual({ incidents: [], truncated: false });
   });
 });

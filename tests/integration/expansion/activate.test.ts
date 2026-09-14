@@ -67,7 +67,7 @@ function makeDiscoveryRecord(overrides: Partial<CoordinatorDiscoveryRecord> = {}
 
 function createCurrentStore(runtime: ReturnType<typeof createRealRuntime>): void {
   openTestStoreDatabase({
-    path: runtime.paths.coral.store.dbFile,
+    path: join(runtime.paths.coral.store.dbDir, 'store.db'),
     storage: runtime.storage,
     storeFormat: currentCoralStoreFormat(),
   }).close();

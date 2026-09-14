@@ -1,14 +1,13 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
-import { dirname, resolve } from 'node:path';
+import { dirname } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../infra/port-types.js';
-import type { StorageActuator } from '../infra/storage-actuator.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
-import type { SettlementAuthority } from './settlement-authority.js';
+import { resolveCurrentStorePath } from './epoch.js';
 import {
   isStoreFormatFingerprint,
   STORE_FORMAT_FINGERPRINT_META_KEY,
@@ -72,8 +71,6 @@ type WritableStoreOptions = {
   readonly flavor?: BuildFlavor;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
-  readonly held: StorageActuator;
-  readonly owner?: Pick<SettlementAuthority, 'openDatabase'>;
 };
 
 type AuthorizedWritableStoreOptions = WritableStoreOptions;
@@ -267,7 +264,7 @@ function writeStoreFormatSidecar(options: AuthorizedWritableStoreOptions): void 
   if (options.path === ':memory:') return;
   const sidecarPath = `${options.path}${STORE_FORMAT_SIDECAR_SUFFIX}`;
   if (
-    !options.held.writeWholeFileDurable(sidecarPath, `${options.storeFormat.fingerprint}\n`, {
+    !options.storage.writeAtomicDurableSync(sidecarPath, `${options.storeFormat.fingerprint}\n`, {
       encoding: 'utf-8',
       mode: 0o600,
     })
@@ -348,13 +345,10 @@ function raiseStoredProductVersion(db: Database, currentProductVersion: string):
 
 export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
   if (options.path !== ':memory:') {
-    options.held.makeDirectory(dirname(options.path), { recursive: true });
+    options.storage.mkdirSync(dirname(options.path), { recursive: true });
   }
 
-  const db =
-    options.owner === undefined
-      ? (new DatabaseSync(options.path) as unknown as Database)
-      : options.owner.openDatabase(() => new DatabaseSync(options.path) as unknown as Database);
+  const db = new DatabaseSync(options.path) as unknown as Database;
   try {
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'compatible') {
@@ -443,18 +437,13 @@ type BackendStorePathOptions = {
   readonly storeFormat: StoreFormatDescription;
 };
 
-function resolveStoreDbPath(runtime: Pick<Runtime, 'paths'>, options: BackendStorePathOptions): string {
-  if (options.path === ':memory:') {
-    return ':memory:';
-  }
-  const { dbFile } = runtime.paths.coral.store;
-  return resolve(options.path ?? dbFile);
+function resolveStoreDbPath(runtime: Pick<Runtime, 'paths' | 'storage'>, options: BackendStorePathOptions): string {
+  return resolveCurrentStorePath(runtime, options.path);
 }
 
 export function openWritableStoreDbNoReset(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: BackendStorePathOptions,
-  held: StorageActuator,
 ): Database {
   const storeDbPath = resolveStoreDbPath(runtime, options);
   // An absent store is not an outdated one: only the coordinator creates it, so
@@ -470,7 +459,6 @@ export function openWritableStoreDbNoReset(
     storeFormat: options.storeFormat,
     flavor: runtime.flavor,
     busyTimeoutMs: options.busyTimeoutMs,
-    held,
   });
 }
 

@@ -18,11 +18,7 @@ import {
   formatProviderProxySetContainResult,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
-import {
-  documentedCoralSetupError,
-  type DocumentedCoralSetupErrorCode,
-  type SetupErrorAuthorIdentity,
-} from '#src/runtime/errors.js';
+import type { SetupErrorAuthorIdentity } from '#src/runtime/errors.js';
 import type {
   HandoffContinuationReason,
   HandoffPublicationIncident,
@@ -124,7 +120,7 @@ function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatus
 }
 
 const storeReset: StoreResetCommandOperations = {
-  list: () => ({ incidents: [], truncated: false }),
+  list: () => ({ epochs: [], legacyIncidents: [], truncated: false }),
   report: async () => {
     throw new Error('not used');
   },
@@ -2107,14 +2103,6 @@ describe('backend startup diagnostic classification', () => {
   // The records below carry no build identity, so authorship stays unprovable however this build proves its own.
   const provenSelfIdentity = (): SetupErrorAuthorIdentity => ({ bundleHash: '0123456789abcdef', namespace: 'ns-self' });
 
-  const authored = (
-    code: DocumentedCoralSetupErrorCode,
-    context?: Record<string, unknown>,
-  ): { userMessage: string; remediation: string } => {
-    const error = documentedCoralSetupError(code, context);
-    return { userMessage: error.userMessage, remediation: error.remediation };
-  };
-
   it('classifies a recent failure without returning serialized exception text', () => {
     expect(
       statusFromStartupDiagnostic(
@@ -2143,40 +2131,6 @@ describe('backend startup diagnostic classification', () => {
       status: 'recent_failure',
       phase: 'startup_failed',
       retryable: false,
-    });
-  });
-
-  it('accepts and carries a retryable startup diagnostic', () => {
-    expect(
-      statusFromStartupDiagnostic(
-        {
-          schemaVersion: 1,
-          phase: 'startup_failed',
-          state: 'stopped_with_diagnostic',
-          retryable: true,
-          pid: 4242,
-          recordedAt: '2026-08-02T11:59:30.000Z',
-          exitCode: 75,
-          error: {
-            kind: 'coral_setup_error',
-            code: 'store_open_contended',
-            userMessage: 'The current-generation store could not be opened because it is in use.',
-            remediation: 'Wait for the other store user to release the SQLite lock, then retry.',
-          },
-        },
-        now,
-        provenSelfIdentity,
-      ),
-    ).toEqual({
-      status: 'recent_failure',
-      phase: 'startup_failed',
-      retryable: true,
-      setupError: {
-        kind: 'documented',
-        code: 'store_open_contended',
-        userMessage: authored('store_open_contended').userMessage,
-        remediation: authored('store_open_contended').remediation,
-      },
     });
   });
 

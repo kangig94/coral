@@ -196,7 +196,7 @@ function seedStore(fixture: Fixture): void {
   const runtime = createRealRuntime('prod');
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+    path: join(storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir, 'store.db'),
     storage: runtime.storage,
   });
 
@@ -293,7 +293,7 @@ async function expectedOutput(fixture: Fixture, testCase: ReadCommandCase): Prom
   const runtime = createRealRuntime('prod');
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+    path: join(storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir, 'store.db'),
     storage: runtime.storage,
     readonly: true,
   });
@@ -411,7 +411,10 @@ describe('cli library-direct reads', () => {
 
     const fixture = createFixture();
     const artifacts = coordinatorArtifacts(fixture);
-    const expectedStorePath = storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile;
+    const expectedStorePath = join(
+      storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir,
+      'store.db',
+    );
 
     const result = runCliSubprocess(fixture, ['jobs']);
     if (result.error) {

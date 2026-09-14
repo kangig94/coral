@@ -309,7 +309,7 @@ function readDurableOperation(fixture: Fixture, jobId: string): ProviderOperatio
   const runtime = createRealRuntime('prod');
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbFile,
+    path: join(storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir, 'store.db'),
     storage: runtime.storage,
     readonly: true,
   });

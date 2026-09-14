@@ -22,7 +22,7 @@ describe('composeCoralPaths', () => {
     expect(p.generation.dataRoot).toContain('.coral/gen2/data');
     expect(p.generation.legacyDataRoot).toContain('.coral/data');
     expect(p.generation.adoptionLock).toContain('.coral/gen2/.adoption-data.lock');
-    expect(p.store.dbFile).toContain('.coral/gen2/data/store/store.db');
+    expect(p.store.dbDir).toContain('.coral/gen2/data/store');
     expect(p.corpus.kbRoot).toContain('.coral/kb');
     expect(p.kbRuntime.root).toContain('.coral/gen2/data/kb');
     expect(p.coordinator.socketPath).toMatch(

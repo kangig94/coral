@@ -27,7 +27,7 @@ const nodeStoreStorage = createRealRuntime('prod').storage;
 function withWritableStore(write: (db: ReturnType<typeof openTestStoreDatabase>) => void): void {
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: storePaths(resolveBuildFlavor(process.env)).dbFile,
+    path: join(storePaths(resolveBuildFlavor(process.env)).dbDir, 'store.db'),
     storage: nodeStoreStorage,
   });
 

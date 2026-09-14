@@ -367,13 +367,9 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       generationWriterLease.assertOwned();
       db =
         options.db ??
-        (openWritableStoreDbNoReset(
-          runtime,
-          {
-            storeFormat: currentCoralStoreFormat(),
-          },
-          generationWriterLease.directoryLock.actuator,
-        ) as unknown as WritableDatabase);
+        (openWritableStoreDbNoReset(runtime, {
+          storeFormat: currentCoralStoreFormat(),
+        }) as unknown as WritableDatabase);
       const activeDb = db;
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
       const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);

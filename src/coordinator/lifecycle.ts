@@ -75,7 +75,6 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../transport/ipc/server.js';
-import { createBackendStoreResetAuthority } from '../store/backend-store-reset.js';
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
@@ -1054,15 +1053,6 @@ async function runLifecycleStartup({
       }
       storeDb = preinjectedStoreServices.storeDb;
     } else {
-      const resetAuthority = createBackendStoreResetAuthority(
-        runtime,
-        { acquiredViaHandoff: bound?.acquiredViaHandoff ?? false },
-        {
-          namespace,
-          storeFormat: deps.storeFormat,
-          build: currentBuild,
-        },
-      );
       const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
       if (currentBundleDir === null) {
         throw documentedCoralSetupError({
@@ -1072,7 +1062,6 @@ async function runLifecycleStartup({
       }
       const routing = await routeOrOpenBackendStoreAtStartup({
         runtime,
-        authority: resetAuthority,
         validateForeignTarget: validateForeignHandoffTarget,
         options: {
           storeFormat: deps.storeFormat,

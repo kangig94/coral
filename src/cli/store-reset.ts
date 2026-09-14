@@ -4,7 +4,6 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
-import { validateForeignHandoffTarget } from '../coordinator/handoff-routing/runner.js';
 import { createRealRuntime } from '../runtime/real.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import {
@@ -12,6 +11,7 @@ import {
   releaseStoreReset,
   resolveStoreResetTargetPaths,
   type StoreResetDiscardDecision,
+  type StoreResetReleasePresentation,
   type StoreResetReleaseTarget,
   type StoreResetTarget,
 } from '../store/operator-store-reset.js';
@@ -21,13 +21,13 @@ import {
 } from '../store/reset-incident-diagnostic.js';
 import type { StoreResetInspectionFs } from '../store/reset-incident-inspection-fs.js';
 import {
-  listStoreResetIncidents as readStoreResetIncidentList,
+  listLegacyStoreResetIncidents,
   readStoreResetIncidentReport,
-  type StoreResetIncidentListResult,
+  type LegacyStoreResetIncidentListEntry,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
+import { listStoreEpochs, type StoreEpochListEntry } from '../store/epoch.js';
 import { isCanonicalStoreResetIncidentId, type StoreResetPublicReport } from '../store/reset-incident.js';
-import type { StoreResetReleasePresentation } from '../store/reset-retention.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import { StoreResetCliError } from './errors.js';
 import { acquireStoreResetSocketGuard } from './store-reset-socket.js';
@@ -37,7 +37,14 @@ export interface StoreResetCliDependencies {
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
   quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
+  runtime?(manifest: StrictBundleManifest): ReturnType<typeof createRealRuntime>;
 }
+
+export type StoreResetListResult = Readonly<{
+  epochs: readonly StoreEpochListEntry[];
+  legacyIncidents: readonly LegacyStoreResetIncidentListEntry[];
+  truncated: boolean;
+}>;
 
 function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDependencies {
   return {
@@ -54,17 +61,18 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
       const runtime = createRealRuntime(manifest.flavor);
       return resolveStoreResetTargetPaths(runtime, target).quarantineRoot;
     },
+    runtime: (manifest) => createRealRuntime(manifest.flavor),
   };
 }
 
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {
-  readonly list: (target: StoreResetTarget) => StoreResetIncidentListResult;
+  readonly list: (target: StoreResetTarget) => StoreResetListResult;
   readonly report: (target: StoreResetTarget, incidentId: string) => Promise<StoreResetPublicReport>;
   readonly discard: (target: StoreResetTarget, flavor: BuildFlavor) => Promise<StoreResetDiscardDecision>;
   readonly release: (
     target: StoreResetReleaseTarget,
     flavor: BuildFlavor,
-    incidentId: string,
+    epoch: string,
   ) => Promise<StoreResetReleasePresentation>;
 } {
   const dependencies = defaultDependencies(shutdownSignal);
@@ -79,19 +87,14 @@ export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal):
 export function releaseStoreResetLocal(
   target: StoreResetReleaseTarget,
   flavor: BuildFlavor,
-  incidentId: string,
+  epoch: string,
 ): Promise<StoreResetReleasePresentation> {
-  if (!isCanonicalStoreResetIncidentId(incidentId)) {
+  if (!/^(0|[1-9]\d*)$/.test(epoch) || !Number.isSafeInteger(Number(epoch))) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
-  return releaseStoreReset({ target, runtime: createRealRuntime(flavor), incidentId });
+  return releaseStoreReset({ target, runtime: createRealRuntime(flavor), epoch: Number(epoch) });
 }
 
-/**
- * Returns the operator decision as-is, `handoff` arm included. A valid newer selection is answered before the
- * maintenance and reset locks are taken, so the caller — not this function — decides what delegating means for
- * an operator command; collapsing it here would hide the one outcome that must not proceed to destructive work.
- */
 export function discardStoreResetLocal(
   target: StoreResetTarget,
   flavor: BuildFlavor,
@@ -108,9 +111,6 @@ export function discardStoreResetLocal(
     build: identity.manifest,
     storeFormat: currentCoralStoreFormat(),
     acquireSocketGuard: acquireStoreResetSocketGuard,
-    // Supplied here rather than defaulted inside `src/store`: the validator is the coordinator's, and the CLI
-    // is the caller that already sits above both layers.
-    validateSelectedTarget: validateForeignHandoffTarget,
   });
 }
 
@@ -130,14 +130,20 @@ function mapReportFailure(result: Exclude<StoreResetIncidentReportResult, { read
 export function listStoreResetIncidentsLocal(
   target: StoreResetTarget,
   dependencies: StoreResetCliDependencies = defaultDependencies(),
-): StoreResetIncidentListResult {
+): StoreResetListResult {
   const manifest = requireCurrentBuild(dependencies);
   try {
-    return readStoreResetIncidentList({
+    const legacy = listLegacyStoreResetIncidents({
       fs: dependencies.createInspectionFs(),
       quarantineRoot: dependencies.quarantineRoot(manifest, target),
       expectedBuild: manifest,
     });
+    const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
+    return {
+      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime, currentCoralStoreFormat()),
+      legacyIncidents: legacy.incidents,
+      truncated: legacy.truncated,
+    };
   } catch (error: unknown) {
     if (error instanceof StoreResetCliError) throw error;
     throw new StoreResetCliError('store_reset_reporting_failed');

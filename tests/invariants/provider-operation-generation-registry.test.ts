@@ -43,7 +43,6 @@ describe('other durable and wire generations', () => {
     const launch = source('src/jobs/shell/launch.ts');
     const activeStore = source('src/store/active-store-selection.ts');
     const activeStoreCoordination = source('src/store/active-store-selection-coordination.ts');
-    const backendReset = source('src/store/backend-store-reset.ts');
 
     expect(runtimeMeta).toContain('durable_cli_process.v${DURABLE_CLI_PROCESS_RUNTIME_META_VERSION}');
     expect(runtimeMeta).not.toContain('z.literal(DURABLE_CLI_PROCESS_RUNTIME_META_VERSION)');
@@ -54,7 +53,7 @@ describe('other durable and wire generations', () => {
     expect(activeStore).toContain('z.literal(ACTIVE_STORE_TRANSITION_VERSION)');
     expect(activeStoreCoordination).toContain('version: ACTIVE_STORE_SELECTION_VERSION');
     expect(activeStoreCoordination).toContain('version: ACTIVE_STORE_TRANSITION_VERSION');
-    expect(backendReset).toContain('active-store-transition.v${ACTIVE_STORE_TRANSITION_VERSION}');
+    expect(activeStoreCoordination).toContain('retained-active-store-transitions');
     expect(source('src/coordinator/lifecycle.ts')).toContain('version: ACTIVE_STORE_SELECTION_VERSION');
   });
 
@@ -75,15 +74,13 @@ describe('other durable and wire generations', () => {
 
   it('derives retained reset and KB generations from their owner registries', () => {
     const resetIncident = source('src/store/reset-incident.ts');
-    const backendReset = source('src/store/backend-store-reset.ts');
     const resetReader = source('src/store/reset-incident-reader.ts');
     const kbRuntime = source('src/kb/runtime.ts');
     const kbProjection = source('src/kb/corpus/projection-lifecycle.ts');
 
     expect(resetIncident).toContain('STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.current');
     expect(resetIncident).toContain('STORE_RESET_INCIDENT_SCHEMA_GENERATIONS.retainedReadable[0]');
-    expect([resetIncident, backendReset, resetReader].join('\n')).not.toMatch(/schemaVersion\s*[!=]==?\s*3/u);
-    expect(backendReset).toContain('schemaVersion: STORE_RESET_INCIDENT_SCHEMA_VERSION');
+    expect([resetIncident, resetReader].join('\n')).not.toMatch(/schemaVersion\s*[!=]==?\s*3/u);
     expect(kbProjection).toContain('CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.current');
     expect(kbProjection).toContain('schemaVersion: typeof CORPUS_PROJECTION_COMMIT_SCHEMA_VERSION');
     expect(kbRuntime).toContain('CORPUS_PROJECTION_COMMIT_SCHEMA_GENERATIONS.retainedSupported');

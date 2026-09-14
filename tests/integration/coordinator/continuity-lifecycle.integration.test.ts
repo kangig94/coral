@@ -196,7 +196,7 @@ describe('coordinator continuity lifecycle integration', () => {
       },
     };
     const progressStore = new JobStore(TEST_BACKEND_NAMESPACE, runtime, createEventBodyCodec(), {
-      db: openTestStoreDb(runtime, runtime.paths.coral.store.dbFile),
+      db: openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db')),
       eventBus,
       reducers: composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry),
       providers: permissiveProviderLookupPort,

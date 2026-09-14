@@ -10,7 +10,6 @@ import { backendLog } from '#src/infra/backend-log.js';
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { createBackendStoreResetAuthority } from '#src/store/backend-store-reset.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from '#src/store/active-store-selection.js';
 import { coordinateActiveStoreSelection } from '#src/store/active-store-selection-coordination.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
@@ -42,18 +41,9 @@ async function openGeneratedStore(runtime: Runtime): Promise<void> {
     flavor: runtime.flavor,
     storeFormatFingerprint: STORE_FORMAT.fingerprint,
   };
-  const authority = createBackendStoreResetAuthority(
-    runtime,
-    { acquiredViaHandoff: true },
-    {
-      namespace: 'generation-readiness-test',
-      build,
-      storeFormat: STORE_FORMAT,
-    },
-  );
   const bundleDir = mkdtempSync(join(tmpdir(), 'coral-generation-readiness-bundle-'));
   roots.push(bundleDir);
-  const result = await coordinateActiveStoreSelection(runtime, authority, {
+  const result = await coordinateActiveStoreSelection(runtime, {
     storeFormat: STORE_FORMAT,
     currentSelection: {
       version: ACTIVE_STORE_SELECTION_VERSION,
@@ -66,7 +56,6 @@ async function openGeneratedStore(runtime: Runtime): Promise<void> {
       validateSelectedTarget: () => {
         throw new Error('Generation-readiness fixture never selects a foreign target.');
       },
-      acquireWriterExclusion: async () => ({ kind: 'unproven', reason: 'lock-timeout', blockers: null }),
     },
   });
   if (result.kind !== 'opened') throw new Error('Generation-readiness fixture unexpectedly handed off.');
@@ -182,7 +171,7 @@ describe('generation readiness', () => {
 
     await openGeneratedStore(runtime);
 
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
+    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
   });
 
   it('boots beside readable legacy history without importing it', async () => {
@@ -199,12 +188,12 @@ describe('generation readiness', () => {
     // generation made the whole daemon unbootable until an operator migrated it.
     await openGeneratedStore(runtime);
 
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
+    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
     // The legacy rows stay where they are, and none of them appear in the new
     // generation. A byte hash of the tree would be the wrong assertion here:
     // classifying the legacy store opens it, and SQLite rewrites its sidecars.
     expect(legacyHistoryValue(join(legacyRoot, 'store', 'store.db'))).toBe('not-imported');
-    expect(legacyHistoryValue(runtime.paths.coral.store.dbFile)).toBeNull();
+    expect(legacyHistoryValue(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBeNull();
     expect(readFileSync(join(legacyRoot, 'equipment', 'dormant.bin'), 'utf-8')).toBe('left-behind-equipment');
     expect(warning).toHaveBeenCalledWith(expect.stringContaining(legacyRoot));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('left untouched'));
@@ -224,7 +213,7 @@ describe('generation readiness', () => {
 
     await openGeneratedStore(runtime);
 
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
+    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
     expect(hashTree(legacyRoot)).toBe(before);
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('0.9.16'));
   });
@@ -247,7 +236,7 @@ describe('generation readiness', () => {
 
     await openGeneratedStore(runtime);
 
-    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
+    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
     expect(hashTree(paths.legacyFlavorRoot)).toBe(before);
   });
 

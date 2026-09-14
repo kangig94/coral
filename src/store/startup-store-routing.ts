@@ -4,10 +4,7 @@ import {
   coordinateActiveStoreSelection,
   type ActiveStoreSelectionProtocolOptions,
 } from './active-store-selection-coordination.js';
-import { acquireBackendStoreWriterExclusion, type BackendStoreResetAuthority } from './backend-store-reset.js';
 import type { Database } from './db.js';
-
-const STARTUP_STORE_RESET_WRITER_EXCLUSION_TIMEOUT_MS = 5_000;
 
 export type StartupBackendStoreRoutingResult =
   | { readonly kind: 'open'; readonly db: Database }
@@ -20,7 +17,6 @@ export type StartupActiveStoreSelectionOptions = Omit<ActiveStoreSelectionProtoc
 
 export type RouteOrOpenBackendStoreAtStartupInput = Readonly<{
   runtime: Runtime;
-  authority: BackendStoreResetAuthority;
   options: StartupActiveStoreSelectionOptions;
   validateForeignTarget: ForeignTargetValidator;
 }>;
@@ -28,13 +24,11 @@ export type RouteOrOpenBackendStoreAtStartupInput = Readonly<{
 export async function routeOrOpenBackendStoreAtStartup(
   input: RouteOrOpenBackendStoreAtStartupInput,
 ): Promise<StartupBackendStoreRoutingResult> {
-  const result = await coordinateActiveStoreSelection(input.runtime, input.authority, {
+  const result = await coordinateActiveStoreSelection(input.runtime, {
     ...input.options,
     dependencies: {
       kind: 'startup',
       validateSelectedTarget: input.validateForeignTarget,
-      acquireWriterExclusion: () =>
-        acquireBackendStoreWriterExclusion(input.runtime, STARTUP_STORE_RESET_WRITER_EXCLUSION_TIMEOUT_MS),
     },
   });
 

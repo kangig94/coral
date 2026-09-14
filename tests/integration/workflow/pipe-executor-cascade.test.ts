@@ -116,7 +116,7 @@ describe('pipe executor coral cascade invariant', () => {
       const eventBus = new TypedEventBus();
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
-      const db = openTestStoreDb(runtime, runtime.paths.coral.store.dbFile);
+      const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
       const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,
@@ -259,7 +259,7 @@ describe('pipe executor coral cascade invariant', () => {
       const eventBus = new TypedEventBus();
       const reducers = composeReducers(jobsRegistry, sessionsRegistry, workflowRegistry);
       const bodyCodec = createEventBodyCodec();
-      const db = openTestStoreDb(runtime, runtime.paths.coral.store.dbFile);
+      const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
       const reactorRef: { current?: ReturnType<typeof createLifecycleReactor> } = {};
       const progressStore = new JobStore('test-ns', runtime, bodyCodec, {
         db,

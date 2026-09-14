@@ -10,8 +10,6 @@ import {
 import {
   HandoffRunError,
   liveHandoffResultObligation,
-  consumeHandoffRunResult,
-  runHandoff,
   type HandoffPublicationIncident,
   type LiveHandoffResult,
   type NonEmptyReadonlyArray,
@@ -96,6 +94,7 @@ import {
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
+import { resolveCurrentStorePath } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
   attributeUnreadableProviderOperations,
@@ -152,7 +151,7 @@ import { decodeHostRef, encodeHostRef } from '../../providers/host-ref-codec.js'
 import { getPluginRoot } from '../dispatch.js';
 import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
-import { renderHandoffNotice, renderHandoffPublicationIncidents } from '../handoff-notice.js';
+import { renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
   formatBackendStatusCommand,
   formatBackendStatus,
@@ -171,7 +170,6 @@ import {
 } from '../format/backend.js';
 import {
   constrainStoreResetRendererInput,
-  formatIncompleteStoreResetRotation,
   formatStoreResetList,
   formatStoreResetRelease,
   formatStoreResetReport,
@@ -519,49 +517,7 @@ type StoreResetDiscardCommandResult = Extract<
 
 function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
   result = constrainStoreResetRendererInput(result);
-  const lines: string[] = [];
-  if (result.resumedIncident !== null) {
-    lines.push(`Resumed store-reset incident '${result.resumedIncident.incidentId}'.`);
-  }
-  for (const epoch of result.epochs) {
-    switch (epoch.kind) {
-      case 'described':
-        switch (epoch.publication.kind) {
-          case 'preserved':
-            lines.push(`Preserved store-reset incident '${epoch.publication.incident.incidentId}'.`);
-            {
-              const rotation = formatIncompleteStoreResetRotation(epoch.publication.rotation);
-              if (rotation !== null) lines.push(rotation);
-            }
-            break;
-          case 'no-evidence':
-            lines.push('The described epoch contained no evidence.');
-            break;
-          default:
-            assertNever(epoch.publication);
-        }
-        break;
-      case 'parked':
-        lines.push(
-          `Parked ${epoch.cause} epoch '${epoch.parkingId}' (${epoch.names.join(',')}; classification ${epoch.classification?.kind ?? 'none'}).`,
-        );
-        {
-          const rotation = formatIncompleteStoreResetRotation(epoch.rotation);
-          if (rotation !== null) lines.push(rotation);
-        }
-        break;
-      case 'adopted':
-        lines.push('Adopted a compatible epoch at the active store name.');
-        break;
-      case 'claimed':
-        lines.push('Claimed the active store name with fresh state.');
-        break;
-      default:
-        assertNever(epoch);
-    }
-  }
-  lines.push(`initialized ${result.target} ${result.flavor} store at ${result.storeDbPath}.`);
-  return lines.join('\n');
+  return `Discarded store epoch ${result.previousEpoch}; initialized epoch ${result.currentEpoch} at ${result.storeDbPath}.`;
 }
 
 export interface KbCommitCommandOperations {
@@ -1332,7 +1288,7 @@ function unreadableProviderOperationEntries(
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
 ): readonly RecoveryQuarantineListEntry[] {
-  const { dbFile: dbPath } = runtime.paths.coral.store;
+  const dbPath = resolveCurrentStorePath(runtime);
   const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat());
   // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
   // means rows this build cannot read may be there, and an empty list is then the opposite of what is
@@ -2040,43 +1996,6 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
       try {
         const result = await storeReset.discard(options.target, options.flavor);
-        if (result.kind === 'handoff') {
-          // The selection decision precedes every destructive step. Replaying the original argv lets the
-          // validated owner perform the requested reset without asking the operator to run another command.
-          const handoffResult = await runHandoff(
-            { kind: 'cli-invocation', argv: ['node', 'coral-cli', ...program.args] },
-            {
-              pluginRoot: getPluginRoot(),
-              activeSelectionTarget: result.target,
-              onSelectionPublicationIncident: (incident) => renderHandoffPublicationIncidents([incident]),
-            },
-          );
-          const continuation = consumeHandoffRunResult(handoffResult, (incidents) =>
-            renderHandoffPublicationIncidents(incidents.filter((incident) => incident.phase === 'terminal')),
-          );
-          if (continuation.kind === 'run-current') {
-            process.stderr.write(
-              'This Coral process could not finish draining stdout, so store-reset delegation was abandoned before any destructive step. Nothing was changed. Retry the command.\n',
-            );
-            process.exitCode = errorCodeToExit('transient');
-            return;
-          }
-          switch (continuation.outcome.kind) {
-            case 'handoff-success':
-              renderHandoffNotice(continuation.outcome);
-              return;
-            case 'handoff-exit':
-              process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);
-              process.exitCode = continuation.outcome.exitCode;
-              return;
-            case 'handoff-signal':
-              process.stderr.write(`Coral ${continuation.version} ran the delegated store-reset command.\n`);
-              process.kill(process.pid, continuation.outcome.signal);
-              return;
-            default:
-              return assertNever(continuation.outcome);
-          }
-        }
         process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
         process.stdout.write(`${formatStoreResetDiscard(result)}\n`);
       } catch (error: unknown) {
@@ -2090,43 +2009,24 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('release')
-    .description('Permanently remove one committed store-reset incident or terminal parking coordinate')
-    .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
+    .description('Permanently remove one non-current store epoch')
+    .argument('<epoch>', 'Numeric epoch shown by backend store-reset list')
     .requiredOption(
       '--target <target>',
       'Store generation containing the incident (current or gen2)',
       parseStoreResetReleaseTarget,
     )
     .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
-    .action(async (incidentId: string, options: { target: StoreResetReleaseTarget; flavor: BuildFlavor }) => {
+    .action(async (epoch: string, options: { target: StoreResetReleaseTarget; flavor: BuildFlavor }) => {
       try {
-        const result = await storeReset.release(options.target, options.flavor, incidentId);
+        const result = await storeReset.release(options.target, options.flavor, epoch);
         const output = `${formatStoreResetRelease(result)}\n`;
-        if (
-          (result.kind === 'released' ||
-            result.kind === 'not-holder' ||
-            result.kind === 'parked' ||
-            result.kind === 'released-with-unverified-parking' ||
-            result.kind === 'not-holder-with-unverified-parking' ||
-            result.kind === 'parked-unverified') &&
-          result.durability === 'proven'
-        ) {
+        if (result.kind === 'released') {
           process.stdout.write(output);
           return;
         }
         process.stderr.write(output);
-        process.exitCode =
-          result.kind === 'undeterminable' ||
-          result.kind === 'partially-released' ||
-          ((result.kind === 'released' ||
-            result.kind === 'not-holder' ||
-            result.kind === 'parked' ||
-            result.kind === 'released-with-unverified-parking' ||
-            result.kind === 'not-holder-with-unverified-parking' ||
-            result.kind === 'parked-unverified') &&
-            result.durability === 'unproven')
-            ? errorCodeToExit('transient')
-            : 1;
+        process.exitCode = result.kind === 'partially-released' ? errorCodeToExit('transient') : 1;
       } catch (error: unknown) {
         emitError(boundStoreResetCliError(error));
       }

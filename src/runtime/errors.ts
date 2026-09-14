@@ -83,22 +83,12 @@ export type DocumentedCoralSetupErrorCode =
   | 'legacy_source_not_quiescent'
   | 'legacy_source_writer_observation_unknown'
   | 'active_store_coordination_invalid'
-  | 'store_open_contended'
-  | 'store_open_unclassified'
   | 'store_not_initialized'
   | 'kb_commit_corrupt_or_unsupported'
   | 'kb_commit_id_invalid'
   | 'kb_commit_not_found'
   | 'kb_commit_already_quarantined'
   | 'kb_commit_quarantine_failed'
-  | 'store_reset_lock_contended'
-  | 'store_reset_interrupted_ambiguous'
-  | 'store_reset_interrupted_foreign'
-  | 'store_reset_interrupted_mismatched'
-  | 'store_reset_interrupted_authority_mismatch'
-  | 'store_reset_interrupted_malformed'
-  | 'store_reset_interrupted_non_resettable'
-  | 'store_reset_quarantine_failed'
   | 'recovery_quarantine_boundary_not_registered'
   | 'recovery_quarantine_subject_not_found'
   | 'recovery_quarantine_revision_changed'
@@ -324,10 +314,6 @@ function stringContextValue(context: CoralSetupErrorContext | undefined, key: st
   return typeof raw === 'string' && raw.trim().length > 0 ? raw : fallback;
 }
 
-function interruptedStoreResetRemediation(context?: CoralSetupErrorContext): string {
-  return `Run 'coral-cli backend store-reset discard --target gen2 --flavor ${stringContextValue(context, 'flavor', '<prod|dev>')}' to resume the interrupted reset under explicit operator control. Startup leaves the active store and staged incident unchanged.`;
-}
-
 function activeStoreCoordinationRemediation(context?: CoralSetupErrorContext): string {
   const recordPath = stringContextValue(context, 'recordPath', '<active-store-record>');
   const coordinationRoot = stringContextValue(context, 'coordinationRoot', '<coordination-directory>');
@@ -526,19 +512,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral cannot safely use the active-store ${stringContextValue(context, 'record', '<selection|transition>')} record.`,
     remediation: activeStoreCoordinationRemediation,
   },
-  store_open_contended: {
-    userMessage: 'The current-generation store could not be opened because it is in use.',
-    remediation: (context) =>
-      `Wait for the other Coral process or store-inspection tool using ${stringContextValue(context, 'path', '<store-path>')} to finish its transaction or exit and release the SQLite lock, then retry. If the refusal persists after every such process has released the store, it is no longer ordinary contention; verify which process still has the store open and verify filesystem health before diagnosing the store. This error does not authorize discarding it.`,
-    exitCode: 75,
-    retryable: true,
-  },
-  store_open_unclassified: {
-    userMessage: 'Coral could not classify why the current-generation store could not be opened.',
-    remediation: (context) =>
-      `Inspect error.context.cause in startup-diagnostic.json or the structured error payload, preserve the store at ${stringContextValue(context, 'path', '<store-path>')}, and report the code with that diagnostic cause. This refusal does not establish that the store is corrupt; do not discard it based on this error.`,
-    exitCode: 70,
-  },
   store_not_initialized: {
     userMessage: 'No Coral store exists yet for this installation.',
     remediation:
@@ -581,58 +554,6 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
       `Coral could not durably quarantine KB commit '${stringContextValue(context, 'commitId', '<commit>')}'.`,
     remediation:
       'Check permissions and free disk space in the generated KB runtime directory, then retry the quarantine command. Preserve active, staging, and retained quarantine evidence.',
-  },
-  store_reset_lock_contended: {
-    userMessage: (context) =>
-      context?.holder === undefined
-        ? 'Another Coral process is initializing the backend store.'
-        : `Store reset refused because the ${stringContextValue(context, 'holder', 'target coordinator socket')} is already owned.`,
-    remediation: (context) =>
-      context?.holder === undefined
-        ? "Run 'coral-cli backend shutdown', then retry shortly. If this persists after 30 seconds with no Coral process running, remove only the stale store.db.reset.lock directory."
-        : `Run 'coral-cli backend shutdown' for the ${stringContextValue(context, 'target', '<legacy|gen2>')} ${stringContextValue(context, 'flavor', '<prod|dev>')} coordinator rooted at ${stringContextValue(context, 'baseDir', '<base-dir>')}, then retry. The discard command never shuts down an incumbent daemon.`,
-  },
-  store_reset_interrupted_ambiguous: {
-    userMessage:
-      'Coral found more than one interrupted backend store-reset publication and cannot determine which one to resume.',
-    remediation: interruptedStoreResetRemediation,
-  },
-  store_reset_interrupted_foreign: {
-    userMessage: 'Coral found an unrecognized entry in the interrupted backend store-reset staging area.',
-    remediation: interruptedStoreResetRemediation,
-  },
-  store_reset_interrupted_mismatched: {
-    userMessage:
-      'Coral found interrupted backend store-reset evidence whose manifest identity does not match its staged publication.',
-    remediation: interruptedStoreResetRemediation,
-  },
-  store_reset_interrupted_authority_mismatch: {
-    userMessage:
-      'Coral found an interrupted backend store-reset incident authored for a different build, store, or flavor.',
-    remediation: interruptedStoreResetRemediation,
-  },
-  store_reset_interrupted_malformed: {
-    userMessage: 'Coral found a malformed interrupted backend store-reset incident.',
-    remediation: interruptedStoreResetRemediation,
-  },
-  store_reset_interrupted_non_resettable: {
-    userMessage:
-      'Coral found an interrupted legacy V2 backend store-reset incident that cannot be resumed automatically.',
-    remediation: interruptedStoreResetRemediation,
-  },
-  store_reset_quarantine_failed: {
-    userMessage: (context) =>
-      context?.reason === 'interrupted'
-        ? 'Coral detected an interrupted backend store reset and refused to resume it during startup.'
-        : context?.reason === 'active_store_transition_evidence'
-          ? 'Coral could not preserve a stale active-store transition before superseding it.'
-          : 'Coral could not quarantine the old backend store before reset.',
-    remediation: (context) =>
-      context?.reason === 'interrupted'
-        ? interruptedStoreResetRemediation(context)
-        : context?.reason === 'active_store_transition_evidence'
-          ? 'Check permissions and free disk space in the Coral store directory, then retry; Coral republishes retained transition evidence itself on the next attempt. If this persists, report this code with its JSON context — do not hand-edit the active-store records or retained transition evidence.'
-          : 'Check permissions and free disk space in the Coral store directory, then retry. Do not move, delete, restore, or upload DB, WAL, or SHM evidence.',
   },
   recovery_quarantine_boundary_not_registered: {
     userMessage: 'That recovery boundary is not available for operator retry.',

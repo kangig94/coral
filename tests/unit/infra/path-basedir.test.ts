@@ -10,6 +10,6 @@ describe('baseDir-partitioned store paths', () => {
     const paths = storePaths('prod', { baseDir });
 
     expect(paths.dbDir).toBe(join(baseDir, 'gen2', 'data', 'store'));
-    expect(paths.dbFile).toBe(join(baseDir, 'gen2', 'data', 'store', 'store.db'));
+    expect(paths.dbDir).toBe(join(baseDir, 'gen2', 'data', 'store'));
   });
 });

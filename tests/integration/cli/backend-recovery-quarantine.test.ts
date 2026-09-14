@@ -41,7 +41,7 @@ import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/re
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const storeReset: StoreResetCommandOperations = {
-  list: () => ({ incidents: [], truncated: false }),
+  list: () => ({ epochs: [], legacyIncidents: [], truncated: false }),
   report: async () => {
     throw new Error('not used');
   },
@@ -108,7 +108,7 @@ describe('backend recovery-quarantine commands', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-cli-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
-    const dbPath = runtime.paths.coral.store.dbFile;
+    const dbPath = join(runtime.paths.coral.store.dbDir, 'store.db');
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = openTestStoreDatabase({
       path: dbPath,
@@ -178,7 +178,7 @@ describe('backend recovery-quarantine commands', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-unreadable-provider-operation-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
-    const dbPath = runtime.paths.coral.store.dbFile;
+    const dbPath = join(runtime.paths.coral.store.dbDir, 'store.db');
     mkdirSync(dirname(dbPath), { recursive: true });
     const db = openTestStoreDatabase({
       path: dbPath,
@@ -311,9 +311,9 @@ describe('backend recovery-quarantine commands', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-discard-cli-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
-    mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
+    mkdirSync(dirname(join(runtime.paths.coral.store.dbDir, 'store.db')), { recursive: true });
     const db = openTestStoreDatabase({
-      path: runtime.paths.coral.store.dbFile,
+      path: join(runtime.paths.coral.store.dbDir, 'store.db'),
       storage: runtime.storage,
       storeFormat: currentCoralStoreFormat(),
       flavor: runtime.flavor,
@@ -369,9 +369,9 @@ describe('backend recovery-quarantine commands', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-readable-cli-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
-    mkdirSync(dirname(runtime.paths.coral.store.dbFile), { recursive: true });
+    mkdirSync(dirname(join(runtime.paths.coral.store.dbDir, 'store.db')), { recursive: true });
     const db = openTestStoreDatabase({
-      path: runtime.paths.coral.store.dbFile,
+      path: join(runtime.paths.coral.store.dbDir, 'store.db'),
       storage: runtime.storage,
       storeFormat: currentCoralStoreFormat(),
       flavor: runtime.flavor,
@@ -713,7 +713,7 @@ describe('backend recovery-quarantine commands', () => {
       fingerprint: `sha256:${'0'.repeat(64)}`,
     };
     const db = openTestStoreDatabase({
-      path: runtime.paths.coral.store.dbFile,
+      path: join(runtime.paths.coral.store.dbDir, 'store.db'),
       storage: runtime.storage,
       storeFormat: olderFormat,
       flavor: runtime.flavor,
@@ -723,7 +723,7 @@ describe('backend recovery-quarantine commands', () => {
     db.close();
 
     expect(
-      classifyStoreFile(runtime.paths.coral.store.dbFile, runtime.storage, currentCoralStoreFormat()),
+      classifyStoreFile(join(runtime.paths.coral.store.dbDir, 'store.db'), runtime.storage, currentCoralStoreFormat()),
     ).toMatchObject({ kind: 'older-incompatible' });
     // An older store is one this build cannot read, not one with nothing in it. Answering `[]` tells an
     // operator the rows they are looking for are gone.
@@ -740,7 +740,7 @@ describe('backend recovery-quarantine commands', () => {
       fingerprint: `sha256:${'0'.repeat(64)}`,
     };
     const db = openTestStoreDatabase({
-      path: runtime.paths.coral.store.dbFile,
+      path: join(runtime.paths.coral.store.dbDir, 'store.db'),
       storage: runtime.storage,
       storeFormat: unsupportedFormat,
       flavor: runtime.flavor,

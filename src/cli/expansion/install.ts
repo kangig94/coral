@@ -85,7 +85,6 @@ async function applyPostInstallCatalogActions(
   runtime: Runtime,
   name: string,
   assertLockOwned: () => void,
-  actuator: StorageActuator,
 ): Promise<InstallResponse> {
   if (!('postInstall' in result) || result.postInstall === undefined) {
     return result;
@@ -116,7 +115,7 @@ async function applyPostInstallCatalogActions(
     throw new Error(`Expansion package '${name}' returned a manifest path outside its target directory`);
   }
 
-  const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() }, actuator);
+  const db = openWritableStoreDbNoReset(runtime, { storeFormat: currentCoralStoreFormat() });
   try {
     const catalog = createExpansionManifestCatalog({ db });
     const manifest = parseEngineManifest(JSON.parse(runtime.storage.readFileSync(manifestPath, 'utf-8')) as unknown);
@@ -203,7 +202,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
     kind,
     opts.generationCoordination ?? generationMutationCoordinationSeam,
     opts.lockTimeoutMs,
-    async (assertLocksOwned, actuator) => {
+    async (assertLocksOwned) => {
       const result = installResponseSchema.parse(
         await pkg.installer.install({
           name,
@@ -217,7 +216,7 @@ export async function installExpansion(name: string, opts: InstallExpansionOptio
         }),
       );
       assertCanonicalInstallerTarget(result, runtime, name);
-      return applyPostInstallCatalogActions(result, runtime, name, assertLocksOwned, actuator);
+      return applyPostInstallCatalogActions(result, runtime, name, assertLocksOwned);
     },
   );
 }

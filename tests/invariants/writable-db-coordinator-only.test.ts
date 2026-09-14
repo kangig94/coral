@@ -9,16 +9,21 @@ const SRC_ROOT = join(REPO_ROOT, 'src');
 type DbOpenCall = {
   relativePath: string;
   line: number;
-  callee: 'openStoreDatabase' | 'openMemoryStoreDatabase' | 'openBackendStoreDb' | 'openWritableStoreDbNoReset';
+  callee:
+    | 'openStoreDatabase'
+    | 'openMemoryStoreDatabase'
+    | 'openBackendStoreDb'
+    | 'openWritableStoreDatabase'
+    | 'openWritableStoreDbNoReset';
   staticallyReadOnlyOrMemory: boolean;
 };
 
 const EXPLICIT_ALLOWLIST = new Set([
   // Store factory internals are the source of truth for opening backend-store DBs.
   'src/store/db.ts:openStoreDatabase',
-  // The branded reset boundary opens the freshly recreated active store only
-  // after the coordinator-owned lifecycle supplies reset authority.
-  'src/store/backend-store-reset.ts:openStoreDatabase',
+  'src/store/db.ts:openWritableStoreDatabase',
+  // Epoch settlement is the single owner of direct writable publication opens.
+  'src/store/epoch.ts:openWritableStoreDatabase',
   // CLI install path persists the installed-expansion manifest catalog after
   // installer success using the no-reset catalog writer.
   'src/cli/expansion/install.ts:openWritableStoreDbNoReset',
@@ -28,13 +33,6 @@ const EXPLICIT_ALLOWLIST = new Set([
   // here (and broke at runtime in the prod bundle); it is now a static call so
   // the open is explicit and invariant-tracked.
   'src/kb-daemon/runtime-host.ts:openWritableStoreDbNoReset',
-  // The active-store selection protocol opens the store it just selected, reached only through
-  // `startup-store-routing.ts` from the coordinator's own lifecycle. Same standing as the reset
-  // boundary above: coordinator-composed, merely not literally under `src/coordinator/`.
-  // It became visible here only when a `(injected ?? openStoreDatabase)(...)` fallback — whose
-  // injected half no production caller ever supplied — collapsed to a direct call. The indirection
-  // hid a real open from this scan, so the entry records an open that was always happening.
-  'src/store/active-store-selection-coordination.ts:openStoreDatabase',
 ]);
 
 function listSourceFiles(dir: string): string[] {
@@ -120,6 +118,7 @@ function collectDbOpenCalls(): DbOpenCall[] {
           callee === 'openStoreDatabase' ||
           callee === 'openMemoryStoreDatabase' ||
           callee === 'openBackendStoreDb' ||
+          callee === 'openWritableStoreDatabase' ||
           callee === 'openWritableStoreDbNoReset'
         ) {
           const optionsArg = callee === 'openWritableStoreDbNoReset' ? node.arguments[1] : node.arguments[0];

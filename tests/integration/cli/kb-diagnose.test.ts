@@ -39,7 +39,7 @@ function seedRetryQueue(
   const runtime = createRealRuntime('prod');
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: runtime.paths.coral.store.dbFile,
+    path: join(runtime.paths.coral.store.dbDir, 'store.db'),
     storage: runtime.storage,
   });
 

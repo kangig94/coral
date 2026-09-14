@@ -132,7 +132,7 @@ let JOBS_DIR = '';
 const openedStoreDatabases = new Set<Database>();
 
 function openServiceStoreDatabase(): Database {
-  const db = openTestStoreDb(runtime, runtime.paths.coral.store.dbFile);
+  const db = openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db'));
   openedStoreDatabases.add(db);
   return db;
 }

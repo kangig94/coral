@@ -137,14 +137,10 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
     });
 
     try {
-      const db = openWritableStoreDbNoReset(
-        runtime,
-        {
-          path: storePath,
-          storeFormat: currentCoralStoreFormat(),
-        },
-        writerLease.directoryLock.actuator,
-      );
+      const db = openWritableStoreDbNoReset(runtime, {
+        path: storePath,
+        storeFormat: currentCoralStoreFormat(),
+      });
 
       try {
         db.exec('BEGIN IMMEDIATE');

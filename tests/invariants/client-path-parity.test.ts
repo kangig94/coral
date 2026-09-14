@@ -108,7 +108,7 @@ describe('self-contained client path parity', () => {
     const engine = enginePaths(flavor, opts);
     const coordinator = coordinatorPaths(flavor, opts);
 
-    expect(mirroredStoreDbPath(flavor, STATE_ROOT)).toBe(store.dbFile);
+    expect(mirroredStoreDbPath(flavor, STATE_ROOT)).toBe(join(store.dbDir, 'store.db'));
 
     const runDir = mirroredCoordinatorRunDir(flavor, STATE_ROOT);
     expect(runDir).toBe(coordinator.runDir);

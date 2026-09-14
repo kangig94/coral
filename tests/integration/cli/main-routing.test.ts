@@ -323,7 +323,7 @@ function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const runtime = createRealRuntime('prod');
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: storePaths('prod', { baseDir: join(home, '.coral') }).dbFile,
+    path: join(storePaths('prod', { baseDir: join(home, '.coral') }).dbDir, 'store.db'),
     storage: runtime.storage,
   });
 

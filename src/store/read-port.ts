@@ -1,5 +1,6 @@
 import type { Runtime } from '../runtime/ports.js';
 import { openStoreDatabase, type Database } from './db.js';
+import { resolveCurrentStorePath } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 
 /**
@@ -36,8 +37,7 @@ export function openReadOnlyStoreDatabase(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
-  const { dbFile } = runtime.paths.coral.store;
-  const path = options.path ?? dbFile;
+  const path = resolveCurrentStorePath(runtime, options.path);
   return openStoreDatabase({
     path: path,
     storage: runtime.storage,

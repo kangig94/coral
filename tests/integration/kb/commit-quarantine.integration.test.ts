@@ -231,7 +231,7 @@ describe('KB commit quarantine', () => {
     const projectionRoot = join(runtime.paths.coral.kbRuntime.root, KB_RUNTIME_AUTHORITY.corpusProjection);
     const otherCommit = join(projectionRoot, 'commits', 'other-commit');
     const unrelatedKbFile = join(runtime.paths.coral.kbRuntime.root, 'unrelated.txt');
-    const storeFile = runtime.paths.coral.store.dbFile;
+    const storeFile = join(runtime.paths.coral.store.dbDir, 'store.db');
     mkdirSync(otherCommit, { recursive: true });
     mkdirSync(dirname(storeFile), { recursive: true });
     writeFileSync(join(otherCommit, 'commit.json'), 'other', 'utf-8');
