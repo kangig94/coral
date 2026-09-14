@@ -924,7 +924,12 @@ export function releaseStoreResetIncident(
   } catch (error: unknown) {
     return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
   }
-  const ledger = readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger();
+  const ledgerPath = join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
+  const ledgerPresence = pathPresence(storage, ledgerPath);
+  if (ledgerPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
+  const ledgerRead = readStoreResetRetentionLedger(storage, quarantineRoot);
+  if (ledgerPresence === 'present' && ledgerRead === null) return { kind: 'undeterminable', incidentId };
+  const ledger = ledgerRead ?? emptyLedger();
   const stagingPath = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY, incidentId);
   const stagingPresence = pathPresence(storage, stagingPath);
   if (stagingPresence === 'present') {
