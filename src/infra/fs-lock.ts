@@ -36,6 +36,7 @@ export class DirectoryLockOwnershipLostError extends Error {
 
 export type DirectoryLockLease = (() => void) & {
   assertOwned(): void;
+  maintain(): void;
 };
 
 function waitSync(ms: number): void {
@@ -245,12 +246,14 @@ function releaseDirectoryLock(
   isOwned: () => boolean,
   loseOwnership: () => void,
 ): DirectoryLockLease {
+  const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor((deps.staleMs ?? STALE_LOCK_MS) / 3));
+  let refreshedAt = deps.time.now();
   const release = (() => {
     loseOwnership();
     deps.time.clearInterval(heartbeat);
     tryRemoveOwnedLockDirectory(lockDir, ownerToken, expectedIdentity, deps.storage);
   }) as DirectoryLockLease;
-  release.assertOwned = () => {
+  const refresh = (): void => {
     if (!isOwned()) {
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
@@ -260,6 +263,16 @@ function releaseDirectoryLock(
       loseOwnership();
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
+  };
+  release.assertOwned = () => {
+    refresh();
+    refreshedAt = deps.time.now();
+  };
+  release.maintain = () => {
+    const currentTime = deps.time.now();
+    if (currentTime - refreshedAt < heartbeatMs) return;
+    refresh();
+    refreshedAt = deps.time.now();
   };
   return release;
 }

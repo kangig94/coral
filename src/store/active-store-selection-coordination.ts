@@ -377,9 +377,10 @@ function mintActiveStoreEpoch(
   runtime: Runtime,
   files: BackendStoreFileSet,
   options: ActiveStoreSelectionProtocolOptions,
+  adoption: GenerationAdoptionLockLease,
 ): MintedActiveStoreEpoch {
   const { dbFile } = files;
-  const snapshot = stageBackendStoreClassification(runtime, files);
+  const snapshot = stageBackendStoreClassification(runtime, files, adoption.maintain);
   try {
     return {
       evidence: snapshot.evidence,
@@ -438,7 +439,7 @@ async function settleActiveStore(
             ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
             : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
       if (resumed !== null) survivor = { kind: 'incident', incident: resumed, resumed: true };
-      const activeEpoch = mintActiveStoreEpoch(runtime, files, options);
+      const activeEpoch = mintActiveStoreEpoch(runtime, files, options, adoption);
       switch (activeEpoch.classification.kind) {
         case 'legacy-adoptable':
           return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
@@ -487,7 +488,7 @@ async function settleActiveStore(
     let claimCandidate = mintBackendStoreForClaim(runtime, files, options);
     let db: Database;
     for (;;) {
-      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate);
+      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate, adoption.maintain);
       epochs.push(...attempt.epochs);
       for (const epoch of attempt.epochs) {
         if (epoch.kind === 'described' && epoch.publication.kind === 'preserved') {
@@ -512,13 +513,15 @@ async function settleActiveStore(
           clearActiveStoreTransition(runtime, clearEvidence.sourceIdentity);
         }
       }
-      return {
+      const settlement = {
         db,
         survivor: finalStoreResetSurvivor(runtime, files, survivor),
         epochs,
         invalidTargetEvidence:
           transition?.evidence.kind === 'valid-target-invalid' ? transition.evidence.invalidTargetEvidence : null,
       };
+      adoption.assertOwned();
+      return settlement;
     } catch (error: unknown) {
       db.close();
       throw error;

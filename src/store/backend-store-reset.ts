@@ -130,6 +130,7 @@ export type BackendStoreResetAuthority = Readonly<{
 
 export type BackendStoreResetLockLease = Readonly<{
   assertOwned(): void;
+  maintain(): void;
   release(): void;
   [BACKEND_STORE_RESET_LOCK_BRAND]: true;
 }>;
@@ -412,11 +413,13 @@ function hashExactDescriptor(
   descriptor: number,
   expectedSize: number,
   consume?: (buffer: Buffer, length: number) => void,
+  maintainLease: () => void = () => undefined,
 ): { readonly sha256: string; readonly bytesConsumed: number; readonly overrun: boolean } {
   const hash = createHash('sha256');
   const buffer = Buffer.allocUnsafe(64 * 1024);
   let total = 0;
   while (total < expectedSize) {
+    maintainLease();
     const requested = Math.min(buffer.length, expectedSize - total);
     const bytesRead = storage.readSync(descriptor, buffer, 0, requested, null);
     if (bytesRead === 0) break;
@@ -503,6 +506,7 @@ function copyPathCandidateForPublication<Name extends string>(
   pathCandidate: EvidenceFileCandidate<Name>,
   destination: string,
   remainingBudget: number | null,
+  maintainLease: () => void = () => undefined,
 ): PublishedEvidenceCopy<Name> {
   const pathBefore = stablePathStat(storage, pathCandidate.source);
   if (
@@ -530,7 +534,7 @@ function copyPathCandidateForPublication<Name extends string>(
     const expectedSize = Number(sourceOpened.size);
     const hashed = hashExactDescriptor(storage, sourceDescriptor, expectedSize, (buffer, length) => {
       writeExactDescriptor(storage, openedDestination, buffer, length);
-    });
+    }, maintainLease);
     const sourceAfter = storage.fstatSync(sourceDescriptor, { bigint: true });
     const sourcePathAfter = stablePathStat(storage, pathCandidate.source);
     const coherence =
@@ -591,6 +595,7 @@ function copyActiveEvidenceForPublication(
   storage: StoragePort,
   source: StableSource,
   destination: string,
+  maintainLease: () => void = () => undefined,
 ): PublishedEvidenceCopy<StoreResetEvidenceFileName> {
   const sourceOpened = source.openedStat;
   let destinationDescriptor: number | null = null;
@@ -602,7 +607,7 @@ function copyActiveEvidenceForPublication(
     const expectedSize = source.sizeBytes;
     const hashed = hashExactDescriptor(storage, source.descriptor, expectedSize, (buffer, length) => {
       writeExactDescriptor(storage, openedDestination, buffer, length);
-    });
+    }, maintainLease);
     const sourceAfter = storage.fstatSync(source.descriptor, { bigint: true });
     const coherence =
       !hashed.overrun &&
@@ -751,6 +756,7 @@ export type BackendStoreClassificationSnapshot = Readonly<{
 export function stageBackendStoreClassification(
   runtime: Pick<Runtime, 'env' | 'ids' | 'storage'>,
   files: BackendStoreFileSet,
+  maintainLease: () => void = () => undefined,
 ): BackendStoreClassificationSnapshot {
   const { dbFile } = files;
   for (;;) {
@@ -789,7 +795,12 @@ export function stageBackendStoreClassification(
           break;
         }
         if (opened.kind === 'undeterminable') throw new Error(opened.cause);
-        copyActiveEvidenceForPublication(runtime.storage, opened.source, join(snapshotDirectory, item.name));
+        copyActiveEvidenceForPublication(
+          runtime.storage,
+          opened.source,
+          join(snapshotDirectory, item.name),
+          maintainLease,
+        );
       }
       if (retry) {
         removeSnapshot();
@@ -1543,6 +1554,7 @@ function copyIncidentEvidence(
   stagingDirectory: string,
   stagingIdentity: StorageBigIntStat,
   initialCoherence: PublishedIncidentEvidence['coherence'],
+  maintainLease: () => void,
 ): PublishedIncidentEvidence {
   let coherence = initialCoherence;
   const published: Array<{ active: ActiveEvidence; file: StoreResetIncidentFile }> = [];
@@ -1555,7 +1567,12 @@ function copyIncidentEvidence(
       coherence = 'torn';
       continue;
     }
-    const copied = copyActiveEvidenceForPublication(storage, opened.source, join(stagingDirectory, active.name));
+    const copied = copyActiveEvidenceForPublication(
+      storage,
+      opened.source,
+      join(stagingDirectory, active.name),
+      maintainLease,
+    );
     if (copied.coherence === 'torn') coherence = 'torn';
     published.push({ active, file: copied.evidence });
   }
@@ -2004,6 +2021,7 @@ function publishIncident(
   activeEvidence: readonly ActiveEvidence[],
   classification: BackendStoreResetClassification,
   writerExclusion: WriterExclusion,
+  maintainLease: () => void,
   newerStorePolicy?: NewerStoreResetPolicy,
 ): IncidentPublication {
   const incidentId = runtime.ids.uuid();
@@ -2044,6 +2062,7 @@ function publishIncident(
       stagingDirectory,
       stagingIdentity,
       'coherent',
+      maintainLease,
     );
     let preservation: PreservationMechanism =
       writerExclusion.kind === 'proven'
@@ -2245,6 +2264,7 @@ function cloneParkedStoreForClaim(
   parkingDirectory: string,
   parked: ReturnType<typeof parkCurrentEvidence>,
   cloneId: string,
+  maintainLease: () => void,
 ): MintedBackendStore {
   const mintedRoot = dirname(minted.directory);
   const directory = join(mintedRoot, cloneId);
@@ -2276,6 +2296,7 @@ function cloneParkedStoreForClaim(
         { source: join(parkingDirectory, item.name), name: item.name },
         join(directory, item.name),
         null,
+        maintainLease,
       );
       if (copied.coherence !== 'coherent') coherent = false;
     }
@@ -2635,6 +2656,7 @@ export function attemptBackendStoreClaim(
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,
   minted: MintedBackendStore,
+  maintainLease: () => void = () => undefined,
 ): BackendStoreClaimAttempt {
   const { dbFile } = files;
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
@@ -2697,7 +2719,15 @@ export function attemptBackendStoreClaim(
       case 'compatible':
       case 'fresh': {
         if (!parkedDatabaseHasPrivateInode(runtime.storage, join(parkingDirectory, 'store.db'), parkedDb.identity)) {
-          claimStore = cloneParkedStoreForClaim(runtime, options, minted, parkingDirectory, parked, parkingId);
+          claimStore = cloneParkedStoreForClaim(
+            runtime,
+            options,
+            minted,
+            parkingDirectory,
+            parked,
+            parkingId,
+            maintainLease,
+          );
           break;
         }
         const adoption = openCompatibleParkedStore(
@@ -2793,7 +2823,16 @@ export function publishClassifiedBackendStoreResetIncident(
 ): IncidentPublication {
   resetLock.assertOwned();
   if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
-  return publishIncident(runtime, authority, files, activeEvidence, classification, writerExclusion, newerStorePolicy);
+  return publishIncident(
+    runtime,
+    authority,
+    files,
+    activeEvidence,
+    classification,
+    writerExclusion,
+    resetLock.maintain,
+    newerStorePolicy,
+  );
 }
 
 export function resumeBackendStoreResetIncidentForOperator(
@@ -2978,6 +3017,10 @@ export function acquireBackendStoreResetLock(
   return {
     assertOwned: () => {
       adoption.assertOwned();
+      if (!owned) throw new Error('Backend store reset lock is no longer owned.');
+    },
+    maintain: () => {
+      adoption.maintain();
       if (!owned) throw new Error('Backend store reset lock is no longer owned.');
     },
     release: () => {

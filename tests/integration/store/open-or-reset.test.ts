@@ -50,6 +50,7 @@ import * as dbModule from '#src/store/db.js';
 import { classifyStoreFile, openStoreDatabase, openWritableStoreDbNoReset } from '#src/store/db.js';
 import {
   generationMutationCoordinationSeam,
+  resolveGenerationBoundaryPaths,
   type GenerationAdoptionLockLease,
 } from '#src/store/generation-mutation-coordination.js';
 
@@ -360,6 +361,7 @@ function authorityFor(runtime: Runtime, dbPath: string): BackendStoreResetAuthor
 function adoptionLease(): GenerationAdoptionLockLease {
   return {
     assertOwned: () => undefined,
+    maintain: () => undefined,
   } as unknown as GenerationAdoptionLockLease;
 }
 
@@ -2443,6 +2445,76 @@ describe('openOrResetBackendStoreDb', () => {
     expectSetupCode(error, 'store_reset_quarantine_failed');
     expect(readFileSync(dbPath)).toEqual(original);
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
+  });
+
+  it('refreshes the adoption lease inside a long synchronous evidence copy after wall time jumps', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-copy-heartbeat-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const source = new DatabaseSync(dbPath);
+    try {
+      source.exec('CREATE TABLE large_evidence (value BLOB NOT NULL)');
+      source.prepare('INSERT INTO large_evidence (value) VALUES (zeroblob(?))').run(256 * 1024);
+    } finally {
+      source.close();
+    }
+
+    const wallNow = runtime.time.now.bind(runtime.time);
+    let wallOffset = 0;
+    vi.spyOn(runtime.time, 'now').mockImplementation(() => wallNow() + wallOffset);
+    const readSync = runtime.storage.readSync;
+    let copyStarted = false;
+    vi.spyOn(runtime.storage, 'readSync').mockImplementation((descriptor, buffer, offset, length, position) => {
+      const bytesRead = readSync(descriptor, buffer, offset, length, position);
+      if (!copyStarted && length === 64 * 1024 && bytesRead > 0) {
+        copyStarted = true;
+        wallOffset = 11 * 60 * 1_000;
+      }
+      return bytesRead;
+    });
+    const adoptionLock = resolveGenerationBoundaryPaths(runtime).adoptionLock;
+    const renameSync = runtime.storage.renameSync;
+    let refreshedDuringCopy = false;
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((sourcePath, destinationPath) => {
+      if (
+        copyStarted &&
+        dirname(String(sourcePath)) === adoptionLock &&
+        basename(String(sourcePath)).startsWith('owner-') &&
+        basename(String(destinationPath)).startsWith('claim-refresh-')
+      ) {
+        refreshedDuringCopy = true;
+      }
+      renameSync(sourcePath, destinationPath);
+    });
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(copyStarted).toBe(true);
+    expect(refreshedDuringCopy).toBe(true);
+  });
+
+  it('revalidates adoption ownership after opening and before returning the writable handle', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-return-ownership-');
+    const dbPath = join(root, 'store.db');
+    createCompatibleSentinelStore(runtime, dbPath);
+    const adoptionLock = resolveGenerationBoundaryPaths(runtime).adoptionLock;
+    const syncDirectoryDurableSync = runtime.storage.syncDirectoryDurableSync;
+    let displaced = false;
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      const durable = syncDirectoryDurableSync(path);
+      if (!displaced && path === dirname(dbPath) && existsSync(dbPath)) {
+        displaced = true;
+        rmSync(adoptionLock, { recursive: true });
+        mkdirSync(adoptionLock, { mode: 0o700 });
+      }
+      return durable;
+    });
+
+    await expect(openReset(runtime, dbPath)).rejects.toThrow(/ownership lost/u);
+    expect(displaced).toBe(true);
   });
 
   it('does not describe a symlinked active name as incident evidence', () => {
