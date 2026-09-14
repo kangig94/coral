@@ -191,8 +191,9 @@ export function coordinatorFilesForHome(home: string, flavor: BuildFlavor) {
   return coordinatorPaths(flavor, { baseDir: join(home, '.coral') });
 }
 
-export function storeDbPathForHome(home: string, flavor: BuildFlavor): string {
-  return join(storePaths(flavor, { baseDir: join(home, '.coral') }).dbDir, 'store.db');
+export function storeDbPathForHome(home: string, flavor: BuildFlavor, epoch = '0'): string {
+  const dbDir = storePaths(flavor, { baseDir: join(home, '.coral') }).dbDir;
+  return epoch === '0' ? join(dbDir, 'store.db') : join(dbDir, `epoch-${epoch}`, 'store.db');
 }
 
 export function readDiscoveryRecordForHome(home: string, flavor: BuildFlavor): CoordinatorDiscoveryRecord | null {

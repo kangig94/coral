@@ -69,7 +69,7 @@ describe('coordinator cold-start integration', () => {
     expect(existsSync(files.infoFile)).toBe(true);
     expect(existsSync(files.socketPath)).toBe(true);
 
-    const dbPath = storeDbPathForHome(home, 'prod');
+    const dbPath = storeDbPathForHome(home, 'prod', '1');
     await waitForCondition(() => existsSync(dbPath), 15_000);
     const db = newRawDatabase(dbPath, { readonly: true });
 

@@ -99,7 +99,7 @@ afterEach(() => {
 });
 
 describe('startup store routing', () => {
-  it('opens epoch zero for the current selection', async () => {
+  it('publishes epoch one when no store epoch is proven', async () => {
     const { runtime, current } = harness();
     publish(runtime, current);
 
@@ -107,7 +107,7 @@ describe('startup store routing', () => {
 
     expect(result.kind).toBe('open');
     if (result.kind === 'open') result.db.close();
-    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
+    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db'))).toBe(true);
   });
 
   it('hands off to a valid newer selection without creating a store', async () => {

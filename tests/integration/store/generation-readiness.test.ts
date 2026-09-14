@@ -30,6 +30,10 @@ function harness(flavor: BuildFlavor = 'prod'): { readonly runtime: Runtime } {
   return { runtime: createRealRuntime(flavor, { baseDir }) };
 }
 
+function generatedStorePath(runtime: Runtime): string {
+  return join(runtime.paths.coral.store.dbDir, 'epoch-1', 'store.db');
+}
+
 async function openGeneratedStore(runtime: Runtime): Promise<void> {
   const build = {
     version: STORE_FORMAT.productVersion,
@@ -171,7 +175,7 @@ describe('generation readiness', () => {
 
     await openGeneratedStore(runtime);
 
-    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
+    expect(existsSync(generatedStorePath(runtime))).toBe(true);
   });
 
   it('boots beside readable legacy history without importing it', async () => {
@@ -188,12 +192,12 @@ describe('generation readiness', () => {
     // generation made the whole daemon unbootable until an operator migrated it.
     await openGeneratedStore(runtime);
 
-    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
+    expect(existsSync(generatedStorePath(runtime))).toBe(true);
     // The legacy rows stay where they are, and none of them appear in the new
     // generation. A byte hash of the tree would be the wrong assertion here:
     // classifying the legacy store opens it, and SQLite rewrites its sidecars.
     expect(legacyHistoryValue(join(legacyRoot, 'store', 'store.db'))).toBe('not-imported');
-    expect(legacyHistoryValue(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBeNull();
+    expect(legacyHistoryValue(generatedStorePath(runtime))).toBeNull();
     expect(readFileSync(join(legacyRoot, 'equipment', 'dormant.bin'), 'utf-8')).toBe('left-behind-equipment');
     expect(warning).toHaveBeenCalledWith(expect.stringContaining(legacyRoot));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('left untouched'));
@@ -213,7 +217,7 @@ describe('generation readiness', () => {
 
     await openGeneratedStore(runtime);
 
-    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
+    expect(existsSync(generatedStorePath(runtime))).toBe(true);
     expect(hashTree(legacyRoot)).toBe(before);
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('0.9.16'));
   });
@@ -236,7 +240,7 @@ describe('generation readiness', () => {
 
     await openGeneratedStore(runtime);
 
-    expect(existsSync(join(runtime.paths.coral.store.dbDir, 'store.db'))).toBe(true);
+    expect(existsSync(generatedStorePath(runtime))).toBe(true);
     expect(hashTree(paths.legacyFlavorRoot)).toBe(before);
   });
 
