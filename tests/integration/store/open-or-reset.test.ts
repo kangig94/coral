@@ -159,7 +159,17 @@ function terminalSurvivors(
 }
 
 function expectOneTerminalSurvivor(dbPath: string, label = dbPath): void {
-  const survivors = terminalSurvivors(join(dirname(dbPath), 'store-reset-quarantine'));
+  const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+  const stagingRoot = join(quarantineRoot, '.staging');
+  const staged = existsSync(stagingRoot) ? readdirSync(stagingRoot) : [];
+  expect(staged, `${label}: unresolved .staging entries`).toEqual([]);
+  expect(
+    existsSync(join(quarantineRoot, '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY)),
+    `${label}: .parked/.in-flight`,
+  ).toBe(false);
+  const storage = createRealRuntime('prod', { baseDir: dirname(dbPath) }).storage;
+  expect(readStoreResetRetentionLedger(storage, quarantineRoot)?.pending ?? null, `${label}: pending`).toBeNull();
+  const survivors = terminalSurvivors(quarantineRoot);
   expect(survivors, `${label}: ${JSON.stringify(survivors)}`).toHaveLength(1);
 }
 
@@ -522,29 +532,56 @@ const ACTIVE_EVIDENCE_MUTATIONS = ['deleted', 'replaced', 'appended', 'sidecar',
 type ActiveEvidenceArm = (typeof ACTIVE_EVIDENCE_ARMS)[number];
 type ActiveEvidenceMutation = (typeof ACTIVE_EVIDENCE_MUTATIONS)[number];
 type MutationDisposition = { readonly kind: 'applied' } | { readonly kind: 'unreachable'; readonly reason: string };
+type TracePhase = 'before' | 'after';
+type TracePoint = Readonly<{ method: string; occurrence: number; phase: TracePhase }>;
+
+function appendTracePoint(trace: TracePoint[], method: string, phase: TracePhase): TracePoint {
+  const point = {
+    method,
+    occurrence: trace.filter((candidate) => candidate.method === method && candidate.phase === phase).length + 1,
+    phase,
+  };
+  trace.push(point);
+  return point;
+}
+
+function sameTracePoint(left: TracePoint, right: TracePoint): boolean {
+  return left.method === right.method && left.occurrence === right.occurrence && left.phase === right.phase;
+}
+
+function formatTracePoint(point: TracePoint): string {
+  return `${point.method}#${point.occurrence}:${point.phase}`;
+}
+
+function assertMutationDisposition(label: string, disposition: MutationDisposition | null): void {
+  expect(disposition, `${label}: replay did not encounter the exact semantic key`).not.toBeNull();
+  if (disposition?.kind === 'unreachable') {
+    expect(disposition.reason, `${label}: unreachable cells require an asserted reason`).not.toHaveLength(0);
+  }
+}
 
 function traceActivePathCalls(
   runtime: Runtime,
   activePath: string,
   boundary: 'descriptor' | 'identity' | 'second-identity' | 'immediate' | 'manual',
   mutation?: {
-    readonly index: number;
+    readonly key: TracePoint;
     readonly kind: ActiveEvidenceMutation;
     readonly surface?: 'active' | 'durable';
     readonly sidecarPath?: string;
   },
 ): {
   readonly runtime: Runtime;
-  readonly calls: readonly string[];
-  readonly durableCalls: readonly string[];
+  readonly calls: readonly TracePoint[];
+  readonly durableCalls: readonly TracePoint[];
   readonly mutationApplied: () => boolean;
   readonly mutationDisposition: () => MutationDisposition | null;
   readonly injectedIdentity: () => { readonly dev: bigint; readonly ino: bigint } | null;
   readonly start: () => void;
   readonly stop: () => void;
 } {
-  const calls: string[] = [];
-  const durableCalls: string[] = [];
+  const calls: TracePoint[] = [];
+  const durableCalls: TracePoint[] = [];
   const durableRoot = join(dirname(activePath), 'store-reset-quarantine');
   const parkingRoot = join(durableRoot, '.parked');
   const activeDescriptors = new Set<number>();
@@ -603,54 +640,52 @@ function traceActivePathCalls(
         const touchesDurableRecord =
           writesTerminalSidecar || renamesTerminalParking || removesTerminalSurvivor || syncsTerminalTransition;
         const observesActiveDescriptor = method === 'fstatSync' && touchesActiveDescriptor;
-        const touchesMutationSurface =
-          mutation?.surface === 'durable' ? touchesDurableRecord : recording && touchesActiveEvidence;
-        const mutationCalls = mutation?.surface === 'durable' ? durableCalls : calls;
-        if (!stopped && touchesDurableRecord) durableCalls.push(method);
-        if (!stopped && recording && touchesActiveEvidence) calls.push(method);
-        if (!stopped && touchesMutationSurface) {
-          const index = mutationCalls.length - 1;
-          if (mutation?.index === index) {
-            if (mutation.kind === 'crash') {
-              if (mutation.surface !== 'durable') {
-                applied = true;
-                throw errno('EIO');
-              }
-            } else if (mutation.kind === 'appended') {
-              if (existsSync(activePath) && lstatSync(activePath).isFile()) {
-                applied = true;
-                const injected = statSync(activePath, { bigint: true });
-                injectedIdentity = { dev: injected.dev, ino: injected.ino };
-                appendFileSync(activePath, 'same-inode-growth');
-              } else {
-                unreachableReason = 'append requires a regular active path at this call';
-              }
-            } else if (mutation.kind === 'sidecar') {
+        const activePoint =
+          !stopped && recording && touchesActiveEvidence ? appendTracePoint(calls, method, 'before') : null;
+        if (
+          mutation !== undefined &&
+          mutation.surface !== 'durable' &&
+          activePoint !== null &&
+          sameTracePoint(mutation.key, activePoint)
+        ) {
+          if (mutation.kind === 'crash') {
+            applied = true;
+            throw errno('EIO');
+          } else if (mutation.kind === 'appended') {
+            if (existsSync(activePath) && lstatSync(activePath).isFile()) {
               applied = true;
-              if (mutation.sidecarPath === undefined) throw new Error('Sidecar mutation requires its active path.');
-              writeFileSync(mutation.sidecarPath, 'injected sidecar evidence');
-              const injected = statSync(mutation.sidecarPath, { bigint: true });
-              injectedIdentity = { dev: injected.dev, ino: injected.ino };
-            } else if (mutation.kind === 'deleted') {
-              applied = true;
-              rmSync(activePath, { recursive: true, force: true });
-            } else {
-              applied = true;
-              rmSync(activePath, { recursive: true, force: true });
-              if (mutation.kind === 'replaced') createCompatibleSentinelStore(runtime, activePath);
-              else mkdirSync(activePath);
               const injected = statSync(activePath, { bigint: true });
               injectedIdentity = { dev: injected.dev, ino: injected.ino };
+              appendFileSync(activePath, 'same-inode-growth');
+            } else {
+              unreachableReason = 'append requires a regular active path at this call';
             }
+          } else if (mutation.kind === 'sidecar') {
+            applied = true;
+            if (mutation.sidecarPath === undefined) throw new Error('Sidecar mutation requires its active path.');
+            writeFileSync(mutation.sidecarPath, 'injected sidecar evidence');
+            const injected = statSync(mutation.sidecarPath, { bigint: true });
+            injectedIdentity = { dev: injected.dev, ino: injected.ino };
+          } else if (mutation.kind === 'deleted') {
+            applied = true;
+            rmSync(activePath, { recursive: true, force: true });
+          } else {
+            applied = true;
+            rmSync(activePath, { recursive: true, force: true });
+            if (mutation.kind === 'replaced') createCompatibleSentinelStore(runtime, activePath);
+            else mkdirSync(activePath);
+            const injected = statSync(activePath, { bigint: true });
+            injectedIdentity = { dev: injected.dev, ino: injected.ino };
           }
         }
 
         const result = Reflect.apply(member, target, args) as unknown;
+        const durablePoint = !stopped && touchesDurableRecord ? appendTracePoint(durableCalls, method, 'after') : null;
         if (
           mutation?.surface === 'durable' &&
           mutation.kind === 'crash' &&
-          touchesMutationSurface &&
-          mutation.index === mutationCalls.length - 1
+          durablePoint !== null &&
+          sameTracePoint(mutation.key, durablePoint)
         ) {
           applied = true;
           throw errno('EIO');
@@ -727,14 +762,14 @@ function expectReturnedHandleTargetsActiveStore(db: { exec(sql: string): unknown
 async function exerciseActiveEvidenceArm(
   arm: ActiveEvidenceArm,
   mutation?: {
-    readonly index: number;
+    readonly key: TracePoint;
     readonly kind: ActiveEvidenceMutation;
     readonly surface?: 'active' | 'durable';
   },
   afterCrashMutation?: ActiveEvidenceMutation,
 ): Promise<{
-  readonly calls: readonly string[];
-  readonly durableCalls: readonly string[];
+  readonly calls: readonly TracePoint[];
+  readonly durableCalls: readonly TracePoint[];
   readonly mutationDisposition: MutationDisposition | null;
 }> {
   const runtime = createRuntime();
@@ -803,6 +838,9 @@ async function exerciseActiveEvidenceArm(
       completed?.db.close();
       if (completed !== null) expectReturnedSurvivorExists(dbPath, completed.survivor);
       expectOneTerminalSurvivor(dbPath, arm);
+      if (trace.mutationDisposition() === null) {
+        return { calls: trace.calls, durableCalls: trace.durableCalls, mutationDisposition: null };
+      }
       return {
         calls: trace.calls,
         durableCalls: trace.durableCalls,
@@ -816,7 +854,10 @@ async function exerciseActiveEvidenceArm(
     expect(trace.mutationDisposition()).toEqual({ kind: 'applied' });
 
     if (afterCrashMutation === 'crash') {
-      const secondCrash = traceActivePathCalls(runtime, dbPath, 'immediate', { index: 0, kind: 'crash' });
+      const secondCrash = traceActivePathCalls(runtime, dbPath, 'immediate', {
+        key: { method: 'existsSync', occurrence: 1, phase: 'before' },
+        kind: 'crash',
+      });
       const secondFailure = await captureAsyncError(() => openReset(secondCrash.runtime, dbPath, exclusion));
       secondCrash.stop();
       expect(secondFailure).not.toBeNull();
@@ -841,7 +882,7 @@ async function exerciseActiveEvidenceArm(
     if (
       trace.mutationApplied() &&
       mutation?.kind === 'appended' &&
-      trace.calls[mutation.index] === 'readSync' &&
+      mutation.key.method === 'readSync' &&
       (arm === 'copy-proven' || arm === 'copy-unproven')
     ) {
       const ledger = readStoreResetRetentionLedger(runtime.storage, join(dirname(dbPath), 'store-reset-quarantine'));
@@ -2761,10 +2802,32 @@ describe('openOrResetBackendStoreDb', () => {
     for (const parkingId of parkingIds) expect(rendered).toContain(parkingId);
   });
 
+  it('fails a shifted replay until the expected semantic key is encountered', () => {
+    const expected = { method: 'renameSync', occurrence: 1, phase: 'before' } as const;
+    const shiftedTrace: TracePoint[] = [];
+    appendTracePoint(shiftedTrace, 'openSync', 'before');
+    appendTracePoint(shiftedTrace, 'lstatSync', 'before');
+
+    expect(() =>
+      assertMutationDisposition(
+        'shifted replay',
+        shiftedTrace.some((point) => sameTracePoint(point, expected)) ? { kind: 'applied' } : null,
+      ),
+    ).toThrow('replay did not encounter the exact semantic key');
+
+    appendTracePoint(shiftedTrace, 'renameSync', 'before');
+    expect(() =>
+      assertMutationDisposition(
+        'matching replay',
+        shiftedTrace.some((point) => sameTracePoint(point, expected)) ? { kind: 'applied' } : null,
+      ),
+    ).not.toThrow();
+  });
+
   it('survives the generated active-evidence mutation and crash-resume cross-product', async () => {
     vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
-    const traces = new Map<ActiveEvidenceArm, readonly string[]>();
-    const durableTraces = new Map<ActiveEvidenceArm, readonly string[]>();
+    const traces = new Map<ActiveEvidenceArm, readonly TracePoint[]>();
+    const durableTraces = new Map<ActiveEvidenceArm, readonly TracePoint[]>();
     for (const arm of ACTIVE_EVIDENCE_ARMS) {
       const trace = await exerciseActiveEvidenceArm(arm);
       traces.set(arm, trace.calls);
@@ -2772,17 +2835,13 @@ describe('openOrResetBackendStoreDb', () => {
     }
 
     const liveCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
-      ACTIVE_EVIDENCE_MUTATIONS.flatMap((mutation) =>
-        (traces.get(arm) ?? []).map((method, index) => ({ arm, mutation, method, index })),
-      ),
+      ACTIVE_EVIDENCE_MUTATIONS.flatMap((mutation) => (traces.get(arm) ?? []).map((key) => ({ arm, mutation, key }))),
     );
     const crashResumeCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
-      (traces.get(arm) ?? []).flatMap((method, index) =>
-        ACTIVE_EVIDENCE_MUTATIONS.map((mutation) => ({ arm, mutation, method, index })),
-      ),
+      (traces.get(arm) ?? []).flatMap((key) => ACTIVE_EVIDENCE_MUTATIONS.map((mutation) => ({ arm, mutation, key }))),
     );
     const durableCrashCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
-      (durableTraces.get(arm) ?? []).map((method, index) => ({ arm, method, index })),
+      (durableTraces.get(arm) ?? []).map((key) => ({ arm, key })),
     );
     for (const arm of ACTIVE_EVIDENCE_ARMS) expect(traces.get(arm)?.length ?? 0, arm).toBeGreaterThan(0);
     for (const arm of ACTIVE_EVIDENCE_ARMS) {
@@ -2793,10 +2852,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runCell = async (label: string, run: () => Promise<MutationDisposition | null>) => {
       const error = await captureAsyncError(async () => {
         const disposition = await run();
-        expect(disposition, `${label}: mutation was neither applied nor proved unreachable`).not.toBeNull();
-        if (disposition?.kind === 'unreachable') {
-          expect(disposition.reason, `${label}: unreachable cells require an asserted reason`).not.toHaveLength(0);
-        }
+        assertMutationDisposition(label, disposition);
       });
       if (error === null) return;
       const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
@@ -2804,28 +2860,28 @@ describe('openOrResetBackendStoreDb', () => {
     };
 
     for (const cell of liveCells) {
-      const label = `live ${cell.arm}/${cell.mutation}[${cell.index}] ${cell.method}`;
+      const label = `live ${cell.arm}/${cell.mutation} ${formatTracePoint(cell.key)}`;
       await runCell(
         label,
         async () =>
-          (await exerciseActiveEvidenceArm(cell.arm, { index: cell.index, kind: cell.mutation })).mutationDisposition,
+          (await exerciseActiveEvidenceArm(cell.arm, { key: cell.key, kind: cell.mutation })).mutationDisposition,
       );
     }
     for (const cell of crashResumeCells) {
-      const label = `crash-resume ${cell.arm}/${cell.mutation}[${cell.index}] ${cell.method}`;
+      const label = `crash-resume ${cell.arm}/${cell.mutation} ${formatTracePoint(cell.key)}`;
       await runCell(label, async () => {
-        const result = await exerciseActiveEvidenceArm(cell.arm, { index: cell.index, kind: 'crash' }, cell.mutation);
+        const result = await exerciseActiveEvidenceArm(cell.arm, { key: cell.key, kind: 'crash' }, cell.mutation);
         return result.mutationDisposition;
       });
     }
     for (const cell of durableCrashCells) {
-      const label = `durable-crash ${cell.arm}[${cell.index}] ${cell.method}`;
+      const label = `durable-crash ${cell.arm} ${formatTracePoint(cell.key)}`;
       await runCell(
         label,
         async () =>
           (
             await exerciseActiveEvidenceArm(cell.arm, {
-              index: cell.index,
+              key: cell.key,
               kind: 'crash',
               surface: 'durable',
             })

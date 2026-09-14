@@ -1432,10 +1432,7 @@ describe('operator store-reset discard', () => {
     ) as StoreResetIncidentManifestV3;
     const pendingManifest = { ...manifest, incidentId: pendingId };
     cpSync(olderPath, pendingPath, { recursive: true });
-    writeFileSync(
-      join(pendingPath, 'reset-manifest.json'),
-      serializeStoreResetIncidentManifest(pendingManifest),
-    );
+    writeFileSync(join(pendingPath, 'reset-manifest.json'), serializeStoreResetIncidentManifest(pendingManifest));
     const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
     if (ledger === null) throw new Error('Expected a retention ledger.');
     recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
@@ -1464,9 +1461,7 @@ describe('operator store-reset discard', () => {
       cause: 'residual',
       incidentId: pendingId,
       names: ['store.db-wal'],
-      entries: [
-        { name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(parkedEvidence) },
-      ],
+      entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(parkedEvidence) }],
       transaction: null,
       classification: null,
     });
