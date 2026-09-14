@@ -2585,25 +2585,26 @@ describe('openOrResetBackendStoreDb', () => {
         const resetLockPath = join(root, 'store.db.reset.lock');
         const readSync = runtime.storage.readSync;
         let injected = false;
-        let contender: ReturnType<typeof acquireDirectoryLockSync> | null = null;
+        const contenders: Array<() => void> = [];
         vi.spyOn(runtime.storage, 'readSync').mockImplementation((descriptor, buffer, offset, length, position) => {
           const bytesRead = readSync(descriptor, buffer, offset, length, position);
           if (!injected && length === 64 * 1024 && bytesRead > 0) {
             injected = true;
             wallOffset = cell.elapsedMs;
             if (cell.claimant === 'competing') {
-              contender = acquireDirectoryLockSync(
+              const contender = acquireDirectoryLockSync(
                 resetLockPath,
                 { storage: runtime.storage, time: runtime.time, staleMs: 30_000, heartbeatMs: 10_000 },
                 250,
               );
+              contenders.push(() => contender());
             }
           }
           return bytesRead;
         });
 
         const error = await captureAsyncError(() => openReset(runtime, dbPath));
-        contender?.();
+        for (const releaseContender of contenders) releaseContender();
         expect(injected).toBe(true);
         if (cell.refresh === 'held') {
           expect(error).toBeNull();

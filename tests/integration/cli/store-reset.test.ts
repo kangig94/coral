@@ -1932,6 +1932,10 @@ describe('backend store-reset commands', () => {
               kind: 'preserved',
               incident: resumedIncident,
               preservation: { kind: 'linked', coherence: 'coherent' },
+              rotation: {
+                kind: 'complete',
+                survivor: { kind: 'incident', id: resumedIncident.incidentId },
+              },
               leftActive: [],
             },
           },

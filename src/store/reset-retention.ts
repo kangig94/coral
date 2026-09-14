@@ -139,6 +139,17 @@ export type StoreResetRetentionSlot =
       readonly manifest: StoreResetIncidentManifest | null;
     };
 
+export type StoreResetRetentionRotation =
+  | {
+      readonly kind: 'complete';
+      readonly survivor: Readonly<{ kind: 'incident' | 'parking'; id: string }>;
+    }
+  | {
+      readonly kind: 'incomplete';
+      readonly survivor: Readonly<{ kind: 'incident' | 'parking'; id: string }>;
+      readonly cause: string;
+    };
+
 export type StoreResetReleaseResult =
   | {
       readonly kind: 'released';
@@ -685,21 +696,41 @@ export function retainOnlyStoreResetPreservedCopy(
   storage: StoragePort,
   quarantineRoot: string,
   survivor: Readonly<{ kind: 'incident' | 'parking'; id: string }>,
-): boolean {
+): StoreResetRetentionRotation {
+  const incomplete = (cause: unknown): StoreResetRetentionRotation => ({
+    kind: 'incomplete',
+    survivor,
+    cause: cause instanceof Error ? cause.message : String(cause),
+  });
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   const survivorRoot = survivor.kind === 'incident' ? quarantineRoot : parkingRoot;
-  if (survivor.kind === 'parking') assertContainedDirectory(storage, quarantineRoot, parkingRoot);
-  assertContainedDirectory(storage, survivorRoot, join(survivorRoot, survivor.id));
-  if (!storage.syncDirectoryDurableSync(survivorRoot)) return false;
+  try {
+    if (survivor.kind === 'parking') assertContainedDirectory(storage, quarantineRoot, parkingRoot);
+    assertContainedDirectory(storage, survivorRoot, join(survivorRoot, survivor.id));
+    if (!storage.syncDirectoryDurableSync(survivorRoot)) {
+      return incomplete('The new store-reset survivor could not be synchronized durably.');
+    }
+  } catch (error: unknown) {
+    return incomplete(error);
+  }
 
   for (const parent of [quarantineRoot, parkingRoot]) {
-    if (parent === parkingRoot) {
-      if (pathPresence(storage, parkingRoot) === 'absent') continue;
-      assertContainedDirectory(storage, quarantineRoot, parkingRoot);
+    try {
+      if (parent === parkingRoot) {
+        if (pathPresence(storage, parkingRoot) === 'absent') continue;
+        assertContainedDirectory(storage, quarantineRoot, parkingRoot);
+      }
+    } catch (error: unknown) {
+      return incomplete(error);
     }
     let readLimit = MAX_INCIDENT_ROOT_ENTRIES;
     while (true) {
-      const read = storage.readDirectoryBoundedSync(parent, readLimit);
+      let read: ReturnType<StoragePort['readDirectoryBoundedSync']>;
+      try {
+        read = storage.readDirectoryBoundedSync(parent, readLimit);
+      } catch (error: unknown) {
+        return incomplete(error);
+      }
       let removed = false;
       for (const candidateId of read.entries) {
         if (!isCanonicalStoreResetIncidentId(candidateId) || (parent === survivorRoot && candidateId === survivor.id)) {
@@ -709,14 +740,30 @@ export function retainOnlyStoreResetPreservedCopy(
         try {
           assertContainedDirectory(storage, parent, candidatePath);
         } catch (error: unknown) {
-          if (error instanceof UnsafeStoreResetPath) continue;
+          if (error instanceof UnsafeStoreResetPath) {
+            try {
+              const link = storage.lstatSync(candidatePath);
+              if (link.isDirectory() && !link.isSymbolicLink()) return incomplete(error);
+              storage.unlinkSync(candidatePath);
+              removed = true;
+            } catch (removalError: unknown) {
+              if (!isNoEntryError(removalError)) return incomplete(removalError);
+            }
+            continue;
+          }
           if (isNoEntryError(error)) continue;
-          throw error;
+          return incomplete(error);
         }
-        storage.rmSync(candidatePath, { recursive: true, force: true });
-        removed = true;
+        try {
+          storage.rmSync(candidatePath, { recursive: true, force: true });
+          removed = true;
+        } catch (error: unknown) {
+          return incomplete(error);
+        }
       }
-      if (removed && !storage.syncDirectoryDurableSync(parent)) return false;
+      if (removed && !storage.syncDirectoryDurableSync(parent)) {
+        return incomplete('A superseded store-reset coordinate removal could not be synchronized durably.');
+      }
       if (!read.overflow) break;
       if (removed) {
         readLimit = MAX_INCIDENT_ROOT_ENTRIES;
@@ -727,16 +774,21 @@ export function retainOnlyStoreResetPreservedCopy(
       readLimit = widerLimit;
     }
   }
-  return true;
+  return { kind: 'complete', survivor };
 }
 
-export function recordStoreResetParked(storage: StoragePort, quarantineRoot: string, parkingId: string): boolean {
-  if (!retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'parking', id: parkingId })) return false;
+export function recordStoreResetParked(
+  storage: StoragePort,
+  quarantineRoot: string,
+  parkingId: string,
+): StoreResetRetentionRotation {
+  const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'parking', id: parkingId });
+  if (rotation.kind === 'incomplete') return rotation;
   const ledger = readStoreResetRetentionLedger(storage, quarantineRoot);
   if (ledger !== null && (ledger.pending !== null || ledger.preserved !== null)) {
     writeLedger(storage, quarantineRoot, { ...ledger, pending: null, preserved: null });
   }
-  return true;
+  return rotation;
 }
 
 function reconcilePending(
@@ -750,7 +802,8 @@ function reconcilePending(
   const incidentId = pending.outcome.incident.incidentId;
   const committed = readCommittedManifest(storage, quarantineRoot, incidentId);
   if (committed !== null) {
-    if (!retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'incident', id: incidentId })) {
+    const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'incident', id: incidentId });
+    if (rotation.kind === 'incomplete') {
       return ledger;
     }
     const reconciled = withPreservedOutcome(ledger, pending.outcome.incident);
@@ -811,11 +864,14 @@ export function recordStoreResetPreserved(
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
-): void {
-  if (!retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'incident', id: incident.incidentId })) {
-    return;
-  }
+): StoreResetRetentionRotation {
+  const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, {
+    kind: 'incident',
+    id: incident.incidentId,
+  });
+  if (rotation.kind === 'incomplete') return rotation;
   writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident));
+  return rotation;
 }
 
 export function recordStoreResetPending(

@@ -85,6 +85,7 @@ import {
   type StoreResetRetentionLedger,
   type StoreResetRetentionIncident,
   type StoreResetRetentionPending,
+  type StoreResetRetentionRotation,
   type StoreResetParkedRecord,
 } from './reset-retention.js';
 
@@ -182,6 +183,7 @@ export type IncidentPublication =
       readonly kind: 'preserved';
       readonly incident: BackendStoreResetIncident;
       readonly preservation: PreservationMechanism;
+      readonly rotation: StoreResetRetentionRotation;
       readonly leftActive: readonly StoreResetEvidenceFileName[];
     }
   | { readonly kind: 'no-evidence'; readonly leftActive: readonly StoreResetEvidenceFileName[] };
@@ -1795,10 +1797,7 @@ function commitTerminalParking(
     storage.renameSync(parkingDirectory, join(parkingRoot, committedRecord.parkingId));
     requireDirectorySync(storage, sourceRoot, parkingRoot);
   }
-  requireStoreResetDurability(
-    recordStoreResetParked(storage, dirname(parkingRoot), committedRecord.parkingId),
-    'Store-reset parking retention could not be synchronized durably.',
-  );
+  recordStoreResetParked(storage, dirname(parkingRoot), committedRecord.parkingId);
   return true;
 }
 
@@ -2211,9 +2210,12 @@ function publishIncident(
       incidentId,
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
-    if (!parkingSurvives) {
-      recordStoreResetPreserved(runtime.storage, quarantineRoot, pendingLedger, retentionIncident);
-    }
+    const rotation = parkingSurvives
+      ? ({
+          kind: 'complete',
+          survivor: { kind: 'parking', id: parkingRecord.parkingId },
+        } satisfies StoreResetRetentionRotation)
+      : recordStoreResetPreserved(runtime.storage, quarantineRoot, pendingLedger, retentionIncident);
 
     recordIncidentAudit(manifest, preservation);
     return {
@@ -2228,6 +2230,7 @@ function publishIncident(
         fileCount: manifestFiles.length,
       },
       preservation,
+      rotation,
       leftActive,
     };
   } catch (error: unknown) {
