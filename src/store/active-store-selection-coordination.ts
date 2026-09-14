@@ -402,17 +402,10 @@ async function settleActiveStore(
   const files = resolveBackendStoreFileSet(runtime, options);
   const { dbFile } = files;
   const pending = hasPendingBackendStoreResetIncident(runtime, files);
-  const initialClassification = classifyStoreForProtocol(runtime, files, options);
-  if (initialClassification.kind === 'legacy-adoptable') {
-    return refuseLegacyStore(dbFile, initialClassification, options.storeFormat, runtime.flavor);
-  }
-  const resetNeeded =
-    pending ||
-    initialClassification.kind === 'older-incompatible' ||
-    initialClassification.kind === 'corrupt-or-unsupported' ||
-    initialClassification.kind === 'newer-incompatible';
+  const activeStoreObserved = runtime.storage.existsSync(dbFile);
+  const resetNeeded = pending || activeStoreObserved;
   let writerExclusion: WriterExclusion | undefined;
-  if (pending || runtime.storage.existsSync(dbFile)) {
+  if (resetNeeded) {
     writerExclusion = await acquireSettlementWriterExclusion(options);
   }
   let resetLock: BackendStoreResetLockLease | null = null;

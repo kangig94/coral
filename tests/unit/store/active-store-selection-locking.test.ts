@@ -8,6 +8,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -211,7 +212,7 @@ describe('active-store-selection locking', () => {
     },
   );
 
-  it('should publish transition then selection before classifying and opening without a reset lock', async () => {
+  it('should publish transition then selection before opening an absent store without a reset lock', async () => {
     const { runtime, currentSelection, authority } = harness();
     const paths = resolveActiveStoreRecordPaths(runtime);
     mkdirSync(paths.coordinationRoot, { recursive: true, mode: 0o755 });
@@ -259,7 +260,7 @@ describe('active-store-selection locking', () => {
     });
 
     expect(result).toMatchObject({ kind: 'opened' });
-    expect(events).toEqual(['transition', 'selection-v1', 'selection', 'classify', 'open']);
+    expect(events).toEqual(['transition', 'selection-v1', 'selection', 'open']);
     expect(existsSync(boundary.adoptionLock)).toBe(false);
     expect(existsSync(resetLock)).toBe(false);
     expect(statSync(paths.coordinationRoot).mode & 0o777).toBe(0o700);
@@ -789,7 +790,113 @@ describe('active-store-selection locking', () => {
     expect(release).toHaveBeenCalledOnce();
   });
 
-  it('should refuse a real legacy store before minting or entering the claim loop', async () => {
+  it('should treat a store deleted after its initial lstat as absent', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true, mode: 0o700 });
+    writeFileSync(runtime.paths.coral.store.dbFile, 'disappearing store');
+    const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
+    let deleteAfterInitialStat = true;
+    function deleteStoreAfterInitialStat(path: string): StorageEntryKind;
+    function deleteStoreAfterInitialStat(path: string, options: { bigint: true }): StorageBigIntStat;
+    function deleteStoreAfterInitialStat(
+      path: string,
+      options?: { bigint: true },
+    ): StorageEntryKind | StorageBigIntStat {
+      const result = options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
+      if (path === runtime.paths.coral.store.dbFile && options === undefined && deleteAfterInitialStat) {
+        deleteAfterInitialStat = false;
+        runtime.storage.unlinkSync(path);
+      }
+      return result;
+    }
+    runtime.storage.lstatSync = deleteStoreAfterInitialStat;
+    const db = fakeDatabase();
+    const openStore = spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+      if (!existsSync(path)) writeFileSync(path, '');
+      return { kind: 'opened', db };
+    });
+    const acquireStoreRecoveryLease = vi.fn(immediateRecoveryLease);
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          acquireStoreRecoveryLease,
+        },
+      }),
+    ).resolves.toMatchObject({ kind: 'opened' });
+
+    expect(deleteAfterInitialStat).toBe(false);
+    expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
+    expect(openStore).toHaveBeenCalledOnce();
+  });
+
+  it('should reset a symlink swapped in after the initial lstat instead of adopting its target', async () => {
+    const { root, runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    const storeFormat = currentCoralStoreFormat();
+    mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true, mode: 0o700 });
+    writeFileSync(runtime.paths.coral.store.dbFile, 'regular store before swap');
+    const externalPath = join(root, 'external-legacy.db');
+    const external = runtime.storage.openSqliteDatabaseSync(externalPath);
+    external.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    external.prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)").run(storeFormat.fingerprint);
+    external.close();
+    const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
+    let swapAfterInitialStat = true;
+    function swapStoreAfterInitialStat(path: string): StorageEntryKind;
+    function swapStoreAfterInitialStat(path: string, options: { bigint: true }): StorageBigIntStat;
+    function swapStoreAfterInitialStat(
+      path: string,
+      options?: { bigint: true },
+    ): StorageEntryKind | StorageBigIntStat {
+      const result = options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
+      if (path === runtime.paths.coral.store.dbFile && options === undefined && swapAfterInitialStat) {
+        swapAfterInitialStat = false;
+        runtime.storage.unlinkSync(path);
+        symlinkSync(externalPath, path);
+      }
+      return result;
+    }
+    runtime.storage.lstatSync = swapStoreAfterInitialStat;
+    const db = fakeDatabase();
+    const openStore = spyOnOpenWritableStoreDatabase().mockImplementation(({ path }) => {
+      if (!existsSync(path)) writeFileSync(path, '');
+      return { kind: 'opened', db };
+    });
+    const acquireStoreRecoveryLease = vi.fn(immediateRecoveryLease);
+
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat,
+        currentSelection,
+        dependencies: {
+          kind: 'operator',
+          validateSelectedTarget: () => {
+            throw new Error('validator should not run');
+          },
+          acquireStoreRecoveryLease,
+        },
+      }),
+    ).resolves.toMatchObject({ kind: 'opened' });
+
+    expect(swapAfterInitialStat).toBe(false);
+    expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
+    expect(openStore).toHaveBeenCalledOnce();
+    const externalAfter = runtime.storage.openSqliteDatabaseSync(externalPath, { readOnly: true });
+    expect(externalAfter.prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint'").get()).toEqual({
+      value: storeFormat.fingerprint,
+    });
+    externalAfter.close();
+  });
+
+  it('should refuse a real legacy store after acquiring recovery exclusion and classifying a snapshot', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const storeFormat = currentCoralStoreFormat();
@@ -799,7 +906,7 @@ describe('active-store-selection locking', () => {
     legacy.prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)").run(storeFormat.fingerprint);
     legacy.close();
     const openStore = spyOnOpenWritableStoreDatabase();
-    const acquireStoreRecoveryLease = vi.fn(async () => ({ assertOwned: vi.fn(), release: vi.fn() }));
+    const acquireStoreRecoveryLease = vi.fn(immediateRecoveryLease);
 
     await expect(
       coordinateActiveStoreSelection(runtime, authority, {
@@ -816,7 +923,7 @@ describe('active-store-selection locking', () => {
     ).rejects.toMatchObject({ code: 'store_schema_outdated' });
 
     expect(openStore).not.toHaveBeenCalled();
-    expect(acquireStoreRecoveryLease).not.toHaveBeenCalled();
+    expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce();
   });
 
   it('should report a record trust violation before trying to acquire a recovery lease', async () => {
