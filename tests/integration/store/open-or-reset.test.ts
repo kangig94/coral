@@ -4,11 +4,14 @@ import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   cpSync,
+  closeSync,
   copyFileSync,
   existsSync,
+  fsyncSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync as renameFileSync,
@@ -17,6 +20,7 @@ import {
   symlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
@@ -57,7 +61,7 @@ import {
 } from '#src/store/generation-mutation-coordination.js';
 
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
-import { enumerateActiveEvidence } from '#src/store/reset-active-evidence.js';
+import { dropParkedEvidence, enumerateActiveEvidence } from '#src/store/reset-active-evidence.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -2712,6 +2716,89 @@ describe('openOrResetBackendStoreDb', () => {
     }
 
     expect(failures, `${failures.length} generated Revision 10 sweep cells failed`).toEqual([]);
+  });
+
+  it('does not drop a fixed-coordinate occupant installed after the ownership decision', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision11-stale-drop-');
+    const parkingDirectory = join(
+      root,
+      'store-reset-quarantine',
+      '.parked',
+      STORE_RESET_IN_FLIGHT_DIRECTORY,
+    );
+    const parkedPath = join(parkingDirectory, 'store.db');
+    mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
+    writeFileSync(parkedPath, 'process-a-evidence');
+    const original = statSync(parkedPath, { bigint: true });
+    const parked = {
+      evidence: {
+        name: 'store.db' as const,
+        identity: { dev: original.dev, ino: original.ino },
+        sizeBytes: Number(original.size),
+        mtimeMs: Number(original.mtimeNs / 1_000_000n),
+      },
+      ownership: 'ours' as const,
+      entry: { name: 'store.db' as const, kind: 'regular-file' as const, sizeBytes: Number(original.size) },
+    };
+
+    rmSync(parkedPath);
+    writeFileSync(parkedPath, 'process-b-evidence');
+    dropParkedEvidence(runtime.storage, parkingDirectory, parked);
+
+    expect(existsSync(parkedPath)).toBe(true);
+    expect(readFileSync(parkedPath, 'utf8')).toBe('process-b-evidence');
+  });
+
+  it('parks and claims when restored legacy evidence no longer matches its routed classification', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision11-legacy-reproof-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath, STORE_FORMAT.fingerprint);
+    const writer = openSync(dbPath, 'r+');
+    const linkSync = runtime.storage.linkSync;
+    let mutated = false;
+    vi.spyOn(runtime.storage, 'linkSync').mockImplementation((source, destination) => {
+      if (!mutated && destination === dbPath && dirname(String(source)).endsWith(STORE_RESET_IN_FLIGHT_DIRECTORY)) {
+        writeSync(writer, Buffer.from('BROKEN'), 0, 6, 0);
+        fsyncSync(writer);
+        mutated = true;
+      }
+      linkSync(source, destination);
+    });
+
+    try {
+      const db = await openReset(runtime, dbPath);
+      db.close();
+    } finally {
+      closeSync(writer);
+    }
+
+    expect(mutated).toBe(true);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
+  it('omits an active-evidence size that cannot be represented safely', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision11-unrepresentable-size-');
+    const dbPath = join(root, 'store.db');
+    createMismatchStore(dbPath);
+    const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
+    const lstat = runtime.storage.lstatSync;
+    vi.spyOn(runtime.storage, 'lstatSync').mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      const observed = options?.bigint === true ? lstat(path, { bigint: true }) : lstat(path);
+      return path === dbPath && options?.bigint === true
+        ? new Proxy(observed, {
+            get(target, property, receiver) {
+              return property === 'size' ? BigInt(Number.MAX_SAFE_INTEGER) + 1n : Reflect.get(target, property, receiver);
+            },
+          })
+        : observed;
+    }) as Runtime['storage']['lstatSync']);
+
+    expect(enumerateActiveEvidence(runtime.storage, files)).toEqual([
+      expect.objectContaining({ name: 'store.db', sizeBytes: null }),
+    ]);
   });
 
   it('revalidates adoption ownership after opening and before returning the writable handle', async () => {
