@@ -3034,14 +3034,15 @@ export function acquireBackendStoreResetLock(
   }
 
   let owned = true;
+  const assertOwned = (): void => {
+    adoption.assertOwned();
+    if (!owned) throw new Error('Backend store reset lock is no longer owned.');
+  };
   return {
-    assertOwned: () => {
-      adoption.assertOwned();
-      if (!owned) throw new Error('Backend store reset lock is no longer owned.');
-    },
+    assertOwned,
     maintain: () => {
       adoption.maintain();
-      if (!owned) throw new Error('Backend store reset lock is no longer owned.');
+      if (!owned) assertOwned();
     },
     release: () => {
       if (!owned) return;
