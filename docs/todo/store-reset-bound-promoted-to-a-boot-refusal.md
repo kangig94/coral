@@ -1765,7 +1765,7 @@ Round 23's reviewers reproduced five and seven blocking failures respectively, a
 
 | site | the third answer became |
 |---|---|
-| `currentProvenEpoch()` (`src/store/epoch.ts:96`, `:139`) | **epoch 0 is proven** — the accumulator is initialised to `0`, so "nothing proven" and "epoch 0 proven" are the same value |
+| `currentProvenEpoch` (`src/store/epoch.ts`) | **epoch 0 is proven** — the accumulator is initialised to `0`, so "nothing proven" and "epoch 0 proven" are the same value |
 | the sweep (`:302`, `:485`) | **garbage, delete it** — `missing`, `malformed` and `unreadable` all reduce to `proven: false` |
 | liveness (`:257`) | **nobody is live** — a missing `coordinator.json` reads as `absent`, which permits deletion |
 | the settle loop (`:442`) | **no progress, refuse** — an unobservable entry blocks the rename and the loop throws |
@@ -1822,10 +1822,11 @@ whole reason this design can afford to check.
 
 ### Liveness needs evidence, and a missing record is not evidence
 
-`coordinator.json` absent reads as "nobody is live", but publication can return without writing on
-`ENOENT` while the daemon declares itself ready (`infra/backend-discovery.ts:90`, `:214`), and
-`store-reset report <K>` opens an epoch in a **child that publishes no record at all**
-(`cli/store-reset.ts:75`). A reviewer deleted a flat epoch-0 database out from under a live child, and
+`coordinator.json` absent reads as "nobody is live", but `writeDiscoveryRecord`
+(`src/infra/backend-discovery.ts`) can return without writing on `ENOENT`, and `probeCoordinator` then
+reports the missing record as absent. `store-reset report <K>` opens an epoch in a **child that publishes
+no record at all** inside `defaultDependencies` (`src/cli/store-reset.ts`). A reviewer deleted a flat
+epoch-0 database out from under a live child, and
 another deleted an epoch beneath the `report` diagnostic.
 
 Absent is unobservable, so the sweep skips — which costs nothing, because the sweep was never a boot

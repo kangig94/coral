@@ -1,4 +1,3 @@
-import { constants } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
@@ -351,27 +350,34 @@ function proveReleaseTarget(
   }
 }
 
-function storeEpochHolderBlocksSweep(runtime: Runtime, dbDir: string): boolean {
+function storeEpochHolderDisposition(
+  runtime: Runtime,
+  dbDir: string,
+): Readonly<{ kind: 'clear' }> | Readonly<{ kind: 'live' }> | Readonly<{ kind: 'unobservable' }> {
   let entries: readonly string[];
   try {
     entries = runtime.storage.readdirSync(dbDir);
   } catch {
-    return true;
+    return { kind: 'unobservable' };
   }
   for (const entry of entries) {
     if (!entry.startsWith(EPOCH_HOLDER_PREFIX) || !entry.endsWith('.json')) continue;
     const path = join(dbDir, entry);
     try {
       const kind = runtime.storage.lstatSync(path);
-      if (!kind.isFile() || kind.isSymbolicLink()) return true;
+      if (!kind.isFile() || kind.isSymbolicLink()) return { kind: 'unobservable' };
       const value: unknown = JSON.parse(runtime.storage.readFileSync(path, 'utf-8'));
-      if (!isRecord(value) || !Number.isSafeInteger(value.pid) || Number(value.pid) <= 0) return true;
-      if (runtime.process.observeLiveness(Number(value.pid)) !== 'absent') return true;
+      if (!isRecord(value) || !Number.isSafeInteger(value.pid) || Number(value.pid) <= 0) {
+        return { kind: 'unobservable' };
+      }
+      const liveness = runtime.process.observeLiveness(Number(value.pid));
+      if (liveness === 'alive') return { kind: 'live' };
+      if (liveness === 'unknown') return { kind: 'unobservable' };
     } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') return true;
+      if (errorCode(error) !== 'ENOENT') return { kind: 'unobservable' };
     }
   }
-  return false;
+  return { kind: 'clear' };
 }
 
 export function sweepStoreEpochs(
@@ -403,7 +409,7 @@ export function sweepStoreEpochs(
     if (initial === 'current') return 'current';
     if (initial === 'unobservable') return 'incomplete';
   }
-  if (storeEpochHolderBlocksSweep(runtime, dbDir)) return 'incomplete';
+  if (storeEpochHolderDisposition(runtime, dbDir).kind !== 'clear') return 'incomplete';
   try {
     if (readDiscoveryRecordDisposition(runtime).kind === 'missing') return 'incomplete';
     const coordinator = probeCoordinator(runtime);
@@ -579,7 +585,7 @@ function openProvenStoreDescriptor(
 ): Readonly<{ descriptor: number; path: string }> | null {
   let descriptor: number | null = null;
   try {
-    descriptor = runtime.storage.openSync(path, constants.O_RDWR | constants.O_NOFOLLOW);
+    descriptor = runtime.storage.openNoFollowSync?.(path) ?? runtime.storage.openSync(path, 'r+');
     const openedIdentity = identityOf(runtime.storage.fstatSync(descriptor, { bigint: true }));
     if (!sameIdentity(proof.identity, openedIdentity)) {
       runtime.storage.closeSync(descriptor);
