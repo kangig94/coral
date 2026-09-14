@@ -1,7 +1,7 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Six design revisions, five unbiased tier-1 review rounds, and seven distinct
-instances of the same defect so far. This document is the specification; read the revisions in order,
+**Status**: in flight. Ten design revisions, seventeen unbiased tier-1 review rounds, and fourteen
+distinct instances of the same defect so far. This document is the specification; read the revisions in order,
 because each one records what the previous got wrong.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
@@ -1128,6 +1128,121 @@ undeterminable-preserves-over-the-bound path. A reset preserves its own evidence
 preserved copy. Commit the new one durably first, so a crash can never leave zero.
 
 No further retention rules are to be introduced.
+
+## Revision 10 — authority is what the act takes, not what the act may call
+
+Round 17's two reviewers returned eight blocking findings that are one sentence:
+
+> **An operation that takes time continues to act on authority it may no longer hold, because the
+> authority is carried as an optional callback beside the act instead of as the thing that permits it.**
+
+Instances, all re-verified against the tree:
+
+- **The reset lock throws away its own lease.** `acquireDirectoryLockSync` returns a `DirectoryLockLease`
+  — a callable carrying `assertOwned()` and `maintain()` — and `acquireBackendStoreResetLock` assigns it
+  to `let releaseDirectoryLock: () => void` (`backend-store-reset.ts:3025`). The composed `maintain`
+  refreshes adoption and writer exclusion; the 30 s marker under `store.db.reset.lock` is never touched,
+  and `assertOwned` answers from a local `owned` boolean (`:3041`–`:3053`). A reviewer aged the marker
+  31 s, called `maintain()`, and a contender took the lock the lease still claimed to hold.
+- **The claim loop passes a partial authority.** `resetLock?.maintain ?? adoption.maintain`
+  (`active-store-selection-coordination.ts:498`) drops writer exclusion on exactly the path that skips
+  the reset lock — the compatible fast path, whose hard-link clone is the longest copy in the system.
+- **A lost lease reads as a clone failure.** `catch { return abandonClone(); }`
+  (`backend-store-reset.ts:2340`) converts the `DirectoryLockOwnershipLostError` thrown by the per-chunk
+  refresh into "the minted store is the safe candidate", and the caller then terminalizes the occupant
+  and installs the mint (`:2791`).
+- **The verification pass re-reads the file with no authority at all.**
+  `copyActiveEvidenceForPublication` refreshes per chunk; the `evidenceMatches` → `describeCandidate`
+  hash that follows takes the `() => undefined` default (`:477`, `:590`, `:673`, `:918`). Every refreshed
+  copy is followed by an equally long unrefreshed read — in publication, claim cloning and restaging alike.
+
+The defect is not four missing calls. It is that `maintain` is a parameter with a default, so
+**forgetting it is well-typed**, and every round the guard has sat one level shallower than the omission.
+
+### The act takes the authority
+
+One value: threaded, required, branded.
+
+`settleActiveStore` composes a single `SettlementAuthority` over adoption, proven writer exclusion, and —
+when taken — the reset lock's own `DirectoryLockLease`. It has one method, `hold(): Held`, which
+refreshes **every** layer it holds and re-proves each from its marker, throwing if any is gone. There is
+no separate `maintain` and `assertOwned`: those two have already been allowed to disagree, one reading a
+boolean and the other reading markers, and two answers to one question is this document's oldest finding.
+
+`Held` is a brand with no exported constructor. Every function that mutates a shared name — the rename
+into parking, the link back, the unlink, the commit rename — and every function that reads or writes a
+whole file takes a `Held`. Not optional, no default. An act on stale authority then has nothing to pass,
+and the four omissions above stop compiling rather than stop being noticed.
+
+What follows mechanically: `resetLock?.maintain ?? adoption.maintain` has nothing to select between and
+goes; `describeCandidate`'s callback parameter becomes a required `Held`, so the verification hash is
+covered; and the clone's `catch` must let whatever `hold()` throws escape, narrowing to the I/O failures
+it was written for.
+
+### Classification at the active name is routing; only an owned inode authorizes an act
+
+Round 17 answered "classify under exclusion without taking the reset lock" by copying every evidence file
+into a private snapshot before classifying (`stageBackendStoreClassification`, `:769`). That copy now runs
+on **every boot with an observed store, including the ordinary compatible one** — on the 1.17 GB store
+that opens this document, a full copy per start. Neither reviewer priced it. It is the same mistake this
+branch exists to remove, a cost that scales with the store placed on the boot path, differing only in
+that it ends in slowness rather than a refusal.
+
+It also does not buy what it was built for. A cooperating writer is already excluded; an adversary who
+ignores the exclusion can replace the file the instant after the snapshot is taken, so the copy moves the
+window rather than closing it. What closes it is already in the tree, and is Revision 4's sentence:
+**classify a parked occupant at its parked path, never at the shared name.**
+
+So:
+
+- `stageBackendStoreClassification` is deleted. Classification before the claim happens in place on the
+  active pathname and is **advisory**: it selects which branch runs and authorizes nothing. The type says
+  so — it cannot be passed to anything that acts.
+- Every branch that acts re-derives its classification from an inode it owns. Both already do: the claim
+  path from the parked copy (`:2701`–`:2711`), the writable open from the descriptor it holds.
+- `legacy-adoptable` therefore has exactly one refusal site — the parked one, after
+  `restoreLegacyParkedStore` puts the inode back (`:2716`–`:2742`). The two early returns in
+  `active-store-selection-coordination.ts` (`:432`, `:453`) go. They refuse the boot naming a
+  classification taken from a copy, so a foreign process that replaces the legacy store with a
+  current-format one during that copy leaves the coordinator refusing to start over an inode that is no
+  longer there. That is a stale observation authorizing a refusal, which is this document's subject;
+  whether `legacy-adoptable` should refuse **at all** remains the migration entry's question, not this
+  one's.
+
+### Retention: "exactly one" is a result, not a hope
+
+Two sites drop it:
+
+- `retainOnlyStoreResetPreservedCopy` skips a prior survivor coordinate whose path is no longer a
+  contained directory — `if (error instanceof UnsafeStoreResetPath) continue;` (`reset-retention.ts:711`)
+  — and then returns `true` (`:730`). Replace a committed survivor's canonical directory with a symlink
+  or a regular file before each rotation and K replacements leave K coordinates beside the survivor. A
+  reviewer reproduced it: `{ok: true, oldCoordinateRemains: true, newSurvivorRemains: true}`. The
+  quarantine is owned, so a non-directory at a canonical coordinate is removed as the non-directory it is
+  — `unlink`, not `rmSync` — and the external target is never followed.
+- `recordStoreResetPreserved` flattens the rotation's `false` to `void` (`:809`–`:819`) while its sibling
+  `recordStoreResetParked` returns it (`:733`). Publication then reports `preserved` with two copies on
+  disk.
+
+Rotation returns a disposition and the caller consumes it. The failing answer is **not** a refusal — that
+is the defect this branch removes — but an honest outcome naming the copy that is still there, rendered
+as such by the CLI and carried in durable status.
+
+### Say what was established, not what was hoped
+
+`release` renders unverified parking as terminal: "Released **terminal** store-reset parking … without a
+verified sidecar" (`cli/format/store-reset.ts:231`), and twice more at `:222` and `:225`. The sidecar is
+precisely what establishes the phase, and it was unreadable. The operator's authority to delete parking
+they cannot verify is not authority to be told it was terminal. Three sites, so fix the class: the phase
+word derives from the result kind, and a kind carrying `unverified` cannot render one.
+
+### The guard
+
+Every previous round's structural guard sat one level shallower than its defect — call text, then lexical
+loop body, then single module. The guard that cannot be one level off is the type itself: `Held` has one
+constructor, it is not exported, and every shared-name mutation and whole-file read takes it. The
+invariant then has only to assert that — one constructor, unexported, no parameter of that type carrying
+a default — which is shallow enough that there is no level beneath it to miss.
 
 ## Invariants to add
 
