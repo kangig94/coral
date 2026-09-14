@@ -127,25 +127,28 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
   }
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
   const socket = await options.acquireSocketGuard(paths, options.runtime);
-  const adoption = await acquireGenerationAdoptionLock(options.runtime);
   try {
-    const previousEpoch = resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir);
-    const settled = discardCurrentStoreEpoch(options.runtime, {
-      storeFormat: options.storeFormat,
-      build: options.build,
-    });
-    settled.db.close();
-    return {
-      kind: 'discarded',
-      target: 'gen2',
-      flavor: options.runtime.flavor,
-      baseDir: paths.baseDir,
-      storeDbPath: settled.path,
-      previousEpoch,
-      currentEpoch: settled.epoch,
-    };
+    const adoption = await acquireGenerationAdoptionLock(options.runtime);
+    try {
+      const previousEpoch = resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir);
+      const settled = discardCurrentStoreEpoch(options.runtime, {
+        storeFormat: options.storeFormat,
+        build: options.build,
+      });
+      settled.db.close();
+      return {
+        kind: 'discarded',
+        target: 'gen2',
+        flavor: options.runtime.flavor,
+        baseDir: paths.baseDir,
+        storeDbPath: settled.path,
+        previousEpoch,
+        currentEpoch: settled.epoch,
+      };
+    } finally {
+      adoption();
+    }
   } finally {
-    adoption();
     await socket.release();
   }
 }

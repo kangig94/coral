@@ -78,6 +78,7 @@ import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } fr
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
+import type { StoreEpoch } from '../store/epoch.js';
 import {
   acquireProviderOperationMutationAdmission,
   type ProviderOperationMutationAdmission,
@@ -797,7 +798,7 @@ export type LifecycleDeps = {
    * so carrier readers cannot advance the startup boundary themselves.
    */
   readonly startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
-  readonly scheduleStoreEpochSweepFn?: () => void;
+  readonly scheduleStoreEpochSweepFn?: (openEpoch: StoreEpoch) => void;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -1048,6 +1049,7 @@ async function runLifecycleStartup({
     const preinjectedStoreServices = storeServicesRef.tryGet();
     const shouldScheduleStoreEpochSweep = preinjectedStoreServices === null;
     let storeDb: Database;
+    let storeEpoch: StoreEpoch | null = null;
     if (preinjectedStoreServices !== null) {
       // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
       // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
@@ -1086,6 +1088,7 @@ async function runLifecycleStartup({
         );
       }
       storeDb = routing.db;
+      storeEpoch = routing.epoch;
     }
     let storeServices: CoordinatorStoreServices;
     try {
@@ -1151,10 +1154,11 @@ async function runLifecycleStartup({
       namespace,
       instanceId,
       startedAt,
+      ...(storeEpoch === null ? {} : { storeEpoch }),
     });
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
-    if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.();
+    if (shouldScheduleStoreEpochSweep && storeEpoch !== null) deps.scheduleStoreEpochSweepFn?.(storeEpoch);
     const serverInfo = {
       port,
       host,
@@ -1227,7 +1231,7 @@ async function runLifecycleStartup({
     runtimeState.setLifecycle('running');
     state.started = true;
     void kbDaemonSupervisor
-      ?.start()
+      ?.start(storeEpoch ?? undefined)
       .then((health) => {
         if (health.phase !== 'online') {
           return;

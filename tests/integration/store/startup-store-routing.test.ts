@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { createForeignTargetValidator } from '#src/infra/handoff-target.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -18,8 +19,10 @@ import {
   type ActiveStoreSelection,
 } from '#src/store/active-store-selection.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
+import { epochPath, sweepStoreEpochs, STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch.js';
 import { routeOrOpenBackendStoreAtStartup } from '#src/store/startup-store-routing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -83,6 +86,20 @@ function publish(runtime: Runtime, selected: ActiveStoreSelection): void {
   }
 }
 
+function publishEpoch(runtime: Runtime, epoch: string, build: StrictBundleManifest): void {
+  const directory = join(runtime.paths.coral.store.dbDir, `epoch-${epoch}`);
+  openTestStoreDatabase({ path: join(directory, 'store.db'), storage: runtime.storage, storeFormat }).close();
+  writeFileSync(
+    join(directory, STORE_EPOCH_METADATA_FILE_NAME),
+    JSON.stringify({
+      supersedes: '0',
+      classification: { kind: 'unavailable', cause: 'test' },
+      build,
+      publishedAt: '2026-09-15T00:00:00.000Z',
+    }),
+  );
+}
+
 async function route(runtime: Runtime, current: ActiveStoreSelection) {
   return routeOrOpenBackendStoreAtStartup({
     runtime,
@@ -99,6 +116,60 @@ afterEach(() => {
 });
 
 describe('startup store routing', () => {
+  it('carries the opened epoch across readiness so changing metadata cannot redirect the sweep', async () => {
+    const { runtime, current } = harness();
+    publishEpoch(runtime, '1', current.manifest);
+    publishEpoch(runtime, '3', current.manifest);
+    const newerMetadata = join(runtime.paths.coral.store.dbDir, 'epoch-3', STORE_EPOCH_METADATA_FILE_NAME);
+    let metadataReads = 0;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'readFileSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string, encoding: 'utf-8'): string => {
+          if (path === newerMetadata && (metadataReads += 1) === 1) {
+            throw Object.assign(new Error('injected settlement EIO'), { code: 'EIO' });
+          }
+          return subject.readFileSync(path, encoding);
+        };
+      },
+    });
+    const routedRuntime = { ...runtime, storage };
+
+    const result = await route(routedRuntime, current);
+    expect(result.kind).toBe('open');
+    if (result.kind !== 'open') return;
+    writeDiscoveryRecord(
+      {
+        pid: runtime.env.pid(),
+        port: 1,
+        socketPath: join(runtime.paths.coral.coordinator.runDir, 'live.sock'),
+        bundleHash: current.manifest.bundleHash,
+        flavor: runtime.flavor,
+        namespace: 'startup-routing-test',
+        startedAt: Date.now(),
+        token: 'startup-routing-test',
+        bootToken: 'startup-routing-test',
+        storeEpoch: 'epoch' in result && typeof result.epoch === 'string' ? result.epoch : undefined,
+      },
+      runtime,
+    );
+    const sweepEpoch = 'epoch' in result && typeof result.epoch === 'string' ? result.epoch : '3';
+    const sweep = sweepStoreEpochs(routedRuntime, runtime.paths.coral.store.dbDir, sweepEpoch);
+    const openDatabasePresent = existsSync(epochPath(runtime.paths.coral.store.dbDir, '1'));
+    console.log(
+      `re-derivation-cell settlement=epoch-1 metadata-after=epoch-3 sweep=${sweepEpoch} open-database-present=${openDatabasePresent}`,
+    );
+    result.db.close();
+
+    expect(result).toMatchObject({
+      kind: 'open',
+      epoch: '1',
+      path: epochPath(runtime.paths.coral.store.dbDir, '1'),
+    });
+    expect(sweep).toBe('complete');
+    expect(openDatabasePresent).toBe(true);
+  });
+
   it('publishes epoch one when no store epoch is proven', async () => {
     const { runtime, current } = harness();
     publish(runtime, current);

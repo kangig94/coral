@@ -98,6 +98,11 @@ export function resolveKbDaemonParentPid(value: string | undefined, selfPid = pr
   return pid;
 }
 
+export function resolveKbDaemonStoreEpoch(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed !== undefined && /^(0|[1-9]\d*)$/u.test(trimmed) ? trimmed : undefined;
+}
+
 export async function handleKbDaemonExpansionRpcRequest(
   params: unknown,
   kbWriteHost: KbDaemonExpansionRpcPort,
@@ -401,6 +406,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     curateUsageBudget: parentCurateUsageBudget,
     backendNamespace: process.env.CORAL_KB_DAEMON_BACKEND_NAMESPACE,
     bundleHash: process.env.CORAL_KB_DAEMON_BUNDLE_HASH,
+    storeEpoch: resolveKbDaemonStoreEpoch(process.env.CORAL_KB_DAEMON_STORE_EPOCH),
     onJournalEvents: (appended) =>
       writeControlMessage({
         type: KB_DAEMON_EVENT_MESSAGE,

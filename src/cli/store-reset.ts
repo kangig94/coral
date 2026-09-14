@@ -49,7 +49,10 @@ export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
-  diagnoseEpoch(storeDbPath: string): Promise<StoreResetDiagnosticStatus>;
+  diagnoseEpoch(
+    storeDbPath: string,
+    holder?: Readonly<{ path: string; epoch: string }>,
+  ): Promise<StoreResetDiagnosticStatus>;
   quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
   runtime?(manifest: StrictBundleManifest): ReturnType<typeof createRealRuntime>;
 }
@@ -80,11 +83,12 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
-    diagnoseEpoch: async (storeDbPath) => {
+    diagnoseEpoch: async (storeDbPath, holder) => {
       const diagnostic = await superviseStoreResetDiagnosticChild(
         createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
         process.execPath,
         storeDbPath,
+        holder,
       );
       return { ...diagnostic, cleanup: 'not_required' };
     },
@@ -103,17 +107,8 @@ async function diagnoseHeldEpoch(
   dependencies: StoreResetCliDependencies,
 ): Promise<StoreResetDiagnosticStatus> {
   const holderPath = storeEpochHolderPath(runtime.paths.coral.store.dbDir, runtime.ids.uuid());
-  if (
-    !runtime.storage.writeAtomicDurableSync(holderPath, `${JSON.stringify({ epoch, pid: runtime.env.pid() })}\n`, {
-      encoding: 'utf-8',
-      mode: 0o600,
-    })
-  ) {
-    return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
-  }
-  try {
-    return await dependencies.diagnoseEpoch(storeDbPath);
-  } finally {
+  const diagnostic = await dependencies.diagnoseEpoch(storeDbPath, { path: holderPath, epoch });
+  if (diagnostic.termination !== 'termination_unconfirmed') {
     try {
       runtime.storage.unlinkSync(holderPath);
     } catch {
@@ -125,6 +120,7 @@ async function diagnoseHeldEpoch(
       // A resurrected marker only makes a later sweep more conservative.
     }
   }
+  return diagnostic;
 }
 
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {

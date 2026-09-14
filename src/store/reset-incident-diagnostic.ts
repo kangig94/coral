@@ -21,17 +21,44 @@ import {
 const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as const;
 const COPY_BUFFER_BYTES = 64 * 1024;
 
-const SQLITE_DIAGNOSTIC_PROGRAM = String.raw`
+export const SQLITE_DIAGNOSTIC_PROGRAM = String.raw`
 'use strict';
 const { DatabaseSync } = require('node:sqlite');
+const fs = require('node:fs');
+const pathModule = require('node:path');
 const path = process.argv[1];
+const holderPath = process.argv[2];
+const holderEpoch = process.argv[3];
 let db;
 let token = 'unavailable';
+let holderReady = holderPath === undefined;
 try {
-  db = new DatabaseSync(path, { readOnly: true, timeout: 100 });
-  db.exec('PRAGMA query_only = ON');
-  const rows = db.prepare('PRAGMA quick_check(1)').all();
-  token = rows.length === 1 && Object.values(rows[0])[0] === 'ok' ? 'ok' : 'failed';
+  if (!holderReady) {
+    const temporary = holderPath + '.' + process.pid + '.tmp';
+    let file;
+    let directory;
+    try {
+      file = fs.openSync(temporary, 'wx', 0o600);
+      fs.writeFileSync(file, JSON.stringify({ epoch: holderEpoch, pid: process.pid }) + '\n');
+      fs.fsyncSync(file);
+      fs.closeSync(file);
+      file = undefined;
+      fs.renameSync(temporary, holderPath);
+      directory = fs.openSync(pathModule.dirname(holderPath), 'r');
+      fs.fsyncSync(directory);
+      holderReady = true;
+    } finally {
+      try { if (file !== undefined) fs.closeSync(file); } catch {}
+      try { if (directory !== undefined) fs.closeSync(directory); } catch {}
+      try { fs.unlinkSync(temporary); } catch {}
+    }
+  }
+  if (holderReady) {
+    db = new DatabaseSync(path, { readOnly: true, timeout: 100 });
+    db.exec('PRAGMA query_only = ON');
+    const rows = db.prepare('PRAGMA quick_check(1)').all();
+    token = rows.length === 1 && Object.values(rows[0])[0] === 'ok' ? 'ok' : 'failed';
+  }
 } catch {
   token = 'unavailable';
 } finally {
@@ -70,6 +97,7 @@ export function superviseStoreResetDiagnosticChild(
   supervisor: StoreResetDiagnosticSupervisorPort,
   executable: string,
   stagedDbPath: string,
+  holder?: Readonly<{ path: string; epoch: string }>,
 ): Promise<{
   readonly integrity: StoreResetDiagnosticStatus['integrity'];
   readonly termination: StoreResetDiagnosticStatus['termination'];
@@ -82,6 +110,7 @@ export function superviseStoreResetDiagnosticChild(
         '--eval',
         SQLITE_DIAGNOSTIC_PROGRAM,
         stagedDbPath,
+        ...(holder === undefined ? [] : [holder.path, holder.epoch]),
       ]);
     } catch {
       resolve({ integrity: 'unavailable', termination: 'not_started' });

@@ -355,11 +355,15 @@ describe('coordinator discovery', () => {
     // it — simulated here by writing it straight to disk, past `writeDiscoveryRecord`'s own field set.
     const infoPath = runtime.paths.coral.coordinator.infoFile;
     const written = JSON.parse(readFileSync(infoPath, 'utf-8')) as Record<string, unknown>;
-    writeFileSync(infoPath, JSON.stringify({ ...written, futureField: 'added-by-a-newer-coordinator' }), 'utf-8');
+    writeFileSync(
+      infoPath,
+      JSON.stringify({ ...written, storeEpoch: '7', futureField: 'added-by-a-newer-coordinator' }),
+      'utf-8',
+    );
 
     expect(readDiscoveryRecordDisposition(runtime)).toMatchObject({
       kind: 'record',
-      record: { namespace: 'ns-d', token: 'token-d' },
+      record: { namespace: 'ns-d', token: 'token-d', storeEpoch: '7' },
     });
   });
 

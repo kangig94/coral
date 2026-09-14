@@ -25,6 +25,7 @@ export interface CoordinatorDiscoveryRecord {
   version?: string;
   instanceId?: string;
   incarnation?: ProcessIncarnation;
+  storeEpoch?: string;
 }
 
 export interface BackendInfo extends CoordinatorDiscoveryRecord {
@@ -72,6 +73,10 @@ const coordinatorDiscoveryRecordSchema = z
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
     incarnation: durableProcessIncarnationSchema.optional(),
+    storeEpoch: z
+      .string()
+      .regex(/^(0|[1-9]\d*)$/u)
+      .optional(),
   })
   // A build older than a future field must still read this record — `.strict()` would make that build's
   // `probeCoordinator` reject it outright the day a newer writer adds one, when every field it already
