@@ -497,13 +497,14 @@ export async function acquireGenerationMaintenanceLease(
     }
 
     let owned = true;
+    const assertOwned = (): void => {
+      if (!owned) throw new Error('Generation maintenance lease is no longer owned.');
+      releaseMaintenance.assertOwned();
+    };
     return {
-      assertOwned() {
-        if (!owned) throw new Error('Generation maintenance lease is no longer owned.');
-        releaseMaintenance.assertOwned();
-      },
+      assertOwned,
       maintain() {
-        if (!owned) throw new Error('Generation maintenance lease is no longer owned.');
+        if (!owned) assertOwned();
         releaseMaintenance.maintain();
       },
       release() {
