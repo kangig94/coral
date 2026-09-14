@@ -161,9 +161,9 @@ function stubStoreOpen(
 ): { readonly classifyStore: ReturnType<typeof vi.spyOn>; readonly openStore: ReturnType<typeof vi.spyOn> } {
   return {
     classifyStore: vi.spyOn(dbModule, 'classifyStoreFile').mockReturnValue(classification),
-    openStore: vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation(({ path }) => {
+    openStore: vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation(({ path, owner }) => {
       if (!existsSync(path)) writeFileSync(path, '');
-      return { kind: 'opened', db: database };
+      return { kind: 'opened', db: owner?.openDatabase(() => database) ?? database };
     }),
   };
 }
@@ -601,6 +601,7 @@ describe('active-store-selection crash cuts', () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', new TextEncoder().encode('{malformed'));
     const db = fakeDatabase();
+    const physicalClose = db.close;
     stubStoreOpen(undefined, db);
     stubAudit().mockImplementation(() => {
       throw new Error('crash:audit');
@@ -613,7 +614,7 @@ describe('active-store-selection crash cuts', () => {
         dependencies: successfulDependencies(),
       }),
     ).rejects.toThrow('crash:audit');
-    expect(db.close).toHaveBeenCalledOnce();
+    expect(physicalClose).toHaveBeenCalledOnce();
     expect(readActiveStoreTransition(runtime).kind).toBe('valid');
     const retainedRoot = join(
       runtime.paths.coral.store.dbDir,
