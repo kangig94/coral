@@ -2230,6 +2230,22 @@ function cloneParkedStoreForClaim(
   const directory = join(mintedRoot, cloneId);
   let decision: ReturnType<typeof openWritableStoreDatabase> | null = null;
   let cloned: MintedBackendStore;
+  const abandonClone = (): MintedBackendStore => {
+    if (decision?.kind === 'opened') {
+      try {
+        decision.db.close();
+      } catch {
+        // The fixed minted store remains the safe claim candidate.
+      }
+    }
+    try {
+      runtime.storage.rmSync(directory, { recursive: true, force: true });
+      requireDirectorySync(runtime.storage, mintedRoot);
+    } catch {
+      // The fixed minted store remains the safe claim candidate.
+    }
+    return minted;
+  };
   try {
     createPrivateOperationDirectory(runtime.storage, mintedRoot, directory, runtime.env.platform());
     let coherent = true;
@@ -2244,7 +2260,7 @@ function cloneParkedStoreForClaim(
       if (copied.coherence !== 'coherent') coherent = false;
     }
     requireDirectorySync(runtime.storage, directory);
-    if (!coherent) throw new Error('The aliased store changed while it was copied to a private inode.');
+    if (!coherent) return abandonClone();
     const path = join(directory, 'store.db');
     decision = openWritableStoreDatabase({
       path,
@@ -2253,18 +2269,11 @@ function cloneParkedStoreForClaim(
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
     });
-    if (decision.kind !== 'opened') throw new Error('The private store copy was incompatible.');
+    if (decision.kind !== 'opened') return abandonClone();
     const stat = stablePathStat(runtime.storage, path);
     cloned = { directory, path, identity: { dev: stat.dev, ino: stat.ino }, db: decision.db };
   } catch {
-    if (decision?.kind === 'opened') decision.db.close();
-    try {
-      runtime.storage.rmSync(directory, { recursive: true, force: true });
-      requireDirectorySync(runtime.storage, mintedRoot);
-    } catch {
-      // The fixed minted store remains the safe claim candidate.
-    }
-    return minted;
+    return abandonClone();
   }
   try {
     minted.db.close();

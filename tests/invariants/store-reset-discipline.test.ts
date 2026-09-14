@@ -401,6 +401,7 @@ describe('store reset discipline invariants', () => {
       .filter((call) => call.callee === 'openWritableStoreDatabase');
     expect(openCalls.map((call) => [call.relativePath, call.enclosingFunctions[0]])).toEqual([
       [BACKEND_STORE_RESET_PATH, 'mintBackendStoreForClaim'],
+      [BACKEND_STORE_RESET_PATH, 'cloneParkedStoreForClaim'],
       [BACKEND_STORE_RESET_PATH, 'openCompatibleParkedStore'],
     ]);
     expect(openCalls.every((call) => !/files\.dbFile|activeEvidencePath/u.test(call.text))).toBe(true);
