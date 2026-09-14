@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Fourteen design revisions, twenty-one unbiased tier-1 review rounds, and
-twenty-three distinct instances of the same defect so far. Revision 14 replaces the premise all thirteen
-earlier revisions inherited, and deletes more than it adds. This document is the specification; read the revisions in order,
-because each one records what the previous got wrong.
+**Status**: in flight. Fifteen design revisions, twenty-two unbiased tier-1 review rounds, and
+twenty-six distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited and deleted more than it added; Revision 15 is the correction round its
+reviewers earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -1661,6 +1661,100 @@ quarantine root, under a 1 GiB bound, and a failure becomes `store_reset_quarant
 boot path (`active-store-selection-coordination.ts:323`). That is this document's subject, still standing,
 in a module it never examined. It is rehomed to the coordination root rather than deleted, and it is not
 optional.
+
+## Revision 15 — a name is not an epoch, and no proof is not a licence to delete
+
+Round 22's reviewers confirmed the core of Revision 14: the atomic publish is sound, `ENOTEMPTY` reconciles
+two publishers, and nothing renames a database another process holds open. They then found four blocking
+failures, all in the two places where the new design still trusts something it has not established.
+
+### Discovery trusts a filename
+
+`resolveCurrentStoreEpoch` selects by basename alone — no entry kind, no containment, no `epoch.json`, no
+database (`src/store/epoch.ts:59`, `:80`) — and the selected name is composed straight into a writable
+SQLite path (`:66`, `:328`). Three reproductions followed:
+
+- A regular file named `epoch-1` beside a valid flat store: startup selects it, gets `ENOTDIR`, publishes
+  epoch 2, and **deletes the real epoch-0 store** because `current >= 2`.
+- `epoch-1` as a symlink to `.`: SQLite follows the parent symlink and writes through `epoch-1/store.db`
+  into the flat epoch-0 database. A reviewer reproduced exactly that.
+- An empty `epoch-2/`: startup mints a fresh database inside the uncommitted directory and then sweeps
+  the valid epoch 0.
+
+> **A published epoch is proven, never named.**
+
+A directory entry is an epoch only if `lstat` says it is a directory and not a symlink, it is contained in
+`<dbDir>`, it holds `store.db`, and it holds an `epoch.json` that reads as valid under the tolerant
+schema. Anything else named `epoch-<N>` is not an epoch: it does not authorize an open, it does not count
+toward `current`, and it is garbage — it can only be a crashed mint or junk. Epoch 0 is proven by the flat
+`store.db` existing as a regular file.
+
+This also disposes of the numeric hazard both reviewers found. `epoch-9007199254740991` is accepted today,
+its successor is not representable, so the loop publishes a directory discovery then ignores and contends
+against forever — **a hang rather than a refusal, which is worse than the defect this branch removes.** A
+number without a representable successor is not an epoch number.
+
+### Deletion has no evidence behind it
+
+The sweep predicate proves `K ≤ current − 2`, which is a statement about numbers and says nothing about
+whether a process is live on `K`. Three reproductions:
+
+- Every `.mint-*` is removed recursively (`:217`), including another publisher's mint with its database
+  open. The displaced publisher then fails on a path someone else deleted — not a filesystem failure.
+- At `current >= 2` the four flat names are unlinked (`:227`) while a rolled-back `v0.10.9` coordinator
+  may be live on them. **That is the accepted limit returning in a worse form**: Revision 14 claimed
+  nothing renames an open database, and instead this deletes one.
+- `release <K>` reads `current` once, then deletes with no re-read and no ownership assertion
+  (`operator-store-reset.ts:155`-`:164`). A stalled `release 2` resumes after epoch 2 has been published
+  and removes the **current** database, printing durable success.
+
+> **Deletion is a finalization, so it requires decisive evidence, and "no process is live on this" is the
+> evidence it requires.** §11 has said this all along; the sweep read it as a retention rule instead.
+
+Which makes the dispositions concrete. The sweep consults the coordinator discovery record and **skips
+entirely** when a live coordinator is not us — a skip is free, because a sweep failure was never a boot
+dependency. A `.mint-*` is removed only by the process that created it, or when it is provably abandoned;
+an orphan mint is disk cost, and disk cost is not a reason to delete something a live process may hold.
+`release` re-reads `current` and asserts its lease immediately before deleting, and `release 0`
+additionally requires that no coordinator is live.
+
+### Two more places where a check was missing and one where it was too strong
+
+**The displaced publisher returns a superseded epoch.** A resolves `e` and stalls; B publishes `e+1`; A
+resumes, finds `e` compatible, opens it and returns it, and every write A makes is invisible to current
+readers (`epoch.ts:327`). The settle loop must re-verify that the epoch it opened is still the highest
+**proven** epoch before returning, and iterate if it is not. This is the one check the design genuinely
+needs, and it is cheap and safe precisely because failing it is not a refusal — it is another pass.
+
+**The loop needs a liveness property.** Each iteration must return, or observe a strictly greater proven
+epoch. Observing neither is an anomaly to report, not to spin on.
+
+**The adoption lock still refuses to boot.** Acquisition times out after five seconds while a dead owner
+is not stale for ten minutes, and the timeout becomes `legacy_source_not_quiescent` thrown out of startup
+(`generation-mutation-coordination.ts:102`, `:173`, `:205`, `active-store-selection-coordination.ts:348`).
+A process that died without unwinding therefore blocks every boot for ten minutes — this document's
+subject, in the mechanism Revision 14 said would become harmless. **The lock is an optimization: failing to
+acquire it means proceed without it.** The settle loop is correct with no lock at all; that is the whole
+point of the redesign.
+
+### Honesty at the boundaries
+
+`release` returns `released` before syncing the parent, so a power loss can resurrect what the CLI called
+permanent (`epoch.ts:174`, `:192`). An adopter that finds a visible epoch after the publisher died between
+`rename` and the directory sync does not sync it either (`:275`, `:280`), so a later power loss can discard
+an epoch it has already written to. Missing, malformed and unreadable `epoch.json` all collapse to `null`
+(`:375`) and render as `legacy-epoch-0` even on epoch 2 — three dispositions wearing one value, which §11
+names exactly. `listStoreEpochs` reads the directory twice and can return no row marked current (`:408`).
+And `retainActiveStoreTransition` ignores `syncDirectory`'s boolean and audits success anyway
+(`active-store-selection-coordination.ts:110`, `:143`).
+
+### One thing that is not a code defect
+
+`clients/hooks/pre-compact.mjs` still opens the flat `<dbDir>/store.db` (`:24`, `:56`, `:70`, `:91`), so
+after the first reset it reads the preserved store and after epoch 0 is swept it reports nothing. That is
+an ordinary miss. What is not ordinary is that `tests/invariants/client-path-parity.test.ts:104` was
+**edited to affirm the obsolete flat path** rather than failing. An invariant that is changed to match the
+code it was written to constrain has been deleted, whatever the diff says.
 
 ## Invariants to add
 
