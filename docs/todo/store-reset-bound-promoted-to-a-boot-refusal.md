@@ -1,7 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Thirteen design revisions, twenty unbiased tier-1 review rounds, and twenty-one
-distinct instances of the same defect so far. This document is the specification; read the revisions in order,
+**Status**: in flight. Fourteen design revisions, twenty-one unbiased tier-1 review rounds, and
+twenty-three distinct instances of the same defect so far. Revision 14 replaces the premise all thirteen
+earlier revisions inherited, and deletes more than it adds. This document is the specification; read the revisions in order,
 because each one records what the previous got wrong.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
@@ -1539,6 +1540,127 @@ can act on.
 ownership. Settlement happens to pass a full runtime storage, so nothing fails today and the exported
 contract is still false. Widen the dependency to what the actuator needs, or do not put an actuator on a
 lease that cannot back one.
+
+## Revision 14 — a live store's name is write-once
+
+Seven guards failed in seven rounds, and round 21's failure was not an implementation gap: revocation is
+lazy because the lease is lost when the *other* process takes it and we learn at our *next* check.
+Tightening a check cannot close a window whose existence is the check's premise. So the design question
+went to a pioneer, and it found the premise that all thirteen revisions inherited without examining.
+
+> **The store lives at `<dbDir>/store.db`.**
+
+Every "shared name" in this document is one of the four flat names `resolveBackendStoreFileSet` hardcodes
+(`backend-store-reset.ts:311`-`:334`). Every reset must **vacate** that name and **reclaim** it. The
+vacate is the one act that is harmful when stale — it removes the winning process's live store from under
+it — and every lease, hold, revocation and membrane in Revisions 10 through 13 exists to serialize that
+single act.
+
+My own candidate was half right for the wrong reason. Conserving *inodes* does not make a stale act
+harmless: `rename(store.db → parked)` conserves the inode and is the most harmful stale act in the tree.
+What must be conserved is the **live name**.
+
+> **A live store's name is write-once. A reset is the next epoch, published beside the current one;
+> nothing ever vacates a name a process may be live on.**
+
+`<dbDir>/epoch-<N>/store.db` and siblings, plus a write-once `epoch.json`. The flat `<dbDir>/store.db`
+every shipped build uses **is epoch 0, spelled the old way, and is never renamed**. The current epoch is
+the highest `epoch-<N>` present, else 0.
+
+```
+settle(dbDir):
+  loop:
+    e = currentEpoch(dbDir)
+    d = openWritableStoreDatabase(epochPath(e))
+    if d.kind === 'opened': sweep(dbDir, e); return d.db
+    m = `${dbDir}/.mint-${uuid}`
+    openWritableStoreDatabase(`${m}/store.db`).db.close()   # a throw here IS a filesystem failure
+    writeDurable(`${m}/epoch.json`, { supersedes: e, classification, build, publishedAt })
+    try rename(m, `${dbDir}/epoch-${e+1}`)                  # atomic; the kernel decides who won
+    catch ENOTEMPTY | EEXIST: rmrf(m); continue             # someone published e+1 — adopt it
+    catch ENOENT:             continue                      # our mint was swept — re-mint
+```
+
+The loop has no counter and no refusal variant: each pass publishes, or observes a strictly higher epoch,
+which is someone else's progress. `rename(dir → non-empty dir)` fails `ENOTEMPTY` atomically with both
+sides intact — measured on this machine, ext4, Node 26.3.1.
+
+### What it deletes
+
+- **`settlement-authority.ts` entirely**, with `WriterExclusion`, the reset lock and
+  `store_reset_lock_contended`, the actuator's role in settlement, and `hold()`'s forty call sites. The
+  adoption lock stays exactly where it is (`active-store-selection-coordination.ts:714`) and becomes what
+  this document kept trying to make the lease: **a performance mechanism whose loss corrupts nothing.**
+- **`reset-retention.ts` entirely.** "Keep exactly one, newest wins" is the ordering of integers:
+  `epoch-K` is garbage iff `K ≤ current − 2`. The sweep never names `current` or `current − 1`, so it
+  cannot reach zero — the outcome two reviewers reached twice through the 200-line guarded-rename dance.
+  K adversarial replacements land at `epoch-(e+1…e+K)`; the next boot publishes `e+K+1` and sweeps the
+  rest. One copy, newest by number.
+- **The copy, the two hashes and the manifest.** The preserved copy *is* the superseded epoch, in place.
+  On the 1.17 GB store that opens this document, `publishIncident` reads and hashes it, writes it, then
+  re-reads and re-hashes to verify (`:1558`, `:654`, `:710`) — the record's own 3.99 s/GB puts that near
+  twelve seconds against a fifteen-second incumbent deadline. **That is the original bug wearing latency
+  instead of a refusal**, and Revision 10 deleted its twin while leaving this one standing.
+  `storedProductVersion` is read by classifying `epoch-<e−1>/store.db` read-only, which is what the
+  preserved copy being on disk at a readable path buys.
+- **Every resume mechanism**: `.staging`, `.parked/.in-flight`, `.minted/current`, `pending`, and the six
+  `store_reset_interrupted_*` refusals. An epoch is complete by construction — one directory rename — and
+  a mint is garbage by construction. There is nothing to resume.
+- **The accepted limit.** "Renaming a database another process holds open is undefined behaviour" stops
+  being accepted because nothing renames an open database. A rolled-back build finds its own `store.db`
+  untouched, classifies it compatible, and boots on its own data.
+
+### The fixed coordinates were the authority's only subject
+
+Sorting `hold()`'s call sites by what they touch gives three kinds: this epoch's own uuid coordinate,
+where a stale write harms nobody; a **fixed** coordinate reused by every epoch — the four flat names,
+`.parked/.in-flight`, `.minted/current`, the ledger — where two epochs collide; and destruction of
+evidence, where the hold proves lock ownership, which is not the authority the act needs.
+
+Both round-20 and round-21 carriers land on the second kind. `openWritableStoreDatabase` opens the fixed
+`.minted/current/store.db` (`db.ts:357`), so a stale epoch's DDL lands in whichever epoch's mint holds
+that name; the raw-descriptor write goes into `.parked/.in-flight/<name>.restage`
+(`backend-store-reset.ts:1073`). Neither carrier can reach a uuid coordinate belonging to another epoch.
+Remove the fixed coordinates and the authority has no subject: mints are `.mint-<uuid>`, epochs are
+published by one rename, and `openWritableStoreDatabase` loses both `held` and `owner`.
+
+Revision 13's sentence was one step short. Authority gates the resource — and the resource that needed
+gating was the **name**. A name nobody reuses needs no gate.
+
+The invariant shrinks to two static facts with nothing beneath them to miss: the only `rename` whose
+destination matches `epoch-<N>` has a `.mint-` source, and the only deletion of an `epoch-` path is
+inside `sweep`, whose predicate is a pure function of two integers.
+
+### §11, finally placed
+
+There are exactly three sites. `openWritableStoreDatabase(epochPath(e))` answers
+`opened | incompatible | threw`, and `threw` — locked, not-a-database, `EIO` — selects the same mechanism
+as `incompatible`, because minting finalizes nothing. That is what lets classification be imperfect, and
+it retires `classifyBackendStoreFailure`'s `store_open_unclassified` refusal
+(`backend-store-reset.ts:3152`). A genuine filesystem failure is then the **mint's own** open throwing on
+a fresh private path — the one refusal the governing rule allows, and it cannot loop. The sweep's
+authority to delete `epoch-K` is an observed `epoch-<K+2 or higher>`; a failed `readdir` is "max
+unknown", which skips the sweep and boots. And `release <K>` refuses when `K === current` — a refusal
+correctly placed on an operator path.
+
+### Stated rather than hidden
+
+"Newest" is by epoch number, not mtime. The one case where they disagree is upgrade → rollback →
+upgrade: the old build wrote epoch 0 after epoch 1 was published, so epoch 0 is newer in time and older
+by number, and is swept when epoch 2 lands. Under the owner's rule that is acceptable.
+
+Two uncertainties remain. `rename(dir → non-empty dir)` is documented `ENOTEMPTY` on APFS but has been
+measured only on ext4 here; Windows is unsupported. And a new CLI with an old live coordinator resolves
+`epoch-max` while the coordinator serves epoch 0 — divergence, not corruption, until that coordinator
+restarts, and only after upgrade → rollback → upgrade.
+
+### One thing this uncovered that is not part of it
+
+`retainTransitionFileInStoreResetQuarantine` writes active-store-selection audit copies into the
+quarantine root, under a 1 GiB bound, and a failure becomes `store_reset_quarantine_failed` thrown on the
+boot path (`active-store-selection-coordination.ts:323`). That is this document's subject, still standing,
+in a module it never examined. It is rehomed to the coordination root rather than deleted, and it is not
+optional.
 
 ## Invariants to add
 
