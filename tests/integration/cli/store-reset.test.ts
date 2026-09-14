@@ -1257,6 +1257,57 @@ describe('operator store-reset discard', () => {
     },
   );
 
+  it.each(['rejected', 'thrown'] as const)(
+    'reports a partial release when the retention-ledger update is %s',
+    async (writeFailure) => {
+      const baseDir = root();
+      const runtime = createRealRuntime('prod', { baseDir });
+      const dbPath = runtime.paths.coral.store.dbFile;
+      createMismatchStore(dbPath);
+      const discarded = await discardStoreReset({
+        target: 'gen2',
+        runtime,
+        build: CURRENT_BUILD,
+        storeFormat: STORE_FORMAT,
+        acquireSocketGuard: noSocketGuard,
+        currentBundleDir: baseDir,
+        validateSelectedTarget: () => {
+          throw new Error('no selected target is expected in this case');
+        },
+      });
+      if (discarded.kind !== 'discarded' || discarded.incident === null) {
+        throw new Error('Expected a committed store-reset incident.');
+      }
+      const incidentId = discarded.incident.incidentId;
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const incidentPath = join(quarantineRoot, incidentId);
+      const ledgerPath = join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
+      const writeAtomicDurableSync = runtime.storage.writeAtomicDurableSync;
+      vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, data, options) => {
+        if (path !== ledgerPath) return writeAtomicDurableSync(path, data, options);
+        if (writeFailure === 'thrown') throw Object.assign(new Error('ledger write failed'), { code: 'EIO' });
+        return false;
+      });
+
+      const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId });
+
+      expect(result).toMatchObject({
+        kind: 'partially-released',
+        parkingState: 'absent',
+        incidentState: 'absent',
+        parkingDeletionDurability: 'not-required',
+        incidentDeletionDurability: 'proven',
+        cause: 'Store-reset retention ledger could not be updated durably.',
+      });
+      expect(formatStoreResetRelease(result)).toContain(
+        `Partially released store-reset incident '${incidentId}'`,
+      );
+      expect(formatStoreResetRelease(result)).toContain('retry this release command');
+      expect(existsSync(incidentPath)).toBe(false);
+      expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.incidentId).toBe(incidentId);
+    },
+  );
+
   it.each(['invalid', 'oversized', 'symlinked', 'unreadable'] as const)(
     'releases terminal UUID parking whose sidecar is %s with unknown byte accounting',
     async (sidecarState) => {

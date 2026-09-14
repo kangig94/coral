@@ -1050,14 +1050,13 @@ export function releaseStoreResetIncident(
   const clearsHolder = holder;
   const clearsPending = ledger.pending?.outcome.incident.incidentId === incidentId;
   if (clearsHolder || clearsPending) {
-    try {
-      writeLedger(storage, quarantineRoot, {
-        ...ledger,
-        ...(clearsHolder ? { preserved: null } : {}),
-        ...(clearsPending ? { pending: null } : {}),
-      });
-    } catch (error: unknown) {
-      return incomplete(error);
+    const written = writeLedger(storage, quarantineRoot, {
+      ...ledger,
+      ...(clearsHolder ? { preserved: null } : {}),
+      ...(clearsPending ? { pending: null } : {}),
+    });
+    if (!written) {
+      return incomplete(new Error('Store-reset retention ledger could not be updated durably.'));
     }
   }
   if (parkingPresence === 'present' && !parkingRecordVerified) {
