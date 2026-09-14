@@ -129,6 +129,22 @@ function retainedIncidentNames(quarantineRoot: string): string[] {
   return readdirSync(quarantineRoot).filter(isCanonicalStoreResetIncidentId);
 }
 
+function retainedStoreCopyCount(root: string): number {
+  if (!existsSync(root)) return 0;
+  let count = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    if (directory === undefined) continue;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(path);
+      if (entry.isFile() && entry.name === 'store.db') count += 1;
+    }
+  }
+  return count;
+}
+
 const PRE_EXISTING_SURVIVOR_ID = '923e4567-e89b-42d3-a456-426614174000';
 
 function seedPreExistingTerminalSurvivor(runtime: Runtime, dbPath: string): string {
@@ -1399,6 +1415,139 @@ describe('openOrResetBackendStoreDb', () => {
     expect(existsSync(priorPath)).toBe(true);
     expect(existsSync(survivorPath)).toBe(false);
   });
+
+  it.each(
+    [0, 1, 2].flatMap((removalIndex) =>
+      (['before', 'after'] as const).map((timing) => ({ removalIndex, timing })),
+    ),
+  )(
+    'never reaches zero when the survivor disappears $timing superseded removal $removalIndex',
+    ({ removalIndex, timing }) => {
+      const runtime = createRuntime();
+      const quarantineRoot = makeTempRoot('coral-store-reset-revision13-removal-window-');
+      const survivorId = '623e4567-e89b-42d3-a456-426614174000';
+      const survivorPath = join(quarantineRoot, survivorId);
+      mkdirSync(survivorPath);
+      writeFileSync(join(survivorPath, 'store.db'), 'survivor evidence');
+      for (const id of [
+        '123e4567-e89b-42d3-a456-426614174001',
+        '123e4567-e89b-42d3-a456-426614174002',
+        '123e4567-e89b-42d3-a456-426614174003',
+      ]) {
+        const path = join(quarantineRoot, id);
+        mkdirSync(path);
+        writeFileSync(join(path, 'store.db'), `superseded ${id}`);
+      }
+      const remove = runtime.storage.rmSync;
+      let observedRemoval = 0;
+      vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
+        const candidate = String(path);
+        const isSuperseded =
+          dirname(candidate) === quarantineRoot &&
+          isCanonicalStoreResetIncidentId(basename(candidate)) &&
+          candidate !== survivorPath;
+        if (isSuperseded && observedRemoval === removalIndex && timing === 'before') {
+          rmSync(survivorPath, { recursive: true, force: true });
+        }
+        remove(path, options);
+        if (isSuperseded && observedRemoval === removalIndex && timing === 'after') {
+          rmSync(survivorPath, { recursive: true, force: true });
+        }
+        if (isSuperseded) observedRemoval += 1;
+      });
+
+      const rotation = retainOnlyStoreResetPreservedCopy(
+        runtime.storage,
+        quarantineRoot,
+        { kind: 'incident', id: survivorId },
+        fixtureHeld(runtime),
+      );
+
+      expect(observedRemoval).toBeGreaterThan(removalIndex);
+      expect(rotation.kind).toBe('incomplete');
+      expect(retainedStoreCopyCount(quarantineRoot)).toBeGreaterThanOrEqual(1);
+    },
+  );
+
+  it('never reaches zero when the survivor disappears during the final parent sync', () => {
+    const runtime = createRuntime();
+    const quarantineRoot = makeTempRoot('coral-store-reset-revision13-final-sync-');
+    const priorId = '723e4567-e89b-42d3-a456-426614174000';
+    const survivorId = '823e4567-e89b-42d3-a456-426614174000';
+    const priorPath = join(quarantineRoot, priorId);
+    const survivorPath = join(quarantineRoot, survivorId);
+    mkdirSync(priorPath);
+    mkdirSync(survivorPath);
+    writeFileSync(join(priorPath, 'store.db'), 'prior evidence');
+    writeFileSync(join(survivorPath, 'store.db'), 'survivor evidence');
+    const syncDirectory = runtime.storage.syncDirectoryDurableSync;
+    let parentSyncs = 0;
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+      if (path === quarantineRoot) {
+        parentSyncs += 1;
+        if (parentSyncs === 2) rmSync(survivorPath, { recursive: true, force: true });
+      }
+      return syncDirectory(path);
+    });
+
+    const rotation = retainOnlyStoreResetPreservedCopy(
+      runtime.storage,
+      quarantineRoot,
+      { kind: 'incident', id: survivorId },
+      fixtureHeld(runtime),
+    );
+
+    expect(parentSyncs).toBeGreaterThanOrEqual(2);
+    expect(rotation.kind).toBe('incomplete');
+    expect(retainedStoreCopyCount(quarantineRoot)).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([1, 2] as const)(
+    'reconciles an absent recorded survivor from the %i coordinate that actually remains',
+    (remainingCoordinates) => {
+      const runtime = createRuntime();
+      const dbPath = join(makeTempRoot('coral-store-reset-revision13-reconcile-'), 'store.db');
+      createMismatchStore(dbPath);
+      const first = publishReset(runtime, dbPath);
+      if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      if (remainingCoordinates === 2) {
+        cpSync(
+          join(quarantineRoot, first.incident.incidentId),
+          join(quarantineRoot, '923e4567-e89b-42d3-a456-426614174001'),
+          { recursive: true },
+        );
+      }
+      const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+      if (ledger === null) throw new Error('Expected a retention ledger.');
+      writeFileSync(
+        join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME),
+        JSON.stringify({
+          ...ledger,
+          rotation: {
+            kind: 'incomplete',
+            survivor: { kind: 'incident', id: 'a23e4567-e89b-42d3-a456-426614174000' },
+            cause: 'recorded survivor disappeared',
+          },
+        }),
+      );
+
+      resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime));
+
+      const reconciled = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+      if (remainingCoordinates === 1) {
+        expect(reconciled).toMatchObject({
+          rotation: null,
+          preserved: { incidentId: first.incident.incidentId },
+        });
+      } else {
+        expect(reconciled?.rotation?.kind).toBe('incomplete');
+        expect(
+          retainedIncidentNames(quarantineRoot).includes(reconciled?.rotation?.survivor.id ?? ''),
+        ).toBe(true);
+      }
+    },
+  );
 
   it.each([
     ['without interruption', false],
@@ -2828,6 +2977,157 @@ describe('openOrResetBackendStoreDb', () => {
       expect(operation).toThrow(/ownership lost/u);
       expect(readFileSync(fixedPath, 'utf8')).toBe('process-b-evidence');
       expect(existsSync(outputPath)).toBe(false);
+    },
+  );
+
+  it('revokes every actuator view after one failed hold, including reflected and inherited access', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision13-membrane-');
+    const adoption = adoptionLease(runtime);
+    let writerLost = false;
+    const held = createSettlementAuthority(
+      adoption,
+      {
+        kind: 'proven',
+        lease: {
+          maintain: () => {
+            if (writerLost) throw new Error('writer exclusion lost');
+          },
+          assertOwned: () => undefined,
+          release: () => undefined,
+        },
+      },
+      null,
+    );
+    const ordinaryPath = join(root, 'ordinary');
+    const descriptorPath = join(root, 'descriptor');
+    const inheritedPath = join(root, 'inherited');
+    const capturedPath = join(root, 'captured');
+    for (const path of [ordinaryPath, descriptorPath, inheritedPath, capturedPath]) writeFileSync(path, path);
+
+    const descriptor = Object.getOwnPropertyDescriptor(held.actuator, 'unlink');
+    if (typeof descriptor?.value !== 'function') throw new Error('Expected an unlink descriptor.');
+    const reflected = descriptor.value as (path: string) => void;
+    const inherited = held.actuator.valueOf() as typeof held.actuator;
+    const captured = held.actuator.unlink;
+    writerLost = true;
+
+    expect(() => held.hold()).toThrow(/writer exclusion lost/u);
+    expect(() => held.actuator.unlink(ordinaryPath)).toThrow(/writer exclusion lost/u);
+    expect(() => reflected(descriptorPath)).toThrow(/writer exclusion lost/u);
+    expect(() => inherited.unlink(inheritedPath)).toThrow(/writer exclusion lost/u);
+    expect(() => captured(capturedPath)).toThrow(/writer exclusion lost/u);
+    expect([ordinaryPath, descriptorPath, inheritedPath, capturedPath].every(existsSync)).toBe(true);
+
+    for (const operation of Object.values(held.actuator)) {
+      if (typeof operation === 'function') expect(() => Reflect.apply(operation, held.actuator, [])).toThrow();
+    }
+    expect(() => adoption()).not.toThrow();
+  });
+
+  it('closes every authority-owned database handle after revocation', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision13-handle-revocation-');
+    const dbPath = join(root, 'store.db');
+    let writerLost = false;
+    const held = createSettlementAuthority(
+      adoptionLease(runtime),
+      {
+        kind: 'proven',
+        lease: {
+          maintain: () => {
+            if (writerLost) throw new Error('writer exclusion lost');
+          },
+          assertOwned: () => undefined,
+          release: () => undefined,
+        },
+      },
+      null,
+    );
+    const decision = dbModule.openWritableStoreDatabase({
+      path: dbPath,
+      storage: runtime.storage,
+      storeFormat: STORE_FORMAT,
+      held: held.actuator,
+    });
+    if (decision.kind !== 'opened') throw new Error('Expected an opened database.');
+
+    writerLost = true;
+    expect(() => held.hold()).toThrow(/writer exclusion lost/u);
+    expect(decision.db.isOpen).toBe(false);
+    expect(() => decision.db.exec('SELECT 1')).toThrow();
+    if (decision.db.isOpen) decision.db.close();
+  });
+
+  it('does not commit writable SQLite work after the last actuator proof loses authority', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision13-post-loss-ddl-');
+    const dbPath = join(root, 'store.db');
+    let writerLost = false;
+    const held = createSettlementAuthority(
+      adoptionLease(runtime),
+      {
+        kind: 'proven',
+        lease: {
+          maintain: () => {
+            if (writerLost) throw new Error('writer exclusion lost');
+          },
+          assertOwned: () => undefined,
+          release: () => undefined,
+        },
+      },
+      null,
+    );
+    const mkdir = runtime.storage.mkdirSync;
+    vi.spyOn(runtime.storage, 'mkdirSync').mockImplementation((path, options) => {
+      mkdir(path, options);
+      if (path === root) writerLost = true;
+    });
+
+    expect(() =>
+      dbModule.openWritableStoreDatabase({
+        path: dbPath,
+        storage: runtime.storage,
+        storeFormat: STORE_FORMAT,
+        held: held.actuator,
+      }),
+    ).toThrow(/writer exclusion lost/u);
+
+    if (existsSync(dbPath)) {
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const meta = db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() as {
+          count: number;
+        };
+        expect(meta.count).toBe(0);
+      } finally {
+        db.close();
+      }
+    }
+  });
+
+  it.each(['file is not a database', 'database is locked'] as const)(
+    'terminalizes and claims when writable parked-store adoption reports %s',
+    async (message) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision13-adoption-error-');
+      const dbPath = join(root, 'store.db');
+      createMismatchStore(dbPath, STORE_FORMAT.fingerprint);
+      const openWritableStoreDatabase = dbModule.openWritableStoreDatabase;
+      vi.spyOn(dbModule, 'openWritableStoreDatabase').mockImplementation((options) => {
+        if (options.path.includes(join('store-reset-quarantine', '.parked', STORE_RESET_IN_FLIGHT_DIRECTORY))) {
+          throw new Error(message);
+        }
+        return openWritableStoreDatabase(options);
+      });
+
+      const error = await captureAsyncError(async () => {
+        const db = await openReset(runtime, dbPath);
+        db.close();
+      });
+
+      expect(error).toBeNull();
+      expect(tableExists(dbPath, 'events')).toBe(true);
     },
   );
 

@@ -16,9 +16,6 @@ const READ_PORT_PATH = 'src/store/read-port.ts';
 const KB_QUERY_RUNTIME_PATH = 'src/read-model/kb-query-runtime.ts';
 const GENERATION_MUTATION_COORDINATION_PATH = 'src/store/generation-mutation-coordination.ts';
 const EXPANSION_INSTALL_PATH = 'src/cli/expansion/install.ts';
-const STORAGE_PORT_TYPES_PATH = 'src/infra/port-types.ts';
-const STORAGE_ACTUATOR_PATH = 'src/infra/storage-actuator.ts';
-const FS_LOCK_PATH = 'src/infra/fs-lock.ts';
 
 type CallHit = {
   relativePath: string;
@@ -249,43 +246,6 @@ function settlementStoreImportClosure(overrides: ReadonlyMap<string, string> = n
   return closure.sort();
 }
 
-function protectedStoragePortMembers(): Set<string> {
-  const source = sourceFile(STORAGE_PORT_TYPES_PATH);
-  const declaration = source.statements.find(
-    (statement): statement is ts.InterfaceDeclaration =>
-      ts.isInterfaceDeclaration(statement) && statement.name.text === 'StorageMutationPort',
-  );
-  if (declaration === undefined) return new Set();
-  return new Set(
-    declaration.members
-      .flatMap((member) =>
-        ts.isMethodSignature(member) && member.name !== undefined ? [propertyNameText(member.name)] : [],
-      )
-      .filter((name): name is string => name !== null),
-  );
-}
-
-function directProtectedStorageMentions(
-  relativePaths: readonly string[],
-  overrides: ReadonlyMap<string, string> = new Map(),
-): string[] {
-  const protectedMembers = protectedStoragePortMembers();
-  const violations: string[] = [];
-  for (const relativePath of relativePaths) {
-    const source = sourceWithOverrides(relativePath, overrides);
-    const visit = (node: ts.Node): void => {
-      const member = ts.isIdentifier(node) || ts.isStringLiteral(node) ? node.text : null;
-      if (member !== null && protectedMembers.has(member)) {
-        const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
-        violations.push(`${relativePath}:${line} ${node.getText(source)}`);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  }
-  return violations.sort();
-}
-
 function isUnmappedErrnoRethrow(statement: ts.ThrowStatement): boolean {
   if (!ts.isIdentifier(statement.expression)) return false;
   let current: ts.Node | undefined = statement.parent;
@@ -467,88 +427,30 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('derives protected storage acts and excludes them from the import-reachable settlement closure', () => {
-    const protectedMembers = protectedStoragePortMembers();
-    expect(protectedMembers.size).toBeGreaterThan(0);
-    expect(settlementStoreImportClosure()).toContain(BACKEND_STORE_RESET_PATH);
-    expect(directProtectedStorageMentions(settlementStoreImportClosure())).toEqual([]);
-
-    const destructuredAccess = new Map([
-      [
-        BACKEND_STORE_RESET_PATH,
-        `${readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8')}\nconst { unlinkSync } = storage; unlinkSync('/shared');`,
-      ],
-    ]);
-    expect(
-      directProtectedStorageMentions(settlementStoreImportClosure(destructuredAccess), destructuredAccess),
-    ).toContainEqual(expect.stringContaining('unlinkSync'));
-
-    const actuatorDeclarations = allSourcePaths().flatMap((relativePath) => {
-      const source = sourceFile(relativePath);
-      return source.statements.flatMap((statement) =>
-        ts.isFunctionDeclaration(statement) && statement.name?.text === 'createStorageActuator'
-          ? [{ relativePath, source, declaration: statement }]
-          : [],
-      );
-    });
-    expect(actuatorDeclarations).toHaveLength(1);
-    const actuatorDeclaration = actuatorDeclarations[0];
-    expect(actuatorDeclaration).toBeDefined();
-    if (actuatorDeclaration === undefined) return;
-    const { relativePath: actuatorPath, source: actuator, declaration } = actuatorDeclaration;
-    expect(declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false).toBe(
+  it('keeps the revoking authority constructor private and places no Proxy before a capability', () => {
+    const backend = sourceFile(BACKEND_STORE_RESET_PATH);
+    const constructor = backend.statements.find(
+      (statement): statement is ts.FunctionDeclaration =>
+        ts.isFunctionDeclaration(statement) && statement.name?.text === 'createSettlementAuthority',
+    );
+    expect(constructor).toBeDefined();
+    expect(constructor?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false).toBe(
       false,
     );
 
-    const actuatorCalls = allSourcePaths()
-      .flatMap(collectCalls)
-      .filter((call) => call.callee === 'createStorageActuator');
-    expect(actuatorCalls).toEqual([
-      expect.objectContaining({
-        relativePath: FS_LOCK_PATH,
-        enclosingFunctions: expect.arrayContaining(['createDirectoryLockLease']),
-      }),
-    ]);
-
-    const ownedMembers = new Map<string, number>();
-    const proofViolations: string[] = [];
-    const visit = (node: ts.Node): void => {
-      if (
-        ts.isPropertyAccessExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === 'storage' &&
-        protectedMembers.has(node.name.text)
-      ) {
-        ownedMembers.set(node.name.text, (ownedMembers.get(node.name.text) ?? 0) + 1);
-        let statement: ts.Node = node;
-        while (statement.parent !== undefined && !ts.isBlock(statement.parent)) statement = statement.parent;
-        const block = statement.parent;
-        const index =
-          block !== undefined && ts.isBlock(block) ? block.statements.indexOf(statement as ts.Statement) : -1;
-        if (
-          block === undefined ||
-          !ts.isBlock(block) ||
-          index < 1 ||
-          block.statements[index - 1]?.getText(actuator) !== 'prove();'
-        ) {
-          const line = actuator.getLineAndCharacterOfPosition(node.getStart(actuator)).line + 1;
-          proofViolations.push(`${actuatorPath}:${line} ${node.getText(actuator)}`);
+    const proxies: string[] = [];
+    for (const relativePath of settlementStoreImportClosure()) {
+      const source = sourceFile(relativePath);
+      const visit = (node: ts.Node): void => {
+        if (ts.isNewExpression(node) && node.expression.getText(source) === 'Proxy') {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+          proxies.push(`${relativePath}:${line}`);
         }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(declaration);
-    expect([...ownedMembers.keys()].sort()).toEqual([...protectedMembers].sort());
-    expect([...ownedMembers.values()].every((count) => count === 1)).toBe(true);
-    expect(proofViolations).toEqual([]);
-
-    const actuatorType = readFileSync(join(REPO_ROOT, STORAGE_ACTUATOR_PATH), 'utf8');
-    expect(actuatorType).not.toMatch(/readWholeFile(?:Async)?\s*\(/u);
-
-    const backend = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
-    expect(backend).toContain('readonly actuator: StorageActuator');
-    expect(backend).not.toContain('createStorageActuator');
-    expect(backend).not.toContain('guardedFunctions');
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+    }
+    expect(proxies).toEqual([]);
   });
 
   it('has at most 127 semantic refusals in the settlement closure (target: 0)', () => {

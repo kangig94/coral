@@ -233,6 +233,15 @@ describe('directory fs lock', () => {
     expect(removed.at(-1)).toBe('/locks/session-1');
   });
 
+  it('backs every advertised lease actuator operation with its declared dependency shape', () => {
+    const { deps } = createLockDeps(() => 1000);
+    const release = acquireDirectoryLockSync('/locks/actuator-contract', deps, 100);
+
+    expect(() => release.actuator.syncDirectory('/locks')).not.toThrow();
+
+    release();
+  });
+
   it('uses explicit sync deps for stale lock checks and removal', () => {
     let currentTime = 0;
     const { deps, directories, removed } = createLockDeps(() => currentTime);
