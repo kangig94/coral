@@ -1534,6 +1534,7 @@ function detectInterruptedIncident(
 export function hasPendingBackendStoreResetIncident(
   runtime: Pick<Runtime, 'storage'>,
   files: BackendStoreFileSet,
+  held: Held,
 ): boolean {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const stagingRoot = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY);
@@ -1557,10 +1558,10 @@ export function hasPendingBackendStoreResetIncident(
   } catch (error: unknown) {
     if (!isNoEntryError(error)) throw error;
   }
-  const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+  const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot, held);
   if (ledger?.pending !== null && ledger?.pending !== undefined) return true;
   try {
-    const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
+    const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot, held);
     if (discovered.entries.some((entry) => entry.record?.phase === 'in-flight')) return true;
     const terminal = discovered.entries.filter(
       (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',

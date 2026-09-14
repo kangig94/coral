@@ -420,7 +420,8 @@ async function settleActiveStore(
   inspectCurrentGeneration(runtime, options);
   const files = resolveBackendStoreFileSet(runtime, options);
   const { dbFile } = files;
-  const pending = hasPendingBackendStoreResetIncident(runtime, files);
+  const observationAuthority = createSettlementAuthority(runtime.storage, adoption, undefined, null);
+  const pending = hasPendingBackendStoreResetIncident(runtime, files, observationAuthority);
   const activeStoreObserved = runtime.storage.existsSync(dbFile);
   let writerExclusion: WriterExclusion | undefined;
   if (pending || activeStoreObserved) {
