@@ -1931,6 +1931,17 @@ function resumeNonPublicationParking(
           break;
         case 'compatible':
         case 'fresh': {
+          if (!parkedDatabaseHasPrivateInode(runtime.storage, join(parkingDirectory, 'store.db'), parkedDb.identity)) {
+            terminalizeParking(
+              runtime.storage,
+              parkingRoot,
+              { ...record, classification: classification.kind },
+              'intruder',
+              record.incidentId,
+              discoveredTransaction.coordinate,
+            );
+            return;
+          }
           const adoption = openCompatibleParkedStore(
             runtime,
             files,

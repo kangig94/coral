@@ -2586,6 +2586,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-claim-parking-resume-');
     const dbPath = join(root, 'store.db');
+    const externalPath = join(root, 'external-store.db');
     createMismatchStore(dbPath);
     const linkSync = runtime.storage.linkSync;
     let injected = false;
@@ -2595,7 +2596,7 @@ describe('openOrResetBackendStoreDb', () => {
         destination === dbPath &&
         String(source).includes(`${join('store-reset-quarantine', '.minted')}`)
       ) {
-        createIncompatibleSentinelStore(dbPath, 91);
+        createCompatibleSentinelStore(runtime, dbPath);
         injected = true;
       }
       linkSync(source, destination);
@@ -2625,10 +2626,20 @@ describe('openOrResetBackendStoreDb', () => {
     expect(await captureAsyncError(() => openReset(runtime, dbPath))).not.toBeNull();
     expect(interrupted).toBe(true);
     vi.restoreAllMocks();
+    expect(parkedPath).not.toBeNull();
+    runtime.storage.linkSync(parkedPath ?? '', externalPath);
+    const externalBytes = readFileSync(externalPath);
 
     const db = await openReset(runtime, dbPath);
     expectReturnedHandleTargetsActiveStore(db, dbPath);
     db.close();
+    expect(readFileSync(externalPath)).toEqual(externalBytes);
+    const activeIdentity = statSync(dbPath, { bigint: true });
+    const externalIdentity = statSync(externalPath, { bigint: true });
+    expect({ dev: activeIdentity.dev, ino: activeIdentity.ino }).not.toEqual({
+      dev: externalIdentity.dev,
+      ino: externalIdentity.ino,
+    });
     const listed = listStoreResetIncidents({
       fs: createStoreResetInspectionFs(),
       quarantineRoot: join(root, 'store-reset-quarantine'),
@@ -3471,6 +3482,7 @@ describe('openOrResetBackendStoreDb', () => {
     const mintedDirectory = join(mintedRoot, mintedId);
     mkdirSync(mintedDirectory, { recursive: true, mode: 0o700 });
     createCompatibleSentinelStore(runtime, join(mintedDirectory, 'store.db'));
+    const interruptedBytes = readFileSync(join(mintedDirectory, 'store.db'));
     runtime.storage.linkSync(join(mintedDirectory, 'store.db'), dbPath);
     const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
     const observedBounds: number[] = [];
@@ -3485,16 +3497,25 @@ describe('openOrResetBackendStoreDb', () => {
     expect(observedBounds).toContain(MAX_INCIDENT_ROOT_ENTRIES + 1);
     expect(existsSync(mintedDirectory)).toBe(false);
     const parkingRoot = join(root, 'store-reset-quarantine', '.parked');
-    expect(readStoreResetParkedRecord(runtime.storage, parkingRoot, mintedId)).toMatchObject({
+    const retained = readdirSync(parkingRoot)
+      .filter(isCanonicalStoreResetIncidentId)
+      .map((coordinate) => ({
+        coordinate,
+        record: readStoreResetParkedRecord(runtime.storage, parkingRoot, coordinate),
+      }))
+      .find((entry) => entry.record?.names.includes('store.db'));
+    expect(retained?.record).toMatchObject({
       phase: 'terminal',
-      cause: 'residual',
+      cause: 'intruder',
       incidentId: null,
       names: expect.arrayContaining(['store.db']),
       classification: 'compatible',
     });
+    expect(readFileSync(join(parkingRoot, retained?.coordinate ?? '', 'store.db'))).toEqual(interruptedBytes);
     expectOneTerminalSurvivor(dbPath);
     expectReturnedSurvivorExists(dbPath, settlement.survivor);
-    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    expect(tableExists(dbPath, 'sentinel_replacement')).toBe(false);
   });
 
   it.each([STORE_RESET_MINTED_STORE_DIRECTORY, '323e4567-e89b-42d3-a456-426614174000'] as const)(
@@ -3524,12 +3545,13 @@ describe('openOrResetBackendStoreDb', () => {
         .find((candidate) => candidate?.names.includes('store.db'));
       expect(record).toMatchObject({
         phase: 'terminal',
-        cause: 'residual',
+        cause: 'intruder',
         incidentId: null,
         names: expect.arrayContaining(['store.db']),
         classification: 'compatible',
       });
-      expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
+      expect(tableExists(dbPath, 'events')).toBe(true);
+      expect(tableExists(dbPath, 'sentinel_replacement')).toBe(false);
     },
   );
 
