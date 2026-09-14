@@ -40,6 +40,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
 import { resolveActiveStoreRecordPaths } from '#src/store/active-store-selection.js';
 import { classifyStoreFile } from '#src/store/db.js';
+import { createSettlementAuthority } from '#src/store/backend-store-reset.js';
 import { generationMutationCoordinationSeam } from '#src/store/generation-mutation-coordination.js';
 import { discardStoreReset, releaseStoreReset, resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 import {
@@ -101,6 +102,10 @@ function root(): string {
   return value;
 }
 
+function fixtureHeld() {
+  return createSettlementAuthority({ maintain: () => undefined, assertOwned: () => undefined }, undefined, null).hold();
+}
+
 function writeTerminalParkingSidecar(
   runtime: ReturnType<typeof createRealRuntime>,
   parkingRoot: string,
@@ -108,18 +113,23 @@ function writeTerminalParkingSidecar(
 ): void {
   const parkingPath = join(parkingRoot, incidentId);
   const parkedWal = join(parkingPath, 'store.db-wal');
-  writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-    version: STORE_RESET_PARKED_SIDECAR_VERSION,
-    parkingId: incidentId,
-    parkedAt: '2026-09-13T00:00:00.000Z',
-    phase: 'terminal',
-    cause: 'intruder',
-    incidentId,
-    names: ['store.db-wal'],
-    entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: statSync(parkedWal).size }],
-    transaction: null,
-    classification: null,
-  });
+  writeStoreResetParkedRecord(
+    runtime.storage,
+    parkingRoot,
+    {
+      version: STORE_RESET_PARKED_SIDECAR_VERSION,
+      parkingId: incidentId,
+      parkedAt: '2026-09-13T00:00:00.000Z',
+      phase: 'terminal',
+      cause: 'intruder',
+      incidentId,
+      names: ['store.db-wal'],
+      entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: statSync(parkedWal).size }],
+      transaction: null,
+      classification: null,
+    },
+    fixtureHeld(),
+  );
 }
 
 function dependencies(quarantineRoot: string): StoreResetCliDependencies {
@@ -1135,18 +1145,23 @@ describe('operator store-reset discard', () => {
     const parkingRoot = join(quarantineRoot, '.parked');
     const parkingPath = join(parkingRoot, INCIDENT_ID);
     mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
-    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-      version: STORE_RESET_PARKED_SIDECAR_VERSION,
-      parkingId: INCIDENT_ID,
-      parkedAt: '2026-09-13T00:00:00.000Z',
-      phase: 'in-flight',
-      cause: 'residual',
-      incidentId: null,
-      names: [],
-      entries: [],
-      transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm'] },
-      classification: null,
-    });
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      {
+        version: STORE_RESET_PARKED_SIDECAR_VERSION,
+        parkingId: INCIDENT_ID,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'in-flight',
+        cause: 'residual',
+        incidentId: null,
+        names: [],
+        entries: [],
+        transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm'] },
+        classification: null,
+      },
+      fixtureHeld(),
+    );
 
     const listed = listStoreResetIncidentsLocal('gen2', dependencies(quarantineRoot));
     expect(listed.incidents).toContainEqual(expect.objectContaining({ incidentId: INCIDENT_ID, state: 'in-flight' }));
@@ -1179,6 +1194,7 @@ describe('operator store-reset discard', () => {
         transaction: null,
         classification: null,
       },
+      fixtureHeld(),
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
 
@@ -1360,7 +1376,8 @@ describe('operator store-reset discard', () => {
         parkingEvidenceBytes: null,
       });
       const rendered = formatStoreResetRelease(result);
-      expect(rendered).toContain(`preserved store-reset incident '${incidentId}' and its same-ID terminal parking`);
+      expect(rendered).toContain(`preserved store-reset incident '${incidentId}' and its same-ID parking`);
+      expect(rendered).not.toContain('terminal parking');
       expect(rendered).toContain(`incident: ${incidentEvidenceBytes} bytes; parking: unknown`);
       expect(rendered).toContain('without a verified parking sidecar');
       expect(existsSync(incidentPath)).toBe(false);
@@ -1386,7 +1403,8 @@ describe('operator store-reset discard', () => {
       parkingEvidenceBytes: null,
       durability: 'proven',
     });
-    expect(formatStoreResetRelease(result)).toContain(`terminal store-reset parking '${INCIDENT_ID}'`);
+    expect(formatStoreResetRelease(result)).toContain(`store-reset parking '${INCIDENT_ID}'`);
+    expect(formatStoreResetRelease(result)).not.toContain('terminal store-reset parking');
     expect(existsSync(parkingPath)).toBe(false);
   });
 
@@ -1432,8 +1450,9 @@ describe('operator store-reset discard', () => {
       parkingEvidenceBytes: null,
     });
     expect(formatStoreResetRelease(result)).toContain(
-      `non-holder store-reset incident '${INCIDENT_ID}' and its same-ID terminal parking`,
+      `non-holder store-reset incident '${INCIDENT_ID}' and its same-ID parking`,
     );
+    expect(formatStoreResetRelease(result)).not.toContain('terminal parking');
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toEqual(preservedBefore);
     expect(existsSync(incidentPath)).toBe(false);
     expect(existsSync(parkingPath)).toBe(false);
@@ -1554,36 +1573,47 @@ describe('operator store-reset discard', () => {
     writeFileSync(join(pendingPath, 'reset-manifest.json'), serializeStoreResetIncidentManifest(pendingManifest));
     const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
     if (ledger === null) throw new Error('Expected a retention ledger.');
-    recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
-      resetAt: pendingManifest.resetAt,
-      identities: [],
-      outcome: {
-        kind: 'preserve',
-        incident: {
-          incidentId: pendingId,
-          resetAt: pendingManifest.resetAt,
-          evidenceBytes: pendingManifest.files.reduce((total, file) => total + file.sizeBytes, 0),
-          resumeLeftActive: false,
+    recordStoreResetPending(
+      runtime.storage,
+      quarantineRoot,
+      ledger,
+      {
+        resetAt: pendingManifest.resetAt,
+        identities: [],
+        outcome: {
+          kind: 'preserve',
+          incident: {
+            incidentId: pendingId,
+            resetAt: pendingManifest.resetAt,
+            evidenceBytes: pendingManifest.files.reduce((total, file) => total + file.sizeBytes, 0),
+            resumeLeftActive: false,
+          },
         },
       },
-    });
+      fixtureHeld(),
+    );
     const parkingRoot = join(quarantineRoot, '.parked');
     const parkingPath = join(parkingRoot, pendingId);
     const parkedEvidence = 'durable pending parking';
     mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
     writeFileSync(join(parkingPath, 'store.db-wal'), parkedEvidence);
-    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-      version: STORE_RESET_PARKED_SIDECAR_VERSION,
-      parkingId: pendingId,
-      parkedAt: pendingManifest.resetAt,
-      phase: 'terminal',
-      cause: 'residual',
-      incidentId: pendingId,
-      names: ['store.db-wal'],
-      entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(parkedEvidence) }],
-      transaction: null,
-      classification: null,
-    });
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      {
+        version: STORE_RESET_PARKED_SIDECAR_VERSION,
+        parkingId: pendingId,
+        parkedAt: pendingManifest.resetAt,
+        phase: 'terminal',
+        cause: 'residual',
+        incidentId: pendingId,
+        names: ['store.db-wal'],
+        entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(parkedEvidence) }],
+        transaction: null,
+        classification: null,
+      },
+      fixtureHeld(),
+    );
     const pendingLedger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
     const unrelatedId = '623e4567-e89b-42d3-a456-426614174000';
 
@@ -1861,7 +1891,8 @@ describe('backend store-reset commands', () => {
       operations,
     );
 
-    expect(stdout).toContain(`Released terminal store-reset parking '${INCIDENT_ID}'`);
+    expect(stdout).toContain(`Released store-reset parking '${INCIDENT_ID}'`);
+    expect(stdout).not.toContain('terminal store-reset parking');
     expect(stdout).toContain('without a verified sidecar; parking byte accounting is unknown');
     expect(stderr).toBe('');
     expect(process.exitCode).toBeUndefined();
@@ -1933,8 +1964,16 @@ describe('backend store-reset commands', () => {
               incident: resumedIncident,
               preservation: { kind: 'linked', coherence: 'coherent' },
               rotation: {
-                kind: 'complete',
+                kind: 'incomplete',
                 survivor: { kind: 'incident', id: resumedIncident.incidentId },
+                cause: 'superseded coordinate changed before pruning',
+              },
+              classification: {
+                kind: 'older-incompatible',
+                currentFingerprint: STORE_FORMAT.fingerprint,
+                currentProductVersion: STORE_FORMAT.productVersion,
+                storedFingerprint: `sha256:${'0'.repeat(64)}`,
+                storedProductVersion: '0.0.0-rc.1',
               },
               leftActive: [],
             },
@@ -1955,6 +1994,9 @@ describe('backend store-reset commands', () => {
 
     expect(stdout).toContain(`Resumed store-reset incident '${INCIDENT_ID}'.`);
     expect(stdout).toContain(`Preserved store-reset incident '${INCIDENT_ID}'.`);
+    expect(stdout).toContain(
+      `Retention rotation is incomplete; incident '${INCIDENT_ID}' remains on disk (superseded coordinate changed before pruning).`,
+    );
     expect(stdout).toContain(
       "Parked intruder epoch '323e4567-e89b-42d3-a456-426614174000' (store.db; classification none).",
     );

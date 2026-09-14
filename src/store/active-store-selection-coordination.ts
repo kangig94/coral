@@ -42,13 +42,13 @@ import {
   classifyBackendStoreFailure,
   documentedBackendStoreClassificationFailure,
   hasPendingBackendStoreResetIncident,
+  createSettlementAuthority,
   publishClassifiedBackendStoreResetIncident,
   mintBackendStoreForClaim,
   resolveBackendStoreFileSet,
   resumeAutomaticBackendStoreResetIncident,
   resumeBackendStoreResetIncidentForOperator,
   retainTransitionFileInStoreResetQuarantine,
-  stageBackendStoreClassification,
   STEADY_STATE_BUSY_TIMEOUT_MS,
   type BackendStoreFileSet,
   type BackendStoreResetAuthority,
@@ -58,8 +58,10 @@ import {
   type WriterExclusion,
   type NewerStoreResetPolicy,
   type OpenOrResetBackendStoreOptions,
+  type SettlementAuthority,
 } from './backend-store-reset.js';
-import { classifyStoreFile, refuseLegacyStore, type Database } from './db.js';
+import { classifyStoreFile, type Database } from './db.js';
+import { enumerateActiveEvidence } from './reset-active-evidence.js';
 import type { StoreFormatClassification } from './format-fingerprint.js';
 import {
   acquireGenerationAdoptionLock,
@@ -95,13 +97,14 @@ function finalStoreResetSurvivor(
   runtime: Pick<Runtime, 'storage'>,
   files: BackendStoreFileSet,
   candidate: ActiveStoreSettlementSurvivor,
+  settlementAuthority: SettlementAuthority,
 ): ActiveStoreSettlementSurvivor {
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const parking = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot).entries.find(
     (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',
   );
   if (parking !== undefined) return { kind: 'parking', parkingId: parking.coordinate };
-  const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
+  const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, settlementAuthority.hold());
   if (slot.kind === 'held' && slot.manifest !== null) {
     const manifest = slot.manifest;
     return {
@@ -270,6 +273,13 @@ function resetPolicyForTransition(transition: ActiveStoreTransition): NewerStore
       : transition.evidence.kind === 'selection-malformed'
         ? transition.evidence.failureCode
         : transition.evidence.kind;
+  return newerStoreResetPolicy(validationCode, selectedManifest);
+}
+
+function newerStoreResetPolicy(
+  validationCode: NewerStoreResetPolicy['evidence']['validationFailure']['code'],
+  selectedManifest: StrictBundleManifest | null,
+): NewerStoreResetPolicy {
   return {
     cause: 'newer-incompatible-invalid-target',
     evidence: {
@@ -285,15 +295,19 @@ function resetPolicyForTransition(transition: ActiveStoreTransition): NewerStore
   };
 }
 
+function resetPolicyForCurrentSelection(selection: ActiveStoreSelection): NewerStoreResetPolicy {
+  return newerStoreResetPolicy('current-selection-newer-store', selection.manifest);
+}
+
 function retainActiveStoreTransition(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
-  lease: Pick<GenerationAdoptionLockLease, 'assertOwned' | 'maintain'>,
+  settlementAuthority: SettlementAuthority,
   transitionFile = resolveActiveStoreRecordPaths(runtime).transitionFile,
 ): ReturnType<typeof retainTransitionFileInStoreResetQuarantine> | null {
   const files = resolveBackendStoreFileSet(runtime, options);
   try {
-    return retainTransitionFileInStoreResetQuarantine(runtime, files, transitionFile, lease);
+    return retainTransitionFileInStoreResetQuarantine(runtime, files, transitionFile, settlementAuthority);
   } catch (error: unknown) {
     if (
       error instanceof Error &&
@@ -315,12 +329,12 @@ function retainInvalidSelectionRecovery(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
   transition: ActiveStoreTransition,
-  lease: Pick<GenerationAdoptionLockLease, 'assertOwned' | 'maintain'>,
+  settlementAuthority: SettlementAuthority,
 ): ActiveStoreTransitionClearEvidence {
   if (transition.evidence.kind !== 'valid-target-invalid' && transition.evidence.kind !== 'selection-malformed') {
     return { kind: 'clear' };
   }
-  const retained = retainActiveStoreTransition(runtime, options, lease);
+  const retained = retainActiveStoreTransition(runtime, options, settlementAuthority);
   if (retained === null) return { kind: 'source-missing' };
   writeAuditEvent(
     'invalid-selection-recovery',
@@ -368,26 +382,30 @@ async function acquireSettlementWriterExclusion(
   return { kind: 'proven', lease: recoveryLease };
 }
 
-type MintedActiveStoreEpoch = Readonly<{
-  evidence: ReturnType<typeof stageBackendStoreClassification>['evidence'];
-  classification: StoreFormatClassification;
-}>;
+const ADVISORY_CLASSIFICATION: unique symbol = Symbol('AdvisoryStoreClassification');
 
-function mintActiveStoreEpoch(
+type AdvisoryStoreClassification =
+  | Readonly<{
+      kind: 'classified';
+      classification: StoreFormatClassification;
+      [ADVISORY_CLASSIFICATION]: true;
+    }>
+  | Readonly<{ kind: 'unavailable'; [ADVISORY_CLASSIFICATION]: true }>;
+
+function classifyAdvisoryActiveStore(
   runtime: Runtime,
   files: BackendStoreFileSet,
   options: ActiveStoreSelectionProtocolOptions,
-  maintainLease: () => void,
-): MintedActiveStoreEpoch {
+): AdvisoryStoreClassification {
   const { dbFile } = files;
-  const snapshot = stageBackendStoreClassification(runtime, files, maintainLease);
   try {
     return {
-      evidence: snapshot.evidence,
-      classification: classifyStoreForProtocol(runtime, { ...files, dbFile: snapshot.path }, options, dbFile),
+      kind: 'classified',
+      classification: classifyStoreForProtocol(runtime, files, options, dbFile),
+      [ADVISORY_CLASSIFICATION]: true,
     };
-  } finally {
-    snapshot.release();
+  } catch {
+    return { kind: 'unavailable', [ADVISORY_CLASSIFICATION]: true };
   }
 }
 
@@ -409,8 +427,6 @@ async function settleActiveStore(
   }
   let resetLock: BackendStoreResetLockLease | null = null;
   try {
-    adoption.assertOwned();
-    if (writerExclusion?.kind === 'proven') writerExclusion.lease.assertOwned();
     let resumed: BackendStoreResetIncident | null = null;
     const publicationWriterExclusion =
       writerExclusion ??
@@ -422,40 +438,55 @@ async function settleActiveStore(
     let transition = initialTransition;
     let survivor: ActiveStoreSettlementSurvivor = { kind: 'none' };
     const epochs: StoreSettlementEpoch[] = [];
-    const maintainWriterExclusion = (): void => {
-      adoption.maintain();
-      if (writerExclusion?.kind === 'proven') writerExclusion.lease.maintain();
-    };
-    let activeEpoch =
-      !pending && activeStoreObserved ? mintActiveStoreEpoch(runtime, files, options, maintainWriterExclusion) : null;
-    if (activeEpoch?.classification.kind === 'legacy-adoptable') {
-      return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
-    }
+    let activeEpoch = !pending && activeStoreObserved ? classifyAdvisoryActiveStore(runtime, files, options) : null;
     const resetNeeded =
       pending ||
-      activeEpoch?.classification.kind === 'older-incompatible' ||
-      activeEpoch?.classification.kind === 'corrupt-or-unsupported' ||
-      activeEpoch?.classification.kind === 'newer-incompatible';
+      (activeEpoch?.kind === 'classified' &&
+        (activeEpoch.classification.kind === 'older-incompatible' ||
+          activeEpoch.classification.kind === 'corrupt-or-unsupported' ||
+          activeEpoch.classification.kind === 'newer-incompatible'));
     if (resetNeeded) {
-      resetLock = acquireBackendStoreResetLock(runtime, files, adoption, writerExclusion);
+      resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
+    }
+    const settlementAuthority = createSettlementAuthority(adoption, writerExclusion, resetLock);
+    if (resetNeeded) {
       resumed =
         writerExclusion === undefined
           ? null
           : options.dependencies.kind === 'operator'
-            ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
-            : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
+            ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, settlementAuthority, writerExclusion)
+            : resumeAutomaticBackendStoreResetIncident(
+                runtime,
+                authority,
+                files,
+                options,
+                settlementAuthority,
+                writerExclusion,
+              );
       if (resumed !== null) survivor = { kind: 'incident', incident: resumed, resumed: true };
-      if (pending || activeEpoch === null) {
-        activeEpoch = mintActiveStoreEpoch(runtime, files, options, resetLock.maintain);
-      }
-      switch (activeEpoch.classification.kind) {
-        case 'legacy-adoptable':
-          return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
-        case 'older-incompatible':
-        case 'corrupt-or-unsupported':
-        case 'newer-incompatible': {
-          if (activeEpoch.classification.kind === 'newer-incompatible') {
-            const evidence = newerStoreEvidence(activeEpoch.classification);
+      activeEpoch = classifyAdvisoryActiveStore(runtime, files, options);
+      const publicationNeeded =
+        activeEpoch.kind === 'classified' &&
+        (activeEpoch.classification.kind === 'older-incompatible' ||
+          activeEpoch.classification.kind === 'corrupt-or-unsupported' ||
+          activeEpoch.classification.kind === 'newer-incompatible');
+      if (publicationNeeded) {
+        const publication = publishClassifiedBackendStoreResetIncident(
+          runtime,
+          authority,
+          files,
+          enumerateActiveEvidence(runtime.storage, files),
+          options.storeFormat,
+          settlementAuthority,
+          publicationWriterExclusion,
+          transition === null
+            ? resetPolicyForCurrentSelection(options.currentSelection)
+            : resetPolicyForTransition(transition),
+        );
+        if (publication.kind === 'preserved') {
+          survivor = { kind: 'incident', incident: publication.incident, resumed: false };
+          if (publication.classification.kind === 'newer-incompatible') {
+            const evidence = newerStoreEvidence(publication.classification);
             transition =
               transition === null
                 ? createActiveStoreTransition(runtime, options.currentSelection, {
@@ -466,43 +497,15 @@ async function settleActiveStore(
                 : transitionWithNewerStoreEvidence(transition, evidence);
             publishTransitionOrRefuse(runtime, transition);
           }
-          const publication = publishClassifiedBackendStoreResetIncident(
-            runtime,
-            authority,
-            files,
-            activeEpoch.evidence,
-            activeEpoch.classification,
-            resetLock,
-            publicationWriterExclusion,
-            activeEpoch.classification.kind === 'newer-incompatible' && transition !== null
-              ? resetPolicyForTransition(transition)
-              : undefined,
-          );
-          if (publication.kind === 'preserved') {
-            survivor = { kind: 'incident', incident: publication.incident, resumed: false };
-          }
-          epochs.push({ kind: 'described', publication });
-          break;
         }
-        case 'absent':
-        case 'fresh':
-        case 'compatible':
-          break;
-        default:
-          assertNever(activeEpoch.classification);
+        epochs.push({ kind: 'described', publication });
       }
     }
 
     let claimCandidate = mintBackendStoreForClaim(runtime, files, options);
     let db: Database;
     for (;;) {
-      const attempt = attemptBackendStoreClaim(
-        runtime,
-        files,
-        options,
-        claimCandidate,
-        resetLock?.maintain ?? adoption.maintain,
-      );
+      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate, settlementAuthority.hold());
       epochs.push(...attempt.epochs);
       for (const epoch of attempt.epochs) {
         if (epoch.kind === 'described' && epoch.publication.kind === 'preserved') {
@@ -522,19 +525,19 @@ async function settleActiveStore(
       if (transition !== null) {
         // The live transition is cleared only after its invalid-selection basis has been copied into the
         // reset-quarantine durability boundary. Coordinator logging is deliberately not evidence authority.
-        const clearEvidence = retainInvalidSelectionRecovery(runtime, options, transition, resetLock ?? adoption);
+        const clearEvidence = retainInvalidSelectionRecovery(runtime, options, transition, settlementAuthority);
         if (clearEvidence.kind === 'clear') {
           clearActiveStoreTransition(runtime, clearEvidence.sourceIdentity);
         }
       }
       const settlement = {
         db,
-        survivor: finalStoreResetSurvivor(runtime, files, survivor),
+        survivor: finalStoreResetSurvivor(runtime, files, survivor, settlementAuthority),
         epochs,
         invalidTargetEvidence:
           transition?.evidence.kind === 'valid-target-invalid' ? transition.evidence.invalidTargetEvidence : null,
       };
-      adoption.assertOwned();
+      settlementAuthority.hold();
       return settlement;
     } catch (error: unknown) {
       db.close();
@@ -612,7 +615,12 @@ function supersedeActiveStoreTransition(
 ): void {
   const paths = resolveActiveStoreRecordPaths(runtime);
   const transitionFile = generation === 'current' ? paths.transitionFile : paths.transitionV1File;
-  const retained = retainActiveStoreTransition(runtime, options, adoption, transitionFile);
+  const retained = retainActiveStoreTransition(
+    runtime,
+    options,
+    createSettlementAuthority(adoption, undefined, null),
+    transitionFile,
+  );
   if (retained !== null) {
     try {
       if (generation === 'current') {

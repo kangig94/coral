@@ -528,6 +528,11 @@ function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string
         switch (epoch.publication.kind) {
           case 'preserved':
             lines.push(`Preserved store-reset incident '${epoch.publication.incident.incidentId}'.`);
+            if (epoch.publication.rotation.kind === 'incomplete') {
+              lines.push(
+                `Retention rotation is incomplete; ${epoch.publication.rotation.survivor.kind} '${epoch.publication.rotation.survivor.id}' remains on disk (${epoch.publication.rotation.cause}).`,
+              );
+            }
             break;
           case 'no-evidence':
             lines.push('The described epoch contained no evidence.');
@@ -2081,7 +2086,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('release')
-    .description('Permanently remove one committed store-reset incident')
+    .description('Permanently remove one committed store-reset incident or terminal parking coordinate')
     .argument('<incident-id>', 'Canonical lowercase UUID shown by backend store-reset list')
     .requiredOption(
       '--target <target>',

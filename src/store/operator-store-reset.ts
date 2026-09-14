@@ -11,6 +11,7 @@ import { coordinateActiveStoreSelection, type ActiveStoreSettlement } from './ac
 import {
   acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
+  createSettlementAuthority,
   resolveBackendStoreFileSet,
   type BackendStoreResetIncident,
 } from './backend-store-reset.js';
@@ -231,9 +232,9 @@ export async function releaseStoreReset(options: {
   let resetLock: ReturnType<typeof acquireBackendStoreResetLock> | null = null;
   try {
     resetLock = acquireBackendStoreResetLock(options.runtime, files, adoption);
-    resetLock.assertOwned();
+    const held = createSettlementAuthority(adoption, undefined, resetLock).hold();
     return {
-      ...releaseStoreResetIncident(options.runtime.storage, paths.quarantineRoot, options.incidentId),
+      ...releaseStoreResetIncident(options.runtime.storage, paths.quarantineRoot, options.incidentId, held),
       target: 'gen2',
       flavor: options.runtime.flavor,
     };

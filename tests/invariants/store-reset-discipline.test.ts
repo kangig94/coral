@@ -9,6 +9,7 @@ const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
 const RESET_ACTIVE_EVIDENCE_PATH = 'src/store/reset-active-evidence.ts';
+const RESET_RETENTION_PATH = 'src/store/reset-retention.ts';
 const ACTIVE_STORE_SELECTION_PATH = 'src/store/active-store-selection.ts';
 const ACTIVE_STORE_SELECTION_COORDINATION_PATH = 'src/store/active-store-selection-coordination.ts';
 const STARTUP_STORE_ROUTING_PATH = 'src/store/startup-store-routing.ts';
@@ -201,6 +202,7 @@ function resolveSourceImport(from: string, specifier: string): string | null {
 function sourceImports(relativePath: string): string[] {
   const source = sourceFile(relativePath);
   return source.statements.filter(ts.isImportDeclaration).flatMap((statement) => {
+    if (statement.importClause?.isTypeOnly === true) return [];
     const specifier = ts.isStringLiteral(statement.moduleSpecifier) ? statement.moduleSpecifier.text : '';
     const resolved = resolveSourceImport(relativePath, specifier);
     return resolved === null ? [] : [resolved];
@@ -364,7 +366,7 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('classifies under exclusion and publishes once before the unbounded owned-store claim loop', () => {
+  it('uses advisory classification only to route into owned-inode publication before the claim loop', () => {
     const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
     const body = withoutComments(settlement.body?.getText(coordination) ?? '');
@@ -374,19 +376,22 @@ describe('store reset discipline invariants', () => {
     const resumeIndex = body.indexOf('resumeBackendStoreResetIncident');
     const loopIndex = body.indexOf('for (;;)');
     const publishIndex = body.indexOf('publishClassifiedBackendStoreResetIncident(');
-    const stageIndex = body.indexOf('mintActiveStoreEpoch(');
+    const advisoryIndex = body.indexOf('classifyAdvisoryActiveStore(');
     const mintIndex = body.indexOf('mintBackendStoreForClaim(');
 
     expect(observeIndex).toBeGreaterThanOrEqual(0);
     expect(acquireExclusionIndex).toBeGreaterThan(observeIndex);
-    expect(stageIndex).toBeGreaterThan(acquireExclusionIndex);
-    expect(resetLockIndex).toBeGreaterThan(stageIndex);
+    expect(advisoryIndex).toBeGreaterThan(acquireExclusionIndex);
+    expect(resetLockIndex).toBeGreaterThan(advisoryIndex);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
     expect(publishIndex).toBeGreaterThan(resumeIndex);
     expect(mintIndex).toBeGreaterThan(publishIndex);
     expect(loopIndex).toBeGreaterThan(publishIndex);
     expect(body).not.toContain('openWritableStoreDatabase(');
     expect(body).not.toContain('classifyStoreForProtocol(');
+    expect(body).not.toContain('newerStoreEvidence(activeEpoch');
+    expect(body).not.toContain('newerStoreEvidence(activeClassification');
+    expect(body).not.toContain('stageBackendStoreClassification');
     expect(body).not.toContain('publications.length === 2');
 
     const publicationCalls = allSourcePaths().flatMap((path) =>
@@ -395,6 +400,13 @@ describe('store reset discipline invariants', () => {
     expect(publicationCalls).toHaveLength(1);
     expect(publicationCalls[0]?.relativePath).toBe(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     expect(publicationCalls[0]?.enclosingFunctions).toContain('settleActiveStore');
+
+    const backendSource = readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8');
+    expect(backendSource).not.toContain('stageBackendStoreClassification');
+    expect(backendSource.match(/\brefuseLegacyStore\(/gu)).toHaveLength(1);
+    expect(readFileSync(join(REPO_ROOT, ACTIVE_STORE_SELECTION_COORDINATION_PATH), 'utf8')).not.toContain(
+      'refuseLegacyStore',
+    );
 
     const openCalls = settlementStoreImportClosure()
       .flatMap(collectCalls)
@@ -415,9 +427,134 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('has at most 131 semantic refusals in the settlement closure (target: 0)', () => {
+  it('makes Held a single private constructor and a required argument at settlement acts', () => {
+    const heldAliases = allSourcePaths().flatMap((relativePath) =>
+      sourceFile(relativePath).statements.flatMap((statement) =>
+        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'Held' ? [{ relativePath, statement }] : [],
+      ),
+    );
+    expect(heldAliases).toHaveLength(1);
+    const heldAlias = heldAliases[0];
+    expect(heldAlias?.relativePath).toBe(BACKEND_STORE_RESET_PATH);
+    expect(
+      heldAlias?.statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false,
+    ).toBe(false);
+
+    const backend = sourceFile(BACKEND_STORE_RESET_PATH);
+    let heldAssertions = 0;
+    let heldBrandAssignments = 0;
+    const visitConstructor = (node: ts.Node): void => {
+      if (ts.isAsExpression(node) && node.type.getText(backend) === 'Held') heldAssertions += 1;
+      if (
+        ts.isPropertyAssignment(node) &&
+        ts.isComputedPropertyName(node.name) &&
+        node.name.expression.getText(backend) === 'HELD_BRAND' &&
+        node.initializer.getText(backend) === 'true as const'
+      ) {
+        heldBrandAssignments += 1;
+      }
+      ts.forEachChild(node, visitConstructor);
+    };
+    visitConstructor(backend);
+    expect(heldAssertions).toBe(1);
+    expect(heldBrandAssignments).toBe(1);
+
+    const settlementAuthority = backend.statements.find(
+      (statement): statement is ts.TypeAliasDeclaration =>
+        ts.isTypeAliasDeclaration(statement) && statement.name.text === 'SettlementAuthority',
+    );
+    expect(settlementAuthority).toBeDefined();
+    const authorityType =
+      settlementAuthority !== undefined &&
+      ts.isTypeReferenceNode(settlementAuthority.type) &&
+      settlementAuthority.type.typeName.getText(backend) === 'Readonly'
+        ? settlementAuthority.type.typeArguments?.[0]
+        : settlementAuthority?.type;
+    const authorityMethods =
+      authorityType !== undefined && ts.isTypeLiteralNode(authorityType)
+        ? authorityType.members.filter(ts.isMethodSignature).map((member) => member.name.getText(backend))
+        : [];
+    expect(authorityMethods).toEqual(['hold']);
+
+    let heldParameterCount = 0;
+    const defaultedOrOptional: string[] = [];
+    for (const relativePath of [BACKEND_STORE_RESET_PATH, RESET_ACTIVE_EVIDENCE_PATH, RESET_RETENTION_PATH]) {
+      const parsed = sourceFile(relativePath);
+      const visitParameters = (node: ts.Node): void => {
+        if (ts.isParameter(node) && ['Held', 'SettlementHeld'].includes(node.type?.getText(parsed) ?? '')) {
+          heldParameterCount += 1;
+          if (node.initializer !== undefined || node.questionToken !== undefined) {
+            const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
+            defaultedOrOptional.push(`${relativePath}:${line} ${node.getText(parsed)}`);
+          }
+        }
+        ts.forEachChild(node, visitParameters);
+      };
+      visitParameters(parsed);
+    }
+    expect(heldParameterCount).toBeGreaterThan(20);
+    expect(defaultedOrOptional).toEqual([]);
+
+    const guardedFunctions = new Map<string, readonly string[]>([
+      [
+        BACKEND_STORE_RESET_PATH,
+        [
+          'hashExactDescriptor',
+          'writeExactDescriptor',
+          'describeCandidate',
+          'copyPathCandidateForPublication',
+          'copyActiveEvidenceForPublication',
+          'evidenceMatches',
+          'createParkingOperation',
+          'removeSettledParkingDirectory',
+          'resumeInterruptedIncident',
+          'terminalizeParking',
+          'commitTerminalParking',
+          'cloneParkedStoreForClaim',
+          'retainNonRegularParking',
+          'publishIncident',
+          'attemptBackendStoreClaim',
+        ],
+      ],
+      [
+        RESET_ACTIVE_EVIDENCE_PATH,
+        ['parkActiveEvidence', 'parkCurrentEvidence', 'linkOwnedEvidenceToActive', 'restoreParkedEvidence'],
+      ],
+      [
+        RESET_RETENTION_PATH,
+        [
+          'writeStoreResetParkedRecord',
+          'retainOnlyStoreResetPreservedCopy',
+          'recordStoreResetParked',
+          'settleStoreResetPending',
+          'resolveStoreResetRetentionSlot',
+          'recordStoreResetPreserved',
+          'recordStoreResetPending',
+          'clearStoreResetPending',
+          'recordStoreResetResumeLeftActive',
+          'releaseStoreResetIncident',
+        ],
+      ],
+    ]);
+    for (const [relativePath, functionNames] of guardedFunctions) {
+      const parsed = sourceFile(relativePath);
+      for (const name of functionNames) {
+        const declaration = findFunction(relativePath, name);
+        expect(
+          declaration.parameters.some((parameter) =>
+            ['Held', 'SettlementHeld'].includes(parameter.type?.getText(parsed) ?? ''),
+          ),
+          `${relativePath}:${name}`,
+        ).toBe(true);
+      }
+    }
+
+    expect(readFileSync(join(REPO_ROOT, BACKEND_STORE_RESET_PATH), 'utf8')).not.toContain('maintainLease');
+  });
+
+  it('has at most 130 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(131);
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(130);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
@@ -600,10 +737,14 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('keeps the complete store classification union in the settlement loop', () => {
+  it('keeps the complete store classification union at the owned-inode publication boundary', () => {
     const source = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const settlement = withoutComments(
       findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore').body?.getText(source) ?? '',
+    );
+    const backend = sourceFile(BACKEND_STORE_RESET_PATH);
+    const publication = withoutComments(
+      findFunction(BACKEND_STORE_RESET_PATH, 'publishIncident').body?.getText(backend) ?? '',
     );
 
     for (const kind of [
@@ -615,14 +756,15 @@ describe('store reset discipline invariants', () => {
       'newer-incompatible',
       'corrupt-or-unsupported',
     ]) {
-      expect(settlement).toContain(`case '${kind}'`);
+      expect(publication).toContain(`case '${kind}'`);
     }
-    expect(settlement).toContain('default:');
-    expect(settlement).toContain('assertNever(activeEpoch.classification)');
+    expect(publication).toContain('default:');
+    expect(publication).toContain('assertNever(ownedClassification)');
+    expect(publication).toContain("classifyStoreFile(join(stagingDirectory, 'store.db')");
     expect(settlement).toContain('resumeAutomaticBackendStoreResetIncident(');
     expect(settlement).toContain('resumeBackendStoreResetIncidentForOperator(');
     expect(settlement).toContain("survivor = { kind: 'incident', incident: publication.incident, resumed: false }");
-    expect(settlement).toContain('survivor: finalStoreResetSurvivor(runtime, files, survivor)');
+    expect(settlement).toContain('survivor: finalStoreResetSurvivor(runtime, files, survivor, settlementAuthority)');
   });
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {

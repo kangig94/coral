@@ -194,6 +194,21 @@ export function formatStoreResetList(result: StoreResetIncidentListResult, targe
   ].join('\n');
 }
 
+function releasedParkingPhase(result: StoreResetReleasePresentation): 'terminal ' | '' {
+  switch (result.kind) {
+    case 'released-with-unverified-parking':
+    case 'not-holder-with-unverified-parking':
+    case 'parked-unverified':
+      return '';
+    case 'released':
+    case 'not-holder':
+    case 'parked':
+      return 'terminal ';
+    default:
+      return '';
+  }
+}
+
 export function formatStoreResetRelease(result: StoreResetReleasePresentation): string {
   result = constrainStoreResetRendererInput(result);
   switch (result.kind) {
@@ -219,16 +234,16 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
       return `Released ${subject} (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'released-with-unverified-parking': {
-      return `Released preserved store-reset incident '${result.incidentId}' and its same-ID terminal parking (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: unknown) from ${result.target} ${result.flavor} without a verified parking sidecar; deletion durability ${result.durability}.`;
+      return `Released preserved store-reset incident '${result.incidentId}' and its same-ID ${releasedParkingPhase(result)}parking (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: unknown) from ${result.target} ${result.flavor} without a verified parking sidecar; deletion durability ${result.durability}.`;
     }
     case 'not-holder-with-unverified-parking': {
-      return `Released non-holder store-reset incident '${result.incidentId}' and its same-ID terminal parking (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: unknown) from ${result.target} ${result.flavor} without a verified parking sidecar; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+      return `Released non-holder store-reset incident '${result.incidentId}' and its same-ID ${releasedParkingPhase(result)}parking (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: unknown) from ${result.target} ${result.flavor} without a verified parking sidecar; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'parked-unverified': {
       const slot = result.clearedPreservedSlot
         ? 'the stale preserved slot was cleared'
         : 'the preserved slot is unchanged';
-      return `Released terminal store-reset parking '${result.incidentId}' from ${result.target} ${result.flavor} without a verified sidecar; parking byte accounting is unknown, deletion durability is ${result.durability}, and ${slot}.`;
+      return `Released ${releasedParkingPhase(result)}store-reset parking '${result.incidentId}' from ${result.target} ${result.flavor} without a verified sidecar; parking byte accounting is unknown, deletion durability is ${result.durability}, and ${slot}.`;
     }
     case 'partially-released': {
       return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}; parking deletion durability is ${result.parkingDeletionDurability}; incident deletion durability is ${result.incidentDeletionDurability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then retry this release command.\ncommand=coral-cli backend store-reset release --target ${result.target} --flavor ${result.flavor} ${result.incidentId}`;

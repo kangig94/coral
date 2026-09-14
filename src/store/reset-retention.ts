@@ -6,6 +6,7 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
 import { validateProductVersion } from '../infra/product-version.js';
+import type { SettlementAuthority } from './backend-store-reset.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_INCIDENT_DIR_ENTRIES,
@@ -21,6 +22,8 @@ import {
   type StoreResetEvidenceFileName,
   type StoreResetIncidentManifest,
 } from './reset-incident.js';
+
+type SettlementHeld = ReturnType<SettlementAuthority['hold']>;
 
 export const STORE_RESET_RETENTION_LEDGER_VERSION = 1 as const;
 export const STORE_RESET_RETENTION_LEDGER_FILE_NAME = `store-reset-retention.v${STORE_RESET_RETENTION_LEDGER_VERSION}.json`;
@@ -493,8 +496,10 @@ export function writeStoreResetParkedRecord(
   storage: StoragePort,
   parkingRoot: string,
   record: StoreResetParkedRecord,
+  held: SettlementHeld,
   coordinate: string = record.parkingId,
 ): void {
+  held();
   const parkingDirectory = join(parkingRoot, coordinate);
   assertContainedDirectory(storage, parkingRoot, parkingDirectory);
   const written = storage.writeAtomicDurableSync(
@@ -696,7 +701,9 @@ export function retainOnlyStoreResetPreservedCopy(
   storage: StoragePort,
   quarantineRoot: string,
   survivor: Readonly<{ kind: 'incident' | 'parking'; id: string }>,
+  held: SettlementHeld,
 ): StoreResetRetentionRotation {
+  held();
   const incomplete = (cause: unknown): StoreResetRetentionRotation => ({
     kind: 'incomplete',
     survivor,
@@ -737,6 +744,7 @@ export function retainOnlyStoreResetPreservedCopy(
           continue;
         }
         const candidatePath = join(parent, candidateId);
+        held();
         try {
           assertContainedDirectory(storage, parent, candidatePath);
         } catch (error: unknown) {
@@ -781,8 +789,9 @@ export function recordStoreResetParked(
   storage: StoragePort,
   quarantineRoot: string,
   parkingId: string,
+  held: SettlementHeld,
 ): StoreResetRetentionRotation {
-  const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'parking', id: parkingId });
+  const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'parking', id: parkingId }, held);
   if (rotation.kind === 'incomplete') return rotation;
   const ledger = readStoreResetRetentionLedger(storage, quarantineRoot);
   if (ledger !== null && (ledger.pending !== null || ledger.preserved !== null)) {
@@ -795,6 +804,7 @@ function reconcilePending(
   storage: StoragePort,
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
+  held: SettlementHeld,
 ): StoreResetRetentionLedger {
   const pending = ledger.pending;
   if (pending === null) return ledger;
@@ -802,7 +812,12 @@ function reconcilePending(
   const incidentId = pending.outcome.incident.incidentId;
   const committed = readCommittedManifest(storage, quarantineRoot, incidentId);
   if (committed !== null) {
-    const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, { kind: 'incident', id: incidentId });
+    const rotation = retainOnlyStoreResetPreservedCopy(
+      storage,
+      quarantineRoot,
+      { kind: 'incident', id: incidentId },
+      held,
+    );
     if (rotation.kind === 'incomplete') {
       return ledger;
     }
@@ -820,15 +835,25 @@ function reconcilePending(
   return ledger;
 }
 
-export function settleStoreResetPending(storage: StoragePort, quarantineRoot: string): void {
-  reconcilePending(storage, quarantineRoot, readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger());
+export function settleStoreResetPending(storage: StoragePort, quarantineRoot: string, held: SettlementHeld): void {
+  reconcilePending(
+    storage,
+    quarantineRoot,
+    readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger(),
+    held,
+  );
 }
 
-export function resolveStoreResetRetentionSlot(storage: StoragePort, quarantineRoot: string): StoreResetRetentionSlot {
+export function resolveStoreResetRetentionSlot(
+  storage: StoragePort,
+  quarantineRoot: string,
+  held: SettlementHeld,
+): StoreResetRetentionSlot {
   const ledger = reconcilePending(
     storage,
     quarantineRoot,
     readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger(),
+    held,
   );
   if (ledger.preserved !== null) {
     const holderPath = join(quarantineRoot, ledger.preserved.incidentId);
@@ -864,11 +889,17 @@ export function recordStoreResetPreserved(
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
   incident: StoreResetRetentionIncident,
+  held: SettlementHeld,
 ): StoreResetRetentionRotation {
-  const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, {
-    kind: 'incident',
-    id: incident.incidentId,
-  });
+  const rotation = retainOnlyStoreResetPreservedCopy(
+    storage,
+    quarantineRoot,
+    {
+      kind: 'incident',
+      id: incident.incidentId,
+    },
+    held,
+  );
   if (rotation.kind === 'incomplete') return rotation;
   writeLedger(storage, quarantineRoot, withPreservedOutcome(ledger, incident));
   return rotation;
@@ -879,7 +910,9 @@ export function recordStoreResetPending(
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
   pending: StoreResetRetentionPending,
+  held: SettlementHeld,
 ): StoreResetRetentionLedger {
+  held();
   const next = { ...ledger, pending };
   writeRequiredLedger(storage, quarantineRoot, next);
   return next;
@@ -889,7 +922,9 @@ export function clearStoreResetPending(
   storage: StoragePort,
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
+  held: SettlementHeld,
 ): void {
+  held();
   if (ledger.pending !== null) writeLedger(storage, quarantineRoot, { ...ledger, pending: null });
 }
 
@@ -899,7 +934,9 @@ export function recordStoreResetResumeLeftActive(
   ledger: StoreResetRetentionLedger,
   incidentId: string,
   names: readonly StoreResetEvidenceFileName[],
+  held: SettlementHeld,
 ): void {
+  held();
   if (names.length === 0) return;
   const update = (incident: StoreResetRetentionIncident): StoreResetRetentionIncident =>
     incident.incidentId === incidentId
@@ -969,7 +1006,9 @@ export function releaseStoreResetIncident(
   storage: StoragePort,
   quarantineRoot: string,
   incidentId: string,
+  held: SettlementHeld,
 ): StoreResetReleaseResult {
+  held();
   if (incidentId === STORE_RESET_IN_FLIGHT_DIRECTORY) return { kind: 'undeterminable', incidentId };
   if (!isCanonicalStoreResetIncidentId(incidentId)) return { kind: 'absent', incidentId };
   const rootPresence = pathPresence(storage, quarantineRoot);
@@ -1027,6 +1066,7 @@ export function releaseStoreResetIncident(
   }
   if (parkingPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
   if (parkingPresence === 'present') {
+    held();
     try {
       assertContainedDirectory(storage, quarantineRoot, parkingRoot);
       assertContainedDirectory(storage, parkingRoot, parkingPath);
@@ -1070,6 +1110,7 @@ export function releaseStoreResetIncident(
     cause: error instanceof Error ? error.message : String(error),
   });
   if (parkingPresence === 'present') {
+    held();
     try {
       storage.rmSync(parkingPath, { recursive: true });
     } catch (error: unknown) {
@@ -1087,6 +1128,7 @@ export function releaseStoreResetIncident(
   }
   if (incidentPresence === 'present') {
     incidentDeletionDurability = 'unproven';
+    held();
     try {
       storage.rmSync(incidentPath, { recursive: true });
     } catch (error: unknown) {
@@ -1094,6 +1136,7 @@ export function releaseStoreResetIncident(
     }
   }
   let quarantineDurable: boolean;
+  held();
   try {
     quarantineDurable = storage.syncDirectoryDurableSync(quarantineRoot);
   } catch {
@@ -1106,6 +1149,7 @@ export function releaseStoreResetIncident(
   const clearsHolder = holder;
   const clearsPending = ledger.pending?.outcome.incident.incidentId === incidentId;
   if (clearsHolder || clearsPending) {
+    held();
     const written = writeLedger(storage, quarantineRoot, {
       ...ledger,
       ...(clearsHolder ? { preserved: null } : {}),

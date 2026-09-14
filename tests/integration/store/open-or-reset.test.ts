@@ -37,6 +37,7 @@ import {
   acquireBackendStoreWriterExclusion,
   acquireBackendStoreResetLock,
   createBackendStoreResetAuthority,
+  createSettlementAuthority,
   mintBackendStoreForClaim,
   publishClassifiedBackendStoreResetIncident,
   resolveBackendStoreFileSet,
@@ -129,24 +130,29 @@ function seedPreExistingTerminalSurvivor(runtime: Runtime, dbPath: string): stri
   const directory = join(parkingRoot, PRE_EXISTING_SURVIVOR_ID);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeFileSync(join(directory, 'store.db-wal'), 'pre-existing survivor');
-  writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-    version: 1,
-    parkingId: PRE_EXISTING_SURVIVOR_ID,
-    parkedAt: '2026-09-12T00:00:00.000Z',
-    phase: 'terminal',
-    cause: 'residual',
-    incidentId: null,
-    names: ['store.db-wal'],
-    entries: [
-      {
-        name: 'store.db-wal',
-        kind: 'regular-file',
-        sizeBytes: Buffer.byteLength('pre-existing survivor'),
-      },
-    ],
-    transaction: null,
-    classification: null,
-  });
+  writeStoreResetParkedRecord(
+    runtime.storage,
+    parkingRoot,
+    {
+      version: 1,
+      parkingId: PRE_EXISTING_SURVIVOR_ID,
+      parkedAt: '2026-09-12T00:00:00.000Z',
+      phase: 'terminal',
+      cause: 'residual',
+      incidentId: null,
+      names: ['store.db-wal'],
+      entries: [
+        {
+          name: 'store.db-wal',
+          kind: 'regular-file',
+          sizeBytes: Buffer.byteLength('pre-existing survivor'),
+        },
+      ],
+      transaction: null,
+      classification: null,
+    },
+    fixtureHeld(),
+  );
   return PRE_EXISTING_SURVIVOR_ID;
 }
 
@@ -161,7 +167,7 @@ function terminalSurvivors(
   ];
 }
 
-function expectOneTerminalSurvivor(dbPath: string, label = dbPath): void {
+function expectOneTerminalSurvivor(dbPath: string, label = dbPath, rotationMayBeIncomplete = false): void {
   const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
   const stagingRoot = join(quarantineRoot, '.staging');
   const staged = existsSync(stagingRoot) ? readdirSync(stagingRoot) : [];
@@ -173,7 +179,11 @@ function expectOneTerminalSurvivor(dbPath: string, label = dbPath): void {
   const storage = createRealRuntime('prod', { baseDir: dirname(dbPath) }).storage;
   expect(readStoreResetRetentionLedger(storage, quarantineRoot)?.pending ?? null, `${label}: pending`).toBeNull();
   const survivors = terminalSurvivors(quarantineRoot);
-  expect(survivors, `${label}: ${JSON.stringify(survivors)}`).toHaveLength(1);
+  if (rotationMayBeIncomplete) {
+    expect(survivors.length, `${label}: ${JSON.stringify(survivors)}`).toBeGreaterThanOrEqual(1);
+  } else {
+    expect(survivors, `${label}: ${JSON.stringify(survivors)}`).toHaveLength(1);
+  }
 }
 
 function expectReturnedSurvivorExists(
@@ -367,6 +377,10 @@ function adoptionLease(): GenerationAdoptionLockLease {
   } as unknown as GenerationAdoptionLockLease;
 }
 
+function fixtureHeld() {
+  return createSettlementAuthority(adoptionLease(), undefined, null).hold();
+}
+
 function writerExclusion(): WriterExclusion {
   return {
     kind: 'proven',
@@ -436,7 +450,9 @@ function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusi
     storeFormat: STORE_FORMAT,
   };
   const files = resolveBackendStoreFileSet(runtime, options);
-  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+  const adoption = adoptionLease();
+  const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
+  const settlementAuthority = createSettlementAuthority(adoption, exclusion, resetLock);
   try {
     const classification = classifyStoreFile(dbPath, runtime.storage, STORE_FORMAT);
     if (classification.kind !== 'older-incompatible' && classification.kind !== 'corrupt-or-unsupported') {
@@ -447,8 +463,8 @@ function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusi
       authorityFor(runtime, dbPath),
       files,
       enumerateActiveEvidence(runtime.storage, files),
-      classification,
-      resetLock,
+      STORE_FORMAT,
+      settlementAuthority,
       exclusion,
     );
   } finally {
@@ -498,14 +514,17 @@ function resumeReset(runtime: Runtime, dbPath: string) {
     path: dbPath,
     storeFormat: STORE_FORMAT,
   });
-  const resetLock = acquireBackendStoreResetLock(runtime, files, adoptionLease());
+  const adoption = adoptionLease();
+  const resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
+  const exclusion = writerExclusion();
+  const settlementAuthority = createSettlementAuthority(adoption, exclusion, resetLock);
   try {
     return resumeBackendStoreResetIncidentForOperator(
       runtime,
       files,
       { path: dbPath, storeFormat: STORE_FORMAT },
-      resetLock,
-      writerExclusion(),
+      settlementAuthority,
+      exclusion,
     );
   } finally {
     resetLock.release();
@@ -860,7 +879,7 @@ async function exerciseActiveEvidenceArm(
       expect(completed).not.toBeNull();
       completed?.db.close();
       if (completed !== null) expectReturnedSurvivorExists(dbPath, completed.survivor);
-      expectOneTerminalSurvivor(dbPath, arm);
+      expectOneTerminalSurvivor(dbPath, arm, mutation.surface === 'durable');
       if (trace.mutationDisposition() === null) {
         return { calls: trace.calls, durableCalls: trace.durableCalls, mutationDisposition: null };
       }
@@ -923,7 +942,7 @@ async function exerciseActiveEvidenceArm(
   if (injectedIdentity !== null && mutation?.kind !== 'appended') {
     expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
   }
-  expectOneTerminalSurvivor(dbPath, arm);
+  expectOneTerminalSurvivor(dbPath, arm, mutation?.surface === 'durable' && mutation.kind === 'crash');
   expectReturnedSurvivorExists(dbPath, settlement.survivor);
   return { calls: trace.calls, durableCalls: trace.durableCalls, mutationDisposition: trace.mutationDisposition() };
 }
@@ -1263,7 +1282,7 @@ describe('openOrResetBackendStoreDb', () => {
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
 
-    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
+    const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld());
 
     expect(slot).toMatchObject({
       kind: 'held',
@@ -1287,7 +1306,9 @@ describe('openOrResetBackendStoreDb', () => {
       overflow: true,
     });
 
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({ kind: 'vacant' });
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld())).toMatchObject({
+      kind: 'vacant',
+    });
     expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toBeNull();
   });
 
@@ -1372,10 +1393,11 @@ describe('openOrResetBackendStoreDb', () => {
           }
           rm(path, options);
         });
-        expectSetupCode(
-          captureError(() => publishReset(runtime, dbPath)),
-          'store_reset_quarantine_failed',
-        );
+        const interruptedRotation = publishReset(runtime, dbPath);
+        expect(interruptedRotation).toMatchObject({
+          kind: 'preserved',
+          rotation: { kind: 'incomplete', survivor: { kind: 'incident', id: expect.any(String) } },
+        });
         cleanupSpy.mockRestore();
         expect(removedPriorIncidents).toBe(1);
 
@@ -1444,10 +1466,10 @@ describe('openOrResetBackendStoreDb', () => {
     });
     createMismatchStore(dbPath);
 
-    expectSetupCode(
-      captureError(() => publishReset(runtime, dbPath)),
-      'store_reset_quarantine_failed',
-    );
+    expect(publishReset(runtime, dbPath)).toMatchObject({
+      kind: 'preserved',
+      rotation: { kind: 'incomplete', survivor: { kind: 'incident', id: expect.any(String) } },
+    });
     expect(interrupted).toBe(true);
     expect(existsSync(firstDirectory)).toBe(true);
     expect(existsSync(join(firstDirectory, 'reset-manifest.json'))).toBe(false);
@@ -1551,7 +1573,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedManifest(dbPath).resetPolicyCause).toBe('newer-incompatible-invalid-target');
   });
 
-  it('preserves the direct opener store and quarantine on an unclassified failure', async () => {
+  it('treats an unclassified advisory read as routing-only and classifies the owned copy', async () => {
     const failure = Object.assign(new Error("EACCES: permission denied, open '/private/customer/store.db'"), {
       code: 'EACCES',
     });
@@ -1568,14 +1590,20 @@ describe('openOrResetBackendStoreDb', () => {
       throw failure;
     });
 
-    const error = await captureAsyncError(() => openReset(runtime, dbPath));
+    const error = await captureAsyncError(async () => {
+      const db = await openReset(runtime, dbPath);
+      db.close();
+    });
 
-    expectSetupCode(error, 'store_open_unclassified');
-    expect(serializeCoralSetupError(error)).toMatchObject({ context: { path: dbPath, cause: failure.message } });
-    for (const [index, path] of storePaths.entries()) {
-      expect(readFileSync(path)).toEqual(before[index]);
+    expect(error).toBeNull();
+    expect(tableExists(dbPath, 'events')).toBe(true);
+    const survivors = terminalSurvivors(quarantinePath);
+    expect(survivors).toHaveLength(1);
+    expect(survivors[0]?.kind).toBe('parking');
+    const parkingPath = join(quarantinePath, '.parked', survivors[0]?.id ?? 'missing');
+    for (const [index, name] of ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'].entries()) {
+      expect(readFileSync(join(parkingPath, name))).toEqual(before[index]);
     }
-    expect(existsSync(quarantinePath)).toBe(false);
     expect(existsSync(join(root, 'store.db.reset.lock'))).toBe(false);
   });
 
@@ -2170,22 +2198,27 @@ describe('openOrResetBackendStoreDb', () => {
     for (let index = 0; index <= MAX_INCIDENT_DIR_ENTRIES; index += 1) {
       writeFileSync(join(parkingDirectory, `extra-${index}`), 'parking evidence');
     }
-    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-      version: 1,
-      parkingId: interruptedId,
-      parkedAt: '2026-09-13T00:00:00.000Z',
-      phase: 'in-flight',
-      cause: 'publication',
-      incidentId: interruptedId,
-      names: [],
-      entries: [],
-      transaction: {
-        kind: 'publication',
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      {
+        version: 1,
+        parkingId: interruptedId,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'in-flight',
+        cause: 'publication',
         incidentId: interruptedId,
-        identities: [{ name: 'store.db', dev: parkedIdentity.dev.toString(), ino: parkedIdentity.ino.toString() }],
+        names: [],
+        entries: [],
+        transaction: {
+          kind: 'publication',
+          incidentId: interruptedId,
+          identities: [{ name: 'store.db', dev: parkedIdentity.dev.toString(), ino: parkedIdentity.ino.toString() }],
+        },
+        classification: null,
       },
-      classification: null,
-    });
+      fixtureHeld(),
+    );
 
     const rmSync = runtime.storage.rmSync;
     const stagingRemoval = vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
@@ -2380,7 +2413,7 @@ describe('openOrResetBackendStoreDb', () => {
     });
 
     ledgerWrite.mockRestore();
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld())).toMatchObject({
       kind: 'held',
       holder: { preservation: { kind: 'copied', coherence: 'coherent' } },
       ledger: { pending: null },
@@ -2397,7 +2430,7 @@ describe('openOrResetBackendStoreDb', () => {
     rmSync(join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME));
     vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockReturnValue(false);
 
-    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot)).toMatchObject({
+    expect(resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld())).toMatchObject({
       kind: 'held',
       holder: { incidentId: publication.incident.incidentId },
     });
@@ -3097,22 +3130,27 @@ describe('openOrResetBackendStoreDb', () => {
         const parkingDirectory = join(parkingRoot, parkingId);
         mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
         writeFileSync(join(parkingDirectory, 'store.db-wal'), evidence);
-        writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-          version: 1,
-          parkingId,
-          parkedAt:
-            clockState === 'equal'
-              ? '2026-09-13T00:00:00.000Z'
-              : `2026-09-${String(13 - index).padStart(2, '0')}T00:00:00.000Z`,
-          parkingOrder: String(index + 1),
-          phase: 'terminal',
-          cause: 'residual',
-          incidentId: null,
-          names: ['store.db-wal'],
-          entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(evidence) }],
-          transaction: null,
-          classification: null,
-        });
+        writeStoreResetParkedRecord(
+          runtime.storage,
+          parkingRoot,
+          {
+            version: 1,
+            parkingId,
+            parkedAt:
+              clockState === 'equal'
+                ? '2026-09-13T00:00:00.000Z'
+                : `2026-09-${String(13 - index).padStart(2, '0')}T00:00:00.000Z`,
+            parkingOrder: String(index + 1),
+            phase: 'terminal',
+            cause: 'residual',
+            incidentId: null,
+            names: ['store.db-wal'],
+            entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(evidence) }],
+            transaction: null,
+            classification: null,
+          },
+          fixtureHeld(),
+        );
       }
 
       const db = await openReset(runtime, dbPath);
@@ -3176,7 +3214,7 @@ describe('openOrResetBackendStoreDb', () => {
     );
     expect(initialClassificationKeys.some((key) => key.method === 'existsSync')).toBe(true);
     expect(initialClassificationKeys.some((key) => key.method === 'lstatSync')).toBe(true);
-    expect(initialClassificationKeys.some((key) => key.method === 'openSqliteDatabaseSync')).toBe(false);
+    expect(initialClassificationKeys.some((key) => key.method === 'openSqliteDatabaseSync')).toBe(true);
 
     const failures: string[] = [];
     const runCell = async (label: string, run: () => Promise<MutationDisposition | null>) => {
@@ -3185,7 +3223,13 @@ describe('openOrResetBackendStoreDb', () => {
         assertMutationDisposition(label, disposition);
       });
       if (error === null) return;
-      const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
+      const serialized = serializeCoralSetupError(error);
+      const cause =
+        serialized === null
+          ? error instanceof Error
+            ? error.message
+            : (JSON.stringify(error) ?? 'non-error thrown')
+          : JSON.stringify(serialized);
       failures.push(`${label}: ${cause}`);
     };
 
@@ -3385,6 +3429,7 @@ describe('openOrResetBackendStoreDb', () => {
                   : { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
               classification: null,
             },
+            fixtureHeld(),
             STORE_RESET_IN_FLIGHT_DIRECTORY,
           );
         }
@@ -3512,11 +3557,11 @@ describe('openOrResetBackendStoreDb', () => {
           },
         }),
       );
-      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, STORE_RESET_IN_FLIGHT_DIRECTORY)).toMatchObject(
-        {
-          kind: 'undeterminable',
-        },
-      );
+      expect(
+        releaseStoreResetIncident(runtime.storage, quarantineRoot, STORE_RESET_IN_FLIGHT_DIRECTORY, fixtureHeld()),
+      ).toMatchObject({
+        kind: 'undeterminable',
+      });
       expect(existsSync(coordinate)).toBe(true);
     });
 
@@ -3776,18 +3821,23 @@ describe('openOrResetBackendStoreDb', () => {
     const parkingDirectory = join(parkingRoot, parkingId);
     mkdirSync(parkingDirectory, { recursive: true, mode: 0o700 });
     createCompatibleSentinelStore(runtime, join(parkingDirectory, 'store.db'));
-    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-      version: 1,
-      parkingId,
-      parkedAt: '2026-09-13T00:00:00.000Z',
-      phase: 'in-flight',
-      cause: 'residual',
-      incidentId: null,
-      names: [],
-      entries: [],
-      transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
-      classification: null,
-    });
+    writeStoreResetParkedRecord(
+      runtime.storage,
+      parkingRoot,
+      {
+        version: 1,
+        parkingId,
+        parkedAt: '2026-09-13T00:00:00.000Z',
+        phase: 'in-flight',
+        cause: 'residual',
+        incidentId: null,
+        names: [],
+        entries: [],
+        transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
+        classification: null,
+      },
+      fixtureHeld(),
+    );
 
     const db = await openReset(runtime, dbPath);
     db.close();
@@ -3822,6 +3872,7 @@ describe('openOrResetBackendStoreDb', () => {
         transaction: { kind: 'claim', names: ['store.db', 'store.db-wal', 'store.db-shm', 'store.db.format'] },
         classification: null,
       },
+      fixtureHeld(),
       STORE_RESET_IN_FLIGHT_DIRECTORY,
     );
     const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
@@ -3872,7 +3923,7 @@ describe('openOrResetBackendStoreDb', () => {
         names: ['store.db-wal'],
         entries: [{ name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength('retired evidence') }],
       });
-      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId)).toMatchObject({
+      expect(releaseStoreResetIncident(runtime.storage, quarantineRoot, parkingId, fixtureHeld())).toMatchObject({
         kind: 'parked',
       });
       expect(existsSync(join(parkingRoot, parkingId))).toBe(false);
@@ -4119,7 +4170,12 @@ describe('openOrResetBackendStoreDb', () => {
 describe('retainTransitionFileInStoreResetQuarantine', () => {
   function retain(runtime: Runtime, dbPath: string, sourcePath: string) {
     const files = resolveBackendStoreFileSet(runtime, { path: dbPath, storeFormat: STORE_FORMAT });
-    return retainTransitionFileInStoreResetQuarantine(runtime, files, sourcePath, adoptionLease());
+    return retainTransitionFileInStoreResetQuarantine(
+      runtime,
+      files,
+      sourcePath,
+      createSettlementAuthority(adoptionLease(), undefined, null),
+    );
   }
 
   it('republishes over a truncated file left at the final evidence path instead of wedging', () => {

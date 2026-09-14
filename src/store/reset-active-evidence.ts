@@ -8,6 +8,9 @@ import {
   type StoreResetEvidenceFileName,
 } from './reset-incident.js';
 import type { StoreResetParkedEntry } from './reset-retention.js';
+import type { SettlementAuthority } from './backend-store-reset.js';
+
+type SettlementHeld = ReturnType<SettlementAuthority['hold']>;
 
 export type ActiveEvidenceFileSet = Readonly<{
   dbFile: string;
@@ -184,6 +187,7 @@ export function parkActiveEvidence(
   files: ActiveEvidenceFileSet,
   evidence: ActiveEvidence,
   parkingDirectory: string,
+  held: SettlementHeld,
 ): ActiveEvidencePark {
   const destination = parkedPath(parkingDirectory, evidence);
   try {
@@ -195,6 +199,7 @@ export function parkActiveEvidence(
 
   try {
     storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
+    held();
     storage.renameSync(candidateForEvidence(files, evidence.name), destination);
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'absent' };
@@ -230,6 +235,7 @@ export function parkCurrentEvidence(
   storage: StoragePort,
   files: ActiveEvidenceFileSet,
   parkingDirectory: string,
+  held: SettlementHeld,
 ): readonly ClaimedParkedEvidence[] {
   const parked: ClaimedParkedEvidence[] = [];
   for (const name of STORE_RESET_EVIDENCE_FILE_NAMES) {
@@ -247,6 +253,7 @@ export function parkCurrentEvidence(
     }
     try {
       storage.lstatSync(join(parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME));
+      held();
       storage.renameSync(candidateForEvidence(files, name), destination);
     } catch (error: unknown) {
       if (isNoEntryError(error)) continue;
@@ -269,8 +276,10 @@ export function linkOwnedEvidenceToActive(
   files: ActiveEvidenceFileSet,
   source: string,
   name: StoreResetEvidenceFileName,
+  held: SettlementHeld,
 ): ActiveNameClaim {
   try {
+    held();
     storage.linkSync(source, candidateForEvidence(files, name));
     return { kind: 'claimed' };
   } catch (error: unknown) {
@@ -351,9 +360,11 @@ export function restoreParkedEvidence(
   files: ActiveEvidenceFileSet,
   parkingDirectory: string,
   parked: ParkedActiveEvidence,
+  held: SettlementHeld,
 ): ActiveEvidenceRestore {
   if (parked.entry.kind !== 'regular-file') return { kind: 'kept', code: 'NON_REGULAR' };
   try {
+    held();
     storage.linkSync(parkedPath(parkingDirectory, parked.evidence), candidateForEvidence(files, parked.evidence.name));
   } catch (error: unknown) {
     const code = errorCode(error);
