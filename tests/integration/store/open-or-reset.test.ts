@@ -2934,9 +2934,7 @@ describe('openOrResetBackendStoreDb', () => {
 
       const expectedId = parkingIds.at(-1)!;
       expect(readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId)).toEqual([expectedId]);
-      expect(readFileSync(join(parkingRoot, expectedId, 'store.db-wal'), 'utf-8')).toBe(
-        `parking-${replacementCount}`,
-      );
+      expect(readFileSync(join(parkingRoot, expectedId, 'store.db-wal'), 'utf-8')).toBe(`parking-${replacementCount}`);
     },
   );
 

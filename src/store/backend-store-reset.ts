@@ -533,9 +533,15 @@ function copyPathCandidateForPublication<Name extends string>(
     destinationDescriptor = openedDestination;
 
     const expectedSize = Number(sourceOpened.size);
-    const hashed = hashExactDescriptor(storage, sourceDescriptor, expectedSize, (buffer, length) => {
-      writeExactDescriptor(storage, openedDestination, buffer, length);
-    }, maintainLease);
+    const hashed = hashExactDescriptor(
+      storage,
+      sourceDescriptor,
+      expectedSize,
+      (buffer, length) => {
+        writeExactDescriptor(storage, openedDestination, buffer, length);
+      },
+      maintainLease,
+    );
     const sourceAfter = storage.fstatSync(sourceDescriptor, { bigint: true });
     const sourcePathAfter = stablePathStat(storage, pathCandidate.source);
     const coherence =
@@ -606,9 +612,15 @@ function copyActiveEvidenceForPublication(
     const openedDestination = storage.openSync(destination, 'wx', 0o600);
     destinationDescriptor = openedDestination;
     const expectedSize = source.sizeBytes;
-    const hashed = hashExactDescriptor(storage, source.descriptor, expectedSize, (buffer, length) => {
-      writeExactDescriptor(storage, openedDestination, buffer, length);
-    }, maintainLease);
+    const hashed = hashExactDescriptor(
+      storage,
+      source.descriptor,
+      expectedSize,
+      (buffer, length) => {
+        writeExactDescriptor(storage, openedDestination, buffer, length);
+      },
+      maintainLease,
+    );
     const sourceAfter = storage.fstatSync(source.descriptor, { bigint: true });
     const coherence =
       !hashed.overrun &&

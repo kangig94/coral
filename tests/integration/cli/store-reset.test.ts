@@ -1189,78 +1189,73 @@ describe('operator store-reset discard', () => {
     expect(existsSync(fixedPath)).toBe(true);
   });
 
-  it.each([
-    'valid-holder',
-    'valid-non-holder',
-    'absent',
-    'malformed',
-    'oversized',
-    'symlinked',
-    'unreadable',
-  ] as const)('crosses retention-ledger state %s with operator release', async (ledgerState) => {
-    const baseDir = root();
-    const runtime = createRealRuntime('prod', { baseDir });
-    const dbPath = runtime.paths.coral.store.dbFile;
-    createMismatchStore(dbPath);
-    const discarded = await discardStoreReset({
-      target: 'gen2',
-      runtime,
-      build: CURRENT_BUILD,
-      storeFormat: STORE_FORMAT,
-      acquireSocketGuard: noSocketGuard,
-      currentBundleDir: baseDir,
-      validateSelectedTarget: () => {
-        throw new Error('no selected target is expected in this case');
-      },
-    });
-    if (discarded.kind !== 'discarded' || discarded.incident === null) {
-      throw new Error('Expected a committed store-reset incident.');
-    }
-    const incidentId = discarded.incident.incidentId;
-    const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const incidentPath = join(quarantineRoot, incidentId);
-    const ledgerPath = join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
-    const validLedger = readFileSync(ledgerPath, 'utf-8');
-
-    if (ledgerState === 'valid-non-holder') {
-      const ledger = JSON.parse(validLedger) as { preserved: { incidentId: string } };
-      ledger.preserved.incidentId = INCIDENT_ID;
-      writeFileSync(ledgerPath, JSON.stringify(ledger));
-    } else if (ledgerState === 'absent') {
-      rmSync(ledgerPath);
-    } else if (ledgerState === 'malformed') {
-      writeFileSync(ledgerPath, '{');
-    } else if (ledgerState === 'oversized') {
-      writeFileSync(ledgerPath, Buffer.alloc(MAX_RESET_RETENTION_LEDGER_BYTES + 1));
-    } else if (ledgerState === 'symlinked') {
-      const outside = join(baseDir, 'outside-retention-ledger');
-      writeFileSync(outside, validLedger);
-      rmSync(ledgerPath);
-      symlinkSync(outside, ledgerPath);
-    } else if (ledgerState === 'unreadable') {
-      const readFile = runtime.storage.readFileSync;
-      vi.spyOn(runtime.storage, 'readFileSync').mockImplementation((path, encoding) => {
-        if (path === ledgerPath) throw Object.assign(new Error('ledger unreadable'), { code: 'EACCES' });
-        return readFile(path, encoding);
+  it.each(['valid-holder', 'valid-non-holder', 'absent', 'malformed', 'oversized', 'symlinked', 'unreadable'] as const)(
+    'crosses retention-ledger state %s with operator release',
+    async (ledgerState) => {
+      const baseDir = root();
+      const runtime = createRealRuntime('prod', { baseDir });
+      const dbPath = runtime.paths.coral.store.dbFile;
+      createMismatchStore(dbPath);
+      const discarded = await discardStoreReset({
+        target: 'gen2',
+        runtime,
+        build: CURRENT_BUILD,
+        storeFormat: STORE_FORMAT,
+        acquireSocketGuard: noSocketGuard,
+        currentBundleDir: baseDir,
+        validateSelectedTarget: () => {
+          throw new Error('no selected target is expected in this case');
+        },
       });
-    }
+      if (discarded.kind !== 'discarded' || discarded.incident === null) {
+        throw new Error('Expected a committed store-reset incident.');
+      }
+      const incidentId = discarded.incident.incidentId;
+      const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
+      const incidentPath = join(quarantineRoot, incidentId);
+      const ledgerPath = join(quarantineRoot, STORE_RESET_RETENTION_LEDGER_FILE_NAME);
+      const validLedger = readFileSync(ledgerPath, 'utf-8');
 
-    const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId });
+      if (ledgerState === 'valid-non-holder') {
+        const ledger = JSON.parse(validLedger) as { preserved: { incidentId: string } };
+        ledger.preserved.incidentId = INCIDENT_ID;
+        writeFileSync(ledgerPath, JSON.stringify(ledger));
+      } else if (ledgerState === 'absent') {
+        rmSync(ledgerPath);
+      } else if (ledgerState === 'malformed') {
+        writeFileSync(ledgerPath, '{');
+      } else if (ledgerState === 'oversized') {
+        writeFileSync(ledgerPath, Buffer.alloc(MAX_RESET_RETENTION_LEDGER_BYTES + 1));
+      } else if (ledgerState === 'symlinked') {
+        const outside = join(baseDir, 'outside-retention-ledger');
+        writeFileSync(outside, validLedger);
+        rmSync(ledgerPath);
+        symlinkSync(outside, ledgerPath);
+      } else if (ledgerState === 'unreadable') {
+        const readFile = runtime.storage.readFileSync;
+        vi.spyOn(runtime.storage, 'readFileSync').mockImplementation((path, encoding) => {
+          if (path === ledgerPath) throw Object.assign(new Error('ledger unreadable'), { code: 'EACCES' });
+          return readFile(path, encoding);
+        });
+      }
 
-    if (ledgerState === 'valid-holder') {
-      expect(result).toMatchObject({ kind: 'released' });
-      expect(existsSync(incidentPath)).toBe(false);
-    } else if (ledgerState === 'valid-non-holder' || ledgerState === 'absent') {
-      expect(result).toMatchObject({ kind: 'not-holder' });
-      expect(existsSync(incidentPath)).toBe(false);
-    } else {
-      expect(result).toMatchObject({ kind: 'undeterminable' });
-      expect(formatStoreResetRelease(result)).toContain(
-        'could not be verified as committed; no evidence was released and the preserved slot is unchanged',
-      );
-      expect(existsSync(incidentPath)).toBe(true);
-    }
-  });
+      const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId });
+
+      if (ledgerState === 'valid-holder') {
+        expect(result).toMatchObject({ kind: 'released' });
+        expect(existsSync(incidentPath)).toBe(false);
+      } else if (ledgerState === 'valid-non-holder' || ledgerState === 'absent') {
+        expect(result).toMatchObject({ kind: 'not-holder' });
+        expect(existsSync(incidentPath)).toBe(false);
+      } else {
+        expect(result).toMatchObject({ kind: 'undeterminable' });
+        expect(formatStoreResetRelease(result)).toContain(
+          'could not be verified as committed; no evidence was released and the preserved slot is unchanged',
+        );
+        expect(existsSync(incidentPath)).toBe(true);
+      }
+    },
+  );
 
   it.each(['invalid', 'oversized', 'symlinked', 'unreadable'] as const)(
     'releases terminal UUID parking whose sidecar is %s with unknown byte accounting',

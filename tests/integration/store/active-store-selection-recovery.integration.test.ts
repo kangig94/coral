@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import {
   chmodSync,
   existsSync,
@@ -590,19 +592,41 @@ describe('active-store selection recovery', () => {
     });
   });
 
-  it('should boot through the real coordinator while SQLite holds an exclusive lock on the old inode', async () => {
+  it('should boot through the real coordinator while a foreign process locks the old SQLite inode', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     const path = runtime.paths.coral.store.dbFile;
     mkdirSync(dirname(path), { recursive: true });
-    const locked = new DatabaseSync(path);
-    locked.exec(`
+    const store = new DatabaseSync(path);
+    store.exec(`
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE sentinel_before_reset (id INTEGER PRIMARY KEY);
       INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', '${incompatibleStoreFingerprint}');
       INSERT INTO meta (key, value) VALUES ('store_product_version', '0.0.1');
-      BEGIN EXCLUSIVE;
     `);
+    store.close();
+    const locker = spawn(
+      process.execPath,
+      [
+        '--no-warnings',
+        '-e',
+        "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('BEGIN EXCLUSIVE'); process.stdout.write('locked\\n'); process.stdin.resume(); process.stdin.once('end', () => db.close());",
+        path,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] },
+    );
+    let lockerStderr = '';
+    locker.stderr.setEncoding('utf-8');
+    locker.stderr.on('data', (chunk: string) => {
+      lockerStderr += chunk;
+    });
+    const lockerExit = once(locker, 'exit');
+    await Promise.race([
+      once(locker.stdout, 'data'),
+      lockerExit.then(([code]) => {
+        throw new Error(`SQLite locker exited before acquiring the lock (${String(code)}): ${lockerStderr}`);
+      }),
+    ]);
 
     try {
       const result = await routeOrOpenBackendStoreAtStartup({
@@ -618,7 +642,9 @@ describe('active-store selection recovery', () => {
         result.db.close();
       }
     } finally {
-      locked.close();
+      locker.stdin.end();
+      const [code] = await lockerExit;
+      expect(code, lockerStderr).toBe(0);
     }
   });
 
