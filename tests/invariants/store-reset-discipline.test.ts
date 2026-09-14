@@ -364,11 +364,11 @@ describe('store reset discipline invariants', () => {
     }
   });
 
-  it('publishes once before the unbounded owned-store claim loop', () => {
+  it('classifies under exclusion and publishes once before the unbounded owned-store claim loop', () => {
     const coordination = sourceFile(ACTIVE_STORE_SELECTION_COORDINATION_PATH);
     const settlement = findFunction(ACTIVE_STORE_SELECTION_COORDINATION_PATH, 'settleActiveStore');
     const body = withoutComments(settlement.body?.getText(coordination) ?? '');
-    const classifyIndex = body.indexOf('classifyStoreForProtocol(');
+    const observeIndex = body.indexOf('runtime.storage.existsSync(dbFile)');
     const acquireExclusionIndex = body.indexOf('acquireSettlementWriterExclusion(');
     const resetLockIndex = body.indexOf('acquireBackendStoreResetLock(');
     const resumeIndex = body.indexOf('resumeBackendStoreResetIncident');
@@ -377,15 +377,16 @@ describe('store reset discipline invariants', () => {
     const stageIndex = body.indexOf('mintActiveStoreEpoch(');
     const mintIndex = body.indexOf('mintBackendStoreForClaim(');
 
-    expect(classifyIndex).toBeGreaterThanOrEqual(0);
-    expect(acquireExclusionIndex).toBeGreaterThan(classifyIndex);
-    expect(resetLockIndex).toBeGreaterThan(acquireExclusionIndex);
+    expect(observeIndex).toBeGreaterThanOrEqual(0);
+    expect(acquireExclusionIndex).toBeGreaterThan(observeIndex);
+    expect(stageIndex).toBeGreaterThan(acquireExclusionIndex);
+    expect(resetLockIndex).toBeGreaterThan(stageIndex);
     expect(resumeIndex).toBeGreaterThan(resetLockIndex);
-    expect(stageIndex).toBeGreaterThan(resumeIndex);
-    expect(publishIndex).toBeGreaterThan(stageIndex);
+    expect(publishIndex).toBeGreaterThan(resumeIndex);
     expect(mintIndex).toBeGreaterThan(publishIndex);
     expect(loopIndex).toBeGreaterThan(publishIndex);
     expect(body).not.toContain('openWritableStoreDatabase(');
+    expect(body).not.toContain('classifyStoreForProtocol(');
     expect(body).not.toContain('publications.length === 2');
 
     const publicationCalls = allSourcePaths().flatMap((path) =>
