@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Sixteen design revisions, twenty-three unbiased tier-1 review rounds, and thirty
-distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen earlier
-revisions inherited; 15 and 16 are the correction rounds its reviewers earned.
+**Status**: in flight. Seventeen design revisions, twenty-four unbiased tier-1 review rounds, and
+thirty-six distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15, 16 and 17 are the correction rounds its reviewers earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -1860,6 +1860,106 @@ acceptable under §7 — it makes it a build problem. Either the hook's copy is 
 build time, or the parity invariant runs both implementations over one shared corpus of proof states so
 drift fails rather than passes. The current parity test supplies one valid epoch and one symlink, which
 is not a corpus.
+
+## Revision 17 — the sweep that never runs, and a defence that was never owed
+
+Round 24's reviewers reproduced seven blocking failures each, in isolated directories. Two are design
+errors rather than implementation gaps, and one of those is mine from Revision 16.
+
+### The sweep has no reachable opportunity
+
+Settlement runs — and performs its only sweep — **before** the coordinator publishes its discovery record
+(`src/coordinator/lifecycle.ts:1063`, `:1137`), and a clean shutdown removes that record (`:1404`). Under
+Revision 16's rule that an absent record is unobservable, every boot sweep therefore returns `incomplete`,
+and every `release` of a non-current epoch is refused: while the daemon is live the record names a
+different PID, and after a clean stop there is no record at all. **The only state that permits a
+successful release is a stale record naming a dead process**, and the remediation text asks the operator
+to confirm no coordinator holds the epoch through a command that does not exist.
+
+So "keep exactly one" never converges in ordinary use, and both reviewers demonstrated K garbage epochs
+accumulating across clean start/reset/stop cycles. The rule from Revision 16 is right; its placement was
+wrong.
+
+> **The sweep is not a boot step. It runs after the coordinator has published its discovery record**,
+> where the record exists, names us, and an absence genuinely means no coordinator is live.
+
+That is what "the sweep was never a boot dependency" should have meant all along, and it costs nothing:
+the boot opens its epoch and proceeds, and retention converges a moment later. `release` gains the same
+footing, plus an operator path that does not depend on a corpse.
+
+A record that **is** present while its PID is absent is also not `absent`. It says a coordinator died; it
+says nothing about the children it spawned. A reviewer used exactly that to delete an epoch the KB daemon
+still had open (`src/kb-daemon/runtime-host.ts:366`). Present-but-dead is unobservable.
+
+### A defence that was never owed
+
+Five of the remaining findings are one mechanism defending against one adversary:
+
+- Containment is proved by `lstat`/`realpath` on the directory, and `O_NOFOLLOW` then protects only the
+  final `store.db` component (`epoch.ts:159`, `:181`). Replacing `epoch-1` with a symlink to an external
+  directory **after** containment succeeds reaches an external database, and Coral stamps it.
+- The `/proc/self/fd` bridge binds an inode but not the name SQLite derives `-wal` and `-shm` from. A
+  reviewer renamed `store.db` to `moved.db` after the descriptor was taken and restored the proved inode
+  before re-verification: `{dev, ino}` matched, `db.location()` was `moved.db`, WAL lived at
+  `moved.db-wal`, and a peer opening `store.db` got `disk I/O error`.
+- Where neither `/proc/self/fd` nor `/dev/fd` exists the code falls back to the mutable pathname, silently
+  defeating the binding it advertises.
+
+Each fix would be another turn of the same screw, so ask instead who this defends against: a process
+running **as the same user** that actively races the coordinator inside `~/.coral`. That process can
+already replace the plugin bundle, the CLI, the hook scripts and the coordinator binary. There is nothing
+here to protect that it cannot reach more directly, and the owner's position is that the store matters to
+nobody.
+
+> **A same-user process that actively races the coordinator is out of scope, and that is written down
+> rather than defended against.**
+
+So the descriptor bridge, `O_NOFOLLOW`, the post-open re-verification and the platform fallback all go, and
+SQLite is handed the path. What stays is the cheap static classification the trichotomy actually needs:
+a `store.db` that *is* a symlink, a directory that *is* a symlink, an entry of the wrong kind — these are
+accidental states, they are disproven, and `lstat` decides them without pretending to be atomic.
+
+### Deletion still acts on a classification it no longer holds
+
+`replaceEpoch` observes an entry as disproven and then removes it by pathname with no holder or liveness
+check at all (`epoch.ts:394`); the sweep and `cleanupMint` have the same observation-to-`rmSync` gap
+(`:465`, `:501`). Two publishers see a malformed `epoch-1`; B removes it, publishes a valid `epoch-1` and
+opens it; A resumes from its stale observation and deletes B's live epoch. Reproduced.
+
+The replacement arm should not exist.
+
+> **The successor is the lowest valid number above `current` whose name is free** — not free-or-disproven.
+
+Nothing has to be deleted in order to publish, `ENOTEMPTY` and `ENOTDIR` simply advance the number, and
+`replaceEpoch` goes with the race it carried. Disproven garbage is then swept, post-ready, by the same
+pass that handles old epochs — where a concurrent publication cannot appear, because publication only ever
+moves upward.
+
+### Three more
+
+**A persistent open failure spins forever.** `openProvenStoreDescriptor` catches everything and returns
+`null` (`:581`), `tryOpenCurrentEpoch` turns that into `retry` (`:628`), and settlement repeats with no
+observed progress (`:677`). A `store.db` at mode `0444` busy-spins. A proven epoch that cannot be opened
+names a refused syscall, which is the one refusal the governing rule allows — surface it rather than
+looping.
+
+**The holder record has no lifecycle.** The parent writes it atomically and the child then truncates and
+rewrites the same path with a plain `writeFileSync` (`cli/store-reset.ts:92`,
+`store/reset-incident-diagnostic.ts:24`), so a death mid-write leaves malformed JSON that is classified
+unobservable forever, blocking every later sweep and release with no command to clear it. The parent
+writes it once, naming the epoch and the PID; the child never rewrites it; the parent removes it in
+`finally`; a record whose PID is absent is stale, visible in `list`, and removable by the sweep that
+re-checks it.
+
+**`incomplete` collapses five outcomes** — unobservable metadata, a live holder, an unobservable holder,
+a failed deletion and a failed durability sync — and `release` maps all of them to `release-unproven`
+whose only advice is to confirm no coordinator holds the epoch (`epoch.ts:392`,
+`operator-store-reset.ts:157`, `cli/format/store-reset.ts:170`). They have different successors and must
+say so.
+
+**`epoch.json` is read without a byte bound on the boot path** (`:769`). A bound here is correct and is
+not this document's subject: exceeding it makes the metadata **malformed**, which is a classification, not
+a refusal.
 
 ## Invariants to add
 
