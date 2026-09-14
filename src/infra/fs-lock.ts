@@ -514,7 +514,6 @@ function createDirectoryLockLease(
   const lease = releaseDirectoryLock(lockDir, deps, ownerToken, identity, heartbeat, () => owned, loseOwnership);
   Object.defineProperty(lease, 'actuator', {
     value: createStorageActuator(deps.storage as unknown as StoragePort, () => {
-      lease.maintain();
       lease.assertOwned();
     }),
     enumerable: true,
