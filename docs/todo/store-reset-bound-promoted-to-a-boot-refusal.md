@@ -1,6 +1,6 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Ten design revisions, seventeen unbiased tier-1 review rounds, and fourteen
+**Status**: in flight. Eleven design revisions, eighteen unbiased tier-1 review rounds, and sixteen
 distinct instances of the same defect so far. This document is the specification; read the revisions in order,
 because each one records what the previous got wrong.
 
@@ -1243,6 +1243,106 @@ loop body, then single module. The guard that cannot be one level off is the typ
 constructor, it is not exported, and every shared-name mutation and whole-file read takes it. The
 invariant then has only to assert that — one constructor, unexported, no parameter of that type carrying
 a default — which is shallow enough that there is no level beneath it to miss.
+
+## Revision 11 — the guard must be derived, never enumerated
+
+Revision 10 said the type was the guard and that "there is no level beneath it to miss." Both round 18
+reviewers found the level beneath it independently, and they found the same one.
+
+`dropParkedEvidence` unlinks a shared parking name and takes no authority at all
+(`src/store/reset-active-evidence.ts:354`). `restoreParkedEvidence` holds before its `linkSync` and then
+unlinks without re-holding (`:367`, `:376`). The invariant passed anyway, because what it checks is a
+**hand-written list of twenty-nine function names** (`tests/invariants/store-reset-discipline.test.ts:498`)
+— and `dropParkedEvidence` is not on it.
+
+Reachable, and both reviewers reached it the same way: process A decides a parked entry is its own and
+stalls past the stale interval; process B takes the locks, settles A's transaction, and reuses the fixed
+`.in-flight` coordinate for new evidence; A resumes and unlinks B's store from a decision it made before
+B existed.
+
+So the count is four, and they are all one sentence:
+
+| round | the guard | the level it missed |
+|---|---|---|
+| 5 | call text in a module | the lexical loop body |
+| 6 | the lexical loop body | a second module |
+| 7 | a single module | the import-reachable closure |
+| 18 | a list of function names | the function nobody listed |
+
+> **A guard that enumerates its subjects fails at exactly the subject nobody enumerated. Derive the set
+> from the tree — imports, types, call edges — or do not claim a guard.**
+
+The one guard on this branch that has never failed is the semantic-refusal ratchet, and it is the one
+that computes its closure from imports instead of naming modules. That is not a coincidence.
+
+### Possession is not proof
+
+The second half of the same defect, and it is a flaw in Revision 10 itself rather than in its
+implementation. `Held` is a callable value that can be stored, passed on, and invoked whenever — so a
+parameter of type `Held` proves that a function *could* re-prove authority, never that it *did*, and
+never that it did **immediately before the syscall**. `commitTerminalParking` holds, runs an arbitrary
+caller-supplied `populate()`, and then renames the fixed coordinate (`backend-store-reset.ts:1794`,
+`:1800`). Nothing about that is ill-typed under Revision 10.
+
+Both halves have one fix. **The authority owns the syscalls.**
+
+```
+held.unlink(path)        held.rename(from, to)      held.link(from, to)
+held.readWholeFile(path) held.writeWholeFile(path, bytes)
+```
+
+Each method re-proves every layer and then performs the call, with nothing between the proof and the
+syscall. There is no `held` to forget, because there is no form of the act that does not go through it:
+a caller holding a stale `Held` cannot mutate a shared name, it can only fail.
+
+And the invariant stops being a list. It becomes one derived check over the import-reachable settlement
+closure: **no module in that closure names a mutating or whole-file `StoragePort` member directly** —
+`unlinkSync`, `renameSync`, `linkSync`, `rmSync`, `writeFileSync`, `readFileSync` and their kin reach the
+filesystem only through the authority. That set comes from the port's own type and the closure from the
+imports, so neither is written down by hand, and there is no list to be absent from.
+
+Observation stays free: `lstatSync`, `existsSync` and their kin mutate nothing, and Revision 3 already
+settled that observing a shared name is unavoidable.
+
+### A refusal that cannot re-prove its evidence parks instead
+
+The one remaining `legacy-adoptable` refusal is reached after restoring the parked inode, but it cites
+the classification taken *before* restoration (`backend-store-reset.ts:2849`, `:2884`). A reviewer
+reproduced the gap with a writable descriptor opened before parking: the foreign descriptor changed the
+same inode immediately after the parked classifier closed it, Coral restored the changed bytes, and then
+refused the boot with `store_schema_outdated` naming a classification that no longer described anything.
+
+This is not the accepted rename-while-open limit re-reported. That limit says the bytes may be corrupted;
+this says an obsolete classification converts that into the exact boot refusal the branch exists to
+remove. Under the governing rule a classification that cannot be re-proved **names neither a refused
+syscall nor unknown evidence that proceeding would finalize, so it selects the next mechanism down**:
+re-classify the restored file at the moment of the refusal, and if that disagrees with the classification
+that routed here — or cannot be performed — park and claim rather than refuse. Whether `legacy-adoptable`
+should refuse at all remains the migration entry's question.
+
+### The incomplete rotation must reach the boundary that reports
+
+`commitTerminalParking` computes and returns `incomplete` (`backend-store-reset.ts:1812`), and
+`attemptBackendStoreClaim` drops the result on both terminalization branches (`:2929`). The `parked`
+epoch carries no rotation field (`:244`), so the CLI can render an incomplete rotation for a `described`
+incident and never for terminal parking (`cli/commands/backend.ts:527`, `:544`). Startup then finishes
+successfully with two retained coordinates and says only "Parked …", with the honest disposition alive
+solely in an audit event that scrolls away — §11's "a refusal is visible as durable status, not only as a
+log line", and `decision-union-results.md` besides. The rotation reaches the epoch, and the CLI renders
+it for both survivor kinds.
+
+### The size bound is instance sixteen
+
+`enumerateActiveEvidence` throws `Store-reset evidence cannot be represented safely.` for a regular file
+larger than `Number.MAX_SAFE_INTEGER` (`reset-active-evidence.ts:120`), on the startup path, before
+anything can park. Nine petabytes is not reachable in practice and that is beside the point: **twelve
+lines above, the same module answers the same question by returning `sizeBytes: null`** (`:107`). One
+module, one question, two answers, and the throwing one is on the boot path — which is this document's
+oldest finding and its whole subject at once.
+
+Parking does not need a representable size; only reporting does, and reporting is what the original
+1 GiB bound existed for. `sizeBytes` is absent when it cannot be represented, every consumer treats
+absence as "not reported", and nothing on the reset path throws over it.
 
 ## Invariants to add
 
