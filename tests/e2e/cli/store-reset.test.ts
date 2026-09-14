@@ -310,6 +310,7 @@ describe('bundled store-reset CLI', () => {
     expect(release.status, release.stderr).toBe(0);
     expect(release.stdout).toContain('Released store epoch 1');
     expect(existsSync(epochOnePath)).toBe(false);
+    console.log('ordinary-release-cell fabricated-discovery=false target=epoch-1 released=true');
   });
 
   it('sweeps after discovery publication across clean reset cycles', async () => {
