@@ -247,7 +247,7 @@ function releaseDirectoryLock(
   loseOwnership: () => void,
 ): DirectoryLockLease {
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor((deps.staleMs ?? STALE_LOCK_MS) / 3));
-  let refreshedAt = deps.time.now();
+  let refreshedAt: number | undefined;
   const release = (() => {
     loseOwnership();
     deps.time.clearInterval(heartbeat);
@@ -264,15 +264,12 @@ function releaseDirectoryLock(
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
   };
-  release.assertOwned = () => {
-    refresh();
-    refreshedAt = deps.time.now();
-  };
+  release.assertOwned = refresh;
   release.maintain = () => {
     const currentTime = deps.time.now();
-    if (currentTime - refreshedAt < heartbeatMs) return;
+    if (refreshedAt !== undefined && currentTime - refreshedAt < heartbeatMs) return;
     refresh();
-    refreshedAt = deps.time.now();
+    refreshedAt = currentTime;
   };
   return release;
 }
