@@ -11,6 +11,7 @@ function fakeStat(overrides: Partial<StorageBigIntStat> = {}): StorageBigIntStat
   return {
     dev: 1n,
     ino: 2n,
+    nlink: 1n,
     mode: 0o100600n,
     uid: 1000n,
     size: 4n,

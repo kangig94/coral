@@ -333,6 +333,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         return {
           dev: stats.dev,
           ino: stats.ino,
+          nlink: stats.nlink,
           mode: stats.mode,
           uid: stats.uid,
           size: stats.size,
@@ -355,6 +356,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         return {
           dev: stats.dev,
           ino: stats.ino,
+          nlink: stats.nlink,
           mode: stats.mode,
           uid: stats.uid,
           size: stats.size,
@@ -376,6 +378,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       return {
         dev: stats.dev,
         ino: stats.ino,
+        nlink: stats.nlink,
         mode: stats.mode,
         uid: stats.uid,
         size: stats.size,

@@ -56,6 +56,7 @@ export interface SqliteDatabasePort {
 export type StorageBigIntStat = {
   readonly dev: bigint;
   readonly ino: bigint;
+  readonly nlink: bigint;
   readonly mode: bigint;
   readonly uid?: bigint;
   readonly size: bigint;

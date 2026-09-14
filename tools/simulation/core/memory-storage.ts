@@ -617,6 +617,7 @@ export class InMemoryStorage implements StoragePort {
         return {
           dev: BigInt(file.dev),
           ino: BigInt(file.ino),
+          nlink: this.fileLinkCount(file),
           mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode)),
           uid: SIMULATED_OWNER_UID,
           size: BigInt(file.content.length),
@@ -640,6 +641,7 @@ export class InMemoryStorage implements StoragePort {
       return {
         dev: BigInt(directory.dev),
         ino: BigInt(directory.ino),
+        nlink: 1n,
         mode: DIRECTORY_TYPE_BITS | BigInt(posixMode(directory.mode)),
         uid: SIMULATED_OWNER_UID,
         size: 0n,
@@ -665,6 +667,7 @@ export class InMemoryStorage implements StoragePort {
     return {
       dev: BigInt(file.dev),
       ino: BigInt(file.ino),
+      nlink: this.fileLinkCount(file),
       mode: REGULAR_FILE_TYPE_BITS | BigInt(posixMode(file.mode)),
       uid: SIMULATED_OWNER_UID,
       size: BigInt(file.content.length),
@@ -1155,6 +1158,14 @@ export class InMemoryStorage implements StoragePort {
   private fileNode(path: string): FileNode | undefined {
     const identity = this.files.get(normalizePathForStorage(path));
     return identity === undefined ? undefined : this.fileNodes.get(fileIdentityKey(identity));
+  }
+
+  private fileLinkCount(file: FileNode): bigint {
+    let count = 0n;
+    for (const identity of this.files.values()) {
+      if (identity.dev === file.dev && identity.ino === file.ino) count += 1n;
+    }
+    return count;
   }
 
   private createFile(path: string, content: Buffer, mode: number): FileNode {

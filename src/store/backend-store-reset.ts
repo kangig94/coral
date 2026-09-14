@@ -23,6 +23,7 @@ import {
   readParkedEvidence,
   restoreParkedEvidence,
   type ActiveEvidence,
+  type ActiveEvidenceIdentity,
   type ActiveEvidenceFileSet,
   type ParkedActiveEvidence,
   type StableSource,
@@ -386,6 +387,16 @@ function stablePathStat(storage: StoragePort, path: string): StorageBigIntStat {
     throw new Error('Store-reset evidence is not a regular file.');
   }
   return storage.statSync(path, { bigint: true });
+}
+
+function parkedDatabaseHasPrivateInode(storage: StoragePort, path: string, identity: ActiveEvidenceIdentity): boolean {
+  const descriptor = storage.openSync(path, 'r');
+  try {
+    const stat = storage.fstatSync(descriptor, { bigint: true });
+    return stat.isFile() && stat.dev === identity.dev && stat.ino === identity.ino && stat.nlink === 1n;
+  } finally {
+    storage.closeSync(descriptor);
+  }
 }
 
 function hashExactDescriptor(
@@ -2565,6 +2576,9 @@ export function attemptBackendStoreClaim(
         return refuseLegacyStore(dbFile, classification, options.storeFormat, runtime.flavor);
       case 'compatible':
       case 'fresh': {
+        if (!parkedDatabaseHasPrivateInode(runtime.storage, join(parkingDirectory, 'store.db'), parkedDb.identity)) {
+          break;
+        }
         const adoption = openCompatibleParkedStore(
           runtime,
           files,

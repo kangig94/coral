@@ -2420,6 +2420,40 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
+  it.each(['private', 'externally-linked'] as const)(
+    'opens a fresh %s claim through a private active inode',
+    async (topology) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot(`coral-store-writable-${topology}-`);
+      const dbPath = join(root, 'store.db');
+      const externalPath = join(root, 'external-store.db');
+      new DatabaseSync(dbPath).close();
+      if (topology === 'externally-linked') runtime.storage.linkSync(dbPath, externalPath);
+      const before = readFileSync(dbPath);
+      const parkedIdentity = statSync(dbPath, { bigint: true });
+      expect(parkedIdentity.nlink).toBe(topology === 'private' ? 1n : 2n);
+
+      const db = await openReset(runtime, dbPath);
+      expectReturnedHandleTargetsActiveStore(db, dbPath);
+      db.close();
+
+      const activeIdentity = statSync(dbPath, { bigint: true });
+      if (topology === 'private') {
+        expect({ dev: activeIdentity.dev, ino: activeIdentity.ino }).toEqual({
+          dev: parkedIdentity.dev,
+          ino: parkedIdentity.ino,
+        });
+        return;
+      }
+      expect(readFileSync(externalPath)).toEqual(before);
+      const externalIdentity = statSync(externalPath, { bigint: true });
+      expect({ dev: activeIdentity.dev, ino: activeIdentity.ino }).not.toEqual({
+        dev: externalIdentity.dev,
+        ino: externalIdentity.ino,
+      });
+    },
+  );
+
   it.each(['directory', 'unreadable-file'] as const)(
     'resets a shared-name symlink whose %s target cannot be opened as SQLite',
     async (targetKind) => {

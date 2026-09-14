@@ -53,6 +53,7 @@ describe('relocated socket paths stay within the configured conservative byte ce
     return {
       dev: 1n,
       ino: 1n,
+      nlink: 1n,
       mode: 0o40700n,
       uid: BigInt(uid),
       size: 0n,

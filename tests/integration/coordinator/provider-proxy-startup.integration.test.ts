@@ -562,6 +562,7 @@ function capsuleBackedStorage(
   const stat: StorageBigIntStat = {
     dev: 1n,
     ino: 2n,
+    nlink: 1n,
     mode: BigInt(0o100600),
     uid,
     size: BigInt(bytes.length),

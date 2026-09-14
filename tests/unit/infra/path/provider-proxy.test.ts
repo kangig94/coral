@@ -40,6 +40,7 @@ function secureStorage(mode = 0o40700n, ownerUid = CURRENT_UID): ProviderProxyEn
   const stat = (value: bigint) => ({
     dev: 1n,
     ino: 1n,
+    nlink: 1n,
     mode: value,
     uid: BigInt(ownerUid),
     size: 0n,

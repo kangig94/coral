@@ -164,6 +164,7 @@ function preflightStat(size: bigint): StorageBigIntStat {
   return {
     dev: 11n,
     ino: 12n,
+    nlink: 1n,
     mode: 0o600n,
     size,
     mtimeNs: 13n,
