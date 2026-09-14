@@ -1114,12 +1114,6 @@ function readActiveStoreTransitionV1With(
   return { kind: 'legacy' };
 }
 
-export function readActiveStoreTransitionV1(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-): ActiveStoreTransitionV1ReadResult {
-  return readActiveStoreTransitionV1With(runtime, readBoundedRecord);
-}
-
 export function readActiveStoreTransitionV1ForSettlement(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
   actuator: StorageActuator,

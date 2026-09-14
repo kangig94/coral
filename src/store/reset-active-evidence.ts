@@ -301,23 +301,6 @@ export function activeNameHasIdentity(
   }
 }
 
-export function dropActiveEvidenceIfOwned(
-  storage: StoragePort,
-  files: ActiveEvidenceFileSet,
-  parked: ClaimedParkedEvidence,
-  held: SettlementHeld,
-): boolean {
-  const identity = activeNameHasIdentity(storage, files, parked.name, parked.identity);
-  if (identity.kind !== 'same') return false;
-  try {
-    held.actuator.unlink(candidateForEvidence(files, parked.name));
-    return true;
-  } catch (error: unknown) {
-    if (isNoEntryError(error)) return false;
-    throw error;
-  }
-}
-
 export function readParkedEvidence(
   storage: StoragePort,
   parkingDirectory: string,
