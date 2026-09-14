@@ -911,7 +911,7 @@ export function releaseStoreResetIncident(
   } catch (error: unknown) {
     return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
   }
-  const slot = resolveStoreResetRetentionSlot(storage, quarantineRoot);
+  const ledger = readStoreResetRetentionLedger(storage, quarantineRoot) ?? emptyLedger();
   const stagingPath = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY, incidentId);
   const stagingPresence = pathPresence(storage, stagingPath);
   if (stagingPresence === 'present') {
@@ -974,7 +974,7 @@ export function releaseStoreResetIncident(
       return { kind: error instanceof UnsafeStoreResetPath ? 'unsafe' : 'undeterminable', incidentId };
     }
   }
-  const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
+  const holder = incidentPresence === 'present' && ledger.preserved?.incidentId === incidentId;
   const parkedEvidenceBytes =
     parkingPresence === 'present' && parkingRecordVerified ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
   const incidentEvidenceBytes =
@@ -1029,12 +1029,12 @@ export function releaseStoreResetIncident(
     incidentDeletionDurability = quarantineDurable ? 'proven' : 'unproven';
   }
   const durability = quarantineDurable && parkingDurable ? 'proven' : 'unproven';
-  const clearsHolder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
-  const clearsPending = slot.ledger.pending?.outcome.incident.incidentId === incidentId;
+  const clearsHolder = holder;
+  const clearsPending = ledger.pending?.outcome.incident.incidentId === incidentId;
   if (clearsHolder || clearsPending) {
     try {
       writeLedger(storage, quarantineRoot, {
-        ...slot.ledger,
+        ...ledger,
         ...(clearsHolder ? { preserved: null } : {}),
         ...(clearsPending ? { pending: null } : {}),
       });

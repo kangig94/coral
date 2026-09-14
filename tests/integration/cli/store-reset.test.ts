@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -1402,7 +1403,7 @@ describe('operator store-reset discard', () => {
     },
   );
 
-  it('does not retry removal after pending reconciliation already deleted the requested incident', async () => {
+  it('releases only the requested target while coordinator recovery remains pending', async () => {
     const baseDir = root();
     const runtime = createRealRuntime('prod', { baseDir });
     const dbPath = runtime.paths.coral.store.dbFile;
@@ -1422,39 +1423,74 @@ describe('operator store-reset discard', () => {
       throw new Error('Expected a committed store-reset incident.');
     }
     const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-    const requestedId = discarded.incident.incidentId;
-    const requestedPath = join(quarantineRoot, requestedId);
-    const replacementId = '423e4567-e89b-42d3-a456-426614174000';
+    const olderId = discarded.incident.incidentId;
+    const olderPath = join(quarantineRoot, olderId);
+    const pendingId = '423e4567-e89b-42d3-a456-426614174000';
+    const pendingPath = join(quarantineRoot, pendingId);
     const manifest = JSON.parse(
-      readFileSync(join(requestedPath, 'reset-manifest.json'), 'utf-8'),
+      readFileSync(join(olderPath, 'reset-manifest.json'), 'utf-8'),
     ) as StoreResetIncidentManifestV3;
-    const replacementManifest = { ...manifest, incidentId: replacementId };
-    mkdirSync(join(quarantineRoot, replacementId));
+    const pendingManifest = { ...manifest, incidentId: pendingId };
+    cpSync(olderPath, pendingPath, { recursive: true });
     writeFileSync(
-      join(quarantineRoot, replacementId, 'reset-manifest.json'),
-      serializeStoreResetIncidentManifest(replacementManifest),
+      join(pendingPath, 'reset-manifest.json'),
+      serializeStoreResetIncidentManifest(pendingManifest),
     );
     const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
     if (ledger === null) throw new Error('Expected a retention ledger.');
     recordStoreResetPending(runtime.storage, quarantineRoot, ledger, {
-      resetAt: replacementManifest.resetAt,
+      resetAt: pendingManifest.resetAt,
       identities: [],
       outcome: {
         kind: 'preserve',
         incident: {
-          incidentId: replacementId,
-          resetAt: replacementManifest.resetAt,
-          evidenceBytes: replacementManifest.files.reduce((total, file) => total + file.sizeBytes, 0),
+          incidentId: pendingId,
+          resetAt: pendingManifest.resetAt,
+          evidenceBytes: pendingManifest.files.reduce((total, file) => total + file.sizeBytes, 0),
           resumeLeftActive: false,
         },
       },
     });
+    const parkingRoot = join(quarantineRoot, '.parked');
+    const parkingPath = join(parkingRoot, pendingId);
+    const parkedEvidence = 'durable pending parking';
+    mkdirSync(parkingPath, { recursive: true, mode: 0o700 });
+    writeFileSync(join(parkingPath, 'store.db-wal'), parkedEvidence);
+    writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
+      version: STORE_RESET_PARKED_SIDECAR_VERSION,
+      parkingId: pendingId,
+      parkedAt: pendingManifest.resetAt,
+      phase: 'terminal',
+      cause: 'residual',
+      incidentId: pendingId,
+      names: ['store.db-wal'],
+      entries: [
+        { name: 'store.db-wal', kind: 'regular-file', sizeBytes: Buffer.byteLength(parkedEvidence) },
+      ],
+      transaction: null,
+      classification: null,
+    });
+    const pendingLedger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
+    const unrelatedId = '623e4567-e89b-42d3-a456-426614174000';
 
-    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: requestedId })).resolves.toMatchObject({
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: unrelatedId })).resolves.toMatchObject({
       kind: 'absent',
     });
-    expect(existsSync(requestedPath)).toBe(false);
-    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.incidentId).toBe(replacementId);
+    expect(existsSync(olderPath)).toBe(true);
+    expect(existsSync(pendingPath)).toBe(true);
+    expect(existsSync(parkingPath)).toBe(true);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toEqual(pendingLedger);
+
+    await expect(releaseStoreReset({ target: 'gen2', runtime, incidentId: olderId })).resolves.toMatchObject({
+      kind: 'released',
+    });
+    expect(existsSync(olderPath)).toBe(false);
+    expect(existsSync(pendingPath)).toBe(true);
+    expect(existsSync(parkingPath)).toBe(true);
+    expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)).toMatchObject({
+      preserved: null,
+      pending: { outcome: { incident: { incidentId: pendingId } } },
+    });
   });
 
   it('reports absent, staged, non-holder, and indeterminate release outcomes from real storage', async () => {

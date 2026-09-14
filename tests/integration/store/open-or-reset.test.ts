@@ -2045,6 +2045,25 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedManifest(dbPath).resetPolicyCause).toBe('corrupt-or-unsupported');
   });
 
+  it('resumes a manifest-bearing staging directory with the atomic writer temp file', async () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-manifest-temp-resume-');
+    const dbPath = join(root, 'store.db');
+    const { stagingRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
+    const manifestPath = join(stagingDirectory, 'reset-manifest.json');
+    writeFileSync(`${manifestPath}.tmp`, readFileSync(manifestPath));
+
+    const db = await openReset(runtime, dbPath);
+    db.close();
+
+    expect(readdirSync(stagingRoot)).toEqual([]);
+    const retained = retainedManifest(dbPath);
+    expect(existsSync(join(root, 'store-reset-quarantine', retained.incidentId, 'reset-manifest.json.tmp'))).toBe(
+      false,
+    );
+    expect(tableExists(dbPath, 'events')).toBe(true);
+  });
+
   it('terminalizes an over-limit unrestorable parking directory before deleting its staging witness', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-pre-manifest-parking-');

@@ -899,17 +899,28 @@ function validateStagingEntries(
   manifest: StoreResetIncidentManifest,
   requireComplete: boolean,
 ): void {
-  const read = storage.readDirectoryBoundedSync(stagingDirectory, MAX_INCIDENT_DIR_ENTRIES);
+  const read = storage.readDirectoryBoundedSync(stagingDirectory, MAX_INCIDENT_DIR_ENTRIES + 1);
   if (read.overflow) {
     throw new InterruptedStoreResetRefusal('store_reset_interrupted_ambiguous');
   }
   const expected = new Set<string>([STORE_RESET_MANIFEST_FILE_NAME, ...manifest.files.map((file) => file.name)]);
-  if (read.entries.some((entry) => !expected.has(entry))) {
+  const allowed = new Set([...expected, `${STORE_RESET_MANIFEST_FILE_NAME}.tmp`]);
+  if (read.entries.some((entry) => !allowed.has(entry))) {
     throw new InterruptedStoreResetRefusal('store_reset_interrupted_foreign');
   }
-  if (requireComplete && read.entries.length !== expected.size) {
+  if (requireComplete && [...expected].some((entry) => !read.entries.includes(entry))) {
     throw new InterruptedStoreResetRefusal('store_reset_interrupted_malformed');
   }
+}
+
+function removeAtomicManifestTemp(storage: StoragePort, stagingDirectory: string): void {
+  try {
+    storage.unlinkSync(join(stagingDirectory, `${STORE_RESET_MANIFEST_FILE_NAME}.tmp`));
+  } catch (error: unknown) {
+    if (isNoEntryError(error)) return;
+    throw error;
+  }
+  requireDirectorySync(storage, stagingDirectory);
 }
 
 function discardUncommittedStaging(storage: StoragePort, stagingDirectory: string, stagingRoot: string): void {
@@ -1292,6 +1303,7 @@ function resumeInterruptedIncident(
 
   requireIntactStagedEvidence(runtime.storage, stagingDirectory, manifest);
   validateStagingEntries(runtime.storage, stagingDirectory, manifest, true);
+  removeAtomicManifestTemp(runtime.storage, stagingDirectory);
   requireSameDirectory(runtime.storage, stagingDirectory, stagingIdentity);
   if (!interrupted.committed) {
     runtime.storage.renameSync(stagingDirectory, join(quarantineRoot, manifest.incidentId));
