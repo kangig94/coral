@@ -1741,18 +1741,20 @@ function resumeTerminalParkingCommit(
   const pendingIncidentId = readStoreResetRetentionLedger(storage, quarantineRoot)?.pending?.outcome.incident
     .incidentId;
   const newest = discovered.entries
-    .filter(
-      (entry) =>
-        isCanonicalStoreResetIncidentId(entry.coordinate) &&
-        entry.record?.phase === 'terminal' &&
-        (pendingIncidentId === undefined || entry.record.incidentId === pendingIncidentId),
-    )
+    .flatMap((entry) => {
+      const record = entry.record;
+      return isCanonicalStoreResetIncidentId(entry.coordinate) &&
+        record?.phase === 'terminal' &&
+        (pendingIncidentId === undefined || record.incidentId === pendingIncidentId)
+        ? [{ coordinate: entry.coordinate, record }]
+        : [];
+    })
     .sort((left, right) => {
-      const byTime = left.record!.parkedAt.localeCompare(right.record!.parkedAt);
+      const byTime = left.record.parkedAt.localeCompare(right.record.parkedAt);
       return byTime === 0 ? left.coordinate.localeCompare(right.coordinate) : byTime;
     })
     .at(-1);
-  if (newest?.record === undefined || newest.record === null) return false;
+  if (newest === undefined) return false;
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   terminalizeParking(
     storage,
@@ -1864,9 +1866,7 @@ function resumeNonPublicationParking(
   const { dbFile } = files;
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   let discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
-  if (resumeTerminalParkingCommit(runtime.storage, quarantineRoot, discovered)) {
-    discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
-  }
+  resumeTerminalParkingCommit(runtime.storage, quarantineRoot, discovered);
   retainInterruptedMintedStores(runtime, files, options);
   discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   if (discovered.truncated) {
