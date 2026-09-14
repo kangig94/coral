@@ -403,9 +403,8 @@ async function settleActiveStore(
   const { dbFile } = files;
   const pending = hasPendingBackendStoreResetIncident(runtime, files);
   const activeStoreObserved = runtime.storage.existsSync(dbFile);
-  const resetNeeded = pending || activeStoreObserved;
   let writerExclusion: WriterExclusion | undefined;
-  if (resetNeeded) {
+  if (pending || activeStoreObserved) {
     writerExclusion = await acquireSettlementWriterExclusion(options);
   }
   let resetLock: BackendStoreResetLockLease | null = null;
@@ -423,6 +422,22 @@ async function settleActiveStore(
     let transition = initialTransition;
     let survivor: ActiveStoreSettlementSurvivor = { kind: 'none' };
     const epochs: StoreSettlementEpoch[] = [];
+    const maintainWriterExclusion = (): void => {
+      adoption.maintain();
+      if (writerExclusion?.kind === 'proven') writerExclusion.lease.maintain();
+    };
+    let activeEpoch =
+      !pending && activeStoreObserved
+        ? mintActiveStoreEpoch(runtime, files, options, maintainWriterExclusion)
+        : null;
+    if (activeEpoch?.classification.kind === 'legacy-adoptable') {
+      return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
+    }
+    const resetNeeded =
+      pending ||
+      activeEpoch?.classification.kind === 'older-incompatible' ||
+      activeEpoch?.classification.kind === 'corrupt-or-unsupported' ||
+      activeEpoch?.classification.kind === 'newer-incompatible';
     if (resetNeeded) {
       resetLock = acquireBackendStoreResetLock(runtime, files, adoption, writerExclusion);
       resumed =
@@ -432,7 +447,9 @@ async function settleActiveStore(
             ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
             : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
       if (resumed !== null) survivor = { kind: 'incident', incident: resumed, resumed: true };
-      const activeEpoch = mintActiveStoreEpoch(runtime, files, options, resetLock.maintain);
+      if (pending || activeEpoch === null) {
+        activeEpoch = mintActiveStoreEpoch(runtime, files, options, resetLock.maintain);
+      }
       switch (activeEpoch.classification.kind) {
         case 'legacy-adoptable':
           return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
