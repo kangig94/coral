@@ -8,7 +8,7 @@ import {
   createDirectoryLockParent,
   isDirectoryLockTimeoutError,
   tryAcquireDirectoryLock,
-  type DirectoryLockLease,
+  type ActuatedDirectoryLockLease,
 } from '../infra/fs-lock.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
 import { validateProductVersion } from '../infra/product-version.js';
@@ -25,7 +25,7 @@ export interface GenerationReadinessCompletion {
 }
 
 export interface GenerationWriterLease {
-  readonly directoryLock: DirectoryLockLease;
+  readonly directoryLock: ActuatedDirectoryLockLease;
   assertOwned(): void;
   release(): void;
 }
@@ -95,7 +95,7 @@ export interface GenerationAdoptionLease {
 
 const GENERATION_ADOPTION_LOCK_BRAND: unique symbol = Symbol('GenerationAdoptionLockLease');
 
-export type GenerationAdoptionLockLease = DirectoryLockLease & {
+export type GenerationAdoptionLockLease = ActuatedDirectoryLockLease & {
   readonly [GENERATION_ADOPTION_LOCK_BRAND]: true;
 };
 
@@ -480,7 +480,7 @@ export async function acquireGenerationMaintenanceLease(
     directoryLockDeps(runtime),
     remainingBudget(),
   );
-  let releaseMaintenance: DirectoryLockLease;
+  let releaseMaintenance: ActuatedDirectoryLockLease;
   try {
     releaseMaintenance = await acquireDirectoryLock(
       paths.maintenanceLock,

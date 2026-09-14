@@ -8,6 +8,7 @@ import { compareProductVersions, validateProductVersion } from '../infra/product
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
+import type { SettlementAuthority } from './settlement-authority.js';
 import {
   isStoreFormatFingerprint,
   STORE_FORMAT_FINGERPRINT_META_KEY,
@@ -72,6 +73,7 @@ type WritableStoreOptions = {
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
   readonly held: StorageActuator;
+  readonly owner?: Pick<SettlementAuthority, 'openDatabase'>;
 };
 
 type AuthorizedWritableStoreOptions = WritableStoreOptions;
@@ -349,7 +351,10 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
     options.held.makeDirectory(dirname(options.path), { recursive: true });
   }
 
-  const db = new DatabaseSync(options.path) as unknown as Database;
+  const db =
+    options.owner === undefined
+      ? (new DatabaseSync(options.path) as unknown as Database)
+      : options.owner.openDatabase(() => new DatabaseSync(options.path) as unknown as Database);
   try {
     const classification = classifyStoreFormat(db, options.storeFormat);
     if (classification.kind === 'compatible') {
@@ -377,7 +382,11 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
     db.close();
     return { kind: 'incompatible', classification };
   } catch (error) {
-    db.close();
+    try {
+      db.close();
+    } catch {
+      // Revocation may already have closed the authority-owned handle.
+    }
     throw error;
   }
 }

@@ -1417,12 +1417,14 @@ describe('openOrResetBackendStoreDb', () => {
   });
 
   it.each(
-    [0, 1, 2].flatMap((removalIndex) =>
-      (['before', 'after'] as const).map((timing) => ({ removalIndex, timing })),
+    (['deleted', 'replaced'] as const).flatMap((survivorMutation) =>
+      [0, 1, 2].flatMap((removalIndex) =>
+        (['before', 'after'] as const).map((timing) => ({ survivorMutation, removalIndex, timing })),
+      ),
     ),
   )(
-    'never reaches zero when the survivor disappears $timing superseded removal $removalIndex',
-    ({ removalIndex, timing }) => {
+    'never reaches zero when the survivor is $survivorMutation $timing superseded removal $removalIndex',
+    ({ survivorMutation, removalIndex, timing }) => {
       const runtime = createRuntime();
       const quarantineRoot = makeTempRoot('coral-store-reset-revision13-removal-window-');
       const survivorId = '623e4567-e89b-42d3-a456-426614174000';
@@ -1440,23 +1442,31 @@ describe('openOrResetBackendStoreDb', () => {
       }
       const remove = runtime.storage.rmSync;
       let observedRemoval = 0;
+      const mutateSurvivor = (): void => {
+        rmSync(survivorPath, { recursive: true, force: true });
+        if (survivorMutation === 'replaced') {
+          mkdirSync(survivorPath);
+          writeFileSync(join(survivorPath, 'store.db'), 'replacement evidence');
+        }
+      };
       vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
         const candidate = String(path);
+        const candidateId = basename(candidate).replace(/\.rotation-retired$/u, '');
         const isSuperseded =
           dirname(candidate) === quarantineRoot &&
-          isCanonicalStoreResetIncidentId(basename(candidate)) &&
+          isCanonicalStoreResetIncidentId(candidateId) &&
           candidate !== survivorPath;
         if (isSuperseded && observedRemoval === removalIndex && timing === 'before') {
-          rmSync(survivorPath, { recursive: true, force: true });
+          mutateSurvivor();
         }
         remove(path, options);
         if (isSuperseded && observedRemoval === removalIndex && timing === 'after') {
-          rmSync(survivorPath, { recursive: true, force: true });
+          mutateSurvivor();
         }
         if (isSuperseded) observedRemoval += 1;
       });
 
-      const rotation = retainOnlyStoreResetPreservedCopy(
+      retainOnlyStoreResetPreservedCopy(
         runtime.storage,
         quarantineRoot,
         { kind: 'incident', id: survivorId },
@@ -1464,59 +1474,93 @@ describe('openOrResetBackendStoreDb', () => {
       );
 
       expect(observedRemoval).toBeGreaterThan(removalIndex);
-      expect(rotation.kind).toBe('incomplete');
       expect(retainedStoreCopyCount(quarantineRoot)).toBeGreaterThanOrEqual(1);
     },
   );
 
-  it('never reaches zero when the survivor disappears during the final parent sync', () => {
-    const runtime = createRuntime();
-    const quarantineRoot = makeTempRoot('coral-store-reset-revision13-final-sync-');
-    const priorId = '723e4567-e89b-42d3-a456-426614174000';
-    const survivorId = '823e4567-e89b-42d3-a456-426614174000';
-    const priorPath = join(quarantineRoot, priorId);
-    const survivorPath = join(quarantineRoot, survivorId);
-    mkdirSync(priorPath);
-    mkdirSync(survivorPath);
-    writeFileSync(join(priorPath, 'store.db'), 'prior evidence');
-    writeFileSync(join(survivorPath, 'store.db'), 'survivor evidence');
-    const syncDirectory = runtime.storage.syncDirectoryDurableSync;
-    let parentSyncs = 0;
-    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
-      if (path === quarantineRoot) {
-        parentSyncs += 1;
-        if (parentSyncs === 2) rmSync(survivorPath, { recursive: true, force: true });
-      }
-      return syncDirectory(path);
-    });
+  it.each(['deleted', 'replaced'] as const)(
+    'never reaches zero when the survivor is %s during the final parent sync',
+    (survivorMutation) => {
+      const runtime = createRuntime();
+      const quarantineRoot = makeTempRoot('coral-store-reset-revision13-final-sync-');
+      const priorId = '723e4567-e89b-42d3-a456-426614174000';
+      const survivorId = '823e4567-e89b-42d3-a456-426614174000';
+      const priorPath = join(quarantineRoot, priorId);
+      const survivorPath = join(quarantineRoot, survivorId);
+      mkdirSync(priorPath);
+      mkdirSync(survivorPath);
+      writeFileSync(join(priorPath, 'store.db'), 'prior evidence');
+      writeFileSync(join(survivorPath, 'store.db'), 'survivor evidence');
+      const syncDirectory = runtime.storage.syncDirectoryDurableSync;
+      let parentSyncs = 0;
+      vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) => {
+        if (path === quarantineRoot) {
+          parentSyncs += 1;
+          if (parentSyncs === 2) {
+            rmSync(survivorPath, { recursive: true, force: true });
+            if (survivorMutation === 'replaced') {
+              mkdirSync(survivorPath);
+              writeFileSync(join(survivorPath, 'store.db'), 'replacement evidence');
+            }
+          }
+        }
+        return syncDirectory(path);
+      });
 
-    const rotation = retainOnlyStoreResetPreservedCopy(
-      runtime.storage,
-      quarantineRoot,
-      { kind: 'incident', id: survivorId },
-      fixtureHeld(runtime),
-    );
+      retainOnlyStoreResetPreservedCopy(
+        runtime.storage,
+        quarantineRoot,
+        { kind: 'incident', id: survivorId },
+        fixtureHeld(runtime),
+      );
 
-    expect(parentSyncs).toBeGreaterThanOrEqual(2);
-    expect(rotation.kind).toBe('incomplete');
-    expect(retainedStoreCopyCount(quarantineRoot)).toBeGreaterThanOrEqual(1);
-  });
+      expect(parentSyncs).toBeGreaterThanOrEqual(2);
+      expect(retainedStoreCopyCount(quarantineRoot)).toBeGreaterThanOrEqual(1);
+    },
+  );
 
-  it.each([1, 2] as const)(
-    'reconciles an absent recorded survivor from the %i coordinate that actually remains',
-    (remainingCoordinates) => {
+  it.each(
+    (['same', 'changed', 'absent'] as const).flatMap((survivorState) =>
+      ([1, 2] as const).flatMap((terminalCoordinates) =>
+        (['resolve', 'release'] as const).map((operatorAction) => ({
+          survivorState,
+          terminalCoordinates,
+          operatorAction,
+        })),
+      ),
+    ),
+  )(
+    'reconciles a $survivorState recorded survivor across $terminalCoordinates coordinates on $operatorAction',
+    ({ survivorState, terminalCoordinates, operatorAction }) => {
       const runtime = createRuntime();
       const dbPath = join(makeTempRoot('coral-store-reset-revision13-reconcile-'), 'store.db');
       createMismatchStore(dbPath);
       const first = publishReset(runtime, dbPath);
       if (first.kind !== 'preserved') throw new Error('Expected initial preserved evidence.');
       const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
-      if (remainingCoordinates === 2) {
-        cpSync(
-          join(quarantineRoot, first.incident.incidentId),
-          join(quarantineRoot, '923e4567-e89b-42d3-a456-426614174001'),
-          { recursive: true },
-        );
+      const recordedPath = join(quarantineRoot, first.incident.incidentId);
+      const originalIdentity = statSync(recordedPath, { bigint: true });
+      const snapshotPath = join(dirname(quarantineRoot), 'recorded-survivor-snapshot');
+      cpSync(recordedPath, snapshotPath, { recursive: true });
+      if (survivorState !== 'same') {
+        rmSync(recordedPath, { recursive: true });
+        if (survivorState === 'changed') {
+          renameFileSync(snapshotPath, recordedPath);
+          const replacementIdentity = statSync(recordedPath, { bigint: true });
+          expect([replacementIdentity.dev, replacementIdentity.ino]).not.toEqual([
+            originalIdentity.dev,
+            originalIdentity.ino,
+          ]);
+        }
+      }
+      const alternateIds = ['923e4567-e89b-42d3-a456-426614174001', '923e4567-e89b-42d3-a456-426614174002'];
+      const additionalCoordinates = terminalCoordinates - (survivorState === 'absent' ? 0 : 1);
+      for (const alternateId of alternateIds.slice(0, additionalCoordinates)) {
+        const alternatePath = join(quarantineRoot, alternateId);
+        cpSync(survivorState === 'changed' ? recordedPath : snapshotPath, alternatePath, { recursive: true });
+        const manifestPath = join(alternatePath, 'reset-manifest.json');
+        const manifest = parseStoreResetIncidentManifest(readFileSync(manifestPath));
+        writeFileSync(manifestPath, serializeStoreResetIncidentManifest({ ...manifest, incidentId: alternateId }));
       }
       const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
       if (ledger === null) throw new Error('Expected a retention ledger.');
@@ -1526,25 +1570,34 @@ describe('openOrResetBackendStoreDb', () => {
           ...ledger,
           rotation: {
             kind: 'incomplete',
-            survivor: { kind: 'incident', id: 'a23e4567-e89b-42d3-a456-426614174000' },
-            cause: 'recorded survivor disappeared',
+            survivor: { kind: 'incident', id: first.incident.incidentId },
+            cause: 'recorded survivor changed or disappeared',
           },
         }),
       );
 
-      resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime));
+      if (operatorAction === 'resolve') {
+        resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot, fixtureHeld(runtime));
+      } else {
+        const released = releaseStoreResetIncident(
+          runtime.storage,
+          quarantineRoot,
+          first.incident.incidentId,
+          fixtureHeld(runtime),
+        );
+        expect(released.kind === 'absent').toBe(survivorState === 'absent');
+      }
 
       const reconciled = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
-      if (remainingCoordinates === 1) {
-        expect(reconciled).toMatchObject({
-          rotation: null,
-          preserved: { incidentId: first.incident.incidentId },
-        });
+      const remainingNames = retainedIncidentNames(quarantineRoot);
+      const expectedCount = terminalCoordinates - (operatorAction === 'release' && survivorState !== 'absent' ? 1 : 0);
+      expect(remainingNames).toHaveLength(expectedCount);
+      if (expectedCount <= 1) {
+        expect(reconciled?.rotation).toBeNull();
+        expect(reconciled?.preserved?.incidentId ?? null).toBe(remainingNames[0] ?? null);
       } else {
         expect(reconciled?.rotation?.kind).toBe('incomplete');
-        expect(
-          retainedIncidentNames(quarantineRoot).includes(reconciled?.rotation?.survivor.id ?? ''),
-        ).toBe(true);
+        expect(remainingNames).toContain(reconciled?.rotation?.survivor.id);
       }
     },
   );
@@ -1579,7 +1632,8 @@ describe('openOrResetBackendStoreDb', () => {
         const rm = runtime.storage.rmSync;
         let removedPriorIncidents = 0;
         const cleanupSpy = vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
-          if ([first.incident.incidentId, secondId].includes(basename(path))) {
+          const candidateId = basename(path).replace(/\.rotation-retired$/u, '');
+          if ([first.incident.incidentId, secondId].includes(candidateId)) {
             if (removedPriorIncidents === 1) throw errno('EIO');
             removedPriorIncidents += 1;
           }
@@ -1649,9 +1703,9 @@ describe('openOrResetBackendStoreDb', () => {
     const rm = runtime.storage.rmSync;
     let interrupted = false;
     vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, options) => {
-      if (!interrupted && path === firstDirectory) {
+      if (!interrupted && path === `${firstDirectory}.rotation-retired`) {
         interrupted = true;
-        rm(join(firstDirectory, 'reset-manifest.json'));
+        rm(join(String(path), 'reset-manifest.json'));
         throw errno('EIO');
       }
       rm(path, options);
@@ -2884,7 +2938,11 @@ describe('openOrResetBackendStoreDb', () => {
           if (
             !replaced &&
             path === quarantineRoot &&
-            retainedIncidentNames(quarantineRoot).some((id) => id !== holder.incident.incidentId)
+            readdirSync(quarantineRoot).some(
+              (name) =>
+                name.endsWith('.rotation-survivor') &&
+                name.slice(0, -'.rotation-survivor'.length) !== holder.incident.incidentId,
+            )
           ) {
             replaced = true;
             rmSync(holderPath, { recursive: true });
@@ -2985,6 +3043,7 @@ describe('openOrResetBackendStoreDb', () => {
     const root = makeTempRoot('coral-store-revision13-membrane-');
     const adoption = adoptionLease(runtime);
     let writerLost = false;
+    const releaseWriter = vi.fn();
     const held = createSettlementAuthority(
       adoption,
       {
@@ -2994,7 +3053,7 @@ describe('openOrResetBackendStoreDb', () => {
             if (writerLost) throw new Error('writer exclusion lost');
           },
           assertOwned: () => undefined,
-          release: () => undefined,
+          release: releaseWriter,
         },
       },
       null,
@@ -3023,12 +3082,13 @@ describe('openOrResetBackendStoreDb', () => {
       if (typeof operation === 'function') expect(() => Reflect.apply(operation, held.actuator, [])).toThrow();
     }
     expect(() => adoption()).not.toThrow();
+    expect(() => releaseWriter()).not.toThrow();
+    expect(releaseWriter).toHaveBeenCalledOnce();
   });
 
   it('closes every authority-owned database handle after revocation', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-revision13-handle-revocation-');
-    const dbPath = join(root, 'store.db');
     let writerLost = false;
     const held = createSettlementAuthority(
       adoptionLease(runtime),
@@ -3044,19 +3104,101 @@ describe('openOrResetBackendStoreDb', () => {
       },
       null,
     );
-    const decision = dbModule.openWritableStoreDatabase({
-      path: dbPath,
-      storage: runtime.storage,
-      storeFormat: STORE_FORMAT,
-      held: held.actuator,
+    const databases = ['first.db', 'second.db'].map((name) => {
+      const decision = dbModule.openWritableStoreDatabase({
+        path: join(root, name),
+        storage: runtime.storage,
+        storeFormat: STORE_FORMAT,
+        held: held.actuator,
+        owner: held,
+      });
+      if (decision.kind !== 'opened') throw new Error('Expected an opened database.');
+      return decision.db;
     });
-    if (decision.kind !== 'opened') throw new Error('Expected an opened database.');
 
     writerLost = true;
     expect(() => held.hold()).toThrow(/writer exclusion lost/u);
-    expect(decision.db.isOpen).toBe(false);
-    expect(() => decision.db.exec('SELECT 1')).toThrow();
-    if (decision.db.isOpen) decision.db.close();
+    for (const database of databases) {
+      expect(database.isOpen).toBe(false);
+      expect(() => database.exec('SELECT 1')).toThrow();
+      if (database.isOpen) database.close();
+    }
+  });
+
+  it.each(['open', 'pragma', 'transaction'] as const)(
+    'revokes the writable SQLite %s carrier after an actuator observes lost authority',
+    (carrier) => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision13-sql-carrier-');
+      const dbPath = join(root, 'store.db');
+      let writerLost = false;
+      const held = createSettlementAuthority(
+        adoptionLease(runtime),
+        {
+          kind: 'proven',
+          lease: {
+            maintain: () => {
+              if (writerLost) throw new Error('writer exclusion lost');
+            },
+            assertOwned: () => undefined,
+            release: () => undefined,
+          },
+        },
+        null,
+      );
+      const database = held.openDatabase(() => new DatabaseSync(dbPath));
+      database.exec('CREATE TABLE carrier_evidence (value INTEGER NOT NULL)');
+      if (carrier === 'transaction') {
+        database.exec('BEGIN');
+        database.prepare('INSERT INTO carrier_evidence (value) VALUES (1)').run();
+      }
+
+      writerLost = true;
+      expect(() => held.actuator.syncDirectory(root)).toThrow(/writer exclusion lost/u);
+      if (carrier === 'open') {
+        expect(() => held.openDatabase(() => new DatabaseSync(join(root, 'second.db')))).toThrow(
+          /writer exclusion lost/u,
+        );
+      } else if (carrier === 'pragma') {
+        expect(() => database.exec('PRAGMA user_version = 1')).toThrow();
+      } else {
+        expect(() => database.exec('COMMIT')).toThrow();
+        const reopened = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+          expect(reopened.prepare('SELECT COUNT(*) AS count FROM carrier_evidence').get()).toMatchObject({ count: 0 });
+        } finally {
+          reopened.close();
+        }
+      }
+    },
+  );
+
+  it('keeps a successfully transferred database live after lease release and later authority revocation', () => {
+    const runtime = createRuntime();
+    const root = makeTempRoot('coral-store-revision13-handle-transfer-');
+    let writerLost = false;
+    const held = createSettlementAuthority(
+      adoptionLease(runtime),
+      {
+        kind: 'proven',
+        lease: {
+          maintain: () => {
+            if (writerLost) throw new Error('writer exclusion lost');
+          },
+          assertOwned: () => undefined,
+          release: () => undefined,
+        },
+      },
+      null,
+    );
+    const database = held.openDatabase(() => new DatabaseSync(join(root, 'store.db')));
+    const transferred = held.transferDatabase(database);
+
+    writerLost = true;
+    expect(() => held.hold()).toThrow(/writer exclusion lost/u);
+    expect(transferred.isOpen).toBe(true);
+    expect(() => transferred.exec('CREATE TABLE transferred_evidence (value INTEGER)')).not.toThrow();
+    transferred.close();
   });
 
   it('does not commit writable SQLite work after the last actuator proof loses authority', () => {
@@ -3090,13 +3232,16 @@ describe('openOrResetBackendStoreDb', () => {
         storage: runtime.storage,
         storeFormat: STORE_FORMAT,
         held: held.actuator,
+        owner: held,
       }),
     ).toThrow(/writer exclusion lost/u);
 
     if (existsSync(dbPath)) {
       const db = new DatabaseSync(dbPath, { readOnly: true });
       try {
-        const meta = db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'meta'").get() as {
+        const meta = db
+          .prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+          .get() as {
           count: number;
         };
         expect(meta.count).toBe(0);

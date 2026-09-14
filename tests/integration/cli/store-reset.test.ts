@@ -2066,7 +2066,7 @@ describe('backend store-reset commands', () => {
     expect(stdout).toContain(`Resumed store-reset incident '${INCIDENT_ID}'.`);
     expect(stdout).toContain(`Preserved store-reset incident '${INCIDENT_ID}'.`);
     expect(stdout).toContain(
-      `Retention rotation is incomplete; incident '${INCIDENT_ID}' remains on disk (superseded coordinate changed before pruning).`,
+      `Retention rotation is incomplete; incident '${INCIDENT_ID}' failed to become the only retained copy (superseded coordinate changed before pruning).`,
     );
     expect(stdout).toContain(
       "Parked intruder epoch '323e4567-e89b-42d3-a456-426614174000' (store.db; classification none).",
@@ -2119,7 +2119,7 @@ describe('backend store-reset commands', () => {
     expect(stdout).toContain(`Parked intruder epoch '${parkingId}'`);
     if (rotationKind === 'incomplete') {
       expect(stdout).toContain(
-        `Retention rotation is incomplete; ${survivorKind} '${survivorId}' remains on disk (${cause}).`,
+        `Retention rotation is incomplete; ${survivorKind} '${survivorId}' failed to become the only retained copy (${cause}).`,
       );
     } else {
       expect(stdout).not.toContain('Retention rotation is incomplete');

@@ -8,6 +8,7 @@ import { DOCUMENTED_CORAL_SETUP_ERROR_CODES, documentedCoralSetupError } from '#
 const REPO_ROOT = process.cwd();
 const SRC_ROOT = join(REPO_ROOT, 'src');
 const BACKEND_STORE_RESET_PATH = 'src/store/backend-store-reset.ts';
+const SETTLEMENT_AUTHORITY_PATH = 'src/store/settlement-authority.ts';
 const RESET_ACTIVE_EVIDENCE_PATH = 'src/store/reset-active-evidence.ts';
 const ACTIVE_STORE_SELECTION_PATH = 'src/store/active-store-selection.ts';
 const ACTIVE_STORE_SELECTION_COORDINATION_PATH = 'src/store/active-store-selection-coordination.ts';
@@ -428,10 +429,10 @@ describe('store reset discipline invariants', () => {
   });
 
   it('keeps the revoking authority constructor private and places no Proxy before a capability', () => {
-    const backend = sourceFile(BACKEND_STORE_RESET_PATH);
-    const constructor = backend.statements.find(
-      (statement): statement is ts.FunctionDeclaration =>
-        ts.isFunctionDeclaration(statement) && statement.name?.text === 'createSettlementAuthority',
+    const authority = sourceFile(SETTLEMENT_AUTHORITY_PATH);
+    const constructor = authority.statements.find(
+      (statement): statement is ts.ClassDeclaration =>
+        ts.isClassDeclaration(statement) && statement.name?.text === 'RevokingSettlementAuthority',
     );
     expect(constructor).toBeDefined();
     expect(constructor?.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword) ?? false).toBe(

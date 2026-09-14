@@ -1,5 +1,5 @@
 import { dirname } from 'node:path';
-import { acquireDirectoryLock, type DirectoryLockDeps, type DirectoryLockLease } from './fs-lock.js';
+import { acquireDirectoryLock, type ActuatedDirectoryLockLease, type DirectoryLockDeps } from './fs-lock.js';
 
 export const PACKAGE_OPERATION_LOCK_TIMEOUT_MS = 250;
 export const PACKAGE_OPERATION_LOCK_STALE_MS = 10 * 60 * 1000;
@@ -11,7 +11,7 @@ export async function acquirePackageOperationLockAtPath(
   lockPath: string,
   deps: PackageOperationLockDeps,
   timeoutMs = PACKAGE_OPERATION_LOCK_TIMEOUT_MS,
-): Promise<DirectoryLockLease> {
+): Promise<ActuatedDirectoryLockLease> {
   deps.storage.mkdirSync(dirname(lockPath), { recursive: true });
   return acquireDirectoryLock(
     lockPath,

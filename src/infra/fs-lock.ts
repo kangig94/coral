@@ -9,10 +9,7 @@ const STALE_LOCK_MS = 30_000;
 const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 
 export type DirectoryLockDeps = {
-  storage: Pick<
-    StoragePort,
-    'mkdirSync' | 'readdirSync' | 'renameSync' | 'rmSync' | 'rmdirSync' | 'statSync' | 'unlinkSync' | 'writeFileSync'
-  >;
+  storage: StoragePort;
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
   heartbeatMs?: number;
@@ -36,9 +33,12 @@ export class DirectoryLockOwnershipLostError extends Error {
 }
 
 export type DirectoryLockLease = (() => void) & {
-  readonly actuator: StorageActuator;
   assertOwned(): void;
   maintain(): void;
+};
+
+export type ActuatedDirectoryLockLease = DirectoryLockLease & {
+  readonly actuator: StorageActuator;
 };
 
 type StorageActuatorOperations = Pick<StorageActuator, Extract<keyof StorageActuator, string>>;
@@ -160,23 +160,23 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
     time: {
       now: () => new Date().getTime(),
       monotonicNow: () => process.hrtime.bigint() / 1_000_000n,
-      sleep: (ms) =>
+      sleep: (ms: number) =>
         new Promise<void>((resolve) => {
           const timer = setTimeout(resolve, ms);
           timer.unref?.();
         }),
-      setInterval: (fn, ms) => {
+      setInterval: (fn: () => void, ms: number) => {
         const timer = setInterval(fn, ms);
         timer.unref?.();
         return timer;
       },
-      clearInterval: (handle) => {
+      clearInterval: (handle: TimerHandle) => {
         if (handle !== null) {
           clearInterval(handle as NodeJS.Timeout);
         }
       },
     },
-  };
+  } as unknown as DirectoryLockDeps;
 }
 
 function tryRemoveLockDirectory(lockDir: string, storage: DirectoryLockDeps['storage']): void {
@@ -505,19 +505,22 @@ function createDirectoryLockLease(
   ownerToken: string,
   identity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
-): DirectoryLockLease {
+  actuatorStorage?: StoragePort,
+): DirectoryLockLease | ActuatedDirectoryLockLease {
   let owned = true;
   const loseOwnership = () => {
     owned = false;
   };
   const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, identity, deps, loseOwnership);
   const lease = releaseDirectoryLock(lockDir, deps, ownerToken, identity, heartbeat, () => owned, loseOwnership);
-  Object.defineProperty(lease, 'actuator', {
-    value: createStorageActuator(deps.storage as unknown as StoragePort, () => {
-      lease.assertOwned();
-    }),
-    enumerable: true,
-  });
+  if (actuatorStorage !== undefined) {
+    Object.defineProperty(lease, 'actuator', {
+      value: createStorageActuator(actuatorStorage, () => {
+        lease.assertOwned();
+      }),
+      enumerable: true,
+    });
+  }
   return lease;
 }
 
@@ -531,7 +534,11 @@ function isAlreadyExistsError(error: unknown): boolean {
  * that directory before this creator resumes, identity verification prevents
  * the displaced creator from returning a lease or removing the replacement.
  */
-function tryCreateDirectoryLock(lockDir: string, deps: DirectoryLockDeps): DirectoryLockLease | null {
+function tryCreateDirectoryLock(
+  lockDir: string,
+  deps: DirectoryLockDeps,
+  actuatorStorage?: StoragePort,
+): DirectoryLockLease | ActuatedDirectoryLockLease | null {
   const ownerToken = randomUUID();
   try {
     deps.storage.mkdirSync(lockDir);
@@ -554,21 +561,29 @@ function tryCreateDirectoryLock(lockDir: string, deps: DirectoryLockDeps): Direc
     tryRemoveOwnedLockDirectory(lockDir, ownerToken, identity, deps.storage);
     throw new DirectoryLockOwnershipLostError(lockDir);
   }
-  return createDirectoryLockLease(lockDir, ownerToken, identity, deps);
+  return createDirectoryLockLease(lockDir, ownerToken, identity, deps, actuatorStorage);
 }
 
 function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {
   deps.signal?.throwIfAborted();
 }
 
-export function tryAcquireDirectoryLock(lockDir: string, providedDeps?: DirectoryLockDeps): DirectoryLockLease | null {
+export function tryAcquireDirectoryLock(lockDir: string): DirectoryLockLease | null;
+export function tryAcquireDirectoryLock(
+  lockDir: string,
+  providedDeps: DirectoryLockDeps,
+): ActuatedDirectoryLockLease | null;
+export function tryAcquireDirectoryLock(
+  lockDir: string,
+  providedDeps?: DirectoryLockDeps,
+): DirectoryLockLease | ActuatedDirectoryLockLease | null {
   const deps = resolveDirectoryLockDeps(providedDeps);
   throwIfDirectoryLockAborted(deps);
-  const lease = tryCreateDirectoryLock(lockDir, deps);
+  const lease = tryCreateDirectoryLock(lockDir, deps, providedDeps?.storage);
   if (lease !== null) return lease;
   if (!tryQuarantineStaleLock(lockDir, deps)) return null;
   throwIfDirectoryLockAborted(deps);
-  return tryCreateDirectoryLock(lockDir, deps);
+  return tryCreateDirectoryLock(lockDir, deps, providedDeps?.storage);
 }
 
 async function waitForDirectoryLockRetry(deps: DirectoryLockDeps): Promise<void> {
@@ -609,19 +624,23 @@ export async function acquireDirectoryLock(
   lockDir: string,
   deps: DirectoryLockDeps,
   timeoutMs?: number,
-): Promise<DirectoryLockLease>;
+): Promise<ActuatedDirectoryLockLease>;
 export async function acquireDirectoryLock(
   lockDir: string,
   depsOrTimeout: DirectoryLockDeps | number = 5000,
   timeoutMs = 5000,
-): Promise<DirectoryLockLease> {
+): Promise<DirectoryLockLease | ActuatedDirectoryLockLease> {
   const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
   const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
   const deadline = deps.time.monotonicNow() + BigInt(effectiveTimeoutMs);
 
   while (deps.time.monotonicNow() < deadline) {
     throwIfDirectoryLockAborted(deps);
-    const lease = tryCreateDirectoryLock(lockDir, deps);
+    const lease = tryCreateDirectoryLock(
+      lockDir,
+      deps,
+      isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout.storage : undefined,
+    );
     if (lease !== null) {
       return lease;
     }
@@ -642,18 +661,22 @@ export function acquireDirectoryLockSync(
   lockDir: string,
   deps: DirectoryLockDeps,
   timeoutMs?: number,
-): DirectoryLockLease;
+): ActuatedDirectoryLockLease;
 export function acquireDirectoryLockSync(
   lockDir: string,
   depsOrTimeout: DirectoryLockDeps | number = 5000,
   timeoutMs = 5000,
-): DirectoryLockLease {
+): DirectoryLockLease | ActuatedDirectoryLockLease {
   const deps = resolveDirectoryLockDeps(isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout : undefined);
   const effectiveTimeoutMs = typeof depsOrTimeout === 'number' ? depsOrTimeout : timeoutMs;
   const deadline = deps.time.monotonicNow() + BigInt(effectiveTimeoutMs);
 
   while (deps.time.monotonicNow() < deadline) {
-    const lease = tryCreateDirectoryLock(lockDir, deps);
+    const lease = tryCreateDirectoryLock(
+      lockDir,
+      deps,
+      isDirectoryLockDeps(depsOrTimeout) ? depsOrTimeout.storage : undefined,
+    );
     if (lease !== null) {
       return lease;
     }

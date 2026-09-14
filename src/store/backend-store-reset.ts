@@ -6,9 +6,12 @@ import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { assertNever } from '../infra/error-format.js';
 import { errorNumber } from '../infra/error-number.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
-import { acquireDirectoryLockSync, isDirectoryLockTimeoutError, type DirectoryLockLease } from '../infra/fs-lock.js';
+import {
+  acquireDirectoryLockSync,
+  isDirectoryLockTimeoutError,
+  type ActuatedDirectoryLockLease,
+} from '../infra/fs-lock.js';
 import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
-import type { StorageActuator } from '../infra/storage-actuator.js';
 import { CoralSetupError, documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import { ACTIVE_STORE_TRANSITION_VERSION } from './active-store-selection.js';
@@ -39,12 +42,7 @@ import {
   acquireGenerationMaintenanceLease,
   type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
-import {
-  classifyStoreFile,
-  openWritableStoreDatabase,
-  StoreFormatChangedDuringAdoptionError,
-  type Database,
-} from './db.js';
+import { classifyStoreFile, openWritableStoreDatabase, type Database } from './db.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_ACTIVE_STORE_TRANSITION_BYTES,
@@ -93,6 +91,13 @@ import {
   type StoreResetRetentionRotation,
   type StoreResetParkedRecord,
 } from './reset-retention.js';
+import {
+  createSettlementAuthority as createRevokingSettlementAuthority,
+  SettlementAuthorityLost,
+  type SettlementAuthority,
+} from './settlement-authority.js';
+
+export type { SettlementAuthority } from './settlement-authority.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const RETAINED_TRANSITION_DIRECTORY = 'retained-active-store-transitions';
@@ -107,7 +112,6 @@ const SQLITE_NOTADB = 26;
 
 const BACKEND_STORE_RESET_AUTHORITY_BRAND: unique symbol = Symbol('BackendStoreResetAuthority');
 const BACKEND_STORE_RESET_LOCK_BRAND: unique symbol = Symbol('BackendStoreResetLock');
-const SETTLEMENT_AUTHORITY_BRAND: unique symbol = Symbol('SettlementAuthority');
 const RESET_DIRECTORY_LOCK: unique symbol = Symbol('ResetDirectoryLock');
 
 type ResettableStoreFormatClassification =
@@ -137,66 +141,24 @@ export type BackendStoreResetAuthority = Readonly<{
   [BACKEND_STORE_RESET_AUTHORITY_BRAND]: true;
 }>;
 
-class SettlementAuthorityLost extends Error {
-  constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause), { cause });
-    this.name = 'SettlementAuthorityLost';
-  }
-}
-
-export type SettlementAuthority = Readonly<{
-  readonly actuator: StorageActuator;
-  hold(): void;
-  [SETTLEMENT_AUTHORITY_BRAND]: true;
-}>;
-
 type Held = SettlementAuthority;
 
 export type BackendStoreResetLockLease = Readonly<{
   release(): void;
-  [RESET_DIRECTORY_LOCK]: DirectoryLockLease;
+  [RESET_DIRECTORY_LOCK]: ActuatedDirectoryLockLease;
   [BACKEND_STORE_RESET_LOCK_BRAND]: true;
 }>;
 
 export function createSettlementAuthority(
-  adoption: DirectoryLockLease,
+  adoption: ActuatedDirectoryLockLease,
   writerExclusion: WriterExclusion | undefined,
   resetLock: BackendStoreResetLockLease | null,
 ): SettlementAuthority {
-  const refresh = (): void => {
-    adoption.maintain();
-    adoption.assertOwned();
-    if (writerExclusion?.kind === 'proven') {
-      writerExclusion.lease.maintain();
-      writerExclusion.lease.assertOwned();
-    }
-    if (resetLock !== null) {
-      resetLock[RESET_DIRECTORY_LOCK].maintain();
-      resetLock[RESET_DIRECTORY_LOCK].assertOwned();
-    }
-  };
-  const hold = (): void => {
-    try {
-      refresh();
-    } catch (error: unknown) {
-      throw new SettlementAuthorityLost(error);
-    }
-  };
-  const actuator = new Proxy(adoption.actuator, {
-    get(target, property, receiver) {
-      const value = Reflect.get(target, property, receiver) as unknown;
-      if (typeof value !== 'function') return value;
-      return (...args: unknown[]) => {
-        hold();
-        return Reflect.apply(value, target, args);
-      };
-    },
-  });
-  return {
-    actuator,
-    hold,
-    [SETTLEMENT_AUTHORITY_BRAND]: true,
-  };
+  return createRevokingSettlementAuthority(adoption.actuator, [
+    adoption,
+    ...(writerExclusion?.kind === 'proven' ? [writerExclusion.lease] : []),
+    ...(resetLock === null ? [] : [resetLock[RESET_DIRECTORY_LOCK]]),
+  ]);
 }
 
 export type BackendStorePathOptions = {
@@ -2355,6 +2317,7 @@ export function mintBackendStoreForClaim(
     storeFormat: options.storeFormat,
     busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
     held: held.actuator,
+    owner: held,
   });
   if (decision.kind !== 'opened') {
     throw new Error('A store minted on an owned empty path was incompatible.');
@@ -2421,6 +2384,7 @@ function cloneParkedStoreForClaim(
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
       held: held.actuator,
+      owner: held,
     });
     if (decision.kind !== 'opened') return abandonClone();
     const stat = stablePathStat(runtime.storage, path);
@@ -2601,7 +2565,7 @@ function withCloseTimeSettlementAuthority(
     if (!(error instanceof SettlementAuthorityLost)) throw error;
   }
 
-  let adoption: DirectoryLockLease | null = null;
+  let adoption: ActuatedDirectoryLockLease | null = null;
   let resetLock: BackendStoreResetLockLease | null = null;
   try {
     adoption = acquireDirectoryLockSync(
@@ -2615,6 +2579,21 @@ function withCloseTimeSettlementAuthority(
     resetLock?.release();
     adoption?.();
   }
+}
+
+function closeDatabaseThen(database: Database, afterClose: () => void): Database {
+  const close = database.close.bind(database);
+  let closed = false;
+  Object.defineProperty(database, 'close', {
+    configurable: true,
+    value: (): void => {
+      if (closed) return;
+      closed = true;
+      close();
+      afterClose();
+    },
+  });
+  return database;
 }
 
 function openCompatibleParkedStore(
@@ -2674,12 +2653,10 @@ function openCompatibleParkedStore(
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs ?? options.busyTimeoutMs,
       held: held.actuator,
+      owner: held,
     });
-  } catch (error: unknown) {
-    if (error instanceof StoreFormatChangedDuringAdoptionError) {
-      return { kind: 'retry', epochs: terminalize() };
-    }
-    throw error;
+  } catch (_error: unknown) {
+    return { kind: 'retry', epochs: terminalize() };
   }
   if (decision.kind === 'incompatible') {
     return { kind: 'retry', epochs: terminalize() };
@@ -2706,47 +2683,34 @@ function openCompatibleParkedStore(
           classification: null,
           rotation: retainedNonRegular.rotation,
         };
-  let closed = false;
-  const db = new Proxy(decision.db, {
-    // SQLite may remove WAL/SHM files while closing; the remaining directory is the recovery truth.
-    get(target, property) {
-      if (property === 'close') {
-        return (): void => {
-          if (closed) return;
-          closed = true;
-          target.close();
+  const db = closeDatabaseThen(decision.db, () => {
+    try {
+      withCloseTimeSettlementAuthority(runtime, files, held, (closeHeld) => {
+        for (const name of ownedRegularEvidenceNames(runtime.storage, parkingDirectory)) {
           try {
-            withCloseTimeSettlementAuthority(runtime, files, held, (closeHeld) => {
-              for (const name of ownedRegularEvidenceNames(runtime.storage, parkingDirectory)) {
-                try {
-                  closeHeld.actuator.unlink(join(parkingDirectory, name));
-                } catch (error: unknown) {
-                  if (!isNoEntryError(error)) throw error;
-                }
-              }
-              requireDirectorySync(closeHeld, parkingDirectory);
-              terminalizeParking(
-                runtime.storage,
-                parkingRoot,
-                parkingRecord,
-                closeHeld,
-                'residual',
-                parkingRecord.incidentId,
-                parkingCoordinate,
-              );
-            });
+            closeHeld.actuator.unlink(join(parkingDirectory, name));
           } catch (error: unknown) {
-            writeAuditEvent(
-              'store_reset_parking_cleanup_deferred',
-              { cause: error instanceof Error ? error.message : String(error) },
-              'warn',
-            );
+            if (!isNoEntryError(error)) throw error;
           }
-        };
-      }
-      const value: unknown = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
+        }
+        requireDirectorySync(closeHeld, parkingDirectory);
+        terminalizeParking(
+          runtime.storage,
+          parkingRoot,
+          parkingRecord,
+          closeHeld,
+          'residual',
+          parkingRecord.incidentId,
+          parkingCoordinate,
+        );
+      });
+    } catch (error: unknown) {
+      writeAuditEvent(
+        'store_reset_parking_cleanup_deferred',
+        { cause: error instanceof Error ? error.message : String(error) },
+        'warn',
+      );
+    }
   });
   return {
     kind: 'opened',
@@ -2761,31 +2725,19 @@ function databaseWithMintedCleanup(
   minted: MintedBackendStore,
   held: Held,
 ): Database {
-  let closed = false;
-  return new Proxy(minted.db, {
-    get(target, property) {
-      if (property === 'close') {
-        return (): void => {
-          if (closed) return;
-          closed = true;
-          target.close();
-          try {
-            withCloseTimeSettlementAuthority(runtime, files, held, (closeHeld) => {
-              closeHeld.actuator.remove(minted.directory, { recursive: true });
-              requireDirectorySync(closeHeld, dirname(minted.directory));
-            });
-          } catch (error: unknown) {
-            writeAuditEvent(
-              'store_reset_minted_cleanup_deferred',
-              { cause: error instanceof Error ? error.message : String(error) },
-              'warn',
-            );
-          }
-        };
-      }
-      const value: unknown = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
+  return closeDatabaseThen(minted.db, () => {
+    try {
+      withCloseTimeSettlementAuthority(runtime, files, held, (closeHeld) => {
+        closeHeld.actuator.remove(minted.directory, { recursive: true });
+        requireDirectorySync(closeHeld, dirname(minted.directory));
+      });
+    } catch (error: unknown) {
+      writeAuditEvent(
+        'store_reset_minted_cleanup_deferred',
+        { cause: error instanceof Error ? error.message : String(error) },
+        'warn',
+      );
+    }
   });
 }
 
@@ -3118,12 +3070,12 @@ export function resumeAutomaticBackendStoreResetIncident(
 export function acquireBackendStoreResetLock(
   runtime: Pick<Runtime, 'storage' | 'time'>,
   files: BackendStoreFileSet,
-  adoption: DirectoryLockLease,
+  adoption: ActuatedDirectoryLockLease,
 ): BackendStoreResetLockLease {
   adoption.assertOwned();
   adoption.actuator.makeDirectory(files.dbDir, { recursive: true });
   const lockPath = join(files.dbDir, 'store.db.reset.lock');
-  let directoryLock: DirectoryLockLease;
+  let directoryLock: ActuatedDirectoryLockLease;
   try {
     // Threaded deps, not the ambient-fs default overload: the composed Runtime is already the caller's only
     // I/O authority (Single Runtime World).

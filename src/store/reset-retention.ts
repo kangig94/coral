@@ -30,6 +30,8 @@ export const STORE_RESET_RETENTION_LEDGER_FILE_NAME = `store-reset-retention.v${
 export const MAX_RESET_RETENTION_LEDGER_BYTES = 64 * 1024;
 export const STORE_RESET_PARKED_SIDECAR_VERSION = 1 as const;
 export const MAX_RESET_PARKED_SIDECAR_BYTES = 64 * 1024;
+const STORE_RESET_ROTATION_SURVIVOR_SUFFIX = '.rotation-survivor';
+const STORE_RESET_ROTATION_RETIRED_SUFFIX = '.rotation-retired';
 
 export type StoreResetParkedClassificationKind =
   | 'absent'
@@ -745,6 +747,18 @@ export function retainOnlyStoreResetPreservedCopy(
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
   const survivorRoot = survivor.kind === 'incident' ? quarantineRoot : parkingRoot;
   const survivorPath = join(survivorRoot, survivor.id);
+  const guardedSurvivorPath = `${survivorPath}${STORE_RESET_ROTATION_SURVIVOR_SUFFIX}`;
+  const restoreGuardedSurvivor = (): void => {
+    if (pathPresence(storage, guardedSurvivorPath) !== 'present') return;
+    if (pathPresence(storage, survivorPath) === 'absent') {
+      held.actuator.rename(guardedSurvivorPath, survivorPath);
+    }
+  };
+  try {
+    restoreGuardedSurvivor();
+  } catch (error: unknown) {
+    return incomplete(error);
+  }
   let survivorIdentity: Readonly<{ dev: bigint; ino: bigint }>;
   try {
     if (survivor.kind === 'parking') assertContainedDirectory(storage, quarantineRoot, parkingRoot);
@@ -771,8 +785,49 @@ export function retainOnlyStoreResetPreservedCopy(
       return false;
     }
   };
-  const survivorChanged = () =>
-    incomplete('The chosen store-reset survivor disappeared or changed before superseded-coordinate removal.');
+  const survivorChangedCause =
+    'The chosen store-reset survivor disappeared or changed before superseded-coordinate removal.';
+  const survivorChanged = () => incomplete(survivorChangedCause);
+
+  try {
+    held.actuator.rename(survivorPath, guardedSurvivorPath);
+    if (!held.actuator.syncDirectory(survivorRoot)) {
+      restoreGuardedSurvivor();
+      return incomplete('The guarded store-reset survivor could not be synchronized durably.');
+    }
+  } catch (error: unknown) {
+    try {
+      restoreGuardedSurvivor();
+    } catch {
+      // The guarded coordinate remains recoverable by the next reconciliation.
+    }
+    return incomplete(error);
+  }
+
+  const guardedSurvivorStillOwnsIdentity = (): boolean => {
+    try {
+      const link = storage.lstatSync(guardedSurvivorPath);
+      const stat = storage.statSync(guardedSurvivorPath, { bigint: true });
+      return (
+        link.isDirectory() &&
+        !link.isSymbolicLink() &&
+        stat.isDirectory() &&
+        stat.dev === survivorIdentity.dev &&
+        stat.ino === survivorIdentity.ino
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const failAndRestore = (cause: unknown): StoreResetRetentionRotation => {
+    try {
+      restoreGuardedSurvivor();
+    } catch (restoreError: unknown) {
+      return incomplete(restoreError);
+    }
+    return incomplete(cause);
+  };
 
   for (const parent of [quarantineRoot, parkingRoot]) {
     try {
@@ -781,7 +836,7 @@ export function retainOnlyStoreResetPreservedCopy(
         assertContainedDirectory(storage, quarantineRoot, parkingRoot);
       }
     } catch (error: unknown) {
-      return incomplete(error);
+      return failAndRestore(error);
     }
     let readLimit = MAX_INCIDENT_ROOT_ENTRIES;
     while (true) {
@@ -789,43 +844,93 @@ export function retainOnlyStoreResetPreservedCopy(
       try {
         read = storage.readDirectoryBoundedSync(parent, readLimit);
       } catch (error: unknown) {
-        return incomplete(error);
+        return failAndRestore(error);
       }
       let removed = false;
+      let restoredRetiredCoordinate = false;
       for (const candidateId of read.entries) {
+        if (candidateId.endsWith(STORE_RESET_ROTATION_RETIRED_SUFFIX)) {
+          const originalId = candidateId.slice(0, -STORE_RESET_ROTATION_RETIRED_SUFFIX.length);
+          if (!isCanonicalStoreResetIncidentId(originalId)) continue;
+          const retiredPath = join(parent, candidateId);
+          const originalPath = join(parent, originalId);
+          try {
+            if (pathPresence(storage, originalPath) !== 'absent') {
+              return failAndRestore('A retired store-reset coordinate collided with its original name.');
+            }
+            held.actuator.rename(retiredPath, originalPath);
+            restoredRetiredCoordinate = true;
+          } catch (error: unknown) {
+            return failAndRestore(error);
+          }
+          continue;
+        }
         if (!isCanonicalStoreResetIncidentId(candidateId) || (parent === survivorRoot && candidateId === survivor.id)) {
           continue;
         }
         const candidatePath = join(parent, candidateId);
+        const retiredPath = `${candidatePath}${STORE_RESET_ROTATION_RETIRED_SUFFIX}`;
         held.hold();
+        let containedDirectory = false;
         try {
           assertContainedDirectory(storage, parent, candidatePath);
+          containedDirectory = true;
         } catch (error: unknown) {
           if (error instanceof UnsafeStoreResetPath) {
             try {
               const link = storage.lstatSync(candidatePath);
-              if (link.isDirectory() && !link.isSymbolicLink()) return incomplete(error);
-              if (!survivorStillOwnsIdentity()) return survivorChanged();
-              held.actuator.unlink(candidatePath);
-              removed = true;
+              if (link.isDirectory() && !link.isSymbolicLink()) return failAndRestore(error);
+              held.actuator.rename(candidatePath, retiredPath);
             } catch (removalError: unknown) {
-              if (!isNoEntryError(removalError)) return incomplete(removalError);
+              if (!isNoEntryError(removalError)) return failAndRestore(removalError);
+              continue;
             }
+          } else if (isNoEntryError(error)) {
             continue;
+          } else {
+            return failAndRestore(error);
           }
-          if (isNoEntryError(error)) continue;
-          return incomplete(error);
+        }
+        if (containedDirectory) {
+          try {
+            held.actuator.rename(candidatePath, retiredPath);
+          } catch (error: unknown) {
+            if (isNoEntryError(error)) continue;
+            return failAndRestore(error);
+          }
         }
         try {
-          if (!survivorStillOwnsIdentity()) return survivorChanged();
-          held.actuator.remove(candidatePath, { recursive: true, force: true });
+          if (!held.actuator.syncDirectory(parent)) {
+            held.actuator.rename(retiredPath, candidatePath);
+            return failAndRestore('A superseded store-reset coordinate retirement could not be synchronized durably.');
+          }
+          if (!guardedSurvivorStillOwnsIdentity()) {
+            held.actuator.rename(retiredPath, candidatePath);
+            return failAndRestore(survivorChangedCause);
+          }
+          const retired = storage.lstatSync(retiredPath);
+          if (retired.isDirectory() && !retired.isSymbolicLink()) {
+            held.actuator.remove(retiredPath, { recursive: true, force: true });
+          } else {
+            held.actuator.unlink(retiredPath);
+          }
           removed = true;
+          if (!guardedSurvivorStillOwnsIdentity()) return failAndRestore(survivorChangedCause);
         } catch (error: unknown) {
-          return incomplete(error);
+          try {
+            if (pathPresence(storage, retiredPath) === 'present' && pathPresence(storage, candidatePath) === 'absent') {
+              held.actuator.rename(retiredPath, candidatePath);
+            }
+          } catch {
+            // The retired coordinate remains named for the next reconciliation.
+          }
+          return failAndRestore(error);
         }
       }
-      if (removed && !held.actuator.syncDirectory(parent)) {
-        return incomplete('A superseded store-reset coordinate removal could not be synchronized durably.');
+      if (removed && !held.actuator.syncDirectory(parent)) return failAndRestore('Superseded removal was not durable.');
+      if (restoredRetiredCoordinate) {
+        readLimit = MAX_INCIDENT_ROOT_ENTRIES;
+        continue;
       }
       if (!read.overflow) break;
       if (removed) {
@@ -837,6 +942,13 @@ export function retainOnlyStoreResetPreservedCopy(
       readLimit = widerLimit;
     }
   }
+  if (!guardedSurvivorStillOwnsIdentity()) return failAndRestore(survivorChangedCause);
+  try {
+    held.actuator.rename(guardedSurvivorPath, survivorPath);
+  } catch (error: unknown) {
+    return failAndRestore(error);
+  }
+  if (!survivorStillOwnsIdentity()) return survivorChanged();
   return { kind: 'complete', survivor };
 }
 
@@ -899,16 +1011,146 @@ function reconcilePending(
   return ledger;
 }
 
+function availableRotationRecoveryId(storage: StoragePort, parent: string, originalId: string): string | null {
+  for (let suffix = 0; suffix < 256; suffix += 1) {
+    const candidateId = `${originalId.slice(0, -2)}${suffix.toString(16).padStart(2, '0')}`;
+    if (candidateId !== originalId && pathPresence(storage, join(parent, candidateId)) === 'absent') return candidateId;
+  }
+  return null;
+}
+
+function recoverInterruptedRotation(
+  storage: StoragePort,
+  quarantineRoot: string,
+  ledger: StoreResetRetentionLedger,
+  held: SettlementHeld,
+): boolean {
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  const knownSurvivors = [
+    ledger.rotation?.survivor,
+    ledger.pending === null ? undefined : { kind: 'incident' as const, id: ledger.pending.outcome.incident.incidentId },
+    ledger.preserved === null ? undefined : { kind: 'incident' as const, id: ledger.preserved.incidentId },
+  ].filter((survivor): survivor is StoreResetRetentionSurvivor => survivor !== undefined);
+  const moveToVisibleCoordinate = (parent: string, temporaryPath: string, originalId: string): boolean => {
+    const temporaryPresence = pathPresence(storage, temporaryPath);
+    if (temporaryPresence === 'undeterminable') return false;
+    if (temporaryPresence === 'absent') return true;
+    const originalPath = join(parent, originalId);
+    const targetId =
+      pathPresence(storage, originalPath) === 'absent'
+        ? originalId
+        : availableRotationRecoveryId(storage, parent, originalId);
+    if (targetId === null) return false;
+    held.actuator.rename(temporaryPath, join(parent, targetId));
+    return held.actuator.syncDirectory(parent);
+  };
+
+  try {
+    for (const survivor of knownSurvivors) {
+      const parent = survivor.kind === 'incident' ? quarantineRoot : parkingRoot;
+      const survivorPath = join(parent, survivor.id);
+      if (!moveToVisibleCoordinate(parent, `${survivorPath}${STORE_RESET_ROTATION_SURVIVOR_SUFFIX}`, survivor.id)) {
+        return false;
+      }
+    }
+    for (const parent of [quarantineRoot, parkingRoot]) {
+      const parentPresence = pathPresence(storage, parent);
+      if (parentPresence === 'undeterminable') return false;
+      if (parentPresence === 'absent') continue;
+      let limit = MAX_INCIDENT_ROOT_ENTRIES;
+      while (true) {
+        const read = storage.readDirectoryBoundedSync(parent, limit);
+        for (const name of read.entries) {
+          if (!name.endsWith(STORE_RESET_ROTATION_RETIRED_SUFFIX)) continue;
+          const originalId = name.slice(0, -STORE_RESET_ROTATION_RETIRED_SUFFIX.length);
+          if (!isCanonicalStoreResetIncidentId(originalId)) continue;
+          if (!moveToVisibleCoordinate(parent, join(parent, name), originalId)) return false;
+        }
+        if (!read.overflow) break;
+        const widerLimit = Math.min(Number.MAX_SAFE_INTEGER, Math.max(limit + 1, limit * 2));
+        if (widerLimit === limit) return false;
+        limit = widerLimit;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function deriveIncompleteRotation(
+  storage: StoragePort,
+  quarantineRoot: string,
+  ledger: StoreResetRetentionLedger,
+): StoreResetRetentionLedger {
+  if (ledger.pending !== null || ledger.rotation === null) return ledger;
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  const coordinates: StoreResetRetentionSurvivor[] = [];
+  for (const [kind, parent] of [
+    ['incident', quarantineRoot],
+    ['parking', parkingRoot],
+  ] as const) {
+    const parentPresence = pathPresence(storage, parent);
+    if (parentPresence === 'undeterminable') return ledger;
+    if (parentPresence === 'absent') continue;
+    let limit = MAX_INCIDENT_ROOT_ENTRIES;
+    while (true) {
+      const read = storage.readDirectoryBoundedSync(parent, limit);
+      for (const id of read.entries) {
+        if (!isCanonicalStoreResetIncidentId(id)) continue;
+        const coordinatePresence = pathPresence(storage, join(parent, id));
+        if (coordinatePresence === 'undeterminable') return ledger;
+        if (coordinatePresence === 'present') coordinates.push({ kind, id });
+      }
+      if (!read.overflow) break;
+      const widerLimit = Math.min(Number.MAX_SAFE_INTEGER, Math.max(limit + 1, limit * 2));
+      if (widerLimit === limit) break;
+      limit = widerLimit;
+      coordinates.length = 0;
+    }
+  }
+  const remaining = [
+    ...new Map(coordinates.map((coordinate) => [`${coordinate.kind}:${coordinate.id}`, coordinate])).values(),
+  ];
+  let reconciled: StoreResetRetentionLedger;
+  if (remaining.length <= 1) {
+    const coordinate = remaining[0];
+    const preserved =
+      coordinate?.kind === 'incident'
+        ? ledger.preserved?.incidentId === coordinate.id
+          ? ledger.preserved
+          : (() => {
+              const manifest = readCommittedManifest(storage, quarantineRoot, coordinate.id);
+              return manifest === null ? null : incidentFromManifest(manifest);
+            })()
+        : null;
+    reconciled = { ...ledger, preserved, rotation: null };
+  } else {
+    const survivor =
+      remaining.find(
+        (coordinate) =>
+          coordinate.kind === ledger.rotation?.survivor.kind && coordinate.id === ledger.rotation.survivor.id,
+      ) ?? remaining[0];
+    reconciled = {
+      ...ledger,
+      rotation: {
+        kind: 'incomplete',
+        survivor,
+        cause: ledger.rotation.cause,
+      },
+    };
+  }
+  return reconciled;
+}
+
 function reconcileIncompleteRotation(
   storage: StoragePort,
   quarantineRoot: string,
   ledger: StoreResetRetentionLedger,
   held: SettlementHeld,
 ): StoreResetRetentionLedger {
-  if (ledger.pending !== null || ledger.rotation === null) return ledger;
-  const rotation = retainOnlyStoreResetPreservedCopy(storage, quarantineRoot, ledger.rotation.survivor, held);
-  const reconciled = { ...ledger, rotation: rotation.kind === 'incomplete' ? rotation : null };
-  writeLedger(storage, quarantineRoot, reconciled, held);
+  const reconciled = deriveIncompleteRotation(storage, quarantineRoot, ledger);
+  if (reconciled !== ledger) writeLedger(storage, quarantineRoot, reconciled, held);
   return reconciled;
 }
 
@@ -918,6 +1160,7 @@ function reconcileRetention(
   ledger: StoreResetRetentionLedger,
   held: SettlementHeld,
 ): StoreResetRetentionLedger {
+  if (!recoverInterruptedRotation(storage, quarantineRoot, ledger, held)) return ledger;
   return reconcileIncompleteRotation(
     storage,
     quarantineRoot,
@@ -1124,7 +1367,10 @@ export function releaseStoreResetIncident(
   if (ledgerPresence === 'undeterminable') return { kind: 'undeterminable', incidentId };
   const ledgerRead = readStoreResetRetentionLedger(storage, quarantineRoot);
   if (ledgerPresence === 'present' && ledgerRead === null) return { kind: 'undeterminable', incidentId };
-  const ledger = ledgerRead ?? emptyLedger();
+  const ledgerBeforeRecovery = ledgerRead ?? emptyLedger();
+  const ledger = recoverInterruptedRotation(storage, quarantineRoot, ledgerBeforeRecovery, held)
+    ? reconcileIncompleteRotation(storage, quarantineRoot, ledgerBeforeRecovery, held)
+    : ledgerBeforeRecovery;
   const stagingPath = join(quarantineRoot, STORE_RESET_STAGING_DIRECTORY, incidentId);
   const stagingPresence = pathPresence(storage, stagingPath);
   if (stagingPresence === 'present') {
@@ -1251,15 +1497,15 @@ export function releaseStoreResetIncident(
   const clearsRotation = ledger.rotation?.survivor.id === incidentId;
   if (clearsHolder || clearsPending || clearsRotation) {
     held.hold();
+    const releasedLedger = {
+      ...ledger,
+      ...(clearsHolder ? { preserved: null } : {}),
+      ...(clearsPending ? { pending: null } : {}),
+    };
     const written = writeLedger(
       storage,
       quarantineRoot,
-      {
-        ...ledger,
-        ...(clearsHolder ? { preserved: null } : {}),
-        ...(clearsPending ? { pending: null } : {}),
-        ...(clearsRotation ? { rotation: null } : {}),
-      },
+      clearsRotation ? deriveIncompleteRotation(storage, quarantineRoot, releasedLedger) : releasedLedger,
       held,
     );
     if (!written) {

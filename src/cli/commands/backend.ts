@@ -171,6 +171,7 @@ import {
 } from '../format/backend.js';
 import {
   constrainStoreResetRendererInput,
+  formatIncompleteStoreResetRotation,
   formatStoreResetList,
   formatStoreResetRelease,
   formatStoreResetReport,
@@ -466,7 +467,6 @@ export function handoffPublicationIncidentsExitContribution(
 
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetReleaseTarget, StoreResetTarget } from '../../store/operator-store-reset.js';
-import type { StoreResetRetentionRotation } from '../../store/reset-retention.js';
 import {
   boundStoreResetCliError,
   discardStoreResetLocal,
@@ -516,11 +516,6 @@ type StoreResetDiscardCommandResult = Extract<
   Awaited<ReturnType<StoreResetCommandOperations['discard']>>,
   { readonly kind: 'discarded' }
 >;
-
-function formatIncompleteStoreResetRotation(rotation: StoreResetRetentionRotation): string | null {
-  if (rotation.kind === 'complete') return null;
-  return `Retention rotation is incomplete; ${rotation.survivor.kind} '${rotation.survivor.id}' remains on disk (${rotation.cause}).`;
-}
 
 function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
   result = constrainStoreResetRendererInput(result);

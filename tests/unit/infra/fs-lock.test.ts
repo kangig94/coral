@@ -34,14 +34,14 @@ function createLockDeps(
   let failQuarantine = false;
   const deps: DirectoryLockDeps = {
     storage: {
-      mkdirSync: (path) => {
+      mkdirSync: (path: string) => {
         if (directories.has(path) || files.has(path)) {
           throw errno('EEXIST');
         }
         directories.set(path, now());
         directoryInodes.set(path, nextInode++);
       },
-      writeFileSync: (path, _data, options) => {
+      writeFileSync: (path: string, _data: unknown, options?: { readonly flag?: string }) => {
         const parent = dirname(path);
         if (!directories.has(parent)) {
           throw errno('ENOENT');
@@ -69,7 +69,7 @@ function createLockDeps(
         files.add(path);
         fileMtimes.set(path, now());
       },
-      renameSync: (oldPath, newPath) => {
+      renameSync: (oldPath: string, newPath: string) => {
         if (failQuarantine && newPath.includes('.stale-')) {
           failQuarantine = false;
           throw errno('EACCES');
@@ -112,14 +112,14 @@ function createLockDeps(
         [...files]
           .filter((file) => dirname(file) === path)
           .map((file) => file.slice(path.length + 1))) as DirectoryLockDeps['storage']['readdirSync'],
-      unlinkSync: (path) => {
+      unlinkSync: (path: string) => {
         if (!files.delete(path)) {
           throw errno('ENOENT');
         }
         fileMtimes.delete(path);
         removed.push(path);
       },
-      rmSync: (path) => {
+      rmSync: (path: string) => {
         removed.push(path);
         directories.delete(path);
         directoryInodes.delete(path);
@@ -136,7 +136,7 @@ function createLockDeps(
           }
         }
       },
-      rmdirSync: (path) => {
+      rmdirSync: (path: string) => {
         for (const file of files) {
           if (dirname(file) === path) {
             throw errno('ENOTEMPTY');
@@ -183,7 +183,8 @@ function createLockDeps(
           isFile: () => fileMtimeMs !== undefined,
         };
       }) as DirectoryLockDeps['storage']['statSync'],
-    },
+      syncDirectoryDurableSync: () => true,
+    } as unknown as DirectoryLockDeps['storage'],
     time: {
       now,
       monotonicNow,

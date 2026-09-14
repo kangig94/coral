@@ -1,6 +1,6 @@
 import type { StoreResetPublicReport } from '../../store/reset-incident.js';
 import type { StoreResetIncidentListResult } from '../../store/reset-incident-reader.js';
-import type { StoreResetReleasePresentation } from '../../store/reset-retention.js';
+import type { StoreResetReleasePresentation, StoreResetRetentionRotation } from '../../store/reset-retention.js';
 import { assertNever } from '../../infra/error-format.js';
 
 export function constrainStoreResetRendererInput<Value>(value: Value): Value {
@@ -95,13 +95,16 @@ function parkingRootStatus(result: StoreResetIncidentListResult): readonly strin
   }
 }
 
+export function formatIncompleteStoreResetRotation(rotation: StoreResetRetentionRotation): string | null {
+  if (rotation.kind === 'complete') return null;
+  return `Retention rotation is incomplete; ${rotation.survivor.kind} '${rotation.survivor.id}' failed to become the only retained copy (${rotation.cause}).`;
+}
+
 function incompleteRotationStatus(result: StoreResetIncidentListResult): readonly string[] {
   const rotation = result.rotation;
-  return rotation === undefined
-    ? []
-    : [
-        `Retention rotation is incomplete; ${rotation.survivor.kind} '${rotation.survivor.id}' failed to become the only retained copy (${rotation.cause}).`,
-      ];
+  if (rotation === undefined) return [];
+  const status = formatIncompleteStoreResetRotation(rotation);
+  return status === null ? [] : [status];
 }
 
 export function formatStoreResetReport(report: StoreResetPublicReport): string {

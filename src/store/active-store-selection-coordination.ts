@@ -540,8 +540,7 @@ async function settleActiveStore(
         invalidTargetEvidence:
           transition?.evidence.kind === 'valid-target-invalid' ? transition.evidence.invalidTargetEvidence : null,
       };
-      settlementAuthority.hold();
-      return settlement;
+      return { ...settlement, db: settlementAuthority.transferDatabase(db) };
     } catch (error: unknown) {
       db.close();
       throw error;
