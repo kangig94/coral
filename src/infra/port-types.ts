@@ -137,7 +137,6 @@ export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
   realpathSync(path: string): string;
   existsSync(path: string): boolean;
   openSync(path: string, flags: string, mode?: number): number;
-  openNoFollowSync?(path: string): number;
   readSync(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number;
   closeSync(fd: number): void;
   openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort;

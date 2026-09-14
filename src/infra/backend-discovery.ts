@@ -173,7 +173,8 @@ function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRec
  * `version`/`instanceId`, so anything gating on it reports a confident `not_running` from evidence it could
  * not read.
  *
- * Only an observed `'absent'` is an absence. There is no invariant test behind that sentence and one was
+ * Only a missing record is an `'absent'` coordinator. A present record whose pid is absent says its parent
+ * died, not that the children it spawned released their resources. There is no invariant test behind that sentence and one was
  * tried — see the rejection recorded in `tests/invariants/liveness-is-never-a-boolean.test.ts`. The rule is
  * held by these return types and by the tests that assert what each variant does, so a fourth site adding
  * itself is caught by review, not by a scan.
@@ -181,17 +182,22 @@ function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRec
 export type CoordinatorProbe =
   /** A record exists and its pid names a live process. */
   | Readonly<{ kind: 'live'; record: CoordinatorDiscoveryRecord }>
-  /** No record was written, or the recorded pid decisively names no process. Either is a real absence. */
+  /** No record was written. */
   | Readonly<{ kind: 'absent' }>
   /**
    * Nothing here is proof of absence, from either input. `unreadable-record` is a file that exists and could
-   * not be decoded; `unreadable-process` is a record whose pid could not be observed — that one carries its
+   * not be decoded; `unreadable-process` and `recorded-process-absent` retain a record whose coordinator
+   * process cannot establish the state of its children — those variants carry the
    * record deliberately, because the record holds the `bootToken` a contender needs to ask an incumbent to
    * stand down, and discarding it over an unanswered probe is what makes "could not observe" read as "nobody
    * is there".
    */
   | Readonly<{ kind: 'unobservable'; reason: 'unreadable-record' }>
-  | Readonly<{ kind: 'unobservable'; reason: 'unreadable-process'; record: CoordinatorDiscoveryRecord }>;
+  | Readonly<{
+      kind: 'unobservable';
+      reason: 'unreadable-process' | 'recorded-process-absent';
+      record: CoordinatorDiscoveryRecord;
+    }>;
 
 /**
  * The record's `incarnation` is not compared here.
@@ -229,7 +235,7 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
     case 'alive':
       return { kind: 'live', record };
     case 'absent':
-      return { kind: 'absent' };
+      return { kind: 'unobservable', reason: 'recorded-process-absent', record };
     case 'unknown':
       return { kind: 'unobservable', reason: 'unreadable-process', record };
   }

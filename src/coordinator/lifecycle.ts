@@ -284,12 +284,13 @@ export function verifiedIncumbentFromDiscovery(
 }
 
 /**
- * The same question asked of a probe rather than a record: which of the probe's four outcomes still leaves an
+ * The same question asked of a probe rather than a record: which probe outcomes still leave an
  * incumbent to contend with.
  *
  * Two of the four outcomes are only correct for a stated reason:
  *
- * - `unreadable-process` keeps its record. The probe not answering is not the incumbent not existing, and the
+ * - `unreadable-process` and `recorded-process-absent` keep their record. Neither an unanswered probe nor a
+ *   dead recorded parent establishes that its children are gone, and the
  *   record carries the `bootToken` a contender needs to ask it to stand down. `verifiedIncumbentFromDiscovery`
  *   then refuses on its own terms if the record cannot be tied to the socket, which is the check that belongs
  *   here — not a pid probe standing in for it.
@@ -297,7 +298,7 @@ export function verifiedIncumbentFromDiscovery(
  *   that nobody is there: `probeCoordinator` warns, while coordinator startup separately refuses the
  *   undecodable pre-bind discovery disposition.
  *
- * The switch is exhaustive on purpose. A fifth `CoordinatorProbe` shape leaves `record` unassigned and fails
+ * The switch is exhaustive on purpose. A new `CoordinatorProbe` shape leaves `record` unassigned and fails
  * the build, rather than defaulting into the `null` that reads as "no incumbent".
  */
 export function verifiedIncumbentFromProbe(
@@ -310,7 +311,7 @@ export function verifiedIncumbentFromProbe(
       record = probe.record;
       break;
     case 'unobservable':
-      record = probe.reason === 'unreadable-process' ? probe.record : null;
+      record = probe.reason === 'unreadable-record' ? null : probe.record;
       break;
     case 'absent':
       record = null;
@@ -796,6 +797,7 @@ export type LifecycleDeps = {
    * so carrier readers cannot advance the startup boundary themselves.
    */
   readonly startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
+  readonly scheduleStoreEpochSweepFn?: () => void;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
@@ -1044,6 +1046,7 @@ async function runLifecycleStartup({
       storeFormatFingerprint: deps.storeFormat.fingerprint,
     };
     const preinjectedStoreServices = storeServicesRef.tryGet();
+    const shouldScheduleStoreEpochSweep = preinjectedStoreServices === null;
     let storeDb: Database;
     if (preinjectedStoreServices !== null) {
       // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
@@ -1151,6 +1154,7 @@ async function runLifecycleStartup({
     });
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
+    if (shouldScheduleStoreEpochSweep) deps.scheduleStoreEpochSweepFn?.();
     const serverInfo = {
       port,
       host,

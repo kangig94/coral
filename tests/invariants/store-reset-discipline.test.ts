@@ -109,6 +109,20 @@ describe('write-once store epoch invariants', () => {
     expect(publications[0]?.arguments[0]?.getText(parsed)).toBe('mint');
     expect(enclosingFunctionName(publications[0])).toBe('mintNextEpoch');
     expect(source('src/store/epoch.ts')).toContain("const MINT_DIRECTORY_PREFIX = '.mint-'");
+    expect(source('src/store/epoch.ts')).not.toContain('replaceEpoch');
+  });
+
+  it('makes descriptor and WAL-path binding race cells unreachable', () => {
+    const epoch = source('src/store/epoch.ts');
+    const ports = source('src/infra/port-types.ts');
+    const runtime = source('src/runtime/real.ts');
+
+    expect(epoch).not.toMatch(
+      /openProvenStoreDescriptor|provenPathStillNamesObject|verifiedObservations|settledObservations|\/proc\/self\/fd|\/dev\/fd/u,
+    );
+    expect(ports).not.toContain('openNoFollowSync');
+    expect(runtime).not.toMatch(/openNoFollowSync|O_NOFOLLOW/u);
+    expect(epoch).toContain('A same-user process actively replacing entries inside ~/.coral');
   });
 
   it('keeps epoch deletion inside the sweep implementation', () => {
@@ -159,9 +173,9 @@ describe('write-once store epoch invariants', () => {
     expect(all).not.toMatch(/WriterExclusion|store_reset_lock_contended|store_reset_interrupted_/u);
   });
 
-  it('counts each inlined settlement refusal in the semantic ratchet (target: 0)', () => {
+  it('counts one new open refusal after deleting two post-open re-verification refusals', () => {
     expect(source('src/store/epoch.ts')).not.toContain('failStoreEpoch');
-    expect(storeSemanticRefusalCount()).toBe(65);
+    expect(storeSemanticRefusalCount()).toBe(64);
   });
 
   it('keeps legacy_source_not_quiescent producers off the startup adoption path', () => {

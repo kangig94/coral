@@ -389,7 +389,6 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     },
     existsSync: (path) => existsSync(path),
     openSync: (path, flags, mode) => (mode === undefined ? openSync(path, flags) : openSync(path, flags, mode)),
-    openNoFollowSync: (path) => openSync(path, fsConstants.O_RDWR | fsConstants.O_NOFOLLOW),
     readSync: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
     writeSync: (fd, buffer, offset, length, position) => writeSync(fd, buffer, offset, length, position),
     fdatasyncSync: (fd) => fdatasyncSync(fd),

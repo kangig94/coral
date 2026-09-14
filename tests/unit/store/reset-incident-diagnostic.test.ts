@@ -174,7 +174,7 @@ afterEach(() => {
 });
 
 describe('store-reset SQLite child supervision', () => {
-  it('makes the diagnostic child register its hold before opening the database', async () => {
+  it('leaves holder publication and removal to the parent', async () => {
     const child = new FakeDiagnosticChild();
     let spawnedArgs: readonly string[] = [];
     const result = superviseStoreResetDiagnosticChild(
@@ -183,16 +183,14 @@ describe('store-reset SQLite child supervision', () => {
       }),
       '/node',
       '/private/store.db',
-      '/private/.epoch-holder-test.json',
     );
     child.stdout('ok');
     child.close(0, null);
 
     await expect(result).resolves.toEqual({ integrity: 'ok', termination: 'completed' });
-    expect(spawnedArgs.at(-1)).toBe('/private/.epoch-holder-test.json');
-    expect(spawnedArgs[2]?.indexOf('writeFileSync(holderPath')).toBeLessThan(
-      spawnedArgs[2]?.indexOf('new DatabaseSync(path,') ?? -1,
-    );
+    expect(spawnedArgs.at(-1)).toBe('/private/store.db');
+    expect(spawnedArgs[2]).not.toContain('writeFileSync');
+    expect(spawnedArgs[2]).not.toContain('unlinkSync');
   });
 
   it.each(['ok', 'failed', 'unavailable'] as const)(

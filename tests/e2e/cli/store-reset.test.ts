@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -296,21 +297,6 @@ describe('bundled store-reset CLI', () => {
     expect(storeHasTable(epochStorePath(home, build, 2), 'private_pre_reset')).toBe(false);
     expect(existsSync(epochStorePath(home, build, 0))).toBe(true);
 
-    writeFileSync(
-      discovery,
-      JSON.stringify({
-        pid: 999_999_991,
-        port: 1,
-        socketPath: join(home, 'tmp', 'absent-coordinator.sock'),
-        bundleHash: build.bundleHash,
-        flavor: build.flavor,
-        namespace: 'default',
-        startedAt: Date.now(),
-        token: 'absent-coordinator-token',
-        bootToken: 'absent-coordinator-boot-token',
-      }),
-      { mode: 0o600 },
-    );
     const release = runCli(home, [
       'backend',
       'store-reset',
@@ -324,6 +310,41 @@ describe('bundled store-reset CLI', () => {
     expect(release.status, release.stderr).toBe(0);
     expect(release.stdout).toContain('Released store epoch 1');
     expect(existsSync(epochOnePath)).toBe(false);
+  });
+
+  it('sweeps after discovery publication across clean reset cycles', async () => {
+    const build = readBuildManifest();
+    const home = temporaryHomes.create('coral-store-reset-e2e-cycles-', build.flavor);
+    mkdirSync(join(home, 'tmp'));
+    const storePath = activeStorePath(home, build);
+    mkdirSync(dirname(storePath), { recursive: true });
+    const initial = new DatabaseSync(storePath);
+    initial.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO meta VALUES ('store_format_fingerprint', 'sha256:${'0'.repeat(64)}');
+    `);
+    initial.close();
+    const discovery = coordinatorPaths(build.flavor, { baseDir: join(home, '.coral') }).infoFile;
+    const cycles = 4;
+
+    for (let cycle = 1; cycle <= cycles; cycle += 1) {
+      const start = runCli(home, ['abort', '--all'], CLI_BUNDLE, { autostart: true, timeoutMs: 30_000 });
+      expect(start.status, start.stderr).toBe(0);
+      const shutdown = runCli(home, ['backend', 'shutdown']);
+      expect(shutdown.status, shutdown.stderr).toBe(0);
+      await waitForCondition(() => !existsSync(discovery));
+      if (cycle < cycles) {
+        const current = new DatabaseSync(epochStorePath(home, build, cycle));
+        current.exec(`UPDATE meta SET value = 'sha256:${'0'.repeat(64)}' WHERE key = 'store_format_fingerprint'`);
+        current.close();
+      }
+    }
+
+    const epochEntries = readdirSync(dirname(storePath))
+      .filter((name) => /^epoch-\d+$/u.test(name))
+      .sort();
+    expect(epochEntries).toEqual(['epoch-3', 'epoch-4']);
+    console.log(`lifecycle-ordering-cell K=${cycles} current=4 preserved=3 garbage=0`);
   });
 
   it('uses fixed envelopes for invalid IDs, malformed incidents, and wrong-build incidents', () => {

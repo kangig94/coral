@@ -111,6 +111,7 @@ import {
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
+import { resolveCurrentStoreEpoch, sweepStoreEpochs } from '../../store/epoch.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type {
@@ -1732,6 +1733,17 @@ export function createCoordinatorCore(
     startProviderOperationReconciler: services.startProviderOperationReconciler,
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
+    scheduleStoreEpochSweepFn: () => {
+      const timer = runtime.time.setTimeout(() => {
+        const dbDir = runtime.paths.coral.store.dbDir;
+        try {
+          void sweepStoreEpochs(runtime, dbDir, resolveCurrentStoreEpoch(runtime.storage, dbDir));
+        } catch (error: unknown) {
+          world.log(`Store epoch retention sweep could not start: ${formatError(error)}\n`);
+        }
+      }, 0);
+      timer.unref?.();
+    },
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),
     getDiscussContext: discuss.getDiscussContext,

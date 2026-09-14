@@ -1,9 +1,9 @@
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
-import { probeCoordinator, readDiscoveryRecordDisposition } from '../infra/backend-discovery.js';
-import type { StorageBigIntStat, StoragePort } from '../infra/port-types.js';
+import { probeCoordinator } from '../infra/backend-discovery.js';
+import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { classifyStoreFile, openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
@@ -12,6 +12,7 @@ import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
 export const STORE_EPOCH_METADATA_FILE_NAME = 'epoch.json';
+export const MAX_STORE_EPOCH_METADATA_BYTES = 64 * 1024;
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 const EPOCH_DIRECTORY_PATTERN = /^epoch-(0|[1-9]\d*)$/;
@@ -50,6 +51,23 @@ export type StoreEpochListEntry = Readonly<{
   epochJson: StoreEpochMetadataDisposition;
 }>;
 
+export type StoreEpochHolderListEntry = Readonly<{
+  id: string;
+  epoch: StoreEpoch | null;
+  pid: number | null;
+  state: 'live' | 'stale' | 'unobservable';
+}>;
+
+export type StoreEpochSweepResult =
+  | 'absent'
+  | 'complete'
+  | 'current'
+  | 'unobservable-metadata'
+  | 'live-holder'
+  | 'unobservable-holder'
+  | 'deletion-failed'
+  | 'durability-sync-failed';
+
 export type StoreEpochMetadataDisposition =
   | Readonly<{ kind: 'legacy-epoch-0' }>
   | Readonly<{ kind: 'valid'; value: StoreEpochMetadata }>
@@ -67,10 +85,8 @@ export type StoreEpochOptions = Readonly<{
 
 export type StoreEpoch = string;
 
-type StoreEpochObjectIdentity = Readonly<{ dev: bigint; ino: bigint }>;
-
 type StoreEpochProof =
-  | Readonly<{ kind: 'proven'; identity: StoreEpochObjectIdentity }>
+  | Readonly<{ kind: 'proven' }>
   | Readonly<{ kind: 'disproven' }>
   | Readonly<{ kind: 'unobservable'; cause: string }>;
 
@@ -107,7 +123,7 @@ export function resolveStoreDbDir(runtime: Pick<Runtime, 'paths'>, path?: string
   return resolve(path, '..');
 }
 
-type StoreEpochDiscoveryStorage = Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync' | 'realpathSync'>;
+type StoreEpochDiscoveryStorage = Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync' | 'statSync'>;
 
 type StoreEpochObservation = Readonly<{
   epoch: StoreEpoch;
@@ -118,19 +134,10 @@ type StoreEpochObservation = Readonly<{
 type ProvenStoreEpochObservation = StoreEpochObservation &
   Readonly<{ proof: Extract<StoreEpochProof, { readonly kind: 'proven' }> }>;
 
-function identityOf(entry: StorageBigIntStat): StoreEpochObjectIdentity {
-  return { dev: entry.dev, ino: entry.ino };
-}
-
-function sameIdentity(left: StoreEpochObjectIdentity, right: StoreEpochObjectIdentity): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
 function observeRegularFile(storage: Pick<StoragePort, 'lstatSync'>, path: string): StoreEpochProof {
   try {
-    const entry = storage.lstatSync(path, { bigint: true });
-    if (!entry.isFile()) return { kind: 'disproven' };
-    return { kind: 'proven', identity: identityOf(entry) };
+    const entry = storage.lstatSync(path);
+    return entry.isFile() && !entry.isSymbolicLink() ? { kind: 'proven' } : { kind: 'disproven' };
   } catch (error: unknown) {
     return errorCode(error) === 'ENOENT'
       ? { kind: 'disproven' }
@@ -141,10 +148,9 @@ function observeRegularFile(storage: Pick<StoragePort, 'lstatSync'>, path: strin
 function observeEpochZero(storage: Pick<StoragePort, 'lstatSync'>, dbDir: string): StoreEpochObservation | null {
   const path = epochPath(dbDir, '0');
   try {
-    const entry = storage.lstatSync(path, { bigint: true });
-    const proof = entry.isFile()
-      ? ({ kind: 'proven', identity: identityOf(entry) } as const)
-      : ({ kind: 'disproven' } as const);
+    const entry = storage.lstatSync(path);
+    const proof =
+      entry.isFile() && !entry.isSymbolicLink() ? ({ kind: 'proven' } as const) : ({ kind: 'disproven' } as const);
     return { epoch: '0', proof, epochJson: { kind: 'legacy-epoch-0' } };
   } catch (error: unknown) {
     if (errorCode(error) === 'ENOENT') return null;
@@ -156,21 +162,14 @@ function observeEpochZero(storage: Pick<StoragePort, 'lstatSync'>, dbDir: string
   }
 }
 
-function observeContainedDirectory(
-  storage: Pick<StoragePort, 'lstatSync' | 'realpathSync'>,
-  dbDir: string,
+function observeEpochDirectory(
+  storage: Pick<StoragePort, 'lstatSync'>,
   path: string,
 ): Exclude<StoreEpochProof, { readonly kind: 'proven' }> | Readonly<{ kind: 'contained' }> {
   try {
     const entry = storage.lstatSync(path);
     if (!entry.isDirectory() || entry.isSymbolicLink()) return { kind: 'disproven' };
-    const relativePath = relative(storage.realpathSync(dbDir), storage.realpathSync(path));
-    return relativePath !== '' &&
-      relativePath !== '..' &&
-      !relativePath.startsWith(`..${sep}`) &&
-      !isAbsolute(relativePath)
-      ? { kind: 'contained' }
-      : { kind: 'disproven' };
+    return { kind: 'contained' };
   } catch (error: unknown) {
     return errorCode(error) === 'ENOENT'
       ? { kind: 'disproven' }
@@ -183,6 +182,10 @@ function observeStoreEpochs(
   dbDir: string,
   entries: readonly string[] = storage.readdirSync(dbDir),
 ): readonly StoreEpochObservation[] {
+  // This is a static classification, not an atomic pathname proof. Symlinks and wrong-kind entries are
+  // disproven at observation time. A same-user process actively replacing entries inside ~/.coral between
+  // this lstat and SQLite's path open is outside the threat model: it can already replace Coral's executable,
+  // plugin bundle, hooks, and CLI.
   const observations: StoreEpochObservation[] = [];
   const epochZero = observeEpochZero(storage, dbDir);
   if (epochZero !== null) observations.push(epochZero);
@@ -190,7 +193,7 @@ function observeStoreEpochs(
     const epoch = epochNumber(entry);
     if (epoch === null || epoch === '0') continue;
     const directory = join(dbDir, entry);
-    const contained = observeContainedDirectory(storage, dbDir, directory);
+    const contained = observeEpochDirectory(storage, directory);
     if (contained.kind !== 'contained') {
       observations.push({
         epoch,
@@ -234,7 +237,7 @@ export function resolveCurrentStorePath(runtime: Pick<Runtime, 'paths' | 'storag
 }
 
 export function openWritableStoreDbNoReset(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'paths' | 'storage'>,
+  runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: {
     readonly path?: string;
     readonly busyTimeoutMs?: number;
@@ -245,22 +248,13 @@ export function openWritableStoreDbNoReset(
   const proof =
     storeDbPath === ':memory:' ? { kind: 'disproven' as const } : observeRegularFile(runtime.storage, storeDbPath);
   if (proof.kind === 'proven') {
-    const bound = openProvenStoreDescriptor(runtime, storeDbPath, proof);
-    if (bound !== null) {
-      try {
-        const db = openStoreDatabase({
-          path: bound.path,
-          storage: runtime.storage,
-          storeFormat: options.storeFormat,
-          flavor: runtime.flavor,
-          busyTimeoutMs: options.busyTimeoutMs,
-        });
-        if (provenPathStillNamesObject(runtime.storage, storeDbPath, proof)) return db;
-        db.close();
-      } finally {
-        runtime.storage.closeSync(bound.descriptor);
-      }
-    }
+    return openStoreDatabase({
+      path: storeDbPath,
+      storage: runtime.storage,
+      storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
+      busyTimeoutMs: options.busyTimeoutMs,
+    });
   }
   throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
 }
@@ -350,34 +344,78 @@ function proveReleaseTarget(
   }
 }
 
-function storeEpochHolderDisposition(
+type StoreEpochHolderObservation = StoreEpochHolderListEntry &
+  Readonly<{ entry: string; path: string; removable: boolean }>;
+
+function observeStoreEpochHolder(runtime: Runtime, dbDir: string, entry: string): StoreEpochHolderObservation | null {
+  const path = join(dbDir, entry);
+  const id = entry.slice(EPOCH_HOLDER_PREFIX.length, -'.json'.length);
+  const unobservable = (removable: boolean): StoreEpochHolderObservation => ({
+    id,
+    entry,
+    path,
+    epoch: null,
+    pid: null,
+    state: 'unobservable',
+    removable,
+  });
+  try {
+    const kind = runtime.storage.lstatSync(path);
+    if (!kind.isFile() || kind.isSymbolicLink()) return unobservable(true);
+    const value: unknown = JSON.parse(runtime.storage.readFileSync(path, 'utf-8'));
+    if (
+      !isRecord(value) ||
+      typeof value.epoch !== 'string' ||
+      !/^(0|[1-9]\d*)$/.test(value.epoch) ||
+      !Number.isSafeInteger(value.pid) ||
+      Number(value.pid) <= 0
+    ) {
+      return unobservable(true);
+    }
+    const pid = Number(value.pid);
+    const liveness = runtime.process.observeLiveness(pid);
+    return {
+      id,
+      entry,
+      path,
+      epoch: value.epoch,
+      pid,
+      state: liveness === 'alive' ? 'live' : liveness === 'absent' ? 'stale' : 'unobservable',
+      removable: liveness !== 'unknown',
+    };
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') return null;
+    return unobservable(error instanceof SyntaxError);
+  }
+}
+
+function observeStoreEpochHolders(
   runtime: Runtime,
   dbDir: string,
-): Readonly<{ kind: 'clear' }> | Readonly<{ kind: 'live' }> | Readonly<{ kind: 'unobservable' }> {
+):
+  | Readonly<{ kind: 'observed'; holders: readonly StoreEpochHolderObservation[] }>
+  | Readonly<{ kind: 'unobservable' }> {
   let entries: readonly string[];
   try {
     entries = runtime.storage.readdirSync(dbDir);
-  } catch {
-    return { kind: 'unobservable' };
+  } catch (error: unknown) {
+    return errorCode(error) === 'ENOENT' ? { kind: 'observed', holders: [] } : { kind: 'unobservable' };
   }
+  const holders: StoreEpochHolderObservation[] = [];
   for (const entry of entries) {
     if (!entry.startsWith(EPOCH_HOLDER_PREFIX) || !entry.endsWith('.json')) continue;
-    const path = join(dbDir, entry);
-    try {
-      const kind = runtime.storage.lstatSync(path);
-      if (!kind.isFile() || kind.isSymbolicLink()) return { kind: 'unobservable' };
-      const value: unknown = JSON.parse(runtime.storage.readFileSync(path, 'utf-8'));
-      if (!isRecord(value) || !Number.isSafeInteger(value.pid) || Number(value.pid) <= 0) {
-        return { kind: 'unobservable' };
-      }
-      const liveness = runtime.process.observeLiveness(Number(value.pid));
-      if (liveness === 'alive') return { kind: 'live' };
-      if (liveness === 'unknown') return { kind: 'unobservable' };
-    } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') return { kind: 'unobservable' };
-    }
+    const holder = observeStoreEpochHolder(runtime, dbDir, entry);
+    if (holder !== null) holders.push(holder);
   }
-  return { kind: 'clear' };
+  return { kind: 'observed', holders };
+}
+
+export function listStoreEpochHolders(runtime: Runtime): readonly StoreEpochHolderListEntry[] {
+  const observed = observeStoreEpochHolders(runtime, runtime.paths.coral.store.dbDir);
+  if (observed.kind === 'unobservable') {
+    return [{ id: 'unobservable', epoch: null, pid: null, state: 'unobservable' }];
+  }
+  return observed.holders.map(({ id, epoch, pid, state }) => ({ id, epoch, pid, state }));
 }
 
 export function sweepStoreEpochs(
@@ -387,41 +425,69 @@ export function sweepStoreEpochs(
   options: {
     readonly assertOwned?: () => void;
     readonly releaseEpoch?: StoreEpoch;
-    readonly replaceEpoch?: StoreEpoch;
   } = {},
-): 'absent' | 'complete' | 'incomplete' | 'current' {
+): StoreEpochSweepResult {
   const { storage } = runtime;
-  if (options.replaceEpoch !== undefined) {
-    const name = `epoch-${options.replaceEpoch}`;
-    const observation = observeStoreEpochs(storage, dbDir, [name]).find(({ epoch }) => epoch === options.replaceEpoch);
-    if (observation?.proof.kind !== 'disproven') return 'incomplete';
-    const removed = removeDuringSweep(storage, join(dbDir, name), true);
-    try {
-      return storage.syncDirectoryDurableSync(dbDir) && removed ? 'complete' : 'incomplete';
-    } catch (error: unknown) {
-      auditSweepFailure(dbDir, error);
-      return 'incomplete';
-    }
-  }
   if (options.releaseEpoch !== undefined) {
     const initial = proveReleaseTarget(storage, dbDir, options.releaseEpoch);
     if (initial === 'absent') return 'absent';
     if (initial === 'current') return 'current';
-    if (initial === 'unobservable') return 'incomplete';
+    if (initial === 'unobservable') return 'unobservable-metadata';
   }
-  if (storeEpochHolderDisposition(runtime, dbDir).kind !== 'clear') return 'incomplete';
+
+  const holderRead = observeStoreEpochHolders(runtime, dbDir);
+  if (holderRead.kind === 'unobservable') return 'unobservable-holder';
+  let holdersChanged = false;
+  let liveHolder = false;
+  let unobservableHolder = false;
+  for (const holder of holderRead.holders) {
+    if (holder.state === 'live') {
+      liveHolder = true;
+      continue;
+    }
+    if (holder.state === 'unobservable' && (options.releaseEpoch === undefined || !holder.removable)) {
+      unobservableHolder = true;
+      continue;
+    }
+    const verified = observeStoreEpochHolder(runtime, dbDir, holder.entry);
+    if (verified === null) continue;
+    if (verified.state === 'live') {
+      liveHolder = true;
+      continue;
+    }
+    if (verified.state === 'unobservable' && (options.releaseEpoch === undefined || !verified.removable)) {
+      unobservableHolder = true;
+      continue;
+    }
+    if (!removeDuringSweep(storage, verified.path, false)) return 'deletion-failed';
+    holdersChanged = true;
+    if (verified.state === 'unobservable') unobservableHolder = true;
+  }
+  if (holdersChanged) {
+    try {
+      if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
+    } catch (error: unknown) {
+      auditSweepFailure(dbDir, error);
+      return 'durability-sync-failed';
+    }
+  }
+  if (unobservableHolder) return 'unobservable-holder';
+  if (liveHolder) return 'live-holder';
+
   try {
-    if (readDiscoveryRecordDisposition(runtime).kind === 'missing') return 'incomplete';
     const coordinator = probeCoordinator(runtime);
     if (
       coordinator.kind === 'unobservable' ||
-      (coordinator.kind === 'live' && (coordinator.record.pid !== runtime.env.pid() || options.releaseEpoch === '0'))
+      (coordinator.kind === 'absent' && options.releaseEpoch === undefined) ||
+      (coordinator.kind === 'live' &&
+        coordinator.record.pid !== runtime.env.pid() &&
+        (options.releaseEpoch === undefined || options.releaseEpoch === '0'))
     ) {
-      return 'incomplete';
+      return coordinator.kind === 'live' ? 'live-holder' : 'unobservable-metadata';
     }
   } catch (error: unknown) {
     auditSweepFailure(dbDir, error);
-    return 'incomplete';
+    return 'unobservable-metadata';
   }
 
   if (options.releaseEpoch !== undefined) {
@@ -429,7 +495,7 @@ export function sweepStoreEpochs(
     const proof = proveReleaseTarget(storage, dbDir, options.releaseEpoch);
     if (proof === 'absent') return 'absent';
     if (proof === 'current') return 'current';
-    if (proof === 'unobservable') return 'incomplete';
+    if (proof === 'unobservable') return 'unobservable-metadata';
     let released: boolean;
     if (options.releaseEpoch !== '0') {
       released = removeDuringSweep(storage, epochDirectory(dbDir, options.releaseEpoch), true);
@@ -445,21 +511,22 @@ export function sweepStoreEpochs(
       }
     }
     try {
-      return storage.syncDirectoryDurableSync(dbDir) && released ? 'complete' : 'incomplete';
+      if (!released) return 'deletion-failed';
+      return storage.syncDirectoryDurableSync(dbDir) ? 'complete' : 'durability-sync-failed';
     } catch (error: unknown) {
       auditSweepFailure(dbDir, error);
-      return 'incomplete';
+      return 'durability-sync-failed';
     }
   }
 
-  if (current === null) return 'incomplete';
+  if (current === null) return 'unobservable-metadata';
 
   let entries: readonly string[];
   try {
     entries = storage.readdirSync(dbDir);
   } catch (error: unknown) {
     auditSweepFailure(dbDir, error);
-    return 'incomplete';
+    return 'unobservable-metadata';
   }
 
   const observations = observeStoreEpochs(storage, dbDir, entries);
@@ -491,10 +558,11 @@ export function sweepStoreEpochs(
     }
   }
   try {
-    return storage.syncDirectoryDurableSync(dbDir) && complete ? 'complete' : 'incomplete';
+    if (!complete) return 'deletion-failed';
+    return storage.syncDirectoryDurableSync(dbDir) ? 'complete' : 'durability-sync-failed';
   } catch (error: unknown) {
     auditSweepFailure(dbDir, error);
-    return 'incomplete';
+    return 'durability-sync-failed';
   }
 }
 
@@ -510,25 +578,15 @@ function selectSuccessor(
   runtime: Runtime,
   dbDir: string,
   current: StoreEpoch | null,
-): Readonly<{ kind: 'selected'; epoch: StoreEpoch }> | Readonly<{ kind: 'retry' }> {
+): Readonly<{ kind: 'selected'; epoch: StoreEpoch }> {
   let candidate = successorEpoch(current ?? '0');
   for (;;) {
-    const name = `epoch-${candidate}`;
     try {
-      runtime.storage.lstatSync(join(dbDir, name));
+      runtime.storage.lstatSync(epochDirectory(dbDir, candidate));
     } catch (error: unknown) {
       if (errorCode(error) === 'ENOENT') return { kind: 'selected', epoch: candidate };
       candidate = successorEpoch(candidate);
       continue;
-    }
-    const observation = observeStoreEpochs(runtime.storage, dbDir, [name]).find(({ epoch }) => epoch === candidate);
-    if (observation?.proof.kind === 'proven') return { kind: 'retry' };
-    if (observation?.proof.kind === 'unobservable') {
-      candidate = successorEpoch(candidate);
-      continue;
-    }
-    if (sweepStoreEpochs(runtime, dbDir, current, { replaceEpoch: candidate }) === 'complete') {
-      return { kind: 'selected', epoch: candidate };
     }
     candidate = successorEpoch(candidate);
   }
@@ -578,50 +636,20 @@ function mintNextEpoch(
   }
 }
 
-function openProvenStoreDescriptor(
-  runtime: Pick<Runtime, 'env' | 'storage'>,
-  path: string,
-  proof: Extract<StoreEpochProof, { readonly kind: 'proven' }>,
-): Readonly<{ descriptor: number; path: string }> | null {
-  let descriptor: number | null = null;
+function assertProvenStoreOpenable(storage: StoragePort, path: string): void {
+  let descriptor: number;
   try {
-    descriptor = runtime.storage.openNoFollowSync?.(path) ?? runtime.storage.openSync(path, 'r+');
-    const openedIdentity = identityOf(runtime.storage.fstatSync(descriptor, { bigint: true }));
-    if (!sameIdentity(proof.identity, openedIdentity)) {
-      runtime.storage.closeSync(descriptor);
-      return null;
-    }
-    return {
-      descriptor,
-      path:
-        runtime.env.platform() === 'linux'
-          ? `/proc/self/fd/${descriptor}`
-          : runtime.env.platform() === 'darwin'
-            ? `/dev/fd/${descriptor}`
-            : path,
-    };
-  } catch {
-    if (descriptor !== null) {
-      try {
-        runtime.storage.closeSync(descriptor);
-      } catch {
-        // The failed proof cannot authorize an open regardless of descriptor cleanup.
-      }
-    }
-    return null;
+    descriptor = storage.openSync(path, 'r+');
+  } catch (error: unknown) {
+    throw new Error(
+      `The open syscall for proven store epoch '${path}' was refused with errno ${errorCode(error) ?? 'UNKNOWN'}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
-}
-
-function provenPathStillNamesObject(
-  storage: Pick<StoragePort, 'lstatSync'>,
-  path: string,
-  proof: Extract<StoreEpochProof, { readonly kind: 'proven' }>,
-): boolean {
   try {
-    const entry = storage.lstatSync(path, { bigint: true });
-    return entry.isFile() && sameIdentity(proof.identity, identityOf(entry));
+    storage.closeSync(descriptor);
   } catch {
-    return false;
+    // This descriptor is only an openability probe. SQLite owns the database handle it opens by pathname.
   }
 }
 
@@ -629,33 +657,22 @@ function tryOpenCurrentEpoch(
   runtime: Runtime,
   options: StoreEpochOptions,
   path: string,
-  proof: Extract<StoreEpochProof, { readonly kind: 'proven' }>,
 ):
   | { readonly kind: 'opened'; readonly db: Database }
-  | { readonly kind: 'retry' }
   | { readonly kind: 'replace'; readonly classification: StoreEpochClassification } {
-  const bound = openProvenStoreDescriptor(runtime, path, proof);
-  if (bound === null) return { kind: 'retry' };
+  assertProvenStoreOpenable(runtime.storage, path);
   try {
     const decision = openWritableStoreDatabase({
-      path: bound.path,
+      path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs,
     });
     if (decision.kind !== 'opened') return { kind: 'replace', classification: decision.classification };
-    if (provenPathStillNamesObject(runtime.storage, path, proof)) return decision;
-    try {
-      decision.db.close();
-    } catch {
-      // Preserve the proof mismatch as the reason to iterate.
-    }
-    return { kind: 'retry' };
+    return decision;
   } catch (error: unknown) {
     return { kind: 'replace', classification: unavailableClassification(error) };
-  } finally {
-    runtime.storage.closeSync(bound.descriptor);
   }
 }
 
@@ -680,33 +697,11 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     let classification: StoreEpochClassification = { kind: 'absent' };
     if (current !== null) {
       const path = epochPath(dbDir, current.epoch);
-      const opened = tryOpenCurrentEpoch(runtime, options, path, current.proof);
-      if (opened.kind === 'retry') continue;
+      const opened = tryOpenCurrentEpoch(runtime, options, path);
       if (opened.kind === 'opened') {
-        const verifiedObservations = observeStoreEpochs(runtime.storage, dbDir);
-        const verified = currentProvenEpoch(verifiedObservations);
-        if (verified?.epoch !== current.epoch) {
-          opened.db.close();
-          if (verified !== null && compareEpoch(verified.epoch, current.epoch) > 0) continue;
-          if (verifiedObservations.find(({ epoch }) => epoch === current.epoch)?.proof.kind === 'unobservable') {
-            continue;
-          }
-          throw new Error(`Store epoch settlement regressed from ${current.epoch} to ${verified?.epoch ?? 'none'}.`);
-        }
         if (current.epoch !== '0' && !runtime.storage.syncDirectoryDurableSync(dbDir)) {
           opened.db.close();
           throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
-        }
-        sweepStoreEpochs(runtime, dbDir, current.epoch);
-        const settledObservations = observeStoreEpochs(runtime.storage, dbDir);
-        const settled = currentProvenEpoch(settledObservations);
-        if (settled?.epoch !== current.epoch) {
-          opened.db.close();
-          if (settled !== null && compareEpoch(settled.epoch, current.epoch) > 0) continue;
-          if (settledObservations.find(({ epoch }) => epoch === current.epoch)?.proof.kind === 'unobservable') {
-            continue;
-          }
-          throw new Error(`Store epoch settlement regressed from ${current.epoch} to ${settled?.epoch ?? 'none'}.`);
         }
         opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
         return { db: opened.db, epoch: current.epoch, path };
@@ -714,7 +709,6 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
       classification = opened.classification;
     }
     const successor = selectSuccessor(runtime, dbDir, current?.epoch ?? null);
-    if (successor.kind === 'retry') continue;
     const published = mintNextEpoch(runtime, options, dbDir, current?.epoch ?? '0', successor.epoch, classification);
     if (published === 'swept') {
       throw new Error(`Store epoch settlement made no progress beyond epoch ${current?.epoch ?? 'none'}.`);
@@ -729,7 +723,6 @@ export function discardCurrentStoreEpoch(runtime: Runtime, options: StoreEpochOp
   for (;;) {
     const current = resolveCurrentStoreEpoch(runtime.storage, dbDir);
     const successor = selectSuccessor(runtime, dbDir, current);
-    if (successor.kind === 'retry') continue;
     const published = mintNextEpoch(runtime, options, dbDir, current ?? '0', successor.epoch, {
       kind: 'unavailable',
       cause: 'operator-discard',
@@ -767,13 +760,15 @@ export function parseStoreEpochMetadata(value: unknown): StoreEpochMetadata | nu
 }
 
 function readEpochMetadata(
-  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'statSync'>,
   directory: string,
 ): StoreEpochMetadataDisposition {
   const metadataPath = join(directory, STORE_EPOCH_METADATA_FILE_NAME);
   try {
     const entry = storage.lstatSync(metadataPath);
     if (!entry.isFile() || entry.isSymbolicLink()) return { kind: 'malformed' };
+    const size = storage.statSync(metadataPath, { bigint: true }).size;
+    if (size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return { kind: 'malformed' };
   } catch (error: unknown) {
     return errorCode(error) === 'ENOENT'
       ? { kind: 'missing' }

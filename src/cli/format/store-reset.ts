@@ -130,7 +130,7 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
 export function formatStoreResetList(result: StoreResetListResult, target: 'legacy' | 'gen2'): string {
   result = constrainStoreResetRendererInput(result);
   target = constrainStoreResetRendererInput(target);
-  if (result.epochs.length === 0 && result.legacyIncidents.length === 0) {
+  if (result.epochs.length === 0 && result.holders.length === 0 && result.legacyIncidents.length === 0) {
     return [`No ${target} store epochs or legacy store-reset incidents.`, ...releaseInstruction(target)].join('\n');
   }
   return [
@@ -139,6 +139,15 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
       (epoch) =>
         `${epoch.epoch} | ${epoch.role} | ${epoch.bytes ?? 'unknown'} | ${epoch.classification.kind} | ${epoch.storedProductVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`,
     ),
+    ...(result.holders.length === 0
+      ? []
+      : [
+          '',
+          'Holder ID | Epoch | PID | State',
+          ...result.holders.map(
+            (holder) => `${holder.id} | ${holder.epoch ?? 'unknown'} | ${holder.pid ?? 'unknown'} | ${holder.state}`,
+          ),
+        ]),
     ...(result.legacyIncidents.length === 0
       ? []
       : [
@@ -172,8 +181,16 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
   switch (result.kind) {
     case 'released':
       return `Released store epoch ${result.epoch} from ${result.target} ${result.flavor}.`;
-    case 'release-unproven':
-      return `Store epoch ${result.epoch} release is unproven for ${result.target} ${result.flavor}; retry after confirming no coordinator holds it.`;
+    case 'release-metadata-unobservable':
+      return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because epoch or coordinator metadata could not be observed; inspect backend store-reset list, restore metadata readability, and retry.`;
+    case 'release-holder-live':
+      return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a live holder remains; wait for the diagnostic or coordinator to exit, then retry.`;
+    case 'release-holder-unobservable':
+      return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a holder record was unobservable; inspect backend store-reset list. This command clears a malformed record, while an unreadable liveness probe must become observable before retrying.`;
+    case 'release-deletion-failed':
+      return `Store epoch ${result.epoch} deletion failed in ${result.target} ${result.flavor}; check store-directory permissions and retry.`;
+    case 'release-durability-sync-failed':
+      return `Store epoch ${result.epoch} was removed from ${result.target} ${result.flavor}, but syncing the store directory failed; inspect backend store-reset list and retry.`;
     case 'absent':
       return `Store epoch ${result.epoch} is absent from ${result.target} ${result.flavor}.`;
     case 'current':

@@ -165,6 +165,10 @@ describe('verifiedIncumbentFromProbe', () => {
       'a record whose pid could not be observed',
       { kind: 'unobservable', reason: 'unreadable-process', record: preTokenRecord() },
     ],
+    [
+      'a record whose parent pid is absent',
+      { kind: 'unobservable', reason: 'recorded-process-absent', record: preTokenRecord() },
+    ],
   ];
 
   it.each(probes)('contends with the incumbent behind %s', (_label, probe) => {

@@ -231,7 +231,7 @@ describe('coordinator discovery', () => {
     expect(probed.record.incarnation, 'and it simply has no token').toBeUndefined();
   });
 
-  it('probeCoordinator reports absence for a record whose pid names no process', async () => {
+  it('probeCoordinator reports unobservable for a record whose pid names no process', async () => {
     makeHome();
     const { probeCoordinator, writeDiscoveryRecord } = await importDiscovery();
     const runtime = makeDiscoveryRuntime('prod');
@@ -251,8 +251,13 @@ describe('coordinator discovery', () => {
       runtime,
     );
 
-    expect(probeCoordinator(runtime), 'liveness is an observation this reader can make alone').toEqual({
-      kind: 'absent',
+    expect(
+      probeCoordinator(runtime),
+      'a dead parent says nothing about whether its children still hold state',
+    ).toMatchObject({
+      kind: 'unobservable',
+      reason: 'recorded-process-absent',
+      record: { pid: 2147483646 },
     });
   });
 

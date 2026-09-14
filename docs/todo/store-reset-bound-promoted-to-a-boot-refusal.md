@@ -1868,8 +1868,8 @@ errors rather than implementation gaps, and one of those is mine from Revision 1
 
 ### The sweep has no reachable opportunity
 
-Settlement runs — and performs its only sweep — **before** the coordinator publishes its discovery record
-(`src/coordinator/lifecycle.ts:1063`, `:1137`), and a clean shutdown removes that record (`:1404`). Under
+Settlement runs — and performs its only sweep — **before** `runLifecycleStartup` publishes the coordinator's
+discovery record (`src/coordinator/lifecycle.ts`), and a clean shutdown removes that record. Under
 Revision 16's rule that an absent record is unobservable, every boot sweep therefore returns `incomplete`,
 and every `release` of a non-current epoch is refused: while the daemon is live the record names a
 different PID, and after a clean stop there is no record at all. **The only state that permits a
@@ -1888,8 +1888,9 @@ the boot opens its epoch and proceeds, and retention converges a moment later. `
 footing, plus an operator path that does not depend on a corpse.
 
 A record that **is** present while its PID is absent is also not `absent`. It says a coordinator died; it
-says nothing about the children it spawned. A reviewer used exactly that to delete an epoch the KB daemon
-still had open (`src/kb-daemon/runtime-host.ts:366`). Present-but-dead is unobservable.
+says nothing about the children it spawned. A reviewer used exactly that to delete an epoch
+`createKbDaemonWriteRuntimeHost` still had open (`src/kb-daemon/runtime-host.ts`). Present-but-dead is
+unobservable.
 
 ### A defence that was never owed
 
@@ -1943,18 +1944,19 @@ observed progress (`:677`). A `store.db` at mode `0444` busy-spins. A proven epo
 names a refused syscall, which is the one refusal the governing rule allows — surface it rather than
 looping.
 
-**The holder record has no lifecycle.** The parent writes it atomically and the child then truncates and
-rewrites the same path with a plain `writeFileSync` (`cli/store-reset.ts:92`,
-`store/reset-incident-diagnostic.ts:24`), so a death mid-write leaves malformed JSON that is classified
-unobservable forever, blocking every later sweep and release with no command to clear it. The parent
+**The holder record has no lifecycle.** Before this revision, the `diagnoseHeldEpoch` parent wrote it
+atomically (`src/cli/store-reset.ts`), while the child now owned by
+`createStoreResetIncidentDiagnosticRunner` (`src/store/reset-incident-diagnostic.ts`) then truncated and
+rewrote the same path with a plain writeFileSync, so a death mid-write leaves malformed JSON that is
+classified unobservable forever, blocking every later sweep and release with no command to clear it. The parent
 writes it once, naming the epoch and the PID; the child never rewrites it; the parent removes it in
 `finally`; a record whose PID is absent is stale, visible in `list`, and removable by the sweep that
 re-checks it.
 
 **`incomplete` collapses five outcomes** — unobservable metadata, a live holder, an unobservable holder,
 a failed deletion and a failed durability sync — and `release` maps all of them to `release-unproven`
-whose only advice is to confirm no coordinator holds the epoch (`epoch.ts:392`,
-`operator-store-reset.ts:157`, `cli/format/store-reset.ts:170`). They have different successors and must
+whose only advice in `formatStoreResetRelease` is to confirm no coordinator holds the epoch (`epoch.ts:392`,
+`operator-store-reset.ts:157`, `src/cli/format/store-reset.ts`). They have different successors and must
 say so.
 
 **`epoch.json` is read without a byte bound on the boot path** (`:769`). A bound here is correct and is

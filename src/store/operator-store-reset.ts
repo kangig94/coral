@@ -49,7 +49,12 @@ export type StoreResetReleasePresentation =
   | { readonly kind: 'current'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | { readonly kind: 'absent'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | {
-      readonly kind: 'release-unproven';
+      readonly kind:
+        | 'release-metadata-unobservable'
+        | 'release-holder-live'
+        | 'release-holder-unobservable'
+        | 'release-deletion-failed'
+        | 'release-durability-sync-failed';
       readonly epoch: StoreEpoch;
       readonly target: 'gen2';
       readonly flavor: BuildFlavor;
@@ -160,7 +165,12 @@ export async function releaseStoreReset(options: {
     });
     if (result === 'absent') return { kind: 'absent', ...base };
     if (result === 'current') return { kind: 'current', ...base };
-    return { kind: result === 'complete' ? 'released' : 'release-unproven', ...base };
+    if (result === 'complete') return { kind: 'released', ...base };
+    if (result === 'unobservable-metadata') return { kind: 'release-metadata-unobservable', ...base };
+    if (result === 'live-holder') return { kind: 'release-holder-live', ...base };
+    if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
+    if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
+    return { kind: 'release-durability-sync-failed', ...base };
   } finally {
     adoption();
   }

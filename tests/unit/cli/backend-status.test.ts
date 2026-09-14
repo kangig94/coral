@@ -120,7 +120,7 @@ function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatus
 }
 
 const storeReset: StoreResetCommandOperations = {
-  list: () => ({ epochs: [], legacyIncidents: [], truncated: false }),
+  list: () => ({ epochs: [], holders: [], legacyIncidents: [], truncated: false }),
   report: async () => {
     throw new Error('not used');
   },

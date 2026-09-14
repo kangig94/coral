@@ -28,7 +28,14 @@ import {
   type LegacyStoreResetIncidentListEntry,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
-import { epochPath, listStoreEpochs, storeEpochHolderPath, type StoreEpochListEntry } from '../store/epoch.js';
+import {
+  epochPath,
+  listStoreEpochHolders,
+  listStoreEpochs,
+  storeEpochHolderPath,
+  type StoreEpochHolderListEntry,
+  type StoreEpochListEntry,
+} from '../store/epoch.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_SQLITE_DIAGNOSTIC_BYTES,
@@ -42,13 +49,14 @@ export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
-  diagnoseEpoch(storeDbPath: string, holderPath: string): Promise<StoreResetDiagnosticStatus>;
+  diagnoseEpoch(storeDbPath: string): Promise<StoreResetDiagnosticStatus>;
   quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
   runtime?(manifest: StrictBundleManifest): ReturnType<typeof createRealRuntime>;
 }
 
 export type StoreResetListResult = Readonly<{
   epochs: readonly StoreEpochListEntry[];
+  holders: readonly StoreEpochHolderListEntry[];
   legacyIncidents: readonly LegacyStoreResetIncidentListEntry[];
   truncated: boolean;
 }>;
@@ -72,12 +80,11 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
-    diagnoseEpoch: async (storeDbPath, holderPath) => {
+    diagnoseEpoch: async (storeDbPath) => {
       const diagnostic = await superviseStoreResetDiagnosticChild(
         createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
         process.execPath,
         storeDbPath,
-        holderPath,
       );
       return { ...diagnostic, cleanup: 'not_required' };
     },
@@ -91,35 +98,31 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
 
 async function diagnoseHeldEpoch(
   runtime: ReturnType<typeof createRealRuntime>,
+  epoch: string,
   storeDbPath: string,
   dependencies: StoreResetCliDependencies,
 ): Promise<StoreResetDiagnosticStatus> {
   const holderPath = storeEpochHolderPath(runtime.paths.coral.store.dbDir, runtime.ids.uuid());
   if (
-    !runtime.storage.writeAtomicDurableSync(holderPath, `${JSON.stringify({ pid: runtime.env.pid() })}\n`, {
+    !runtime.storage.writeAtomicDurableSync(holderPath, `${JSON.stringify({ epoch, pid: runtime.env.pid() })}\n`, {
       encoding: 'utf-8',
       mode: 0o600,
     })
   ) {
     return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
   }
-  let preserveHolder = false;
   try {
-    const diagnostic = await dependencies.diagnoseEpoch(storeDbPath, holderPath);
-    preserveHolder = diagnostic.termination === 'termination_unconfirmed';
-    return diagnostic;
+    return await dependencies.diagnoseEpoch(storeDbPath);
   } finally {
-    if (!preserveHolder) {
-      try {
-        runtime.storage.unlinkSync(holderPath);
-      } catch {
-        // The child removes its registration after closing the database.
-      }
-      try {
-        runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);
-      } catch {
-        // A resurrected marker only makes a later sweep more conservative.
-      }
+    try {
+      runtime.storage.unlinkSync(holderPath);
+    } catch {
+      // A stale marker is visible to `list` and reaped after its pid is observed absent.
+    }
+    try {
+      runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);
+    } catch {
+      // A resurrected marker only makes a later sweep more conservative.
     }
   }
 }
@@ -204,6 +207,7 @@ export function listStoreResetIncidentsLocal(
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     return {
       epochs: target === 'legacy' ? [] : listStoreEpochs(runtime, currentCoralStoreFormat()),
+      holders: target === 'legacy' ? [] : listStoreEpochHolders(runtime),
       legacyIncidents: legacy.incidents,
       truncated: legacy.truncated,
     };
@@ -253,7 +257,12 @@ export async function reportStoreResetLocal(
     const diagnostic =
       epoch.bytes === null || epoch.bytes > MAX_SQLITE_DIAGNOSTIC_BYTES
         ? ({ integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' } as const)
-        : await diagnoseHeldEpoch(runtime, epochPath(runtime.paths.coral.store.dbDir, epoch.epoch), dependencies);
+        : await diagnoseHeldEpoch(
+            runtime,
+            epoch.epoch,
+            epochPath(runtime.paths.coral.store.dbDir, epoch.epoch),
+            dependencies,
+          );
     return { kind: 'epoch', epoch, diagnostic };
   }
   if (!isCanonicalStoreResetIncidentId(reference)) {

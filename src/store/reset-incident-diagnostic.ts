@@ -24,17 +24,10 @@ const COPY_BUFFER_BYTES = 64 * 1024;
 const SQLITE_DIAGNOSTIC_PROGRAM = String.raw`
 'use strict';
 const { DatabaseSync } = require('node:sqlite');
-const { unlinkSync, writeFileSync } = require('node:fs');
 const path = process.argv[1];
-const holderPath = process.argv[2];
 let db;
-let registered = false;
 let token = 'unavailable';
 try {
-  if (holderPath) {
-    writeFileSync(holderPath, JSON.stringify({ pid: process.pid }) + '\n', { encoding: 'utf8', mode: 0o600 });
-    registered = true;
-  }
   db = new DatabaseSync(path, { readOnly: true, timeout: 100 });
   db.exec('PRAGMA query_only = ON');
   const rows = db.prepare('PRAGMA quick_check(1)').all();
@@ -43,9 +36,6 @@ try {
   token = 'unavailable';
 } finally {
   try { db?.close(); } catch { token = 'unavailable'; }
-  if (registered) {
-    try { unlinkSync(holderPath); } catch { token = 'unavailable'; }
-  }
 }
 process.stdout.write(token);
 `;
@@ -80,7 +70,6 @@ export function superviseStoreResetDiagnosticChild(
   supervisor: StoreResetDiagnosticSupervisorPort,
   executable: string,
   stagedDbPath: string,
-  holderPath?: string,
 ): Promise<{
   readonly integrity: StoreResetDiagnosticStatus['integrity'];
   readonly termination: StoreResetDiagnosticStatus['termination'];
@@ -93,7 +82,6 @@ export function superviseStoreResetDiagnosticChild(
         '--eval',
         SQLITE_DIAGNOSTIC_PROGRAM,
         stagedDbPath,
-        ...(holderPath === undefined ? [] : [holderPath]),
       ]);
     } catch {
       resolve({ integrity: 'unavailable', termination: 'not_started' });
