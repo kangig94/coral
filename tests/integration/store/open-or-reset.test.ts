@@ -23,6 +23,7 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { backendLog } from '#src/infra/backend-log.js';
+import { acquireDirectoryLockSync } from '#src/infra/fs-lock.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { BUNDLED_ENGINES } from '#src/expansion/bundled.js';
 import { createExpansionManifestCatalog } from '#src/expansion/manifest/catalog.js';
@@ -2548,6 +2549,135 @@ describe('openOrResetBackendStoreDb', () => {
     expect(copyStarted).toBe(true);
     expect(refreshedDuringCopy).toBe(true);
     expect(maintainMaintenance).toHaveBeenCalled();
+  });
+
+  it('survives the generated Revision 10 authority and retention-rotation state space', async () => {
+    const failures: string[] = [];
+    const runCell = async (label: string, run: () => Promise<void> | void) => {
+      const error = await captureAsyncError(async () => run());
+      if (error === null) return;
+      const cause = error instanceof Error ? error.message : (JSON.stringify(error) ?? 'non-error thrown');
+      failures.push(`${label}: ${cause}`);
+    };
+
+    const authorityCells = [
+      { elapsedMs: 0, claimant: 'absent', refresh: 'held' },
+      { elapsedMs: 31_000, claimant: 'absent', refresh: 'held' },
+      { elapsedMs: 31_000, claimant: 'competing', refresh: 'lost' },
+    ] as const;
+    for (const cell of authorityCells) {
+      await runCell(`authority/${cell.elapsedMs}/${cell.claimant}/${cell.refresh}`, async () => {
+        const runtime = createRuntime();
+        const root = makeTempRoot('coral-store-revision10-authority-');
+        const dbPath = join(root, 'store.db');
+        createMismatchStore(dbPath);
+        const source = new DatabaseSync(dbPath);
+        try {
+          source.exec('CREATE TABLE authority_sweep_evidence (value BLOB NOT NULL)');
+          source.prepare('INSERT INTO authority_sweep_evidence (value) VALUES (zeroblob(?))').run(256 * 1024);
+        } finally {
+          source.close();
+        }
+
+        const wallNow = runtime.time.now.bind(runtime.time);
+        let wallOffset = 0;
+        vi.spyOn(runtime.time, 'now').mockImplementation(() => wallNow() + wallOffset);
+        const resetLockPath = join(root, 'store.db.reset.lock');
+        const readSync = runtime.storage.readSync;
+        let injected = false;
+        let contender: ReturnType<typeof acquireDirectoryLockSync> | null = null;
+        vi.spyOn(runtime.storage, 'readSync').mockImplementation((descriptor, buffer, offset, length, position) => {
+          const bytesRead = readSync(descriptor, buffer, offset, length, position);
+          if (!injected && length === 64 * 1024 && bytesRead > 0) {
+            injected = true;
+            wallOffset = cell.elapsedMs;
+            if (cell.claimant === 'competing') {
+              contender = acquireDirectoryLockSync(
+                resetLockPath,
+                { storage: runtime.storage, time: runtime.time, staleMs: 30_000, heartbeatMs: 10_000 },
+                250,
+              );
+            }
+          }
+          return bytesRead;
+        });
+
+        const error = await captureAsyncError(() => openReset(runtime, dbPath));
+        contender?.();
+        expect(injected).toBe(true);
+        if (cell.refresh === 'held') {
+          expect(error).toBeNull();
+        } else {
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toMatch(/ownership lost/u);
+        }
+      });
+    }
+
+    await runCell('authority/compatible-clone/unobservable', async () => {
+      const runtime = createRuntime();
+      const root = makeTempRoot('coral-store-revision10-clone-authority-');
+      const dbPath = join(root, 'store.db');
+      const aliasPath = join(root, 'store.db.alias');
+      createCompatibleSentinelStore(runtime, dbPath);
+      runtime.storage.linkSync(dbPath, aliasPath);
+      const maintain = vi.fn(() => {
+        throw new Error('maintenance lease ownership unobservable');
+      });
+      const error = await captureAsyncError(() =>
+        openReset(runtime, dbPath, {
+          kind: 'proven',
+          lease: { assertOwned: () => undefined, maintain, release: () => undefined },
+        }),
+      );
+      expect(maintain).toHaveBeenCalled();
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain('maintenance lease ownership unobservable');
+      expect(tableExists(aliasPath, 'sentinel_replacement')).toBe(true);
+    });
+
+    for (const replacement of ['regular-file', 'symlink'] as const) {
+      await runCell(`retention/replaced-coordinate/${replacement}`, () => {
+        const runtime = createRuntime();
+        const root = makeTempRoot('coral-store-revision10-retention-');
+        const dbPath = join(root, 'store.db');
+        createMismatchStore(dbPath);
+        const holder = publishReset(runtime, dbPath);
+        if (holder.kind !== 'preserved') throw new Error('Expected an initial preserved incident.');
+        const quarantineRoot = join(root, 'store-reset-quarantine');
+        const holderPath = join(quarantineRoot, holder.incident.incidentId);
+        const externalTarget = join(root, 'external-retention-target');
+        mkdirSync(externalTarget);
+        writeFileSync(join(externalTarget, 'sentinel'), 'external target survives');
+        createMismatchStore(dbPath);
+
+        const readDirectoryBoundedSync = runtime.storage.readDirectoryBoundedSync;
+        let replaced = false;
+        vi.spyOn(runtime.storage, 'readDirectoryBoundedSync').mockImplementation((path, maxEntries) => {
+          const read = readDirectoryBoundedSync(path, maxEntries);
+          if (
+            !replaced &&
+            path === quarantineRoot &&
+            retainedIncidentNames(quarantineRoot).some((id) => id !== holder.incident.incidentId)
+          ) {
+            replaced = true;
+            rmSync(holderPath, { recursive: true });
+            if (replacement === 'regular-file') writeFileSync(holderPath, 'replacement coordinate');
+            else symlinkSync(externalTarget, holderPath);
+          }
+          return read;
+        });
+
+        const next = publishReset(runtime, dbPath);
+        if (next.kind !== 'preserved') throw new Error('Expected replacement preservation.');
+        expect(replaced).toBe(true);
+        expect(existsSync(holderPath)).toBe(false);
+        expect(existsSync(join(quarantineRoot, next.incident.incidentId))).toBe(true);
+        expect(readFileSync(join(externalTarget, 'sentinel'), 'utf8')).toBe('external target survives');
+      });
+    }
+
+    expect(failures, `${failures.length} generated Revision 10 sweep cells failed`).toEqual([]);
   });
 
   it('revalidates adoption ownership after opening and before returning the writable handle', async () => {
