@@ -543,7 +543,7 @@ describe('active-store selection recovery', () => {
         },
         acquireWriterExclusion: async () => ({
           kind: 'proven',
-          lease: { assertOwned: () => undefined, release: () => undefined },
+          lease: { assertOwned: () => undefined, maintain: () => undefined, release: () => undefined },
         }),
       },
     });

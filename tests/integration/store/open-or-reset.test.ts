@@ -368,7 +368,7 @@ function adoptionLease(): GenerationAdoptionLockLease {
 function writerExclusion(): WriterExclusion {
   return {
     kind: 'proven',
-    lease: { assertOwned: () => undefined, release: () => undefined },
+    lease: { assertOwned: () => undefined, maintain: () => undefined, release: () => undefined },
   };
 }
 
@@ -1946,7 +1946,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(false);
   });
 
-  it('restages mutable legacy hard links as torn copies before accepting their manifest', async () => {
+  it('refreshes maintenance exclusion while restaging mutable legacy hard links as copies', async () => {
     const runtime = createRuntime();
     const dbPath = join(makeTempRoot('coral-store-interrupted-linked-'), 'store.db');
     const { quarantineRoot, stagingDirectory } = createInterruptedReset(runtime, dbPath);
@@ -1962,8 +1962,31 @@ describe('openOrResetBackendStoreDb', () => {
     ledger.pending.outcome.incident.preservation = { kind: 'linked', coherence: 'coherent' };
     writeFileSync(ledgerPath, `${JSON.stringify(ledger)}\n`);
     appendFileSync(parkedDb, 'uncooperative append after publication');
+    const openSync = runtime.storage.openSync;
+    const renameSync = runtime.storage.renameSync;
+    let restaging = false;
+    let refreshedDuringRestage = false;
+    vi.spyOn(runtime.storage, 'openSync').mockImplementation((path, flags, mode) => {
+      const descriptor = openSync(path, flags, mode);
+      if (String(path).endsWith('.restage')) restaging = true;
+      return descriptor;
+    });
+    vi.spyOn(runtime.storage, 'renameSync').mockImplementation((source, destination) => {
+      renameSync(source, destination);
+      if (String(source).endsWith('.restage')) restaging = false;
+    });
+    const exclusion = {
+      kind: 'proven',
+      lease: {
+        assertOwned: () => undefined,
+        maintain: () => {
+          if (restaging) refreshedDuringRestage = true;
+        },
+        release: () => undefined,
+      },
+    } as unknown as WriterExclusion;
 
-    const db = await openReset(runtime, dbPath);
+    const db = await openReset(runtime, dbPath, exclusion);
     db.close();
 
     const manifest = retainedManifest(dbPath);
@@ -1977,6 +2000,7 @@ describe('openOrResetBackendStoreDb', () => {
       kind: 'copied',
       coherence: 'torn',
     });
+    expect(refreshedDuringRestage).toBe(true);
     expect(tableExists(dbPath, 'events')).toBe(true);
   });
 
@@ -2447,7 +2471,7 @@ describe('openOrResetBackendStoreDb', () => {
     expect(tableExists(dbPath, 'sentinel_before_reset')).toBe(true);
   });
 
-  it('refreshes the adoption lease inside a long synchronous evidence copy after wall time jumps', async () => {
+  it('refreshes adoption and maintenance leases inside a long synchronous evidence copy', async () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-copy-heartbeat-');
     const dbPath = join(root, 'store.db');
@@ -2487,12 +2511,22 @@ describe('openOrResetBackendStoreDb', () => {
       }
       renameSync(sourcePath, destinationPath);
     });
+    const maintainMaintenance = vi.fn();
+    const exclusion = {
+      kind: 'proven',
+      lease: {
+        assertOwned: () => undefined,
+        maintain: maintainMaintenance,
+        release: () => undefined,
+      },
+    } as unknown as WriterExclusion;
 
-    const db = await openReset(runtime, dbPath);
+    const db = await openReset(runtime, dbPath, exclusion);
     db.close();
 
     expect(copyStarted).toBe(true);
     expect(refreshedDuringCopy).toBe(true);
+    expect(maintainMaintenance).toHaveBeenCalled();
   });
 
   it('revalidates adoption ownership after opening and before returning the writable handle', async () => {

@@ -81,6 +81,7 @@ export type GenerationReadiness =
 
 export interface GenerationMaintenanceLease {
   assertOwned(): void;
+  maintain(): void;
   release(): void;
 }
 
@@ -500,6 +501,10 @@ export async function acquireGenerationMaintenanceLease(
       assertOwned() {
         if (!owned) throw new Error('Generation maintenance lease is no longer owned.');
         releaseMaintenance.assertOwned();
+      },
+      maintain() {
+        if (!owned) throw new Error('Generation maintenance lease is no longer owned.');
+        releaseMaintenance.maintain();
       },
       release() {
         if (!owned) return;

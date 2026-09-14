@@ -51,6 +51,23 @@ afterEach(() => {
 });
 
 describe('generation mutation writer identity', () => {
+  it('allows synchronous maintenance work to refresh its exclusion lease', async () => {
+    const runtime = coordinationRuntime(4240, testIncarnation(4240), 'alive');
+    const writeFileSync = runtime.storage.writeFileSync.bind(runtime.storage);
+    let refreshWrites = 0;
+    runtime.storage.writeFileSync = (path, data, options) => {
+      if (String(path).includes('claim-refresh-')) refreshWrites += 1;
+      writeFileSync(path, data, options);
+    };
+    const maintenance = await acquireGenerationMaintenanceLease(runtime);
+    try {
+      maintenance.maintain();
+      expect(refreshWrites).toBe(1);
+    } finally {
+      maintenance.release();
+    }
+  });
+
   it('reclaims an abandoned maintenance lease after its heartbeat goes stale', async () => {
     const pid = 4241;
     const incarnation = testIncarnation(pid);

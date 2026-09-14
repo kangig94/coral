@@ -144,7 +144,7 @@ function stubAudit(): ReturnType<typeof vi.spyOn> {
 }
 
 async function immediateRecoveryLease(): Promise<GenerationMaintenanceLease> {
-  return { assertOwned: () => undefined, release: () => undefined };
+  return { assertOwned: () => undefined, maintain: () => undefined, release: () => undefined };
 }
 
 function supersededTransition(currentSelection: ActiveStoreSelection): ActiveStoreTransition {
@@ -782,7 +782,7 @@ describe('active-store-selection locking', () => {
     await vi.waitFor(() => expect(acquireStoreRecoveryLease).toHaveBeenCalledOnce());
     expect(openStore).not.toHaveBeenCalled();
 
-    grantLease({ assertOwned, release });
+    grantLease({ assertOwned, maintain: () => undefined, release });
     await expect(coordinating).resolves.toMatchObject({ kind: 'opened' });
     expect(assertOwned).toHaveBeenCalled();
     expect(openStore).toHaveBeenCalledOnce();

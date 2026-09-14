@@ -1092,6 +1092,7 @@ function restageEvidenceAsCopies(
   stagingDirectory: string,
   parkingDirectory: string,
   manifest: StoreResetIncidentManifest,
+  maintainLease: () => void,
   tolerateMutableLinks = false,
 ): readonly PublishedEvidenceFile<StoreResetEvidenceFileName>[] {
   const files: PublishedEvidenceFile<StoreResetEvidenceFileName>[] = [];
@@ -1104,6 +1105,7 @@ function restageEvidenceAsCopies(
       { source: stagedPath, name: expected.name },
       restagedPath,
       null,
+      maintainLease,
     );
     const matchesManifest =
       copied.coherence === 'coherent' &&
@@ -1162,6 +1164,7 @@ function resumeInterruptedIncident(
   files: BackendStoreFileSet,
   options: OpenOrResetBackendStoreOptions,
   writerExclusion: WriterExclusion,
+  maintainLease: () => void,
   authorizeCommittedManifest?: (manifest: StoreResetIncidentManifest) => void,
 ): {
   readonly incident: BackendStoreResetIncident;
@@ -1319,6 +1322,7 @@ function resumeInterruptedIncident(
       stagingDirectory,
       parkingDirectory,
       manifest,
+      maintainLease,
       mutableLinkedEvidence,
     );
     if (mutableLinkedEvidence) {
@@ -2842,7 +2846,6 @@ export function publishClassifiedBackendStoreResetIncident(
   newerStorePolicy?: NewerStoreResetPolicy,
 ): IncidentPublication {
   resetLock.assertOwned();
-  if (writerExclusion.kind === 'proven') writerExclusion.lease.assertOwned();
   return publishIncident(
     runtime,
     authority,
@@ -2863,7 +2866,7 @@ export function resumeBackendStoreResetIncidentForOperator(
   writerExclusion: WriterExclusion,
 ): BackendStoreResetIncident | null {
   resetLock.assertOwned();
-  return resumeInterruptedIncident(runtime, files, options, writerExclusion)?.incident ?? null;
+  return resumeInterruptedIncident(runtime, files, options, writerExclusion, resetLock.maintain)?.incident ?? null;
 }
 
 export type RetainedStoreResetQuarantineFile = Readonly<{
@@ -2888,9 +2891,9 @@ export function retainTransitionFileInStoreResetQuarantine(
   runtime: Pick<Runtime, 'env' | 'storage'>,
   files: BackendStoreFileSet,
   sourcePath: string,
-  adoption: GenerationAdoptionLockLease,
+  lease: Pick<GenerationAdoptionLockLease, 'assertOwned' | 'maintain'>,
 ): RetainedStoreResetQuarantineFile {
-  adoption.assertOwned();
+  lease.assertOwned();
   const sourceIdentity = stablePathStat(runtime.storage, sourcePath);
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
   const evidenceRoot = join(quarantineRoot, RETAINED_TRANSITION_DIRECTORY);
@@ -2935,6 +2938,7 @@ export function retainTransitionFileInStoreResetQuarantine(
     { source: sourcePath, name: evidenceName },
     stagingPath,
     MAX_ACTIVE_STORE_TRANSITION_BYTES,
+    lease.maintain,
   );
   if (copied.coherence !== 'coherent') {
     throw new Error('Retained active-store transition source changed during publication.');
@@ -2981,7 +2985,7 @@ function resumeAutomaticBackendStoreReset(
 ): ReturnType<typeof resumeInterruptedIncident> {
   resetLock.assertOwned();
   try {
-    return resumeInterruptedIncident(runtime, files, options, writerExclusion, (manifest) => {
+    return resumeInterruptedIncident(runtime, files, options, writerExclusion, resetLock.maintain, (manifest) => {
       authorizeAutomaticIncidentResume(authority, manifest);
     });
   } catch (error: unknown) {
@@ -3013,6 +3017,7 @@ export function acquireBackendStoreResetLock(
   runtime: Pick<Runtime, 'storage' | 'time'>,
   files: BackendStoreFileSet,
   adoption: GenerationAdoptionLockLease,
+  writerExclusion?: WriterExclusion,
 ): BackendStoreResetLockLease {
   adoption.assertOwned();
   runtime.storage.mkdirSync(files.dbDir, { recursive: true });
@@ -3036,12 +3041,14 @@ export function acquireBackendStoreResetLock(
   let owned = true;
   const assertOwned = (): void => {
     adoption.assertOwned();
+    if (writerExclusion?.kind === 'proven') writerExclusion.lease.assertOwned();
     if (!owned) throw new Error('Backend store reset lock is no longer owned.');
   };
   return {
     assertOwned,
     maintain: () => {
       adoption.maintain();
+      if (writerExclusion?.kind === 'proven') writerExclusion.lease.maintain();
       if (!owned) assertOwned();
     },
     release: () => {

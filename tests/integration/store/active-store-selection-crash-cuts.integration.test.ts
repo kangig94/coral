@@ -180,7 +180,11 @@ function successfulDependencies(
     validateSelectedTarget: () => {
       throw new Error('validator should not run');
     },
-    acquireStoreRecoveryLease: async () => ({ assertOwned: () => undefined, release: () => undefined }),
+    acquireStoreRecoveryLease: async () => ({
+      assertOwned: () => undefined,
+      maintain: () => undefined,
+      release: () => undefined,
+    }),
     ...extra,
   };
 }

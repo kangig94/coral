@@ -288,12 +288,12 @@ function resetPolicyForTransition(transition: ActiveStoreTransition): NewerStore
 function retainActiveStoreTransition(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
-  adoption: GenerationAdoptionLockLease,
+  lease: Pick<GenerationAdoptionLockLease, 'assertOwned' | 'maintain'>,
   transitionFile = resolveActiveStoreRecordPaths(runtime).transitionFile,
 ): ReturnType<typeof retainTransitionFileInStoreResetQuarantine> | null {
   const files = resolveBackendStoreFileSet(runtime, options);
   try {
-    return retainTransitionFileInStoreResetQuarantine(runtime, files, transitionFile, adoption);
+    return retainTransitionFileInStoreResetQuarantine(runtime, files, transitionFile, lease);
   } catch (error: unknown) {
     if (
       error instanceof Error &&
@@ -315,12 +315,12 @@ function retainInvalidSelectionRecovery(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
   transition: ActiveStoreTransition,
-  adoption: GenerationAdoptionLockLease,
+  lease: Pick<GenerationAdoptionLockLease, 'assertOwned' | 'maintain'>,
 ): ActiveStoreTransitionClearEvidence {
   if (transition.evidence.kind !== 'valid-target-invalid' && transition.evidence.kind !== 'selection-malformed') {
     return { kind: 'clear' };
   }
-  const retained = retainActiveStoreTransition(runtime, options, adoption);
+  const retained = retainActiveStoreTransition(runtime, options, lease);
   if (retained === null) return { kind: 'source-missing' };
   writeAuditEvent(
     'invalid-selection-recovery',
@@ -377,10 +377,10 @@ function mintActiveStoreEpoch(
   runtime: Runtime,
   files: BackendStoreFileSet,
   options: ActiveStoreSelectionProtocolOptions,
-  adoption: GenerationAdoptionLockLease,
+  maintainLease: () => void,
 ): MintedActiveStoreEpoch {
   const { dbFile } = files;
-  const snapshot = stageBackendStoreClassification(runtime, files, adoption.maintain);
+  const snapshot = stageBackendStoreClassification(runtime, files, maintainLease);
   try {
     return {
       evidence: snapshot.evidence,
@@ -424,7 +424,7 @@ async function settleActiveStore(
     let survivor: ActiveStoreSettlementSurvivor = { kind: 'none' };
     const epochs: StoreSettlementEpoch[] = [];
     if (resetNeeded) {
-      resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
+      resetLock = acquireBackendStoreResetLock(runtime, files, adoption, writerExclusion);
       resumed =
         writerExclusion === undefined
           ? null
@@ -432,7 +432,7 @@ async function settleActiveStore(
             ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
             : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
       if (resumed !== null) survivor = { kind: 'incident', incident: resumed, resumed: true };
-      const activeEpoch = mintActiveStoreEpoch(runtime, files, options, adoption);
+      const activeEpoch = mintActiveStoreEpoch(runtime, files, options, resetLock.maintain);
       switch (activeEpoch.classification.kind) {
         case 'legacy-adoptable':
           return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
@@ -481,7 +481,13 @@ async function settleActiveStore(
     let claimCandidate = mintBackendStoreForClaim(runtime, files, options);
     let db: Database;
     for (;;) {
-      const attempt = attemptBackendStoreClaim(runtime, files, options, claimCandidate, adoption.maintain);
+      const attempt = attemptBackendStoreClaim(
+        runtime,
+        files,
+        options,
+        claimCandidate,
+        resetLock?.maintain ?? adoption.maintain,
+      );
       epochs.push(...attempt.epochs);
       for (const epoch of attempt.epochs) {
         if (epoch.kind === 'described' && epoch.publication.kind === 'preserved') {
@@ -501,7 +507,7 @@ async function settleActiveStore(
       if (transition !== null) {
         // The live transition is cleared only after its invalid-selection basis has been copied into the
         // reset-quarantine durability boundary. Coordinator logging is deliberately not evidence authority.
-        const clearEvidence = retainInvalidSelectionRecovery(runtime, options, transition, adoption);
+        const clearEvidence = retainInvalidSelectionRecovery(runtime, options, transition, resetLock ?? adoption);
         if (clearEvidence.kind === 'clear') {
           clearActiveStoreTransition(runtime, clearEvidence.sourceIdentity);
         }
