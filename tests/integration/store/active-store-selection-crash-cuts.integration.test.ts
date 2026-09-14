@@ -385,23 +385,27 @@ describe('active-store-selection crash cuts', () => {
       storedProductVersion: '99.0.0',
     });
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      // A publish that cannot complete is refused under the documented coordination code, not raised as a
-      // bare internal error — and the write failure that caused it stays attached, so the refusal names
-      // which cut fired rather than only that one did.
-      await expect(
-        coordinateActiveStoreSelection(runtime, authority, {
-          storeFormat: currentCoralStoreFormat(),
-          currentSelection,
-          dependencies: startupDependencies(),
-        }),
-      ).rejects.toMatchObject({
-        code: 'active_store_coordination_invalid',
-        context: { record: 'transition', failureCode: 'record_unavailable', cause: 'crash:pre-intent-publication' },
-      });
-      expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
-    }
-    expect(classifyStore).toHaveBeenCalledTimes(2);
+    await expect(
+      coordinateActiveStoreSelection(runtime, authority, {
+        storeFormat: currentCoralStoreFormat(),
+        currentSelection,
+        dependencies: startupDependencies(),
+      }),
+    ).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: { record: 'transition', failureCode: 'record_unavailable', cause: 'crash:pre-intent-publication' },
+    });
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
+    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
+
+    const recovered = await coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat: currentCoralStoreFormat(),
+      currentSelection,
+      dependencies: startupDependencies(),
+    });
+    expect(recovered.kind).toBe('opened');
+    if (recovered.kind === 'opened') recovered.db.close();
+    expect(classifyStore).toHaveBeenCalledTimes(3);
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
   });
 
@@ -436,6 +440,16 @@ describe('active-store-selection crash cuts', () => {
     restore();
 
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'valid', transition });
+    expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(false);
+
+    const recovered = await coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat: currentCoralStoreFormat(),
+      currentSelection,
+      dependencies: startupDependencies(),
+    });
+    expect(recovered.kind).toBe('opened');
+    if (recovered.kind === 'opened') recovered.db.close();
+    expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
     expect(existsSync(runtime.paths.coral.store.dbFile)).toBe(true);
   });
 
@@ -483,7 +497,7 @@ describe('active-store-selection crash cuts', () => {
     );
     expect(readActiveStoreTransition(runtime)).toMatchObject({
       kind: 'valid',
-      transition: { evidence: { storeEvidence: { kind: 'newer-incompatible' } } },
+      transition: { evidence: { storeEvidence: { kind: 'pending-classification' } } },
     });
 
     runtime.storage.writeAtomicDurableSync = original;

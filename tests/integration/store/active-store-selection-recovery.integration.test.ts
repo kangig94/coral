@@ -490,7 +490,7 @@ describe('active-store selection recovery', () => {
     expect(readActiveStoreTransition(runtime)).toEqual({ kind: 'absent' });
   });
 
-  it('should refuse an unclassified store-open failure without declaring corruption', async () => {
+  it('should park and replace an occupant whose owned classification is unavailable', async () => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
     createCurrentStore(runtime);
@@ -499,32 +499,31 @@ describe('active-store selection recovery', () => {
       throw failure;
     });
 
-    await expect(
-      coordinateActiveStoreSelection(runtime, authority, {
-        storeFormat,
-        currentSelection,
-        dependencies: {
-          kind: 'operator',
-          validateSelectedTarget: () => {
-            throw new Error('validator should not run');
-          },
-          acquireStoreRecoveryLease: async () => ({
-            assertOwned: () => undefined,
-            maintain: () => undefined,
-            release: () => undefined,
-          }),
+    const result = await coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat,
+      currentSelection,
+      dependencies: {
+        kind: 'operator',
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
         },
-      }),
-    ).rejects.toMatchObject({
-      code: 'store_open_unclassified',
-      userMessage: 'Coral could not classify why the current-generation store could not be opened.',
-      remediation: expect.not.stringContaining('store-reset discard'),
-      context: {
-        path: runtime.paths.coral.store.dbFile,
-        flavor: runtime.flavor,
-        cause: failure.message,
+        acquireStoreRecoveryLease: async () => ({
+          assertOwned: () => undefined,
+          maintain: () => undefined,
+          release: () => undefined,
+        }),
       },
     });
+    expect(result.kind).toBe('opened');
+    expect(result.epochs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'parked',
+          classification: expect.objectContaining({ kind: 'corrupt-or-unsupported' }),
+        }),
+      ]),
+    );
+    result.db.close();
   });
 
   it.each([
