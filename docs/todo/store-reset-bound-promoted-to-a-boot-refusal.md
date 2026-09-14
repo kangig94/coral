@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Seventeen design revisions, twenty-four unbiased tier-1 review rounds, and
-thirty-six distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15, 16 and 17 are the correction rounds its reviewers earned.
+**Status**: in flight. Eighteen design revisions, twenty-five unbiased tier-1 review rounds, and
+forty-two distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 18 are the correction rounds its reviewers earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -1962,6 +1962,89 @@ say so.
 **`epoch.json` is read without a byte bound on the boot path** (`:769`). A bound here is correct and is
 not this document's subject: exceeding it makes the metadata **malformed**, which is a classification, not
 a refusal.
+
+## Revision 18 — carry the epoch you opened, and never sweep on the event loop
+
+Round 25's reviewers confirmed publication and the static classification again, and found two things the
+epoch design had not yet been asked: who knows which epoch is open, and where the sweep runs.
+
+### The decision is made once and then re-derived by everyone
+
+`settleStoreEpoch` returns the exact `{db, epoch, path}` it opened and coordination preserves it
+(`src/store/active-store-selection-coordination.ts:47`, `:194`), and then
+`routeOrOpenBackendStoreAtStartup` **drops `epoch` and `path` and returns only `db`**
+(`src/store/startup-store-routing.ts:9`, `:38`). Three consumers therefore re-derive it independently:
+the post-ready sweep (`coordinator/composition/index.ts:1736`), the KB daemon
+(`kb-daemon/runtime-host.ts:363`), and `release`.
+
+A reviewer walked it through: epoch 3's `epoch.json` returns a transient `EIO`, so it is unobservable and
+startup opens the older compatible epoch 1; the metadata becomes readable a moment later; the sweep
+resolves `current = 3` and **deletes the database the coordinator has open**. The same divergence lets the
+coordinator and the KB daemon write to two different epochs, and lets `release 1` unlink a live
+coordinator's epoch because a restored `epoch-3` made 1 look old (`epoch.ts:477`, `:493`) — with an
+integration test that asserts the unsafe outcome.
+
+The whole point of the design is that the epoch is chosen once, atomically. Re-deriving it is choosing
+again.
+
+> **The epoch a process opened is carried, not recomputed — and the coordinator's discovery record names
+> it.**
+
+`routeOrOpenBackendStoreAtStartup` stops narrowing the result. The sweep is told which epoch is open. The
+KB daemon is told by its parent rather than resolving for itself. And the discovery record gains the
+epoch alongside the PID it already carries — additively, tolerantly read, per §10 — so `release` can
+refuse any epoch a live coordinator has open rather than only the one it computes as current.
+
+### A sweep that blocks the event loop is this document's subject in a new costume
+
+The post-ready sweep is scheduled with `setTimeout(0)` and then performs the entire pass
+**synchronously**: recursive `rmSync`, a full scan, and a durable directory sync
+(`coordinator/composition/index.ts:1736`, `epoch.ts:319`, `:524`, `:560`). Both reviewers reached the
+same place — a large or deep accidental `epoch-*` tree blocks the coordinator's event loop, the waiting
+client's authenticated health request times out (`transport/ipc/ensure.ts:739`), and signal-driven
+shutdown waits too.
+
+A coordinator that cannot answer because it is deleting a big directory is the coordinator that could not
+start because it was hashing a big file. The mechanism changed; the shape did not.
+
+> **The sweep never runs on the coordinator's event loop.** It uses asynchronous filesystem operations
+> and yields between entries, so no single pass can make the coordinator unobservable.
+
+### The holder must name the process that holds
+
+The holder record names `runtime.env.pid()` — the CLI parent — while SQLite is opened by a spawned
+diagnostic child (`cli/store-reset.ts:99`, `store/reset-incident-diagnostic.ts:78`). Two consequences,
+both reproduced: a parent killed with SIGKILL leaves a record naming a dead PID while its child still
+holds the database, and the next sweep reaps the record as stale and unlinks underneath it; and on
+`termination_unconfirmed` the child is **detached while possibly still live** and the parent removes the
+marker anyway in `finally` (`reset-incident-diagnostic.ts:126`, `cli/store-reset.ts:116`).
+
+The second is §11 exactly — unknown authorizing finalization — and
+`tests/integration/cli/store-reset.test.ts:144` currently requires it. The record names the process that
+opens the database, and an unconfirmed termination leaves the protection in place; the record's own
+staleness is then decided by that PID, not by its parent's.
+
+### Four smaller ones, each an exit that does not exist
+
+**`discard` leaks its socket guard.** The guard is acquired before the adoption lock but the cleanup
+block starts after it (`operator-store-reset.ts:129`), so a lock timeout leaves the CLI holding the
+coordinator's sockets and nothing can start until it is killed.
+
+**Two release dispositions advertise a retry that cannot complete.** Release short-circuits on `absent`
+(`epoch.ts:431`), so a deletion that succeeded with a failed durability sync retries into "absent" and
+never re-syncs, and epoch zero's `store.db` is removed before its WAL, SHM and sidecar so a later unlink
+failure orphans them permanently. §11 requires the successor to exist.
+
+**A `<dbDir>/store.db` that is a directory can never be removed.** It is correctly disproven
+(`epoch.ts:148`) and then removed with `unlinkSync` because flat members are assumed to be files
+(`:502`, `:549`), returning `EISDIR` on every cycle while the remediation says to retry.
+
+**Two unbounded loops.** A persistent non-`ENOENT` `lstat` on successor candidates advances the integer
+forever (`:577`) — a store directory readable but not executable does this — and orphaned `.mint-*`
+directories are removed only by their creator's `finally` (`:603`, `:634`), so K process deaths leave K
+initialized SQLite mints and eventually `ENOSPC`. A persistent observation failure names a refused
+syscall and is surfaced; an abandoned mint is reclaimed by the post-ready sweep, which now runs where it
+can see that no one owns it.
 
 ## Invariants to add
 
