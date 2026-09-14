@@ -258,9 +258,9 @@ export function classifyStoreFile(
   }
 }
 
-function writeStoreFormatSidecar(options: AuthorizedWritableStoreOptions): void {
+function writeStoreFormatSidecar(options: AuthorizedWritableStoreOptions, db: Database): void {
   if (options.path === ':memory:') return;
-  const sidecarPath = `${options.path}${STORE_FORMAT_SIDECAR_SUFFIX}`;
+  const sidecarPath = `${db.location() ?? options.path}${STORE_FORMAT_SIDECAR_SUFFIX}`;
   if (
     !options.storage.writeAtomicDurableSync(sidecarPath, `${options.storeFormat.fingerprint}\n`, {
       encoding: 'utf-8',
@@ -355,7 +355,7 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
         busyTimeoutMs: options.busyTimeoutMs,
       });
       raiseStoredProductVersion(db, options.storeFormat.productVersion);
-      writeStoreFormatSidecar(options);
+      writeStoreFormatSidecar(options, db);
       return { kind: 'opened', db };
     }
     if (
@@ -368,7 +368,7 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
         busyTimeoutMs: options.busyTimeoutMs,
       });
       applyBundledStoreSchema(db, options.storeFormat);
-      writeStoreFormatSidecar(options);
+      writeStoreFormatSidecar(options, db);
       return { kind: 'opened', db };
     }
     db.close();

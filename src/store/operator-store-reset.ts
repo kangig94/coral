@@ -7,11 +7,10 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   discardCurrentStoreEpoch,
-  epochDirectory,
-  epochPath,
   resolveCurrentStoreEpoch,
   resolveCurrentStorePath,
   sweepStoreEpochs,
+  type StoreEpoch,
 } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import { acquireGenerationAdoptionLock, resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
@@ -39,19 +38,19 @@ export type StoreResetDiscardResult = {
   readonly flavor: BuildFlavor;
   readonly baseDir: string;
   readonly storeDbPath: string;
-  readonly previousEpoch: number;
-  readonly currentEpoch: number;
+  readonly previousEpoch: StoreEpoch | null;
+  readonly currentEpoch: StoreEpoch;
 };
 
 export type StoreResetDiscardDecision = StoreResetDiscardResult;
 
 export type StoreResetReleasePresentation =
-  | { readonly kind: 'released'; readonly epoch: number; readonly target: 'gen2'; readonly flavor: BuildFlavor }
-  | { readonly kind: 'current'; readonly epoch: number; readonly target: 'gen2'; readonly flavor: BuildFlavor }
-  | { readonly kind: 'absent'; readonly epoch: number; readonly target: 'gen2'; readonly flavor: BuildFlavor }
+  | { readonly kind: 'released'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
+  | { readonly kind: 'current'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
+  | { readonly kind: 'absent'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | {
       readonly kind: 'release-unproven';
-      readonly epoch: number;
+      readonly epoch: StoreEpoch;
       readonly target: 'gen2';
       readonly flavor: BuildFlavor;
     };
@@ -149,24 +148,19 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
 export async function releaseStoreReset(options: {
   readonly target: StoreResetReleaseTarget;
   readonly runtime: Runtime;
-  readonly epoch: number;
+  readonly epoch: StoreEpoch;
 }): Promise<StoreResetReleasePresentation> {
-  const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
+  const dbDir = options.runtime.paths.coral.store.dbDir;
   const adoption = await acquireGenerationAdoptionLock(options.runtime);
   try {
     const base = { epoch: options.epoch, target: 'gen2' as const, flavor: options.runtime.flavor };
-    const coordinate = options.epoch === 0 ? epochPath(paths.dbDir, 0) : epochDirectory(paths.dbDir, options.epoch);
-    if (!options.runtime.storage.existsSync(coordinate)) {
-      return { kind: 'absent', ...base };
-    }
-    const current = resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir);
-    adoption.assertOwned();
-    if (options.epoch === current) return { kind: 'current', ...base };
-    const complete = sweepStoreEpochs(options.runtime, paths.dbDir, current, {
+    const result = sweepStoreEpochs(options.runtime, dbDir, null, {
       releaseEpoch: options.epoch,
       assertOwned: adoption.assertOwned,
     });
-    return { kind: complete ? 'released' : 'release-unproven', ...base };
+    if (result === 'absent') return { kind: 'absent', ...base };
+    if (result === 'current') return { kind: 'current', ...base };
+    return { kind: result === 'complete' ? 'released' : 'release-unproven', ...base };
   } finally {
     adoption();
   }

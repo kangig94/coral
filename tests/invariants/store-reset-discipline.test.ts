@@ -19,6 +19,15 @@ function storeSources(): readonly string[] {
     .map((name) => `src/store/${name}`);
 }
 
+function enclosingFunctionName(node: ts.Node): string | null {
+  let current: ts.Node | undefined = node.parent;
+  while (current !== undefined) {
+    if (ts.isFunctionDeclaration(current) && current.name !== undefined) return current.name.text;
+    current = current.parent;
+  }
+  return null;
+}
+
 function storeSemanticRefusalCount(): number {
   const paths = new Set(storeSources());
   const parsed = new Map<string, ts.SourceFile>();
@@ -76,9 +85,30 @@ function storeSemanticRefusalCount(): number {
 
 describe('write-once store epoch invariants', () => {
   it('publishes an epoch directory only by renaming a private mint', () => {
-    const epoch = source('src/store/epoch.ts');
-    expect(epoch.match(/renameSync\([^)]*epochDirectory/g)).toEqual(['renameSync(mint, epochDirectory']);
-    expect(epoch).toContain("const MINT_DIRECTORY_PREFIX = '.mint-'");
+    const parsed = ts.createSourceFile(
+      'src/store/epoch.ts',
+      source('src/store/epoch.ts'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const publications: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'renameSync' &&
+        /epochDirectory|epoch-/u.test(node.arguments[1]?.getText(parsed) ?? '')
+      ) {
+        publications.push(node);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parsed);
+
+    expect(publications).toHaveLength(1);
+    expect(publications[0]?.arguments[0]?.getText(parsed)).toBe('mint');
+    expect(enclosingFunctionName(publications[0])).toBe('mintNextEpoch');
+    expect(source('src/store/epoch.ts')).toContain("const MINT_DIRECTORY_PREFIX = '.mint-'");
   });
 
   it('keeps epoch deletion inside the sweep implementation', () => {
@@ -86,14 +116,32 @@ describe('write-once store epoch invariants', () => {
       if (path === 'src/store/epoch.ts') continue;
       expect(source(path), path).not.toMatch(/(?:rmSync|unlinkSync)\([^\n]*epoch-/u);
     }
-    const epoch = source('src/store/epoch.ts');
-    expect(epoch).toMatch(/function sweepStoreEpochs[\s\S]*removeDuringSweep/u);
+    const parsed = ts.createSourceFile(
+      'src/store/epoch.ts',
+      source('src/store/epoch.ts'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const deletionOwners: Array<string | null> = [];
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === 'removeDuringSweep'
+      ) {
+        deletionOwners.push(enclosingFunctionName(node));
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parsed);
+    expect(deletionOwners.length).toBeGreaterThan(0);
+    expect(new Set(deletionOwners)).toEqual(new Set(['sweepStoreEpochs']));
   });
 
   it('classifies exactly K <= current - 2 as garbage', () => {
     for (let current = 0; current < 100; current += 1) {
       for (let candidate = 0; candidate < 100; candidate += 1) {
-        expect(isGarbageStoreEpoch(current, candidate)).toBe(candidate <= current - 2);
+        expect(isGarbageStoreEpoch(String(current), String(candidate))).toBe(candidate <= current - 2);
       }
     }
   });

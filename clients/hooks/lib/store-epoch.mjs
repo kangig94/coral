@@ -5,9 +5,7 @@ const EPOCH_DIRECTORY_PATTERN = /^epoch-(0|[1-9]\d*)$/;
 
 function epochNumber(name) {
   const match = EPOCH_DIRECTORY_PATTERN.exec(name);
-  if (match === null) return null;
-  const value = Number(match[1]);
-  return Number.isSafeInteger(value) && value < Number.MAX_SAFE_INTEGER ? value : null;
+  return match?.[1] ?? null;
 }
 
 function isRecord(value) {
@@ -15,7 +13,11 @@ function isRecord(value) {
 }
 
 function isValidEpochMetadata(value) {
-  if (!isRecord(value) || !Number.isSafeInteger(value.supersedes) || value.supersedes < 0) return false;
+  if (!isRecord(value)) return false;
+  const validSupersedes =
+    (typeof value.supersedes === 'string' && /^(0|[1-9]\d*)$/.test(value.supersedes)) ||
+    (Number.isSafeInteger(value.supersedes) && value.supersedes >= 0);
+  if (!validSupersedes) return false;
   if (!isRecord(value.classification) || typeof value.classification.kind !== 'string') return false;
   if (!isRecord(value.build) || typeof value.build.version !== 'string') return false;
   if (typeof value.publishedAt !== 'string') return false;
@@ -58,7 +60,7 @@ function isPublishedEpoch(dbDir, name) {
 }
 
 export function resolveCurrentStoreDbPath(dbDir) {
-  let current = 0;
+  let current = isRegularFile(join(dbDir, 'store.db')) ? '0' : null;
   let entries;
   try {
     entries = readdirSync(dbDir);
@@ -67,7 +69,15 @@ export function resolveCurrentStoreDbPath(dbDir) {
   }
   for (const entry of entries) {
     const epoch = epochNumber(entry);
-    if (epoch !== null && epoch > current && isPublishedEpoch(dbDir, entry)) current = epoch;
+    if (
+      epoch !== null &&
+      epoch !== '0' &&
+      (current === null || BigInt(epoch) > BigInt(current)) &&
+      isPublishedEpoch(dbDir, entry)
+    ) {
+      current = epoch;
+    }
   }
-  return current === 0 ? join(dbDir, 'store.db') : join(dbDir, `epoch-${current}`, 'store.db');
+  if (current === null) return null;
+  return current === '0' ? join(dbDir, 'store.db') : join(dbDir, `epoch-${current}`, 'store.db');
 }

@@ -28,7 +28,7 @@ import {
   type LegacyStoreResetIncidentListEntry,
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
-import { epochPath, listStoreEpochs, type StoreEpochListEntry } from '../store/epoch.js';
+import { epochPath, listStoreEpochs, storeEpochHolderPath, type StoreEpochListEntry } from '../store/epoch.js';
 import {
   isCanonicalStoreResetIncidentId,
   MAX_SQLITE_DIAGNOSTIC_BYTES,
@@ -42,7 +42,7 @@ export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
-  diagnoseEpoch(storeDbPath: string): Promise<StoreResetDiagnosticStatus>;
+  diagnoseEpoch(storeDbPath: string, holderPath: string): Promise<StoreResetDiagnosticStatus>;
   quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
   runtime?(manifest: StrictBundleManifest): ReturnType<typeof createRealRuntime>;
 }
@@ -72,11 +72,12 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
-    diagnoseEpoch: async (storeDbPath) => {
+    diagnoseEpoch: async (storeDbPath, holderPath) => {
       const diagnostic = await superviseStoreResetDiagnosticChild(
         createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
         process.execPath,
         storeDbPath,
+        holderPath,
       );
       return { ...diagnostic, cleanup: 'not_required' };
     },
@@ -86,6 +87,41 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
     },
     runtime: (manifest) => createRealRuntime(manifest.flavor),
   };
+}
+
+async function diagnoseHeldEpoch(
+  runtime: ReturnType<typeof createRealRuntime>,
+  storeDbPath: string,
+  dependencies: StoreResetCliDependencies,
+): Promise<StoreResetDiagnosticStatus> {
+  const holderPath = storeEpochHolderPath(runtime.paths.coral.store.dbDir, runtime.ids.uuid());
+  if (
+    !runtime.storage.writeAtomicDurableSync(holderPath, `${JSON.stringify({ pid: runtime.env.pid() })}\n`, {
+      encoding: 'utf-8',
+      mode: 0o600,
+    })
+  ) {
+    return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
+  }
+  let preserveHolder = false;
+  try {
+    const diagnostic = await dependencies.diagnoseEpoch(storeDbPath, holderPath);
+    preserveHolder = diagnostic.termination === 'termination_unconfirmed';
+    return diagnostic;
+  } finally {
+    if (!preserveHolder) {
+      try {
+        runtime.storage.unlinkSync(holderPath);
+      } catch {
+        // The child removes its registration after closing the database.
+      }
+      try {
+        runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);
+      } catch {
+        // A resurrected marker only makes a later sweep more conservative.
+      }
+    }
+  }
 }
 
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {
@@ -112,14 +148,14 @@ export function releaseStoreResetLocal(
   flavor: BuildFlavor,
   epoch: string,
 ): Promise<StoreResetReleasePresentation> {
-  if (!/^(0|[1-9]\d*)$/.test(epoch) || !Number.isSafeInteger(Number(epoch))) {
+  if (!/^(0|[1-9]\d*)$/.test(epoch)) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
-  return releaseStoreReset({ target, runtime: createRealRuntime(flavor), epoch: Number(epoch) });
+  return releaseStoreReset({ target, runtime: createRealRuntime(flavor), epoch });
 }
 
 function isCanonicalEpoch(value: string): boolean {
-  return /^(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value));
+  return /^(0|[1-9]\d*)$/.test(value);
 }
 
 export function discardStoreResetLocal(
@@ -211,13 +247,13 @@ export async function reportStoreResetLocal(
     const manifest = requireCurrentBuild(dependencies);
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     const epoch = listStoreEpochs(runtime, currentCoralStoreFormat()).find(
-      (candidate) => candidate.epoch === Number(reference),
+      (candidate) => candidate.epoch === reference,
     );
     if (epoch === undefined) throw new StoreResetCliError('store_reset_incident_not_found');
     const diagnostic =
       epoch.bytes === null || epoch.bytes > MAX_SQLITE_DIAGNOSTIC_BYTES
         ? ({ integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' } as const)
-        : await dependencies.diagnoseEpoch(epochPath(runtime.paths.coral.store.dbDir, epoch.epoch));
+        : await diagnoseHeldEpoch(runtime, epochPath(runtime.paths.coral.store.dbDir, epoch.epoch), dependencies);
     return { kind: 'epoch', epoch, diagnostic };
   }
   if (!isCanonicalStoreResetIncidentId(reference)) {

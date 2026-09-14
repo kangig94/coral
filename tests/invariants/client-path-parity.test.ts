@@ -156,7 +156,7 @@ describe('self-contained client path parity', () => {
 
   it('runs both epoch selectors over the same proof-state corpus', () => {
     const validMetadata = JSON.stringify({
-      supersedes: 0,
+      supersedes: '0',
       classification: { kind: 'unavailable' },
       build: {
         version: '0.10.9',
@@ -169,10 +169,22 @@ describe('self-contained client path parity', () => {
     });
     const corpus = [
       {
+        name: 'absent store',
+        expected: null,
+        arrange(_dbDir: string) {},
+      },
+      {
         name: 'legacy flat file',
         expected: '0',
         arrange(dbDir: string) {
           writeFileSync(join(dbDir, 'store.db'), 'flat');
+        },
+      },
+      {
+        name: 'flat symlink',
+        expected: null,
+        arrange(dbDir: string) {
+          symlinkSync(join(dbDir, '..', 'external-store.db'), join(dbDir, 'store.db'));
         },
       },
       {
@@ -249,9 +261,17 @@ describe('self-contained client path parity', () => {
         fixture.arrange(dbDir);
         const backendEpoch = resolveCurrentStoreEpoch(createRealRuntime('prod').storage, dbDir);
         const backendPath =
-          backendEpoch === 0 ? join(dbDir, 'store.db') : join(dbDir, `epoch-${backendEpoch}`, 'store.db');
+          backendEpoch === null
+            ? null
+            : backendEpoch === '0'
+              ? join(dbDir, 'store.db')
+              : join(dbDir, `epoch-${backendEpoch}`, 'store.db');
         const expectedPath =
-          fixture.expected === '0' ? join(dbDir, 'store.db') : join(dbDir, `epoch-${fixture.expected}`, 'store.db');
+          fixture.expected === null
+            ? null
+            : fixture.expected === '0'
+              ? join(dbDir, 'store.db')
+              : join(dbDir, `epoch-${fixture.expected}`, 'store.db');
 
         expect(backendPath, `backend: ${fixture.name}`).toBe(expectedPath);
         expect(resolveCurrentStoreDbPath(dbDir), `hook: ${fixture.name}`).toBe(expectedPath);

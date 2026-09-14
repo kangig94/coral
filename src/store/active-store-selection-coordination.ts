@@ -31,7 +31,7 @@ import {
   type ActiveStoreTransitionFailureCode,
 } from './active-store-selection.js';
 import type { Database } from './db.js';
-import { settleStoreEpoch } from './epoch.js';
+import { settleStoreEpoch, type StoreEpoch } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import {
   formatLegacyGenerationIgnoredNotice,
@@ -46,7 +46,7 @@ export type ActiveStoreSelectionProtocolResult =
 
 export type ActiveStoreSettlement = Readonly<{
   db: Database;
-  epoch: number;
+  epoch: StoreEpoch;
   path: string;
   invalidTargetEvidence: InvalidTargetEvidence | null;
 }>;
