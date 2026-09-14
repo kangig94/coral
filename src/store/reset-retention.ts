@@ -834,8 +834,8 @@ export function recordStoreResetResumeLeftActive(
   });
 }
 
-function parkingDirectoryEvidenceBytes(storage: StoragePort, parkingDirectory: string): number | null {
-  const directories = [parkingDirectory];
+function directoryEvidenceBytes(storage: StoragePort, root: string, excludedRootEntry: string): number | null {
+  const directories = [root];
   let total = 0;
   let entries = 0;
   while (directories.length > 0) {
@@ -859,7 +859,7 @@ function parkingDirectoryEvidenceBytes(storage: StoragePort, parkingDirectory: s
           directories.push(path);
           continue;
         }
-        if (!link.isFile() || (directory === parkingDirectory && name === STORE_RESET_PARKED_SIDECAR_FILE_NAME)) {
+        if (!link.isFile() || (directory === root && name === excludedRootEntry)) {
           continue;
         }
         const stat = storage.lstatSync(path, { bigint: true });
@@ -871,6 +871,14 @@ function parkingDirectoryEvidenceBytes(storage: StoragePort, parkingDirectory: s
     }
   }
   return total;
+}
+
+function parkingDirectoryEvidenceBytes(storage: StoragePort, parkingDirectory: string): number | null {
+  return directoryEvidenceBytes(storage, parkingDirectory, STORE_RESET_PARKED_SIDECAR_FILE_NAME);
+}
+
+function incidentDirectoryEvidenceBytes(storage: StoragePort, incidentDirectory: string): number | null {
+  return directoryEvidenceBytes(storage, incidentDirectory, STORE_RESET_MANIFEST_FILE_NAME);
 }
 
 export function releaseStoreResetIncident(
@@ -956,7 +964,8 @@ export function releaseStoreResetIncident(
   const holder = slot.kind === 'held' && slot.holder.incidentId === incidentId;
   const parkedEvidenceBytes =
     parkingPresence === 'present' && parkingRecordVerified ? parkingDirectoryEvidenceBytes(storage, parkingPath) : null;
-  const incidentEvidenceBytes = manifest?.files.reduce((total, file) => total + file.sizeBytes, 0) ?? null;
+  const incidentEvidenceBytes =
+    incidentPresence === 'present' && manifest !== null ? incidentDirectoryEvidenceBytes(storage, incidentPath) : null;
   const parkingEvidenceBytes = parkedEvidenceBytes;
   let parkingDeletionDurability: StoreResetDeletionDurability =
     parkingPresence === 'present' ? 'unproven' : 'not-required';

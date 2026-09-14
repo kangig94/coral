@@ -119,6 +119,68 @@ function retainedIncidentNames(quarantineRoot: string): string[] {
   return readdirSync(quarantineRoot).filter(isCanonicalStoreResetIncidentId);
 }
 
+const PRE_EXISTING_SURVIVOR_ID = '923e4567-e89b-42d3-a456-426614174000';
+
+function seedPreExistingTerminalSurvivor(runtime: Runtime, dbPath: string): string {
+  const parkingRoot = join(dirname(dbPath), 'store-reset-quarantine', '.parked');
+  const directory = join(parkingRoot, PRE_EXISTING_SURVIVOR_ID);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, 'store.db-wal'), 'pre-existing survivor');
+  writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
+    version: 1,
+    parkingId: PRE_EXISTING_SURVIVOR_ID,
+    parkedAt: '2026-09-12T00:00:00.000Z',
+    phase: 'terminal',
+    cause: 'residual',
+    incidentId: null,
+    names: ['store.db-wal'],
+    entries: [
+      {
+        name: 'store.db-wal',
+        kind: 'regular-file',
+        sizeBytes: Buffer.byteLength('pre-existing survivor'),
+      },
+    ],
+    transaction: null,
+    classification: null,
+  });
+  return PRE_EXISTING_SURVIVOR_ID;
+}
+
+function terminalSurvivors(
+  quarantineRoot: string,
+): readonly { readonly kind: 'incident' | 'parking'; readonly id: string }[] {
+  const parkingRoot = join(quarantineRoot, '.parked');
+  const parkingIds = existsSync(parkingRoot) ? readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId) : [];
+  return [
+    ...retainedIncidentNames(quarantineRoot).map((id) => ({ kind: 'incident' as const, id })),
+    ...parkingIds.map((id) => ({ kind: 'parking' as const, id })),
+  ];
+}
+
+function expectOneTerminalSurvivor(dbPath: string, label = dbPath): void {
+  const survivors = terminalSurvivors(join(dirname(dbPath), 'store-reset-quarantine'));
+  expect(survivors, `${label}: ${JSON.stringify(survivors)}`).toHaveLength(1);
+}
+
+function expectReturnedSurvivorExists(
+  dbPath: string,
+  survivor: Awaited<ReturnType<typeof settleReset>>['survivor'],
+): void {
+  const survivors = terminalSurvivors(join(dirname(dbPath), 'store-reset-quarantine'));
+  switch (survivor.kind) {
+    case 'incident':
+      expect(survivors).toContainEqual({ kind: 'incident', id: survivor.incident.incidentId });
+      break;
+    case 'parking':
+      expect(survivors).toContainEqual({ kind: 'parking', id: survivor.parkingId });
+      break;
+    case 'none':
+      expect(survivors).toEqual([]);
+      break;
+  }
+}
+
 function retainedManifest(dbPath: string): StoreResetIncidentManifestV3 {
   const quarantineRoot = join(dirname(dbPath), 'store-reset-quarantine');
   const incidents = retainedIncidentNames(quarantineRoot);
@@ -321,6 +383,20 @@ async function openReset(
     readonly steadyStateBusyTimeoutMs?: number;
   } = {},
 ) {
+  return (await settleReset(runtime, dbPath, exclusion, overrides)).db;
+}
+
+async function settleReset(
+  runtime: Runtime,
+  dbPath: string,
+  exclusion: WriterExclusion = writerExclusion(),
+  overrides: {
+    readonly authority?: BackendStoreResetAuthority;
+    readonly storeFormat?: typeof STORE_FORMAT;
+    readonly startupBusyTimeoutMs?: number;
+    readonly steadyStateBusyTimeoutMs?: number;
+  } = {},
+) {
   const storeFormat = overrides.storeFormat ?? STORE_FORMAT;
   const result = await coordinateActiveStoreSelection(runtime, overrides.authority ?? authorityFor(runtime, dbPath), {
     path: dbPath,
@@ -337,7 +413,7 @@ async function openReset(
     },
   });
   if (result.kind !== 'opened') throw new Error('The active-evidence fixture unexpectedly handed off.');
-  return result.db;
+  return result;
 }
 
 function publishReset(runtime: Runtime, dbPath: string, exclusion: WriterExclusion = writerExclusion()) {
@@ -451,7 +527,12 @@ function traceActivePathCalls(
   runtime: Runtime,
   activePath: string,
   boundary: 'descriptor' | 'identity' | 'second-identity' | 'immediate' | 'manual',
-  mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation; readonly sidecarPath?: string },
+  mutation?: {
+    readonly index: number;
+    readonly kind: ActiveEvidenceMutation;
+    readonly surface?: 'active' | 'durable';
+    readonly sidecarPath?: string;
+  },
 ): {
   readonly runtime: Runtime;
   readonly calls: readonly string[];
@@ -465,6 +546,7 @@ function traceActivePathCalls(
   const calls: string[] = [];
   const durableCalls: string[] = [];
   const durableRoot = join(dirname(activePath), 'store-reset-quarantine');
+  const parkingRoot = join(durableRoot, '.parked');
   const activeDescriptors = new Set<number>();
   const activeIdentities: Array<{ readonly dev: bigint; readonly ino: bigint }> = [];
   const rememberActiveIdentity = () => {
@@ -486,6 +568,7 @@ function traceActivePathCalls(
   let applied = false;
   let unreachableReason: string | null = null;
   let injectedIdentity: { readonly dev: bigint; readonly ino: bigint } | null = null;
+  let terminalTransitionOpen = false;
   const storage = new Proxy(runtime.storage, {
     get(target, property) {
       const member = Reflect.get(target, property, target) as unknown;
@@ -499,19 +582,40 @@ function traceActivePathCalls(
         );
         const touchesActiveAlias = args.some(pathHasActiveIdentity);
         const touchesActiveEvidence = touchesActivePath || touchesActiveDescriptor || touchesActiveAlias;
-        const touchesDurableRecord = args.some(
-          (argument) =>
-            typeof argument === 'string' && (argument === durableRoot || argument.startsWith(`${durableRoot}${sep}`)),
-        );
+        const writesTerminalSidecar =
+          method === 'writeAtomicDurableSync' &&
+          String(args[0]).endsWith(STORE_RESET_PARKED_SIDECAR_FILE_NAME) &&
+          typeof args[1] === 'string' &&
+          args[1].includes('"phase":"terminal"');
+        if (writesTerminalSidecar) terminalTransitionOpen = true;
+        const renamesTerminalParking =
+          method === 'renameSync' &&
+          dirname(String(args[1])) === parkingRoot &&
+          isCanonicalStoreResetIncidentId(basename(String(args[1])));
+        const removesTerminalSurvivor =
+          method === 'rmSync' &&
+          isCanonicalStoreResetIncidentId(basename(String(args[0]))) &&
+          (dirname(String(args[0])) === durableRoot || dirname(String(args[0])) === parkingRoot);
+        const syncsTerminalTransition =
+          terminalTransitionOpen &&
+          method === 'syncDirectoryDurableSync' &&
+          (args[0] === durableRoot || args[0] === parkingRoot);
+        const touchesDurableRecord =
+          writesTerminalSidecar || renamesTerminalParking || removesTerminalSurvivor || syncsTerminalTransition;
         const observesActiveDescriptor = method === 'fstatSync' && touchesActiveDescriptor;
+        const touchesMutationSurface =
+          mutation?.surface === 'durable' ? touchesDurableRecord : recording && touchesActiveEvidence;
+        const mutationCalls = mutation?.surface === 'durable' ? durableCalls : calls;
         if (!stopped && touchesDurableRecord) durableCalls.push(method);
-        if (!stopped && recording && touchesActiveEvidence) {
-          const index = calls.length;
-          calls.push(method);
+        if (!stopped && recording && touchesActiveEvidence) calls.push(method);
+        if (!stopped && touchesMutationSurface) {
+          const index = mutationCalls.length - 1;
           if (mutation?.index === index) {
             if (mutation.kind === 'crash') {
-              applied = true;
-              throw errno('EIO');
+              if (mutation.surface !== 'durable') {
+                applied = true;
+                throw errno('EIO');
+              }
             } else if (mutation.kind === 'appended') {
               if (existsSync(activePath) && lstatSync(activePath).isFile()) {
                 applied = true;
@@ -542,6 +646,15 @@ function traceActivePathCalls(
         }
 
         const result = Reflect.apply(member, target, args) as unknown;
+        if (
+          mutation?.surface === 'durable' &&
+          mutation.kind === 'crash' &&
+          touchesMutationSurface &&
+          mutation.index === mutationCalls.length - 1
+        ) {
+          applied = true;
+          throw errno('EIO');
+        }
         if (
           method === 'openSync' &&
           typeof result === 'number' &&
@@ -613,7 +726,11 @@ function expectReturnedHandleTargetsActiveStore(db: { exec(sql: string): unknown
 
 async function exerciseActiveEvidenceArm(
   arm: ActiveEvidenceArm,
-  mutation?: { readonly index: number; readonly kind: ActiveEvidenceMutation },
+  mutation?: {
+    readonly index: number;
+    readonly kind: ActiveEvidenceMutation;
+    readonly surface?: 'active' | 'durable';
+  },
   afterCrashMutation?: ActiveEvidenceMutation,
 ): Promise<{
   readonly calls: readonly string[];
@@ -622,6 +739,7 @@ async function exerciseActiveEvidenceArm(
 }> {
   const runtime = createRuntime();
   const dbPath = join(makeTempRoot(`coral-store-active-${arm}-sweep-`), 'store.db');
+  seedPreExistingTerminalSurvivor(runtime, dbPath);
   let boundary: Parameters<typeof traceActivePathCalls>[2];
   let exclusion: WriterExclusion | undefined;
   let startClaimTrace: () => void = () => undefined;
@@ -671,17 +789,20 @@ async function exerciseActiveEvidenceArm(
   );
   startClaimTrace = trace.start;
 
+  let settlement: Awaited<ReturnType<typeof settleReset>>;
   let db: Awaited<ReturnType<typeof openReset>>;
   if (mutation?.kind === 'crash') {
-    let openedAcrossInjectedFailure: Awaited<ReturnType<typeof openReset>> | null = null;
+    let openedAcrossInjectedFailure: Awaited<ReturnType<typeof settleReset>> | null = null;
     const firstFailure = await captureAsyncError(async () => {
-      openedAcrossInjectedFailure = await openReset(trace.runtime, dbPath, exclusion);
+      openedAcrossInjectedFailure = await settleReset(trace.runtime, dbPath, exclusion);
     });
     trace.stop();
     if (firstFailure === null) {
-      const completed = openedAcrossInjectedFailure as unknown as { close(): void } | null;
+      const completed = openedAcrossInjectedFailure as Awaited<ReturnType<typeof settleReset>> | null;
       expect(completed).not.toBeNull();
-      completed?.close();
+      completed?.db.close();
+      if (completed !== null) expectReturnedSurvivorExists(dbPath, completed.survivor);
+      expectOneTerminalSurvivor(dbPath, arm);
       return {
         calls: trace.calls,
         durableCalls: trace.durableCalls,
@@ -706,9 +827,11 @@ async function exerciseActiveEvidenceArm(
         expect(disposition.reason).toBe('append requires a regular active path between crash and resume');
       }
     }
-    db = await openReset(runtime, dbPath, exclusion);
+    settlement = await settleReset(runtime, dbPath, exclusion);
+    db = settlement.db;
   } else {
-    db = await openReset(trace.runtime, dbPath, exclusion);
+    settlement = await settleReset(trace.runtime, dbPath, exclusion);
+    db = settlement.db;
     trace.stop();
   }
 
@@ -736,6 +859,8 @@ async function exerciseActiveEvidenceArm(
   if (injectedIdentity !== null && mutation?.kind !== 'appended') {
     expect(containsIdentity(dirname(dbPath), injectedIdentity)).toBe(true);
   }
+  expectOneTerminalSurvivor(dbPath, arm);
+  expectReturnedSurvivorExists(dbPath, settlement.survivor);
   return { calls: trace.calls, durableCalls: trace.durableCalls, mutationDisposition: trace.mutationDisposition() };
 }
 
@@ -1571,7 +1696,7 @@ describe('openOrResetBackendStoreDb', () => {
   });
 
   it.each(RESET_POLICY_CAUSES)(
-    'retains the %s incident across a fresh-schema publication failure',
+    'keeps the %s incident until the interrupted fresh schema replaces it with terminal parking',
     async (resetPolicyCause) => {
       const runtime = createRuntime();
       const dbPath = join(makeTempRoot('coral-store-fresh-schema-crash-'), 'store.db');
@@ -1607,11 +1732,12 @@ describe('openOrResetBackendStoreDb', () => {
       expect(retainedBeforeRestart.resetPolicyCause).toBe(resetPolicyCause);
       if (expectedIncidentId !== null) expect(retainedBeforeRestart.incidentId).toBe(expectedIncidentId);
 
-      const db = await openReset(runtime, dbPath);
-      db.close();
+      const settlement = await settleReset(runtime, dbPath);
+      settlement.db.close();
 
-      const retainedAfterRestart = retainedManifest(dbPath);
-      expect(retainedAfterRestart).toEqual(retainedBeforeRestart);
+      expect(settlement.survivor.kind).toBe('parking');
+      expectOneTerminalSurvivor(dbPath);
+      expectReturnedSurvivorExists(dbPath, settlement.survivor);
       expect(tableExists(dbPath, 'events')).toBe(true);
     },
   );
@@ -2543,8 +2669,8 @@ describe('openOrResetBackendStoreDb', () => {
       linkSync(source, destination);
     });
 
-    const db = await openReset(runtime, dbPath);
-    db.close();
+    const settlement = await settleReset(runtime, dbPath);
+    settlement.db.close();
 
     expect(nextEpoch).toBe(epochCount);
     expect(containsIdentity(root, identities.at(-1)!)).toBe(true);
@@ -2554,6 +2680,7 @@ describe('openOrResetBackendStoreDb', () => {
     const parkingIds = readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId);
     expect([...retainedIncidentNames(quarantineRoot), ...parkingIds]).toHaveLength(1);
     expect(parkingIds).toHaveLength(1);
+    expect(settlement.survivor).toEqual({ kind: 'parking', parkingId: parkingIds[0] });
     for (const parkingId of parkingIds) {
       const sidecar = JSON.parse(
         readFileSync(join(parkingRoot, parkingId, STORE_RESET_PARKED_SIDECAR_FILE_NAME), 'utf-8'),
@@ -2590,6 +2717,9 @@ describe('openOrResetBackendStoreDb', () => {
         ACTIVE_EVIDENCE_MUTATIONS.map((mutation) => ({ arm, mutation, method, index })),
       ),
     );
+    const durableCrashCells = ACTIVE_EVIDENCE_ARMS.flatMap((arm) =>
+      (durableTraces.get(arm) ?? []).map((method, index) => ({ arm, method, index })),
+    );
     for (const arm of ACTIVE_EVIDENCE_ARMS) expect(traces.get(arm)?.length ?? 0, arm).toBeGreaterThan(0);
     for (const arm of ACTIVE_EVIDENCE_ARMS) {
       expect(durableTraces.get(arm)?.length ?? 0, `${arm} durable records`).toBeGreaterThan(0);
@@ -2623,6 +2753,20 @@ describe('openOrResetBackendStoreDb', () => {
         const result = await exerciseActiveEvidenceArm(cell.arm, { index: cell.index, kind: 'crash' }, cell.mutation);
         return result.mutationDisposition;
       });
+    }
+    for (const cell of durableCrashCells) {
+      const label = `durable-crash ${cell.arm}[${cell.index}] ${cell.method}`;
+      await runCell(
+        label,
+        async () =>
+          (
+            await exerciseActiveEvidenceArm(cell.arm, {
+              index: cell.index,
+              kind: 'crash',
+              surface: 'durable',
+            })
+          ).mutationDisposition,
+      );
     }
 
     expect(failures, `${failures.length} generated sweep cells failed`).toEqual([]);
@@ -3196,6 +3340,7 @@ describe('openOrResetBackendStoreDb', () => {
       const root = makeTempRoot(`coral-store-fixed-retirement-${sidecarState}-`);
       const dbPath = join(root, 'store.db');
       createCompatibleSentinelStore(runtime, dbPath);
+      seedPreExistingTerminalSurvivor(runtime, dbPath);
       const quarantineRoot = join(root, 'store-reset-quarantine');
       const parkingRoot = join(quarantineRoot, '.parked');
       const fixedDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
@@ -3205,10 +3350,12 @@ describe('openOrResetBackendStoreDb', () => {
       if (sidecarState !== 'absent') writeFileSync(sidecarPath, '{');
       if (sidecarState === 'unreadable') runtime.storage.chmodSync(sidecarPath, 0o000);
 
-      const db = await openReset(runtime, dbPath);
-      db.close();
+      const settlement = await settleReset(runtime, dbPath);
+      settlement.db.close();
 
       expect(existsSync(fixedDirectory)).toBe(false);
+      expectOneTerminalSurvivor(dbPath);
+      expectReturnedSurvivorExists(dbPath, settlement.survivor);
       const parkingIds = readdirSync(parkingRoot).filter(isCanonicalStoreResetIncidentId);
       expect(parkingIds).toHaveLength(1);
       const parkingId = parkingIds[0];
@@ -3230,6 +3377,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-compatible-claim-sibling-');
     const dbPath = join(root, 'store.db');
+    seedPreExistingTerminalSurvivor(runtime, dbPath);
     createMismatchStore(dbPath);
     const linkSync = runtime.storage.linkSync;
     let injected = false;
@@ -3274,6 +3422,8 @@ describe('openOrResetBackendStoreDb', () => {
       phase: 'terminal',
       entries: expect.arrayContaining([expect.objectContaining({ name: 'store.db-shm', kind: 'directory' })]),
     });
+    expectOneTerminalSurvivor(dbPath);
+    expectReturnedSurvivorExists(dbPath, result.survivor);
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 
@@ -3281,6 +3431,7 @@ describe('openOrResetBackendStoreDb', () => {
     const runtime = createRuntime();
     const root = makeTempRoot('coral-store-minted-resume-');
     const dbPath = join(root, 'store.db');
+    seedPreExistingTerminalSurvivor(runtime, dbPath);
     const mintedId = '323e4567-e89b-42d3-a456-426614174000';
     const mintedRoot = join(root, 'store-reset-quarantine', '.minted');
     const mintedDirectory = join(mintedRoot, mintedId);
@@ -3294,8 +3445,8 @@ describe('openOrResetBackendStoreDb', () => {
       return readDirectoryBoundedSync(path, maxEntries);
     });
 
-    const db = await openReset(runtime, dbPath);
-    db.close();
+    const settlement = await settleReset(runtime, dbPath);
+    settlement.db.close();
 
     expect(observedBounds).toContain(MAX_INCIDENT_ROOT_ENTRIES + 1);
     expect(existsSync(mintedDirectory)).toBe(false);
@@ -3307,6 +3458,8 @@ describe('openOrResetBackendStoreDb', () => {
       names: expect.arrayContaining(['store.db']),
       classification: 'compatible',
     });
+    expectOneTerminalSurvivor(dbPath);
+    expectReturnedSurvivorExists(dbPath, settlement.survivor);
     expect(tableExists(dbPath, 'sentinel_replacement')).toBe(true);
   });
 

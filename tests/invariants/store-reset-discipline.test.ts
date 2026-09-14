@@ -413,9 +413,9 @@ describe('store reset discipline invariants', () => {
     );
   });
 
-  it('has at most 135 semantic refusals in the settlement closure (target: 0)', () => {
+  it('has at most 131 semantic refusals in the settlement closure (target: 0)', () => {
     const overrides = process.env.CORAL_TEST_INJECT_SETTLEMENT_THROW === '1' ? injectedSettlementThrow() : new Map();
-    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(135);
+    expect(settlementSemanticRefusalCount(overrides)).toBeLessThanOrEqual(131);
   });
 
   it('detects a semantic throw injected into an imported settlement module the old closure missed', () => {
@@ -494,48 +494,30 @@ describe('store reset discipline invariants', () => {
     expect(manifestIndex).toBeGreaterThan(parkIndex);
   });
 
-  it('keeps parking creation renames after their sidecar and recovery relocation after discovery', () => {
-    const parkingRenamers = [
-      [RESET_ACTIVE_EVIDENCE_PATH, 'parkActiveEvidence', 'lstatSync(join(parkingDirectory'],
-      [RESET_ACTIVE_EVIDENCE_PATH, 'parkCurrentEvidence', 'lstatSync(join(parkingDirectory'],
-      [BACKEND_STORE_RESET_PATH, 'terminalizeParking', 'writeStoreResetParkedRecord('],
-      [BACKEND_STORE_RESET_PATH, 'retainInterruptedMintedStores', 'writeStoreResetParkedRecord('],
-      [BACKEND_STORE_RESET_PATH, 'retainNonRegularParking', 'writeStoreResetParkedRecord('],
-    ] as const;
-    const closure = new Set(settlementStoreImportClosure());
+  it('commits every terminal parking survivor through one sidecar-rename-rotation transition', () => {
+    const source = sourceFile(BACKEND_STORE_RESET_PATH);
+    const transition = withoutComments(
+      findFunction(BACKEND_STORE_RESET_PATH, 'commitTerminalParking').body?.getText(source) ?? '',
+    );
+    expect(transition.indexOf('writeStoreResetParkedRecord(')).toBeLessThan(transition.indexOf('populate();'));
+    expect(transition.indexOf('populate();')).toBeLessThan(transition.indexOf('renameSync('));
+    expect(transition.indexOf('renameSync(')).toBeLessThan(transition.indexOf('recordStoreResetParked('));
 
-    for (const [relativePath, functionName, sidecarWrite] of parkingRenamers) {
-      expect(closure.has(relativePath)).toBe(true);
-      const source = sourceFile(relativePath);
-      const body = withoutComments(findFunction(relativePath, functionName).body?.getText(source) ?? '');
-      const sidecarIndex = body.indexOf(sidecarWrite);
-      const renameIndex = body.indexOf('renameSync(');
-      expect(sidecarIndex, functionName).toBeGreaterThanOrEqual(0);
-      expect(renameIndex, functionName).toBeGreaterThan(sidecarIndex);
+    for (const [functionName, transitionCall] of [
+      ['terminalizeParking', 'commitTerminalParking('],
+      ['retainInterruptedMintedStores', 'commitTerminalParking('],
+      ['retireNonResumableFixedParking', 'terminalizeParking('],
+      ['retainNonRegularParking', 'commitTerminalParking('],
+    ] as const) {
+      const body = withoutComments(findFunction(BACKEND_STORE_RESET_PATH, functionName).body?.getText(source) ?? '');
+      expect(body, functionName).toContain(transitionCall);
     }
 
-    const recoveryRelocation = withoutComments(
-      findFunction(BACKEND_STORE_RESET_PATH, 'retireNonResumableFixedParking').body?.getText(
-        sourceFile(BACKEND_STORE_RESET_PATH),
-      ) ?? '',
-    );
-    expect(recoveryRelocation.indexOf('renameSync(')).toBeGreaterThan(
-      recoveryRelocation.indexOf('discovered.entries.find('),
-    );
-
-    const renamingFunctions = settlementStoreImportClosure()
+    const retentionCommitters = settlementStoreImportClosure()
       .flatMap(collectCalls)
-      .filter((call) => call.callee === 'renameSync')
-      .filter(
-        (call) =>
-          parkingRenamers.some(([, functionName]) => call.enclosingFunctions[0] === functionName) ||
-          /,\s*(?:parkingDirectory|terminalDirectory|join\(parkingRoot)/u.test(call.text),
-      )
-      .map((call) => call.enclosingFunctions[0])
-      .sort();
-    expect(renamingFunctions).toEqual(
-      [...parkingRenamers.map(([, functionName]) => functionName), 'retireNonResumableFixedParking'].sort(),
-    );
+      .filter((call) => call.callee === 'recordStoreResetParked')
+      .map((call) => call.enclosingFunctions[0]);
+    expect(retentionCommitters).toEqual(['commitTerminalParking']);
   });
 
   it('keeps shared-path capabilities and exact inode identity inside their canonical owner', () => {
@@ -637,7 +619,8 @@ describe('store reset discipline invariants', () => {
     expect(settlement).toContain('assertNever(activeEpoch.classification)');
     expect(settlement).toContain('resumeAutomaticBackendStoreResetIncident(');
     expect(settlement).toContain('resumeBackendStoreResetIncidentForOperator(');
-    expect(settlement).toContain('publications.push(publication)');
+    expect(settlement).toContain("survivor = { kind: 'incident', incident: publication.incident, resumed: false }");
+    expect(settlement).toContain('survivor: finalStoreResetSurvivor(runtime, files, survivor)');
   });
 
   it('keeps every store-reset support import closure outside reset authority and generic DB openers', () => {

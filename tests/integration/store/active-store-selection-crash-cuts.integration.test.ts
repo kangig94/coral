@@ -519,7 +519,7 @@ describe('active-store-selection crash cuts', () => {
     });
     expect(result.kind).toBe('opened');
     if (result.kind === 'opened') {
-      expect(result.publications).toHaveLength(1);
+      expect(result.survivor.kind).toBe('incident');
       result.db.close();
     }
     expect(tableExists(runtime.paths.coral.store.dbFile, 'sentinel_before_reset')).toBe(false);

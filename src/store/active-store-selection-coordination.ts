@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import {
@@ -52,7 +54,6 @@ import {
   type BackendStoreResetAuthority,
   type BackendStoreResetIncident,
   type BackendStoreResetLockLease,
-  type IncidentPublication,
   type StoreSettlementEpoch,
   type WriterExclusion,
   type NewerStoreResetPolicy,
@@ -67,6 +68,12 @@ import {
   type GenerationAdoptionLockLease,
   type GenerationMaintenanceLease,
 } from './generation-mutation-coordination.js';
+import {
+  isCanonicalStoreResetIncidentId,
+  STORE_RESET_INCIDENT_SCHEMA_VERSION,
+  STORE_RESET_QUARANTINE_DIRECTORY,
+} from './reset-incident.js';
+import { discoverStoreResetParkedRecords, resolveStoreResetRetentionSlot } from './reset-retention.js';
 
 export type ActiveStoreSelectionProtocolResult =
   | ({ readonly kind: 'opened' } & ActiveStoreSettlement)
@@ -74,11 +81,52 @@ export type ActiveStoreSelectionProtocolResult =
 
 export type ActiveStoreSettlement = Readonly<{
   db: Database;
-  resumedIncident: BackendStoreResetIncident | null;
-  publications: readonly IncidentPublication[];
+  survivor: ActiveStoreSettlementSurvivor;
   epochs: readonly StoreSettlementEpoch[];
   invalidTargetEvidence: InvalidTargetEvidence | null;
 }>;
+
+export type ActiveStoreSettlementSurvivor =
+  | { readonly kind: 'incident'; readonly incident: BackendStoreResetIncident; readonly resumed: boolean }
+  | { readonly kind: 'parking'; readonly parkingId: string }
+  | { readonly kind: 'none' };
+
+function finalStoreResetSurvivor(
+  runtime: Pick<Runtime, 'storage'>,
+  files: BackendStoreFileSet,
+  candidate: ActiveStoreSettlementSurvivor,
+): ActiveStoreSettlementSurvivor {
+  const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+  const parking = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot).entries.find(
+    (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',
+  );
+  if (parking !== undefined) return { kind: 'parking', parkingId: parking.coordinate };
+  const slot = resolveStoreResetRetentionSlot(runtime.storage, quarantineRoot);
+  if (slot.kind === 'held' && slot.manifest !== null) {
+    const manifest = slot.manifest;
+    return {
+      kind: 'incident',
+      incident: {
+        incidentId: manifest.incidentId,
+        resetAt: manifest.resetAt,
+        reason: manifest.reason,
+        schemaVersion: manifest.schemaVersion,
+        resetPolicyCause:
+          manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
+        fileCount: manifest.files.length,
+      },
+      resumed:
+        candidate.kind === 'incident' && candidate.incident.incidentId === manifest.incidentId && candidate.resumed,
+    };
+  }
+  if (
+    candidate.kind === 'incident' &&
+    runtime.storage.existsSync(join(quarantineRoot, candidate.incident.incidentId))
+  ) {
+    return candidate;
+  }
+  return { kind: 'none' };
+}
 
 export type ActiveStoreSelectionStartupDependencies = Readonly<{
   kind: 'startup';
@@ -379,7 +427,7 @@ async function settleActiveStore(
         blockers: 'active store appeared after the writer-exclusion probe',
       } satisfies WriterExclusion);
     let transition = initialTransition;
-    const publications: IncidentPublication[] = [];
+    let survivor: ActiveStoreSettlementSurvivor = { kind: 'none' };
     const epochs: StoreSettlementEpoch[] = [];
     if (resetNeeded) {
       resetLock = acquireBackendStoreResetLock(runtime, files, adoption);
@@ -389,6 +437,7 @@ async function settleActiveStore(
           : options.dependencies.kind === 'operator'
             ? resumeBackendStoreResetIncidentForOperator(runtime, files, options, resetLock, writerExclusion)
             : resumeAutomaticBackendStoreResetIncident(runtime, authority, files, options, resetLock, writerExclusion);
+      if (resumed !== null) survivor = { kind: 'incident', incident: resumed, resumed: true };
       const activeEpoch = mintActiveStoreEpoch(runtime, files, options);
       switch (activeEpoch.classification.kind) {
         case 'legacy-adoptable':
@@ -420,7 +469,9 @@ async function settleActiveStore(
               ? resetPolicyForTransition(transition)
               : undefined,
           );
-          publications.push(publication);
+          if (publication.kind === 'preserved') {
+            survivor = { kind: 'incident', incident: publication.incident, resumed: false };
+          }
           epochs.push({ kind: 'described', publication });
           break;
         }
@@ -438,6 +489,12 @@ async function settleActiveStore(
     for (;;) {
       const attempt = attemptBackendStoreClaim(runtime, files, options, minted);
       epochs.push(...attempt.epochs);
+      for (const epoch of attempt.epochs) {
+        if (epoch.kind === 'described' && epoch.publication.kind === 'preserved') {
+          survivor = { kind: 'incident', incident: epoch.publication.incident, resumed: false };
+        }
+        if (epoch.kind === 'parked') survivor = { kind: 'parking', parkingId: epoch.parkingId };
+      }
       if (attempt.kind === 'retry') continue;
       db = attempt.db;
       break;
@@ -454,8 +511,7 @@ async function settleActiveStore(
       }
       return {
         db,
-        resumedIncident: resumed,
-        publications,
+        survivor: finalStoreResetSurvivor(runtime, files, survivor),
         epochs,
         invalidTargetEvidence:
           transition?.evidence.kind === 'valid-target-invalid' ? transition.evidence.invalidTargetEvidence : null,

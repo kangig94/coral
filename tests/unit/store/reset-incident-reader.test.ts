@@ -129,8 +129,17 @@ class MemoryInspectionFs implements StoreResetInspectionFs {
       typeof value === 'string' ? value : serializeStoreResetIncidentManifest(value),
     );
     this.stats.set(directory, stat('directory'));
+    this.entries.set(directory, [
+      'reset-manifest.json',
+      ...(typeof value === 'string' ? [] : value.files.map((file) => file.name)),
+    ]);
     this.stats.set(manifestPath, stat('file', contents.length));
     this.files.set(manifestPath, contents);
+    if (typeof value !== 'string') {
+      for (const file of value.files) {
+        this.stats.set(join(directory, file.name), stat('file', file.sizeBytes));
+      }
+    }
   }
 
   addFile(path: string, value: string): void {
@@ -225,7 +234,7 @@ describe('store reset incident listing', () => {
         schemaVersion: 2,
         resetPolicyCause: null,
         fileCount: 1,
-        evidenceBytes: 'unknown',
+        evidenceBytes: 1,
         parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
@@ -238,7 +247,7 @@ describe('store reset incident listing', () => {
         schemaVersion: 2,
         resetPolicyCause: null,
         fileCount: 1,
-        evidenceBytes: 'unknown',
+        evidenceBytes: 1,
         parkingEvidenceBytes: 0,
         retention: { slot: 'unknown' },
         storedProductVersion: 'unknown',
@@ -462,7 +471,7 @@ describe('store reset incident listing', () => {
         parked: [],
       },
       storedProductVersion: '0.9.15',
-      evidenceBytes: 17,
+      evidenceBytes: 1,
       parkingEvidenceBytes: 0,
     });
     expect(result.incidents[1]).toMatchObject({

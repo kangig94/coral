@@ -1478,9 +1478,15 @@ export function hasPendingBackendStoreResetIncident(
   const ledger = readStoreResetRetentionLedger(runtime.storage, quarantineRoot);
   if (ledger?.pending !== null && ledger?.pending !== undefined) return true;
   try {
-    return discoverStoreResetParkedRecords(runtime.storage, quarantineRoot).entries.some(
-      (entry) => entry.record?.phase === 'in-flight',
+    const discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
+    if (discovered.entries.some((entry) => entry.record?.phase === 'in-flight')) return true;
+    const terminal = discovered.entries.filter(
+      (entry) => isCanonicalStoreResetIncidentId(entry.coordinate) && entry.record?.phase === 'terminal',
     );
+    if (terminal.length === 0) return false;
+    if (discovered.truncated || terminal.length > 1 || (ledger !== null && ledger.preserved !== null)) return true;
+    const incidentRead = runtime.storage.readDirectoryBoundedSync(quarantineRoot, MAX_INCIDENT_ROOT_ENTRIES);
+    return incidentRead.entries.some(isCanonicalStoreResetIncidentId);
   } catch {
     return true;
   }
@@ -1696,25 +1702,67 @@ function terminalizeParking(
     entries: describeParkedEntries(storage, parkingDirectory, names),
     transaction: null,
   };
-  writeStoreResetParkedRecord(storage, parkingRoot, terminalRecord, coordinate);
+  return commitTerminalParking(storage, parkingRoot, terminalRecord, coordinate);
+}
+
+function commitTerminalParking(
+  storage: StoragePort,
+  parkingRoot: string,
+  record: StoreResetParkedRecord,
+  coordinate: string = record.parkingId,
+  sourceRoot: string = parkingRoot,
+  populate: () => void = () => undefined,
+): boolean {
+  const parkingDirectory = join(sourceRoot, coordinate);
+  writeStoreResetParkedRecord(storage, sourceRoot, record, coordinate);
+  populate();
   if (
-    names.length === 0 &&
-    removeSettledParkingDirectory(storage, parkingRoot, parkingDirectory, terminalRecord, coordinate)
+    record.names.length === 0 &&
+    removeSettledParkingDirectory(storage, sourceRoot, parkingDirectory, record, coordinate)
   ) {
     return false;
   }
-  if (coordinate !== record.parkingId) {
+  if (sourceRoot !== parkingRoot || coordinate !== record.parkingId) {
     storage.renameSync(parkingDirectory, join(parkingRoot, record.parkingId));
-    requireDirectorySync(storage, parkingRoot);
+    requireDirectorySync(storage, sourceRoot, parkingRoot);
   }
-  const parkingSurvives = incidentId === null || cause === 'intruder';
-  if (parkingSurvives) {
-    requireStoreResetDurability(
-      recordStoreResetParked(storage, dirname(parkingRoot), record.parkingId),
-      'Store-reset parking retention could not be synchronized durably.',
-    );
-  }
-  return parkingSurvives;
+  requireStoreResetDurability(
+    recordStoreResetParked(storage, dirname(parkingRoot), record.parkingId),
+    'Store-reset parking retention could not be synchronized durably.',
+  );
+  return true;
+}
+
+function resumeTerminalParkingCommit(
+  storage: StoragePort,
+  quarantineRoot: string,
+  discovered: ReturnType<typeof discoverStoreResetParkedRecords>,
+): boolean {
+  const pendingIncidentId = readStoreResetRetentionLedger(storage, quarantineRoot)?.pending?.outcome.incident
+    .incidentId;
+  const newest = discovered.entries
+    .filter(
+      (entry) =>
+        isCanonicalStoreResetIncidentId(entry.coordinate) &&
+        entry.record?.phase === 'terminal' &&
+        (pendingIncidentId === undefined || entry.record.incidentId === pendingIncidentId),
+    )
+    .sort((left, right) => {
+      const byTime = left.record!.parkedAt.localeCompare(right.record!.parkedAt);
+      return byTime === 0 ? left.coordinate.localeCompare(right.coordinate) : byTime;
+    })
+    .at(-1);
+  if (newest?.record === undefined || newest.record === null) return false;
+  const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
+  terminalizeParking(
+    storage,
+    parkingRoot,
+    newest.record,
+    newest.record.cause === 'intruder' ? 'intruder' : 'residual',
+    newest.record.incidentId,
+    newest.coordinate,
+  );
+  return true;
 }
 
 function observedStoreResetEvidenceNames(storage: StoragePort, directory: string): StoreResetEvidenceFileName[] {
@@ -1764,7 +1812,6 @@ function retainInterruptedMintedStores(
         ? runtime.ids.uuid()
         : mintedId;
     if (runtime.storage.existsSync(join(parkingRoot, parkingId))) continue;
-    const parkingDirectory = join(parkingRoot, parkingId);
     const initialNames = observedStoreResetEvidenceNames(runtime.storage, mintedDirectory);
     const initialEntries = describeParkedEntries(runtime.storage, mintedDirectory, initialNames);
     const parkedDb = initialEntries.find((entry) => entry.name === 'store.db');
@@ -1774,14 +1821,13 @@ function retainInterruptedMintedStores(
         : null;
     const finalNames = observedStoreResetEvidenceNames(runtime.storage, mintedDirectory);
     const finalEntries = describeParkedEntries(runtime.storage, mintedDirectory, finalNames);
-    writeStoreResetParkedRecord(
+    commitTerminalParking(
       runtime.storage,
-      mintedRoot,
+      parkingRoot,
       terminalParkingRecord(runtime, parkingId, 'residual', finalEntries, classification),
       mintedId,
+      mintedRoot,
     );
-    runtime.storage.renameSync(mintedDirectory, parkingDirectory);
-    requireDirectorySync(runtime.storage, mintedRoot, parkingRoot);
   }
 }
 
@@ -1796,39 +1842,17 @@ function retireNonResumableFixedParking(
   if (fixed.record?.phase === 'in-flight' && fixed.record.transaction !== null) return false;
 
   const parkingRoot = join(quarantineRoot, STORE_RESET_PARKED_DIRECTORY);
-  const fixedDirectory = join(parkingRoot, STORE_RESET_IN_FLIGHT_DIRECTORY);
-  if (
-    fixed.record?.phase === 'terminal' &&
-    removeSettledParkingDirectory(
-      runtime.storage,
-      parkingRoot,
-      fixedDirectory,
-      fixed.record,
-      STORE_RESET_IN_FLIGHT_DIRECTORY,
-    )
-  ) {
-    return true;
-  }
   let parkingId = fixed.record?.parkingId ?? runtime.ids.uuid();
   while (runtime.storage.existsSync(join(parkingRoot, parkingId))) parkingId = runtime.ids.uuid();
-  const names = observedStoreResetEvidenceNames(runtime.storage, fixedDirectory);
-  writeStoreResetParkedRecord(
+  const baseRecord = fixed.record ?? terminalParkingRecord(runtime, parkingId, 'residual', [], null);
+  terminalizeParking(
     runtime.storage,
     parkingRoot,
-    {
-      ...(fixed.record ?? terminalParkingRecord(runtime, parkingId, 'residual', [], null)),
-      parkingId,
-      phase: 'terminal',
-      cause: 'residual',
-      incidentId: fixed.record?.incidentId ?? null,
-      names,
-      entries: describeParkedEntries(runtime.storage, fixedDirectory, names),
-      transaction: null,
-    },
+    { ...baseRecord, parkingId },
+    'residual',
+    fixed.record?.incidentId ?? null,
     STORE_RESET_IN_FLIGHT_DIRECTORY,
   );
-  runtime.storage.renameSync(fixedDirectory, join(parkingRoot, parkingId));
-  requireDirectorySync(runtime.storage, parkingRoot);
   return true;
 }
 
@@ -1839,8 +1863,12 @@ function resumeNonPublicationParking(
 ): void {
   const { dbFile } = files;
   const quarantineRoot = join(files.dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
-  retainInterruptedMintedStores(runtime, files, options);
   let discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
+  if (resumeTerminalParkingCommit(runtime.storage, quarantineRoot, discovered)) {
+    discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
+  }
+  retainInterruptedMintedStores(runtime, files, options);
+  discovered = discoverStoreResetParkedRecords(runtime.storage, quarantineRoot);
   if (discovered.truncated) {
     writeAuditEvent('store_reset_parking_scan_truncated', { disposition: 'terminal-evidence-deferred' }, 'warn');
   }
@@ -2257,19 +2285,27 @@ function retainNonRegularParking(
   const terminalParkingId = runtime.ids.uuid();
   const terminalDirectory = join(parkingRoot, terminalParkingId);
   createPrivateOperationDirectory(runtime.storage, parkingRoot, terminalDirectory, runtime.env.platform());
-  writeStoreResetParkedRecord(runtime.storage, parkingRoot, {
-    ...parkingRecord,
-    parkingId: terminalParkingId,
-    phase: 'terminal',
-    cause: 'residual',
-    names: retained.map((item) => item.name),
-    entries: retained.map((item) => item.entry),
-    transaction: null,
-  });
-  for (const item of retained) {
-    runtime.storage.renameSync(join(parkingDirectory, item.name), join(terminalDirectory, item.name));
-    requireDirectorySync(runtime.storage, parkingDirectory, terminalDirectory);
-  }
+  commitTerminalParking(
+    runtime.storage,
+    parkingRoot,
+    {
+      ...parkingRecord,
+      parkingId: terminalParkingId,
+      phase: 'terminal',
+      cause: 'residual',
+      names: retained.map((item) => item.name),
+      entries: retained.map((item) => item.entry),
+      transaction: null,
+    },
+    terminalParkingId,
+    parkingRoot,
+    () => {
+      for (const item of retained) {
+        runtime.storage.renameSync(join(parkingDirectory, item.name), join(terminalDirectory, item.name));
+        requireDirectorySync(runtime.storage, parkingDirectory, terminalDirectory);
+      }
+    },
+  );
   return { names: retained.map((item) => item.name), parkingId: terminalParkingId };
 }
 

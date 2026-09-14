@@ -283,6 +283,7 @@ function readListEntry(
     if (!buildMatches(manifest, expectedBuild)) {
       return unavailableEntry(incidentId, 'build_mismatch', ledger);
     }
+    const retention = listRetention(incidentId, ledger);
     return {
       incidentId,
       state: 'ready',
@@ -292,7 +293,8 @@ function readListEntry(
       resetPolicyCause:
         manifest.schemaVersion === STORE_RESET_INCIDENT_SCHEMA_VERSION ? manifest.resetPolicyCause : null,
       fileCount: manifest.files.length,
-      ...listRetention(incidentId, ledger),
+      ...retention,
+      evidenceBytes: inspectDirectory(fs, incidentPath, STORE_RESET_MANIFEST_FILE_NAME).evidenceBytes,
     };
   } catch (error: unknown) {
     if (error instanceof StoreResetIncidentReadError) {
@@ -309,14 +311,15 @@ function readListEntry(
   }
 }
 
-function inspectParkingDirectory(
+function inspectDirectory(
   fs: StoreResetInspectionFs,
-  parkingDirectory: string,
+  root: string,
+  excludedRootEntry: string,
 ): {
   readonly evidenceBytes: number | 'unknown';
   readonly entries: readonly StoreResetListedParkedEntry[] | 'unknown';
 } {
-  const directories = [parkingDirectory];
+  const directories = [root];
   const observed: StoreResetListedParkedEntry[] = [];
   let total = 0;
   let entries = 0;
@@ -337,10 +340,10 @@ function inspectParkingDirectory(
           const path = join(directory, entry.name);
           const stat = fs.lstat(path);
           if (stat === null) return { evidenceBytes: 'unknown', entries: 'unknown' };
-          const isSidecar = directory === parkingDirectory && entry.name === STORE_RESET_PARKED_SIDECAR_FILE_NAME;
-          if (!isSidecar) {
+          const excluded = directory === root && entry.name === excludedRootEntry;
+          if (!excluded) {
             observed.push({
-              name: relative(parkingDirectory, path),
+              name: relative(root, path),
               kind: stat.kind === 'file' ? 'regular-file' : stat.kind,
               sizeBytes:
                 stat.kind === 'file' && stat.size >= 0n && stat.size <= BigInt(Number.MAX_SAFE_INTEGER)
@@ -352,7 +355,7 @@ function inspectParkingDirectory(
             directories.push(path);
             continue;
           }
-          if (isSidecar || stat.kind !== 'file') continue;
+          if (excluded || stat.kind !== 'file') continue;
           if (stat.size < 0n || stat.size > BigInt(Number.MAX_SAFE_INTEGER - total)) {
             return { evidenceBytes: 'unknown', entries: 'unknown' };
           }
@@ -457,7 +460,7 @@ function readParkedListEntries(
         }
       }
       const incidentId = record?.parkingId ?? coordinate;
-      const parkingContents = inspectParkingDirectory(fs, parkingPath);
+      const parkingContents = inspectDirectory(fs, parkingPath, STORE_RESET_PARKED_SIDECAR_FILE_NAME);
       return {
         incidentId,
         state,

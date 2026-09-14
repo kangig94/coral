@@ -167,18 +167,20 @@ async function discardGeneratedStore(
     return { kind: 'handoff', target: selectionResult.target, source: 'active-selection' };
   }
   selectionResult.db.close();
+  const survivingIncident = selectionResult.survivor.kind === 'incident' ? selectionResult.survivor.incident : null;
+  const resumedIncident =
+    selectionResult.survivor.kind === 'incident' && selectionResult.survivor.resumed
+      ? selectionResult.survivor.incident
+      : null;
   return {
     kind: 'discarded',
     target: 'gen2',
     flavor: options.runtime.flavor,
     baseDir: paths.baseDir,
     storeDbPath: paths.storeDbPath,
-    incident:
-      selectionResult.resumedIncident ??
-      selectionResult.publications.find((publication) => publication.kind === 'preserved')?.incident ??
-      null,
-    resumed: selectionResult.resumedIncident !== null,
-    resumedIncident: selectionResult.resumedIncident,
+    incident: survivingIncident,
+    resumed: resumedIncident !== null,
+    resumedIncident,
     epochs: selectionResult.epochs,
   };
 }

@@ -198,19 +198,31 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
   result = constrainStoreResetRendererInput(result);
   switch (result.kind) {
     case 'released': {
-      return `Released preserved store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}.`;
+      const subject =
+        result.parkingEvidenceBytes === null
+          ? `preserved store-reset incident '${result.incidentId}'`
+          : `preserved store-reset incident '${result.incidentId}' and its same-ID parking`;
+      return `Released ${subject} (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}.`;
     }
     case 'not-holder': {
-      return `Released non-holder store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+      const subject =
+        result.parkingEvidenceBytes === null
+          ? `non-holder store-reset incident '${result.incidentId}'`
+          : `non-holder store-reset incident '${result.incidentId}' and its same-ID parking`;
+      return `Released ${subject} (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'parked': {
-      return `Released parked store-reset evidence '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
+      const subject =
+        result.incidentEvidenceBytes === null
+          ? `parked store-reset evidence '${result.incidentId}'`
+          : `store-reset incident '${result.incidentId}' and its same-ID parking`;
+      return `Released ${subject} (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}; deletion durability ${result.durability}; the preserved slot is unchanged.`;
     }
     case 'released-unverified': {
       return `Released terminal store-reset parking '${result.incidentId}' from ${result.target} ${result.flavor} without a verified sidecar; parking byte accounting is unknown and deletion durability is ${result.durability}.`;
     }
     case 'partially-released': {
-      return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}; parking deletion durability is ${result.parkingDeletionDurability}; incident deletion durability is ${result.incidentDeletionDurability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then Retry this release command.`;
+      return `Partially released store-reset incident '${result.incidentId}' (incident: ${evidenceBytes(result.incidentEvidenceBytes)}; parking: ${evidenceBytes(result.parkingEvidenceBytes)}) from ${result.target} ${result.flavor}: parking is ${result.parkingState}, incident is ${result.incidentState}; parking deletion durability is ${result.parkingDeletionDurability}; incident deletion durability is ${result.incidentDeletionDurability} (${result.cause}). Recursive deletion may have removed contents even when a directory remains. Inspect the listed state, then retry this release command.\ncommand=coral-cli backend store-reset release --target ${result.target} --flavor ${result.flavor} ${result.incidentId}`;
     }
     case 'absent':
       return `Store-reset incident '${result.incidentId}' is absent from ${result.target} ${result.flavor}.\ncommand=coral-cli backend store-reset list --target ${result.target}`;
