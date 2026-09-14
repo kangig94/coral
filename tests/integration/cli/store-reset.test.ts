@@ -1299,9 +1299,7 @@ describe('operator store-reset discard', () => {
         incidentDeletionDurability: 'proven',
         cause: 'Store-reset retention ledger could not be updated durably.',
       });
-      expect(formatStoreResetRelease(result)).toContain(
-        `Partially released store-reset incident '${incidentId}'`,
-      );
+      expect(formatStoreResetRelease(result)).toContain(`Partially released store-reset incident '${incidentId}'`);
       expect(formatStoreResetRelease(result)).toContain('retry this release command');
       expect(existsSync(incidentPath)).toBe(false);
       expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved?.incidentId).toBe(incidentId);

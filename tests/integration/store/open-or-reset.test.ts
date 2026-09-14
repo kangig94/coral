@@ -3072,14 +3072,8 @@ describe('openOrResetBackendStoreDb', () => {
         await runCell(
           label,
           async () =>
-            (
-              await exerciseActiveEvidenceArm(
-                'copy-proven',
-                { key, kind: mutation },
-                undefined,
-                'immediate',
-              )
-            ).mutationDisposition,
+            (await exerciseActiveEvidenceArm('copy-proven', { key, kind: mutation }, undefined, 'immediate'))
+              .mutationDisposition,
         );
       }
     }
@@ -3339,9 +3333,7 @@ describe('openOrResetBackendStoreDb', () => {
           const result = await releaseStoreReset({ target: 'gen2', runtime, incidentId });
           const rendered = formatStoreResetRelease(result);
           if (ledgerWrite === 'written') {
-            expect(result.kind).toBe(
-              parkingState === 'absent' ? 'released' : 'released-with-unverified-parking',
-            );
+            expect(result.kind).toBe(parkingState === 'absent' ? 'released' : 'released-with-unverified-parking');
             expect(rendered).toMatch(/^Released /u);
             expect(readStoreResetRetentionLedger(runtime.storage, quarantineRoot)?.preserved).toBeNull();
           } else {

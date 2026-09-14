@@ -846,16 +846,15 @@ describe('active-store-selection locking', () => {
     const externalPath = join(root, 'external-legacy.db');
     const external = runtime.storage.openSqliteDatabaseSync(externalPath);
     external.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
-    external.prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)").run(storeFormat.fingerprint);
+    external
+      .prepare("INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', ?)")
+      .run(storeFormat.fingerprint);
     external.close();
     const lstatSync = runtime.storage.lstatSync.bind(runtime.storage);
     let swapAfterInitialStat = true;
     function swapStoreAfterInitialStat(path: string): StorageEntryKind;
     function swapStoreAfterInitialStat(path: string, options: { bigint: true }): StorageBigIntStat;
-    function swapStoreAfterInitialStat(
-      path: string,
-      options?: { bigint: true },
-    ): StorageEntryKind | StorageBigIntStat {
+    function swapStoreAfterInitialStat(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
       const result = options?.bigint === true ? lstatSync(path, options) : lstatSync(path);
       if (path === runtime.paths.coral.store.dbFile && options === undefined && swapAfterInitialStat) {
         swapAfterInitialStat = false;

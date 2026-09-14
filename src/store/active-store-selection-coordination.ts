@@ -427,9 +427,7 @@ async function settleActiveStore(
       if (writerExclusion?.kind === 'proven') writerExclusion.lease.maintain();
     };
     let activeEpoch =
-      !pending && activeStoreObserved
-        ? mintActiveStoreEpoch(runtime, files, options, maintainWriterExclusion)
-        : null;
+      !pending && activeStoreObserved ? mintActiveStoreEpoch(runtime, files, options, maintainWriterExclusion) : null;
     if (activeEpoch?.classification.kind === 'legacy-adoptable') {
       return refuseLegacyStore(dbFile, activeEpoch.classification, options.storeFormat, runtime.flavor);
     }
