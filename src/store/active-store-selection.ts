@@ -623,7 +623,7 @@ function ensureActiveStoreCoordinationDirectory(runtime: Runtime, actuator: Stor
     );
   }
   // Unix permission bits are not meaningful on win32 (chmod there only toggles the read-only attribute), so the
-  // private-mode assertion is platform-gated, mirroring `assertPrivateDirectory` in backend-store-reset.ts.
+  // Private-mode assertion is platform-gated because Windows does not expose POSIX permission bits.
   // Windows is not a supported Coral platform; this guard is defensive only.
   if (runtime.env.platform() !== 'win32' && (stat.mode & PERMISSION_BITS) !== 0o700n) {
     throw new ActiveStoreCoordinationWriteError(
@@ -688,46 +688,6 @@ function activeStoreTransitionIdentity(
     );
   }
   return stat;
-}
-
-function clearActiveStoreTransitionFile(
-  runtime: Runtime,
-  path: string,
-  actuator: StorageActuator,
-  expectedIdentity?: StorageBigIntStat,
-): void {
-  const identity = activeStoreTransitionIdentity(runtime, path, expectedIdentity);
-  if (identity === null) return;
-  actuator.unlink(path);
-  const coordinationRoot = resolveActiveStoreRecordPaths(runtime).coordinationRoot;
-  if (!actuator.syncDirectory(coordinationRoot)) {
-    throw new ActiveStoreCoordinationWriteError(
-      'record_unavailable',
-      'Active-store transition clear could not be synchronized durably.',
-    );
-  }
-}
-
-export function clearActiveStoreTransition(
-  runtime: Runtime,
-  actuator: StorageActuator,
-  expectedIdentity?: StorageBigIntStat,
-): void {
-  const paths = resolveActiveStoreRecordPaths(runtime);
-  clearActiveStoreTransitionFile(runtime, paths.transitionFile, actuator, expectedIdentity);
-}
-
-export function clearActiveStoreTransitionV1(
-  runtime: Runtime,
-  actuator: StorageActuator,
-  expectedIdentity: StorageBigIntStat,
-): void {
-  clearActiveStoreTransitionFile(
-    runtime,
-    resolveActiveStoreRecordPaths(runtime).transitionV1File,
-    actuator,
-    expectedIdentity,
-  );
 }
 
 type BoundedRecordReadResult =

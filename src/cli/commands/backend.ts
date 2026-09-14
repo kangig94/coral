@@ -497,7 +497,7 @@ function directProviderProxySetHolderStatusExitContribution(
 const OFFLINE_OPERATOR_FLAVOR_HELP =
   'State flavor (prod or dev); required because the daemon that normally supplies it is down';
 const STORE_RESET_EVIDENCE_WARNING =
-  'Quarantined store-reset evidence is diagnostic-only and cannot restore active state.\n';
+  'Published a new store epoch; the previous epoch remains preserved until a later sweep or explicit release.\n';
 
 export interface StoreResetCommandOperations {
   list(target: StoreResetTarget): ReturnType<typeof listStoreResetIncidentsLocal>;
@@ -1949,10 +1949,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
     });
 
-  const storeResetCommand = backend.command('store-reset').description('Inspect retained store-reset incidents');
+  const storeResetCommand = backend.command('store-reset').description('Inspect and operate on store epochs');
   storeResetCommand
     .command('list')
-    .description('List retained store-reset incidents and reportability')
+    .description('List current, preserved, and garbage store epochs plus legacy reset incidents')
     .requiredOption(
       '--target <target>',
       'Store generation to inspect (legacy or current; gen2 also accepted)',
@@ -1983,10 +1983,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('discard')
-    .description(
-      'Quarantine and replace an incompatible generated store; if a newer local Coral build is already selected ' +
-        'to own this store, the command runs there instead of here',
-    )
+    .description('Publish a fresh generated store epoch regardless of the current epoch classification')
     .requiredOption(
       '--target <target>',
       'Store generation to discard (current; gen2 also accepted, legacy is inspection-only)',

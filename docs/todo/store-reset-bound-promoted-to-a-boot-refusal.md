@@ -1664,46 +1664,22 @@ optional.
 
 ## Invariants to add
 
-Superseded by Revision 3's own invariant list. The entries that stood here named
-`openOrResetBackendStoreDb`, which Revision 3 deletes, so keeping them left the document asserting two
-incompatible architectures. The one that survives unchanged is: no `store_reset_*` remediation contains
-`store-reset release`, asserted against rendered remediation values rather than textual proximity.
+Two static facts, with no call-graph allowlist beneath them: the only rename whose destination matches
+`epoch-<N>` has a `.mint-` source, and the only deletion of an `epoch-` path is inside `sweepStoreEpochs`.
+The sweep predicate itself is property-tested over integer pairs.
 
 ## Blast radius
 
-`src/store/backend-store-reset.ts` carries the largest change; `src/store/reset-retention.ts` is new.
-`src/store/reset-incident.ts` gains constants only — **the manifest schema does not change**, and cannot:
-`validateManifest` uses `requireExactKeys` at every level and the staging manifest is parsed on the
-startup path before any authority check, so one added key means `manifest_invalid_schema` and an
-unbootable coordinator for every shipped build. `files` must also be non-empty, so a manifest-only
-incident is not representable.
+`src/store/epoch.ts` becomes the single owner of layout, discovery, publication, metadata, sweep, list,
+discard, and release deletion. `backend-store-reset.ts`, `reset-retention.ts`,
+`reset-active-evidence.ts`, and `settlement-authority.ts` are deleted. Runtime paths retain only `dbDir`;
+all database consumers resolve the highest epoch at open time. The KB daemon applies that same rule when
+its own write runtime starts rather than receiving a coordinator-cached path.
 
-Also touched: `reset-incident-reader.ts` (list entries gain retention and `storedProductVersion`, read
-from the ledger rather than the manifest),
-`active-store-selection-coordination.ts` (supply the recovery lease on the startup arm, gated on a reset
-being needed), `startup-store-routing.ts` (wire the lease in), `operator-store-reset.ts`,
-`cli/commands/backend.ts`, `cli/store-reset.ts`, `cli/format/store-reset.ts`, `cli/classify.ts`,
-`runtime/errors.ts`. `infra/port-types.ts` and `runtime/real.ts` need nothing.
-
-Docs describing the copy-then-unlink commit and the incident model need the link primitive, the slot, and
-the release command: `docs/architecture.md`, `docs/configuration.md`, `docs/design-rationale.md`.
-
-Tests carry the most volume. `tests/integration/store/open-or-reset.test.ts` is the big one. Its "retains
-the verified copy when active evidence mutates during its final removal" case **loses its premise** under
-`link` — active and staged are one file, so independent mutation is impossible; replace it with an
-unmatched-inode case rather than deleting it. Its "fails closed when active evidence is replaced between
-path stat and descriptor open" case must stay green **unchanged**: it targets the before-copy check, which
-does not soften. Startup now takes the maintenance lease, so every reset case needs the coordination root
-present.
-
-Four new cases, each one a state where the pre-repair design produced an unbootable coordinator:
-
-- **copy arm, crash after the manifest write, resume finishes the commit and boots.** This is the highest
-  risk in the whole change and the highest-value test in it — the only path where a crash, a concurrent
-  writer and a shipped older reader all meet.
-- link when the maintenance lease reports drained, copy when a writer lease is held.
-- a torn copy publishes a manifest the reader verifies as `match`.
-- adoption of a single orphaned committed incident on a vacant slot.
+The reset test matrix is reduced to dimensions the epoch design still has: concurrent publication,
+mint sweep, adversarial epoch chains, seeded process-death cuts, rollback visibility of untouched epoch
+zero, and sweep failure. Tests for staging, parking, copy/hash selection, retention rotation, resume
+classification, and settlement lease revocation are deleted with the machinery they described.
 
 Gates: `format:check`, `lint`, `typecheck:tests`, `knip`, `build`, `npm test`, `test:integration`,
 `test:store-reset:integration`, `verify:store-reset-build`, `test:e2e:build`, `test:e2e:lifecycle`.
@@ -1712,49 +1688,28 @@ be unaffected.
 
 ## Rollback behaviour
 
-A newer build links, crashes, and the plugin is rolled back. The older build's
-`reconcileCommittedEvidence` re-hashes both names, which are one inode, so both match the manifest; it
-unlinks the active name and renames staging into place. **An older build resumes a linked publication
-correctly.** Its only failure mode is a store exceeding `MAX_REPORT_HASH_BYTES` — on which that build is
-already bricked today, so rolling back never gets worse. The ledger is invisible to it; an incident it
-creates that the ledger does not name becomes one extra retained directory on the next new-build boot,
-never a lost one.
-
-## Accepted limit — renaming an open SQLite database
-
-The `writer-live` path deliberately permits reset settlement to rename the database while another
-process may still have it open, then create a new database at the old pathname. SQLite documents this as
-undefined and potentially corrupting behaviour because rollback-journal and WAL names are derived from
-the database pathname, so the old and new database files can use the same journal or WAL
-([SQLite, “Unlinking or renaming a database file while in use”](https://www.sqlite.org/howtocorrupt.html#_unlinking_or_renaming_a_database_file_while_in_use)).
-
-This is accepted rather than converted into a probe, retry or startup refusal. The store is disposable;
-the operator has no reason to preserve it, and the only plausible foreign writer is an orphaned Coral
-daemon whose data is equally disposable. Refusing to boot would therefore preserve data that has no
-owner-visible value at the cost of reinstating the defect this design removes.
+A newer build publishes `epoch-1/` or later beside the flat epoch-zero files. A rolled-back v0.10.9-shaped
+reader does not enumerate the store directory: it opens `<dbDir>/store.db` directly and sees its own data
+unchanged. It can boot and continue writing epoch zero. A later new build still chooses the highest epoch
+number; after it publishes epoch two, sweep may remove the now-time-newer epoch-zero store under the
+explicit numeric retention rule.
 
 ## Adjacent findings, tracked separately
 
 - **There is no store migration path, and it is the real defect behind all of this.** See
   [`no-store-migration-path.md`](no-store-migration-path.md).
-- **The six `store_reset_interrupted_*` codes are boot refusals that this document's own rule condemns.**
-  `resumeAutomaticBackendStoreResetIncident` turns every `InterruptedStoreResetRefusal` into a documented
-  setup error on the startup path, so each is a bound or a check correct about what it measured and
-  promoted into a veto on booting. This design leaves all six exactly as they are and is scoped so as not
-  to add a seventh. The likely fix — quarantine the unverifiable staging directory under a non-UUID name,
-  record it in the ledger, continue to classification — gives each anomaly a durable identity and an exit
-  through `release` instead of a dead daemon. It is the next instance of the pattern and needs its own
-  review.
-- `retainActiveStoreTransition`'s oversize refusal is **fatal at startup** — the same bug class as the
-  incident: a bounded-read limit on a startup path with no third answer.
+- The six `store_reset_interrupted_*` boot refusals and their resume state were removed with the staging
+  protocol.
+- `retainActiveStoreTransition` now writes beneath the coordination root. Its former quarantine byte bound
+  and `store_reset_quarantine_failed` boot path are gone.
 - `retained-active-store-transitions/` has **no operator surface at all**, deliberately, and its count is
   unbounded in principle. Bounded in practice today at 8 KB, but a refusal there is not visible as
   durable status.
 - **`retained` means three different things** across this file set — the V2 schema still readable,
   evidence kept on disk, and a provider-host hold state. This design says `preserved` for the slot rather
   than reuse the house word.
-- `tests/invariants/store-reset-discipline.test.ts` forbids `quarantineStoreFiles`, a symbol absent from
-  `src/`. A guard against a ghost.
+- `tests/invariants/store-reset-discipline.test.ts` now asserts the two publication/deletion facts directly
+  instead of maintaining a list of protected functions.
 
 ## How the design was reached
 

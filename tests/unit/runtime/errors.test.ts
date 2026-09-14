@@ -638,12 +638,6 @@ describe('CoralSetupError', () => {
       expected: '/home/김/state',
     },
     {
-      field: 'path',
-      code: 'store_open_contended' as const,
-      context: { path: '/home/김/store.db' },
-      expected: '/home/김/store.db',
-    },
-    {
       field: 'quarantineDir',
       code: 'kb_commit_already_quarantined' as const,
       context: { quarantineDir: '/home/김/quarantine' },

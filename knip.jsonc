@@ -21,11 +21,6 @@
     "vitest/*.ts"
   ],
   "project": ["src/**/*.ts"],
-  // `.claude/coral` is a symlink to the local Coral project state (plans, memos, red-attacker
-  // staging). Git ignores it via `.claude/.gitignore`, but knip follows the symlink and reads
-  // whatever is parked there as if it were repo source — stale scratch fixtures then surface as
-  // unresolved imports. Nothing under `.claude/` is built or shipped.
-  "ignore": [".claude/**"],
   // Const-assertion arrays that back a type via `typeof X[number]` are referenced
   // only within their own file (in a type position), so their value export reads as
   // "unused" — keep them by not flagging exports used in their defining file.

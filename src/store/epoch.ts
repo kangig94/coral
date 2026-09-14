@@ -167,6 +167,22 @@ export function sweepStoreEpochs(
   current: number,
   options: { readonly releaseEpoch?: number } = {},
 ): boolean {
+  if (options.releaseEpoch !== undefined) {
+    if (options.releaseEpoch !== 0) {
+      return removeDuringSweep(storage, epochDirectory(dbDir, options.releaseEpoch), true);
+    }
+    let released = true;
+    for (const name of [
+      STORE_DATABASE_FILE_NAME,
+      `${STORE_DATABASE_FILE_NAME}-wal`,
+      `${STORE_DATABASE_FILE_NAME}-shm`,
+      `${STORE_DATABASE_FILE_NAME}${STORE_FORMAT_SIDECAR_SUFFIX}`,
+    ]) {
+      released = removeDuringSweep(storage, join(dbDir, name), false) && released;
+    }
+    return released;
+  }
+
   let entries: readonly string[];
   try {
     entries = storage.readdirSync(dbDir);
@@ -178,10 +194,7 @@ export function sweepStoreEpochs(
   let complete = true;
   for (const entry of entries) {
     const epoch = epochNumber(entry);
-    if (
-      (epoch !== null && (isGarbageStoreEpoch(current, epoch) || epoch === options.releaseEpoch)) ||
-      entry.startsWith(MINT_DIRECTORY_PREFIX)
-    ) {
+    if ((epoch !== null && isGarbageStoreEpoch(current, epoch)) || entry.startsWith(MINT_DIRECTORY_PREFIX)) {
       complete = removeDuringSweep(storage, join(dbDir, entry), true) && complete;
     }
   }
@@ -189,7 +202,7 @@ export function sweepStoreEpochs(
   if (current >= 1) {
     complete = removeDuringSweep(storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY), true) && complete;
   }
-  if (current >= 2 || options.releaseEpoch === 0) {
+  if (current >= 2) {
     for (const name of [
       STORE_DATABASE_FILE_NAME,
       `${STORE_DATABASE_FILE_NAME}-wal`,
