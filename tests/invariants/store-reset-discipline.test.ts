@@ -710,17 +710,10 @@ describe('store reset discipline invariants', () => {
 
     const unlinkCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter((call) => call.callee === 'unlink');
     expect(unlinkCalls.map((call) => call.enclosingFunctions[0]).sort()).toEqual([
-      'dropActiveEvidenceIfOwned',
       'dropParkedEvidence',
       'restoreParkedEvidence',
     ]);
-    expect(
-      unlinkCalls.every((call) =>
-        call.enclosingFunctions.includes('dropActiveEvidenceIfOwned')
-          ? call.text.includes('candidateForEvidence(files, parked.name)')
-          : call.text.includes('parkedPath(parkingDirectory, parked.evidence)'),
-      ),
-    ).toBe(true);
+    expect(unlinkCalls.every((call) => call.text.includes('parkedPath(parkingDirectory, parked.evidence)'))).toBe(true);
 
     const sharedPathCalls = collectCalls(RESET_ACTIVE_EVIDENCE_PATH).filter(
       (call) => call.callee !== 'candidateForEvidence' && call.text.includes('candidateForEvidence('),
@@ -732,7 +725,6 @@ describe('store reset discipline invariants', () => {
       'openSync',
       'rename',
       'rename',
-      'unlink',
     ]);
     expect(externalPathAccesses).toEqual([]);
   });
