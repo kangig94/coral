@@ -1,6 +1,6 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Eleven design revisions, eighteen unbiased tier-1 review rounds, and sixteen
+**Status**: in flight. Twelve design revisions, nineteen unbiased tier-1 review rounds, and nineteen
 distinct instances of the same defect so far. This document is the specification; read the revisions in order,
 because each one records what the previous got wrong.
 
@@ -1343,6 +1343,102 @@ oldest finding and its whole subject at once.
 Parking does not need a representable size; only reporting does, and reporting is what the original
 1 GiB bound existed for. `sizeBytes` is absent when it cannot be represented, every consumer treats
 absence as "not reported", and nothing on the reset path throws over it.
+
+## Revision 12 — remove the freedom, and stop refusing a store this build can read
+
+Round 19's reviewers agreed on three blocking findings and one of them found a fourth. Three of the four
+are the same defect the previous revision was written to remove, arriving one layer down.
+
+### The guard failed a fifth time, and adding a third derived axis will not stop a sixth
+
+| round | the guard | the level it missed |
+|---|---|---|
+| 5 | call text in a module | the lexical loop body |
+| 6 | the lexical loop body | a second module |
+| 7 | a single module | the import-reachable closure |
+| 18 | a list of function names | the function nobody listed |
+| 19 | a derived closure **and** a derived member set | what the supplied proof proves |
+
+Revision 11's invariant genuinely derives both of its sets and is still blind, because
+`createStorageActuator(storage, prove)` takes **any** callback. Fourteen construction sites exist; four in
+`active-store-selection.ts` pass `() => undefined` while mutating shared coordination state
+(`:580`, `:639`, `:683`, `:824`), and three in `reset-retention.ts` are `held ?? createStorageActuator(storage, () => undefined)`
+(`:402`, `:523`, `:685`) — optional authority with a defaulted no-op, which is precisely the shape
+Revision 10 abolished and Revision 11 was meant to make unconstructible. Both reviewers reproduced the
+consequence: coordinator A's adoption lease goes stale, B claims it and publishes, and A's authority-free
+durable write overwrites B's record with an adjacent "proof" that proves nothing.
+
+Each round the guard checked one more syntactic surface and the defect moved to that surface's blind
+side. So the answer is not a third axis.
+
+> **Do not police a degree of freedom. Remove it.**
+
+`createStorageActuator` stops being exported. An actuator is obtainable only *from* a lease —
+`SettlementAuthority.actuator`, `DirectoryLockLease.actuator` — so there is no construction site to audit
+and no callback to supply: possessing an actuator *is* the provenance. The one genuine pre-authority act,
+creating the directory a lock will live in, becomes a single named function that does that one `mkdir`
+and nothing else, and whose name says it is the exception.
+
+And **reads leave the actuator entirely.** A read finalizes nothing, which §11 has said all along and
+Revision 11 contradicted by protecting `readFileSync`; that contradiction is exactly what forced the
+`held ?? no-op` reader shape into `reset-retention.ts`. Readers take the raw port, the optional-authority
+parameter disappears with them, and a stale read is handled where it was always handled — by the act it
+feeds, which is gated.
+
+The invariant that remains is small because the structure carries the weight: no module in the derived
+settlement closure names a protected **mutating** port member, and `createStorageActuator` has exactly one
+call site, inside the lease that returns it.
+
+### `legacy-adoptable` is adopted, not refused
+
+**I ruled this out of scope twice and I was wrong.** Both rounds of trying to make the refusal sound
+produced the same unclosable window — a reviewer showed that `classifyStoreFile` closes its handle before
+returning, so no amount of moving the re-proof closer to the `throw` removes the gap — and that is the
+signal that the refusal, not its placement, is the defect. The classification itself says so:
+`legacy-adoptable` means **the stored fingerprint equals the current fingerprint** and only the
+`store_product_version` metadata row is absent (`src/store/db.ts:213`-`:225`). The schema is identical.
+This build can read and write that store. It refuses to start on it, with an error code that says
+`store_schema_outdated` about a schema that is not outdated.
+
+That is the purest instance of this document's subject so far: a missing metadata row promoted into a
+boot refusal on a store the running build can use. It is not a migration-policy question, because no
+migration is involved — nothing needs to change but two rows that `applyBundledStoreSchema` already
+writes with `INSERT OR IGNORE`.
+
+So: adopt it. Stamp the metadata and continue. Delete `refuseLegacyStore`, `restoreLegacyParkedStore`,
+`restoredLegacyClassificationStillApplies`, `refuseRestoredLegacyStore`, the re-proof and its descent, and
+`store_schema_outdated`'s producer on this path. The stale-inode worry does not survive the change either,
+because adoption re-proves itself where it acts: the insert runs in a transaction on the database already
+open, and `applyBundledStoreSchema` refuses to write over a different fingerprint. If that refusal fires,
+the store is not what was classified, and the answer is the next mechanism down — park and claim — not an
+escaping throw.
+
+### Rotation must never leave zero
+
+`retainOnlyStoreResetPreservedCopy` proves the chosen survivor exists once, before syncing its parent
+(`reset-retention.ts:733`), then skips that coordinate **by name** (`:761`), removes every other canonical
+coordinate (`:784`), and returns `complete` (`:804`). A reviewer removed the new survivor during that
+sync and got `rotation = complete(N)` with neither `N` nor the previous holder on disk.
+
+"Keep exactly one" is a statement about the end state, so it is proved at the end, not assumed from the
+beginning. Re-prove the survivor's **identity** — not its name — immediately before each superseded
+removal; if it is absent or changed, remove nothing further and return `incomplete`. Newest-wins is
+preserved and the failure mode becomes two copies, which is honest, instead of zero, which is the one
+outcome the owner's rule forbids in both directions.
+
+### The incomplete disposition needs a durable home
+
+The rotation union carries `complete | incomplete` correctly and the discard command renders both
+(`cli/commands/backend.ts:520`), but nothing stores it: the parked sidecar has no field
+(`reset-retention.ts:61`), the ledger has only `pending` and `preserved` (`:131`), terminal parking writes
+an audit event and returns (`backend-store-reset.ts:1801`), the list contract cannot express it
+(`reset-incident-reader.ts:78`), and startup discards `result.epochs` (`startup-store-routing.ts:28`).
+After a restart, `store-reset list` shows several coordinates and no reason. §11 asks for durable status
+keyed by the identity it can be acted on with, not a line that scrolls away.
+
+One canonical home: an additive field on the retention ledger, carrying the disposition, its cause, and
+the survivor it failed to isolate — cleared when a later rotation converges, surfaced by `list`. Additive
+and tolerantly read, per §10.
 
 ## Invariants to add
 
