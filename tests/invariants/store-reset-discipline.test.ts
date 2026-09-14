@@ -114,4 +114,17 @@ describe('write-once store epoch invariants', () => {
   it('has at most 60 semantic refusals in the settlement closure (target: 0)', () => {
     expect(storeSemanticRefusalCount()).toBeLessThanOrEqual(60);
   });
+
+  it('keeps legacy_source_not_quiescent producers off the startup adoption path', () => {
+    const activeSelection = source('src/store/active-store-selection-coordination.ts');
+    expect(activeSelection).toContain('tryAcquireGenerationAdoptionLock(runtime)');
+    expect(activeSelection).not.toMatch(/\bacquireGenerationAdoptionLock\b/u);
+
+    const coordination = source('src/store/generation-mutation-coordination.ts');
+    const start = coordination.indexOf('export async function tryAcquireGenerationAdoptionLock');
+    const end = coordination.indexOf('export async function acquireGenerationAdoptionLease', start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(coordination.slice(start, end)).not.toContain('generationNotQuiescentError');
+  });
 });
