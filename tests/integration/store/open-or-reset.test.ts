@@ -1527,15 +1527,12 @@ describe('openOrResetBackendStoreDb', () => {
     expect(retainedManifest(dbPath).resetPolicyCause).toBe('newer-incompatible-invalid-target');
   });
 
-  it.each([
-    [new Error('database is locked'), 'store_open_contended'],
-    [
-      Object.assign(new Error("EACCES: permission denied, open '/private/customer/store.db'"), { code: 'EACCES' }),
-      'store_open_unclassified',
-    ],
-  ] as const)('preserves the direct opener store and quarantine on %s', async (failure, code) => {
+  it('preserves the direct opener store and quarantine on an unclassified failure', async () => {
+    const failure = Object.assign(new Error("EACCES: permission denied, open '/private/customer/store.db'"), {
+      code: 'EACCES',
+    });
     const runtime = createRuntime();
-    const root = makeTempRoot(`coral-store-${code}-`);
+    const root = makeTempRoot('coral-store-store_open_unclassified-');
     const dbPath = join(root, 'store.db');
     const storePaths = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.format`];
     const quarantinePath = join(root, 'store-reset-quarantine');
@@ -1549,7 +1546,7 @@ describe('openOrResetBackendStoreDb', () => {
 
     const error = await captureAsyncError(() => openReset(runtime, dbPath));
 
-    expectSetupCode(error, code);
+    expectSetupCode(error, 'store_open_unclassified');
     expect(serializeCoralSetupError(error)).toMatchObject({ context: { path: dbPath, cause: failure.message } });
     for (const [index, path] of storePaths.entries()) {
       expect(readFileSync(path)).toEqual(before[index]);

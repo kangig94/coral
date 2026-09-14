@@ -208,8 +208,8 @@ function classifyStoreForProtocol(
     const failure = classifyBackendStoreFailure(error, options.storeFormat);
     switch (failure.kind) {
       case 'corrupt-or-unsupported':
+      case 'reset':
         return failure.classification;
-      case 'unavailable':
       case 'unclassified':
         throw documentedBackendStoreClassificationFailure(runtime, reportedPath ?? dbFile, failure);
       default:

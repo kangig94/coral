@@ -523,33 +523,30 @@ describe('active-store selection recovery', () => {
     Object.assign(new Error('database disk image is malformed'), { errcode: 5 }),
     Object.assign(new Error('database table is locked'), { errno: 6 }),
     new Error('database is locked'),
-  ])('should report a busy store as retryable contention without discard advice', async (failure) => {
+  ])('should reset a store whose classifier reports SQLite lock contention', async (failure) => {
     const { runtime, currentSelection, authority } = harness();
     publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    createNewerStore(runtime);
     vi.spyOn(dbModule, 'classifyStoreFile').mockImplementation(() => {
       throw failure;
     });
 
-    await expect(
-      coordinateActiveStoreSelection(runtime, authority, {
-        storeFormat,
-        currentSelection,
-        dependencies: {
-          kind: 'operator',
-          validateSelectedTarget: () => {
-            throw new Error('validator should not run');
-          },
+    const result = await coordinateActiveStoreSelection(runtime, authority, {
+      storeFormat,
+      currentSelection,
+      dependencies: {
+        kind: 'startup',
+        validateSelectedTarget: () => {
+          throw new Error('validator should not run');
         },
-      }),
-    ).rejects.toMatchObject({
-      code: 'store_open_contended',
-      remediation: expect.not.stringContaining('store-reset discard'),
-      context: {
-        path: runtime.paths.coral.store.dbFile,
-        flavor: runtime.flavor,
-        cause: failure.message,
+        acquireWriterExclusion: async () => ({
+          kind: 'proven',
+          lease: { assertOwned: () => undefined, release: () => undefined },
+        }),
       },
     });
+    expect(result.kind).toBe('opened');
+    if (result.kind === 'opened') result.db.close();
   });
 
   it.each([
@@ -571,7 +568,7 @@ describe('active-store selection recovery', () => {
   });
 
   // SQLite reports contention through extended codes whose primary code is in the low byte, so 261 and
-  // 517 are both SQLITE_BUSY and must classify as availability rather than reach the corruption branch.
+  // 517 are both SQLITE_BUSY and must reach the reset path rather than refuse before writer exclusion.
   it.each([
     Object.assign(new Error('unrecognized contention'), { errcode: 5 }),
     Object.assign(new Error('unrecognized contention'), { errno: 6 }),
@@ -579,11 +576,50 @@ describe('active-store selection recovery', () => {
     Object.assign(new Error('unrecognized contention'), { errcode: 517 }),
     new Error('database is locked'),
     new Error('database table is locked'),
-  ])('should classify contention as availability, never as corruption', (failure) => {
+  ])('should classify contention as a reset disposition', (failure) => {
     expect(classifyBackendStoreFailure(failure, storeFormat)).toEqual({
-      kind: 'unavailable',
-      cause: failure.message,
+      kind: 'reset',
+      classification: {
+        kind: 'corrupt-or-unsupported',
+        currentFingerprint: storeFormat.fingerprint,
+        currentProductVersion: storeFormat.productVersion,
+        storedFingerprint: null,
+        storedProductVersion: null,
+        storedProductVersionState: 'unavailable',
+      },
     });
+  });
+
+  it('should boot through the real coordinator while SQLite holds an exclusive lock on the old inode', async () => {
+    const { runtime, currentSelection, authority } = harness();
+    publish(runtime, 'selectionFile', encodeActiveStoreSelection(currentSelection));
+    const path = runtime.paths.coral.store.dbFile;
+    mkdirSync(dirname(path), { recursive: true });
+    const locked = new DatabaseSync(path);
+    locked.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE sentinel_before_reset (id INTEGER PRIMARY KEY);
+      INSERT INTO meta (key, value) VALUES ('store_format_fingerprint', '${incompatibleStoreFingerprint}');
+      INSERT INTO meta (key, value) VALUES ('store_product_version', '0.0.1');
+      BEGIN EXCLUSIVE;
+    `);
+
+    try {
+      const result = await routeOrOpenBackendStoreAtStartup({
+        runtime,
+        authority,
+        validateForeignTarget: createForeignTargetValidator(),
+        options: { storeFormat, currentSelection },
+      });
+
+      expect(result.kind).toBe('open');
+      if (result.kind === 'open') {
+        expect(rowCount(result.db as DatabaseSync, 'events')).toBe(0);
+        result.db.close();
+      }
+    } finally {
+      locked.close();
+    }
   });
 
   it.each([new Error('disk I/O error'), Object.assign(new Error('disk I/O error'), { errcode: 10 }), new Error('')])(
