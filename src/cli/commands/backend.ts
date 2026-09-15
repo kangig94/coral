@@ -1300,49 +1300,51 @@ export function listRecoveryQuarantineLocal(
   if (provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, dbPath) === null) {
     throw new Error('Resolved recovery-quarantine store path is outside the canonical epoch layout.');
   }
-  let staged: StagedStoreDatabaseEvidence | undefined;
+  const staged: StagedStoreDatabaseEvidence = stageStoreDatabaseEvidence({
+    fs: createStoreResetInspectionFs(),
+    sourceDirectory: dirname(dbPath),
+    tempRoot: tmpdir(),
+    platform: process.platform,
+  });
+  let entries: readonly RecoveryQuarantineListEntry[];
   try {
-    staged = stageStoreDatabaseEvidence({
-      fs: createStoreResetInspectionFs(),
-      sourceDirectory: dirname(dbPath),
-      tempRoot: tmpdir(),
-      platform: process.platform,
-    });
     const classification = classifyStoreFile(staged.dbPath, runtime.storage, currentCoralStoreFormat());
     // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
     // means rows this build cannot read may be there, and an empty list is then the opposite of what is
     // true — an operator reading it concludes there is nothing to act on.
     if (classification.kind === 'absent' || classification.kind === 'fresh') {
       if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
-      return [];
-    }
-    if (classification.kind !== 'compatible') {
+      entries = [];
+    } else if (classification.kind !== 'compatible') {
       throw new Error(
         `Recovery quarantine cannot be inspected while the local store is ${classification.kind}. Run coral-cli backend status and start or repair the coordinator so it can perform the supported store transition, then retry recovery-quarantine list.`,
       );
+    } else {
+      const db = openReadOnlyStoreDatabase(runtime, {
+        path: staged.dbPath,
+        storeFormat: currentCoralStoreFormat(),
+      }) as unknown as Database;
+      try {
+        const stored = RecoveryQuarantineStore.readOnly(db).list();
+        entries = [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
+          const boundary = left.boundary.localeCompare(right.boundary);
+          return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
+        });
+        if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
+      } finally {
+        db.close();
+      }
     }
-
-    const db = openReadOnlyStoreDatabase(runtime, {
-      path: staged.dbPath,
-      storeFormat: currentCoralStoreFormat(),
-    }) as unknown as Database;
-    try {
-      const stored = RecoveryQuarantineStore.readOnly(db).list();
-      const entries = [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
-        const boundary = left.boundary.localeCompare(right.boundary);
-        return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
-      });
-      if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
-      return entries;
-    } finally {
-      db.close();
+  } catch (error: unknown) {
+    if (staged.cleanup() !== 'removed') {
+      throw new Error('Recovery quarantine inspection cleanup failed.', { cause: error });
     }
-  } finally {
-    const cleanup = staged?.cleanup();
-    if (cleanup !== undefined && cleanup !== 'removed') {
-      throw new Error('Recovery quarantine inspection cleanup failed.');
-    }
+    throw error;
   }
+  if (staged.cleanup() !== 'removed') {
+    throw new Error('Recovery quarantine inspection cleanup failed.');
+  }
+  return entries;
 }
 
 export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal): RecoveryQuarantineCommandOperations {

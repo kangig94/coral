@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { releaseStoreResetLocal, reportStoreResetLocal, type StoreResetCliDependencies } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import { acquireSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -18,7 +17,6 @@ import {
   listStoreEpochHolders,
   settleStoreEpoch,
   storeEpochHolderPath,
-  storeEpochLockPath,
   sweepStoreEpochs,
   sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';

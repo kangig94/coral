@@ -298,7 +298,7 @@ describe('write-once store epochs', () => {
     createSharedFileLockSync(join(residue, '.lock'))();
 
     const reopened = settleStoreEpoch(runtime, options());
-    let sentinel: string | null = null;
+    let sentinel: string | null;
     try {
       sentinel =
         reopened.db.prepare<[], { value: string }>('SELECT value FROM symlink_root_sentinel').get()?.value ?? null;
