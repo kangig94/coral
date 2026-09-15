@@ -475,6 +475,7 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
     throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
   }
   const entries: string[] = [];
+  let readFailed = false;
   try {
     for (;;) {
       const entry = fs.readDirectory(cursor);
@@ -482,13 +483,16 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
       if (REPORT_NAMESPACE_PATTERN.test(entry.name)) entries.push(entry.name);
     }
   } catch {
-    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
+    readFailed = true;
   } finally {
     try {
       fs.closeDirectory(cursor);
     } catch {
-      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
+      readFailed = true;
     }
+  }
+  if (readFailed) {
+    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
   }
 
   let liveReservations = 0;

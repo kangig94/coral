@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createStoreResetIncidentDiagnosticRunner,
   stageStoreDatabaseEvidence,
-  StoreDatabaseEvidenceUnavailableError,
   superviseStoreResetDiagnosticChild,
+  type StoreDatabaseEvidenceUnavailableError,
   type StoreResetDiagnosticChild,
   type StoreResetDiagnosticSupervisorPort,
 } from '#src/store/reset-incident-diagnostic.js';
