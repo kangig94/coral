@@ -398,7 +398,9 @@ export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly commitEvents: CommitEventsFn;
-  private readonly commitUnreadableStatusDisposition: (input: ResolvableCoralEventInput<unknown, unknown>) => readonly AppendedEvent[];
+  private readonly commitUnreadableStatusDisposition: (
+    input: ResolvableCoralEventInput<unknown, unknown>,
+  ) => readonly AppendedEvent[];
   private readonly observer?: PostCommitObserver;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private changeSeq = 0;

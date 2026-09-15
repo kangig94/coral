@@ -432,11 +432,7 @@ export function commitWithinOpenTransaction(
   return commitCollectedInputs(db, collectedInputs, ctx, true);
 }
 
-export function commitRecoveryDisposition(
-  db: Database,
-  input: CoralEventInput,
-  ctx: AppendContext,
-): AppendedEvent[] {
+export function commitRecoveryDisposition(db: Database, input: CoralEventInput, ctx: AppendContext): AppendedEvent[] {
   return withImmediate(db, () => commitCollectedInputs(db, [input], ctx, false));
 }
 

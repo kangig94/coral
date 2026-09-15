@@ -396,11 +396,11 @@ describe('write-once store epochs', () => {
       },
     });
 
-    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe(
-      'deletion-failed',
-    );
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe('deletion-failed');
     expect(events).toEqual(['remove-succeeded', 'remove-failed', 'parent-sync']);
-    console.log('sweep-barrier-cell site=post-ready-holder-cleanup mutation=true exit=deletion-failed parent-sync=after');
+    console.log(
+      'sweep-barrier-cell site=post-ready-holder-cleanup mutation=true exit=deletion-failed parent-sync=after',
+    );
   });
 
   it('tells release operators that holder cleanup failed before the target was attempted', async () => {
