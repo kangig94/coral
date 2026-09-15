@@ -59,7 +59,9 @@ export type StoreResetReleasePresentation =
         | 'release-metadata-unobservable'
         | 'release-holder-live'
         | 'release-holder-unobservable'
+        | 'release-holder-cleanup-failed'
         | 'release-deletion-failed'
+        | 'release-lock-cleanup-failed'
         | 'release-pre-deletion-durability-sync-failed'
         | 'release-durability-sync-failed';
       readonly epoch: StoreEpoch;
@@ -194,7 +196,9 @@ export async function releaseStoreReset(options: {
       if (result === 'unobservable-metadata') return { kind: 'release-metadata-unobservable', ...base };
       if (result === 'live-holder') return { kind: 'release-holder-live', ...base };
       if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
+      if (result === 'holder-cleanup-failed') return { kind: 'release-holder-cleanup-failed', ...base };
       if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
+      if (result === 'lock-cleanup-failed') return { kind: 'release-lock-cleanup-failed', ...base };
       if (result === 'pre-deletion-durability-sync-failed') {
         return { kind: 'release-pre-deletion-durability-sync-failed', ...base };
       }

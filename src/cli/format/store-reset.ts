@@ -187,8 +187,12 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
       return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a live holder remains; wait for the diagnostic or coordinator to exit, then retry.`;
     case 'release-holder-unobservable':
       return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a holder record was unobservable; inspect backend store-reset list. This command clears a malformed record, while an unreadable liveness probe must become observable before retrying.`;
+    case 'release-holder-cleanup-failed':
+      return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because earlier holder cleanup failed; target deletion was not attempted. Check store-directory permissions and retry.`;
     case 'release-deletion-failed':
       return `Store epoch ${result.epoch} deletion failed in ${result.target} ${result.flavor}; check store-directory permissions and retry.`;
+    case 'release-lock-cleanup-failed':
+      return `Store epoch ${result.epoch} was removed from ${result.target} ${result.flavor}, but its orphaned epoch lock could not be removed; check store-directory permissions and rerun the sweep.`;
     case 'release-legacy-reader-unproven':
       return `Store epoch 0 was not removed from ${result.target} ${result.flavor}: Coral cannot prove that no pre-epoch build still holds the flat database. After externally verifying that risk, rerun with --allow-unproven-legacy-reader to explicitly authorize deletion.`;
     case 'release-pre-deletion-durability-sync-failed':
