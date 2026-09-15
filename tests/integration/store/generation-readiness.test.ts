@@ -1,6 +1,16 @@
 import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 
@@ -138,6 +148,26 @@ function hashTree(root: string): string {
   return hash.digest('hex');
 }
 
+function storeFileSnapshot(storeDir: string): readonly Readonly<{
+  name: string;
+  bytes: number;
+  mtimeNs: string;
+  sha256: string;
+}>[] {
+  return readdirSync(storeDir)
+    .sort()
+    .map((name) => {
+      const path = join(storeDir, name);
+      const stat = statSync(path, { bigint: true });
+      return {
+        name,
+        bytes: Number(stat.size),
+        mtimeNs: stat.mtimeNs.toString(),
+        sha256: createHash('sha256').update(readFileSync(path)).digest('hex'),
+      };
+    });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) {
@@ -201,6 +231,37 @@ describe('generation readiness', () => {
     expect(readFileSync(join(legacyRoot, 'equipment', 'dormant.bin'), 'utf-8')).toBe('left-behind-equipment');
     expect(warning).toHaveBeenCalledWith(expect.stringContaining(legacyRoot));
     expect(warning).toHaveBeenCalledWith(expect.stringContaining('left untouched'));
+  });
+
+  it('boots beside a crashed legacy WAL store without changing any legacy file', async () => {
+    const { runtime } = harness();
+    const paths = resolveGenerationBoundaryPaths(runtime);
+    const storeDir = join(paths.legacyFlavorRoot, 'store');
+    const dbFile = join(storeDir, 'store.db');
+    mkdirSync(storeDir, { recursive: true });
+    const crashed = spawnSync(
+      process.execPath,
+      [
+        '--no-warnings',
+        '-e',
+        "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec(\"PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('store_product_version', '0.9.16'); CREATE TABLE history (value TEXT NOT NULL); INSERT INTO history VALUES ('crashed-wal');\"); process.kill(process.pid, 'SIGKILL');",
+        dbFile,
+      ],
+      { encoding: 'utf-8' },
+    );
+    expect(crashed.signal).toBe('SIGKILL');
+    rmSync(`${dbFile}-shm`, { force: true });
+    expect(readdirSync(storeDir).sort()).toEqual(['store.db', 'store.db-wal']);
+    const before = storeFileSnapshot(storeDir);
+    vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
+
+    await openGeneratedStore(runtime);
+
+    const after = storeFileSnapshot(storeDir);
+    console.log(
+      `crashed-wal-cell before=${before.map(({ name }) => name).join(',')} after=${after.map(({ name }) => name).join(',')} metadata-and-bytes-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
+    );
+    expect(after).toEqual(before);
   });
 
   it('boots beside a foreign legacy generation and reports its stored version', async () => {

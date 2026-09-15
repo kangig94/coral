@@ -1647,15 +1647,87 @@ describe('write-once store epochs', () => {
     publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
     const id = 'live-publisher';
     const mint = join(dbDir, `.mint-${id}`);
-    createCompatibleStore(join(mint, 'store.db'), 'live-mint');
     const held = acquireSharedFileLockSync(storeMintLockPath(dbDir, id));
+    createCompatibleStore(join(mint, 'store.db'), 'live-mint');
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'readdir') return Reflect.get(subject, property, receiver) as unknown;
+        return async (path: string): Promise<string[]> => {
+          const entries = await subject.readdir(path);
+          if (path !== dbDir) return entries;
+          return entries.sort((left, right) => {
+            const lock = basename(storeMintLockPath(dbDir, id));
+            return left === lock ? -1 : right === lock ? 1 : 0;
+          });
+        };
+      },
+    });
     try {
-      expect(await sweepStoreEpochsPostReady(runtime, dbDir, '3')).toBe('live-holder');
-      expect(existsSync(join(mint, 'store.db'))).toBe(true);
-      console.log('post-ready-live-mint-cell result=live-holder mint=present');
+      const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3');
+      const present = existsSync(join(mint, 'store.db'));
+      console.log(`post-ready-live-mint-cell lock-before-directory=true result=${result} mint-present=${present}`);
+      expect(result).toBe('live-holder');
+      expect(present).toBe(true);
     } finally {
       held();
     }
+  });
+
+  it('keeps a live epoch across the former orphan-lock release-to-unlink window', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const legacyOrphanLock = join(dbDir, '.epoch-lock-1.sqlite');
+    acquireSharedFileLockSync(legacyOrphanLock)();
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-5'), true);
+    let closeOpened: (() => void) | null = null;
+    let publicationRanInUnlinkWindow = false;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'unlink') return Reflect.get(subject, property, receiver) as unknown;
+        return async (path: string): Promise<void> => {
+          if (path === legacyOrphanLock) {
+            publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+            const opened = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
+            closeOpened = () => opened.close();
+            publicationRanInUnlinkWindow = true;
+          }
+          await subject.unlink(path);
+        };
+      },
+    });
+
+    try {
+      await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
+      if (closeOpened === null) {
+        publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+        const opened = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
+        closeOpened = () => opened.close();
+      }
+      const result = await sweepStoreEpochsPostReady(runtime, dbDir, '5');
+      const present = existsSync(epochPath(dbDir, '1'));
+      console.log(
+        `orphan-reuse-live-store-cell publication-in-unlink-window=${publicationRanInUnlinkWindow} result=${result} epoch-1-present=${present}`,
+      );
+      expect(result).toBe('live-holder');
+      expect(present).toBe(true);
+    } finally {
+      closeOpened?.();
+    }
+  });
+
+  it('treats a mint directory without its lock as unobservable', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    const mint = join(dbDir, '.mint-between-mkdir-and-lock');
+    mkdirSync(mint);
+
+    const result = await sweepStoreEpochsPostReady(runtime, dbDir, '1');
+    const present = existsSync(mint);
+    console.log(`lockless-mint-cell result=${result} mint-present=${present}`);
+    expect(result).toBe('unobservable-metadata');
+    expect(present).toBe(true);
   });
 
   it('does not sweep the coordinator epoch while its settled database is open', async () => {

@@ -94,6 +94,16 @@ function storeHasTable(path: string, table: string): boolean {
   }
 }
 
+function storeMetadataValue(path: string, key: string): string | null {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(key) as { value?: unknown } | undefined;
+    return typeof row?.value === 'string' ? row.value : null;
+  } finally {
+    db.close();
+  }
+}
+
 function writeIncident(options: {
   readonly home: string;
   readonly build?: BuildManifest;
@@ -198,6 +208,50 @@ afterEach(async () => {
 });
 
 describe('bundled store-reset CLI', () => {
+  it('refuses to smoke-open the legacy flat store through the built backend bundle', () => {
+    const build = readBuildManifest();
+    const home = temporaryHome('coral-smoke-flat-refusal-');
+    mkdirSync(join(home, 'tmp'));
+    const storePath = activeStorePath(home, build);
+    mkdirSync(dirname(storePath), { recursive: true });
+    const store = new DatabaseSync(storePath);
+    store.exec(
+      `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('store_format_fingerprint', '${build.storeFormatFingerprint}')`,
+    );
+    store.close();
+    const before = readFileSync(storePath);
+    const result = spawnSync(process.execPath, [BACKEND_BUNDLE, '--smoke-open-store', '--path', storePath], {
+      encoding: 'utf-8',
+      env: { ...process.env, ...temporaryHomes.environment(home), TMPDIR: join(home, 'tmp') },
+    });
+
+    console.log(
+      `smoke-flat-refusal-cell status=${result.status} product-version=${storeMetadataValue(storePath, 'store_product_version') ?? 'absent'}`,
+    );
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(storeMetadataValue(storePath, 'store_product_version')).toBeNull();
+    expect(readFileSync(storePath)).toEqual(before);
+  });
+
+  it.each(['absent-root', 'empty-root'] as const)('initializes epoch one on discard with %s', (state) => {
+    const build = readBuildManifest();
+    const home = temporaryHome(`coral-store-reset-discard-${state}-`);
+    mkdirSync(join(home, 'tmp'));
+    if (state === 'empty-root') mkdirSync(dirname(activeStorePath(home, build)), { recursive: true });
+
+    const result = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+
+    console.log(
+      `discard-no-epoch-cell state=${state} status=${result.status} stdout=${JSON.stringify(result.stdout.trim())} stderr=${JSON.stringify(result.stderr.trim())}`,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe('');
+    expect(result.stdout).toContain('Initialized store epoch 1');
+    expect(result.stdout).not.toContain('null');
+    expect(existsSync(epochStorePath(home, build, 1))).toBe(true);
+  });
+
   it.each(['stopped', 'unhealthy-discovery'])('lists and reports locally with daemon state %s', (daemonState) => {
     const home = temporaryHome('coral-store-reset-e2e-home-');
     mkdirSync(join(home, 'tmp'));
