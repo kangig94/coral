@@ -1,6 +1,15 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -33,8 +42,11 @@ const sourceDurableWrapperBundle = join(sourceBuildDir, 'coral-durable-wrapper.c
 const sourceManifestPath = join(sourceBuildDir, 'manifest.json');
 const sourceStrictManifestPath = join(sourceBuildDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as {
+  version: string;
+  buildSetId: string;
   bundleHash: string;
   flavor: BuildFlavor;
+  storeFormatFingerprint: string;
 };
 
 const tempRoots: string[] = [];
@@ -76,19 +88,39 @@ function createPluginFixture(): {
 
   const scratchCwd = mkdtempSync(join(tmpdir(), `coral-fixture-smoke-${sourceManifest.flavor}-`));
   tempRoots.push(scratchCwd);
-  const smokeDbPath = join(scratchCwd, 'fixture.db');
-  const smokeRuntime = createRealRuntime(sourceManifest.flavor);
+  const smokeHome = join(scratchCwd, 'home');
+  const smokeRuntime = createRealRuntime(sourceManifest.flavor, { baseDir: join(smokeHome, '.coral') });
+  const smokeEpochDir = join(smokeRuntime.paths.coral.store.dbDir, 'epoch-1');
+  const smokeDbPath = join(smokeEpochDir, 'store.db');
+  mkdirSync(smokeEpochDir, { recursive: true });
+  writeFileSync(join(smokeEpochDir, '.lock'), '');
   openTestStoreDatabase({
     path: smokeDbPath,
     storage: smokeRuntime.storage,
     storeFormat: currentCoralStoreFormat(),
   }).close();
+  writeFileSync(
+    join(smokeEpochDir, 'epoch.json'),
+    JSON.stringify({
+      supersedes: null,
+      classification: { kind: 'unavailable', cause: 'lifecycle smoke fixture' },
+      build: {
+        version: sourceManifest.version,
+        buildSetId: sourceManifest.buildSetId,
+        bundleHash: sourceManifest.bundleHash,
+        flavor: sourceManifest.flavor,
+        storeFormatFingerprint: sourceManifest.storeFormatFingerprint,
+      },
+      publishedAt: '2026-09-15T00:00:00.000Z',
+    }),
+  );
   const smokeOut = execFileSync(
     'node',
     [join(root, 'bridge', 'coral-backend.cjs'), '--smoke-open-store', '--path', smokeDbPath],
     {
       cwd: scratchCwd,
       encoding: 'utf-8',
+      env: { ...process.env, HOME: smokeHome },
     },
   );
   if (smokeOut.trim() !== 'ok') {
