@@ -215,11 +215,10 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(false);
 
     finishSweep();
-    await flush();
+    await sequence;
     expect(harness.callLog.indexOf('storeEpochSweep.joined')).toBeLessThan(
       harness.callLog.indexOf('closeIpcServerFn:start'),
     );
-    await sequence;
   });
 
   it('runs provider-host recovery before closing provider-operation mutation admission', async () => {

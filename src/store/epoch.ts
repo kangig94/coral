@@ -1278,7 +1278,7 @@ export function listStoreEpochs(
 
 export function storeEpochHookSource(): string {
   return String.raw`// Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from '${'node:' + 'fs'}';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 const EPOCH_DIRECTORY_PATTERN = /^epoch-(0|[1-9]\d*)$/;

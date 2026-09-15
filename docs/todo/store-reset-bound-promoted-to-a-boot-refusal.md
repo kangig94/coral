@@ -2057,10 +2057,10 @@ and a consequence of something I wrote two revisions ago.
 
 Revision 17 made the successor skip over a blocked name: an incompatible flat epoch 0 beside an
 unusable `epoch-1` publishes `epoch-2`. Retention still defines garbage arithmetically as
-`candidate <= current - 2` (`src/store/epoch.ts:262`), so the sweep removes the blocker **and epoch 0**,
+`candidate <= current - 2` (`garbageStoreEpochs` in `src/store/epoch.ts`), so the sweep removes the blocker **and epoch 0**,
 and the only survivor is the freshly minted epoch 2. No preserved copy at all. The existing cell builds
 exactly this state and asserts only that the blocker disappeared
-(`tests/integration/store/open-or-reset.test.ts:318`, `:351`).
+(`publishes after a successor blocked` in `tests/integration/store/open-or-reset.test.ts`).
 
 Once the numbering can gap, "one less than current" is not "the previous epoch".
 
@@ -2081,13 +2081,13 @@ proving it is abandoned, so a concurrent publisher's mint disappears between its
 `mintNextEpoch` then sees `ENOENT` and settlement **throws instead of re-minting** (`:861`, `:869`,
 `:949`) — with a test that expects the throw (`open-or-reset.test.ts:582`), against Revision 14's
 explicit `ENOENT: continue`. An orphaned KB daemon holding epoch 1 has no record at all, so the sweep
-unlinks it (`kb-daemon/daemon-main.ts:211`). And a diagnostic holder published *after* the sweep's
+unlinks it (`stopForParentExit` in `src/kb-daemon/daemon-main.ts`). And a diagnostic holder published *after* the sweep's
 snapshot is deleted anyway; a reviewer produced `result=complete epoch1Exists=false holderStillLive=true`.
 
 PID-only identity makes the opposite failure just as reachable: after the child exits, PID reuse by any
 long-lived process makes every sweep and release answer `live-holder` forever, and the remediation names a
 process that no longer exists (`reset-incident-diagnostic.ts:37`, `epoch.ts:682`,
-`cli/format/store-reset.ts:186`).
+`formatStoreResetRelease` in `src/cli/format/store-reset.ts`).
 
 > **A process that opens a store holds a lock on it for as long as it holds the database, and liveness is
 > "can I take that lock", not "is this PID alive".**
@@ -2101,10 +2101,10 @@ its lock is free.
 ### The sweep must not outlive the authority that started it
 
 The post-ready sweep's timer and promise are discarded unreferenced
-(`coordinator/composition/index.ts:1736`), so shutdown cannot cancel or join it. It can therefore resume
+(`scheduleStoreEpochSweepFn` in `src/coordinator/composition/index.ts`), so shutdown cannot cancel or join it. It can therefore resume
 after the coordinator has released its socket and removed its discovery record, and unlink epoch zero
 under a rolled-back build that has since started, or a live mint belonging to a successor
-(`coordinator/shutdown.ts:1196`, `lifecycle.ts:1412`). It is a lifecycle obligation: tracked, cancelled
+(`runShutdownSequence` in `src/coordinator/shutdown.ts`, `createLifecycle` in `src/coordinator/lifecycle.ts`). It is a lifecycle obligation: tracked, cancelled
 before destructive steps, joined before addresses are released.
 
 And `swept` must reach its documented successor — re-mint — rather than a boot refusal.
@@ -2113,8 +2113,8 @@ And `swept` must reach its documented successor — re-mint — rather than a bo
 
 `release` permits an absent discovery record (`epoch.ts:480`) and then re-resolves current and deletes
 (`:498`), so a coordinator that opened epoch 1 during a transient metadata `EIO` — before its record was
-written, or after a swallowed `ENOENT` write returned false (`infra/backend-discovery.ts:110`,
-`runtime/real.ts:1252`) — loses its open epoch to `release 1`. A reviewer reproduced
+written, or after a swallowed `ENOENT` write returned false (`writeDiscoveryRecord` in
+`src/infra/backend-discovery.ts`, `writeAtomicSyncNode` in `src/runtime/real.ts`) — loses its open epoch to `release 1`. A reviewer reproduced
 `kind=released epoch1Exists=false descriptorOpen=true`.
 
 `discard` already binds the coordinator sockets to prove no coordinator is live. `release` takes the same
@@ -2128,8 +2128,8 @@ The asynchronous sweep still does unbounded synchronous work: `JSON.parse` on a 
 inside the scans; the responsiveness cell should scale, not sit at 300 entries.
 
 And the hook's second selector still disagrees with the canonical one: the backend rejects an
-`epoch.json` over 64 KiB and the hook reads it unbounded (`epoch.ts:1006`,
-`clients/hooks/lib/store-epoch.mjs:41`), so a 70 KB valid document makes the backend choose epoch 1 while
+`epoch.json` over 64 KiB and the hook reads it unbounded (`observeStoreEpoch` in `src/store/epoch.ts`,
+`isPublishedEpoch` in `clients/hooks/lib/store-epoch.mjs`), so a 70 KB valid document makes the backend choose epoch 1 while
 `pre-compact` opens epoch 2 — reproduced. §7 has been asking for one home since Revision 15; the parity
 corpus keeps being a sample rather than a proof. Generate the hook's copy from the owner.
 

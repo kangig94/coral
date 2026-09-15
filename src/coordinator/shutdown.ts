@@ -301,6 +301,7 @@ type OpeningShutdownObligationsContext = Pick<
   | 'runtime'
   | 'server'
   | 'state'
+  | 'stopStoreEpochSweepFn'
   | 'streamResponses'
   | 'teardownRecoveryCoordinator'
   | 'waitForInflightDrain'
@@ -324,6 +325,7 @@ function buildOpeningShutdownObligations({
   runtime,
   server,
   state,
+  stopStoreEpochSweepFn,
   streamResponses,
   teardownRecoveryCoordinator,
   waitForInflightDrain,
@@ -333,6 +335,16 @@ function buildOpeningShutdownObligations({
   serverClose.start();
 
   const connectionDrain: readonly ShutdownObligation[] = [
+    ...(stopStoreEpochSweepFn === undefined
+      ? []
+      : [
+          {
+            label: 'store epoch sweep cancellation',
+            task: () => confirmedTask(stopStoreEpochSweepFn),
+            retainedAuthority: () => cleanupContribution('store epoch sweep cancellation'),
+            remainder: { owner: 'process-exit' as const },
+          },
+        ]),
     {
       label: 'inflight drain',
       task: () => confirmedTask(() => waitForInflightDrain(idleTimer, ledger.remainingBudgetMs(), runtime.time)),
@@ -1128,7 +1140,6 @@ export async function runShutdownSequence({
   log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
-  await stopStoreEpochSweepFn?.();
 
   const openingObligations = buildOpeningShutdownObligations({
     closeServerFn,
@@ -1139,6 +1150,7 @@ export async function runShutdownSequence({
     runtime,
     server,
     state,
+    stopStoreEpochSweepFn,
     streamResponses,
     teardownRecoveryCoordinator,
     waitForInflightDrain,
