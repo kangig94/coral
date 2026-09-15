@@ -266,7 +266,7 @@ describe('bundled store-reset CLI', () => {
     );
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
-    expect(result.stderr).toContain('path is neither a canonical positive store epoch nor a private temporary path');
+    expect(result.stderr).toContain('path is not a proven canonical positive store epoch');
     expect(storeMetadataValue(storePath, 'store_product_version')).toBeNull();
     expect(readFileSync(storePath)).toEqual(before);
   });

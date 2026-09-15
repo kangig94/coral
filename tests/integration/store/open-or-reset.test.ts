@@ -29,6 +29,7 @@ import {
   discardCurrentStoreEpoch,
   epochDirectory,
   epochPath,
+  listStoreEpochResidues,
   listStoreEpochs,
   openWritableStoreDbNoReset,
   resolveCurrentStoreEpoch,
@@ -50,6 +51,7 @@ import {
 import {
   acquireDirectoryLockSync,
   acquireSharedFileLockSync,
+  createSharedFileLockSync,
   tryAcquireExclusiveFileLockSync,
 } from '#src/infra/fs-lock.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
@@ -492,6 +494,7 @@ describe('write-once store epochs', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-2'), true);
     publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
     const first = join(dbDir, '.epoch-holder-a.json');
     const second = join(dbDir, '.epoch-holder-b.json');
@@ -954,18 +957,20 @@ describe('write-once store epochs', () => {
     console.log(`oversized-epoch-json-cell bytes=${MAX_STORE_EPOCH_METADATA_BYTES + 1} classification=malformed`);
   });
 
-  it('surfaces a mode-0444 proven store as an open syscall refusal with errno', () => {
+  it('replaces a mode-0444 store rather than refusing to boot', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
     const path = epochPath(dbDir, '1');
     chmodSync(path, 0o444);
 
-    expect(() => settleStoreEpoch(runtime, options())).toThrow(/open syscall.*errno EACCES/u);
+    const settled = settleStoreEpoch(runtime, options());
+    expect(settled.epoch).toBe('2');
+    settled.db.close();
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
   });
 
-  it.each(['EACCES', 'EMFILE'])('surfaces persistent %s from open instead of retrying', (code) => {
+  it.each(['EACCES', 'EMFILE'])('replaces an epoch whose open persistently returns %s', (code) => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
@@ -984,9 +989,9 @@ describe('write-once store epochs', () => {
       },
     });
 
-    expect(() => settleStoreEpoch(withStorage(runtime, storage), options())).toThrow(
-      new RegExp(`open syscall.*errno ${code}`, 'u'),
-    );
+    const settled = settleStoreEpoch(withStorage(runtime, storage), options());
+    expect(settled.epoch).toBe('2');
+    settled.db.close();
     expect(attempts).toBe(1);
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
   });
@@ -1589,7 +1594,7 @@ describe('write-once store epochs', () => {
     for (let index = 0; index < 12; index += 1) {
       const id = `process-death-${index}`;
       createCompatibleStore(join(dbDir, `.mint-${id}`, 'store.db'), `mint-${index}`);
-      acquireSharedFileLockSync(storeMintLockPath(dbDir, id))();
+      createSharedFileLockSync(storeMintLockPath(dbDir, id))();
     }
 
     expect(await sweepStoreEpochsPostReady(runtime, dbDir, '1')).toBe('complete');
@@ -1603,7 +1608,7 @@ describe('write-once store epochs', () => {
     publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
     const id = 'live-publisher';
     const mint = join(dbDir, `.mint-${id}`);
-    const held = acquireSharedFileLockSync(storeMintLockPath(dbDir, id));
+    const held = createSharedFileLockSync(storeMintLockPath(dbDir, id));
     createCompatibleStore(join(mint, 'store.db'), 'live-mint');
     const storage = new Proxy(runtime.storage, {
       get(subject, property, receiver) {
@@ -1637,7 +1642,7 @@ describe('write-once store epochs', () => {
     const epoch = epochDirectory(dbDir, '1');
     mkdirSync(mint, { recursive: true });
     const mintLock = storeMintLockPath(dbDir, id);
-    const lease = acquireSharedFileLockSync(mintLock);
+    const lease = createSharedFileLockSync(mintLock);
     const before = statSync(mintLock, { bigint: true });
     renameSync(mint, epoch);
     const publishedLock = storeEpochLockPath(dbDir, '1');
@@ -1676,9 +1681,7 @@ describe('write-once store epochs', () => {
             try {
               const opened = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
               closeOpened = () => opened.close();
-              openedValue = opened
-                .prepare<[], { value: string }>('SELECT value FROM rollback_sentinel')
-                .get()?.value;
+              openedValue = opened.prepare<[], { value: string }>('SELECT value FROM rollback_sentinel').get()?.value;
             } catch {
               openedValue = undefined;
             }
@@ -1737,6 +1740,10 @@ describe('write-once store epochs', () => {
 
       let settled: ReturnType<typeof settleStoreEpoch> | undefined;
       try {
+        expect(listStoreEpochs(runtime, storeFormat).find(({ epoch }) => epoch === '1')?.classification.kind).toBe(
+          'unavailable',
+        );
+        expect(() => openReadOnlyStoreDatabase(runtime, { path: epochPath(dbDir, '1'), storeFormat })).toThrow();
         settled = settleStoreEpoch(runtime, options());
         const legacyAfter = fileTreeSnapshot(legacyRoot);
         console.log(
@@ -1752,18 +1759,52 @@ describe('write-once store epochs', () => {
     },
   );
 
-  it('treats a mint directory without its lock as unobservable', async () => {
+  it('keeps the generated hook out of a legacy store named by a symlinked epoch lock', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(epochDirectory(dbDir, '1'), true);
+    const legacyRoot = join(dirname(dbDir), 'hook-legacy-tree');
+    const legacyStore = join(legacyRoot, 'store.db');
+    createCrashedWalStore(legacyStore);
+    rmSync(storeEpochLockPath(dbDir, '1'));
+    symlinkSync(legacyStore, storeEpochLockPath(dbDir, '1'));
+    const before = fileTreeSnapshot(legacyRoot);
+    const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?lock-proof=${Date.now()}`;
+    const hook = (await import(helperUrl)) as {
+      resolveCurrentStoreDbPath(path: string): string | null;
+      openLockedReadOnlyStoreDatabase(dbDir: string, dbPath: string): unknown;
+    };
+
+    expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
+    expect(() => hook.openLockedReadOnlyStoreDatabase(dbDir, epochPath(dbDir, '1'))).toThrow();
+    const after = fileTreeSnapshot(legacyRoot);
+    console.log(
+      `generated-hook-malformed-lock-cell resolved=none open=refused legacy-byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
+    );
+    expect(after).toEqual(before);
+  });
+
+  it('lists and converges K lockless mints and K partial-cleanup residues', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
-    const mint = join(dbDir, '.mint-between-mkdir-and-lock');
-    mkdirSync(mint);
+    const residueCount = 8;
+    for (let index = 0; index < residueCount; index += 1) {
+      mkdirSync(join(dbDir, `.mint-lockless-${index}`));
+      createCompatibleStore(join(dbDir, `.mint-partial-cleanup-${index}`, 'store.db'), `partial-${index}`);
+    }
+
+    const listed = listStoreEpochResidues(runtime);
+    expect(listed).toHaveLength(residueCount * 2);
+    expect(new Set(listed.map(({ state }) => state))).toEqual(new Set(['reclaimable']));
 
     const result = await sweepStoreEpochsPostReady(runtime, dbDir, '1');
-    const present = existsSync(mint);
-    console.log(`lockless-mint-cell result=${result} mint-present=${present}`);
-    expect(result).toBe('unobservable-metadata');
-    expect(present).toBe(true);
+    const remaining = listStoreEpochResidues(runtime);
+    console.log(
+      `mint-residue-cell lockless=${residueCount} partial-cleanup=${residueCount} listed-state=${listed[0]?.state} result=${result} remaining=${remaining.length}`,
+    );
+    expect(result).toBe('complete');
+    expect(remaining).toEqual([]);
   });
 
   it('does not sweep the coordinator epoch while its settled database is open', async () => {
@@ -1873,7 +1914,6 @@ describe('write-once store epochs', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     for (const epoch of ['1', '2', '3']) publishAdversarialEpoch(join(dbDir, `epoch-${epoch}`), true);
-    const removedEpoch = epochDirectory(dbDir, '1');
     const controller = new AbortController();
     const events: string[] = [];
     const storage = new Proxy(runtime.storage, {
@@ -1881,7 +1921,7 @@ describe('write-once store epochs', () => {
         if (property === 'rm') {
           return async (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): Promise<void> => {
             await subject.rm(path, rmOptions);
-            if (path === removedEpoch) {
+            if (basename(path).startsWith('.reaping-')) {
               events.push('epoch-removed');
               controller.abort();
             }
@@ -1957,7 +1997,9 @@ describe('write-once store epochs', () => {
       get(subject, property, receiver) {
         if (property !== 'rmSync') return Reflect.get(subject, property, receiver) as unknown;
         return (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): void => {
-          if (path === target) throw Object.assign(new Error('injected deletion failure'), { code: 'EACCES' });
+          if (basename(path).startsWith('.reaping-')) {
+            throw Object.assign(new Error('injected deletion failure'), { code: 'EACCES' });
+          }
           subject.rmSync(path, rmOptions);
         };
       },
@@ -1966,7 +2008,8 @@ describe('write-once store epochs', () => {
     const released = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: '1' });
 
     expect(released.kind).toBe('release-deletion-failed');
-    expect(existsSync(target)).toBe(true);
+    expect(existsSync(target)).toBe(false);
+    expect(listStoreEpochResidues(runtime).map(({ state }) => state)).toEqual(['reclaimable']);
   });
 
   it('durably syncs an epoch adopted after its publisher died following rename', () => {
@@ -2033,12 +2076,13 @@ describe('write-once store epochs', () => {
     publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-2'), true);
     publishAdversarialEpoch(join(runtime.paths.coral.store.dbDir, 'epoch-1'), true);
     createCompatibleStore(flatStorePath(runtime.paths.coral.store.dbDir), 'garbage');
-    const garbagePath = epochDirectory(runtime.paths.coral.store.dbDir, '1');
     const storage = new Proxy(runtime.storage, {
       get(target, property, receiver) {
         if (property !== 'rm') return Reflect.get(target, property, receiver) as unknown;
         return async (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): Promise<void> => {
-          if (path === garbagePath) throw Object.assign(new Error('injected sweep failure'), { code: 'EIO' });
+          if (basename(path).startsWith('.reaping-')) {
+            throw Object.assign(new Error('injected sweep failure'), { code: 'EIO' });
+          }
           await target.rm(path, rmOptions);
         };
       },

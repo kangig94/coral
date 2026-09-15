@@ -58,6 +58,7 @@ function releaseStoreReset(
 function publishEpoch(dbDir: string, epoch: string): void {
   const directory = join(dbDir, `epoch-${epoch}`);
   mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, '.lock'), '');
   openTestStoreDatabase({
     path: join(directory, 'store.db'),
     storage: createRealRuntime('prod').storage,

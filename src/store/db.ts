@@ -5,7 +5,7 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import type { StoragePort } from '../infra/port-types.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
-import type { ReadonlyDatabase, ReadonlyStatement } from './read-port.js';
+import type { ReadonlyDatabase, ReadonlyStatement } from './read-types.js';
 import {
   isStoreFormatFingerprint,
   STORE_FORMAT_FINGERPRINT_META_KEY,

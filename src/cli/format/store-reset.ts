@@ -129,7 +129,12 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
 export function formatStoreResetList(result: StoreResetListResult, target: 'legacy' | 'gen2'): string {
   result = constrainStoreResetRendererInput(result);
   target = constrainStoreResetRendererInput(target);
-  if (result.epochs.length === 0 && result.holders.length === 0 && result.legacyIncidents.length === 0) {
+  if (
+    result.epochs.length === 0 &&
+    result.holders.length === 0 &&
+    result.residues.length === 0 &&
+    result.legacyIncidents.length === 0
+  ) {
     return [`No ${target} store epochs or legacy store-reset incidents.`, ...releaseInstruction(target)].join('\n');
   }
   return [
@@ -146,6 +151,13 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
           ...result.holders.map(
             (holder) => `${holder.id} | ${holder.epoch ?? 'unknown'} | ${holder.pid ?? 'unknown'} | ${holder.state}`,
           ),
+        ]),
+    ...(result.residues.length === 0
+      ? []
+      : [
+          '',
+          'Residue | Bytes | State',
+          ...result.residues.map((residue) => `${residue.name} | ${residue.bytes ?? 'unknown'} | ${residue.state}`),
         ]),
     ...(result.legacyIncidents.length === 0
       ? []

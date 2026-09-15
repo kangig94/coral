@@ -1,7 +1,15 @@
 import type { Runtime } from '../runtime/ports.js';
+import { documentedCoralSetupError } from '../runtime/errors.js';
 import { openStoreDatabase, type Database } from './db.js';
-import { acquireStoreEpochReadLock, holdStoreEpochLockUntilClose, resolveCurrentStorePath } from './epoch.js';
+import {
+  acquireStoreEpochReadLock,
+  holdStoreEpochLockUntilClose,
+  resolveCurrentStorePath,
+  storeEpochAtPath,
+} from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
+import type { ReadonlyDatabase } from './read-types.js';
+export type { ReadonlyDatabase, ReadonlyStatement } from './read-types.js';
 
 /**
  * Generic read-only SQLite primitives owned by the store layer. A domain
@@ -9,19 +17,6 @@ import type { StoreFormatDescription } from './format-fingerprint.js';
  * semantics — domains do not redeclare the underlying database/statement
  * shapes.
  */
-
-export interface ReadonlyStatement<BindParameters extends unknown[] = unknown[], Result = unknown> {
-  get(...params: BindParameters): Result | undefined;
-  all(...params: BindParameters): Result[];
-  iterate(...params: BindParameters): IterableIterator<Result>;
-}
-
-export interface ReadonlyDatabase {
-  prepare<BindParameters extends unknown[] = unknown[], Result = unknown>(
-    source: string,
-  ): ReadonlyStatement<BindParameters, Result>;
-  close(): void;
-}
 
 type OpenReadOnlyStoreOptions = {
   readonly storeFormat: StoreFormatDescription;
@@ -39,6 +34,9 @@ export function openReadOnlyStoreDatabase(
 ): ReadonlyDatabase {
   const path = resolveCurrentStorePath(runtime, options.path);
   const lease = acquireStoreEpochReadLock(runtime, path);
+  if (storeEpochAtPath(runtime.paths.coral.store.dbDir, path) !== null && lease === null) {
+    throw documentedCoralSetupError('store_not_initialized', { path });
+  }
   try {
     const db = openStoreDatabase({
       path: path,

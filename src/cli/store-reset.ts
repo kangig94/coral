@@ -31,10 +31,12 @@ import {
 import {
   epochPath,
   listStoreEpochHolders,
+  listStoreEpochResidues,
   listStoreEpochs,
   storeEpochHolderPath,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
+  type StoreEpochResidueListEntry,
 } from '../store/epoch.js';
 import {
   isCanonicalStoreResetIncidentId,
@@ -60,6 +62,7 @@ export interface StoreResetCliDependencies {
 export type StoreResetListResult = Readonly<{
   epochs: readonly StoreEpochListEntry[];
   holders: readonly StoreEpochHolderListEntry[];
+  residues: readonly StoreEpochResidueListEntry[];
   legacyIncidents: readonly LegacyStoreResetIncidentListEntry[];
   truncated: boolean;
 }>;
@@ -111,9 +114,7 @@ async function diagnoseHeldEpoch(
   if (diagnostic.termination !== 'termination_unconfirmed') {
     try {
       runtime.storage.unlinkSync(holderPath);
-    } catch {
-      // A stale marker is visible to `list` and reaped when its epoch lock proves no live holder.
-    }
+    } catch {}
     try {
       runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);
     } catch {
@@ -209,6 +210,7 @@ export function listStoreResetIncidentsLocal(
     return {
       epochs: target === 'legacy' ? [] : listStoreEpochs(runtime, currentCoralStoreFormat()),
       holders: target === 'legacy' ? [] : listStoreEpochHolders(runtime),
+      residues: target === 'legacy' ? [] : listStoreEpochResidues(runtime),
       legacyIncidents: legacy.incidents,
       truncated: legacy.truncated,
     };

@@ -58,7 +58,13 @@ function isPublishedEpoch(dbDir, name) {
       return false;
     }
     const metadataPath = join(directory, 'epoch.json');
-    if (!isRegularFile(join(directory, 'store.db')) || !isRegularFile(metadataPath)) return false;
+    const databasePath = join(directory, 'store.db');
+    const lockPath = join(directory, '.lock');
+    if (!isRegularFile(databasePath) || !isRegularFile(metadataPath) || !isRegularFile(lockPath)) return false;
+    const realDirectory = realpathSync(directory);
+    if (dirname(realpathSync(databasePath)) !== realDirectory || dirname(realpathSync(lockPath)) !== realDirectory) {
+      return false;
+    }
     if (statSync(metadataPath, { bigint: true }).size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return false;
     return isValidEpochMetadata(JSON.parse(readFileSync(metadataPath, 'utf8')));
   } catch {
@@ -89,12 +95,15 @@ export function resolveCurrentStoreDbPath(dbDir) {
 }
 
 function storeEpochForDbPath(dbDir, dbPath) {
-  const directory = dirname(resolve(dbPath));
+  const resolvedPath = resolve(dbPath);
+  if (basename(resolvedPath) !== 'store.db') return null;
+  const directory = dirname(resolvedPath);
   return dirname(directory) === resolve(dbDir) ? epochNumber(basename(directory)) : null;
 }
 
 function acquireSharedStoreEpochLock(dbDir, epoch) {
   const lock = new DatabaseSync(join(dbDir, 'epoch-' + epoch, '.lock'), {
+    readOnly: true,
     timeout: HOOK_LOCK_TIMEOUT_MS,
   });
   try {
@@ -114,7 +123,9 @@ function acquireSharedStoreEpochLock(dbDir, epoch) {
 
 export function openLockedReadOnlyStoreDatabase(dbDir, dbPath) {
   const epoch = storeEpochForDbPath(dbDir, dbPath);
-  if (epoch === null) throw new Error('Resolved store database is outside the canonical epoch layout.');
+  if (epoch === null || !isPublishedEpoch(dbDir, 'epoch-' + epoch)) {
+    throw new Error('Resolved store database is outside the proven canonical epoch layout.');
+  }
   const releaseLock = acquireSharedStoreEpochLock(dbDir, epoch);
   let db;
   try {

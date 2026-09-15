@@ -1,7 +1,7 @@
 declare const __IS_CORAL_BACKEND_MAIN__: boolean | undefined;
 declare const __PLUGIN_ROOT__: string | undefined;
 
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { z } from 'zod';
 
 import { auditBootstrapFailure, writeBootstrapDiagnostic, writeStartupErrorSentinel } from './bootstrap-diagnostics.js';
@@ -123,24 +123,6 @@ function createBootstrapProbeExitGate(): Readonly<{
 
 const bootstrapProbeExitGate = createBootstrapProbeExitGate();
 
-function isPrivateTemporaryStorePath(path: string, runtime: ReturnType<typeof createRealRuntime>): boolean {
-  const parent = dirname(path);
-  if (resolve(parent, '..') !== resolve(runtime.env.tmpdir())) return false;
-  try {
-    const entry = runtime.storage.lstatSync(parent, { bigint: true });
-    const uid = process.getuid?.();
-    return (
-      entry.isDirectory() &&
-      entry.uid !== undefined &&
-      uid !== undefined &&
-      entry.uid === BigInt(uid) &&
-      (entry.mode & 0o077n) === 0n
-    );
-  } catch {
-    return false;
-  }
-}
-
 export function createCoordinatorShutdownSignalHandler(options: {
   readonly shutdown: (reason: 'sigterm' | 'sigint') => Promise<unknown>;
   readonly recordExitCode: (code: number) => void;
@@ -166,15 +148,13 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
   try {
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-    const { openWritableStoreDbNoReset, storeEpochAtPath } = await import('../store/epoch.js');
+    const { openWritableStoreDbNoReset, provenStoreEpochAtPath } = await import('../store/epoch.js');
     const smokeStorePathInput = z
       .string()
       .refine((path) => resolve(path) === path, 'path is not a canonical absolute path')
       .refine(
-        (path) =>
-          storeEpochAtPath(runtime.paths.coral.store.dbDir, path) !== null ||
-          isPrivateTemporaryStorePath(path, runtime),
-        'path is neither a canonical positive store epoch nor a private temporary path',
+        (path) => provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, path) !== null,
+        'path is not a proven canonical positive store epoch',
       );
     const parsed = smokeStorePathInput.safeParse(argv[pathIdx + 1]);
     if (!parsed.success) {

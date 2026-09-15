@@ -42,7 +42,7 @@ import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/re
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 
 const storeReset: StoreResetCommandOperations = {
-  list: () => ({ epochs: [], holders: [], legacyIncidents: [], truncated: false }),
+  list: () => ({ epochs: [], holders: [], residues: [], legacyIncidents: [], truncated: false }),
   report: async () => {
     throw new Error('not used');
   },

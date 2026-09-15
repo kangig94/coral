@@ -149,9 +149,12 @@ describe('write-once store epoch invariants', () => {
     };
     visit(parsed);
     expect(deletionOwners.length).toBeGreaterThan(0);
-    expect(new Set(deletionOwners)).toEqual(
-      new Set(['removeEpochEntry', 'removeWhileExclusivelyLocked', 'sweepStoreEpochs']),
-    );
+    expect(new Set(deletionOwners)).toEqual(new Set(['removeAfterReapingRename', 'sweepStoreEpochs']));
+    const epoch = source('src/store/epoch.ts');
+    const rename = epoch.indexOf('renameForReaping(runtime, dbDir, targetPath)');
+    const remove = epoch.indexOf('removeDuringSweep(runtime.storage, reapingPath)', rename);
+    expect(rename).toBeGreaterThanOrEqual(0);
+    expect(remove).toBeGreaterThan(rename);
   });
 
   it('retains exactly the highest two proven epochs across numbering gaps', () => {
@@ -179,7 +182,7 @@ describe('write-once store epoch invariants', () => {
 
   it('replaces the swept-mint refusal with holder-publication safety in the semantic-refusal ratchet', () => {
     expect(source('src/store/epoch.ts')).not.toContain('failStoreEpoch');
-    expect(storeSemanticRefusalCount()).toBe(64);
+    expect(storeSemanticRefusalCount()).toBe(63);
   });
 
   it('uses file-lock acquisition rather than bare pid observation for holder liveness', () => {

@@ -48,14 +48,6 @@ type StoredStoreFormatIdentity = CurrentStoreFormatIdentity & {
   readonly storedProductVersion: string;
 };
 
-/**
- * Classification of an on-disk store against the current executable contract:
- * `absent` has no database file; `fresh` has no user tables; `compatible` has
- * the current fingerprint and a valid non-newer version; `older-incompatible`
- * and `newer-incompatible` have valid versions on the corresponding side of
- * current SemVer precedence; `corrupt-or-unsupported` covers missing or malformed
- * metadata and equal-version/different-fingerprint stores that cannot be ordered safely.
- */
 export type StoreFormatClassification =
   | { readonly kind: 'absent' }
   | { readonly kind: 'fresh' }

@@ -223,9 +223,6 @@ describe('generation readiness', () => {
     await openGeneratedStore(runtime);
 
     expect(existsSync(generatedStorePath(runtime))).toBe(true);
-    // The legacy rows stay where they are, and none of them appear in the new
-    // generation. A byte hash of the tree would be the wrong assertion here:
-    // classifying the legacy store opens it, and SQLite rewrites its sidecars.
     expect(legacyHistoryValue(join(legacyRoot, 'store', 'store.db'))).toBe('not-imported');
     expect(legacyHistoryValue(generatedStorePath(runtime))).toBeNull();
     expect(readFileSync(join(legacyRoot, 'equipment', 'dormant.bin'), 'utf-8')).toBe('left-behind-equipment');
