@@ -52,6 +52,7 @@ import {
 } from '#src/infra/fs-lock.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import { formatStoreResetRelease } from '#src/cli/format/store-reset.js';
+import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
@@ -325,6 +326,170 @@ describe('write-once store epochs', () => {
     expect(result.kind).toBe('release-pre-deletion-durability-sync-failed');
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     console.log('release-disposition-cell phase=pre-deletion target=present renderer-claim=not-removed');
+  });
+
+  it('distinguishes an absent second proof with a failed barrier from a removed release target', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-19'), true);
+    publishLiveCoordinator(runtime, runtime.env.pid(), '19');
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): boolean => (path === dbDir ? false : subject.syncDirectoryDurableSync(path));
+      },
+    });
+
+    const result = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: '17' });
+
+    expect(result.kind).toBe('release-absent-durability-sync-failed');
+    expect(existsSync(epochDirectory(dbDir, '17'))).toBe(false);
+    expect(formatStoreResetRelease(result)).toContain('was already absent');
+    expect(formatStoreResetRelease(result)).not.toContain('was removed');
+    console.log('release-disposition-cell phase=absent-second-proof target=absent renderer-claim=already-absent');
+  });
+
+  it('syncs after synchronous holder unlink mutates and then throws', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const holder = join(dbDir, '.epoch-holder-post-effect-sync.json');
+    writeFileSync(holder, `${JSON.stringify({ epoch: '1', pid: 999_999_991 })}\n`);
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'unlinkSync') {
+          return (path: string): void => {
+            subject.unlinkSync(path);
+            if (path === holder) {
+              events.push('holder-removed');
+              throw Object.assign(new Error('injected post-effect holder failure'), { code: 'EIO' });
+            }
+          };
+        }
+        if (property === 'syncDirectoryDurableSync') {
+          return (path: string): boolean => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurableSync(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, '3')).toBe('deletion-failed');
+    expect(events).toEqual(['holder-removed', 'parent-sync']);
+    console.log('ambiguous-removal-cell site=sync-holder post-effect=EIO parent-sync=after');
+  });
+
+  it('syncs after post-ready holder unlink mutates and then throws', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const holder = join(dbDir, '.epoch-holder-post-effect-async.json');
+    writeFileSync(holder, `${JSON.stringify({ epoch: '1', pid: 999_999_991 })}\n`);
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'unlink') {
+          return async (path: string): Promise<void> => {
+            await subject.unlink(path);
+            if (path === holder) {
+              events.push('holder-removed');
+              throw Object.assign(new Error('injected post-effect holder failure'), { code: 'EIO' });
+            }
+          };
+        }
+        if (property === 'syncDirectoryDurable') {
+          return async (path: string): Promise<boolean> => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurable(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe(
+      'deletion-failed',
+    );
+    expect(events).toEqual(['holder-removed', 'parent-sync']);
+    console.log('ambiguous-removal-cell site=post-ready-holder post-effect=EIO parent-sync=after');
+  });
+
+  it('syncs a post-effect orphan-lock removal before returning cancellation', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const orphanLock = storeEpochLockPath(dbDir, '1');
+    const lease = acquireSharedFileLockSync(orphanLock);
+    lease();
+    const controller = new AbortController();
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'unlink') {
+          return async (path: string): Promise<void> => {
+            await subject.unlink(path);
+            if (path === orphanLock) {
+              events.push('orphan-lock-removed');
+              controller.abort();
+              throw Object.assign(new Error('injected post-effect orphan-lock failure'), { code: 'EIO' });
+            }
+          };
+        }
+        if (property === 'syncDirectoryDurable') {
+          return async (path: string): Promise<boolean> => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurable(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    await expect(
+      sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3', { signal: controller.signal }),
+    ).resolves.toBe('cancelled');
+    expect(events).toEqual(['orphan-lock-removed', 'parent-sync']);
+    console.log('ambiguous-removal-cell site=orphan-lock post-effect=EIO parent-sync=before-cancel');
+  });
+
+  it('syncs after legacy-quarantine removal mutates and then throws', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const quarantine = join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY);
+    mkdirSync(quarantine);
+    writeFileSync(join(quarantine, 'incident'), 'evidence');
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'rm') {
+          return async (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): Promise<void> => {
+            await subject.rm(path, rmOptions);
+            if (path === quarantine) {
+              events.push('quarantine-removed');
+              throw Object.assign(new Error('injected post-effect quarantine failure'), { code: 'EIO' });
+            }
+          };
+        }
+        if (property === 'syncDirectoryDurable') {
+          return async (path: string): Promise<boolean> => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurable(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe(
+      'deletion-failed',
+    );
+    expect(events).toEqual(['quarantine-removed', 'parent-sync']);
+    console.log('ambiguous-removal-cell site=legacy-quarantine post-effect=EIO parent-sync=after');
   });
 
   it('syncs successful synchronous holder cleanup before reporting a later holder deletion failure', () => {

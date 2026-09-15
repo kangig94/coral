@@ -75,6 +75,7 @@ export type StoreEpochSweepResult =
   | 'deletion-failed'
   | 'lock-cleanup-failed'
   | 'pre-deletion-durability-sync-failed'
+  | 'absent-durability-sync-failed'
   | 'durability-sync-failed';
 
 export type StoreEpochMetadataDisposition =
@@ -645,9 +646,9 @@ export function sweepStoreEpochs(
       continue;
     }
     try {
+      holdersChanged = true;
       const removed = removeDuringSweep(storage, holder.path);
       holderDeletionFailed ||= !removed;
-      holdersChanged ||= removed;
       if (holder.state === 'unobservable') unobservableHolder = true;
     } finally {
       holder.proof?.();
@@ -694,10 +695,10 @@ export function sweepStoreEpochs(
     if (proof === 'unobservable') return 'unobservable-metadata';
     if (proof === 'absent' && options.releaseEpoch !== '0') {
       try {
-        return storage.syncDirectoryDurableSync(dbDir) ? 'absent' : 'durability-sync-failed';
+        return storage.syncDirectoryDurableSync(dbDir) ? 'absent' : 'absent-durability-sync-failed';
       } catch (error: unknown) {
         auditSweepFailure(dbDir, error);
-        return 'durability-sync-failed';
+        return 'absent-durability-sync-failed';
       }
     }
     let releaseRemoval: Exclude<LockedRemoval, 'locked'>;
@@ -1080,9 +1081,9 @@ export async function sweepStoreEpochsPostReady(
     }
     if (holder !== null) {
       try {
+        unsyncedMutation = true;
         const removed = await removeDuringPostReadySweep(runtime.storage, holder.path);
         holderDeletionFailed ||= !removed;
-        unsyncedMutation ||= removed;
       } finally {
         holder.proof?.();
       }
@@ -1154,7 +1155,7 @@ export async function sweepStoreEpochsPostReady(
       liveHolder = true;
       auditSweepSkip(join(dbDir, entry));
     } else {
-      unsyncedMutation ||= removal === 'removed';
+      unsyncedMutation = true;
       complete = removal === 'removed' && complete;
     }
     await yieldSweepTurn();
@@ -1162,8 +1163,8 @@ export async function sweepStoreEpochsPostReady(
 
   if (options.signal?.aborted) return finish('cancelled');
   if (compareEpoch(openEpoch, '1') >= 0) {
+    unsyncedMutation = true;
     const removed = await removeDuringPostReadySweep(runtime.storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY));
-    unsyncedMutation ||= removed;
     complete = removed && complete;
   }
   if (!(await syncMutations())) return 'durability-sync-failed';
