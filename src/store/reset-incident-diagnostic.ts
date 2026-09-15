@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import {
   MAX_SQLITE_DIAGNOSTIC_BYTES,
@@ -21,6 +21,20 @@ import { storeEpochLockPath } from './epoch.js';
 
 const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as const;
 const COPY_BUFFER_BYTES = 64 * 1024;
+const REPORT_NAMESPACE_PREFIX = 'coral-store-report-';
+const REPORT_NAMESPACE_PATTERN = /^coral-store-report-(\d+)-/u;
+
+export type StoreDatabaseEvidenceUnavailableReason = 'over-bound' | 'unobservable';
+
+export class StoreDatabaseEvidenceUnavailableError extends Error {
+  readonly reason: StoreDatabaseEvidenceUnavailableReason;
+
+  constructor(reason: StoreDatabaseEvidenceUnavailableReason, message: string) {
+    super(message);
+    this.name = 'StoreDatabaseEvidenceUnavailableError';
+    this.reason = reason;
+  }
+}
 
 export type StagedStoreDatabaseEvidence = Readonly<{
   dbPath: string;
@@ -250,8 +264,11 @@ function copyEvidence(options: {
   readonly platform: string;
 }): { readonly bytes: number; readonly sha256: string } {
   const before = options.fs.lstat(options.source);
-  if (before === null || before.kind !== 'file' || before.size > BigInt(options.remainingBudget)) {
-    throw new Error('source unavailable');
+  if (before === null || before.kind !== 'file') {
+    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'source is unavailable');
+  }
+  if (before.size > BigInt(options.remainingBudget)) {
+    throw new StoreDatabaseEvidenceUnavailableError('over-bound', 'source exceeds the diagnostic byte bound');
   }
   let sourceDescriptor: StoreResetFileDescriptor | null = null;
   let destinationDescriptor: StoreResetFileDescriptor | null = null;
@@ -307,7 +324,10 @@ function copyEvidence(options: {
   } catch (error: unknown) {
     failure = error;
   }
-  if (failure !== null || result === null) throw new Error('copy unavailable');
+  if (failure !== null || result === null) {
+    if (failure instanceof StoreDatabaseEvidenceUnavailableError) throw failure;
+    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'copy is unavailable');
+  }
   return result;
 }
 
@@ -362,19 +382,14 @@ export function stageStoreDatabaseEvidence(options: {
   readonly tempRoot: string;
   readonly platform: string;
 }): StagedStoreDatabaseEvidence {
-  const tempDirectory = options.fs.mkdtemp(join(options.tempRoot, 'coral-store-report-'));
-  const tempIdentity = options.fs.lstat(tempDirectory);
-  if (
-    tempIdentity === null ||
-    tempIdentity.kind !== 'directory' ||
-    (options.platform !== 'win32' && (tempIdentity.mode & 0o777n) !== 0o700n)
-  ) {
-    throw new Error('temporary directory is not private');
-  }
-  const tempRealPath = options.fs.realpath(tempDirectory);
+  reclaimStoreReportNamespaces(options.fs, options.tempRoot, options.platform);
+  const tempDirectory = options.fs.mkdtemp(join(options.tempRoot, `${REPORT_NAMESPACE_PREFIX}${process.pid}-`));
+  let tempIdentity: StoreResetInspectionStat | null = null;
+  let tempRealPath: string | null = null;
   let cleaned = false;
   const cleanup = (): StoreResetDiagnosticStatus['cleanup'] => {
     if (cleaned) return 'removed';
+    if (tempIdentity === null || tempRealPath === null) return 'cleanup_unavailable';
     try {
       if (options.fs.realpath(tempDirectory) !== tempRealPath) return 'cleanup_unavailable';
       if (!options.fs.removeTreeGuarded(tempDirectory, tempIdentity)) return 'cleanup_unavailable';
@@ -386,11 +401,23 @@ export function stageStoreDatabaseEvidence(options: {
   };
 
   try {
+    tempIdentity = options.fs.lstat(tempDirectory);
+    if (
+      tempIdentity === null ||
+      tempIdentity.kind !== 'directory' ||
+      (options.platform !== 'win32' && (tempIdentity.mode & 0o777n) !== 0o700n)
+    ) {
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'temporary directory is not private');
+    }
+    tempRealPath = options.fs.realpath(tempDirectory);
     let remaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
-    const sourceHashes = new Map<string, string>();
+    const sourceHashes = new Map<string, string | null>();
     for (const name of DIAGNOSTIC_SOURCE_NAMES) {
       const source = join(options.sourceDirectory, name);
-      if (options.fs.lstat(source) === null) continue;
+      if (options.fs.lstat(source) === null) {
+        sourceHashes.set(name, null);
+        continue;
+      }
       const copied = copyEvidence({
         fs: options.fs,
         source,
@@ -401,13 +428,19 @@ export function stageStoreDatabaseEvidence(options: {
       remaining -= copied.bytes;
       sourceHashes.set(name, copied.sha256);
     }
-    if (!sourceHashes.has('store.db')) throw new Error('store database is unavailable');
+    if (sourceHashes.get('store.db') === null) {
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'store database is unavailable');
+    }
     return {
       dbPath: join(tempDirectory, 'store.db'),
       verify: () => {
         let verificationRemaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
         try {
           for (const [name, expectedHash] of sourceHashes) {
+            if (expectedHash === null) {
+              if (options.fs.lstat(join(options.sourceDirectory, name)) !== null) return false;
+              continue;
+            }
             const verified = hashEvidence(options.fs, join(options.sourceDirectory, name), verificationRemaining);
             if (verified.sha256 !== expectedHash) return false;
             verificationRemaining -= verified.bytes;
@@ -422,6 +455,70 @@ export function stageStoreDatabaseEvidence(options: {
   } catch (error: unknown) {
     cleanup();
     throw error;
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: string, platform: string): void {
+  let cursor: ReturnType<StoreResetInspectionFs['openDirectory']>;
+  try {
+    cursor = fs.openDirectory(tempRoot);
+  } catch {
+    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
+  }
+  const entries: string[] = [];
+  try {
+    for (;;) {
+      const entry = fs.readDirectory(cursor);
+      if (entry === null) break;
+      if (REPORT_NAMESPACE_PATTERN.test(entry.name)) entries.push(entry.name);
+    }
+  } catch {
+    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
+  } finally {
+    try {
+      fs.closeDirectory(cursor);
+    } catch {
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
+    }
+  }
+
+  let liveReservations = 0;
+  const realTempRoot = fs.realpath(tempRoot);
+  for (const name of entries) {
+    const match = REPORT_NAMESPACE_PATTERN.exec(name);
+    const ownerPid = match === null ? null : Number(match[1]);
+    const path = join(tempRoot, name);
+    const identity = fs.lstat(path);
+    if (
+      ownerPid === null ||
+      !Number.isSafeInteger(ownerPid) ||
+      ownerPid <= 0 ||
+      identity === null ||
+      identity.kind !== 'directory' ||
+      (platform !== 'win32' && (identity.mode & 0o777n) !== 0o700n) ||
+      dirname(fs.realpath(path)) !== realTempRoot
+    ) {
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
+    }
+    if (processIsAlive(ownerPid)) {
+      liveReservations += 1;
+      continue;
+    }
+    if (!fs.removeTreeGuarded(path, identity)) {
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace reclamation failed');
+    }
+  }
+  if (liveReservations > 0) {
+    throw new StoreDatabaseEvidenceUnavailableError('over-bound', 'the aggregate report-copy bound is reserved');
   }
 }
 

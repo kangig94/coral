@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createStoreResetIncidentDiagnosticRunner,
+  stageStoreDatabaseEvidence,
+  StoreDatabaseEvidenceUnavailableError,
   superviseStoreResetDiagnosticChild,
   type StoreResetDiagnosticChild,
   type StoreResetDiagnosticSupervisorPort,
@@ -291,6 +293,76 @@ describe('store-reset SQLite child supervision', () => {
 });
 
 describe('store-reset SQLite evidence staging', () => {
+  it('rejects verification when a WAL appears after staging observed its absence', () => {
+    const base = root('coral-reset-late-wal-');
+    const sourceDirectory = join(base, 'source');
+    const tempRoot = join(base, 'tmp');
+    mkdirSync(sourceDirectory);
+    mkdirSync(tempRoot);
+    writeFileSync(join(sourceDirectory, 'store.db'), 'database');
+    let createdWal = false;
+    const fs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
+      lstat(path, _call, current) {
+        if (!createdWal && path === join(sourceDirectory, 'store.db-wal') && current === null) {
+          createdWal = true;
+          writeFileSync(path, 'late transaction');
+        }
+        return current;
+      },
+    });
+
+    const staged = stageStoreDatabaseEvidence({ fs, sourceDirectory, tempRoot, platform: process.platform });
+    try {
+      const verified = staged.verify();
+      console.log(`late-wal-verification-cell wal-created=${createdWal} verified=${verified}`);
+      expect(createdWal).toBe(true);
+      expect(verified).toBe(false);
+    } finally {
+      staged.cleanup();
+    }
+  });
+
+  it('reclaims interrupted report namespaces before reserving the aggregate bound', () => {
+    const base = root('coral-reset-report-reclaim-');
+    const sourceDirectory = join(base, 'source');
+    const tempRoot = join(base, 'tmp');
+    mkdirSync(sourceDirectory);
+    mkdirSync(tempRoot);
+    writeFileSync(join(sourceDirectory, 'store.db'), 'database');
+    const interrupted = 4;
+    for (let index = 0; index < interrupted; index += 1) {
+      const namespace = join(tempRoot, `coral-store-report-2147483647-interrupted-${index}`);
+      mkdirSync(namespace, { mode: 0o700 });
+      writeFileSync(join(namespace, 'store.db'), 'abandoned copy');
+    }
+
+    const staged = stageStoreDatabaseEvidence({
+      fs: createStoreResetInspectionFs(),
+      sourceDirectory,
+      tempRoot,
+      platform: process.platform,
+    });
+    try {
+      const namespaces = readdirSync(tempRoot).filter((name) => name.startsWith('coral-store-report-'));
+      console.log(`report-reclamation-cell interrupted=${interrupted} retained=${namespaces.length}`);
+      expect(namespaces).toHaveLength(1);
+      expect(() =>
+        stageStoreDatabaseEvidence({
+          fs: createStoreResetInspectionFs(),
+          sourceDirectory,
+          tempRoot,
+          platform: process.platform,
+        }),
+      ).toThrowError(
+        expect.objectContaining<Partial<StoreDatabaseEvidenceUnavailableError>>({
+          reason: 'over-bound',
+        }),
+      );
+    } finally {
+      staged.cleanup();
+    }
+  });
+
   it('copies through partial I/O, passes only the staged DB, rehashes evidence, and cleans up', async () => {
     const fixture = diagnosticFixture();
     const child = new FakeDiagnosticChild();

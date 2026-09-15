@@ -1,4 +1,13 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -242,6 +251,37 @@ describe('pre-compact.mjs', () => {
     expect(snapshots).toHaveLength(1);
     expect(readFileSync(join(snapshotDir, snapshots[0]), 'utf8')).toContain('published-job');
     expect(readFileSync(join(snapshotDir, snapshots[0]), 'utf8')).not.toContain('flat-job');
+  });
+
+  it('captures a snapshot through a symlinked store root', () => {
+    const fixture = createFixture();
+    const fingerprint = 'sha256:8888888888888888888888888888888888888888888888888888888888888888';
+    const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
+    const targetHome = join(fixture.root, 'store-target-home');
+    seedStore(targetHome, fixture.projectRoot, fingerprint, 'symlinked-root-job');
+    const configuredStore = join(fixture.root, '.coral', 'gen2', 'data', 'store');
+    mkdirSync(join(configuredStore, '..'), { recursive: true });
+    symlinkSync(join(targetHome, '.coral', 'gen2', 'data', 'store'), configuredStore, 'dir');
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-symlinked-root', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PLUGIN_ROOT: fixture.pluginRoot,
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    const snapshotDir = join(fixture.snapshotDir, 'hooks');
+    const snapshots = existsSync(snapshotDir) ? readdirSync(snapshotDir) : [];
+    console.log(
+      `pre-compact-symlinked-root-cell status=${result.status} snapshots=${snapshots.length} captured=${result.stderr.includes('captured job snapshot')}`,
+    );
+    expect(result.status).toBe(0);
+    expect(snapshots).toHaveLength(1);
+    expect(readFileSync(join(snapshotDir, snapshots[0]), 'utf8')).toContain('symlinked-root-job');
   });
 
   it('does not prescribe a destructive store reset for one unsafe projected job ID', () => {

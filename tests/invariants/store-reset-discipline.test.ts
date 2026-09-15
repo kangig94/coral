@@ -197,7 +197,9 @@ describe('write-once store epoch invariants', () => {
 
   it('replaces the swept-mint refusal with holder-publication safety in the semantic-refusal ratchet', () => {
     expect(source('src/store/epoch.ts')).not.toContain('failStoreEpoch');
-    expect(storeSemanticRefusalCount()).toBe(63);
+    const count = storeSemanticRefusalCount();
+    console.log(`semantic-refusal-ratchet-cell count=${count}`);
+    expect(count).toBe(63);
   });
 
   it('uses file-lock acquisition rather than bare pid observation for holder liveness', () => {
@@ -224,9 +226,8 @@ describe('write-once store epoch invariants', () => {
     expect(functionSource('src/store/epoch.ts', 'provenStoreEpochAtPath')).toContain('resolveProvenStoreEpochAtPath');
     expect(functionSource('src/store/epoch.ts', 'resolveProvenStoreEpochAtPath')).toContain('observeStoreEpoch');
     expect(functionSource('src/store/epoch.ts', 'openWritableStoreDbNoReset')).toContain('acquireStoreEpochReadLock');
-    expect(functionSource('src/store/epoch.ts', 'acquireStoreEpochReadLock')).toContain(
-      'resolveProvenStoreEpochAtPath',
-    );
+    expect(functionSource('src/store/epoch.ts', 'resolveCurrentStore')).toContain('resolveProvenStoreEpochAtPath');
+    expect(functionSource('src/store/epoch.ts', 'acquireStoreEpochReadLock')).toContain('resolved.storeRoot');
     expect(functionSource('src/store/read-port.ts', 'openReadOnlyStoreDatabase')).toContain(
       'acquireStoreEpochReadLock',
     );

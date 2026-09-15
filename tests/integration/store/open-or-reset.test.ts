@@ -227,9 +227,8 @@ async function withGeneratedHookReadStore<T>(runtime: Runtime, epoch: string, ru
       '--no-warnings',
       '--input-type=module',
       '-e',
-      "const { openLockedReadOnlyStoreDatabase } = await import(process.argv[1]); const handle = openLockedReadOnlyStoreDatabase(process.argv[2], process.argv[3]); handle.db.prepare('SELECT 1').get(); process.stdout.write('ready\\n'); process.on('SIGTERM', () => { handle.close(); process.exit(0); }); setInterval(() => {}, 1000);",
+      "const { openLockedReadOnlyStoreDatabase } = await import(process.argv[1]); const handle = openLockedReadOnlyStoreDatabase(process.argv[2]); handle.db.prepare('SELECT 1').get(); process.stdout.write('ready\\n'); process.on('SIGTERM', () => { handle.close(); process.exit(0); }); setInterval(() => {}, 1000);",
       helperUrl,
-      dbDir,
       epochPath(dbDir, epoch),
     ],
     { stdio: ['ignore', 'pipe', 'pipe'] },
@@ -317,6 +316,83 @@ describe('write-once store epochs', () => {
     expect(epochs).toEqual(['epoch-1']);
     expect(sweep).toBe('complete');
     expect(existsSync(residue)).toBe(false);
+  });
+
+  it('opens the database path returned by generated-hook discovery through a symlinked root', async () => {
+    const runtime = harness();
+    const configuredDbDir = runtime.paths.coral.store.dbDir;
+    const targetDbDir = join(dirname(configuredDbDir), 'generated-hook-root');
+    mkdirSync(dirname(configuredDbDir), { recursive: true });
+    publishAdversarialEpoch(epochDirectory(targetDbDir, '1'), true);
+    symlinkSync(targetDbDir, configuredDbDir, 'dir');
+    const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?resolved-root=${Date.now()}`;
+    const hook = (await import(helperUrl)) as {
+      resolveCurrentStoreDbPath(path: string): string | null;
+      openLockedReadOnlyStoreDatabase(dbPath: string): { db: DatabaseSync; close(): void };
+    };
+
+    const dbPath = hook.resolveCurrentStoreDbPath(configuredDbDir);
+    expect(dbPath).toBe(epochPath(targetDbDir, '1'));
+    if (dbPath === null) throw new Error('generated hook did not resolve the published epoch');
+    const opened = hook.openLockedReadOnlyStoreDatabase(dbPath);
+    try {
+      expect(opened.db.prepare('SELECT value FROM rollback_sentinel').get()).toEqual({
+        value: 'concurrent-winner',
+      });
+    } finally {
+      opened.close();
+    }
+  });
+
+  it('carries one resolved root through proof, lease, open, and holder publication', () => {
+    const runtime = harness();
+    const configuredDbDir = runtime.paths.coral.store.dbDir;
+    const oldRoot = join(dirname(configuredDbDir), 'old-store-root');
+    const newRoot = join(dirname(configuredDbDir), 'new-store-root');
+    publishAdversarialEpoch(epochDirectory(oldRoot, '1'), true);
+    publishAdversarialEpoch(epochDirectory(newRoot, '1'), true);
+    mkdirSync(dirname(configuredDbDir), { recursive: true });
+    symlinkSync(oldRoot, configuredDbDir, 'dir');
+    const oldLock = storeEpochLockPath(oldRoot, '1');
+    let retargeted = false;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'realpathSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): string => {
+          const resolved = subject.realpathSync(path);
+          if (!retargeted && path === oldLock) {
+            retargeted = true;
+            rmSync(configuredDbDir);
+            symlinkSync(newRoot, configuredDbDir, 'dir');
+          }
+          return resolved;
+        };
+      },
+    });
+
+    const settled = settleStoreEpoch(withStorage(runtime, storage), options());
+    const oldHolder = readdirSync(oldRoot).find((entry) => entry.startsWith('.epoch-holder-'));
+    const newHolder = readdirSync(newRoot).find((entry) => entry.startsWith('.epoch-holder-'));
+    const oldLease = tryAcquireExclusiveFileLockSync(oldLock);
+    const newLease = tryAcquireExclusiveFileLockSync(storeEpochLockPath(newRoot, '1'));
+    try {
+      console.log(
+        `carried-root-cell path=${settled.path === epochPath(oldRoot, '1') ? 'old' : 'other'} holder=${oldHolder === undefined ? 'missing' : 'old'} old-lease=${oldLease === null ? 'held' : 'free'} new-lease=${newLease === null ? 'held' : 'free'}`,
+      );
+      expect(retargeted).toBe(true);
+      expect(settled.path).toBe(epochPath(oldRoot, '1'));
+      expect(settled.db.prepare('SELECT value FROM rollback_sentinel').get()).toEqual({
+        value: 'concurrent-winner',
+      });
+      expect(oldHolder).toBeDefined();
+      expect(newHolder).toBeUndefined();
+      expect(oldLease).toBeNull();
+      expect(newLease).not.toBeNull();
+    } finally {
+      newLease?.();
+      oldLease?.();
+      settled.db.close();
+    }
   });
 
   it.each(['post-ready sweep', 'release'] as const)(
@@ -864,13 +940,13 @@ describe('write-once store epochs', () => {
     const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?metadata-proof=${Date.now()}`;
     const hook = (await import(helperUrl)) as {
       resolveCurrentStoreDbPath(path: string): string | null;
-      openLockedReadOnlyStoreDatabase(dbDir: string, dbPath: string): unknown;
+      openLockedReadOnlyStoreDatabase(dbPath: string): unknown;
     };
 
     expect(() => openWritableStoreDbNoReset(runtime, { path: malformedPath, storeFormat })).toThrow();
     expect(() => openReadOnlyStoreDatabase(runtime, { path: malformedPath, storeFormat })).toThrow();
     expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
-    expect(() => hook.openLockedReadOnlyStoreDatabase(dbDir, malformedPath)).toThrow();
+    expect(() => hook.openLockedReadOnlyStoreDatabase(malformedPath)).toThrow();
     const settled = settleStoreEpoch(runtime, options());
     console.log(
       `malformed-metadata-openers-cell writable=refused read-only=refused hook=refused settlement=epoch-${settled.epoch}`,
@@ -1890,11 +1966,11 @@ describe('write-once store epochs', () => {
       const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?hardlink-proof=${artifact}-${Date.now()}`;
       const hook = (await import(helperUrl)) as {
         resolveCurrentStoreDbPath(path: string): string | null;
-        openLockedReadOnlyStoreDatabase(dbDir: string, dbPath: string): { close(): void };
+        openLockedReadOnlyStoreDatabase(dbPath: string): { close(): void };
       };
 
       expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
-      expect(() => hook.openLockedReadOnlyStoreDatabase(dbDir, epochPath(dbDir, '1'))).toThrow();
+      expect(() => hook.openLockedReadOnlyStoreDatabase(epochPath(dbDir, '1'))).toThrow();
       console.log(
         `generated-hook-hardlink-cell artifact=${artifact} resolved=none nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
       );
@@ -2029,11 +2105,11 @@ describe('write-once store epochs', () => {
     const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?lock-proof=${Date.now()}`;
     const hook = (await import(helperUrl)) as {
       resolveCurrentStoreDbPath(path: string): string | null;
-      openLockedReadOnlyStoreDatabase(dbDir: string, dbPath: string): unknown;
+      openLockedReadOnlyStoreDatabase(dbPath: string): unknown;
     };
 
     expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
-    expect(() => hook.openLockedReadOnlyStoreDatabase(dbDir, epochPath(dbDir, '1'))).toThrow();
+    expect(() => hook.openLockedReadOnlyStoreDatabase(epochPath(dbDir, '1'))).toThrow();
     const after = fileTreeSnapshot(legacyRoot);
     console.log(
       `generated-hook-malformed-lock-cell resolved=none open=refused legacy-byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,

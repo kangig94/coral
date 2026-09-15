@@ -1344,7 +1344,18 @@ function formatCapabilityRejected(result: Extract<ShutdownResult, { reason: 'cap
   ].join('\n');
 }
 
-export function formatRecoveryQuarantineList(entries: readonly RecoveryQuarantineListEntry[]): string {
+export type RecoveryQuarantineListResult =
+  | readonly RecoveryQuarantineListEntry[]
+  | Readonly<{ kind: 'unavailable'; reason: 'over-bound' | 'unobservable' }>;
+
+export function formatRecoveryQuarantineList(result: RecoveryQuarantineListResult): string {
+  if (!Array.isArray(result)) {
+    const unavailable = result as Exclude<RecoveryQuarantineListResult, readonly RecoveryQuarantineListEntry[]>;
+    return unavailable.reason === 'over-bound'
+      ? 'Recovery quarantine inspection exceeds the 256 MiB diagnostic bound; no rows were read.'
+      : 'Recovery quarantine inspection is unavailable because the current store could not be observed safely; no rows were read.';
+  }
+  const entries = result as readonly RecoveryQuarantineListEntry[];
   if (entries.length === 0) {
     return 'Recovery quarantine is empty.';
   }

@@ -96,9 +96,13 @@ import {
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
-import { provenStoreEpochAtPath, resolveCurrentStorePath } from '../../store/epoch.js';
+import { inspectCurrentStore } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
-import { stageStoreDatabaseEvidence, type StagedStoreDatabaseEvidence } from '../../store/reset-incident-diagnostic.js';
+import {
+  stageStoreDatabaseEvidence,
+  StoreDatabaseEvidenceUnavailableError,
+  type StagedStoreDatabaseEvidence,
+} from '../../store/reset-incident-diagnostic.js';
 import {
   attributeUnreadableProviderOperations,
   readProviderOperations,
@@ -170,6 +174,7 @@ import {
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
   RECOVERY_REVISION_UNTIL_CLEARED,
+  type RecoveryQuarantineListResult,
 } from '../format/backend.js';
 import {
   constrainStoreResetRendererInput,
@@ -554,7 +559,7 @@ export interface HandoffRoutingStatusQuarantineCommandOperations {
 }
 
 export interface RecoveryQuarantineCommandOperations {
-  list(): readonly RecoveryQuarantineListEntry[];
+  list(): RecoveryQuarantineListResult;
   clear(request: RecoveryQuarantineClearRequest): Promise<RecoveryQuarantineClearResult>;
   discardProviderOperation?(
     request: UnreadableProviderOperationDiscardRequest,
@@ -1295,17 +1300,28 @@ function unreadableProviderOperationEntries(
 
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
-): readonly RecoveryQuarantineListEntry[] {
-  const dbPath = resolveCurrentStorePath(runtime);
-  if (provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, dbPath) === null) {
-    throw new Error('Resolved recovery-quarantine store path is outside the canonical epoch layout.');
+): RecoveryQuarantineListResult {
+  const current = inspectCurrentStore(runtime);
+  if (current.kind === 'absent') return [];
+  if (current.kind === 'unobservable') return { kind: 'unavailable', reason: 'unobservable' };
+  const dbPath = current.epoch.path;
+  let staged: StagedStoreDatabaseEvidence;
+  try {
+    staged = stageStoreDatabaseEvidence({
+      fs: createStoreResetInspectionFs(),
+      sourceDirectory: dirname(dbPath),
+      tempRoot: tmpdir(),
+      platform: process.platform,
+    });
+  } catch (error: unknown) {
+    return {
+      kind: 'unavailable',
+      reason:
+        error instanceof StoreDatabaseEvidenceUnavailableError && error.reason === 'over-bound'
+          ? 'over-bound'
+          : 'unobservable',
+    };
   }
-  const staged: StagedStoreDatabaseEvidence = stageStoreDatabaseEvidence({
-    fs: createStoreResetInspectionFs(),
-    sourceDirectory: dirname(dbPath),
-    tempRoot: tmpdir(),
-    platform: process.platform,
-  });
   let entries: readonly RecoveryQuarantineListEntry[];
   try {
     const classification = classifyStoreFile(staged.dbPath, runtime.storage, currentCoralStoreFormat());
@@ -2162,14 +2178,23 @@ function unquoteRecoveryCoordinate(value: string): string {
   }
 }
 
+function recoveryQuarantineEntries(result: RecoveryQuarantineListResult): readonly RecoveryQuarantineListEntry[] {
+  if (Array.isArray(result)) return result as readonly RecoveryQuarantineListEntry[];
+  throw new RecoveryQuarantineContractError(
+    'Recovery quarantine coordinates are unavailable while the local store cannot be inspected.',
+    [{ kind: 'recovery-quarantine-clear', command: { kind: 'list' } }],
+  );
+}
+
 function parseRecoveryQuarantineClearOptions(
   options: {
     readonly boundary: string;
     readonly key: string;
     readonly revision: string;
   },
-  storedEntries: readonly RecoveryQuarantineListEntry[],
+  result: RecoveryQuarantineListResult,
 ): RecoveryQuarantineClearRequest {
+  const storedEntries = recoveryQuarantineEntries(result);
   const revision = unquoteRecoveryCoordinate(options.revision);
   const plainKey = unquoteRecoveryCoordinate(options.key);
   if (plainKey.includes('\u0000')) {
@@ -2204,8 +2229,9 @@ function parseRecoveryQuarantineClearOptions(
 
 function parseUnreadableProviderOperationDiscardOptions(
   options: Readonly<{ key: string; revision: string; allowReadable?: boolean }>,
-  storedEntries: readonly RecoveryQuarantineListEntry[],
+  result: RecoveryQuarantineListResult,
 ): UnreadableProviderOperationDiscardRequest {
+  const storedEntries = recoveryQuarantineEntries(result);
   const plainKey = unquoteRecoveryCoordinate(options.key);
   const decodedKey = decodeRecoveryQuarantineKey(options.key);
   const candidateKey = decodedKey.kind === 'decoded' ? decodedKey.key : plainKey;

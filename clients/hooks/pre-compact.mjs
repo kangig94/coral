@@ -88,7 +88,7 @@ await failOpen(async () => {
     return;
   }
 
-  const storeHandle = openLockedReadOnlyStoreDatabase(storeDbDir(), dbPath);
+  const storeHandle = openLockedReadOnlyStoreDatabase(dbPath);
   const { db } = storeHandle;
   try {
     // Default SQLITE_BUSY timeout is 0ms: a backend mid-write would make the

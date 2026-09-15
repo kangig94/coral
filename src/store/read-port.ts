@@ -1,12 +1,7 @@
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { openStoreDatabase, type Database } from './db.js';
-import {
-  acquireStoreEpochReadLock,
-  holdStoreEpochLockUntilClose,
-  resolveCurrentStorePath,
-  storeEpochAtPath,
-} from './epoch.js';
+import { acquireStoreEpochReadLock, holdStoreEpochLockUntilClose, resolveCurrentStore } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import type { ReadonlyDatabase } from './read-types.js';
 
@@ -31,14 +26,14 @@ export function openReadOnlyStoreDatabase(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
-  const path = resolveCurrentStorePath(runtime, options.path);
-  const lease = acquireStoreEpochReadLock(runtime, path);
-  if (storeEpochAtPath(runtime.paths.coral.store.dbDir, path) !== null && lease === null) {
-    throw documentedCoralSetupError('store_not_initialized', { path });
+  const resolved = resolveCurrentStore(runtime, options.path);
+  const lease = resolved.epoch === null ? null : acquireStoreEpochReadLock(runtime, resolved.epoch);
+  if (resolved.epochCandidate && lease === null) {
+    throw documentedCoralSetupError('store_not_initialized', { path: resolved.path });
   }
   try {
     const db = openStoreDatabase({
-      path: path,
+      path: resolved.path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,

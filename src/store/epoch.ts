@@ -105,6 +105,23 @@ export type StoreEpochOptions = Readonly<{
 
 export type StoreEpoch = string;
 
+export type ResolvedStoreEpoch = Readonly<{
+  storeRoot: string;
+  epoch: StoreEpoch;
+  path: string;
+}>;
+
+export type ResolvedStorePath = Readonly<{
+  path: string;
+  epoch: ResolvedStoreEpoch | null;
+  epochCandidate: boolean;
+}>;
+
+export type CurrentStoreInspection =
+  | Readonly<{ kind: 'current'; epoch: ResolvedStoreEpoch }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unobservable' }>;
+
 type StoreEpochProof =
   | Readonly<{ kind: 'proven' }>
   | Readonly<{ kind: 'disproven' }>
@@ -283,12 +300,52 @@ export function resolveCurrentStoreEpoch(storage: StoreEpochDiscoveryStorage, db
   return currentProvenEpoch(observeStoreEpochs(storage, storeRoot))?.epoch ?? null;
 }
 
+export function inspectCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>): CurrentStoreInspection {
+  const configuredDbDir = runtime.paths.coral.store.dbDir;
+  try {
+    if (!runtime.storage.existsSync(configuredDbDir)) return { kind: 'absent' };
+    const storeRoot = runtime.storage.realpathSync(configuredDbDir);
+    const observations = observeStoreEpochs(runtime.storage, storeRoot);
+    const current = currentProvenEpoch(observations);
+    if (current !== null) return { kind: 'current', epoch: resolvedStoreEpoch(storeRoot, current.epoch) };
+    return { kind: observations.length === 0 ? 'absent' : 'unobservable' };
+  } catch {
+    return { kind: 'unobservable' };
+  }
+}
+
+function resolvedStoreEpoch(storeRoot: string, epoch: StoreEpoch): ResolvedStoreEpoch {
+  return { storeRoot, epoch, path: epochPath(storeRoot, epoch) };
+}
+
+export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>, path?: string): ResolvedStorePath {
+  const configuredDbDir = runtime.paths.coral.store.dbDir;
+  if (path === ':memory:') return { path, epoch: null, epochCandidate: false };
+  if (path !== undefined) {
+    const epoch = resolveProvenStoreEpochAtPath(runtime.storage, configuredDbDir, path);
+    if (epoch !== null) return { path: epoch.path, epoch, epochCandidate: true };
+    let epochCandidate = false;
+    try {
+      const storeRoot = runtime.storage.realpathSync(configuredDbDir);
+      const addressedPath = runtime.storage.realpathSync(path);
+      epochCandidate = storeEpochAtPath(storeRoot, addressedPath) !== null;
+    } catch {
+      // An explicit non-epoch path is proven as a regular file by its opener.
+    }
+    return { path, epoch: null, epochCandidate };
+  }
+  if (!runtime.storage.existsSync(configuredDbDir)) {
+    return { path: epochPath(configuredDbDir, '1'), epoch: null, epochCandidate: true };
+  }
+  const storeRoot = runtime.storage.realpathSync(configuredDbDir);
+  const current = currentProvenEpoch(observeStoreEpochs(runtime.storage, storeRoot));
+  if (current === null) return { path: epochPath(storeRoot, '1'), epoch: null, epochCandidate: true };
+  const epoch = resolvedStoreEpoch(storeRoot, current.epoch);
+  return { path: epoch.path, epoch, epochCandidate: true };
+}
+
 export function resolveCurrentStorePath(runtime: Pick<Runtime, 'paths' | 'storage'>, path?: string): string {
-  if (path !== undefined) return path;
-  const dbDir = resolveStoreDbDir(runtime);
-  if (!runtime.storage.existsSync(dbDir)) return epochPath(dbDir, '1');
-  const current = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-  return epochPath(dbDir, current ?? '1');
+  return resolveCurrentStore(runtime, path).path;
 }
 
 export function openWritableStoreDbNoReset(
@@ -299,34 +356,35 @@ export function openWritableStoreDbNoReset(
     readonly storeFormat: StoreFormatDescription;
   },
 ): Database {
-  const storeDbPath = resolveCurrentStorePath(runtime, options.path);
-  const epoch = storeEpochAtPath(runtime.paths.coral.store.dbDir, storeDbPath);
-  const lease = epoch === null ? null : acquireStoreEpochReadLock(runtime, storeDbPath);
+  const resolved = resolveCurrentStore(runtime, options.path);
+  const lease = resolved.epoch === null ? null : acquireStoreEpochReadLock(runtime, resolved.epoch);
   const proof =
-    storeDbPath === ':memory:'
+    resolved.path === ':memory:'
       ? { kind: 'disproven' as const }
-      : epoch === null
-        ? observeContainedRegularFile(runtime.storage, dirname(storeDbPath), storeDbPath, { kind: 'proven' })
+      : resolved.epoch === null && !resolved.epochCandidate
+        ? observeContainedRegularFile(runtime.storage, dirname(resolved.path), resolved.path, { kind: 'proven' })
         : lease !== null
           ? { kind: 'proven' as const }
           : { kind: 'disproven' as const };
   if (proof.kind === 'proven') {
     try {
       const db = openStoreDatabase({
-        path: storeDbPath,
+        path: resolved.path,
         storage: runtime.storage,
         storeFormat: options.storeFormat,
         flavor: runtime.flavor,
         busyTimeoutMs: options.busyTimeoutMs,
       });
-      return epoch === null || lease === null ? db : registerStoreEpochHolder(runtime, epoch, db, lease);
+      return resolved.epoch === null || lease === null
+        ? db
+        : registerStoreEpochHolder(runtime, resolved.epoch, db, lease);
     } catch (error: unknown) {
       lease?.();
       throw error;
     }
   }
   lease?.();
-  throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
+  throw documentedCoralSetupError('store_not_initialized', { path: resolved.path });
 }
 
 export function storeEpochAtPath(dbDir: string, path: string): StoreEpoch | null {
@@ -339,32 +397,27 @@ export function provenStoreEpochAtPath(storage: StoragePort, dbDir: string, path
   return resolveProvenStoreEpochAtPath(storage, dbDir, path)?.epoch ?? null;
 }
 
-function resolveProvenStoreEpochAtPath(
-  storage: StoragePort,
-  dbDir: string,
-  path: string,
-): Readonly<{ epoch: StoreEpoch; storeRoot: string }> | null {
-  const epoch = storeEpochAtPath(dbDir, path);
-  if (epoch === null) return null;
+function resolveProvenStoreEpochAtPath(storage: StoragePort, dbDir: string, path: string): ResolvedStoreEpoch | null {
   let storeRoot: string;
+  let addressedPath: string;
   try {
     storeRoot = storage.realpathSync(dbDir);
+    addressedPath = storage.realpathSync(path);
   } catch {
     return null;
   }
+  const epoch = storeEpochAtPath(storeRoot, addressedPath);
+  if (epoch === null) return null;
   const observation = observeStoreEpoch(storage, storeRoot, `epoch-${epoch}`);
-  return observation?.proof.kind === 'proven' ? { epoch, storeRoot } : null;
+  return observation?.proof.kind === 'proven' ? resolvedStoreEpoch(storeRoot, epoch) : null;
 }
 
 export function acquireStoreEpochReadLock(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-  storeDbPath: string,
+  runtime: Pick<Runtime, 'storage'>,
+  resolved: ResolvedStoreEpoch,
 ): FileLockLease | null {
-  const dbDir = runtime.paths.coral.store.dbDir;
-  const proven = resolveProvenStoreEpochAtPath(runtime.storage, dbDir, storeDbPath);
-  if (proven === null) return null;
-  const lease = acquireSharedFileLockSync(storeEpochLockPath(proven.storeRoot, proven.epoch));
-  const observation = observeStoreEpoch(runtime.storage, proven.storeRoot, `epoch-${proven.epoch}`);
+  const lease = acquireSharedFileLockSync(storeEpochLockPath(resolved.storeRoot, resolved.epoch));
+  const observation = observeStoreEpoch(runtime.storage, resolved.storeRoot, `epoch-${resolved.epoch}`);
   if (observation?.proof.kind === 'proven') return lease;
   lease();
   return null;
@@ -390,22 +443,25 @@ export function holdStoreEpochLockUntilClose(db: Database, lease: FileLockLease 
 }
 
 function registerStoreEpochHolder(
-  runtime: Pick<Runtime, 'env' | 'ids' | 'paths' | 'storage'>,
-  epoch: StoreEpoch,
+  runtime: Pick<Runtime, 'env' | 'ids' | 'storage'>,
+  resolved: ResolvedStoreEpoch,
   db: Database,
   lease: FileLockLease,
 ): Database {
-  const dbDir = runtime.paths.coral.store.dbDir;
-  const holderPath = storeEpochHolderPath(dbDir, runtime.ids.uuid());
+  const holderPath = storeEpochHolderPath(resolved.storeRoot, runtime.ids.uuid());
   if (
-    !runtime.storage.writeAtomicDurableSync(holderPath, `${JSON.stringify({ epoch, pid: runtime.env.pid() })}\n`, {
-      encoding: 'utf-8',
-      mode: 0o600,
-    })
+    !runtime.storage.writeAtomicDurableSync(
+      holderPath,
+      `${JSON.stringify({ epoch: resolved.epoch, pid: runtime.env.pid() })}\n`,
+      {
+        encoding: 'utf-8',
+        mode: 0o600,
+      },
+    )
   ) {
     db.close();
     lease();
-    throw new Error(`Failed to publish store epoch ${epoch} holder.`);
+    throw new Error(`Failed to publish store epoch ${resolved.epoch} holder.`);
   }
   const close = db.close.bind(db);
   let closed = false;
@@ -419,7 +475,7 @@ function registerStoreEpochHolder(
       } finally {
         try {
           runtime.storage.unlinkSync(holderPath);
-          runtime.storage.syncDirectoryDurableSync(dbDir);
+          runtime.storage.syncDirectoryDurableSync(resolved.storeRoot);
         } catch {
           // The lock is decisive; a stale diagnostic record is cleaned by the next sweep.
         } finally {
@@ -1415,18 +1471,22 @@ function openPublishedEpoch(
   epoch: StoreEpoch,
   lease: FileLockLease,
 ): StoreEpochSettlement {
-  const path = epochPath(dbDir, epoch);
+  const resolved = resolvedStoreEpoch(dbDir, epoch);
   try {
-    assertProvenStoreOpenable(runtime.storage, path);
+    assertProvenStoreOpenable(runtime.storage, resolved.path);
     const db = openStoreDatabase({
-      path,
+      path: resolved.path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs,
     });
     db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-    return { db: registerStoreEpochHolder(runtime, epoch, db, lease), epoch, path };
+    return {
+      db: registerStoreEpochHolder(runtime, resolved, db, lease),
+      epoch: resolved.epoch,
+      path: resolved.path,
+    };
   } catch (error: unknown) {
     lease();
     throw error;
@@ -1453,30 +1513,29 @@ function assertProvenStoreOpenable(storage: StoragePort, path: string): void {
 function tryOpenCurrentEpoch(
   runtime: Runtime,
   options: StoreEpochOptions,
-  epoch: StoreEpoch,
-  path: string,
+  resolved: ResolvedStoreEpoch,
 ):
   | { readonly kind: 'opened'; readonly db: Database }
   | { readonly kind: 'replace'; readonly classification: StoreEpochClassification } {
   let lease: FileLockLease | null = null;
   try {
-    lease = acquireStoreEpochReadLock(runtime, epochPath(runtime.paths.coral.store.dbDir, epoch));
+    lease = acquireStoreEpochReadLock(runtime, resolved);
     if (lease === null) {
       return {
         kind: 'replace',
         classification: unavailableClassification(
-          new Error(`Store epoch ${epoch} did not retain its canonical proof.`),
+          new Error(`Store epoch ${resolved.epoch} did not retain its canonical proof.`),
         ),
       };
     }
-    assertProvenStoreOpenable(runtime.storage, path);
+    assertProvenStoreOpenable(runtime.storage, resolved.path);
   } catch (error: unknown) {
     lease?.();
     return { kind: 'replace', classification: unavailableClassification(error) };
   }
   try {
     const decision = openWritableStoreDatabase({
-      path,
+      path: resolved.path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
@@ -1486,7 +1545,7 @@ function tryOpenCurrentEpoch(
       lease();
       return { kind: 'replace', classification: decision.classification };
     }
-    return { kind: 'opened', db: registerStoreEpochHolder(runtime, epoch, decision.db, lease) };
+    return { kind: 'opened', db: registerStoreEpochHolder(runtime, resolved, decision.db, lease) };
   } catch (error: unknown) {
     lease();
     return { kind: 'replace', classification: unavailableClassification(error) };
@@ -1514,15 +1573,15 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     const current = currentProvenEpoch(observations);
     let classification: StoreEpochClassification = { kind: 'absent' };
     if (current !== null) {
-      const path = epochPath(dbDir, current.epoch);
-      const opened = tryOpenCurrentEpoch(runtime, options, current.epoch, path);
+      const resolved = resolvedStoreEpoch(dbDir, current.epoch);
+      const opened = tryOpenCurrentEpoch(runtime, options, resolved);
       if (opened.kind === 'opened') {
         if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
           opened.db.close();
           throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
         }
         opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-        return { db: opened.db, epoch: current.epoch, path };
+        return { db: opened.db, epoch: resolved.epoch, path: resolved.path };
       }
       classification = opened.classification;
     }
@@ -1820,11 +1879,12 @@ export function resolveCurrentStoreDbPath(dbDir) {
   return join(root.path, 'epoch-' + current, 'store.db');
 }
 
-function storeEpochForDbPath(dbDir, dbPath) {
+function storeEpochForDbPath(dbPath) {
   const resolvedPath = resolve(dbPath);
   if (basename(resolvedPath) !== 'store.db') return null;
   const directory = dirname(resolvedPath);
-  return dirname(directory) === resolve(dbDir) ? epochNumber(basename(directory)) : null;
+  const epoch = epochNumber(basename(directory));
+  return epoch === null ? null : { epoch, storeRoot: dirname(directory), path: resolvedPath };
 }
 
 function acquireSharedStoreEpochLock(dbDir, epoch) {
@@ -1847,16 +1907,19 @@ function acquireSharedStoreEpochLock(dbDir, epoch) {
   };
 }
 
-export function openLockedReadOnlyStoreDatabase(dbDir, dbPath) {
-  const epoch = storeEpochForDbPath(dbDir, dbPath);
-  const root = resolveStoreRoot(dbDir);
-  if (epoch === null || !isPublishedEpoch(root, 'epoch-' + epoch)) {
+export function openLockedReadOnlyStoreDatabase(dbPath) {
+  const resolved = storeEpochForDbPath(dbPath);
+  if (resolved === null) {
     throw new Error('Resolved store database is outside the proven canonical epoch layout.');
   }
-  const releaseLock = acquireSharedStoreEpochLock(root.path, epoch);
+  const root = resolveStoreRoot(resolved.storeRoot);
+  if (!isPublishedEpoch(root, 'epoch-' + resolved.epoch)) {
+    throw new Error('Resolved store database is outside the proven canonical epoch layout.');
+  }
+  const releaseLock = acquireSharedStoreEpochLock(resolved.storeRoot, resolved.epoch);
   let db;
   try {
-    db = new DatabaseSync(join(root.path, 'epoch-' + epoch, 'store.db'), { readOnly: true });
+    db = new DatabaseSync(resolved.path, { readOnly: true });
   } catch (error) {
     releaseLock();
     throw error;
