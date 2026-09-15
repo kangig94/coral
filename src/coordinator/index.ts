@@ -355,19 +355,14 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
 
   const getCurrentJournalSeq = () =>
     prepareCached<[], { seq: number }>(getQueryDb(), 'SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get()?.seq ?? 0;
-  const coordinatorCommit: CommitEventsFn = (cb, options) => {
+  const coordinatorCommit: CommitEventsFn = (cb) => {
     const db = getStoreDb();
-    const appended = commitJournalEvents(
-      db,
-      cb,
-      {
-        now: () => nowDate(runtime.time),
-        reducers,
-        bodyCodec,
-        providers: providerLookupPortFromCatalog(providerRegistry),
-      },
-      options,
-    );
+    const appended = commitJournalEvents(db, cb, {
+      now: () => nowDate(runtime.time),
+      reducers,
+      bodyCodec,
+      providers: providerLookupPortFromCatalog(providerRegistry),
+    });
     if (appended.length === 0) {
       return appended;
     }

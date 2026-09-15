@@ -5,7 +5,7 @@ import {
   commit as commitJournalEvents,
   type CommitContext,
   type CommitEventsFn,
-  type CommitOptions,
+  type UnreadableJobStatusRecoveryCommitFn,
 } from '../store/append.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import type { CoralEventInput } from '../store/envelope.js';
@@ -80,6 +80,7 @@ type SessionStoreEventBody =
 
 export type SessionManagerOptions = {
   db: Database;
+  commitUnreadableJobStatusRecovery?: UnreadableJobStatusRecoveryCommitFn;
 };
 
 function toSessionNamespace(dir: string, ids: Pick<IdPort, 'sha256'>): string {
@@ -272,24 +273,20 @@ function createLocalSessionCommit(db: Database, time: TimePort, providers: Provi
   const reducers = composeReducers(sessionsRegistry);
   const bodyCodec = createEventBodyCodec();
 
-  return (cb, options) =>
-    commitJournalEvents(
-      db,
-      cb,
-      {
-        now: () => nowDate(time),
-        reducers,
-        bodyCodec,
-        providers,
-      },
-      options,
-    );
+  return (cb) =>
+    commitJournalEvents(db, cb, {
+      now: () => nowDate(time),
+      reducers,
+      bodyCodec,
+      providers,
+    });
 }
 
 export class SessionManager {
   private readonly time: TimePort;
   private readonly ids: IdPort;
   private readonly commitEvents: CommitEventsFn;
+  private readonly commitUnreadableJobStatusRecovery?: UnreadableJobStatusRecoveryCommitFn;
   private readonly releaseEmitter: SessionReleasedEmitter;
   private readonly scopeKey: string;
   private readonly db: Database;
@@ -310,6 +307,8 @@ export class SessionManager {
     commitEvents: CommitEventsFn,
     releaseEmitter: SessionReleasedEmitter | undefined,
     db: Database,
+    providers?: undefined,
+    commitUnreadableJobStatusRecovery?: UnreadableJobStatusRecoveryCommitFn,
   );
   constructor(
     workingDirectory: string,
@@ -318,6 +317,7 @@ export class SessionManager {
     releaseEmitter: SessionReleasedEmitter | undefined,
     db: Database,
     providers?: ProviderLookupPort,
+    commitUnreadableJobStatusRecovery?: UnreadableJobStatusRecoveryCommitFn,
   ) {
     this.time = runtime.time;
     this.ids = runtime.ids;
@@ -330,6 +330,7 @@ export class SessionManager {
     } else {
       this.commitEvents = commitEvents;
     }
+    this.commitUnreadableJobStatusRecovery = commitUnreadableJobStatusRecovery;
     this.releaseEmitter = releaseEmitter ?? (() => {});
     this.scopeKey = toSessionNamespace(workingDirectory, this.ids);
   }
@@ -341,7 +342,15 @@ export class SessionManager {
     releaseEmitter: SessionReleasedEmitter,
     options: SessionManagerOptions,
   ): SessionManager {
-    return new SessionManager(workingDirectory, runtime, commitEvents, releaseEmitter, options.db);
+    return new SessionManager(
+      workingDirectory,
+      runtime,
+      commitEvents,
+      releaseEmitter,
+      options.db,
+      undefined,
+      options.commitUnreadableJobStatusRecovery,
+    );
   }
 
   private populateCache(sessionId: string, entry: ProviderSession): void {
@@ -825,12 +834,12 @@ export class SessionManager {
     sessionId: string,
     jobId: string,
     appendDisposition?: <Scope>(commit: CommitContext<Scope>, releaseResult: SessionJobClaimReleaseResult) => void,
-    options?: CommitOptions,
+    commitEvents: CommitEventsFn = this.commitEvents,
   ): SessionJobRecoveryDispositionCommitResult {
     let releaseResult: SessionJobClaimReleaseResult = 'already_absent';
     let committedEntry: ProviderSession | undefined;
     const appended =
-      this.commitEvents((commit) => {
+      commitEvents((commit) => {
         const entry = this.readEntry(sessionId, { forceFresh: true });
         if (!entry || entry.activeJobId === undefined) {
           appendDisposition?.(commit, releaseResult);
@@ -867,7 +876,7 @@ export class SessionManager {
           commit.append(sessionContinuationLeaseClearedEvent(committedEntry, clearedLease));
         }
         return undefined;
-      }, options) ?? [];
+      }) ?? [];
 
     if (committedEntry !== undefined) {
       this.populateCache(sessionId, committedEntry);
@@ -885,9 +894,11 @@ export class SessionManager {
     jobId: string,
     appendDisposition: <Scope>(commit: CommitContext<Scope>, releaseResult: SessionJobClaimReleaseResult) => void,
   ): SessionJobRecoveryDispositionCommitResult {
-    return this.commitJobRelease(sessionId, jobId, appendDisposition, {
-      terminalOrderExemption: { eventType: 'job.progress.emitted', jobId },
-    });
+    const commitRecovery = this.commitUnreadableJobStatusRecovery;
+    if (commitRecovery === undefined) {
+      throw new Error('Unreadable job-status recovery commit is not configured.');
+    }
+    return this.commitJobRelease(sessionId, jobId, appendDisposition, (cb) => commitRecovery(jobId, cb));
   }
 
   /** Provider-scoped lookup. Returns null if sessionId not found or provider mismatch. */

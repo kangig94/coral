@@ -1285,7 +1285,6 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
             },
           );
           this.deps.abortRegistry.remove(jobId);
-          this.deps.progressStore.publishUnreadableStatusProgress(committed.appended);
         } catch (releaseError: unknown) {
           this.appendUnreadableStatusDisposition(
             jobId,

@@ -5,14 +5,14 @@ import type { CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
-  commitUnreadableJobStatusRecoveryProgress,
+  commitUnreadableJobStatusRecovery,
   type AppendedEvent,
   type CommitAppendInput,
   type CommitClosureResult,
   type CommitContext,
   type CommitEventsFn,
   type PostCommitObserver,
-  type UnreadableJobStatusRecoveryProgressInput,
+  type UnreadableJobStatusRecoveryCommitFn,
 } from '../store/append.js';
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
 import type { EventBodyCodec } from '../store/event-body-codec.js';
@@ -399,9 +399,7 @@ export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly commitEvents: CommitEventsFn;
-  private readonly commitUnreadableStatusDisposition: (
-    input: UnreadableJobStatusRecoveryProgressInput,
-  ) => readonly AppendedEvent[];
+  private readonly commitUnreadableStatusRecoveryEvents: UnreadableJobStatusRecoveryCommitFn;
   private readonly observer?: PostCommitObserver;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private changeSeq = 0;
@@ -436,9 +434,9 @@ export class JobStore implements JobProgressStore {
       bodyCodec: this.bodyCodec,
       providers: options.providers,
     };
-    this.commitEvents = (cb, options) => commitJournalEvents(this.db, cb, appendContext, options);
-    this.commitUnreadableStatusDisposition = (input) =>
-      commitUnreadableJobStatusRecoveryProgress(this.db, input, appendContext);
+    this.commitEvents = (cb) => commitJournalEvents(this.db, cb, appendContext);
+    this.commitUnreadableStatusRecoveryEvents = (jobId, cb) =>
+      commitUnreadableJobStatusRecovery(this.db, jobId, cb, appendContext);
   }
 
   getNamespace(): string {
@@ -828,21 +826,21 @@ export class JobStore implements JobProgressStore {
   }
 
   appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number {
-    const emittedAt = nowIsoString(this.runtime.time);
-    const appended = this.commitUnreadableStatusDisposition({
-      type: 'job.progress.emitted',
-      stream: { kind: 'job', id: jobId },
-      namespace: this.namespace,
-      refs: buildJobEventRefs({ jobId, sessionId }),
-      body: {
-        kind: 'message',
-        message,
-        timing: { origin: 'runtime', originAt: emittedAt, emittedAt, elapsedMs: 0 },
-      },
+    const appended = this.commitUnreadableStatusRecovery(jobId, (commit) => {
+      this.appendUnreadableStatusProgressInCommit(commit, jobId, sessionId, message);
+      return undefined;
     });
+    return appended[0]?.seq ?? 0;
+  }
+
+  commitUnreadableStatusRecovery(
+    jobId: string,
+    cb: <Scope>(commit: CommitContext<Scope>) => CommitClosureResult,
+  ): readonly AppendedEvent[] {
+    const appended = this.commitUnreadableStatusRecoveryEvents(jobId, cb);
     const published = this.publishAppendedEvents(appended, new Map());
     if (published.length > 0) this.observer?.(published);
-    return appended[0]?.seq ?? 0;
+    return published;
   }
 
   appendUnreadableStatusProgressInCommit<Scope>(
@@ -863,11 +861,6 @@ export class JobStore implements JobProgressStore {
         timing: { origin: 'runtime', originAt: emittedAt, emittedAt, elapsedMs: 0 },
       },
     });
-  }
-
-  publishUnreadableStatusProgress(appended: readonly AppendedEvent[]): void {
-    const published = this.publishAppendedEvents(appended, new Map());
-    if (published.length > 0) this.observer?.(published);
   }
 
   private countLiveOverrideJobs(): number {

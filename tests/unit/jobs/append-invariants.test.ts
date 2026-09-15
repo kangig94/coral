@@ -495,40 +495,36 @@ describe('jobs append invariants', () => {
     }
   });
 
-  it('exempts only the named recovery progress event from terminal ordering', () => {
+  it('does not grant terminal-order exemptions through the generic commit contract', () => {
     const db = createDb();
     try {
-      const jobId = 'job-recovery-progress-only';
+      const jobId = 'job-generic-commit-cannot-exempt';
       appendJobEvents(db, [launchInput(jobId), terminalInput(jobId)]);
+
+      const appendLateProgress: Parameters<typeof commit>[1] = (commit) => {
+        commit.append({
+          type: 'job.progress.emitted',
+          stream: { kind: 'job', id: jobId },
+          refs: { jobId, sessionId: `session-${jobId}` },
+          body: {
+            kind: 'message',
+            message: 'late recovery progress',
+            timing: {
+              origin: 'launch',
+              originAt: NOW.toISOString(),
+              emittedAt: '2026-04-19T00:00:01.000Z',
+              elapsedMs: 1000,
+            },
+          },
+        });
+        return undefined;
+      };
 
       expectTerminalOrderViolation(
         () =>
-          commit(
+          (commit as unknown as (...args: unknown[]) => unknown)(
             db,
-            (commit) => {
-              commit.append({
-                type: 'job.progress.emitted',
-                stream: { kind: 'job', id: jobId },
-                refs: { jobId, sessionId: `session-${jobId}` },
-                body: {
-                  kind: 'message',
-                  message: 'late recovery progress',
-                  timing: {
-                    origin: 'launch',
-                    originAt: NOW.toISOString(),
-                    emittedAt: '2026-04-19T00:00:01.000Z',
-                    elapsedMs: 1000,
-                  },
-                },
-              });
-              commit.append({
-                type: 'job.aborted',
-                stream: { kind: 'job', id: jobId },
-                refs: { jobId, sessionId: `session-${jobId}` },
-                body: { reason: 'user_abort' },
-              });
-              return undefined;
-            },
+            appendLateProgress,
             {
               now: () => NOW,
               reducers: composeReducers(jobsRegistry, workflowRegistry),
@@ -540,7 +536,7 @@ describe('jobs append invariants', () => {
             },
           ),
         jobId,
-        'job.aborted',
+        'job.progress.emitted',
       );
       expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(2);
     } finally {

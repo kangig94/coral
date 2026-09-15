@@ -92,16 +92,13 @@ export type CommitAppendInput<Scope, Body> = ResolvableCoralEventInput<Scope, Bo
 export interface CommitContext<Scope> {
   append<const Body>(input: CommitAppendInput<Scope, Body>): CauseRefToken<Scope>;
 }
-export type CommitOptions = Readonly<{
-  terminalOrderExemption?: Readonly<{
-    eventType: 'job.progress.emitted';
-    jobId: string;
-  }>;
-}>;
 export type CommitEventsFn = (
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
-  options?: CommitOptions,
 ) => readonly AppendedEvent[] | void;
+export type UnreadableJobStatusRecoveryCommitFn = (
+  jobId: string,
+  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+) => readonly AppendedEvent[];
 
 function toTimestamp(value: Date): string {
   return value.toISOString();
@@ -320,7 +317,7 @@ function commitCollectedInputs(
   db: Database,
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
   ctx: AppendContext,
-  options: CommitOptions = {},
+  terminalOrderExemptInputIndex?: number,
 ): AppendedEvent[] {
   if (collectedInputs.length === 0) {
     return [];
@@ -349,17 +346,9 @@ function commitCollectedInputs(
 
   for (const [index, validateAppend] of ctx.reducers.appendValidators.entries()) {
     const contract = ctx.reducers.appendValidatorContracts[index];
-    const exemption = options.terminalOrderExemption;
     const inputs =
-      contract === 'jobs:terminal-order-and-single-terminal' && exemption !== undefined
-        ? validationInputs.filter(
-            (input) =>
-              !(
-                input.type === exemption.eventType &&
-                input.stream.kind === 'job' &&
-                input.stream.id === exemption.jobId
-              ),
-          )
+      contract === 'jobs:terminal-order-and-single-terminal' && terminalOrderExemptInputIndex !== undefined
+        ? validationInputs.filter((_input, inputIndex) => inputIndex !== terminalOrderExemptInputIndex)
         : validationInputs;
     validateAppend(validationCtx, inputs);
   }
@@ -435,7 +424,6 @@ export function commitWithinOpenTransaction(
   db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
-  options: CommitOptions = {},
 ): AppendedEvent[] {
   const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
   const c: CommitContext<unknown> = {
@@ -448,35 +436,45 @@ export function commitWithinOpenTransaction(
   };
 
   cb(c);
-  return commitCollectedInputs(db, collectedInputs, ctx, options);
+  return commitCollectedInputs(db, collectedInputs, ctx);
 }
 
-export type UnreadableJobStatusRecoveryProgressInput = CoralEventInput &
-  Readonly<{
-    type: 'job.progress.emitted';
-    stream: Readonly<{ kind: 'job'; id: string }>;
-  }>;
-
-export function commitUnreadableJobStatusRecoveryProgress(
+export function commitUnreadableJobStatusRecovery(
   db: Database,
-  input: UnreadableJobStatusRecoveryProgressInput,
+  jobId: string,
+  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
 ): AppendedEvent[] {
-  if (input.type !== 'job.progress.emitted' || input.stream.kind !== 'job') {
-    throw new TypeError('Unreadable job-status recovery may append only job.progress.emitted to a job stream.');
-  }
-  return withImmediate(db, () =>
-    commitCollectedInputs(db, [input], ctx, {
-      terminalOrderExemption: { eventType: 'job.progress.emitted', jobId: input.stream.id },
-    }),
-  );
+  return withImmediate(db, () => {
+    const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
+    const commit: CommitContext<unknown> = {
+      append(input) {
+        const slot = collectedInputs.length;
+        collectedInputs.push(input);
+        return makeCauseRefToken(slot);
+      },
+    };
+    cb(commit);
+
+    const exemptInputIndexes = collectedInputs.flatMap((input, index) =>
+      input.type === 'job.progress.emitted' && input.stream.kind === 'job' && input.stream.id === jobId ? [index] : [],
+    );
+    if (exemptInputIndexes.length !== 1) {
+      throw new TypeError(
+        `Unreadable job-status recovery requires exactly one job.progress.emitted event for job '${jobId}'.`,
+      );
+    }
+    if (collectedInputs.some((input, index) => index !== exemptInputIndexes[0] && input.stream.kind !== 'session')) {
+      throw new TypeError('Unreadable job-status recovery permits only its progress event and session events.');
+    }
+    return commitCollectedInputs(db, collectedInputs, ctx, exemptInputIndexes[0]);
+  });
 }
 
 export function commit(
   db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
-  options: CommitOptions = {},
 ): AppendedEvent[] {
-  return withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx, options));
+  return withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx));
 }

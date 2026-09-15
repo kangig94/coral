@@ -77,7 +77,10 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       (payload) => {
         this.eventBus.emit('session:released', payload);
       },
-      { db: deps.progressStore.getDb() },
+      {
+        db: deps.progressStore.getDb(),
+        commitUnreadableJobStatusRecovery: (jobId, cb) => deps.progressStore.commitUnreadableStatusRecovery(jobId, cb),
+      },
     );
     this.abortRegistry = new AbortRegistry(deps.runtime.ids);
     this.backendNamespace = deps.backendNamespace;

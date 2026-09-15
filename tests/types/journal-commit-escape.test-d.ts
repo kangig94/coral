@@ -1,11 +1,13 @@
 import type { CauseRef, CauseRefToken } from '#src/causality/cause-ref.js';
-import type { commit, CommitContext } from '#src/store/append.js';
+import type { commit, CommitContext, CommitEventsFn } from '#src/store/append.js';
 import type { ResolvableCoralEventInput } from '#src/store/envelope.js';
 import type { WorkflowCompletedInputBody } from '#src/workflow/events.js';
 
 type AssertAssignable<_T extends U, U> = true;
 type CommitCallback = Parameters<typeof commit>[1];
 type CommitAppendInput<Scope> = Parameters<CommitContext<Scope>['append']>[0];
+type _GenericCommitHasNoAuthorityArgument = AssertAssignable<Parameters<typeof commit>['length'], 3>;
+type _CommitPortHasNoAuthorityArgument = AssertAssignable<Parameters<CommitEventsFn>['length'], 1>;
 type WorkflowInput<Scope> = ResolvableCoralEventInput<Scope, WorkflowCompletedInputBody<Scope>>;
 declare const OUTER_SCOPE: unique symbol;
 declare const INNER_SCOPE: unique symbol;
