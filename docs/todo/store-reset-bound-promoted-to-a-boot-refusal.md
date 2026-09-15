@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-three design revisions, thirty-two unbiased tier-1 review rounds, and
-sixty-nine distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 23 are the corrections it earned.
+**Status**: in flight. Twenty-four design revisions, thirty-three unbiased tier-1 review rounds, and
+seventy-four distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 24 are the corrections it earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2420,6 +2420,88 @@ observed absent" to "reaped when its epoch lock proves no live holder"; the clas
 was restated after `legacy-adoptable` was deleted; and a test comment still asserts that legacy
 classification opens SQLite and rewrites sidecars, which this revision removed. All three describe code
 rather than constrain it. Delete them.
+
+## Revision 24 — proof has three parts, and we were doing one and a half
+
+Round 34's reviewers confirmed rename-before-destroy, the disjoint residue namespaces, the lock carried
+through publication, and the corrected fixtures. Then both found the same thing from opposite ends:
+**`lstat` plus `realpath` establishes filesystem kind and lexical placement, and nothing else.**
+
+Proof of a store artifact has three parts:
+
+1. the **kind** — a regular file, a real directory, not a symlink;
+2. **inode identity** — this object is not also reachable as another object we promised not to touch;
+3. **protocol validity** — a file that is supposed to be a SQLite lock actually is one.
+
+Shape checks give the first and a lexical version of the second. Both reproduced failures live in the gap.
+
+### Hard links walk straight through containment
+
+`epoch-1/store.db` hard-linked to the flat `<dbDir>/store.db` passes every check: it is a regular file,
+it is not a symlink, and `realpath` returns its own lexical pathname, so containment "holds". A reviewer
+drove the built `coral-backend.cjs --smoke-open-store` at it and the flat legacy database went from zero
+to forty-five schema objects and gained `store_product_version=0.10.9`. Same inode, `nlink=2`. The
+generated hook repeats the check and therefore the hole.
+
+> **A required epoch file with `nlink !== 1` is not proven.**
+
+This rule is not new to this document. Hard-link alias protection was in the design before Revision 14 and
+both reviewers of the day confirmed it sound; the rewrite dropped it and nothing noticed for twenty
+rounds. That is the class of loss the briefs now ask reviewers to hunt for, and it took until someone
+tried the alias to find it.
+
+### A read-only command rewrites databases outside the store
+
+`observeContainedRegularFile` proves a child against **the supplied directory's resolved path** and never
+proves that the supplied directory is itself real and contained. Holder inspection and residue listing
+both call it that way, and then open the resulting `.lock` read-write with `BEGIN EXCLUSIVE`. With
+`.reaping-alias` symlinked to an external directory holding a crashed WAL database, `store-reset list`
+exited 0, reported the residue reclaimable, grew that external `.lock` from 4096 to 8192 bytes and deleted
+its `-wal` and `-shm`. Reproduced through the built CLI, twice, the second time through a holder record
+pointing at an aliased epoch.
+
+Two separable mistakes, and both need fixing:
+
+- **A directory is proven before its children are.** One shared observation of a residue or epoch root,
+  consumed by listing, holder inspection and the sweep alike.
+- **`list` is read-only and must not acquire anything.** Deciding liveness by taking an exclusive lock is
+  a mutation, and a reporting command that mutates is wrong even where the target is canonical. Listing
+  reports liveness as unknown, or through a probe that cannot write.
+
+### A window between `mkdir` and the lock, which ends as a boot exception
+
+`createSharedFileLockSync` exposes the preparation directory with `mkdirSync` before constructing
+`.lock`, and every `.preparing-*` entry is sweepable. A reaper that observes the directory with no lock
+renames and deletes it; the publisher's `new DatabaseSync` then fails with `ERR_SQLITE_ERROR: unable to
+open database file` — **not** `ENOENT`, confirmed on Node 26.3.1 — and `mintNextEpoch` retries only
+`ENOENT`, so it escapes through settlement as a refusal to boot.
+
+An artifact enters the sweepable namespace only when it is complete. Prepare outside it and rename in,
+which is the mechanism this document already uses for publication and for reaping.
+
+### A lock that is a regular file but not a database
+
+A `.lock` containing arbitrary bytes is "proven" by shape, and the exclusive opener then throws
+`SQLITE_NOTADB` for it; both removal paths collapse that into `target-failed` **before** the rename, so
+the residue can never be reclaimed and accumulates without bound, with `release` able to say only
+`release-deletion-failed`.
+
+> **Lock acquisition answers four ways: acquired, contended, malformed, unobservable.**
+
+`SQLITE_NOTADB` is decisive — the file is not a lock — so it is disproven and the artifact is renamed and
+destroyed like any other garbage. Genuine I/O uncertainty stays unobservable and stays untouched. That is
+§11's three answers plus the one this site actually needs.
+
+### Two small ones
+
+A wrong-kind residue root — a regular file named `.mint-x` — is reported `unobservable` because probing
+`<file>/.lock` yields `ENOTDIR` and only `ENOENT` maps to disproven, while the sweep looks at the root
+itself and reclaims it correctly. The operator status and the behaviour disagree; one shared observation
+fixes both.
+
+And `scripts/verify-native-binding.sh` had its header comment rewritten to describe the new smoke
+workflow instead of the old one. `conventions.md` makes an edited description a finding in its own right.
+Delete it.
 
 ## Invariants to add
 
