@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-two design revisions, thirty-one unbiased tier-1 review rounds, and
-sixty-four distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 22 are the corrections it earned.
+**Status**: in flight. Twenty-three design revisions, thirty-two unbiased tier-1 review rounds, and
+sixty-nine distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 23 are the corrections it earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2342,6 +2342,84 @@ a genuinely new generation it exits `ENOENT: no such file or directory, scandir 
 the installed CLI. And where the directory exists with no proven epoch it prints `Discarded store epoch
 null; initialized epoch 1` and warns that the previous epoch remains preserved. The result type already
 makes `previousEpoch` nullable; the renderer simply never disposed of that arm.
+
+## Revision 23 — rename before destroying, and prove the lock before opening it
+
+Round 33's architect reproduced two blocking defects in Revision 22's contained lock. The guardian's run
+was cut short by the provider's own content filter after contributing one finding, so this round had one
+and a half reviewers; that is recorded rather than hidden, and the round should be re-reviewed.
+
+### `rm -rf` erases the lock first, and it is not atomic
+
+`removeWhileExclusivelyLockedAsync` takes the epoch's `.lock` and then recursively removes the directory
+**containing that lock** before releasing the lease. Recursive removal is a sequence: `.lock` is unlinked
+early, `store.db` later. In that interval another process creates a new `.lock` inode — the shared-lock
+helper has create semantics — opens the still-present database, and has it deleted underneath a live
+descriptor. The reviewer reproduced it: the sweep returned `complete`, `epoch-1/store.db` was gone, and the
+reader's open handle still answered queries.
+
+So moving the lock inside the store did not remove the pathname-reuse hazard; it relocated it into the
+deletion itself. **Holding the inode does not preserve pathname-to-inode identity when that pathname is
+one of the children being erased.**
+
+The answer is the move this document has used since Revision 4 and never applied to deletion:
+
+> **Rename before destroying.** Under the exclusive lease, `rename(epoch-N → .reaping-<uuid>)` — one
+> atomic operation that removes the public address — and only then erase.
+
+An opener arriving afterwards finds `epoch-N` absent, which is the truth, and cannot recreate a lock at an
+address that no longer exists. A crash between the rename and the erase leaves a `.reaping-<uuid>` that
+the sweep reclaims, which is the same shape as an abandoned mint.
+
+### A lock is opened without being proven
+
+Epoch discovery proves the directory, `epoch.json` and `store.db`, and never inspects `.lock`. Settlement
+then hands that pathname to SQLite before either error-conversion block, through a helper that follows
+symlinks and accepts anything SQLite can open. Two reproduced consequences:
+
+- A valid current epoch whose `.lock` is a **directory** aborts startup with `unable to open database
+  file`. That is a new boot refusal, on malformed store state, which is this document's subject.
+- A valid current epoch whose `.lock` **symlinks to the crashed legacy WAL store** makes ordinary
+  settlement open and reconcile that database — `store.db + store.db-wal` became a reconciled `store.db`,
+  and `store.db-shm` appeared. Revision 22 closed two doors into the legacy tree and left this third one
+  open, through the very mechanism it introduced.
+
+> **An existing epoch lock is proven before it is opened — regular file, not a symlink, physically
+> contained — and a malformed one is a classification, not an escape.**
+
+Creating a mint's lock and opening an existing epoch's lock are different operations with different
+preconditions and stop sharing a helper. A `.lock` that cannot be proven makes its epoch unusable, which
+routes to the successor mechanism exactly as a corrupt `store.db` does, and never to a throw.
+
+### The smoke opener's domain is lexical, not physical
+
+`storeEpochAtPath` checks the basename and the lexical parent name; it does not prove that `epoch-N` is a
+real contained directory. With `epoch-1` symlinked to the legacy directory, the built
+`coral-backend.cjs --smoke-open-store` exited 0, created `.lock` in the legacy tree, and raised that
+database's product version from `0.10.8` to `0.10.9`. Prove the physical directory and the final database
+at the entrypoint.
+
+The guardian added, before its run was cut: the schema accepts a "private temporary" path that can never
+succeed, because the native-binding script supplies a fresh `s.db` while the selected opener refuses an
+absent file. An accepted input that cannot work is not a domain.
+
+### Lockless mints accumulate silently
+
+Publication exposes the mint directory before creating its lock, so a crash in that interval leaves a
+lockless mint; a partial cleanup that erases `.lock` and then fails leaves another, possibly large. The
+sweep correctly treats them as unobservable and leaves them, and composition then discards that
+disposition — so they grow without bound, without convergence, and without operator-visible status. §11
+asks that a hold name what ends it. Either publish into the sweep-visible namespace only after the lock
+exists, or give the residue a bounded convergence and a status an operator can read.
+
+### Descriptions were refreshed rather than deleted
+
+`conventions.md` states that editing a descriptive comment to keep it true as the code changes is itself a
+finding. Revision 22 did it three times: the diagnostic-marker comment moved from "reaped after its pid is
+observed absent" to "reaped when its epoch lock proves no live holder"; the classification union comment
+was restated after `legacy-adoptable` was deleted; and a test comment still asserts that legacy
+classification opens SQLite and rewrites sidecars, which this revision removed. All three describe code
+rather than constrain it. Delete them.
 
 ## Invariants to add
 
