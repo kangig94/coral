@@ -2238,9 +2238,9 @@ it goes, and with it:
 
 - `release 0` and its "cannot prove no pre-epoch reader" confirmation.
 - The question of whether a directory named `epoch-0` is valid, which cost a finding.
-- Every deletion-safety cell aimed at a `v0.10.9`-shaped reader — the flat name is never a deletion target,
-  so the hazard is gone by construction rather than by exemption. That was Revision 20's remaining hole and
-  it closes without a mechanism.
+- Every deletion-safety cell for the removed epoch-zero release machinery. One rolled-back-reader cell remains
+  to prove that publication and sweep never address the flat name at all. The hazard is gone by construction
+  rather than by exemption. That was Revision 20's remaining hole and it closes without a mechanism.
 
 `legacy-adoptable` does **not** follow them out. It is produced when the fingerprint matches and the
 product-version row is absent — see `classifyStoreFormat` in `src/store/db.ts` — which no epoch writer
@@ -2282,13 +2282,14 @@ The sweep predicate itself is property-tested over integer pairs.
 
 `src/store/epoch.ts` becomes the single owner of layout, discovery, publication, metadata, sweep, list,
 discard, and release deletion. `backend-store-reset.ts`, `reset-retention.ts`,
-`reset-active-evidence.ts`, and `settlement-authority.ts` are deleted. Runtime paths retain only `dbDir`;
-all database consumers resolve the highest epoch at open time. The KB daemon applies that same rule when
-its own write runtime starts rather than receiving a coordinator-cached path.
+`reset-active-evidence.ts`, and `settlement-authority.ts` are deleted. Runtime paths retain only `dbDir`.
+The coordinator settles the active positive epoch before opening consumers, and passes that selected epoch
+to the KB daemon in `CORAL_KB_DAEMON_STORE_EPOCH`; the daemon opens that exact epoch rather than selecting
+again.
 
 The reset test matrix is reduced to dimensions the epoch design still has: concurrent publication,
-mint sweep, adversarial epoch chains, seeded process-death cuts, rollback visibility of untouched epoch
-zero, and sweep failure. Tests for staging, parking, copy/hash selection, retention rotation, resume
+mint sweep, adversarial epoch chains, seeded process-death cuts, rollback visibility of the untouched flat
+store, and sweep failure. Tests for staging, parking, copy/hash selection, retention rotation, resume
 classification, and settlement lease revocation are deleted with the machinery they described.
 
 The operator surface addresses epochs by number: `list` classifies each epoch read-only, `report <K>`
