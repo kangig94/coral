@@ -9,6 +9,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -208,6 +209,41 @@ afterEach(async () => {
 });
 
 describe('bundled store-reset CLI', () => {
+  it('refuses to smoke-open an epoch directory symlinked to the legacy tree', () => {
+    const build = readBuildManifest();
+    const home = temporaryHome('coral-smoke-symlinked-epoch-');
+    mkdirSync(join(home, 'tmp'));
+    const dbDir = dirname(activeStorePath(home, build));
+    const legacyRoot = root('coral-smoke-symlinked-legacy-');
+    const legacyStore = join(legacyRoot, 'store.db');
+    mkdirSync(dbDir, { recursive: true });
+    const store = new DatabaseSync(legacyStore);
+    store.exec(
+      `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('store_format_fingerprint', '${build.storeFormatFingerprint}')`,
+    );
+    store.close();
+    symlinkSync(legacyRoot, join(dbDir, 'epoch-1'));
+    const before = readFileSync(legacyStore);
+
+    const result = spawnSync(
+      process.execPath,
+      [BACKEND_BUNDLE, '--smoke-open-store', '--path', join(dbDir, 'epoch-1', 'store.db')],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, ...temporaryHomes.environment(home), TMPDIR: join(home, 'tmp') },
+      },
+    );
+
+    console.log(
+      `smoke-symlinked-epoch-cell status=${result.status} legacy-lock=${existsSync(join(legacyRoot, '.lock')) ? 'created' : 'absent'} product-version=${storeMetadataValue(legacyStore, 'store_product_version') ?? 'absent'}`,
+    );
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(existsSync(join(legacyRoot, '.lock'))).toBe(false);
+    expect(storeMetadataValue(legacyStore, 'store_product_version')).toBeNull();
+    expect(readFileSync(legacyStore)).toEqual(before);
+  });
+
   it('refuses to smoke-open the legacy flat store through the built backend bundle', () => {
     const build = readBuildManifest();
     const home = temporaryHome('coral-smoke-flat-refusal-');
