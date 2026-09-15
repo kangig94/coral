@@ -350,6 +350,8 @@ describe('write-once store epochs', () => {
     publishLiveCoordinator(runtime, runtime.env.pid());
     expect(sweepStoreEpochs(runtime, dbDir, '2')).toBe('complete');
     expect(existsSync(successor)).toBe(false);
+    expect(existsSync(epochPath(dbDir, '0'))).toBe(true);
+    expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
     if (_description === 'symlink') expect(existsSync(externalSentinel)).toBe(true);
     console.log(
       `successor-blocker-cell kind=${_description} selected=epoch-2 blocker-deleted-during-publication=false`,

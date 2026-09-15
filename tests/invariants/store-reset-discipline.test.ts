@@ -4,7 +4,7 @@ import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { isGarbageStoreEpoch } from '#src/store/epoch.js';
+import { garbageStoreEpochs } from '#src/store/epoch.js';
 
 const ROOT = process.cwd();
 const STORE_ROOT = join(ROOT, 'src/store');
@@ -152,11 +152,12 @@ describe('write-once store epoch invariants', () => {
     expect(new Set(deletionOwners)).toEqual(new Set(['sweepStoreEpochs']));
   });
 
-  it('classifies exactly K <= current - 2 as garbage', () => {
-    for (let current = 0; current < 100; current += 1) {
-      for (let candidate = 0; candidate < 100; candidate += 1) {
-        expect(isGarbageStoreEpoch(String(current), String(candidate))).toBe(candidate <= current - 2);
-      }
+  it('retains epoch zero and the highest two proven epochs across numbering gaps', () => {
+    for (let mask = 0; mask < 1 << 8; mask += 1) {
+      const proven = Array.from({ length: 8 }, (_, epoch) => String(epoch)).filter((_epoch, index) => mask & (1 << index));
+      const retained = new Set([...proven].sort((left, right) => Number(left) - Number(right)).slice(-2));
+      if (proven.includes('0')) retained.add('0');
+      expect(garbageStoreEpochs(proven)).toEqual(new Set(proven.filter((epoch) => !retained.has(epoch))));
     }
   });
 

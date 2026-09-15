@@ -259,8 +259,11 @@ export function openWritableStoreDbNoReset(
   throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
 }
 
-export function isGarbageStoreEpoch(current: StoreEpoch, candidate: StoreEpoch): boolean {
-  return BigInt(candidate) <= BigInt(current) - 2n;
+export function garbageStoreEpochs(provenEpochs: readonly StoreEpoch[]): ReadonlySet<StoreEpoch> {
+  const ordered = [...new Set(provenEpochs)].sort(compareEpoch);
+  const retained = new Set(ordered.slice(-2));
+  retained.add('0');
+  return new Set(ordered.filter((epoch) => !retained.has(epoch)));
 }
 
 function errorCode(error: unknown): string | null {
@@ -546,13 +549,16 @@ export function sweepStoreEpochs(
 
   const observations = observeStoreEpochs(storage, dbDir, entries);
   const byEpoch = new Map(observations.map((observation) => [observation.epoch, observation]));
+  const garbageEpochs = garbageStoreEpochs(
+    observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
+  );
   let complete = true;
   for (const entry of entries) {
     const epoch = epochNumber(entry);
     const observation = epoch === null ? undefined : byEpoch.get(epoch);
     const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
     const disprovenEpochEntry = observation?.proof.kind === 'disproven';
-    const garbageEpoch = observation?.proof.kind === 'proven' && isGarbageStoreEpoch(current, observation.epoch);
+    const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
     if (invalidEpochEntry || (epoch !== current && (disprovenEpochEntry || garbageEpoch))) {
       complete = removeDuringSweep(storage, join(dbDir, entry)) && complete;
     }
@@ -560,17 +566,6 @@ export function sweepStoreEpochs(
 
   if (compareEpoch(current, '1') >= 0) {
     complete = removeDuringSweep(storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY)) && complete;
-  }
-  const epochZero = byEpoch.get('0');
-  if (compareEpoch(current, '2') >= 0 && epochZero?.proof.kind !== 'unobservable') {
-    for (const name of [
-      `${STORE_DATABASE_FILE_NAME}-wal`,
-      `${STORE_DATABASE_FILE_NAME}-shm`,
-      `${STORE_DATABASE_FILE_NAME}${STORE_FORMAT_SIDECAR_SUFFIX}`,
-      STORE_DATABASE_FILE_NAME,
-    ]) {
-      complete = removeDuringSweep(storage, join(dbDir, name)) && complete;
-    }
   }
   try {
     if (!complete) return 'deletion-failed';
@@ -767,6 +762,9 @@ export async function sweepStoreEpochsPostReady(
     await yieldSweepTurn();
   }
   const byEpoch = new Map(observations.map((observation) => [observation.epoch, observation]));
+  const garbageEpochs = garbageStoreEpochs(
+    observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
+  );
   let complete = true;
   for (const entry of entries) {
     const epoch = epochNumber(entry);
@@ -774,7 +772,7 @@ export async function sweepStoreEpochsPostReady(
     const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
     const abandonedMint = entry.startsWith(MINT_DIRECTORY_PREFIX);
     const disprovenEpochEntry = observation?.proof.kind === 'disproven';
-    const garbageEpoch = observation?.proof.kind === 'proven' && isGarbageStoreEpoch(openEpoch, observation.epoch);
+    const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
     if (abandonedMint || invalidEpochEntry || (epoch !== openEpoch && (disprovenEpochEntry || garbageEpoch))) {
       complete = (await removeDuringPostReadySweep(runtime.storage, join(dbDir, entry))) && complete;
     }
@@ -784,17 +782,6 @@ export async function sweepStoreEpochsPostReady(
   if (compareEpoch(openEpoch, '1') >= 0) {
     complete =
       (await removeDuringPostReadySweep(runtime.storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY))) && complete;
-  }
-  if (compareEpoch(openEpoch, '2') >= 0 && epochZero?.proof.kind !== 'unobservable') {
-    for (const name of [
-      `${STORE_DATABASE_FILE_NAME}-wal`,
-      `${STORE_DATABASE_FILE_NAME}-shm`,
-      `${STORE_DATABASE_FILE_NAME}${STORE_FORMAT_SIDECAR_SUFFIX}`,
-      STORE_DATABASE_FILE_NAME,
-    ]) {
-      complete = (await removeDuringPostReadySweep(runtime.storage, join(dbDir, name))) && complete;
-      await yieldSweepTurn();
-    }
   }
   if (!complete) return 'deletion-failed';
   return (await syncDirectoryDurable(runtime.storage, dbDir)) ? 'complete' : 'durability-sync-failed';
@@ -1056,6 +1043,9 @@ export function listStoreEpochs(
   if (!runtime.storage.existsSync(dbDir)) return [];
   const observations = observeStoreEpochs(runtime.storage, dbDir);
   const current = currentProvenEpoch(observations)?.epoch ?? null;
+  const garbageEpochs = garbageStoreEpochs(
+    observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
+  );
 
   return [...observations]
     .sort((left, right) => compareEpoch(right.epoch, left.epoch))
@@ -1078,7 +1068,7 @@ export function listStoreEpochs(
             ? 'unobservable'
             : observation.proof.kind === 'proven' && epoch === current
               ? 'current'
-              : observation.proof.kind === 'proven' && current !== null && BigInt(epoch) === BigInt(current) - 1n
+              : observation.proof.kind === 'proven' && !garbageEpochs.has(epoch)
                 ? 'preserved'
                 : 'garbage',
         bytes: observation.proof.kind === 'proven' ? epochBytes(runtime.storage, dbDir, epoch) : null,
