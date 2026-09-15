@@ -56,8 +56,8 @@ export type StoreEpochListEntry = Readonly<{
   epoch: StoreEpoch;
   role: 'current' | 'preserved' | 'garbage' | 'unobservable';
   bytes: number | null;
-  classification: StoreEpochClassification;
-  storedProductVersion: string | null;
+  publicationReason: StoreEpochClassification;
+  supersededStoreVersion: string | null;
   epochJson: StoreEpochMetadataDisposition;
 }>;
 
@@ -237,30 +237,36 @@ function observeStoreEpochs(
   // plugin bundle, hooks, and CLI.
   const observations: StoreEpochObservation[] = [];
   for (const entry of entries) {
-    const epoch = epochNumber(entry);
-    if (epoch === null) continue;
-    const directory = join(dbDir, entry);
-    const contained = observeContainedDirectory(storage, dbDir, directory);
-    if (contained.kind !== 'proven') {
-      observations.push({
-        epoch,
-        proof: contained,
-        epochJson:
-          contained.kind === 'unobservable' ? { kind: 'unreadable', cause: contained.cause } : { kind: 'malformed' },
-      });
-      continue;
-    }
-    const epochJson = readEpochMetadata(storage, directory);
-    if (epochJson.kind === 'unreadable') {
-      observations.push({ epoch, proof: { kind: 'unobservable', cause: epochJson.cause }, epochJson });
-      continue;
-    }
-    const database = observeContainedRegularFile(storage, directory, epochPath(dbDir, epoch), contained);
-    const lock = database.kind === 'proven' ? observeStoreEpochLock(storage, dbDir, epoch, contained) : database;
-    const proof = epochJson.kind === 'valid' ? lock : { kind: 'disproven' as const };
-    observations.push({ epoch, proof, epochJson });
+    const observation = observeStoreEpoch(storage, dbDir, entry);
+    if (observation !== null) observations.push(observation);
   }
   return observations;
+}
+
+function observeStoreEpoch(
+  storage: StoreEpochDiscoveryStorage,
+  dbDir: string,
+  entry: string,
+): StoreEpochObservation | null {
+  const epoch = epochNumber(entry);
+  if (epoch === null) return null;
+  const directory = join(dbDir, entry);
+  const contained = observeContainedDirectory(storage, dbDir, directory);
+  if (contained.kind !== 'proven') {
+    return {
+      epoch,
+      proof: contained,
+      epochJson:
+        contained.kind === 'unobservable' ? { kind: 'unreadable', cause: contained.cause } : { kind: 'malformed' },
+    };
+  }
+  const epochJson = readEpochMetadata(storage, directory);
+  if (epochJson.kind === 'unreadable') {
+    return { epoch, proof: { kind: 'unobservable', cause: epochJson.cause }, epochJson };
+  }
+  const database = observeContainedRegularFile(storage, directory, epochPath(dbDir, epoch), contained);
+  const lock = database.kind === 'proven' ? observeStoreEpochLock(storage, dbDir, epoch, contained) : database;
+  return { epoch, proof: epochJson.kind === 'valid' ? lock : { kind: 'disproven' }, epochJson };
 }
 
 function currentProvenEpoch(observations: readonly StoreEpochObservation[]): ProvenStoreEpochObservation | null {
@@ -301,21 +307,14 @@ export function openWritableStoreDbNoReset(
       : epoch === null
         ? observeContainedRegularFile(runtime.storage, dirname(storeDbPath), storeDbPath, { kind: 'proven' })
         : provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) === epoch
-          ? observeStoreEpochLock(runtime.storage, runtime.paths.coral.store.dbDir, epoch)
+          ? { kind: 'proven' as const }
           : { kind: 'disproven' as const };
   if (proof.kind === 'proven') {
-    const lease =
-      epoch === null ? null : acquireSharedFileLockSync(storeEpochLockPath(runtime.paths.coral.store.dbDir, epoch));
+    const lease = epoch === null ? null : acquireStoreEpochReadLock(runtime, storeDbPath);
     if (
       epoch !== null &&
-      observeContainedRegularFile(
-        runtime.storage,
-        epochDirectory(runtime.paths.coral.store.dbDir, epoch),
-        storeDbPath,
-        {
-          kind: 'proven',
-        },
-      ).kind !== 'proven'
+      (lease === null ||
+        provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) !== epoch)
     ) {
       lease?.();
     } else {
@@ -347,10 +346,8 @@ export function provenStoreEpochAtPath(storage: StoragePort, dbDir: string, path
   const epoch = storeEpochAtPath(dbDir, path);
   if (epoch === null) return null;
   const storeRoot = storage.realpathSync(dbDir);
-  const directory = epochDirectory(storeRoot, epoch);
-  const provenPath = epochPath(storeRoot, epoch);
-  const contained = observeContainedDirectory(storage, storeRoot, directory);
-  return observeContainedRegularFile(storage, directory, provenPath, contained).kind === 'proven' ? epoch : null;
+  const observation = observeStoreEpoch(storage, storeRoot, `epoch-${epoch}`);
+  return observation?.proof.kind === 'proven' ? epoch : null;
 }
 
 export function acquireStoreEpochReadLock(
@@ -361,8 +358,10 @@ export function acquireStoreEpochReadLock(
   const epoch = provenStoreEpochAtPath(runtime.storage, dbDir, storeDbPath);
   if (epoch === null) return null;
   const storeRoot = runtime.storage.realpathSync(dbDir);
-  if (observeStoreEpochLock(runtime.storage, storeRoot, epoch).kind !== 'proven') return null;
-  return acquireSharedFileLockSync(storeEpochLockPath(storeRoot, epoch));
+  const lease = acquireSharedFileLockSync(storeEpochLockPath(storeRoot, epoch));
+  if (provenStoreEpochAtPath(runtime.storage, dbDir, storeDbPath) === epoch) return lease;
+  lease();
+  return null;
 }
 
 export function holdStoreEpochLockUntilClose(db: Database, lease: FileLockLease | null): Database {
@@ -1455,7 +1454,15 @@ function tryOpenCurrentEpoch(
   | { readonly kind: 'replace'; readonly classification: StoreEpochClassification } {
   let lease: FileLockLease | null = null;
   try {
-    lease = acquireSharedFileLockSync(storeEpochLockPath(runtime.paths.coral.store.dbDir, epoch));
+    lease = acquireStoreEpochReadLock(runtime, epochPath(runtime.paths.coral.store.dbDir, epoch));
+    if (lease === null) {
+      return {
+        kind: 'replace',
+        classification: unavailableClassification(
+          new Error(`Store epoch ${epoch} did not retain its canonical proof.`),
+        ),
+      };
+    }
     assertProvenStoreOpenable(runtime.storage, path);
   } catch (error: unknown) {
     lease?.();
@@ -1672,7 +1679,7 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
     .sort((left, right) => compareEpoch(right.epoch, left.epoch))
     .map((observation) => {
       const { epoch } = observation;
-      const classification =
+      const publicationReason =
         observation.epochJson.kind === 'valid'
           ? observation.epochJson.value.classification
           : unavailableClassification(new Error('Epoch metadata is not valid.'));
@@ -1687,8 +1694,9 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
                 ? 'preserved'
                 : 'garbage',
         bytes: observation.proof.kind === 'proven' ? epochBytes(runtime.storage, dbDir, epoch) : null,
-        classification,
-        storedProductVersion: 'storedProductVersion' in classification ? classification.storedProductVersion : null,
+        publicationReason,
+        supersededStoreVersion:
+          'storedProductVersion' in publicationReason ? publicationReason.storedProductVersion : null,
         epochJson: observation.epochJson,
       };
     });

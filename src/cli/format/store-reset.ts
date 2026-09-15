@@ -111,8 +111,8 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
     `- Epoch: ${code(String(result.epoch.epoch))}`,
     `- Role: ${code(result.epoch.role)}`,
     `- Bytes: ${result.epoch.bytes ?? 'unknown'}`,
-    `- Classification: ${code(result.epoch.classification.kind)}`,
-    `- Stored Coral version: ${result.epoch.storedProductVersion === null ? 'not observed' : code(result.epoch.storedProductVersion)}`,
+    `- Publication reason: ${code(result.epoch.publicationReason.kind)}`,
+    `- Superseded store Coral version: ${result.epoch.supersededStoreVersion === null ? 'not observed' : code(result.epoch.supersededStoreVersion)}`,
     `- Epoch metadata: ${code(formatEpochMetadata(result.epoch.epochJson))}`,
     '',
     '## SQLite diagnostic',
@@ -138,10 +138,10 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     return [`No ${target} store epochs or legacy store-reset incidents.`, ...releaseInstruction(target)].join('\n');
   }
   return [
-    'Epoch | Role | Bytes | Classification | Stored Coral version | Epoch metadata',
+    'Epoch | Role | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
     ...result.epochs.map(
       (epoch) =>
-        `${epoch.epoch} | ${epoch.role} | ${epoch.bytes ?? 'unknown'} | ${epoch.classification.kind} | ${epoch.storedProductVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`,
+        `${epoch.epoch} | ${epoch.role} | ${epoch.bytes ?? 'unknown'} | ${epoch.publicationReason.kind} | ${epoch.supersededStoreVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`,
     ),
     ...(result.holders.length === 0
       ? []

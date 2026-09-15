@@ -220,9 +220,23 @@ describe('write-once store epoch invariants', () => {
     expect(hook).toContain('return entry.isFile() && entry.nlink === 1n && entry.dev === device;');
   });
 
-  it('keeps list classification on the sidecar without opening SQLite', () => {
+  it('uses the metadata-complete epoch proof for every production opener', () => {
+    expect(functionSource('src/store/epoch.ts', 'provenStoreEpochAtPath')).toContain('observeStoreEpoch');
+    expect(functionSource('src/store/epoch.ts', 'openWritableStoreDbNoReset')).toContain('provenStoreEpochAtPath');
+    expect(functionSource('src/store/epoch.ts', 'acquireStoreEpochReadLock')).toContain('provenStoreEpochAtPath');
+    expect(functionSource('src/store/read-port.ts', 'openReadOnlyStoreDatabase')).toContain(
+      'acquireStoreEpochReadLock',
+    );
+    expect(source('src/cli/expansion/install.ts')).toContain('openWritableStoreDbNoReset');
+    expect(source('clients/hooks/lib/store-epoch.mjs')).toContain(
+      "isValidEpochMetadata(JSON.parse(readFileSync(metadataPath, 'utf8')))",
+    );
+  });
+
+  it('keeps list publication provenance on the sidecar without opening SQLite', () => {
     const list = functionSource('src/store/epoch.ts', 'listStoreEpochs');
     expect(list).not.toMatch(/classifyStoreFile|acquireSharedFileLockSync|openStoreDatabase/u);
+    expect(list).toContain('publicationReason');
     expect(list).toContain('observation.epochJson.value.classification');
   });
 

@@ -22,6 +22,12 @@ import { storeEpochLockPath } from './epoch.js';
 const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as const;
 const COPY_BUFFER_BYTES = 64 * 1024;
 
+export type StagedStoreDatabaseEvidence = Readonly<{
+  dbPath: string;
+  verify(): boolean;
+  cleanup(): StoreResetDiagnosticStatus['cleanup'];
+}>;
+
 export const SQLITE_DIAGNOSTIC_PROGRAM = String.raw`
 'use strict';
 const { DatabaseSync } = require('node:sqlite');
@@ -348,6 +354,102 @@ function hashEvidence(
   }
   if (failure !== null || result === null) throw new Error('hash unavailable');
   return result;
+}
+
+export function stageStoreDatabaseEvidence(options: {
+  readonly fs: StoreResetInspectionFs;
+  readonly sourceDirectory: string;
+  readonly tempRoot: string;
+  readonly platform: string;
+}): StagedStoreDatabaseEvidence {
+  const tempDirectory = options.fs.mkdtemp(join(options.tempRoot, 'coral-store-report-'));
+  const tempIdentity = options.fs.lstat(tempDirectory);
+  if (
+    tempIdentity === null ||
+    tempIdentity.kind !== 'directory' ||
+    (options.platform !== 'win32' && (tempIdentity.mode & 0o777n) !== 0o700n)
+  ) {
+    throw new Error('temporary directory is not private');
+  }
+  const tempRealPath = options.fs.realpath(tempDirectory);
+  let cleaned = false;
+  const cleanup = (): StoreResetDiagnosticStatus['cleanup'] => {
+    if (cleaned) return 'removed';
+    try {
+      if (options.fs.realpath(tempDirectory) !== tempRealPath) return 'cleanup_unavailable';
+      if (!options.fs.removeTreeGuarded(tempDirectory, tempIdentity)) return 'cleanup_unavailable';
+      cleaned = true;
+      return 'removed';
+    } catch {
+      return 'cleanup_unavailable';
+    }
+  };
+
+  try {
+    let remaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
+    const sourceHashes = new Map<string, string>();
+    for (const name of DIAGNOSTIC_SOURCE_NAMES) {
+      const source = join(options.sourceDirectory, name);
+      if (options.fs.lstat(source) === null) continue;
+      const copied = copyEvidence({
+        fs: options.fs,
+        source,
+        destination: join(tempDirectory, name),
+        remainingBudget: remaining,
+        platform: options.platform,
+      });
+      remaining -= copied.bytes;
+      sourceHashes.set(name, copied.sha256);
+    }
+    if (!sourceHashes.has('store.db')) throw new Error('store database is unavailable');
+    return {
+      dbPath: join(tempDirectory, 'store.db'),
+      verify: () => {
+        let verificationRemaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
+        try {
+          for (const [name, expectedHash] of sourceHashes) {
+            const verified = hashEvidence(options.fs, join(options.sourceDirectory, name), verificationRemaining);
+            if (verified.sha256 !== expectedHash) return false;
+            verificationRemaining -= verified.bytes;
+          }
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      cleanup,
+    };
+  } catch (error: unknown) {
+    cleanup();
+    throw error;
+  }
+}
+
+export async function diagnoseStoreDatabaseCopy(options: {
+  readonly fs: StoreResetInspectionFs;
+  readonly sourceDirectory: string;
+  readonly tempRoot: string;
+  readonly platform: string;
+  readonly executable: string;
+  readonly supervisor: StoreResetDiagnosticSupervisorPort;
+}): Promise<StoreResetDiagnosticStatus> {
+  let staged: StagedStoreDatabaseEvidence;
+  try {
+    staged = stageStoreDatabaseEvidence(options);
+  } catch {
+    return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
+  }
+  const supervision = await superviseStoreResetDiagnosticChild(options.supervisor, options.executable, staged.dbPath);
+  if (supervision.termination === 'termination_unconfirmed') {
+    return { integrity: 'unavailable', termination: 'termination_unconfirmed', cleanup: 'cleanup_unavailable' };
+  }
+  const sourceUnchanged = staged.verify();
+  const cleanup = staged.cleanup();
+  return {
+    integrity: sourceUnchanged && cleanup === 'removed' ? supervision.integrity : 'unavailable',
+    termination: supervision.termination,
+    cleanup,
+  };
 }
 
 export function createStoreResetIncidentDiagnosticRunner(options: {

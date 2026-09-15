@@ -57,7 +57,7 @@ import {
   tryAcquireExclusiveFileLockSync,
 } from '#src/infra/fs-lock.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
-import { formatStoreResetRelease } from '#src/cli/format/store-reset.js';
+import { formatStoreResetList, formatStoreResetRelease } from '#src/cli/format/store-reset.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from '#src/store/reset-incident.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
@@ -289,7 +289,9 @@ describe('write-once store epochs', () => {
     symlinkSync(target, dbDir, 'dir');
 
     const published = discardCurrentStoreEpoch(runtime, options());
-    published.db.exec("CREATE TABLE symlink_root_sentinel (value TEXT NOT NULL); INSERT INTO symlink_root_sentinel VALUES ('reopened')");
+    published.db.exec(
+      "CREATE TABLE symlink_root_sentinel (value TEXT NOT NULL); INSERT INTO symlink_root_sentinel VALUES ('reopened')",
+    );
     published.db.close();
     const residue = join(dbDir, '.reaping-abandoned');
     mkdirSync(residue);
@@ -694,7 +696,7 @@ describe('write-once store epochs', () => {
     },
   );
 
-  it('takes list classification from epoch.json without opening SQLite', () => {
+  it('takes list publication provenance from epoch.json without opening SQLite', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
@@ -712,8 +714,34 @@ describe('write-once store epochs', () => {
     const entries = listStoreEpochs(withStorage(runtime, storage));
 
     expect(sqliteOpens).toBe(0);
-    expect(entries[0]?.classification).toEqual({ kind: 'unavailable', cause: 'adversary' });
-    console.log('read-only-list-cell classification=epoch.json sqlite-opens=0');
+    expect(entries[0]?.publicationReason).toEqual({ kind: 'unavailable', cause: 'adversary' });
+    console.log('read-only-list-cell publication-reason=epoch.json sqlite-opens=0');
+  });
+
+  it('renders replacement provenance as the publication reason and superseded store version', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(epochDirectory(dbDir, '1'));
+
+    const settled = settleStoreEpoch(runtime, options());
+    settled.db.close();
+    const epochs = listStoreEpochs(runtime);
+    const replacement = epochs.find(({ epoch }) => epoch === '2');
+    const rendered = formatStoreResetList(
+      { epochs, holders: [], residues: [], legacyIncidents: [], truncated: false },
+      'gen2',
+    );
+
+    expect(replacement?.publicationReason.kind).toBe('newer-incompatible');
+    expect(replacement?.supersededStoreVersion).toBe('0.0.1');
+    expect(rendered).toContain(
+      'Epoch | Role | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
+    );
+    expect(rendered).toContain('2 | current |');
+    expect(rendered).toContain('| newer-incompatible | 0.0.1 |');
+    console.log(
+      `epoch-provenance-cell epoch=2 publication-reason=${replacement?.publicationReason.kind} superseded-version=${replacement?.supersededStoreVersion}`,
+    );
   });
   it('does not treat an epoch symlink to the store root as a published epoch', () => {
     const runtime = harness();
@@ -824,6 +852,31 @@ describe('write-once store epochs', () => {
     arrange(join(dbDir, 'epoch-2'));
 
     expect(resolveCurrentStoreEpoch(runtime.storage, dbDir)).toBeNull();
+  });
+
+  it('keeps every store opener out of an epoch with malformed metadata', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const malformedPath = epochPath(dbDir, '1');
+    createCompatibleStore(malformedPath, 'malformed-metadata');
+    writeFileSync(join(dirname(malformedPath), '.lock'), '');
+    writeFileSync(join(dirname(malformedPath), STORE_EPOCH_METADATA_FILE_NAME), '{');
+    const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?metadata-proof=${Date.now()}`;
+    const hook = (await import(helperUrl)) as {
+      resolveCurrentStoreDbPath(path: string): string | null;
+      openLockedReadOnlyStoreDatabase(dbDir: string, dbPath: string): unknown;
+    };
+
+    expect(() => openWritableStoreDbNoReset(runtime, { path: malformedPath, storeFormat })).toThrow();
+    expect(() => openReadOnlyStoreDatabase(runtime, { path: malformedPath, storeFormat })).toThrow();
+    expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
+    expect(() => hook.openLockedReadOnlyStoreDatabase(dbDir, malformedPath)).toThrow();
+    const settled = settleStoreEpoch(runtime, options());
+    console.log(
+      `malformed-metadata-openers-cell writable=refused read-only=refused hook=refused settlement=epoch-${settled.epoch}`,
+    );
+    settled.db.close();
+    expect(settled.epoch).toBe('2');
   });
 
   it('does not select an epoch symlink to an external directory', () => {
@@ -1946,7 +1999,7 @@ describe('write-once store epochs', () => {
 
       let settled: ReturnType<typeof settleStoreEpoch> | undefined;
       try {
-        expect(listStoreEpochs(runtime).find(({ epoch }) => epoch === '1')?.classification.kind).toBe('unavailable');
+        expect(listStoreEpochs(runtime).find(({ epoch }) => epoch === '1')?.publicationReason.kind).toBe('unavailable');
         expect(() => openReadOnlyStoreDatabase(runtime, { path: epochPath(dbDir, '1'), storeFormat })).toThrow();
         settled = settleStoreEpoch(runtime, options());
         const legacyAfter = fileTreeSnapshot(legacyRoot);

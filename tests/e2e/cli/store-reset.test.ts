@@ -360,28 +360,40 @@ describe('bundled store-reset CLI', () => {
     },
   );
 
-  it.each(['canonical', 'crashed-wal-lock'] as const)(
-    'keeps the complete epoch namespace byte-identical while built list classifies a %s epoch',
-    (state) => {
-      const build = readBuildManifest();
-      const home = temporaryHome(`coral-list-byte-identical-${state}-`);
-      mkdirSync(join(home, 'tmp'));
-      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
-      expect(discard.status, discard.stderr).toBe(0);
-      const dbDir = dirname(activeStorePath(home, build));
-      if (state === 'crashed-wal-lock') createCrashedWalStore(join(dbDir, 'epoch-1', '.lock'));
-      const before = fileTreeSnapshot(dbDir);
+  it.each(
+    (['store-reset-list', 'store-reset-report', 'recovery-quarantine-list'] as const).flatMap((surface) =>
+      (['canonical', 'crashed-wal-lock', 'malformed-metadata'] as const).map((state) => ({ surface, state })),
+    ),
+  )('keeps the complete epoch namespace byte-identical while built $surface inspects $state', ({ surface, state }) => {
+    const build = readBuildManifest();
+    const home = temporaryHome('coral-rpt-');
+    mkdirSync(join(home, 'tmp'));
+    const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+    expect(discard.status, discard.stderr).toBe(0);
+    const dbDir = dirname(activeStorePath(home, build));
+    if (state === 'crashed-wal-lock') createCrashedWalStore(join(dbDir, 'epoch-1', '.lock'));
+    if (state === 'malformed-metadata') writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), '{');
+    const before = fileTreeSnapshot(dbDir);
 
-      const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
-      const after = fileTreeSnapshot(dbDir);
+    const invocation =
+      surface === 'store-reset-list'
+        ? ['backend', 'store-reset', 'list', '--target', 'gen2']
+        : surface === 'store-reset-report'
+          ? ['backend', 'store-reset', 'report', '1', '--target', 'gen2']
+          : ['backend', 'recovery-quarantine', 'list'];
+    const result = runCli(home, invocation);
+    const after = fileTreeSnapshot(dbDir);
 
-      console.log(
-        `built-list-byte-identity-cell state=${state} status=${list.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
-      );
-      expect(list.status, list.stderr).toBe(0);
-      expect(after).toEqual(before);
-    },
-  );
+    console.log(
+      `built-reporting-byte-identity-cell surface=${surface} state=${state} status=${result.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
+    );
+    if (surface === 'recovery-quarantine-list' && state === 'malformed-metadata') {
+      expect(result.status).not.toBe(0);
+    } else {
+      expect(result.status, result.stderr).toBe(0);
+    }
+    expect(after).toEqual(before);
+  });
 
   it.each(['absent-root', 'empty-root'] as const)('initializes epoch one on discard with %s', (state) => {
     const build = readBuildManifest();
@@ -416,7 +428,9 @@ describe('bundled store-reset CLI', () => {
     const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
     expect(list.status, list.stderr).toBe(0);
     expect(list.stderr).toBe('');
-    expect(list.stdout).toContain('Epoch | Role | Bytes | Classification | Stored Coral version | Epoch metadata\n');
+    expect(list.stdout).toContain(
+      'Epoch | Role | Bytes | Publication reason | Superseded store Coral version | Epoch metadata\n',
+    );
     expect(list.stdout).toContain('Legacy incident ID | State | Reset at | Reason | Files | Bytes\n');
     expect(list.stdout).toContain(`${INCIDENT_ID} | ready | 2026-07-23T01:02:03.004Z | mismatch | 1 |`);
     expect(list.stdout).toContain('Legacy ready incidents remain reportable.\n');

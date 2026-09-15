@@ -1,4 +1,5 @@
 import { tmpdir } from 'node:os';
+import { dirname } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
@@ -17,7 +18,7 @@ import {
 } from '../store/operator-store-reset.js';
 import {
   createStoreResetIncidentDiagnosticRunner,
-  superviseStoreResetDiagnosticChild,
+  diagnoseStoreDatabaseCopy,
   type StoreResetIncidentDiagnosticRunner,
   type StoreResetDiagnosticStatus,
 } from '../store/reset-incident-diagnostic.js';
@@ -33,7 +34,7 @@ import {
   listStoreEpochHolders,
   listStoreEpochResidues,
   listStoreEpochs,
-  storeEpochHolderPath,
+  provenStoreEpochAtPath,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
   type StoreEpochResidueListEntry,
@@ -51,10 +52,7 @@ export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
-  diagnoseEpoch(
-    storeDbPath: string,
-    holder?: Readonly<{ path: string; epoch: string }>,
-  ): Promise<StoreResetDiagnosticStatus>;
+  diagnoseEpoch(storeDbPath: string): Promise<StoreResetDiagnosticStatus>;
   quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
   runtime?(manifest: StrictBundleManifest): ReturnType<typeof createRealRuntime>;
 }
@@ -86,15 +84,15 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
-    diagnoseEpoch: async (storeDbPath, holder) => {
-      const diagnostic = await superviseStoreResetDiagnosticChild(
-        createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
-        process.execPath,
-        storeDbPath,
-        holder,
-      );
-      return { ...diagnostic, cleanup: 'not_required' };
-    },
+    diagnoseEpoch: (storeDbPath) =>
+      diagnoseStoreDatabaseCopy({
+        fs: createStoreResetInspectionFs(),
+        sourceDirectory: dirname(storeDbPath),
+        tempRoot: tmpdir(),
+        platform: process.platform,
+        executable: process.execPath,
+        supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
+      }),
     quarantineRoot: (manifest, target) => {
       const runtime = createRealRuntime(manifest.flavor);
       return resolveStoreResetTargetPaths(runtime, target).quarantineRoot;
@@ -109,21 +107,9 @@ async function diagnoseHeldEpoch(
   storeDbPath: string,
   dependencies: StoreResetCliDependencies,
 ): Promise<StoreResetDiagnosticStatus> {
-  const holderPath = storeEpochHolderPath(runtime.paths.coral.store.dbDir, runtime.ids.uuid());
-  const diagnostic = await dependencies.diagnoseEpoch(storeDbPath, { path: holderPath, epoch });
-  if (diagnostic.termination !== 'termination_unconfirmed') {
-    try {
-      runtime.storage.unlinkSync(holderPath);
-    } catch (error: unknown) {
-      void error;
-    }
-    try {
-      runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);
-    } catch {
-      // A resurrected marker only makes a later sweep more conservative.
-    }
-  }
-  return diagnostic;
+  return provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) === epoch
+    ? dependencies.diagnoseEpoch(storeDbPath)
+    : { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
 }
 
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {

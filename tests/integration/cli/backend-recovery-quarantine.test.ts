@@ -30,7 +30,7 @@ import { sha256Hex } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile } from '#src/store/db.js';
-import { epochPath, sweepStoreEpochs } from '#src/store/epoch.js';
+import { epochPath } from '#src/store/epoch.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
@@ -137,32 +137,30 @@ function publishEpochMetadata(runtime: ReturnType<typeof createRealRuntime>, epo
 }
 
 describe('backend recovery-quarantine commands', () => {
-  it('keeps the production list classifier locked across publication and release', () => {
+  it('opens only a staged database copy while listing recovery quarantine', () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-list-lock-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
     const dbDir = runtime.paths.coral.store.dbDir;
     publishCompatibleEpoch(runtime, '1');
-    let releaseResult: ReturnType<typeof sweepStoreEpochs> | null = null;
-    let crossed = false;
+    const livePath = epochPath(dbDir, '1');
+    const openedPaths: string[] = [];
     const storage = new Proxy(runtime.storage, {
       get(subject, property, receiver) {
         if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
         return (path: string, options?: { readOnly?: boolean }) => {
-          if (!crossed && path === epochPath(dbDir, '1')) {
-            crossed = true;
-            publishCompatibleEpoch(runtime, '3');
-            releaseResult = sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
-          }
+          openedPaths.push(path);
           return subject.openSqliteDatabaseSync(path, options);
         };
       },
     });
 
     expect(listRecoveryQuarantineLocal({ ...runtime, storage })).toEqual([]);
-    expect(releaseResult).toBe('live-holder');
-    expect(runtime.storage.existsSync(epochPath(dbDir, '1'))).toBe(true);
-    console.log('recovery-quarantine-list-lock-cell publication=epoch-3 release=live-holder epoch-1=present');
+    expect(openedPaths.length).toBeGreaterThan(0);
+    expect(openedPaths).not.toContain(livePath);
+    console.log(
+      `recovery-quarantine-copy-cell live-opens=${openedPaths.filter((path) => path === livePath).length} staged-opens=${openedPaths.length}`,
+    );
   });
 
   it('should list retained rows directly while no daemon exists', async () => {

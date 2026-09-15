@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -15,6 +15,10 @@ import { acquirePackageOperationLockAtPath } from '#src/infra/package-operation-
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { installExpansion } from '#src/cli/expansion/install.js';
+import { applyBundledStoreSchema } from '#src/store/db.js';
+import { epochPath } from '#src/store/epoch.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const createdRoots: string[] = [];
 const kiwiInstallMethod = 'runtime-download' satisfies InstallMethod;
@@ -62,6 +66,40 @@ function createRuntimeForFixture(fixture: ReturnType<typeof createFixture>): Run
 }
 
 describe('installExpansion', () => {
+  it('refuses catalog registration through an epoch with malformed metadata', async () => {
+    const fixture = createFixture();
+    const runtime = createRuntimeForFixture(fixture);
+    const dbPath = epochPath(runtime.paths.coral.store.dbDir, '1');
+    mkdirSync(dirname(dbPath), { recursive: true });
+    const db = openTestStoreDatabase({
+      path: dbPath,
+      storage: runtime.storage,
+      storeFormat: currentCoralStoreFormat(),
+      flavor: runtime.flavor,
+    });
+    applyBundledStoreSchema(db, currentCoralStoreFormat());
+    db.close();
+    writeFileSync(join(dirname(dbPath), '.lock'), '');
+    writeFileSync(join(dirname(dbPath), 'epoch.json'), '{');
+    vi.spyOn(kiwiInstaller, 'install').mockResolvedValue({
+      status: 'installed',
+      method: kiwiInstallMethod,
+      targetDir: runtime.paths.coral.engine.dataDir('kiwi'),
+      postInstall: [{ action: 'register_expansion', manifestPath: 'missing-manifest.json' }],
+    });
+
+    let refusal: unknown;
+    try {
+      await installExpansion('kiwi', { runtime });
+    } catch (error: unknown) {
+      refusal = error;
+    }
+    console.log(
+      `expansion-malformed-epoch-cell refusal=${refusal instanceof Error && 'code' in refusal ? String(refusal.code) : 'other'}`,
+    );
+    expect(refusal).toMatchObject({ code: 'store_not_initialized' });
+  });
+
   it('returns a structured unknown_expansion error for names outside the bundled manifest', async () => {
     const fixture = createFixture();
     const runtime = createRuntimeForFixture(fixture);

@@ -1,4 +1,5 @@
 import { InvalidArgumentError, type Command } from 'commander';
+import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import type { z } from 'zod';
 
@@ -42,6 +43,7 @@ import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import { createStoreResetInspectionFs } from '../../infra/store-reset-inspection-fs.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../infra/node-process.js';
@@ -94,8 +96,9 @@ import {
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
-import { acquireStoreEpochReadLock, resolveCurrentStorePath } from '../../store/epoch.js';
+import { provenStoreEpochAtPath, resolveCurrentStorePath } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
+import { stageStoreDatabaseEvidence, type StagedStoreDatabaseEvidence } from '../../store/reset-incident-diagnostic.js';
 import {
   attributeUnreadableProviderOperations,
   readProviderOperations,
@@ -1294,36 +1297,51 @@ export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
 ): readonly RecoveryQuarantineListEntry[] {
   const dbPath = resolveCurrentStorePath(runtime);
-  const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat(), () => {
-    const releaseLock = acquireStoreEpochReadLock(runtime, dbPath);
-    if (releaseLock === null) {
-      throw new Error('Resolved recovery-quarantine store path is outside the canonical epoch layout.');
-    }
-    return releaseLock;
-  });
-  // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
-  // means rows this build cannot read may be there, and an empty list is then the opposite of what is
-  // true — an operator reading it concludes there is nothing to act on.
-  if (classification.kind === 'absent' || classification.kind === 'fresh') {
-    return [];
+  if (provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, dbPath) === null) {
+    throw new Error('Resolved recovery-quarantine store path is outside the canonical epoch layout.');
   }
-  if (classification.kind !== 'compatible') {
-    throw new Error(
-      `Recovery quarantine cannot be inspected while the local store is ${classification.kind}. Run coral-cli backend status and start or repair the coordinator so it can perform the supported store transition, then retry recovery-quarantine list.`,
-    );
-  }
-
-  const db = openReadOnlyStoreDatabase(runtime, {
-    storeFormat: currentCoralStoreFormat(),
-  }) as unknown as Database;
+  let staged: StagedStoreDatabaseEvidence | undefined;
   try {
-    const stored = RecoveryQuarantineStore.readOnly(db).list();
-    return [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
-      const boundary = left.boundary.localeCompare(right.boundary);
-      return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
+    staged = stageStoreDatabaseEvidence({
+      fs: createStoreResetInspectionFs(),
+      sourceDirectory: dirname(dbPath),
+      tempRoot: tmpdir(),
+      platform: process.platform,
     });
+    const classification = classifyStoreFile(staged.dbPath, runtime.storage, currentCoralStoreFormat());
+    // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
+    // means rows this build cannot read may be there, and an empty list is then the opposite of what is
+    // true — an operator reading it concludes there is nothing to act on.
+    if (classification.kind === 'absent' || classification.kind === 'fresh') {
+      if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
+      return [];
+    }
+    if (classification.kind !== 'compatible') {
+      throw new Error(
+        `Recovery quarantine cannot be inspected while the local store is ${classification.kind}. Run coral-cli backend status and start or repair the coordinator so it can perform the supported store transition, then retry recovery-quarantine list.`,
+      );
+    }
+
+    const db = openReadOnlyStoreDatabase(runtime, {
+      path: staged.dbPath,
+      storeFormat: currentCoralStoreFormat(),
+    }) as unknown as Database;
+    try {
+      const stored = RecoveryQuarantineStore.readOnly(db).list();
+      const entries = [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
+        const boundary = left.boundary.localeCompare(right.boundary);
+        return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
+      });
+      if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
+      return entries;
+    } finally {
+      db.close();
+    }
   } finally {
-    db.close();
+    const cleanup = staged?.cleanup();
+    if (cleanup !== undefined && cleanup !== 'removed') {
+      throw new Error('Recovery quarantine inspection cleanup failed.');
+    }
   }
 }
 

@@ -190,36 +190,10 @@ describe('store-reset operator epochs', () => {
     });
   });
 
-  it('registers a report diagnostic holder before the child opens an epoch', async () => {
-    const baseRuntime = harness();
-    const diagnosticPid = baseRuntime.env.pid() + 100_000;
-    const runtime = {
-      ...baseRuntime,
-      process: new Proxy(baseRuntime.process, {
-        get(subject, property, receiver) {
-          if (property !== 'observeLiveness') return Reflect.get(subject, property, receiver) as unknown;
-          return (pid: number) => (pid === diagnosticPid ? 'alive' : subject.observeLiveness(pid));
-        },
-      }),
-    };
+  it('does not publish a live-namespace holder while reporting an epoch copy', async () => {
+    const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishEpoch(dbDir, '1');
-    publishEpoch(dbDir, '3');
-    writeDiscoveryRecord(
-      {
-        pid: 999_999_991,
-        port: 1,
-        socketPath: join(runtime.paths.coral.coordinator.runDir, 'dead.sock'),
-        bundleHash: 'dead-coordinator',
-        flavor: runtime.flavor,
-        namespace: 'dead-coordinator',
-        startedAt: Date.now(),
-        token: 'dead-coordinator',
-        bootToken: 'dead-coordinator',
-        version: '0.10.9',
-      },
-      runtime,
-    );
     const dependencies: StoreResetCliDependencies = {
       resolveIdentity: () => ({ ok: true, manifest: build }),
       createInspectionFs: () => {
@@ -228,28 +202,9 @@ describe('store-reset operator epochs', () => {
       createDiagnosticRunner: () => {
         throw new Error('legacy diagnostics are not used');
       },
-      diagnoseEpoch: async (_storeDbPath, holderRegistration) => {
-        const holderLock = acquireSharedFileLockSync(storeEpochLockPath(dbDir, '1'));
-        expect(holderRegistration).toBeDefined();
-        try {
-          runtime.storage.writeAtomicDurableSync(
-            holderRegistration?.path ?? '',
-            `${JSON.stringify({ epoch: holderRegistration?.epoch, pid: diagnosticPid })}\n`,
-            { encoding: 'utf-8', mode: 0o600 },
-          );
-          const holder = readdirSync(dbDir).find((name) => name.startsWith('.epoch-holder-'));
-          expect(holder).toBeDefined();
-          expect(JSON.parse(readFileSync(join(dbDir, holder ?? ''), 'utf-8'))).toEqual({
-            epoch: '1',
-            pid: diagnosticPid,
-          });
-          await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-            kind: 'release-holder-live',
-          });
-          return { integrity: 'ok', termination: 'completed', cleanup: 'not_required' };
-        } finally {
-          holderLock();
-        }
+      diagnoseEpoch: async () => {
+        expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
+        return { integrity: 'ok', termination: 'completed', cleanup: 'removed' };
       },
       quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
       runtime: () => runtime,
@@ -262,7 +217,7 @@ describe('store-reset operator epochs', () => {
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
   });
 
-  it('retains a report holder when diagnostic child termination is unconfirmed', async () => {
+  it('does not publish a report holder when diagnostic child termination is unconfirmed', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishEpoch(dbDir, '1');
@@ -274,25 +229,18 @@ describe('store-reset operator epochs', () => {
       createDiagnosticRunner: () => {
         throw new Error('legacy diagnostics are not used');
       },
-      diagnoseEpoch: async (_storeDbPath, holderRegistration) => {
-        runtime.storage.writeAtomicDurableSync(
-          holderRegistration?.path ?? '',
-          `${JSON.stringify({ epoch: holderRegistration?.epoch, pid: runtime.env.pid() + 100_000 })}\n`,
-          { encoding: 'utf-8', mode: 0o600 },
-        );
-        return {
-          integrity: 'unavailable',
-          termination: 'termination_unconfirmed',
-          cleanup: 'not_required',
-        };
-      },
+      diagnoseEpoch: async () => ({
+        integrity: 'unavailable',
+        termination: 'termination_unconfirmed',
+        cleanup: 'cleanup_unavailable',
+      }),
       quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
       runtime: () => runtime,
     };
 
     await expect(reportStoreResetLocal('gen2', '1', dependencies)).resolves.toMatchObject({ kind: 'epoch' });
 
-    expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toHaveLength(1);
+    expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
   });
 
   it('lists holder liveness as unknown and reaps a stale holder during the sweep', () => {
