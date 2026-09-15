@@ -5,6 +5,7 @@ import type { CauseRefToken } from '../causality/cause-ref.js';
 import type { ProviderLookupPort } from '../providers/catalog.js';
 import {
   commit as commitJournalEvents,
+  commitRecoveryDisposition,
   type AppendedEvent,
   type CommitAppendInput,
   type CommitClosureResult,
@@ -397,6 +398,7 @@ export class JobStore implements JobProgressStore {
   private readonly eventBus: JobEventBus;
   private readonly db: Database;
   private readonly commitEvents: CommitEventsFn;
+  private readonly commitUnreadableStatusDisposition: (input: ResolvableCoralEventInput<unknown, unknown>) => readonly AppendedEvent[];
   private readonly observer?: PostCommitObserver;
   private readonly namespaceOverrides = new Map<string, { backendNamespace: string; bundleHash?: string }>();
   private changeSeq = 0;
@@ -425,13 +427,14 @@ export class JobStore implements JobProgressStore {
     this.streamKinds = reducers.streamKinds;
     this.bodyCodec = bodyCodec;
     this.db = db;
-    this.commitEvents = (cb) =>
-      commitJournalEvents(this.db, cb, {
-        now: () => nowDate(this.runtime.time),
-        reducers,
-        bodyCodec: this.bodyCodec,
-        providers: options.providers,
-      });
+    const appendContext = {
+      now: () => nowDate(this.runtime.time),
+      reducers,
+      bodyCodec: this.bodyCodec,
+      providers: options.providers,
+    };
+    this.commitEvents = (cb) => commitJournalEvents(this.db, cb, appendContext);
+    this.commitUnreadableStatusDisposition = (input) => commitRecoveryDisposition(this.db, input, appendContext);
   }
 
   getNamespace(): string {
@@ -822,21 +825,17 @@ export class JobStore implements JobProgressStore {
 
   appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number {
     const emittedAt = nowIsoString(this.runtime.time);
-    const appended =
-      this.commitEvents((commit) => {
-        commit.append({
-          type: 'job.progress.emitted',
-          stream: { kind: 'job', id: jobId },
-          namespace: this.namespace,
-          refs: buildJobEventRefs({ jobId, sessionId }),
-          body: {
-            kind: 'message',
-            message,
-            timing: { origin: 'runtime', originAt: emittedAt, emittedAt, elapsedMs: 0 },
-          },
-        });
-        return undefined;
-      }) ?? [];
+    const appended = this.commitUnreadableStatusDisposition({
+      type: 'job.progress.emitted',
+      stream: { kind: 'job', id: jobId },
+      namespace: this.namespace,
+      refs: buildJobEventRefs({ jobId, sessionId }),
+      body: {
+        kind: 'message',
+        message,
+        timing: { origin: 'runtime', originAt: emittedAt, emittedAt, elapsedMs: 0 },
+      },
+    });
     const published = this.publishAppendedEvents(appended, new Map());
     if (published.length > 0) this.observer?.(published);
     return appended[0]?.seq ?? 0;

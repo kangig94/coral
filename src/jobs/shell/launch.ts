@@ -969,8 +969,8 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private releaseTerminalJob(jobId: string, sessionId: string): void {
     const { abortRegistry, sessionManager } = this.deps;
+    sessionManager.releaseJob(sessionId, jobId);
     abortRegistry.remove(jobId);
-    void sessionManager.releaseJob(sessionId, jobId);
   }
 
   private elapsedJobDurationMs(jobId: string): number {
@@ -1234,12 +1234,21 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
       currentStatus = this.deps.progressStore.readStatus(jobId);
     } catch (statusError: unknown) {
       if (statusError instanceof StoreCodecError) {
-        this.deps.progressStore.appendUnreadableStatusProgress(
+        try {
+          this.releaseTerminalJob(jobId, sessionId);
+        } catch (releaseError: unknown) {
+          this.appendUnreadableStatusDisposition(
+            jobId,
+            sessionId,
+            `Live job ${jobId} was not released after provider failure (${errorMessage(error)}) because its latest persisted event could not be decoded (${statusError.message}), and releasing its session claim failed (${errorMessage(releaseError)}). The abort registration and session claim remain held.`,
+          );
+          return;
+        }
+        this.appendUnreadableStatusDisposition(
           jobId,
           sessionId,
           `Released live job ${jobId} without a terminal after provider failure (${errorMessage(error)}) because its latest persisted event could not be decoded (${statusError.message}).`,
         );
-        this.releaseTerminalJob(jobId, sessionId);
         return;
       }
       throw statusError;
@@ -1330,6 +1339,17 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         },
       },
     });
+  }
+
+  private appendUnreadableStatusDisposition(jobId: string, sessionId: string, message: string): void {
+    try {
+      this.deps.progressStore.appendUnreadableStatusProgress(jobId, sessionId, message);
+    } catch (appendError: unknown) {
+      backendLog.error(
+        `Failed to persist unreadable-status disposition for ${jobId}: ${errorMessage(appendError)}`,
+        appendError,
+      );
+    }
   }
 
   private markJobQueued(jobId: string, sessionId: string, queuePosition: number): void {

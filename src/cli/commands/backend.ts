@@ -94,7 +94,7 @@ import {
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 import { classifyStoreFile, type Database } from '../../store/db.js';
-import { resolveCurrentStorePath } from '../../store/epoch.js';
+import { acquireStoreEpochReadLock, resolveCurrentStorePath } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
   attributeUnreadableProviderOperations,
@@ -1291,7 +1291,13 @@ export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
 ): readonly RecoveryQuarantineListEntry[] {
   const dbPath = resolveCurrentStorePath(runtime);
-  const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat());
+  const classification = classifyStoreFile(dbPath, runtime.storage, currentCoralStoreFormat(), () => {
+    const releaseLock = acquireStoreEpochReadLock(runtime, dbPath);
+    if (releaseLock === null) {
+      throw new Error('Resolved recovery-quarantine store path is outside the canonical epoch layout.');
+    }
+    return releaseLock;
+  });
   // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
   // means rows this build cannot read may be there, and an empty list is then the opposite of what is
   // true — an operator reading it concludes there is nothing to act on.

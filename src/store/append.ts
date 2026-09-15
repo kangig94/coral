@@ -309,22 +309,12 @@ function prepareInput(
  * composition of `withImmediate` and this, so every existing caller keeps its own single-call transaction
  * unchanged.
  */
-export function commitWithinOpenTransaction(
+function commitCollectedInputs(
   db: Database,
-  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+  collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
   ctx: AppendContext,
+  validateDomainAppend: boolean,
 ): AppendedEvent[] {
-  const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
-  const c: CommitContext<unknown> = {
-    append(input) {
-      const slot = collectedInputs.length;
-      const token = makeCauseRefToken<unknown>(slot);
-      collectedInputs.push(input);
-      return token;
-    },
-  };
-
-  cb(c);
   if (collectedInputs.length === 0) {
     return [];
   }
@@ -350,8 +340,10 @@ export function commitWithinOpenTransaction(
     },
   };
 
-  for (const validateAppend of ctx.reducers.appendValidators) {
-    validateAppend(validationCtx, validationInputs);
+  if (validateDomainAppend) {
+    for (const validateAppend of ctx.reducers.appendValidators) {
+      validateAppend(validationCtx, validationInputs);
+    }
   }
 
   const insertStmt = db.prepare<
@@ -419,6 +411,33 @@ export function commitWithinOpenTransaction(
   }
 
   return assigned;
+}
+
+export function commitWithinOpenTransaction(
+  db: Database,
+  cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+  ctx: AppendContext,
+): AppendedEvent[] {
+  const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
+  const c: CommitContext<unknown> = {
+    append(input) {
+      const slot = collectedInputs.length;
+      const token = makeCauseRefToken<unknown>(slot);
+      collectedInputs.push(input);
+      return token;
+    },
+  };
+
+  cb(c);
+  return commitCollectedInputs(db, collectedInputs, ctx, true);
+}
+
+export function commitRecoveryDisposition(
+  db: Database,
+  input: CoralEventInput,
+  ctx: AppendContext,
+): AppendedEvent[] {
+  return withImmediate(db, () => commitCollectedInputs(db, [input], ctx, false));
 }
 
 export function commit(
