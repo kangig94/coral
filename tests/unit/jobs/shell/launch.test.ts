@@ -819,33 +819,172 @@ describe('ExecutionService launch', () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it('releases a live job and records why when provider failure meets a malformed latest event', async () => {
+  it.each([
+    {
+      releaseResult: 'released' as const,
+      prepareClaim: (_sessionManager: SessionManager, _sessionId: string, _jobId: string) => {},
+      expectedMessage: 'Released live job',
+      expectedActiveJobId: undefined,
+    },
+    {
+      releaseResult: 'already_absent' as const,
+      prepareClaim: (sessionManager: SessionManager, sessionId: string, jobId: string) => {
+        expect(sessionManager.releaseJob(sessionId, jobId)).toBe('released');
+      },
+      expectedMessage: 'had no session claim to release',
+      expectedActiveJobId: undefined,
+    },
+    {
+      releaseResult: 'owned_by_another_job' as const,
+      prepareClaim: (sessionManager: SessionManager, sessionId: string, jobId: string) => {
+        expect(sessionManager.releaseJob(sessionId, jobId)).toBe('released');
+        expect(sessionManager.claimForJobSync(sessionId, 'foreign-job')).toBe(true);
+      },
+      expectedMessage: 'session claim was owned by another job',
+      expectedActiveJobId: 'foreign-job',
+    },
+  ])(
+    'atomically records the $releaseResult malformed-status disposition and consumes its release result',
+    async ({ releaseResult, prepareClaim, expectedMessage, expectedActiveJobId }) => {
+      let rejectProvider!: (error: Error) => void;
+      const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
+        rejectProvider = reject;
+      });
+      const { provider } = makeProvider({ execute: () => providerResult });
+      mockState.getNewProvider.mockReturnValue(provider);
+      const progressStore = createProgressStore();
+      const baseCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
+      let armed = false;
+      const committedBatches: string[][] = [];
+      const observingCommit: CommitEventsFn = (callback, options) =>
+        baseCommit((commit) => {
+          const types: string[] = [];
+          const append = ((input: { type: string }) => {
+            types.push(input.type);
+            return (commit.append as (next: typeof input) => unknown)(input);
+          }) as typeof commit.append;
+          const result = callback({ append });
+          if (armed) committedBatches.push(types);
+          return result;
+        }, options);
+      const service = createService(ctx, { progressStore, coordinatorCommit: observingCommit });
+      const { abortRegistry, sessionManager } = getInternals(service);
+      const decision = await service.start('codex', { prompt: 'malformed latest event' }, ctx);
+      expect(decision.status).toBe('running');
+      if (decision.status !== 'running') throw new Error('expected running launch');
+      trackJob(decision.jobId);
+      prepareClaim(sessionManager, decision.sessionId, decision.jobId);
+      appendMalformedTerminalRow(progressStore, decision.jobId, decision.sessionId);
+      expect(() => progressStore.readStatus(decision.jobId)).toThrow(StoreCodecError);
+      armed = true;
+
+      rejectProvider(new Error('provider failed after malformed latest event'));
+
+      await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
+      await vi.waitFor(() =>
+        expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(expectedActiveJobId),
+      );
+      const disposition = progressMessages(progressStore, decision.jobId).at(-1);
+      expect(disposition).toContain(expectedMessage);
+      expect(disposition).toContain('provider failed after malformed latest event');
+      expect(committedBatches).toContainEqual(
+        releaseResult === 'released'
+          ? expect.arrayContaining(['job.progress.emitted', 'session.claim.released'])
+          : expect.arrayContaining(['job.progress.emitted']),
+      );
+      console.log(
+        `store-codec-live-job-cell source=persisted-malformed-terminal result=${releaseResult} abort=false claim=${expectedActiveJobId ?? 'absent'} disposition=${JSON.stringify(disposition)}`,
+      );
+    },
+  );
+
+  it('rolls back the claim release when the atomic malformed-status recovery commit crashes', async () => {
     let rejectProvider!: (error: Error) => void;
     const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
       rejectProvider = reject;
     });
     const { provider } = makeProvider({ execute: () => providerResult });
     mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-    const { abortRegistry, progressStore, sessionManager } = getInternals(service);
-    const decision = await service.start('codex', { prompt: 'malformed latest event' }, ctx);
+    const progressStore = createProgressStore();
+    const baseCommit = createTestJobJournalDeps(progressStore, runtime).coordinatorCommit;
+    const crash = new Error('simulated process death during malformed-status recovery commit');
+    let armed = false;
+    let recoveryCommitObserved = false;
+    const crashingCommit: CommitEventsFn = (callback, options) =>
+      baseCommit((commit) => {
+        const types: string[] = [];
+        const append = ((input: { type: string }) => {
+          types.push(input.type);
+          return (commit.append as (next: typeof input) => unknown)(input);
+        }) as typeof commit.append;
+        const result = callback({ append });
+        if (armed && types.includes('session.claim.released')) {
+          recoveryCommitObserved = true;
+          if (types.includes('job.progress.emitted')) throw crash;
+        }
+        return result;
+      }, options);
+    const service = createService(ctx, { progressStore, coordinatorCommit: crashingCommit });
+    const { abortRegistry, sessionManager } = getInternals(service);
+    vi.spyOn(progressStore, 'appendUnreadableStatusProgress').mockImplementation(() => {
+      throw crash;
+    });
+    const decision = await service.start('codex', { prompt: 'process death recovery cut' }, ctx);
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') throw new Error('expected running launch');
     trackJob(decision.jobId);
     appendMalformedTerminalRow(progressStore, decision.jobId, decision.sessionId);
-    expect(() => progressStore.readStatus(decision.jobId)).toThrow(StoreCodecError);
+    armed = true;
 
-    rejectProvider(new Error('provider failed after malformed latest event'));
+    rejectProvider(new Error('provider failed before simulated process death'));
 
-    await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
-    await vi.waitFor(() => expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBeUndefined());
-    const disposition = progressMessages(progressStore, decision.jobId).find((message) =>
-      message.includes(`Released live job ${decision.jobId}`),
+    await vi.waitFor(() => expect(recoveryCommitObserved).toBe(true));
+    expect(progressMessages(progressStore, decision.jobId)).not.toContainEqual(
+      expect.stringContaining('provider failed before simulated process death'),
     );
-    expect(disposition).toContain('provider failed after malformed latest event');
-    console.log(
-      `store-codec-live-job-cell source=persisted-malformed-terminal job=${decision.jobId} abort=false claim=released disposition=${JSON.stringify(disposition)}`,
-    );
+    expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(decision.jobId);
+    expect(abortRegistry.has(decision.jobId)).toBe(true);
+    expect(launchCoordinator.getActiveJobIds()).toContain(decision.jobId);
+    console.log('store-codec-atomicity-cell cut=process-death claim=held abort=true permit=held disposition=absent');
+  });
+
+  it('rolls back the claim release when the malformed-status disposition insert fails', async () => {
+    let rejectProvider!: (error: Error) => void;
+    const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const { provider } = makeProvider({ execute: () => providerResult });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const progressStore = createProgressStore();
+    const service = createService(ctx, { progressStore });
+    const { abortRegistry, sessionManager } = getInternals(service);
+    const decision = await service.start('codex', { prompt: 'recovery append failure' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    appendMalformedTerminalRow(progressStore, decision.jobId, decision.sessionId);
+    let recoveryInsertAttempted = false;
+    progressStore.getDb().function('mark_recovery_insert_attempt', () => {
+      recoveryInsertAttempted = true;
+      return 0;
+    });
+    progressStore.getDb().exec(`
+      CREATE TEMP TRIGGER fail_recovery_disposition
+      BEFORE INSERT ON events
+      WHEN NEW.type = 'job.progress.emitted'
+      BEGIN
+        SELECT mark_recovery_insert_attempt();
+        SELECT RAISE(ABORT, 'injected recovery disposition failure');
+      END;
+    `);
+
+    rejectProvider(new Error('provider failed before recovery append failure'));
+
+    await vi.waitFor(() => expect(recoveryInsertAttempted).toBe(true));
+    expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(decision.jobId);
+    expect(abortRegistry.has(decision.jobId)).toBe(true);
+    expect(launchCoordinator.getActiveJobIds()).toContain(decision.jobId);
+    console.log('store-codec-atomicity-cell cut=second-transaction-failure claim=held abort=true permit=held');
   });
 
   it('does not claim release or drop abort ownership when unreadable-status session release fails', async () => {
@@ -874,7 +1013,7 @@ describe('ExecutionService launch', () => {
       }
       return readStatus(jobId);
     });
-    vi.spyOn(sessionManager, 'releaseJob').mockImplementation(() => {
+    vi.spyOn(sessionManager, 'releaseJobWithRecoveryDisposition').mockImplementation(() => {
       throw new Error('injected session journal write failure');
     });
 

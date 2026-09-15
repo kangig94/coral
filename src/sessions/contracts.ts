@@ -1,6 +1,6 @@
 import type { ProviderValidatedContinuitySnapshot } from './continuity.js';
 import type { ProviderValidatedSessionContinuityMutation } from './continuity-mutation.js';
-import type { CommitContext } from '../store/append.js';
+import type { AppendedEvent, CommitContext } from '../store/append.js';
 import type { ProviderInstruction } from '../providers/contract.js';
 import type { ProviderArtifactIdentity } from '../providers/artifact-identity.js';
 import type { ProviderBindingEnvelope } from '../infra/provider-binding-envelope.js';
@@ -30,6 +30,10 @@ export type SessionAllocateOptions = {
 export type SessionJobContinuityCheckpointResult = { ok: true; nextVersion: number } | { ok: false };
 export type SessionArtifactHandleRecordResult = { ok: true; nextVersion: number } | { ok: false };
 export type SessionJobClaimReleaseResult = 'released' | 'already_absent' | 'owned_by_another_job';
+export type SessionJobRecoveryDispositionCommitResult = Readonly<{
+  releaseResult: SessionJobClaimReleaseResult;
+  appended: readonly AppendedEvent[];
+}>;
 
 export type SessionArtifactHandleRecordOptions = {
   expectedActiveJobId: string;
@@ -45,6 +49,11 @@ export interface SessionJobReadPort {
 
 export interface SessionJobClaimPort extends SessionJobReadPort {
   releaseJob(sessionId: string, jobId: string): SessionJobClaimReleaseResult;
+  releaseJobWithRecoveryDisposition(
+    sessionId: string,
+    jobId: string,
+    appendDisposition: <Scope>(commit: CommitContext<Scope>, releaseResult: SessionJobClaimReleaseResult) => void,
+  ): SessionJobRecoveryDispositionCommitResult;
   checkpointJobContinuityAtomic(
     sessionId: string,
     options: {

@@ -51,4 +51,11 @@ export interface JobProgressStore {
   liveJobCount(): number;
   appendProgress(jobId: string, sessionId: string | null, message: string): number;
   appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number;
+  appendUnreadableStatusProgressInCommit<Scope>(
+    commit: CommitContext<Scope>,
+    jobId: string,
+    sessionId: string,
+    message: string,
+  ): void;
+  publishUnreadableStatusProgress(appended: readonly AppendedEvent[]): void;
 }

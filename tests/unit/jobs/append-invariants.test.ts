@@ -495,6 +495,59 @@ describe('jobs append invariants', () => {
     }
   });
 
+  it('exempts only the named recovery progress event from terminal ordering', () => {
+    const db = createDb();
+    try {
+      const jobId = 'job-recovery-progress-only';
+      appendJobEvents(db, [launchInput(jobId), terminalInput(jobId)]);
+
+      expectTerminalOrderViolation(
+        () =>
+          commit(
+            db,
+            (commit) => {
+              commit.append({
+                type: 'job.progress.emitted',
+                stream: { kind: 'job', id: jobId },
+                refs: { jobId, sessionId: `session-${jobId}` },
+                body: {
+                  kind: 'message',
+                  message: 'late recovery progress',
+                  timing: {
+                    origin: 'launch',
+                    originAt: NOW.toISOString(),
+                    emittedAt: '2026-04-19T00:00:01.000Z',
+                    elapsedMs: 1000,
+                  },
+                },
+              });
+              commit.append({
+                type: 'job.aborted',
+                stream: { kind: 'job', id: jobId },
+                refs: { jobId, sessionId: `session-${jobId}` },
+                body: { reason: 'user_abort' },
+              });
+              return undefined;
+            },
+            {
+              now: () => NOW,
+              reducers: composeReducers(jobsRegistry, workflowRegistry),
+              bodyCodec: createEventBodyCodec(),
+              providers: permissiveProviderLookupPort,
+            },
+            {
+              terminalOrderExemption: { eventType: 'job.progress.emitted', jobId },
+            },
+          ),
+        jobId,
+        'job.aborted',
+      );
+      expect((db.prepare('SELECT COUNT(*) AS count FROM events').get() as { count: number }).count).toBe(2);
+    } finally {
+      db.close();
+    }
+  });
+
   it('allows launch rejection to be followed by the terminal outcome', () => {
     const db = createDb();
     try {

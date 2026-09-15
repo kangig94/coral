@@ -92,8 +92,15 @@ export type CommitAppendInput<Scope, Body> = ResolvableCoralEventInput<Scope, Bo
 export interface CommitContext<Scope> {
   append<const Body>(input: CommitAppendInput<Scope, Body>): CauseRefToken<Scope>;
 }
+export type CommitOptions = Readonly<{
+  terminalOrderExemption?: Readonly<{
+    eventType: 'job.progress.emitted';
+    jobId: string;
+  }>;
+}>;
 export type CommitEventsFn = (
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
+  options?: CommitOptions,
 ) => readonly AppendedEvent[] | void;
 
 function toTimestamp(value: Date): string {
@@ -313,7 +320,7 @@ function commitCollectedInputs(
   db: Database,
   collectedInputs: readonly ResolvableCoralEventInput<unknown, unknown>[],
   ctx: AppendContext,
-  validateDomainAppend: boolean,
+  options: CommitOptions = {},
 ): AppendedEvent[] {
   if (collectedInputs.length === 0) {
     return [];
@@ -340,10 +347,21 @@ function commitCollectedInputs(
     },
   };
 
-  if (validateDomainAppend) {
-    for (const validateAppend of ctx.reducers.appendValidators) {
-      validateAppend(validationCtx, validationInputs);
-    }
+  for (const [index, validateAppend] of ctx.reducers.appendValidators.entries()) {
+    const contract = ctx.reducers.appendValidatorContracts[index];
+    const exemption = options.terminalOrderExemption;
+    const inputs =
+      contract === 'jobs:terminal-order-and-single-terminal' && exemption !== undefined
+        ? validationInputs.filter(
+            (input) =>
+              !(
+                input.type === exemption.eventType &&
+                input.stream.kind === 'job' &&
+                input.stream.id === exemption.jobId
+              ),
+          )
+        : validationInputs;
+    validateAppend(validationCtx, inputs);
   }
 
   const insertStmt = db.prepare<
@@ -417,6 +435,7 @@ export function commitWithinOpenTransaction(
   db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
+  options: CommitOptions = {},
 ): AppendedEvent[] {
   const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
   const c: CommitContext<unknown> = {
@@ -429,17 +448,35 @@ export function commitWithinOpenTransaction(
   };
 
   cb(c);
-  return commitCollectedInputs(db, collectedInputs, ctx, true);
+  return commitCollectedInputs(db, collectedInputs, ctx, options);
 }
 
-export function commitRecoveryDisposition(db: Database, input: CoralEventInput, ctx: AppendContext): AppendedEvent[] {
-  return withImmediate(db, () => commitCollectedInputs(db, [input], ctx, false));
+export type UnreadableJobStatusRecoveryProgressInput = CoralEventInput &
+  Readonly<{
+    type: 'job.progress.emitted';
+    stream: Readonly<{ kind: 'job'; id: string }>;
+  }>;
+
+export function commitUnreadableJobStatusRecoveryProgress(
+  db: Database,
+  input: UnreadableJobStatusRecoveryProgressInput,
+  ctx: AppendContext,
+): AppendedEvent[] {
+  if (input.type !== 'job.progress.emitted' || input.stream.kind !== 'job') {
+    throw new TypeError('Unreadable job-status recovery may append only job.progress.emitted to a job stream.');
+  }
+  return withImmediate(db, () =>
+    commitCollectedInputs(db, [input], ctx, {
+      terminalOrderExemption: { eventType: 'job.progress.emitted', jobId: input.stream.id },
+    }),
+  );
 }
 
 export function commit(
   db: Database,
   cb: <Scope>(c: CommitContext<Scope>) => CommitClosureResult,
   ctx: AppendContext,
+  options: CommitOptions = {},
 ): AppendedEvent[] {
-  return withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx));
+  return withImmediate(db, () => commitWithinOpenTransaction(db, cb, ctx, options));
 }

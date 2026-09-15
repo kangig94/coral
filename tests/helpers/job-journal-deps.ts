@@ -15,13 +15,18 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
-  const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
-    const appended = commit(progressStore.getDb(), cb, {
-      now: () => new Date(runtime.time.now()),
-      reducers,
-      bodyCodec: progressStore.bodyCodec,
-      providers: permissiveProviderLookupPort,
-    });
+  const coordinatorCommit = (cb: Parameters<typeof commit>[1], options?: Parameters<typeof commit>[3]) => {
+    const appended = commit(
+      progressStore.getDb(),
+      cb,
+      {
+        now: () => new Date(runtime.time.now()),
+        reducers,
+        bodyCodec: progressStore.bodyCodec,
+        providers: permissiveProviderLookupPort,
+      },
+      options,
+    );
     if (appended.length > 0) {
       publishJobEvents(appended);
     }
