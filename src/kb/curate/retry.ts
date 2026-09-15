@@ -4,7 +4,7 @@ import type { KbCurateRetryQueueRow } from '../state/schema.js';
 import type { KbEntryId } from '../entry-types.js';
 import { kbEntryIdSchema, type PendingRepair } from './state/model.js';
 import { prepareCached, type Database } from '../../store/db.js';
-import type { ReadonlyDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 
 const DEFAULT_RETRY_REASON = 'pending-repair';
 

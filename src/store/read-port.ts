@@ -9,7 +9,6 @@ import {
 } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import type { ReadonlyDatabase } from './read-types.js';
-export type { ReadonlyDatabase, ReadonlyStatement } from './read-types.js';
 
 /**
  * Generic read-only SQLite primitives owned by the store layer. A domain

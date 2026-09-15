@@ -1,5 +1,5 @@
 /**
- * The compile-time guarantee that `ReadonlyDatabase`/`ReadonlyStatement` (`src/store/read-port.ts`) expose no
+ * The compile-time guarantee that `ReadonlyDatabase`/`ReadonlyStatement` (`src/store/read-types.ts`) expose no
  * write surface, kept where `tsc -p tsconfig/typecheck.json` (via `npm run typecheck:tests`) runs it in CI
  * rather than only in a mutation somebody performed once and reverted.
  *
@@ -9,7 +9,7 @@
  */
 
 import type { Database } from '#src/store/db.js';
-import type { ReadonlyDatabase } from '#src/store/read-port.js';
+import type { ReadonlyDatabase } from '#src/store/read-types.js';
 
 declare const db: ReadonlyDatabase;
 

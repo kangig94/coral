@@ -5,7 +5,8 @@ import { resolveBuildFlavor } from '../../infra/build-flavor.js';
 import { serializeCoralSetupError } from '../../runtime/errors.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../../store/read-port.js';
+import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
 
 function isCatalogUnavailableError(error: unknown): boolean {

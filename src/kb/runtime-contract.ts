@@ -1,6 +1,6 @@
 import type { CurateHandle } from './curate/scheduler.js';
 import type { KbRuntime } from './contract.js';
-import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-types.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 

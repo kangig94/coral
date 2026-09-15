@@ -1,5 +1,5 @@
 import type { Database, Statement } from '../../store/db.js';
-import type { ReadonlyDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 import { BUNDLED_ENGINES } from '../bundled.js';
 import type { EngineManifest } from '../contract.js';
 import { parseDeclarativeEngineManifest, persistedDeclarativeEngineManifestSchema } from './schema.js';

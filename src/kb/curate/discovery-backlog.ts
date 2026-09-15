@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { KbCurateDiscoveryBacklogNoteRow, KbCurateDiscoveryBacklogRow } from '../state/schema.js';
 import type { PendingDiscovery } from './state/model.js';
 import { prepareCached, type Database } from '../../store/db.js';
-import type { ReadonlyDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 
 export const backlogRowSchema = z
   .object({

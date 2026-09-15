@@ -15,7 +15,7 @@ import {
   type CurateState,
 } from './state/index.js';
 import type { Database } from '../../store/db.js';
-import type { ReadonlyDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 import type { DiscoveryCurateClaimedEntry, DiscoveryProposal, NoteClaimCandidate } from './pipeline-types.js';
 
 const DISCOVERY_NEW_NOTE_THRESHOLD = 50;

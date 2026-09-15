@@ -4,7 +4,8 @@ import type { CorpusConsumerApplyContext } from '#src/store/consumer-contract.js
 import type { Backed, FtsRetrieval, KbRuntime } from '#src/kb/contract.js';
 import { KB_FTS_CAPABILITY } from '#src/kb/capability/constants.js';
 import { createKbProjectionInput } from '#src/kb/projection-input.js';
-import { asReadonlyDatabase, type ReadonlyDatabase } from '#src/store/read-port.js';
+import { asReadonlyDatabase } from '#src/store/read-port.js';
+import type { ReadonlyDatabase } from '#src/store/read-types.js';
 import { normalizeCorpusCursor, readCorpusState } from '#src/kb/state/corpus-state.js';
 import { createTestKbRuntime, type CreateTestKbRuntimeOptions } from '#tests/fixtures/test-runtime.js';
 

@@ -55,6 +55,7 @@ function harness(): Runtime {
 function publishEpoch(runtime: Runtime, epoch: string): void {
   const directory = epochDirectory(runtime.paths.coral.store.dbDir, epoch);
   mkdirSync(directory, { recursive: true });
+  writeFileSync(storeEpochLockPath(runtime.paths.coral.store.dbDir, epoch), '');
   openTestStoreDatabase({
     path: epochPath(runtime.paths.coral.store.dbDir, epoch),
     storage: runtime.storage,

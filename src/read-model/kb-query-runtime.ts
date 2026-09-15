@@ -18,7 +18,8 @@ import { createCorpusStorage } from '../kb/corpus/rescan/storage.js';
 import { readKbIndexSnapshot } from '../kb/corpus/index/store.js';
 import { GeneratedCommunityProjectionStore } from '../kb/curate/community/generated-projection-store.js';
 import type { KbIndex } from '../kb/entry-types.js';
-import { openReadOnlyStoreDatabase, type ReadonlyDatabase } from '../store/read-port.js';
+import { openReadOnlyStoreDatabase } from '../store/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-types.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 
 export type KbQueryRuntime = Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'process' | 'storage' | 'time'>;

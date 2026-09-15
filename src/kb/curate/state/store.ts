@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import type { KbCurateActiveClaimRow } from '../../state/schema.js';
 import { prepareCached, withImmediate, type Database } from '../../../store/db.js';
-import type { ReadonlyDatabase } from '../../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../../store/read-types.js';
 import { readCurateDiscoveryBacklog, syncCurateDiscoveryBacklog } from '../discovery-backlog.js';
 import { readCurateRetryQueue } from '../retry.js';
 import {

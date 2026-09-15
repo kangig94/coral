@@ -44,7 +44,7 @@ import { noteEntryId, sourceEntryId, type KbIndex, type NoteEntry } from '#src/k
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openKbTestStoreDb } from '#tests/helpers/store-db.js';
 import { createKbTestRuntime } from '#tests/helpers/kb-test-runtime.js';
-import type { ReadonlyDatabase } from '#src/store/read-port.js';
+import type { ReadonlyDatabase } from '#src/store/read-types.js';
 import { curateDb } from '../../../src/kb/curate/db-access.js';
 
 function expectPendingRepairEntries(

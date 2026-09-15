@@ -1,6 +1,6 @@
 import { sqlPlaceholders, type Database } from '../store/db.js';
 
-import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-types.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import { isDeepStrictEqual } from 'node:util';
 import { upsertProjection } from '../store/projection-upsert.js';

@@ -11,7 +11,7 @@ import {
   kbEntryIdSchema,
 } from './state/model.js';
 import { prepareCached, type Database } from '../../store/db.js';
-import type { ReadonlyDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 
 export type CurateSchedulerState = {
   processedThrough: CurateCursor | null;

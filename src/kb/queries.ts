@@ -14,7 +14,7 @@ import type {
 import { type MemoStorage, listMemos } from './ops/memo.js';
 import { buildKbDiagnoseResult } from './diagnose.js';
 import type { KbReadQueryRuntime } from './contract.js';
-import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-types.js';
 import {
   readEntry,
   readEntryWithResolvedId,

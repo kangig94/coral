@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import { kbRuntimePaths } from '#src/infra/path/kb-runtime.js';
 import type { KbRuntime } from '#src/kb/contract.js';
-import type { ReadonlyDatabase } from '#src/store/read-port.js';
+import type { ReadonlyDatabase } from '#src/store/read-types.js';
 import { communityEntryId, noteEntryId, sourceEntryId, wikiEntryId, type EntityGraph } from '#src/kb/entry-types.js';
 import { computeBodySurfaceHash } from '#src/kb/corpus/snapshot.js';
 import { EMPTY_GENERATED_COMMUNITY_FRESHNESS } from '#src/kb/curate/community/generated-projection-store.js';

@@ -1,4 +1,4 @@
-import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-types.js';
 import { providerSessionProvider, type ProviderSession } from './entry.js';
 import { listProjectionSessionEntries, readProjectionProviderSession } from './projections.js';
 

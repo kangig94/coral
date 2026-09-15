@@ -4,7 +4,7 @@ import type { KbCurateConflictQuarantineRow } from '../state/schema.js';
 import type { KbEntryId } from '../entry-types.js';
 import { kbEntryIdSchema } from './state/model.js';
 import { prepareCached, type Database } from '../../store/db.js';
-import type { ReadonlyDatabase } from '../../store/read-port.js';
+import type { ReadonlyDatabase } from '../../store/read-types.js';
 
 export type ConflictQuarantineKind = 'note' | 'source' | 'community' | 'wiki';
 

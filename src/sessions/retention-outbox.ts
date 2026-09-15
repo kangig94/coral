@@ -1,5 +1,5 @@
 import type { AppendedEvent, CommitEventsFn } from '../store/append.js';
-import type { ReadonlyDatabase } from '../store/read-port.js';
+import type { ReadonlyDatabase } from '../store/read-types.js';
 import { decodeStoredBody, type StoreReadContext } from '../store/body-codec.js';
 import { rowToCoralEvent, type CoralEvent } from '../store/envelope.js';
 import type { EventsRow } from '../store/schema.js';

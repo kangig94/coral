@@ -134,6 +134,7 @@ describe('self-contained client path parity', () => {
     try {
       const published = join(dbDir, 'epoch-1');
       mkdirSync(published);
+      writeFileSync(join(published, '.lock'), '');
       writeFileSync(join(published, 'store.db'), 'published');
       writeFileSync(
         join(published, 'epoch.json'),
@@ -197,6 +198,7 @@ describe('self-contained client path parity', () => {
         arrange(dbDir: string) {
           const published = join(dbDir, 'epoch-1');
           mkdirSync(published);
+          writeFileSync(join(published, '.lock'), '');
           writeFileSync(join(published, 'store.db'), 'published');
           writeFileSync(join(published, 'epoch.json'), validMetadata);
           symlinkSync('.', join(dbDir, 'epoch-2'));
@@ -208,6 +210,7 @@ describe('self-contained client path parity', () => {
         arrange(dbDir: string) {
           const published = join(dbDir, 'epoch-1');
           mkdirSync(published);
+          writeFileSync(join(published, '.lock'), '');
           writeFileSync(join(published, 'store.db'), 'published');
           writeFileSync(join(published, 'epoch.json'), validMetadata);
           writeFileSync(join(dbDir, 'epoch-2'), 'blocker');
@@ -221,6 +224,7 @@ describe('self-contained client path parity', () => {
             mkdirSync(join(dbDir, `epoch-${epoch}`));
             writeFileSync(join(dbDir, `epoch-${epoch}`, 'store.db'), epoch);
           }
+          writeFileSync(join(dbDir, 'epoch-1', '.lock'), '');
           writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
         },
       },
@@ -232,6 +236,7 @@ describe('self-contained client path parity', () => {
             mkdirSync(join(dbDir, `epoch-${epoch}`));
             writeFileSync(join(dbDir, `epoch-${epoch}`, 'store.db'), epoch);
           }
+          writeFileSync(join(dbDir, 'epoch-1', '.lock'), '');
           writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
           writeFileSync(join(dbDir, 'epoch-2', 'epoch.json'), '{');
         },
@@ -244,6 +249,7 @@ describe('self-contained client path parity', () => {
             mkdirSync(join(dbDir, `epoch-${epoch}`));
             writeFileSync(join(dbDir, `epoch-${epoch}`, 'store.db'), epoch);
           }
+          writeFileSync(join(dbDir, 'epoch-1', '.lock'), '');
           writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
           writeFileSync(
             join(dbDir, 'epoch-2', 'epoch.json'),
@@ -257,6 +263,7 @@ describe('self-contained client path parity', () => {
         arrange(dbDir: string) {
           const published = join(dbDir, 'epoch-1');
           mkdirSync(published);
+          writeFileSync(join(published, '.lock'), '');
           writeFileSync(join(published, 'store.db'), 'published');
           writeFileSync(join(published, 'epoch.json'), validMetadata);
           symlinkSync('epoch-1', join(dbDir, 'epoch-2'));
@@ -268,6 +275,7 @@ describe('self-contained client path parity', () => {
         arrange(dbDir: string) {
           const published = join(dbDir, 'epoch-123456789012345678901234567890');
           mkdirSync(published);
+          writeFileSync(join(published, '.lock'), '');
           writeFileSync(join(published, 'store.db'), 'published');
           writeFileSync(join(published, 'epoch.json'), validMetadata);
         },
