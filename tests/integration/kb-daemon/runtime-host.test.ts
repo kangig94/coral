@@ -120,6 +120,7 @@ describe('KB daemon runtime host', () => {
     for (const epoch of ['1', '3']) {
       const directory = join(runtime.paths.coral.store.dbDir, `epoch-${epoch}`);
       mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, '.lock'), '');
       const db = openTestStoreDb(runtime, join(directory, 'store.db'));
       db.exec('CREATE TABLE epoch_marker (epoch TEXT NOT NULL)');
       db.prepare('INSERT INTO epoch_marker (epoch) VALUES (?)').run(epoch);

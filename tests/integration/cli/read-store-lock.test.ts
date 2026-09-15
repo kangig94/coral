@@ -37,6 +37,7 @@ afterEach(() => {
 function publishEpoch(runtime: Runtime, epoch: string): void {
   const directory = join(runtime.paths.coral.store.dbDir, `epoch-${epoch}`);
   mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, '.lock'), '');
   openTestStoreDatabase({
     path: join(directory, 'store.db'),
     storage: runtime.storage,

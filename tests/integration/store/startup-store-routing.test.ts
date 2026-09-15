@@ -88,6 +88,8 @@ function publish(runtime: Runtime, selected: ActiveStoreSelection): void {
 
 function publishEpoch(runtime: Runtime, epoch: string, build: StrictBundleManifest): void {
   const directory = join(runtime.paths.coral.store.dbDir, `epoch-${epoch}`);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, '.lock'), '');
   openTestStoreDatabase({ path: join(directory, 'store.db'), storage: runtime.storage, storeFormat }).close();
   writeFileSync(
     join(directory, STORE_EPOCH_METADATA_FILE_NAME),

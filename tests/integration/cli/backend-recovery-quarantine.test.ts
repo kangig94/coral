@@ -118,6 +118,7 @@ function publishCompatibleEpoch(runtime: ReturnType<typeof createRealRuntime>, e
 
 function publishEpochMetadata(runtime: ReturnType<typeof createRealRuntime>, epoch: string): void {
   const directory = join(runtime.paths.coral.store.dbDir, `epoch-${epoch}`);
+  writeFileSync(join(directory, '.lock'), '');
   writeFileSync(
     join(directory, 'epoch.json'),
     `${JSON.stringify({

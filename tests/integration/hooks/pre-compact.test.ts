@@ -40,6 +40,7 @@ function seedStore(
   }
   writeFileSync(join(epochDir, 'store.db.format'), `${fingerprint}\n`, 'utf8');
   if (epoch !== 'flat') {
+    writeFileSync(join(epochDir, '.lock'), '', 'utf8');
     writeFileSync(
       join(epochDir, 'epoch.json'),
       JSON.stringify({
