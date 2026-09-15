@@ -411,9 +411,7 @@ describe('write-once store epochs', () => {
       },
     });
 
-    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe(
-      'deletion-failed',
-    );
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe('deletion-failed');
     expect(events).toEqual(['holder-removed', 'parent-sync']);
     console.log('ambiguous-removal-cell site=post-ready-holder post-effect=EIO parent-sync=after');
   });
@@ -485,9 +483,7 @@ describe('write-once store epochs', () => {
       },
     });
 
-    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe(
-      'deletion-failed',
-    );
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe('deletion-failed');
     expect(events).toEqual(['quarantine-removed', 'parent-sync']);
     console.log('ambiguous-removal-cell site=legacy-quarantine post-effect=EIO parent-sync=after');
   });
