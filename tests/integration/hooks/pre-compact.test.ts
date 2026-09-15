@@ -7,9 +7,15 @@ import { PRE_COMPACT_HOOK, cleanupFixtures, createFixture, runHook } from '#test
 
 afterEach(cleanupFixtures);
 
-function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jobId = 'job-live', epoch = 0): void {
+function seedStore(
+  homeDir: string,
+  projectRoot: string,
+  fingerprint: string,
+  jobId = 'job-live',
+  epoch: number | 'flat' = 1,
+): void {
   const storeDir = join(homeDir, '.coral', 'gen2', 'data', 'store');
-  const epochDir = epoch === 0 ? storeDir : join(storeDir, `epoch-${epoch}`);
+  const epochDir = epoch === 'flat' ? storeDir : join(storeDir, `epoch-${epoch}`);
   mkdirSync(epochDir, { recursive: true });
   const db = newRawDatabase(join(epochDir, 'store.db'));
   try {
@@ -33,7 +39,7 @@ function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jo
     db.close();
   }
   writeFileSync(join(epochDir, 'store.db.format'), `${fingerprint}\n`, 'utf8');
-  if (epoch > 0) {
+  if (epoch !== 'flat') {
     writeFileSync(
       join(epochDir, 'epoch.json'),
       JSON.stringify({
@@ -138,7 +144,7 @@ describe('pre-compact.mjs', () => {
     cpSync(join(process.cwd(), 'clients', 'hooks'), hooksRoot, { recursive: true });
     const fingerprint = 'sha256:3333333333333333333333333333333333333333333333333333333333333333';
     seedStore(fixture.root, fixture.projectRoot, fingerprint);
-    const shmPath = join(fixture.root, '.coral', 'gen2', 'data', 'store', 'store.db-shm');
+    const shmPath = join(fixture.root, '.coral', 'gen2', 'data', 'store', 'epoch-1', 'store.db-shm');
     writeFileSync(shmPath, 'untouched-shm', 'utf8');
     const before = { bytes: readFileSync(shmPath), mtimeMs: statSync(shmPath).mtimeMs };
 
@@ -215,7 +221,7 @@ describe('pre-compact.mjs', () => {
     const fixture = createFixture();
     const fingerprint = 'sha256:7777777777777777777777777777777777777777777777777777777777777777';
     const hook = seedPluginManifest(fixture.pluginRoot, fingerprint);
-    seedStore(fixture.root, fixture.projectRoot, fingerprint, 'flat-job');
+    seedStore(fixture.root, fixture.projectRoot, fingerprint, 'flat-job', 'flat');
     seedStore(fixture.root, fixture.projectRoot, fingerprint, 'published-job', 1);
 
     const result = runHook(

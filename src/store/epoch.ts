@@ -110,8 +110,8 @@ function compareEpoch(left: StoreEpoch, right: StoreEpoch): number {
   return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
 }
 
-function successorEpoch(epoch: StoreEpoch): StoreEpoch {
-  return (BigInt(epoch) + 1n).toString();
+function successorEpoch(epoch: StoreEpoch | null): StoreEpoch {
+  return epoch === null ? '1' : (BigInt(epoch) + 1n).toString();
 }
 
 export function epochDirectory(dbDir: string, epoch: StoreEpoch): string {
@@ -1145,7 +1145,7 @@ function selectSuccessor(
   dbDir: string,
   current: StoreEpoch | null,
 ): Readonly<{ kind: 'selected'; epoch: StoreEpoch }> {
-  let candidate = successorEpoch(current ?? '0');
+  let candidate = successorEpoch(current);
   const attempts = runtime.storage.readdirSync(dbDir).length + 1;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
@@ -1277,7 +1277,7 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
       busyTimeoutMs: options.startupBusyTimeoutMs,
     });
     if (opened.kind !== 'opened') throw new Error('An in-memory store cannot be incompatible before opening.');
-    return { db: opened.db, epoch: '0', path: ':memory:' };
+    return { db: opened.db, epoch: '1', path: ':memory:' };
   }
 
   runtime.storage.mkdirSync(dbDir, { recursive: true, mode: 0o700 });

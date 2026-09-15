@@ -40,7 +40,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { commitJobInputs, commitJobTerminal } from '#tests/helpers/job-commits.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { resolveCurrentStorePath } from '#src/store/epoch.js';
 import { SessionManager } from '#src/sessions/shell.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
@@ -472,6 +472,7 @@ describe('execution backend server', () => {
     mkdirSync(mockState.tmpRoot, { recursive: true });
     mockState.tmpHome = mkdtempSync(join(mockState.tmpRoot, 'home-'));
     runtime = createRealRuntime('prod');
+    openSettledTestStoreDb(runtime).close();
     JOBS_DIR = jobsDir(runtime.env);
     rmSync(JOBS_DIR, { recursive: true, force: true });
   });

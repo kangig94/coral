@@ -19,7 +19,7 @@ import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openTestStoreDb } from '#tests/helpers/store-db.js';
+import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 
@@ -275,7 +275,7 @@ describe('KB daemon runtime host', () => {
     const root = createTempRoot();
     vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
     const runtime = createRealRuntime('prod', { baseDir: root });
-    openTestStoreDb(runtime, join(runtime.paths.coral.store.dbDir, 'store.db')).close();
+    openSettledTestStoreDb(runtime).close();
     const pluginRoot = join(root, 'plugin');
     const runtimeDir = runtime.paths.coral.kbRuntime.root;
     const host = createKbDaemonWriteRuntimeHost({
