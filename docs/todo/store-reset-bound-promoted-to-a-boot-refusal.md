@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty design revisions, twenty-seven unbiased tier-1 review rounds, and
-fifty-five distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 20 are the correction rounds its reviewers earned.
+**Status**: in flight. Twenty-one design revisions, thirty unbiased tier-1 review rounds, and
+fifty-eight distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 21 are the corrections it earned, the last of them from the owner.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2211,6 +2211,66 @@ its own lock is free, which is the same proof the sweep already performs.
 And a directory literally named `epoch-0` is accepted by `EPOCH_DIRECTORY_PATTERN` in `src/store/epoch.ts` but
 skipped by both observers, so it is neither proven, nor disproven, nor garbage, and survives every cycle at
 any size. `epoch-0` is not a valid epoch directory name: the flat `store.db` is epoch 0's only address.
+
+## Revision 21 — the flat name belongs to the previous generation
+
+The owner corrected the premise again, and this one is mine from Revision 14.
+
+`epoch-*` is introduced by this release. `v0.10.9` knows only `<dbDir>/store.db`. I made the flat name
+**epoch 0** — a member of the new number space — and then spent Revisions 19 and 20 building exemptions to
+keep it safe: retention exempts it, automatic sweeping never touches it, `release 0` carries a
+legacy-reader override that states what it cannot prove. Every one of those exemptions exists because two
+generations were forced into one number space that only one of them understands.
+
+> **The flat `store.db` is the previous generation's artifact. This build never opens it, never locks it,
+> and never deletes it. The epoch space starts at 1.**
+
+Retention then becomes the owner's sentence with nothing added: **sort the proven epochs, keep the highest
+two.** Two, not three. `garbageStoreEpochs` loses `retained.add('0')` and the rule is the whole
+implementation.
+
+### What it deletes
+
+Epoch 0 is threaded through roughly twenty sites in `src/store/epoch.ts` — `epochPath`'s special case,
+two proof paths (sync and async) that accept a regular file as an epoch, the listing skip, the retention
+exemption, the release target special case, the flat-name unlink path, a dedicated lock coordinate. All of
+it goes, and with it:
+
+- `release 0` and its "cannot prove no pre-epoch reader" confirmation.
+- The question of whether a directory named `epoch-0` is valid, which cost a finding.
+- Every deletion-safety cell aimed at a `v0.10.9`-shaped reader — the flat name is never a deletion target,
+  so the hazard is gone by construction rather than by exemption. That was Revision 20's remaining hole and
+  it closes without a mechanism.
+
+`legacy-adoptable` does **not** follow them out. It is produced when the fingerprint matches and the
+product-version row is absent (`src/store/db.ts:218`), which no epoch writer can produce because
+`applyBundledStoreSchema` stamps both rows — but `classifyStoreFile` also serves the pre-epoch
+legacy-generation store (`src/store/generation-mutation-coordination.ts:142`), which this design does not
+touch. Verify reachability there before removing anything; Revision 12's adoption stays correct where it
+is still reachable.
+
+### The cost, stated
+
+A first boot from `v0.10.9` becomes an **unconditional reset**: a compatible flat store is no longer
+adopted, because it is no longer read. The population that loses anything is empty — `src/store/schema.sql`
+already changed, so the fingerprint already differs and that boot already resets — and going forward
+nothing writes the flat name again, so it cannot become compatible later. Unconditional reset was the
+owner's starting position.
+
+A rolled-back `v0.10.9` finds its store exactly as it left it, because nothing in the new build has an
+address for it.
+
+### Why neither reviewer found this
+
+Twenty-eight review rounds did not question epoch 0, and the reason is in the briefs rather than in the
+reviewers. I wrote the review scope, so the premises entered it as givens — and for retention I protected
+them explicitly: *"do not report the absence of those mechanisms as a finding, and do not propose new
+retention rules."* That instruction was aimed at re-litigating the owner's decision, and it also fenced
+off the question of whether my encoding of that decision was right.
+
+Reviewers checked the implementation against the design. Nobody checked the design against the purpose.
+The one time that question was asked outside the fence — the pioneer, Revision 14 — the premise broke
+immediately. Review briefs from here name their own premises as the first thing to attack.
 
 ## Invariants to add
 
