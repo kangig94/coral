@@ -14,7 +14,7 @@ import { jobsDir } from '#src/jobs/paths.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import type { JobStatus } from '#src/jobs/records.js';
 import { commitInputs } from '#tests/helpers/commit-inputs.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { openSettledTestStoreDb, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { composeReducers } from '#src/store/reducers.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -107,7 +107,7 @@ function createCoordinatorHome(sharedStoreDir: string): TemporaryHome {
 }
 
 function seedCompletedJobs(
-  storePath: string,
+  home: TemporaryHome,
   bundleHash: string,
   jobs: ReadonlyArray<{ jobId: string; namespace: string; projectRoot: string }>,
 ): void {
@@ -115,12 +115,8 @@ function seedCompletedJobs(
   for (const { projectRoot } of jobs) {
     mkdirSync(projectRoot, { recursive: true });
   }
-  const runtime = createRealRuntime(sourceManifest.flavor);
-  const db = openTestStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: storePath,
-    storage: runtime.storage,
-  });
+  const runtime = createRealRuntime(sourceManifest.flavor, { baseDir: join(home, '.coral') });
+  const db = openSettledTestStoreDb(runtime);
 
   try {
     for (const { jobId, namespace, projectRoot } of jobs) {
@@ -258,11 +254,7 @@ describe('namespace coexistence integration', () => {
     const firstJobId = `coexist-first-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const secondJobId = `coexist-second-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
     const projectRoot = join(firstHome, 'shared-project');
-    const sharedStorePath = join(
-      storePaths(sourceManifest.flavor, { baseDir: join(firstHome, '.coral') }).dbDir,
-      'store.db',
-    );
-    seedCompletedJobs(sharedStorePath, sourceManifest.bundleHash, [
+    seedCompletedJobs(firstHome, sourceManifest.bundleHash, [
       { jobId: firstJobId, namespace: firstNamespace, projectRoot },
       { jobId: secondJobId, namespace: secondNamespace, projectRoot },
     ]);
