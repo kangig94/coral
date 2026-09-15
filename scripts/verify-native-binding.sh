@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-#
-# verify-native-binding.sh — AC8 scratch-dir native-binding smoke.
-#
-# Builds the bundles, initializes a canonical epoch through the built CLI, then
-# smoke-opens it from a fresh tempdir outside the repo.
-#
-# Usage:  bash scripts/verify-native-binding.sh
-# Exit 0 + prints "OK" on success; exit 1 on failure.
-#
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"

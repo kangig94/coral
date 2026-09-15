@@ -199,14 +199,14 @@ describe('write-once store epoch invariants', () => {
   it('uses file-lock acquisition rather than bare pid observation for holder liveness', () => {
     const epoch = source('src/store/epoch.ts');
     expect(epoch).not.toContain('observeLiveness');
-    expect(epoch).toContain('tryAcquireExclusiveFileLockSync');
+    expect(epoch).toContain('attemptExclusiveFileLockSync');
   });
 
   it('requires private inode identity for every required epoch file in source and generated hooks', () => {
     const epoch = source('src/store/epoch.ts');
     const hook = source('clients/hooks/lib/store-epoch.mjs');
-    expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.nlink === 1');
-    expect(functionSource('src/store/epoch.ts', 'readEpochMetadata')).toContain('nlink === 1n');
+    expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.nlink === 1n');
+    expect(functionSource('src/store/epoch.ts', 'readEpochMetadata')).toContain('nlink !== 1n');
     expect(epoch).toContain('return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;');
     expect(hook).toContain('return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;');
   });

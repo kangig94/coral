@@ -295,7 +295,7 @@ describe('store-reset operator epochs', () => {
     expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toHaveLength(1);
   });
 
-  it('lists and reaps a stale holder only after rechecking its absent pid', () => {
+  it('lists holder liveness as unknown and reaps a stale holder during the sweep', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishEpoch(dbDir, '1');
@@ -318,7 +318,9 @@ describe('store-reset operator epochs', () => {
       runtime,
     );
 
-    expect(listStoreEpochHolders(runtime)).toEqual([{ id: 'stale', epoch: '1', pid: 999_999_991, state: 'stale' }]);
+    expect(listStoreEpochHolders(runtime)).toEqual([
+      { id: 'stale', epoch: '1', pid: 999_999_991, state: 'unobservable' },
+    ]);
     expect(sweepStoreEpochs(runtime, dbDir, '3')).toBe('complete');
     expect(existsSync(holderPath)).toBe(false);
   });

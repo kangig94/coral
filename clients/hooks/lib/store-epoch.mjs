@@ -37,7 +37,7 @@ function isValidEpochMetadata(value) {
 function isRegularFile(path) {
   try {
     const entry = lstatSync(path);
-    return entry.isFile() && !entry.isSymbolicLink();
+    return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;
   } catch {
     return false;
   }

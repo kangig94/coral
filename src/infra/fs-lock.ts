@@ -54,6 +54,12 @@ export type ActuatedDirectoryLockLease = DirectoryLockLease & {
 
 export type FileLockLease = () => void;
 
+export type ExclusiveFileLockAttempt =
+  | Readonly<{ kind: 'acquired'; lease: FileLockLease }>
+  | Readonly<{ kind: 'contended' }>
+  | Readonly<{ kind: 'malformed' }>
+  | Readonly<{ kind: 'unobservable'; cause: unknown }>;
+
 function sqliteLockLease(db: DatabaseSync): FileLockLease {
   let held = true;
   return () => {
@@ -94,20 +100,44 @@ export function acquireSharedFileLockSync(path: string): FileLockLease {
   }
 }
 
-export function tryAcquireExclusiveFileLockSync(path: string): FileLockLease | null {
-  const entry = lstatSync(path);
-  if (!entry.isFile() || entry.isSymbolicLink()) {
-    throw new Error(`File lock is not a regular file: ${path}`);
+export function attemptExclusiveFileLockSync(path: string): ExclusiveFileLockAttempt {
+  let entry: ReturnType<typeof lstatSync>;
+  try {
+    entry = lstatSync(path);
+  } catch (cause: unknown) {
+    return { kind: 'unobservable', cause };
   }
-  const db = new DatabaseSync(path, { timeout: 0 });
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) return { kind: 'malformed' };
+
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(path, { timeout: 0 });
+  } catch (cause: unknown) {
+    return { kind: 'unobservable', cause };
+  }
   try {
     db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
-    return sqliteLockLease(db);
+    return { kind: 'acquired', lease: sqliteLockLease(db) };
   } catch (error: unknown) {
-    db.close();
-    if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' && /database is locked/u.test(String(error))) return null;
-    throw error;
+    try {
+      db.close();
+    } catch (cause: unknown) {
+      return { kind: 'unobservable', cause };
+    }
+    if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR') {
+      if (/database is locked/u.test(String(error))) return { kind: 'contended' };
+      if (/file is not a database/u.test(String(error))) return { kind: 'malformed' };
+    }
+    return { kind: 'unobservable', cause: error };
   }
+}
+
+export function tryAcquireExclusiveFileLockSync(path: string): FileLockLease | null {
+  const attempt = attemptExclusiveFileLockSync(path);
+  if (attempt.kind === 'acquired') return attempt.lease;
+  if (attempt.kind === 'contended') return null;
+  if (attempt.kind === 'malformed') throw new Error(`File lock is malformed: ${path}`);
+  throw attempt.cause;
 }
 
 type StorageActuatorOperations = Pick<StorageActuator, Extract<keyof StorageActuator, string>>;

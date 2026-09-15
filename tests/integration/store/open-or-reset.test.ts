@@ -884,6 +884,28 @@ describe('write-once store epochs', () => {
     }
   });
 
+  it('does not delete a pre-existing mint that blocks preparation publication', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const occupied = join(dbDir, '.mint-occupied');
+    mkdirSync(occupied, { recursive: true });
+    writeFileSync(join(occupied, 'sentinel'), 'pre-existing mint');
+    const ids = ['occupied', 'fresh', 'holder'];
+    const collisionRuntime: Runtime = {
+      ...runtime,
+      ids: { uuid: () => ids.shift() ?? 'fallback' },
+    };
+
+    const settled = settleStoreEpoch(collisionRuntime, options());
+    settled.db.close();
+
+    console.log(
+      `mint-collision-cell selected=epoch-${settled.epoch} blocker-present=${existsSync(occupied)} blocker-byte-identical=${readFileSync(join(occupied, 'sentinel'), 'utf-8') === 'pre-existing mint'}`,
+    );
+    expect(settled.epoch).toBe('1');
+    expect(readFileSync(join(occupied, 'sentinel'), 'utf-8')).toBe('pre-existing mint');
+  });
+
   it.each([String(Number.MAX_SAFE_INTEGER - 1), '9007199254740995', '123456789012345678901234567890'])(
     'supersedes incompatible epoch %s without a numeric ceiling',
     (epoch) => {
@@ -2121,7 +2143,7 @@ describe('write-once store epochs', () => {
 
     expect(released.kind).toBe('release-deletion-failed');
     expect(existsSync(target)).toBe(false);
-    expect(listStoreEpochResidues(runtime).map(({ state }) => state)).toEqual(['reclaimable']);
+    expect(listStoreEpochResidues(runtime).map(({ state }) => state)).toEqual(['unobservable']);
   });
 
   it('durably syncs an epoch adopted after its publisher died following rename', () => {
