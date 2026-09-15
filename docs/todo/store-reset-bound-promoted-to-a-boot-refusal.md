@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-four design revisions, thirty-three unbiased tier-1 review rounds, and
-seventy-four distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 24 are the corrections it earned.
+**Status**: in flight. Twenty-five design revisions, thirty-four unbiased tier-1 review rounds, and
+eighty distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen earlier
+revisions inherited; 15 through 25 are the corrections it earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2502,6 +2502,77 @@ fixes both.
 And `scripts/verify-native-binding.sh` had its header comment rewritten to describe the new smoke
 workflow instead of the old one. `conventions.md` makes an edited description a finding in its own right.
 Delete it.
+
+## Revision 25 — the device is part of the identity, and reporting does not open
+
+Round 35's architect reproduced three blocking failures; the guardian independently reproduced two of the
+three before its run was stopped by the provider's content filter, as in round 33. **Two of the three were
+introduced by Revision 24's own fixes**, which is now the recurring shape: each new mechanism arrives with
+its own hazard.
+
+### A bind mount satisfies every part of the proof
+
+Revision 24 added `nlink === 1` to kind and lexical containment, and a bind-mounted file over
+`epoch-1/store.db` satisfies all three. A reviewer bind-mounted an external empty SQLite file there, ran
+the built `coral-backend.cjs --smoke-open-store`, and watched the external database go from zero to
+forty-five schema objects with `store_product_version=0.10.9`. Ordinary startup reaches the same writable
+settlement. Deletion has the mirror of it: a bind-mounted external directory named like a holder is marked
+removable and recursive `rmSync` empties it.
+
+`realpath` cannot see a mount, and `nlink` counts links within a filesystem, not across one. The missing
+axis is the one `stat` already reports:
+
+> **An artifact is proven only if its `dev` is the store directory's `dev`. And a recursive removal never
+> crosses a device boundary.**
+
+Inode identity was always `{dev, ino}` — this document used that pair before Revision 14 — and the rewrite
+kept the `ino` half.
+
+### Moving construction outside `dbDir` broke boot on a mounted store root
+
+Revision 24 built the mint under `dirname(dbDir)` to keep it out of the sweepable namespace. If `dbDir` is
+itself a mount point — a dedicated volume — the rename into it crosses filesystems, and `EXDEV` is not a
+successor result: it is rethrown. A reviewer mounted an empty `dbDir` as tmpfs and the built CLI's
+`discard` exited 70 with `EXDEV: cross-device link not permitted`. Coordinator startup takes the same
+path, so **every boot refuses on a dedicated volume**. That is this document's subject, introduced by the
+previous round's fix.
+
+The same relocation leaks: a process killed after the lock is created and before the first rename leaves
+`.coral-store-epoch-construction-<uuid>` under `dirname(dbDir)`, which neither sweep enumerates, so K
+deaths leave K permanent unlisted directories.
+
+Both follow from the same move, and the move was answering the wrong question. Round 34 found a reaper
+deleting a `.preparing-*` between its `mkdir` and its lock — and **Revision 23 had already stated the rule
+that prevents it**: "a mint directory that exists without its `.lock` is a process caught between `mkdir`
+and lock creation. That is unobservable, not abandoned." The rule was specified and never implemented, and
+round 35 relocated the artifact instead of implementing it.
+
+> **Construction happens inside `dbDir`**, so no rename crosses a device. It happens in a namespace the
+> concurrent sweep does not scan, so nothing deletes it mid-build. **And the post-ready sweep reclaims
+> that namespace** — where the live coordinator is us and its record says so, which is the evidence every
+> other reclamation already uses.
+
+### A read-only SQLite open is a write
+
+`list` classifies each epoch by opening its lock and then its database "read-only". SQLite read-only opens
+are not write-free in WAL mode: against an ordinary freshly minted epoch the built CLI added a persistent
+`store.db-shm` and a zero-length `store.db-wal`; against a crashed WAL lock it created `.lock-shm`, 32 KiB,
+which the guardian reproduced separately.
+
+My Revision 24 narrowing — "must not acquire anything **that can write**" — was therefore wrong in its own
+terms, because the read-only open is the write.
+
+> **`list` classifies from `epoch.json` and the filesystem. It does not open the database.**
+
+The sidecar already records the classification at publication, which is what it is for. An epoch whose
+`epoch.json` is missing or malformed is already disproven, so there is nothing left to classify by opening.
+This removes the mechanism rather than making it safer, and it makes reporting genuinely free of side
+effects.
+
+### Carried forward for the next round
+
+The guardian was checking, when it was stopped, whether the post-ready sweep can delete an epoch whose
+already-held lock later becomes unproven. That question is unanswered and belongs in the next review.
 
 ## Invariants to add
 
