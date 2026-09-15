@@ -799,10 +799,11 @@ export type LifecycleDeps = {
    */
   readonly startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
   readonly scheduleStoreEpochSweepFn?: (openEpoch: StoreEpoch) => void;
+  readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
-  readonly writeBackendInfoFn: (info: BackendInfo) => void;
+  readonly writeBackendInfoFn: (info: BackendInfo) => boolean | void;
   readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
@@ -1140,7 +1141,7 @@ async function runLifecycleStartup({
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());
     const startedAt = runtimeState.getStartedAt();
-    writeBackendInfoFn({
+    const discoveryPublished = writeBackendInfoFn({
       pid: backendPid,
       port,
       host,
@@ -1156,6 +1157,9 @@ async function runLifecycleStartup({
       startedAt,
       ...(storeEpoch === null ? {} : { storeEpoch }),
     });
+    if (discoveryPublished === false) {
+      throw new Error('Coordinator discovery publication failed.');
+    }
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
     if (shouldScheduleStoreEpochSweep && storeEpoch !== null) deps.scheduleStoreEpochSweepFn?.(storeEpoch);
@@ -1512,6 +1516,7 @@ export function createLifecycle(
           disposeLifecycleReactor,
           hooks,
           discussStores,
+          stopStoreEpochSweepFn: deps.stopStoreEpochSweepFn,
           log,
           isShutdownObligationAbandoned: (subject) => state.operatorAbandonedShutdownObligations.has(subject),
           ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),

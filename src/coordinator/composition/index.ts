@@ -18,7 +18,7 @@ import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
-import type { StoragePort } from '../../infra/port-types.js';
+import type { StoragePort, TimerHandle } from '../../infra/port-types.js';
 import {
   knownDiscussSources,
   loadDiscussDetail,
@@ -1709,6 +1709,11 @@ export function createCoordinatorCore(
     });
   });
 
+  let storeEpochSweepAbort: AbortController | null = null;
+  let storeEpochSweepTimer: TimerHandle | null = null;
+  let settleScheduledStoreEpochSweep: (() => void) | null = null;
+  let storeEpochSweepSettlement = Promise.resolve();
+
   const lifecycleDeps: LifecycleDeps = {
     identity,
     storeFormat: options.storeFormat,
@@ -1734,13 +1739,34 @@ export function createCoordinatorCore(
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: (openEpoch) => {
-      const timer = runtime.time.setTimeout(() => {
+      const controller = new AbortController();
+      storeEpochSweepAbort = controller;
+      storeEpochSweepSettlement = new Promise<void>((resolveSweep) => {
+        settleScheduledStoreEpochSweep = resolveSweep;
+      });
+      storeEpochSweepTimer = runtime.time.setTimeout(() => {
+        storeEpochSweepTimer = null;
         const dbDir = runtime.paths.coral.store.dbDir;
-        void sweepStoreEpochsPostReady(runtime, dbDir, openEpoch).catch((error: unknown) => {
-          world.log(`Store epoch retention sweep could not start: ${formatError(error)}\n`);
-        });
+        void sweepStoreEpochsPostReady(runtime, dbDir, openEpoch, { signal: controller.signal })
+          .catch((error: unknown) => {
+            world.log(`Store epoch retention sweep could not start: ${formatError(error)}\n`);
+          })
+          .finally(() => {
+            settleScheduledStoreEpochSweep?.();
+            settleScheduledStoreEpochSweep = null;
+          });
       }, 0);
-      timer.unref?.();
+      storeEpochSweepTimer.unref?.();
+    },
+    stopStoreEpochSweepFn: async () => {
+      storeEpochSweepAbort?.abort();
+      if (storeEpochSweepTimer !== null) {
+        runtime.time.clearTimeout(storeEpochSweepTimer);
+        storeEpochSweepTimer = null;
+        settleScheduledStoreEpochSweep?.();
+        settleScheduledStoreEpochSweep = null;
+      }
+      await storeEpochSweepSettlement;
     },
     getDiscussStoreForSource: discuss.getDiscussStoreForSource,
     knownDiscussSources: () => knownDiscussSources(discuss.readHelpersDeps),

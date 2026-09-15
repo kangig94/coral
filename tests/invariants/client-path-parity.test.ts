@@ -10,7 +10,7 @@ import { coordinatorPaths } from '#src/infra/path/coordinator.js';
 import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStoreEpoch } from '#src/store/epoch.js';
+import { resolveCurrentStoreEpoch, storeEpochHookSource } from '#src/store/epoch.js';
 // @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
 import { resolveCurrentStoreDbPath } from '../../clients/hooks/lib/store-epoch.mjs';
 
@@ -107,6 +107,10 @@ const mirroredCoordinatorInfoPath = loadMirrorFunction<(homeDir: string, flavor:
 );
 
 describe('self-contained client path parity', () => {
+  it('keeps the hook selector generated from the backend owner', () => {
+    expect(readFileSync(join(REPO_ROOT, 'clients/hooks/lib/store-epoch.mjs'), 'utf8')).toBe(storeEpochHookSource());
+  });
+
   it.each(FLAVORS)('matches authoritative %s paths', (flavor) => {
     const opts = { baseDir: STATE_ROOT };
     const store = storePaths(flavor, opts);
@@ -230,6 +234,21 @@ describe('self-contained client path parity', () => {
           }
           writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
           writeFileSync(join(dbDir, 'epoch-2', 'epoch.json'), '{');
+        },
+      },
+      {
+        name: 'oversized valid metadata above a published epoch',
+        expected: '1',
+        arrange(dbDir: string) {
+          for (const epoch of ['1', '2']) {
+            mkdirSync(join(dbDir, `epoch-${epoch}`));
+            writeFileSync(join(dbDir, `epoch-${epoch}`, 'store.db'), epoch);
+          }
+          writeFileSync(join(dbDir, 'epoch-1', 'epoch.json'), validMetadata);
+          writeFileSync(
+            join(dbDir, 'epoch-2', 'epoch.json'),
+            JSON.stringify({ ...JSON.parse(validMetadata), padding: 'x'.repeat(70_000) }),
+          );
         },
       },
       {

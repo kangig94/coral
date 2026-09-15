@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readdirSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type { StoragePort, TimePort, TimerHandle } from './port-types.js';
 import type { StorageActuator } from './storage-actuator.js';
 
@@ -40,6 +41,50 @@ export type DirectoryLockLease = (() => void) & {
 export type ActuatedDirectoryLockLease = DirectoryLockLease & {
   readonly actuator: StorageActuator;
 };
+
+export type FileLockLease = () => void;
+
+function sqliteLockLease(db: DatabaseSync): FileLockLease {
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    try {
+      db.exec('ROLLBACK');
+    } finally {
+      db.close();
+    }
+  };
+}
+
+function sqliteErrorCode(error: unknown): string | null {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null;
+}
+
+export function acquireSharedFileLockSync(path: string): FileLockLease {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(path, { timeout: 5_000 });
+  try {
+    db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');
+    return sqliteLockLease(db);
+  } catch (error: unknown) {
+    db.close();
+    throw error;
+  }
+}
+
+export function tryAcquireExclusiveFileLockSync(path: string): FileLockLease | null {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(path, { timeout: 0 });
+  try {
+    db.exec('PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE');
+    return sqliteLockLease(db);
+  } catch (error: unknown) {
+    db.close();
+    if (sqliteErrorCode(error) === 'ERR_SQLITE_ERROR' && /database is locked/u.test(String(error))) return null;
+    throw error;
+  }
+}
 
 type StorageActuatorOperations = Pick<StorageActuator, Extract<keyof StorageActuator, string>>;
 

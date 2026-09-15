@@ -60,7 +60,10 @@ export type StoreResetReleasePresentation =
       readonly flavor: BuildFlavor;
     };
 
-type AcquireStoreResetSocketGuard = (paths: StoreResetTargetPaths, runtime: Runtime) => Promise<StoreResetSocketGuard>;
+export type AcquireStoreResetSocketGuard = (
+  paths: StoreResetTargetPaths,
+  runtime: Runtime,
+) => Promise<StoreResetSocketGuard>;
 
 export type StoreResetDiscardOptions =
   | { readonly target: 'legacy'; readonly runtime: Runtime }
@@ -157,24 +160,30 @@ export async function releaseStoreReset(options: {
   readonly target: StoreResetReleaseTarget;
   readonly runtime: Runtime;
   readonly epoch: StoreEpoch;
+  readonly acquireSocketGuard: AcquireStoreResetSocketGuard;
 }): Promise<StoreResetReleasePresentation> {
-  const dbDir = options.runtime.paths.coral.store.dbDir;
-  const adoption = await acquireGenerationAdoptionLock(options.runtime);
+  const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
+  const socket = await options.acquireSocketGuard(paths, options.runtime);
   try {
-    const base = { epoch: options.epoch, target: 'gen2' as const, flavor: options.runtime.flavor };
-    const result = sweepStoreEpochs(options.runtime, dbDir, null, {
-      releaseEpoch: options.epoch,
-      assertOwned: adoption.assertOwned,
-    });
-    if (result === 'absent') return { kind: 'absent', ...base };
-    if (result === 'current') return { kind: 'current', ...base };
-    if (result === 'complete') return { kind: 'released', ...base };
-    if (result === 'unobservable-metadata') return { kind: 'release-metadata-unobservable', ...base };
-    if (result === 'live-holder') return { kind: 'release-holder-live', ...base };
-    if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
-    if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
-    return { kind: 'release-durability-sync-failed', ...base };
+    const adoption = await acquireGenerationAdoptionLock(options.runtime);
+    try {
+      const base = { epoch: options.epoch, target: 'gen2' as const, flavor: options.runtime.flavor };
+      const result = sweepStoreEpochs(options.runtime, paths.dbDir, null, {
+        releaseEpoch: options.epoch,
+        assertOwned: adoption.assertOwned,
+      });
+      if (result === 'absent') return { kind: 'absent', ...base };
+      if (result === 'current') return { kind: 'current', ...base };
+      if (result === 'complete') return { kind: 'released', ...base };
+      if (result === 'unobservable-metadata') return { kind: 'release-metadata-unobservable', ...base };
+      if (result === 'live-holder') return { kind: 'release-holder-live', ...base };
+      if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
+      if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
+      return { kind: 'release-durability-sync-failed', ...base };
+    } finally {
+      adoption();
+    }
   } finally {
-    adoption();
+    await socket.release();
   }
 }

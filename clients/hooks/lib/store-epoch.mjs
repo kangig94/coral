@@ -1,7 +1,9 @@
-import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+// Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 const EPOCH_DIRECTORY_PATTERN = /^epoch-(0|[1-9]\d*)$/;
+const MAX_STORE_EPOCH_METADATA_BYTES = 65536;
 
 function epochNumber(name) {
   const match = EPOCH_DIRECTORY_PATTERN.exec(name);
@@ -47,13 +49,15 @@ function isPublishedEpoch(dbDir, name) {
     if (
       relativePath === '' ||
       relativePath === '..' ||
-      relativePath.startsWith(`..${sep}`) ||
+      relativePath.startsWith('..' + sep) ||
       isAbsolute(relativePath)
     ) {
       return false;
     }
-    if (!isRegularFile(join(directory, 'store.db')) || !isRegularFile(join(directory, 'epoch.json'))) return false;
-    return isValidEpochMetadata(JSON.parse(readFileSync(join(directory, 'epoch.json'), 'utf8')));
+    const metadataPath = join(directory, 'epoch.json');
+    if (!isRegularFile(join(directory, 'store.db')) || !isRegularFile(metadataPath)) return false;
+    if (statSync(metadataPath, { bigint: true }).size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return false;
+    return isValidEpochMetadata(JSON.parse(readFileSync(metadataPath, 'utf8')));
   } catch {
     return false;
   }
@@ -79,5 +83,5 @@ export function resolveCurrentStoreDbPath(dbDir) {
     }
   }
   if (current === null) return null;
-  return current === '0' ? join(dbDir, 'store.db') : join(dbDir, `epoch-${current}`, 'store.db');
+  return current === '0' ? join(dbDir, 'store.db') : join(dbDir, 'epoch-' + current, 'store.db');
 }

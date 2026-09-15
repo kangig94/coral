@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { reportStoreResetLocal, type StoreResetCliDependencies } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { acquireSharedFileLockSync } from '#src/infra/fs-lock.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -26,9 +27,11 @@ import {
   listStoreEpochHolders,
   settleStoreEpoch,
   storeEpochHolderPath,
+  storeEpochLockPath,
   sweepStoreEpochs,
+  sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
-import { releaseStoreReset } from '#src/store/operator-store-reset.js';
+import { releaseStoreReset as releaseStoreResetWithSocketGuard } from '#src/store/operator-store-reset.js';
 import { SQLITE_DIAGNOSTIC_PROGRAM, superviseStoreResetDiagnosticChild } from '#src/store/reset-incident-diagnostic.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
@@ -50,6 +53,15 @@ function harness() {
   const baseDir = mkdtempSync(join(tmpdir(), 'coral-store-reset-cli-'));
   roots.push(baseDir);
   return createRealRuntime('prod', { baseDir });
+}
+
+function releaseStoreReset(
+  options: Omit<Parameters<typeof releaseStoreResetWithSocketGuard>[0], 'acquireSocketGuard'>,
+) {
+  return releaseStoreResetWithSocketGuard({
+    ...options,
+    acquireSocketGuard: async () => ({ release: async () => undefined }),
+  });
 }
 
 function publishEpoch(dbDir: string, epoch: string): void {
@@ -110,6 +122,7 @@ describe('store-reset operator epochs', () => {
     const dbDir = runtime.paths.coral.store.dbDir;
     publishEpoch(dbDir, '1');
     publishEpoch(dbDir, '3');
+    publishEpoch(dbDir, '5');
     const oldPath = epochPath(dbDir, '1');
     const holderPath = storeEpochHolderPath(dbDir, 'parent-killed');
     const programPath = join(dbDir, 'diagnostic-program.cjs');
@@ -129,7 +142,7 @@ describe('store-reset operator epochs', () => {
       await new Promise<void>((resolveExit) => parent.once('exit', () => resolveExit()));
 
       expect(runtime.process.observeLiveness(holder.pid)).toBe('alive');
-      expect(sweepStoreEpochs(runtime, dbDir, '3')).toBe('live-holder');
+      expect(await sweepStoreEpochsPostReady(runtime, dbDir, '5')).toBe('live-holder');
       expect(existsSync(oldPath)).toBe(true);
       console.log(`diagnostic-parent-sigkill-cell parent=absent child=${holder.pid} holder=live removed=false`);
 
@@ -217,22 +230,27 @@ describe('store-reset operator epochs', () => {
         throw new Error('legacy diagnostics are not used');
       },
       diagnoseEpoch: async (_storeDbPath, holderRegistration) => {
+        const holderLock = acquireSharedFileLockSync(storeEpochLockPath(dbDir, '1'));
         expect(holderRegistration).toBeDefined();
-        runtime.storage.writeAtomicDurableSync(
-          holderRegistration?.path ?? '',
-          `${JSON.stringify({ epoch: holderRegistration?.epoch, pid: diagnosticPid })}\n`,
-          { encoding: 'utf-8', mode: 0o600 },
-        );
-        const holder = readdirSync(dbDir).find((name) => name.startsWith('.epoch-holder-'));
-        expect(holder).toBeDefined();
-        expect(JSON.parse(readFileSync(join(dbDir, holder ?? ''), 'utf-8'))).toEqual({
-          epoch: '1',
-          pid: diagnosticPid,
-        });
-        await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-          kind: 'release-holder-live',
-        });
-        return { integrity: 'ok', termination: 'completed', cleanup: 'not_required' };
+        try {
+          runtime.storage.writeAtomicDurableSync(
+            holderRegistration?.path ?? '',
+            `${JSON.stringify({ epoch: holderRegistration?.epoch, pid: diagnosticPid })}\n`,
+            { encoding: 'utf-8', mode: 0o600 },
+          );
+          const holder = readdirSync(dbDir).find((name) => name.startsWith('.epoch-holder-'));
+          expect(holder).toBeDefined();
+          expect(JSON.parse(readFileSync(join(dbDir, holder ?? ''), 'utf-8'))).toEqual({
+            epoch: '1',
+            pid: diagnosticPid,
+          });
+          await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
+            kind: 'release-holder-live',
+          });
+          return { integrity: 'ok', termination: 'completed', cleanup: 'not_required' };
+        } finally {
+          holderLock();
+        }
       },
       quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
       runtime: () => runtime,
@@ -337,11 +355,12 @@ describe('store-reset operator epochs', () => {
     expect(existsSync(holderPath)).toBe(false);
   });
 
-  it('does not reap a stale holder when its pid is reused before the deletion check', () => {
+  it('reaps a stale holder despite pid reuse and remains complete on repeated retries', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishEpoch(dbDir, '1');
     publishEpoch(dbDir, '3');
+    publishEpoch(dbDir, '5');
     const reusedPid = 999_999_991;
     const holderPath = storeEpochHolderPath(dbDir, 'reused');
     writeFileSync(holderPath, `${JSON.stringify({ epoch: '1', pid: reusedPid })}\n`);
@@ -352,16 +371,34 @@ describe('store-reset operator epochs', () => {
         return (pid: number): 'absent' | 'alive' | 'unknown' => {
           if (pid !== reusedPid) return subject.observeLiveness(pid);
           observations += 1;
-          return observations === 1 ? 'absent' : 'alive';
+          return 'alive';
         };
       },
     });
     const reusedRuntime = { ...runtime, process };
 
-    expect(sweepStoreEpochs(reusedRuntime, dbDir, '3')).toBe('live-holder');
-    expect(observations).toBe(2);
-    expect(existsSync(holderPath)).toBe(true);
-    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+    writeDiscoveryRecord(
+      {
+        pid: runtime.env.pid(),
+        port: 1,
+        socketPath: join(runtime.paths.coral.coordinator.runDir, 'live.sock'),
+        bundleHash: 'current-coordinator',
+        flavor: runtime.flavor,
+        namespace: 'current-coordinator',
+        startedAt: Date.now(),
+        token: 'current-coordinator',
+        bootToken: 'current-coordinator',
+        version: '0.10.9',
+        storeEpoch: '5',
+      },
+      runtime,
+    );
+
+    expect(sweepStoreEpochs(reusedRuntime, dbDir, '5')).toBe('complete');
+    expect(sweepStoreEpochs(reusedRuntime, dbDir, '5')).toBe('complete');
+    expect(observations).toBe(0);
+    expect(existsSync(holderPath)).toBe(false);
+    expect(existsSync(epochPath(dbDir, '1'))).toBe(false);
   });
 
   it('clears a malformed holder through release and succeeds on retry', async () => {

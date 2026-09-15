@@ -189,7 +189,12 @@ describe('store-reset SQLite child supervision', () => {
     child.close(0, null);
 
     await expect(result).resolves.toEqual({ integrity: 'ok', termination: 'completed' });
-    expect(spawnedArgs.slice(-3)).toEqual(['/private/store.db', '/private/.epoch-holder-child.json', '7']);
+    expect(spawnedArgs.slice(-4)).toEqual([
+      '/private/store.db',
+      '/private/.epoch-holder-child.json',
+      '7',
+      '/private/.epoch-lock-7.sqlite',
+    ]);
     expect(spawnedArgs[2]?.indexOf('fs.writeFileSync')).toBeLessThan(
       spawnedArgs[2]?.indexOf('db = new DatabaseSync') ?? -1,
     );

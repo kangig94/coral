@@ -82,6 +82,7 @@ type RunShutdownSequenceContext = {
   disposeLifecycleReactor: () => void | Promise<void>;
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
+  stopStoreEpochSweepFn?: () => Promise<void>;
   log: (message: string) => void;
   isShutdownObligationAbandoned?: (subject: ShutdownObligationSubject) => boolean;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
@@ -1108,6 +1109,7 @@ export async function runShutdownSequence({
   disposeLifecycleReactor,
   hooks,
   discussStores,
+  stopStoreEpochSweepFn,
   log,
   isShutdownObligationAbandoned,
   acceptProcessExitRemainder,
@@ -1126,6 +1128,7 @@ export async function runShutdownSequence({
   log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
+  await stopStoreEpochSweepFn?.();
 
   const openingObligations = buildOpeningShutdownObligations({
     closeServerFn,

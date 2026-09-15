@@ -10,6 +10,9 @@ import {
 } from './server-esbuild-options.mjs';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '../src/infra/bundle-manifest-address.ts';
 
+const { storeEpochHookSource } = await import('../dist/store/epoch.js');
+writeFileSync('clients/hooks/lib/store-epoch.mjs', storeEpochHookSource());
+
 mkdirSync('clients/build', { recursive: true });
 
 function parseArgs(argv) {

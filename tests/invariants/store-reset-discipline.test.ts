@@ -149,12 +149,14 @@ describe('write-once store epoch invariants', () => {
     };
     visit(parsed);
     expect(deletionOwners.length).toBeGreaterThan(0);
-    expect(new Set(deletionOwners)).toEqual(new Set(['sweepStoreEpochs']));
+    expect(new Set(deletionOwners)).toEqual(new Set(['removeWhileExclusivelyLocked', 'sweepStoreEpochs']));
   });
 
   it('retains epoch zero and the highest two proven epochs across numbering gaps', () => {
     for (let mask = 0; mask < 1 << 8; mask += 1) {
-      const proven = Array.from({ length: 8 }, (_, epoch) => String(epoch)).filter((_epoch, index) => mask & (1 << index));
+      const proven = Array.from({ length: 8 }, (_, epoch) => String(epoch)).filter(
+        (_epoch, index) => mask & (1 << index),
+      );
       const retained = new Set([...proven].sort((left, right) => Number(left) - Number(right)).slice(-2));
       if (proven.includes('0')) retained.add('0');
       expect(garbageStoreEpochs(proven)).toEqual(new Set(proven.filter((epoch) => !retained.has(epoch))));
@@ -174,9 +176,15 @@ describe('write-once store epoch invariants', () => {
     expect(all).not.toMatch(/WriterExclusion|store_reset_lock_contended|store_reset_interrupted_/u);
   });
 
-  it('counts one new open refusal after deleting two post-open re-verification refusals', () => {
+  it('replaces the swept-mint refusal with holder-publication safety in the semantic-refusal ratchet', () => {
     expect(source('src/store/epoch.ts')).not.toContain('failStoreEpoch');
     expect(storeSemanticRefusalCount()).toBe(64);
+  });
+
+  it('uses file-lock acquisition rather than bare pid observation for holder liveness', () => {
+    const epoch = source('src/store/epoch.ts');
+    expect(epoch).not.toContain('observeLiveness');
+    expect(epoch).toContain('tryAcquireExclusiveFileLockSync');
   });
 
   it('keeps legacy_source_not_quiescent producers off the startup adoption path', () => {

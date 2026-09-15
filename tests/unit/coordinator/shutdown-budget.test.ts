@@ -34,6 +34,7 @@ interface Harness {
 function buildHarness(opts: {
   hooksOnShutdown?: (signal: AbortSignal) => Promise<void>;
   closeIpcServerFn?: (listener: IpcListener) => Promise<void>;
+  stopStoreEpochSweepFn?: () => Promise<void>;
   reason?: string;
   providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   stopProviderOperationReconciler?: NonNullable<
@@ -149,6 +150,7 @@ function buildHarness(opts: {
       },
     },
     discussStores: new Map(),
+    ...(opts.stopStoreEpochSweepFn === undefined ? {} : { stopStoreEpochSweepFn: opts.stopStoreEpochSweepFn }),
     log: (msg) => {
       logLines.push(msg);
     },
@@ -193,6 +195,33 @@ function heldFailureDetail(held: ShutdownSequenceHold): string {
 }
 
 describe('runShutdownSequence drain budget', () => {
+  it('joins the store epoch sweep before destructive teardown and socket release', async () => {
+    let finishSweep!: () => void;
+    const sweepSettlement = new Promise<void>((resolve) => {
+      finishSweep = resolve;
+    });
+    const harness = buildHarness({
+      stopStoreEpochSweepFn: async () => {
+        harness.callLog.push('storeEpochSweep.stop');
+        await sweepSettlement;
+        harness.callLog.push('storeEpochSweep.joined');
+      },
+    });
+
+    const sequence = runShutdownSequence(harness.ctx);
+    await flush();
+
+    expect(harness.callLog).toEqual(['setLifecycle:draining', 'idleTimer.stopWatching', 'storeEpochSweep.stop']);
+    expect(harness.closeIpcCalled()).toBe(false);
+
+    finishSweep();
+    await flush();
+    expect(harness.callLog.indexOf('storeEpochSweep.joined')).toBeLessThan(
+      harness.callLog.indexOf('closeIpcServerFn:start'),
+    );
+    await sequence;
+  });
+
   it('runs provider-host recovery before closing provider-operation mutation admission', async () => {
     const order: string[] = [];
     const mutationSettlement = new Promise<void>(() => {});

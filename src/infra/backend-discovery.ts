@@ -92,7 +92,7 @@ function discoveryFilePath(runtime: DiscoveryRuntime): string {
   return runtime.paths.coral.coordinator.infoFile;
 }
 
-export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryWriterRuntime): void {
+export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryWriterRuntime): boolean {
   const infoPath = discoveryFilePath(runtime);
   const incarnation =
     record.incarnation ??
@@ -109,7 +109,7 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
 
   runtime.storage.mkdirSync(dirname(infoPath), { recursive: true });
   if (!runtime.storage.writeAtomicSync(infoPath, payload, { encoding: 'utf-8', mode: 0o600 })) {
-    return;
+    return false;
   }
   if (runtime.env.platform() !== 'win32') {
     try {
@@ -118,6 +118,7 @@ export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime
       // Best-effort.
     }
   }
+  return true;
 }
 
 /**
@@ -246,8 +247,8 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
   }
 }
 
-export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRuntime): void {
-  writeDiscoveryRecord(info, runtime);
+export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRuntime): boolean {
+  return writeDiscoveryRecord(info, runtime);
 }
 
 export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {

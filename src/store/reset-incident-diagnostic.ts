@@ -17,6 +17,7 @@ import {
   type StoreResetInspectionFs,
   type StoreResetInspectionStat,
 } from './reset-incident-inspection-fs.js';
+import { storeEpochLockPath } from './epoch.js';
 
 const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as const;
 const COPY_BUFFER_BYTES = 64 * 1024;
@@ -29,11 +30,16 @@ const pathModule = require('node:path');
 const path = process.argv[1];
 const holderPath = process.argv[2];
 const holderEpoch = process.argv[3];
+const holderLockPath = process.argv[4] ??
+  (holderPath === undefined ? undefined : pathModule.join(pathModule.dirname(holderPath), '.epoch-lock-' + holderEpoch + '.sqlite'));
 let db;
+let holderLock;
 let token = 'unavailable';
 let holderReady = holderPath === undefined;
 try {
   if (!holderReady) {
+    holderLock = new DatabaseSync(holderLockPath, { timeout: 5000 });
+    holderLock.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');
     const temporary = holderPath + '.' + process.pid + '.tmp';
     let file;
     let directory;
@@ -63,6 +69,7 @@ try {
   token = 'unavailable';
 } finally {
   try { db?.close(); } catch { token = 'unavailable'; }
+  try { holderLock?.exec('ROLLBACK'); holderLock?.close(); } catch { token = 'unavailable'; }
 }
 process.stdout.write(token);
 `;
@@ -110,7 +117,9 @@ export function superviseStoreResetDiagnosticChild(
         '--eval',
         SQLITE_DIAGNOSTIC_PROGRAM,
         stagedDbPath,
-        ...(holder === undefined ? [] : [holder.path, holder.epoch]),
+        ...(holder === undefined
+          ? []
+          : [holder.path, holder.epoch, storeEpochLockPath(join(holder.path, '..'), holder.epoch)]),
       ]);
     } catch {
       resolve({ integrity: 'unavailable', termination: 'not_started' });

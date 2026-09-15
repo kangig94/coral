@@ -150,7 +150,12 @@ export function releaseStoreResetLocal(
   if (!/^(0|[1-9]\d*)$/.test(epoch)) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
-  return releaseStoreReset({ target, runtime: createRealRuntime(flavor), epoch });
+  return releaseStoreReset({
+    target,
+    runtime: createRealRuntime(flavor),
+    epoch,
+    acquireSocketGuard: acquireStoreResetSocketGuard,
+  });
 }
 
 function isCanonicalEpoch(value: string): boolean {
