@@ -114,7 +114,9 @@ async function diagnoseHeldEpoch(
   if (diagnostic.termination !== 'termination_unconfirmed') {
     try {
       runtime.storage.unlinkSync(holderPath);
-    } catch {}
+    } catch (error: unknown) {
+      void error;
+    }
     try {
       runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);
     } catch {
