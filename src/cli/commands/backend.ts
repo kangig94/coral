@@ -519,6 +519,9 @@ type StoreResetDiscardCommandResult = Extract<
 
 function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
   result = constrainStoreResetRendererInput(result);
+  if (result.previousEpoch === null) {
+    return `Initialized store epoch ${result.currentEpoch} at ${result.storeDbPath}.`;
+  }
   return `Discarded store epoch ${result.previousEpoch}; initialized epoch ${result.currentEpoch} at ${result.storeDbPath}.`;
 }
 
@@ -1011,7 +1014,7 @@ export function createBackendStatusCommandOperations(
   const runtime = createRealRuntime(resolveBuildFlavor(process.env));
   const statusPath = routingStatusPath(runtime);
   return {
-    inspectReadiness: () => inspectGenerationReadiness(runtime, currentCoralStoreFormat()),
+    inspectReadiness: () => inspectGenerationReadiness(runtime),
     getStatus: () => getBackendStatusFull(getPluginRoot()),
     getLiveHandoffResult,
     getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, statusPath),
@@ -2007,7 +2010,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .action(async (options: { target: StoreResetTarget; flavor: BuildFlavor }) => {
       try {
         const result = await storeReset.discard(options.target, options.flavor);
-        process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
+        if (result.previousEpoch !== null) process.stderr.write(STORE_RESET_EVIDENCE_WARNING);
         process.stdout.write(`${formatStoreResetDiscard(result)}\n`);
       } catch (error: unknown) {
         if (error instanceof HandoffRunError) {

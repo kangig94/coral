@@ -730,9 +730,6 @@ describe('architecture boundary guard', () => {
     // command would be dead on arrival.
     expect(existsSync(resolve(REPO_ROOT, 'src/store/legacy-store-adoption.ts'))).toBe(false);
     expect(existsSync(resolve(REPO_ROOT, 'src/cli/store-adopt.ts'))).toBe(false);
-    // `'legacy-adoptable'` also names a StoreFormatClassification variant, which
-    // is a store-file concern (equal fingerprint, no version row) and unrelated
-    // to importing a generation. Only the adoption vocabulary is banned.
     const offenders = PRODUCTION_FILE_PATHS.filter((file) =>
       /\badoptLegacyStore\b|\blegacy_adoption_\w+|\bstore-adopt\b/u.test(readFileSync(file, 'utf-8')),
     ).map((file) => toCanonicalSrcPath(REPO_ROOT, file));

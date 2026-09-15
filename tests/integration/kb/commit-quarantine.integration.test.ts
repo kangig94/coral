@@ -15,7 +15,6 @@ import {
   resolveGenerationBoundaryPaths,
   tryAcquireGenerationWriterLease,
 } from '#src/store/generation-mutation-coordination.js';
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -83,7 +82,7 @@ describe('KB commit quarantine', () => {
       'commits',
       commitId,
     );
-    const readiness = await generationMutationCoordinationSeam.completeReadiness(runtime, currentCoralStoreFormat(), {
+    const readiness = await generationMutationCoordinationSeam.completeReadiness(runtime, {
       kind: 'kb-child',
       name: 'orphaned-kb-daemon',
     });

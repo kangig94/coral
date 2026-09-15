@@ -10,6 +10,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -421,44 +422,6 @@ describe('write-once store epochs', () => {
     console.log('ambiguous-removal-cell site=post-ready-holder post-effect=EIO parent-sync=after');
   });
 
-  it('syncs a post-effect orphan-lock removal before returning cancellation', async () => {
-    const runtime = harness();
-    const dbDir = runtime.paths.coral.store.dbDir;
-    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
-    const orphanLock = storeEpochLockPath(dbDir, '1');
-    const lease = acquireSharedFileLockSync(orphanLock);
-    lease();
-    const controller = new AbortController();
-    const events: string[] = [];
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property === 'unlink') {
-          return async (path: string): Promise<void> => {
-            await subject.unlink(path);
-            if (path === orphanLock) {
-              events.push('orphan-lock-removed');
-              controller.abort();
-              throw Object.assign(new Error('injected post-effect orphan-lock failure'), { code: 'EIO' });
-            }
-          };
-        }
-        if (property === 'syncDirectoryDurable') {
-          return async (path: string): Promise<boolean> => {
-            if (path === dbDir) events.push('parent-sync');
-            return subject.syncDirectoryDurable(path);
-          };
-        }
-        return Reflect.get(subject, property, receiver) as unknown;
-      },
-    });
-
-    await expect(
-      sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3', { signal: controller.signal }),
-    ).resolves.toBe('cancelled');
-    expect(events).toEqual(['orphan-lock-removed', 'parent-sync']);
-    console.log('ambiguous-removal-cell site=orphan-lock post-effect=EIO parent-sync=before-cancel');
-  });
-
   it('syncs after legacy-quarantine removal mutates and then throws', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -594,47 +557,6 @@ describe('write-once store epochs', () => {
     console.log('release-disposition-cell phase=holder-cleanup target=present renderer-claim=not-attempted');
   });
 
-  it('reclaims orphan epoch locks after unlink failure and process death between epoch and lock removal', async () => {
-    const runtime = harness();
-    const dbDir = runtime.paths.coral.store.dbDir;
-    for (const epoch of ['1', '2', '4']) publishAdversarialEpoch(join(dbDir, `epoch-${epoch}`), true);
-    const failedUnlinkLock = storeEpochLockPath(dbDir, '1');
-    let failedOnce = false;
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'unlinkSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string): void => {
-          if (path === failedUnlinkLock && !failedOnce) {
-            failedOnce = true;
-            throw Object.assign(new Error('injected lock unlink failure'), { code: 'EIO' });
-          }
-          subject.unlinkSync(path);
-        };
-      },
-    });
-
-    const failedCleanup = await releaseStoreReset({
-      target: 'gen2',
-      runtime: withStorage(runtime, storage),
-      epoch: '1',
-    });
-    expect(failedCleanup.kind).toBe('release-lock-cleanup-failed');
-    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
-    expect(existsSync(failedUnlinkLock)).toBe(true);
-
-    const processDeathLock = storeEpochLockPath(dbDir, '2');
-    const processDeathLease = acquireSharedFileLockSync(processDeathLock);
-    processDeathLease();
-    rmSync(epochDirectory(dbDir, '2'), { recursive: true });
-    expect(existsSync(processDeathLock)).toBe(true);
-    publishLiveCoordinator(runtime, runtime.env.pid(), '4');
-
-    expect(sweepStoreEpochs(runtime, dbDir, '4')).toBe('complete');
-    expect(existsSync(failedUnlinkLock)).toBe(false);
-    expect(existsSync(processDeathLock)).toBe(false);
-    console.log('lock-tombstone-recovery-cell unlink-failure=reclaimed process-death=reclaimed');
-  });
-
   it.each(['synchronous', 'post-ready'] as const)(
     'reclaims a large invalid epoch-0 directory in the %s sweep',
     async (kind) => {
@@ -657,7 +579,7 @@ describe('write-once store epochs', () => {
     },
   );
 
-  it('reclaims positive epoch lock tombstones across K release cycles', async () => {
+  it('removes each epoch lock with its store across K release cycles', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     for (let epoch = 1; epoch <= 9; epoch += 1) publishAdversarialEpoch(join(dbDir, `epoch-${epoch}`), true);
@@ -669,7 +591,7 @@ describe('write-once store epochs', () => {
     const entries = readdirSync(dbDir);
     expect(entries.filter((entry) => entry.startsWith('.epoch-lock-'))).toEqual([]);
     expect(entries).toEqual(['epoch-9']);
-    console.log('lock-tombstone-cell cycles=8 raw-cardinality=1 lock-files=0');
+    console.log('contained-lock-lifecycle-cell cycles=8 raw-cardinality=1 root-lock-files=0');
   });
 
   it.each(['post-ready sweep', 'release'] as const)(
@@ -1633,7 +1555,9 @@ describe('write-once store epochs', () => {
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
     for (let index = 0; index < 12; index += 1) {
-      createCompatibleStore(join(dbDir, `.mint-process-death-${index}`, 'store.db'), `mint-${index}`);
+      const id = `process-death-${index}`;
+      createCompatibleStore(join(dbDir, `.mint-${id}`, 'store.db'), `mint-${index}`);
+      acquireSharedFileLockSync(storeMintLockPath(dbDir, id))();
     }
 
     expect(await sweepStoreEpochsPostReady(runtime, dbDir, '1')).toBe('complete');
@@ -1671,6 +1595,34 @@ describe('write-once store epochs', () => {
     } finally {
       held();
     }
+  });
+
+  it('carries the mint lease inode through publication rename', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const id = 'rename-lease';
+    const mint = join(dbDir, `.mint-${id}`);
+    const epoch = epochDirectory(dbDir, '1');
+    mkdirSync(mint, { recursive: true });
+    const mintLock = storeMintLockPath(dbDir, id);
+    const lease = acquireSharedFileLockSync(mintLock);
+    const before = statSync(mintLock, { bigint: true });
+    renameSync(mint, epoch);
+    const publishedLock = storeEpochLockPath(dbDir, '1');
+    const after = statSync(publishedLock, { bigint: true });
+    const whileHeld = tryAcquireExclusiveFileLockSync(publishedLock);
+    whileHeld?.();
+    lease();
+    const afterRelease = tryAcquireExclusiveFileLockSync(publishedLock);
+    afterRelease?.();
+
+    const sameInode = before.dev === after.dev && before.ino === after.ino;
+    console.log(
+      `lease-rename-cell before=${before.dev}:${before.ino} after=${after.dev}:${after.ino} same-inode=${sameInode} exclusive-while-held=${whileHeld === null ? 'blocked' : 'acquired'} exclusive-after-release=${afterRelease === null ? 'blocked' : 'acquired'}`,
+    );
+    expect(sameInode).toBe(true);
+    expect(whileHeld).toBeNull();
+    expect(afterRelease).not.toBeNull();
   });
 
   it('keeps a live epoch across the former orphan-lock release-to-unlink window', async () => {

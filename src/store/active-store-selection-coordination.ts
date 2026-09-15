@@ -171,7 +171,7 @@ function retainInvalidSelectionRecovery(
 
 function inspectCurrentGeneration(runtime: Runtime, options: ActiveStoreSelectionProtocolOptions): void {
   if (options.path !== undefined) return;
-  const readiness = inspectGenerationReadiness(runtime, options.storeFormat);
+  const readiness = inspectGenerationReadiness(runtime);
   switch (readiness.kind) {
     case 'generated-ready':
     case 'no-legacy':

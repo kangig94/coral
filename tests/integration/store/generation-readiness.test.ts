@@ -193,7 +193,7 @@ describe('generation readiness', () => {
       return exists(path);
     });
 
-    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({ kind: 'generated-ready' });
+    expect(inspectGenerationReadiness(runtime)).toEqual({ kind: 'generated-ready' });
   });
 
   it('permits coordinator initialization when both generation targets are absent', async () => {
@@ -201,7 +201,7 @@ describe('generation readiness', () => {
     const paths = resolveGenerationBoundaryPaths(runtime);
     expect(existsSync(paths.generatedFlavorRoot)).toBe(false);
     expect(existsSync(paths.legacyFlavorRoot)).toBe(false);
-    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toEqual({ kind: 'no-legacy' });
+    expect(inspectGenerationReadiness(runtime)).toEqual({ kind: 'no-legacy' });
 
     await openGeneratedStore(runtime);
 
@@ -213,7 +213,7 @@ describe('generation readiness', () => {
     const legacyRoot = createSameGenerationLegacyStore(runtime);
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
-    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toMatchObject({
+    expect(inspectGenerationReadiness(runtime)).toMatchObject({
       kind: 'legacy-ignored',
       legacyPath: legacyRoot,
     });
@@ -264,23 +264,22 @@ describe('generation readiness', () => {
     expect(after).toEqual(before);
   });
 
-  it('boots beside a foreign legacy generation and reports its stored version', async () => {
+  it('boots beside a foreign legacy generation without inspecting its stored version', async () => {
     const { runtime } = harness();
     const legacyRoot = createForeignLegacyStore(runtime, '0.9.16');
     const before = hashTree(legacyRoot);
     const warning = vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
-    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toMatchObject({
+    expect(inspectGenerationReadiness(runtime)).toMatchObject({
       kind: 'legacy-ignored',
       legacyPath: legacyRoot,
-      storedProductVersion: '0.9.16',
     });
 
     await openGeneratedStore(runtime);
 
     expect(existsSync(generatedStorePath(runtime))).toBe(true);
     expect(hashTree(legacyRoot)).toBe(before);
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('0.9.16'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('contents were not inspected or changed'));
   });
 
   it('boots beside an unreadable legacy store rather than diagnosing it', async () => {
@@ -292,11 +291,9 @@ describe('generation readiness', () => {
     const before = hashTree(paths.legacyFlavorRoot);
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
-    expect(inspectGenerationReadiness(runtime, STORE_FORMAT)).toMatchObject({
+    expect(inspectGenerationReadiness(runtime)).toMatchObject({
       kind: 'legacy-ignored',
       legacyPath: paths.legacyFlavorRoot,
-      // Unreadable is reported as unknown, never guessed.
-      storedProductVersion: null,
     });
 
     await openGeneratedStore(runtime);
@@ -310,7 +307,7 @@ describe('generation readiness', () => {
     createSameGenerationLegacyStore(runtime);
     vi.spyOn(backendLog, 'warn').mockImplementation(() => {});
 
-    const completion = await generationMutationCoordinationSeam.completeReadiness(runtime, STORE_FORMAT, {
+    const completion = await generationMutationCoordinationSeam.completeReadiness(runtime, {
       kind: 'install',
       name: 'generation-readiness-test',
     });
@@ -320,17 +317,15 @@ describe('generation readiness', () => {
     completion.release();
   });
 
-  it('names both paths and the stored version in the notice', () => {
+  it('names both paths and the observation boundary in the notice', () => {
     const notice = formatLegacyGenerationIgnoredNotice({
       kind: 'legacy-ignored',
       legacyPath: '/home/u/.coral/data',
       generatedPath: '/home/u/.coral/gen2/data',
-      storedProductVersion: '0.9.16',
     });
 
     expect(notice).toContain('/home/u/.coral/data');
     expect(notice).toContain('/home/u/.coral/gen2/data');
-    expect(notice).toContain('0.9.16');
-    expect(notice).toContain('left untouched');
+    expect(notice).toContain('contents were not inspected or changed');
   });
 });

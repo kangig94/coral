@@ -97,7 +97,7 @@ function pathExists(path: string): boolean {
 
 function recordGenerationCoordination(events: string[]): GenerationMutationCoordination {
   return {
-    async completeReadiness(_runtime, _storeFormat, mutation) {
+    async completeReadiness(_runtime, mutation) {
       events.push(`readiness:${mutation.kind}`);
       return {
         release() {

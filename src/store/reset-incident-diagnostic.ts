@@ -31,7 +31,7 @@ const path = process.argv[1];
 const holderPath = process.argv[2];
 const holderEpoch = process.argv[3];
 const holderLockPath = process.argv[4] ??
-  (holderPath === undefined ? undefined : pathModule.join(pathModule.dirname(holderPath), '.epoch-lock-' + holderEpoch + '.sqlite'));
+  (path === undefined ? undefined : pathModule.join(pathModule.dirname(path), '.lock'));
 let db;
 let holderLock;
 let token = 'unavailable';

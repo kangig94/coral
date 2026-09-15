@@ -193,7 +193,7 @@ describe('store-reset SQLite child supervision', () => {
       '/private/store.db',
       '/private/.epoch-holder-child.json',
       '7',
-      '/private/.epoch-lock-7.sqlite',
+      '/private/epoch-7/.lock',
     ]);
     expect(spawnedArgs[2]?.indexOf('fs.writeFileSync')).toBeLessThan(
       spawnedArgs[2]?.indexOf('db = new DatabaseSync') ?? -1,

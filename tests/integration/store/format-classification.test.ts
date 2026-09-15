@@ -124,15 +124,17 @@ describe('store format classification', () => {
     });
   });
 
-  it('classifies an equal valid fingerprint with no version row as legacy-adoptable', () => {
-    const { dbPath } = tempPath('legacy-adoptable.db');
+  it('classifies an equal valid fingerprint with no version row as unsupported', () => {
+    const { dbPath } = tempPath('missing-version.db');
     createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT });
 
     expect(classify(dbPath, format('1.0.0'))).toEqual({
-      kind: 'legacy-adoptable',
+      kind: 'corrupt-or-unsupported',
       currentFingerprint: CURRENT_FINGERPRINT,
       currentProductVersion: '1.0.0',
       storedFingerprint: CURRENT_FINGERPRINT,
+      storedProductVersion: null,
+      storedProductVersionState: 'absent',
     });
   });
 
@@ -286,18 +288,20 @@ describe('store format classification', () => {
     expect(readStoredProductVersion(dbPath)).toBe('1.0.0+stored');
   });
 
-  it('reads and adopts a legacy-adoptable store without replacing its inode', () => {
-    const { root, dbPath } = tempPath('legacy-adoptable-high-water.db');
+  it('refuses a store with no product version without replacing its inode', () => {
+    const { root, dbPath } = tempPath('missing-version-high-water.db');
     createStore(dbPath, { fingerprint: CURRENT_FINGERPRINT });
     const storage = createRealRuntime('prod', { baseDir: join(root, 'runtime') }).storage;
     const before = statSync(dbPath, { bigint: true });
 
-    openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0'), readonly: true }).close();
+    expect(() =>
+      openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0'), readonly: true }),
+    ).toThrow();
     expect(readStoredProductVersion(dbPath)).toBeUndefined();
 
-    openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') }).close();
+    expect(() => openTestStoreDatabase({ path: dbPath, storage, storeFormat: format('1.1.0') })).toThrow();
 
-    expect(readStoredProductVersion(dbPath)).toBe('1.1.0');
+    expect(readStoredProductVersion(dbPath)).toBeUndefined();
     const after = statSync(dbPath, { bigint: true });
     expect({ dev: after.dev, ino: after.ino }).toEqual({ dev: before.dev, ino: before.ino });
   });

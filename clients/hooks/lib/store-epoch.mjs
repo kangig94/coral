@@ -94,7 +94,7 @@ function storeEpochForDbPath(dbDir, dbPath) {
 }
 
 function acquireSharedStoreEpochLock(dbDir, epoch) {
-  const lock = new DatabaseSync(join(dbDir, '.epoch-lock-' + epoch + '.sqlite'), {
+  const lock = new DatabaseSync(join(dbDir, 'epoch-' + epoch, '.lock'), {
     timeout: HOOK_LOCK_TIMEOUT_MS,
   });
   try {

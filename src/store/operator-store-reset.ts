@@ -64,7 +64,6 @@ export type StoreResetReleasePresentation =
         | 'release-holder-cleanup-failed'
         | 'release-deletion-failed'
         | 'release-lock-release-failed'
-        | 'release-lock-cleanup-failed'
         | 'release-pre-deletion-durability-sync-failed'
         | 'release-absent-durability-sync-failed'
         | 'release-durability-sync-failed';
@@ -147,7 +146,9 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
   try {
     const adoption = await acquireGenerationAdoptionLock(options.runtime);
     try {
-      const previousEpoch = resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir);
+      const previousEpoch = options.runtime.storage.existsSync(paths.dbDir)
+        ? resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir)
+        : null;
       const settled = discardCurrentStoreEpoch(options.runtime, {
         storeFormat: options.storeFormat,
         build: options.build,
@@ -199,7 +200,6 @@ export async function releaseStoreReset(options: {
       if (result === 'holder-cleanup-failed') return { kind: 'release-holder-cleanup-failed', ...base };
       if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
       if (result === 'lock-release-failed') return { kind: 'release-lock-release-failed', ...base };
-      if (result === 'lock-cleanup-failed') return { kind: 'release-lock-cleanup-failed', ...base };
       if (result === 'pre-deletion-durability-sync-failed') {
         return { kind: 'release-pre-deletion-durability-sync-failed', ...base };
       }

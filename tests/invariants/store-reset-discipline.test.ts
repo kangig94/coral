@@ -149,7 +149,9 @@ describe('write-once store epoch invariants', () => {
     };
     visit(parsed);
     expect(deletionOwners.length).toBeGreaterThan(0);
-    expect(new Set(deletionOwners)).toEqual(new Set(['removeWhileExclusivelyLocked', 'sweepStoreEpochs']));
+    expect(new Set(deletionOwners)).toEqual(
+      new Set(['removeEpochEntry', 'removeWhileExclusivelyLocked', 'sweepStoreEpochs']),
+    );
   });
 
   it('retains exactly the highest two proven epochs across numbering gaps', () => {
@@ -184,6 +186,12 @@ describe('write-once store epoch invariants', () => {
     const epoch = source('src/store/epoch.ts');
     expect(epoch).not.toContain('observeLiveness');
     expect(epoch).toContain('tryAcquireExclusiveFileLockSync');
+  });
+
+  it('keeps every store lock inside its store directory', () => {
+    const epoch = source('src/store/epoch.ts');
+    expect(epoch).toContain("export const STORE_LOCK_FILE_NAME = '.lock'");
+    expect(epoch).not.toMatch(/\.epoch-lock-|\.mint-lock-|removeOrphanedEpochLock|removeLockFile/u);
   });
 
   it('keeps legacy_source_not_quiescent producers off the startup adoption path', () => {

@@ -11,12 +11,9 @@ import {
   type ActuatedDirectoryLockLease,
 } from '../infra/fs-lock.js';
 import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../infra/process-containment.js';
-import { validateProductVersion } from '../infra/product-version.js';
 import type { StorageActuator } from '../infra/storage-actuator.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
-import { classifyStoreFile } from './db.js';
-import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 
 export type GenerationMutationKind = 'install' | 'update' | 'uninstall' | 'kb-child' | 'routing-status';
 
@@ -36,13 +33,8 @@ export type GenerationWriterLeaseAttempt =
   | Readonly<{ kind: 'contended' }>;
 
 export interface GenerationMutationCoordination {
-  // `storeFormat` is threaded in rather than defaulted to `currentCoralStoreFormat()`:
-  // that default made this store module import `src/store-format.ts`, which drags the
-  // whole provider registry into the simulation's sealed import graph and breaks
-  // `npm run build`. Callers in the CLI already hold the description.
   completeReadiness(
     runtime: Runtime,
-    storeFormat: StoreFormatDescription,
     mutation: { readonly kind: GenerationMutationKind; readonly name: string },
   ): Promise<GenerationReadinessCompletion>;
   acquireWriterLease(
@@ -79,7 +71,6 @@ export type GenerationReadiness =
       readonly kind: 'legacy-ignored';
       readonly legacyPath: string;
       readonly generatedPath: string;
-      readonly storedProductVersion: string | null;
     };
 
 export interface GenerationMaintenanceLease {
@@ -124,7 +115,6 @@ export function resolveGenerationBoundaryPaths(runtime: Pick<Runtime, 'paths'>):
 
 export function inspectGenerationReadiness(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
-  storeFormat: StoreFormatDescription,
 ): GenerationReadiness {
   const paths = resolveGenerationBoundaryPaths(runtime);
   if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
@@ -134,29 +124,10 @@ export function inspectGenerationReadiness(
     return { kind: 'no-legacy' };
   }
 
-  // The stored version is read for the notice only. Nothing branches on whether
-  // this build could read the legacy store, because nothing imports it — an
-  // unreadable one is reported as unknown rather than diagnosed.
-  const storedProductVersion = ((): string | null => {
-    try {
-      const classification: StoreFormatClassification = classifyStoreFile(
-        join(paths.legacyFlavorRoot, 'store', 'store.db'),
-        runtime.storage,
-        storeFormat,
-      );
-      return 'storedProductVersion' in classification && classification.storedProductVersion !== null
-        ? validateProductVersion(classification.storedProductVersion)
-        : null;
-    } catch {
-      return null;
-    }
-  })();
-
   return {
     kind: 'legacy-ignored',
     legacyPath: paths.legacyFlavorRoot,
     generatedPath: paths.generatedFlavorRoot,
-    storedProductVersion,
   };
 }
 
@@ -164,9 +135,8 @@ export function formatLegacyGenerationIgnoredNotice(
   readiness: Extract<GenerationReadiness, { readonly kind: 'legacy-ignored' }>,
 ): string {
   return (
-    `Legacy Coral history remains at ${readiness.legacyPath} (stored Coral version ` +
-    `${readiness.storedProductVersion ?? 'unknown'}) and is left untouched. This generation initializes ` +
-    `its own state at ${readiness.generatedPath}.`
+    `Legacy Coral history remains at ${readiness.legacyPath}; its contents were not inspected or changed. ` +
+    `This generation initializes its own state at ${readiness.generatedPath}.`
   );
 }
 
@@ -230,12 +200,11 @@ export async function tryAcquireGenerationAdoptionLock(
 
 export async function acquireGenerationAdoptionLease(
   runtime: Runtime,
-  storeFormat: StoreFormatDescription,
   timeoutMs = GENERATION_COORDINATION_TIMEOUT_MS,
 ): Promise<GenerationAdoptionLease> {
   const releaseAdoption = await acquireGenerationAdoptionLock(runtime, timeoutMs);
   try {
-    const readiness = inspectGenerationReadiness(runtime, storeFormat);
+    const readiness = inspectGenerationReadiness(runtime);
     switch (readiness.kind) {
       case 'generated-ready':
       case 'no-legacy':
@@ -445,8 +414,8 @@ export function tryAcquireGenerationWriterLease(
 }
 
 export const generationMutationCoordinationSeam: GenerationMutationCoordination = {
-  async completeReadiness(runtime, storeFormat) {
-    return acquireGenerationAdoptionLease(runtime, storeFormat);
+  async completeReadiness(runtime) {
+    return acquireGenerationAdoptionLease(runtime);
   },
   async acquireWriterLease(runtime, mutation) {
     const paths = resolveGenerationBoundaryPaths(runtime);
@@ -540,10 +509,9 @@ export async function acquireGenerationMaintenanceLease(
 export async function acquireGenerationWriterLeaseAfterReadiness(
   coordination: GenerationMutationCoordination,
   runtime: Runtime,
-  storeFormat: StoreFormatDescription,
   mutation: { readonly kind: GenerationMutationKind; readonly name: string },
 ): Promise<GenerationWriterLease> {
-  const readiness = await coordination.completeReadiness(runtime, storeFormat, mutation);
+  const readiness = await coordination.completeReadiness(runtime, mutation);
   readiness.release();
   return coordination.acquireWriterLease(runtime, mutation);
 }

@@ -2204,7 +2204,7 @@ collateral from a shutdown-ordering change, which is how this kind of thing alwa
 ### Two leaks
 
 Every exclusive probe creates `.epoch-lock-<N>.sqlite` and positive-epoch deletion leaves it behind,
-because `removeLockFile` in `src/store/epoch.ts` defaults to false. K publications leave O(K) entries
+because the then-current sweep defaults its separate lock-path cleanup to false. K publications leave O(K) entries
 that every future scan walks. They need a race-safe reclamation — the lock file is removable exactly when
 its own lock is free, which is the same proof the sweep already performs.
 

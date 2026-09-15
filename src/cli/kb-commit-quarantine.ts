@@ -14,7 +14,6 @@ import {
   type GenerationAdoptionLease,
   type GenerationMaintenanceLease,
 } from '../store/generation-mutation-coordination.js';
-import { currentCoralStoreFormat } from '../store-format.js';
 import { acquireOperatorSocketGuard } from './operator-socket-guard.js';
 
 const MAINTENANCE_LOCK_TIMEOUT_MS = 5_000;
@@ -83,7 +82,7 @@ async function acquireQuarantineAdoptionLease(
   retryCommand: string,
 ): Promise<GenerationAdoptionLease> {
   try {
-    return await acquireGenerationAdoptionLease(runtime, currentCoralStoreFormat(), timeoutMs);
+    return await acquireGenerationAdoptionLease(runtime, timeoutMs);
   } catch (error: unknown) {
     throw boundQuarantineLeaseError(error, runtime, 'generation adoption lock', retryCommand);
   }

@@ -112,7 +112,7 @@ async function diagnoseHeldEpoch(
     try {
       runtime.storage.unlinkSync(holderPath);
     } catch {
-      // A stale marker is visible to `list` and reaped after its pid is observed absent.
+      // A stale marker is visible to `list` and reaped when its epoch lock proves no live holder.
     }
     try {
       runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.store.dbDir);

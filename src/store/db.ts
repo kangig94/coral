@@ -213,14 +213,7 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
   }
 
   if (versionMetadata.kind === 'absent') {
-    return storedFingerprint === currentFingerprint
-      ? {
-          kind: 'legacy-adoptable',
-          currentFingerprint,
-          currentProductVersion,
-          storedFingerprint,
-        }
-      : corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null, 'absent');
+    return corruptOrUnsupported(currentFingerprint, currentProductVersion, storedFingerprint, null, 'absent');
   }
 
   if (storedProductVersion === null) {
@@ -365,11 +358,7 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
       writeStoreFormatSidecar(options, db);
       return { kind: 'opened', db };
     }
-    if (
-      classification.kind === 'fresh' ||
-      classification.kind === 'absent' ||
-      classification.kind === 'legacy-adoptable'
-    ) {
+    if (classification.kind === 'fresh' || classification.kind === 'absent') {
       applyJournalPragmas(db, {
         kind: 'writable',
         busyTimeoutMs: options.busyTimeoutMs,
@@ -413,7 +402,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     });
 
     const classification = classifyStoreFormat(db, options.storeFormat);
-    if (classification.kind === 'compatible' || classification.kind === 'legacy-adoptable') {
+    if (classification.kind === 'compatible') {
       return db;
     }
 

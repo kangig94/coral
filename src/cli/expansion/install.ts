@@ -149,12 +149,7 @@ async function runGenerationCoordinatedMutation(
   lockTimeoutMs: number | undefined,
   mutate: (assertLocksOwned: () => void, actuator: StorageActuator) => Promise<InstallResponse>,
 ): Promise<InstallResponse> {
-  const writerLease = await acquireGenerationWriterLeaseAfterReadiness(
-    generationCoordination,
-    runtime,
-    currentCoralStoreFormat(),
-    { kind, name },
-  );
+  const writerLease = await acquireGenerationWriterLeaseAfterReadiness(generationCoordination, runtime, { kind, name });
   try {
     writerLease.assertOwned();
     let releasePackageLock: Awaited<ReturnType<typeof acquirePackageOperationLock>>;

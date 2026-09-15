@@ -13,15 +13,13 @@ import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
 export const STORE_EPOCH_METADATA_FILE_NAME = 'epoch.json';
+export const STORE_LOCK_FILE_NAME = '.lock';
 export const MAX_STORE_EPOCH_METADATA_BYTES = 64 * 1024;
 export const MAX_STORE_EPOCH_HOLDER_BYTES = 4 * 1024;
 
 const EPOCH_DIRECTORY_PATTERN = /^epoch-([1-9]\d*)$/;
-const EPOCH_LOCK_PATTERN = /^\.epoch-lock-([1-9]\d*)\.sqlite$/;
 const MINT_DIRECTORY_PREFIX = '.mint-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
-const EPOCH_LOCK_PREFIX = '.epoch-lock-';
-const MINT_LOCK_PREFIX = '.mint-lock-';
 
 export type StoreEpochClassification =
   | StoreFormatClassification
@@ -73,7 +71,6 @@ export type StoreEpochSweepResult =
   | 'holder-cleanup-failed'
   | 'deletion-failed'
   | 'lock-release-failed'
-  | 'lock-cleanup-failed'
   | 'pre-deletion-durability-sync-failed'
   | 'absent-durability-sync-failed'
   | 'durability-sync-failed';
@@ -127,11 +124,11 @@ export function storeEpochHolderPath(dbDir: string, id: string): string {
 }
 
 export function storeEpochLockPath(dbDir: string, epoch: StoreEpoch): string {
-  return join(dbDir, `${EPOCH_LOCK_PREFIX}${epoch}.sqlite`);
+  return join(epochDirectory(dbDir, epoch), STORE_LOCK_FILE_NAME);
 }
 
 export function storeMintLockPath(dbDir: string, id: string): string {
-  return join(dbDir, `${MINT_LOCK_PREFIX}${id}.sqlite`);
+  return join(dbDir, `${MINT_DIRECTORY_PREFIX}${id}`, STORE_LOCK_FILE_NAME);
 }
 
 export function resolveStoreDbDir(runtime: Pick<Runtime, 'paths'>, path?: string): string {
@@ -270,7 +267,8 @@ export function openWritableStoreDbNoReset(
   throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
 }
 
-function storeEpochAtPath(dbDir: string, path: string): StoreEpoch | null {
+export function storeEpochAtPath(dbDir: string, path: string): StoreEpoch | null {
+  if (basename(path) !== STORE_DATABASE_FILE_NAME) return null;
   const directory = resolve(path, '..');
   return resolve(directory, '..') === resolve(dbDir) ? epochNumber(basename(directory)) : null;
 }
@@ -421,14 +419,9 @@ function removeDuringSweep(storage: StoragePort, path: string): boolean {
   }
 }
 
-type LockedRemoval = 'removed' | 'locked' | 'target-failed' | 'lock-release-failed' | 'lock-cleanup-failed';
+type LockedRemoval = 'removed' | 'locked' | 'target-failed' | 'lock-release-failed';
 
-function removeWhileExclusivelyLocked(
-  runtime: Runtime,
-  lockPath: string,
-  targetPath: string,
-  removeLockFile: boolean,
-): LockedRemoval {
+function removeWhileExclusivelyLocked(runtime: Runtime, lockPath: string, targetPath: string): LockedRemoval {
   let lease: FileLockLease | null;
   try {
     lease = tryAcquireExclusiveFileLockSync(lockPath);
@@ -444,61 +437,22 @@ function removeWhileExclusivelyLocked(
     auditSweepFailure(lockPath, error);
     return 'lock-release-failed';
   }
-  if (removed && removeLockFile) {
-    try {
-      runtime.storage.unlinkSync(lockPath);
-    } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') {
-        auditSweepFailure(lockPath, error);
-        return 'lock-cleanup-failed';
-      }
-    }
-  }
   return removed ? 'removed' : 'target-failed';
 }
 
-function removeOrphanedEpochLock(runtime: Runtime, dbDir: string, entry: string): LockedRemoval | null {
-  const epoch = EPOCH_LOCK_PATTERN.exec(entry)?.[1];
-  if (epoch === undefined) return null;
+function removeEpochEntry(runtime: Runtime, dbDir: string, epoch: StoreEpoch): LockedRemoval {
   const targetPath = epochDirectory(dbDir, epoch);
   try {
-    runtime.storage.lstatSync(targetPath);
-    return null;
-  } catch (error: unknown) {
-    if (errorCode(error) !== 'ENOENT') {
-      auditSweepFailure(targetPath, error);
-      return 'target-failed';
+    const target = runtime.storage.lstatSync(targetPath);
+    if (!target.isDirectory() || target.isSymbolicLink()) {
+      return removeDuringSweep(runtime.storage, targetPath) ? 'removed' : 'target-failed';
     }
-  }
-  let lease: FileLockLease | null;
-  try {
-    lease = tryAcquireExclusiveFileLockSync(join(dbDir, entry));
-  } catch (error: unknown) {
-    auditSweepFailure(join(dbDir, entry), error);
-    return 'target-failed';
-  }
-  if (lease === null) return 'locked';
-  try {
-    try {
-      runtime.storage.lstatSync(targetPath);
-      return null;
-    } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') {
-        auditSweepFailure(targetPath, error);
-        return 'target-failed';
-      }
-    }
-  } finally {
-    lease();
-  }
-  try {
-    runtime.storage.unlinkSync(join(dbDir, entry));
-    return 'removed';
   } catch (error: unknown) {
     if (errorCode(error) === 'ENOENT') return 'removed';
-    auditSweepFailure(join(dbDir, entry), error);
-    return 'lock-cleanup-failed';
+    auditSweepFailure(targetPath, error);
+    return 'target-failed';
   }
+  return removeWhileExclusivelyLocked(runtime, storeEpochLockPath(dbDir, epoch), targetPath);
 }
 
 function proveReleaseTarget(
@@ -684,18 +638,12 @@ export function sweepStoreEpochs(
         return 'absent-durability-sync-failed';
       }
     }
-    const removal = removeWhileExclusivelyLocked(
-      runtime,
-      storeEpochLockPath(dbDir, options.releaseEpoch),
-      epochDirectory(dbDir, options.releaseEpoch),
-      true,
-    );
+    const removal = removeEpochEntry(runtime, dbDir, options.releaseEpoch);
     if (removal === 'locked') return 'live-holder';
     const releaseRemoval: Exclude<LockedRemoval, 'locked'> = removal;
     try {
       if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
       if (releaseRemoval === 'lock-release-failed') return 'lock-release-failed';
-      if (releaseRemoval === 'lock-cleanup-failed') return 'lock-cleanup-failed';
       return releaseRemoval === 'removed' ? 'complete' : 'deletion-failed';
     } catch (error: unknown) {
       auditSweepFailure(dbDir, error);
@@ -731,12 +679,7 @@ export function sweepStoreEpochs(
       if (epoch === null) {
         complete = removeDuringSweep(storage, join(dbDir, entry)) && complete;
       } else {
-        const removal = removeWhileExclusivelyLocked(
-          runtime,
-          storeEpochLockPath(dbDir, epoch),
-          join(dbDir, entry),
-          true,
-        );
+        const removal = removeEpochEntry(runtime, dbDir, epoch);
         if (removal === 'locked') {
           liveHolder = true;
           auditSweepSkip(join(dbDir, entry));
@@ -746,17 +689,6 @@ export function sweepStoreEpochs(
         complete = removal === 'removed' && complete;
       }
     }
-  }
-
-  for (const entry of entries) {
-    const removal = removeOrphanedEpochLock(runtime, dbDir, entry);
-    if (removal === null) continue;
-    if (removal === 'locked') {
-      liveHolder = true;
-      auditSweepSkip(join(dbDir, entry));
-      continue;
-    }
-    complete = removal === 'removed' && complete;
   }
 
   if (compareEpoch(current, '1') >= 0) {
@@ -905,7 +837,6 @@ async function removeWhileExclusivelyLockedAsync(
   runtime: Runtime,
   lockPath: string,
   targetPath: string,
-  removeLockFile: boolean,
 ): Promise<LockedRemoval> {
   let lease: FileLockLease | null;
   try {
@@ -922,66 +853,38 @@ async function removeWhileExclusivelyLockedAsync(
     auditSweepFailure(lockPath, error);
     return 'lock-release-failed';
   }
-  if (removed && removeLockFile) {
-    try {
-      await runtime.storage.unlink(lockPath);
-    } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') {
-        auditSweepFailure(lockPath, error);
-        return 'lock-cleanup-failed';
-      }
-    }
-  }
   return removed ? 'removed' : 'target-failed';
 }
 
-async function removeOrphanedEpochLockAsync(
-  runtime: Runtime,
-  dbDir: string,
-  entry: string,
-): Promise<LockedRemoval | null> {
-  const epoch = EPOCH_LOCK_PATTERN.exec(entry)?.[1];
-  if (epoch === undefined) return null;
-  const lockPath = join(dbDir, entry);
+async function removeEpochEntryAsync(runtime: Runtime, dbDir: string, epoch: StoreEpoch): Promise<LockedRemoval> {
   const targetPath = epochDirectory(dbDir, epoch);
   try {
-    await runtime.storage.lstat(targetPath);
-    return null;
-  } catch (error: unknown) {
-    if (errorCode(error) !== 'ENOENT') {
-      auditSweepFailure(targetPath, error);
-      return 'target-failed';
+    const target = await runtime.storage.lstat(targetPath);
+    if (!target.isDirectory() || target.isSymbolicLink()) {
+      return (await removeDuringPostReadySweep(runtime.storage, targetPath)) ? 'removed' : 'target-failed';
     }
-  }
-  let lease: FileLockLease | null;
-  try {
-    lease = tryAcquireExclusiveFileLockSync(lockPath);
-  } catch (error: unknown) {
-    auditSweepFailure(lockPath, error);
-    return 'target-failed';
-  }
-  if (lease === null) return 'locked';
-  try {
-    try {
-      await runtime.storage.lstat(targetPath);
-      return null;
-    } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') {
-        auditSweepFailure(targetPath, error);
-        return 'target-failed';
-      }
-    }
-  } finally {
-    lease();
-  }
-  try {
-    await runtime.storage.unlink(lockPath);
-    return 'removed';
   } catch (error: unknown) {
     if (errorCode(error) === 'ENOENT') return 'removed';
-    auditSweepFailure(lockPath, error);
-    return 'lock-cleanup-failed';
+    auditSweepFailure(targetPath, error);
+    return 'target-failed';
   }
+  return removeWhileExclusivelyLockedAsync(runtime, storeEpochLockPath(dbDir, epoch), targetPath);
+}
+
+async function removeAbandonedMint(runtime: Runtime, mintPath: string): Promise<LockedRemoval | 'unobservable'> {
+  try {
+    const mint = await runtime.storage.lstat(mintPath);
+    if (!mint.isDirectory() || mint.isSymbolicLink()) {
+      return (await removeDuringPostReadySweep(runtime.storage, mintPath)) ? 'removed' : 'target-failed';
+    }
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') return 'removed';
+    auditSweepFailure(mintPath, error);
+    return 'target-failed';
+  }
+  const lockPath = join(mintPath, STORE_LOCK_FILE_NAME);
+  if ((await observeRegularFileAsync(runtime.storage, lockPath)).kind !== 'proven') return 'unobservable';
+  return removeWhileExclusivelyLockedAsync(runtime, lockPath, mintPath);
 }
 
 async function syncDirectoryDurable(storage: StoragePort, path: string): Promise<boolean> {
@@ -1062,6 +965,7 @@ export async function sweepStoreEpochsPostReady(
   let complete = true;
   let liveHolder = false;
   let lockReleaseFailed = false;
+  let unobservableMint = false;
   for (const entry of entries) {
     if (options.signal?.aborted) return finish('cancelled');
     const epoch = epochNumber(entry);
@@ -1071,49 +975,27 @@ export async function sweepStoreEpochsPostReady(
     const disprovenEpochEntry = observation?.proof.kind === 'disproven';
     const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
     if (abandonedMint || invalidEpochEntry || (epoch !== openEpoch && (disprovenEpochEntry || garbageEpoch))) {
+      const wasUnsynced: boolean = unsyncedMutation;
       unsyncedMutation = true;
       const removal = abandonedMint
-        ? await removeWhileExclusivelyLockedAsync(
-            runtime,
-            storeMintLockPath(dbDir, entry.slice(MINT_DIRECTORY_PREFIX.length)),
-            join(dbDir, entry),
-            true,
-          )
+        ? await removeAbandonedMint(runtime, join(dbDir, entry))
         : epoch === null
           ? (await removeDuringPostReadySweep(runtime.storage, join(dbDir, entry)))
             ? 'removed'
             : 'target-failed'
-          : await removeWhileExclusivelyLockedAsync(
-              runtime,
-              storeEpochLockPath(dbDir, epoch),
-              join(dbDir, entry),
-              true,
-            );
+          : await removeEpochEntryAsync(runtime, dbDir, epoch);
+      if (removal === 'unobservable') {
+        unsyncedMutation = wasUnsynced;
+        unobservableMint = true;
+        await yieldSweepTurn();
+        continue;
+      }
       if (removal === 'locked') {
         liveHolder = true;
         auditSweepSkip(join(dbDir, entry));
         await yieldSweepTurn();
         continue;
       }
-      lockReleaseFailed ||= removal === 'lock-release-failed';
-      complete = removal === 'removed' && complete;
-    }
-    await yieldSweepTurn();
-  }
-
-  for (const entry of entries) {
-    if (options.signal?.aborted) return finish('cancelled');
-    const wasUnsynced: boolean = unsyncedMutation;
-    unsyncedMutation = true;
-    const removal = await removeOrphanedEpochLockAsync(runtime, dbDir, entry);
-    if (removal === null) {
-      unsyncedMutation = wasUnsynced;
-      continue;
-    }
-    if (removal === 'locked') {
-      liveHolder = true;
-      auditSweepSkip(join(dbDir, entry));
-    } else {
       lockReleaseFailed ||= removal === 'lock-release-failed';
       complete = removal === 'removed' && complete;
     }
@@ -1129,6 +1011,7 @@ export async function sweepStoreEpochsPostReady(
   if (!(await syncMutations())) return 'durability-sync-failed';
   if (lockReleaseFailed) return 'lock-release-failed';
   if (!complete) return 'deletion-failed';
+  if (unobservableMint) return 'unobservable-metadata';
   return liveHolder ? 'live-holder' : 'complete';
 }
 
@@ -1169,13 +1052,13 @@ function mintNextEpoch(
   supersedes: StoreEpoch | null,
   successor: StoreEpoch,
   classification: StoreEpochClassification,
-): 'published' | 'contended' | 'swept' {
+): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
   const id = runtime.ids.uuid();
   const mint = join(dbDir, `${MINT_DIRECTORY_PREFIX}${id}`);
-  const mintLockPath = storeMintLockPath(dbDir, id);
-  const mintLease = acquireSharedFileLockSync(mintLockPath);
+  runtime.storage.mkdirSync(mint, { mode: 0o700 });
+  const mintLease = acquireSharedFileLockSync(storeMintLockPath(dbDir, id));
+  let leaseTransferred = false;
   try {
-    runtime.storage.mkdirSync(mint, { mode: 0o700 });
     const opened = openWritableStoreDatabase({
       path: join(mint, STORE_DATABASE_FILE_NAME),
       storage: runtime.storage,
@@ -1197,21 +1080,42 @@ function mintNextEpoch(
       if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
         throw new Error(`Failed to durably sync store epoch root '${dbDir}'.`);
       }
-      return 'published';
+      leaseTransferred = true;
+      return { kind: 'published', lease: mintLease };
     } catch (error: unknown) {
       const code = errorCode(error);
-      if (code === 'ENOTDIR' || code === 'ENOTEMPTY' || code === 'EEXIST') return 'contended';
-      if (code === 'ENOENT') return 'swept';
+      if (code === 'ENOTDIR' || code === 'ENOTEMPTY' || code === 'EEXIST') return { kind: 'contended' };
+      if (code === 'ENOENT') return { kind: 'swept' };
       throw error;
     }
   } finally {
     cleanupMint(runtime.storage, mint);
-    mintLease();
-    try {
-      runtime.storage.unlinkSync(mintLockPath);
-    } catch (error: unknown) {
-      if (errorCode(error) !== 'ENOENT') auditSweepFailure(mintLockPath, error);
-    }
+    if (!leaseTransferred) mintLease();
+  }
+}
+
+function openPublishedEpoch(
+  runtime: Runtime,
+  options: StoreEpochOptions,
+  dbDir: string,
+  epoch: StoreEpoch,
+  lease: FileLockLease,
+): StoreEpochSettlement {
+  const path = epochPath(dbDir, epoch);
+  try {
+    assertProvenStoreOpenable(runtime.storage, path);
+    const db = openStoreDatabase({
+      path,
+      storage: runtime.storage,
+      storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
+      busyTimeoutMs: options.startupBusyTimeoutMs,
+    });
+    db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
+    return { db: registerStoreEpochHolder(runtime, epoch, db, lease), epoch, path };
+  } catch (error: unknown) {
+    lease();
+    throw error;
   }
 }
 
@@ -1300,7 +1204,10 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     }
     const successor = selectSuccessor(runtime, dbDir, current?.epoch ?? null);
     const published = mintNextEpoch(runtime, options, dbDir, current?.epoch ?? null, successor.epoch, classification);
-    if (published === 'swept') continue;
+    if (published.kind === 'published') {
+      return openPublishedEpoch(runtime, options, dbDir, successor.epoch, published.lease);
+    }
+    if (published.kind === 'swept') continue;
   }
 }
 
@@ -1315,7 +1222,9 @@ export function discardCurrentStoreEpoch(runtime: Runtime, options: StoreEpochOp
       kind: 'unavailable',
       cause: 'operator-discard',
     });
-    if (published === 'published') return settleStoreEpoch(runtime, options);
+    if (published.kind === 'published') {
+      return openPublishedEpoch(runtime, options, dbDir, successor.epoch, published.lease);
+    }
   }
 }
 
@@ -1538,7 +1447,7 @@ function storeEpochForDbPath(dbDir, dbPath) {
 }
 
 function acquireSharedStoreEpochLock(dbDir, epoch) {
-  const lock = new DatabaseSync(join(dbDir, '.epoch-lock-' + epoch + '.sqlite'), {
+  const lock = new DatabaseSync(join(dbDir, 'epoch-' + epoch, '.lock'), {
     timeout: HOOK_LOCK_TIMEOUT_MS,
   });
   try {

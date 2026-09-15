@@ -459,7 +459,6 @@ describe('backend status generation readiness', () => {
         kind: 'legacy-ignored',
         legacyPath: '/state/data',
         generatedPath: '/state/gen2/data',
-        storedProductVersion: '0.9.16',
       }),
       getStatus: async () => ({ status: 'no_record_no_socket' }),
       getLiveHandoffResult: () => null,
@@ -473,7 +472,7 @@ describe('backend status generation readiness', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stderr).toBe(
-      'Legacy Coral history remains at /state/data (stored Coral version 0.9.16) and is left untouched. This generation initializes its own state at /state/gen2/data.\n',
+      'Legacy Coral history remains at /state/data; its contents were not inspected or changed. This generation initializes its own state at /state/gen2/data.\n',
     );
     expect(stdout).toContain('No coordinator discovery record and no coordinator socket');
   });
