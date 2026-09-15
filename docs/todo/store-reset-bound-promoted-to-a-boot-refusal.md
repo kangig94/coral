@@ -2303,13 +2303,11 @@ be unaffected.
 
 ## Rollback behaviour
 
-A newer build publishes `epoch-1/` or later beside the flat epoch-zero files. A rolled-back v0.10.9-shaped
+A newer build publishes `epoch-1/` or later beside the previous generation's flat files. A rolled-back v0.10.9-shaped
 reader does not enumerate the store directory: it opens `<dbDir>/store.db` directly and sees its own data
-unchanged. It can boot and continue writing epoch zero. A later new build still chooses the highest epoch
-number, and **never removes epoch zero automatically** — Revision 19 exempted it precisely because a
-rolled-back build's live store is always the flat name and a `v0.10.9` discovery record cannot say so.
-Only an explicit `release 0`, which states that it cannot prove no pre-epoch build holds the flat
-database, removes it.
+unchanged. It can boot and continue writing the flat store. A later new build still chooses the highest
+positive epoch and never observes the flat name as an epoch. Automatic sweep and explicit `release` share
+that positive-only address space, so neither can remove, lock, or prove the flat database.
 
 ## Adjacent findings, tracked separately
 
