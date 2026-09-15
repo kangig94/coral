@@ -2246,8 +2246,10 @@ be unaffected.
 A newer build publishes `epoch-1/` or later beside the flat epoch-zero files. A rolled-back v0.10.9-shaped
 reader does not enumerate the store directory: it opens `<dbDir>/store.db` directly and sees its own data
 unchanged. It can boot and continue writing epoch zero. A later new build still chooses the highest epoch
-number; after it publishes epoch two, sweep may remove the now-time-newer epoch-zero store under the
-explicit numeric retention rule.
+number, and **never removes epoch zero automatically** — Revision 19 exempted it precisely because a
+rolled-back build's live store is always the flat name and a `v0.10.9` discovery record cannot say so.
+Only an explicit `release 0`, which states that it cannot prove no pre-epoch build holds the flat
+database, removes it.
 
 ## Adjacent findings, tracked separately
 
