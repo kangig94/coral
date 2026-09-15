@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-one design revisions, thirty unbiased tier-1 review rounds, and
-fifty-eight distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 21 are the corrections it earned, the last of them from the owner.
+**Status**: in flight. Twenty-two design revisions, thirty-one unbiased tier-1 review rounds, and
+sixty-four distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 22 are the corrections it earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2271,6 +2271,77 @@ off the question of whether my encoding of that decision was right.
 Reviewers checked the implementation against the design. Nobody checked the design against the purpose.
 The one time that question was asked outside the fence — the pioneer, Revision 14 — the premise broke
 immediately. Review briefs from here name their own premises as the first thing to attack.
+
+## Revision 22 — the lock is born with the store and dies with it
+
+Round 32's reviewers confirmed the positive-epoch topology, retention, publication and listing, and then
+falsified Revision 21's central claim in two production entrypoints and found two ways the sweep can
+delete a live store through lock-file identity.
+
+### "Never opens the flat store" was false on the ordinary boot path
+
+Startup calls `inspectGenerationReadiness` **before** epoch settlement, and that passes the legacy flat
+`store.db` to `classifyStoreFile`, which opens SQLite read-only. A reviewer reproduced the consequence on
+a crashed WAL store: the directory went from `store.db + store.db-wal` to
+`store.db + store.db-wal + store.db-shm`. **Opening it changed it.** The repository's own test already
+acknowledged that classification rewrites legacy sidecars while the operator notice beside it says the
+tree "is left untouched".
+
+The second entrypoint is `--smoke-open-store --path <anything>`, dispatched in production bootstrap with
+no validation beyond "an argument follows", handed straight to a writable opener. A reviewer pointed it at
+the flat store through the built `coral-backend.cjs` and watched `store_product_version` go from absent to
+present.
+
+> **Readiness reports what it can see without opening anything.**
+
+Readiness needs to emit an operator notice about a previous-generation store. `existsSync` and `lstat`
+answer that. The `classifyStoreFile` call on that path goes, and with it the claim that we can look inside
+a database we have promised not to touch. `legacy-adoptable` then has no reachable producer at all —
+`inspectGenerationReadiness` was the last one, and it only collapsed the result to a `legacy-ignored`
+notice anyway — so Revision 12's adoption and its classification arm can be deleted outright. My note in
+Revision 21 that "adoption stays correct where it is still reachable" was wrong about where that was.
+
+And the smoke opener's path domain is constrained at the entrypoint: a canonical positive-epoch path or a
+private temporary one, validated before it reaches an opener, per the repository's schema-first rule.
+
+### Lock files are root entries, and that is the bug behind both deletions
+
+Two reproduced chains, one cause:
+
+- `.mint-lock-<id>.sqlite` satisfies `entry.startsWith('.mint-')`, so the post-ready sweep classifies a
+  live mint's **lock** as an abandoned mint, derives the nonsense id `lock-<id>.sqlite`, guards the
+  deletion with an unrelated lock path, unlinks the real lock, and then deletes the publisher's live
+  database. Production creates the lock before the directory, so the sweep's snapshot sees them in exactly
+  the order that triggers it.
+- Orphan-lock cleanup **releases its exclusive lease and then unlinks the pathname**. In that window a
+  publisher can take `epoch-1` and an opener a shared lease on the old inode; the unlink then detaches the
+  name, later acquirers create a *new* inode under it and obtain "exclusive" while the live reader holds
+  the old one, and the next sweep deletes the live epoch. A reviewer drove the whole chain.
+
+The reviewer's own diagnosis is the design: lock safety rests on stable pathname-to-inode identity, and
+the sweep both treats lock files as targets and removes lock pathnames without holding the decisive lease
+through removal.
+
+> **A store's lock lives inside the store: `.mint-<id>/.lock`, which becomes `epoch-N/.lock` when the mint
+> is published.** One lock file per store, created with it, carried by the same rename that publishes it,
+> removed by the same `rm -rf` that removes it.
+
+Nothing in the store root is a lock, so no root entry can be mistaken for one and the `.mint-` prefix
+collision cannot be spelled. An epoch's lock cannot outlive its epoch, so **orphan locks do not exist** —
+orphan-lock cleanup, tombstone reclamation, the `removeLockFile` family and the pathname-reuse hazard all
+go with the concept. And a lease survives the publication rename because the inode does, so the mint's
+exclusive lock becomes the epoch's shared lock without a handoff.
+
+One consequence to implement deliberately rather than discover: a mint directory that exists without its
+`.lock` is a process caught between `mkdir` and lock creation. That is **unobservable**, not abandoned.
+
+### The operator contract has two reachable no-epoch failures
+
+`discard` resolves the current epoch before `discardCurrentStoreEpoch` creates the store directory, so on
+a genuinely new generation it exits `ENOENT: no such file or directory, scandir …` — reproduced through
+the installed CLI. And where the directory exists with no proven epoch it prints `Discarded store epoch
+null; initialized epoch 1` and warns that the previous epoch remains preserved. The result type already
+makes `previousEpoch` nullable; the renderer simply never disposed of that arm.
 
 ## Invariants to add
 
