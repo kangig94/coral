@@ -230,7 +230,7 @@ describe('generation readiness', () => {
     expect(legacyHistoryValue(generatedStorePath(runtime))).toBeNull();
     expect(readFileSync(join(legacyRoot, 'equipment', 'dormant.bin'), 'utf-8')).toBe('left-behind-equipment');
     expect(warning).toHaveBeenCalledWith(expect.stringContaining(legacyRoot));
-    expect(warning).toHaveBeenCalledWith(expect.stringContaining('left untouched'));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('not inspected or changed'));
   });
 
   it('boots beside a crashed legacy WAL store without changing any legacy file', async () => {
