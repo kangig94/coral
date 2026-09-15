@@ -32,6 +32,15 @@ export interface StoreResetSocketGuard {
   release(): Promise<void>;
 }
 
+export type StoreResetSocketGuardOperation =
+  | Readonly<{ kind: 'discard'; target: 'gen2' }>
+  | Readonly<{
+      kind: 'release';
+      target: StoreResetReleaseTarget;
+      epoch: StoreEpoch;
+      allowUnprovenLegacyReader: boolean;
+    }>;
+
 export type StoreResetDiscardResult = {
   readonly kind: 'discarded';
   readonly target: 'gen2';
@@ -61,6 +70,7 @@ export type StoreResetReleasePresentation =
         | 'release-holder-unobservable'
         | 'release-holder-cleanup-failed'
         | 'release-deletion-failed'
+        | 'release-lock-release-failed'
         | 'release-lock-cleanup-failed'
         | 'release-pre-deletion-durability-sync-failed'
         | 'release-absent-durability-sync-failed'
@@ -73,6 +83,7 @@ export type StoreResetReleasePresentation =
 export type AcquireStoreResetSocketGuard = (
   paths: StoreResetTargetPaths,
   runtime: Runtime,
+  operation: StoreResetSocketGuardOperation,
 ) => Promise<StoreResetSocketGuard>;
 
 export type StoreResetDiscardOptions =
@@ -139,7 +150,7 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
     throw documentedCoralSetupError({ code: 'startup_bundle_unresolvable', pluginRoot });
   }
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
-  const socket = await options.acquireSocketGuard(paths, options.runtime);
+  const socket = await options.acquireSocketGuard(paths, options.runtime, { kind: 'discard', target: 'gen2' });
   try {
     const adoption = await acquireGenerationAdoptionLock(options.runtime);
     try {
@@ -182,7 +193,12 @@ export async function releaseStoreReset(options: {
     };
   }
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
-  const socket = await options.acquireSocketGuard(paths, options.runtime);
+  const socket = await options.acquireSocketGuard(paths, options.runtime, {
+    kind: 'release',
+    target: options.target,
+    epoch: options.epoch,
+    allowUnprovenLegacyReader: options.allowUnprovenLegacyReader === true,
+  });
   try {
     const adoption = await acquireGenerationAdoptionLock(options.runtime);
     try {
@@ -199,6 +215,7 @@ export async function releaseStoreReset(options: {
       if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
       if (result === 'holder-cleanup-failed') return { kind: 'release-holder-cleanup-failed', ...base };
       if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
+      if (result === 'lock-release-failed') return { kind: 'release-lock-release-failed', ...base };
       if (result === 'lock-cleanup-failed') return { kind: 'release-lock-cleanup-failed', ...base };
       if (result === 'pre-deletion-durability-sync-failed') {
         return { kind: 'release-pre-deletion-durability-sync-failed', ...base };

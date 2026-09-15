@@ -191,6 +191,8 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
       return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because earlier holder cleanup failed; target deletion was not attempted. Check store-directory permissions and retry.`;
     case 'release-deletion-failed':
       return `Store epoch ${result.epoch} deletion failed in ${result.target} ${result.flavor}; check store-directory permissions and retry.`;
+    case 'release-lock-release-failed':
+      return `Store epoch ${result.epoch} was removed from ${result.target} ${result.flavor}, but releasing its exclusive epoch lock failed; the store-directory durability barrier completed. Check store-directory permissions and retry.`;
     case 'release-lock-cleanup-failed':
       return `Store epoch ${result.epoch} was removed from ${result.target} ${result.flavor}, but its orphaned epoch lock could not be removed; check store-directory permissions and rerun the sweep.`;
     case 'release-legacy-reader-unproven':

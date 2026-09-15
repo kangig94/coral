@@ -73,6 +73,7 @@ export type StoreEpochSweepResult =
   | 'unobservable-holder'
   | 'holder-cleanup-failed'
   | 'deletion-failed'
+  | 'lock-release-failed'
   | 'lock-cleanup-failed'
   | 'pre-deletion-durability-sync-failed'
   | 'absent-durability-sync-failed'
@@ -443,7 +444,7 @@ function removeDuringSweep(storage: StoragePort, path: string): boolean {
   }
 }
 
-type LockedRemoval = 'removed' | 'locked' | 'target-failed' | 'lock-cleanup-failed';
+type LockedRemoval = 'removed' | 'locked' | 'target-failed' | 'lock-release-failed' | 'lock-cleanup-failed';
 
 function removeWhileExclusivelyLocked(
   runtime: Runtime,
@@ -460,7 +461,12 @@ function removeWhileExclusivelyLocked(
   }
   if (lease === null) return 'locked';
   const removed = removeDuringSweep(runtime.storage, targetPath);
-  lease();
+  try {
+    lease();
+  } catch (error: unknown) {
+    auditSweepFailure(lockPath, error);
+    return 'lock-release-failed';
+  }
   if (removed && removeLockFile) {
     try {
       runtime.storage.unlinkSync(lockPath);
@@ -714,6 +720,7 @@ export function sweepStoreEpochs(
     } else {
       const lease = tryAcquireExclusiveFileLockSync(storeEpochLockPath(dbDir, '0'));
       if (lease === null) return 'live-holder';
+      let lockReleaseFailed = false;
       try {
         releaseRemoval = 'removed';
         for (const name of [
@@ -728,11 +735,18 @@ export function sweepStoreEpochs(
           }
         }
       } finally {
-        lease();
+        try {
+          lease();
+        } catch (error: unknown) {
+          auditSweepFailure(storeEpochLockPath(dbDir, '0'), error);
+          lockReleaseFailed = true;
+        }
       }
+      if (lockReleaseFailed) releaseRemoval = 'lock-release-failed';
     }
     try {
       if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
+      if (releaseRemoval === 'lock-release-failed') return 'lock-release-failed';
       if (releaseRemoval === 'lock-cleanup-failed') return 'lock-cleanup-failed';
       return releaseRemoval === 'removed' ? 'complete' : 'deletion-failed';
     } catch (error: unknown) {
@@ -758,6 +772,7 @@ export function sweepStoreEpochs(
   );
   let complete = true;
   let liveHolder = false;
+  let lockReleaseFailed = false;
   for (const entry of entries) {
     const epoch = epochNumber(entry);
     const observation = epoch === null ? undefined : byEpoch.get(epoch);
@@ -779,6 +794,7 @@ export function sweepStoreEpochs(
           auditSweepSkip(join(dbDir, entry));
           continue;
         }
+        lockReleaseFailed ||= removal === 'lock-release-failed';
         complete = removal === 'removed' && complete;
       }
     }
@@ -800,6 +816,7 @@ export function sweepStoreEpochs(
   }
   try {
     if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
+    if (lockReleaseFailed) return 'lock-release-failed';
     if (!complete) return 'deletion-failed';
     return liveHolder ? 'live-holder' : 'complete';
   } catch (error: unknown) {
@@ -967,7 +984,12 @@ async function removeWhileExclusivelyLockedAsync(
   }
   if (lease === null) return 'locked';
   const removed = await removeDuringPostReadySweep(runtime.storage, targetPath);
-  lease();
+  try {
+    lease();
+  } catch (error: unknown) {
+    auditSweepFailure(lockPath, error);
+    return 'lock-release-failed';
+  }
   if (removed && removeLockFile) {
     try {
       await runtime.storage.unlink(lockPath);
@@ -1109,6 +1131,7 @@ export async function sweepStoreEpochsPostReady(
   );
   let complete = true;
   let liveHolder = false;
+  let lockReleaseFailed = false;
   for (const entry of entries) {
     if (options.signal?.aborted) return finish('cancelled');
     const epoch = epochNumber(entry);
@@ -1118,6 +1141,7 @@ export async function sweepStoreEpochsPostReady(
     const disprovenEpochEntry = observation?.proof.kind === 'disproven';
     const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
     if (abandonedMint || invalidEpochEntry || (epoch !== openEpoch && (disprovenEpochEntry || garbageEpoch))) {
+      unsyncedMutation = true;
       const removal = abandonedMint
         ? await removeWhileExclusivelyLockedAsync(
             runtime,
@@ -1141,7 +1165,7 @@ export async function sweepStoreEpochsPostReady(
         await yieldSweepTurn();
         continue;
       }
-      unsyncedMutation = true;
+      lockReleaseFailed ||= removal === 'lock-release-failed';
       complete = removal === 'removed' && complete;
     }
     await yieldSweepTurn();
@@ -1149,13 +1173,18 @@ export async function sweepStoreEpochsPostReady(
 
   for (const entry of entries) {
     if (options.signal?.aborted) return finish('cancelled');
+    const wasUnsynced: boolean = unsyncedMutation;
+    unsyncedMutation = true;
     const removal = await removeOrphanedEpochLockAsync(runtime, dbDir, entry);
-    if (removal === null) continue;
+    if (removal === null) {
+      unsyncedMutation = wasUnsynced;
+      continue;
+    }
     if (removal === 'locked') {
       liveHolder = true;
       auditSweepSkip(join(dbDir, entry));
     } else {
-      unsyncedMutation = true;
+      lockReleaseFailed ||= removal === 'lock-release-failed';
       complete = removal === 'removed' && complete;
     }
     await yieldSweepTurn();
@@ -1168,6 +1197,7 @@ export async function sweepStoreEpochsPostReady(
     complete = removed && complete;
   }
   if (!(await syncMutations())) return 'durability-sync-failed';
+  if (lockReleaseFailed) return 'lock-release-failed';
   if (!complete) return 'deletion-failed';
   return liveHolder ? 'live-holder' : 'complete';
 }
