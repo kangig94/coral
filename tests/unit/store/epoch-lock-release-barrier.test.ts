@@ -16,12 +16,15 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
   const actual = await importOriginal<typeof FsLockMod>();
   return {
     ...actual,
-    tryAcquireExclusiveFileLockSync: (path: string) => {
-      const lease = actual.tryAcquireExclusiveFileLockSync(path);
-      if (lease === null || !lockReleaseFault.paths.has(path)) return lease;
-      return () => {
-        lease();
-        throw new Error(`injected lock release failure: ${path}`);
+    attemptExclusiveFileLockSync: (path: string) => {
+      const attempt = actual.attemptExclusiveFileLockSync(path);
+      if (attempt.kind !== 'acquired' || !lockReleaseFault.paths.has(path)) return attempt;
+      return {
+        kind: 'acquired' as const,
+        lease: () => {
+          attempt.lease();
+          throw new Error(`injected lock release failure: ${path}`);
+        },
       };
     },
   };
