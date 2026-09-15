@@ -63,7 +63,7 @@ import { formatAbortResult } from '#src/cli/format/jobs.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
-import { StoreCodecError } from '#src/store/body-codec.js';
+import { decodeStoredBody, encodeEventBody, StoreCodecError } from '#src/store/body-codec.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import {
   toProviderDefinition,
@@ -155,6 +155,42 @@ function createProgressStore(namespace = 'test-ns'): JobStore {
     eventBus,
     providers: permissiveProviderLookupPort,
   });
+}
+
+function appendMalformedTerminalRow(progressStore: JobStore, jobId: string, sessionId: string): void {
+  const db = progressStore.getDb();
+  const current = db.prepare<[], { seq: number }>('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get();
+  db.prepare(
+    `INSERT INTO events
+       (seq, ts, type, stream_kind, stream_id, namespace, project, correlation_id, causation_seq, refs, body)
+     VALUES (?, ?, 'job.terminal.recorded', 'job', ?, ?, ?, NULL, NULL, ?, ?)`,
+  ).run(
+    (current?.seq ?? 0) + 1,
+    '2026-09-15T00:00:00.000Z',
+    jobId,
+    TEST_BACKEND_NAMESPACE,
+    fixtureCanonicalWorkDir('/tmp/malformed-terminal-project'),
+    JSON.stringify({ jobId, sessionId }),
+    encodeEventBody({ malformed: 'persisted terminal body' }),
+  );
+}
+
+function progressMessages(progressStore: JobStore, jobId: string): string[] {
+  return progressStore
+    .getDb()
+    .prepare<[string], EventsRow>(
+      `SELECT ${EVENT_COLUMNS}
+         FROM events
+        WHERE stream_kind = 'job'
+          AND stream_id = ?
+          AND type = 'job.progress.emitted'
+        ORDER BY seq ASC`,
+    )
+    .all(jobId)
+    .flatMap((row) => {
+      const body = decodeStoredBody(row, progressStore) as { message?: unknown };
+      return typeof body.message === 'string' ? [body.message] : [];
+    });
 }
 
 function loadPersistedRecoveryLaunch(progressStore: JobStore, jobId: string): JobLaunch {
@@ -796,12 +832,41 @@ describe('ExecutionService launch', () => {
     expect(decision.status).toBe('running');
     if (decision.status !== 'running') throw new Error('expected running launch');
     trackJob(decision.jobId);
+    appendMalformedTerminalRow(progressStore, decision.jobId, decision.sessionId);
+    expect(() => progressStore.readStatus(decision.jobId)).toThrow(StoreCodecError);
+
+    rejectProvider(new Error('provider failed after malformed latest event'));
+
+    await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
+    await vi.waitFor(() => expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBeUndefined());
+    const disposition = progressMessages(progressStore, decision.jobId).find((message) =>
+      message.includes(`Released live job ${decision.jobId}`),
+    );
+    expect(disposition).toContain('provider failed after malformed latest event');
+    console.log(
+      `store-codec-live-job-cell source=persisted-malformed-terminal job=${decision.jobId} abort=false claim=released disposition=${JSON.stringify(disposition)}`,
+    );
+  });
+
+  it('does not claim release or drop abort ownership when unreadable-status session release fails', async () => {
+    let rejectProvider!: (error: Error) => void;
+    const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const { provider } = makeProvider({ execute: () => providerResult });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore, sessionManager } = getInternals(service);
+    const decision = await service.start('codex', { prompt: 'release write failure' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
     const readStatus = progressStore.readStatus.bind(progressStore);
-    const statusSpy = vi.spyOn(progressStore, 'readStatus').mockImplementation((jobId) => {
+    vi.spyOn(progressStore, 'readStatus').mockImplementation((jobId) => {
       if (jobId === decision.jobId) {
         throw new StoreCodecError('Malformed latest job event', {
           seq: 41,
-          type: 'job.progress.emitted',
+          type: 'job.terminal.recorded',
           streamKind: 'job',
           streamId: jobId,
           column: 'body',
@@ -809,24 +874,23 @@ describe('ExecutionService launch', () => {
       }
       return readStatus(jobId);
     });
+    vi.spyOn(sessionManager, 'releaseJob').mockImplementation(() => {
+      throw new Error('injected session journal write failure');
+    });
 
-    rejectProvider(new Error('provider failed after malformed latest event'));
+    rejectProvider(new Error('provider failed before release write'));
 
-    await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
-    await vi.waitFor(() => expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBeUndefined());
-    statusSpy.mockRestore();
-    const disposition = progressStore
-      .readJobEvents(decision.jobId)
-      .find(
-        (event): event is Extract<JobEvent, { type: 'progress' }> =>
-          event.type === 'progress' &&
-          event.message?.includes(decision.jobId) === true &&
-          event.message.includes('Malformed latest job event'),
-      );
-    expect(disposition?.message).toContain('provider failed after malformed latest event');
-    console.log(
-      `store-codec-live-job-cell job=${decision.jobId} abort=false claim=released disposition=${JSON.stringify(disposition?.message)}`,
+    await vi.waitFor(() =>
+      expect(progressMessages(progressStore, decision.jobId)).toContainEqual(
+        expect.stringContaining('injected session journal write failure'),
+      ),
     );
+    const disposition = progressMessages(progressStore, decision.jobId).at(-1);
+    expect(disposition).toContain('was not released');
+    expect(disposition).not.toContain('Released live job');
+    expect(abortRegistry.has(decision.jobId)).toBe(true);
+    expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(decision.jobId);
+    console.log('store-codec-release-failure-cell disposition=not-released abort=true claim=held');
   });
 
   it.each([

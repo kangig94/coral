@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -30,6 +30,7 @@ import { sha256Hex } from '#src/infra/hash.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile } from '#src/store/db.js';
+import { epochPath, sweepStoreEpochs } from '#src/store/epoch.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
@@ -103,7 +104,61 @@ async function expectRenderedClearDispatch(rendered: string, expected: RecoveryQ
   expect(dispatched).toEqual(expected);
 }
 
+function publishCompatibleEpoch(runtime: ReturnType<typeof createRealRuntime>, epoch: string): void {
+  const directory = join(runtime.paths.coral.store.dbDir, `epoch-${epoch}`);
+  mkdirSync(directory, { recursive: true });
+  openTestStoreDatabase({
+    path: join(directory, 'store.db'),
+    storage: runtime.storage,
+    storeFormat: currentCoralStoreFormat(),
+    flavor: runtime.flavor,
+  }).close();
+  writeFileSync(
+    join(directory, 'epoch.json'),
+    `${JSON.stringify({
+      supersedes: '0',
+      classification: { kind: 'unavailable', cause: 'test publication' },
+      build: {
+        version: currentCoralStoreFormat().productVersion,
+        buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+        bundleHash: '0123456789abcdef',
+        flavor: runtime.flavor,
+        storeFormatFingerprint: currentCoralStoreFormat().fingerprint,
+      },
+      publishedAt: '2026-09-15T00:00:00.000Z',
+    })}\n`,
+  );
+}
+
 describe('backend recovery-quarantine commands', () => {
+  it('keeps the production list classifier locked across publication and release', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-list-lock-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishCompatibleEpoch(runtime, '1');
+    let releaseResult: ReturnType<typeof sweepStoreEpochs> | null = null;
+    let crossed = false;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string, options?: { readOnly?: boolean }) => {
+          if (!crossed && path === epochPath(dbDir, '1')) {
+            crossed = true;
+            publishCompatibleEpoch(runtime, '3');
+            releaseResult = sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
+          }
+          return subject.openSqliteDatabaseSync(path, options);
+        };
+      },
+    });
+
+    expect(listRecoveryQuarantineLocal({ ...runtime, storage })).toEqual([]);
+    expect(releaseResult).toBe('live-holder');
+    expect(runtime.storage.existsSync(epochPath(dbDir, '1'))).toBe(true);
+    console.log('recovery-quarantine-list-lock-cell publication=epoch-3 release=live-holder epoch-1=present');
+  });
+
   it('should list retained rows directly while no daemon exists', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-cli-'));
     tempDirectories.push(baseDir);

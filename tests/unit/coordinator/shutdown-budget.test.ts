@@ -243,16 +243,19 @@ describe('runShutdownSequence drain budget', () => {
 
     if (sequence === undefined) throw new Error('shutdown signal did not start the sequence');
     const held = requireHeld(await sequence);
+    expect(held.exit).toBe('store-epoch-sweep-settlement');
+    expect(held.retryAfter).toBeInstanceOf(Promise);
+    expect(held.retainedAuthority.operatorActions).toEqual([]);
 
     finishSweep();
     harness.time.tick(100);
     await held.retryAfter;
-    await retryHeldFinalization(held);
+    await expect(retryHeldFinalization(held)).resolves.toEqual({ disposition: 'settled' });
     expect(harness.callLog.indexOf('storeEpochSweep.joined')).toBeLessThan(
       harness.callLog.indexOf('closeIpcServerFn:start'),
     );
     console.log(
-      'shutdown-sweep-cell syscall=outlasted-budget exit-gate=held second-signal=nonzero join-before-ipc=true',
+      'shutdown-sweep-cell syscall=outlasted-budget exit=store-epoch-sweep-settlement action=wait-and-retry executed=true second-signal=nonzero join-before-ipc=true',
     );
   });
 

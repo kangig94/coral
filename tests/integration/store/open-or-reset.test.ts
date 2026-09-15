@@ -51,6 +51,7 @@ import {
   tryAcquireExclusiveFileLockSync,
 } from '#src/infra/fs-lock.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
+import { formatStoreResetRelease } from '#src/cli/format/store-reset.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
@@ -324,6 +325,148 @@ describe('write-once store epochs', () => {
     expect(result.kind).toBe('release-pre-deletion-durability-sync-failed');
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     console.log('release-disposition-cell phase=pre-deletion target=present renderer-claim=not-removed');
+  });
+
+  it('syncs successful synchronous holder cleanup before reporting a later holder deletion failure', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const first = join(dbDir, '.epoch-holder-a.json');
+    const second = join(dbDir, '.epoch-holder-b.json');
+    writeFileSync(first, `${JSON.stringify({ epoch: '1', pid: 999_999_991 })}\n`);
+    writeFileSync(second, `${JSON.stringify({ epoch: '2', pid: 999_999_992 })}\n`);
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'unlinkSync') {
+          return (path: string): void => {
+            if (path === second) {
+              events.push('remove-failed');
+              throw Object.assign(new Error('injected holder deletion failure'), { code: 'EIO' });
+            }
+            subject.unlinkSync(path);
+            if (path === first) events.push('remove-succeeded');
+          };
+        }
+        if (property === 'syncDirectoryDurableSync') {
+          return (path: string): boolean => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurableSync(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, '3')).toBe('deletion-failed');
+    expect(events).toEqual(['remove-succeeded', 'remove-failed', 'parent-sync']);
+    console.log('sweep-barrier-cell site=sync-holder-cleanup mutation=true exit=deletion-failed parent-sync=after');
+  });
+
+  it('syncs successful post-ready holder cleanup before reporting a later holder deletion failure', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const first = join(dbDir, '.epoch-holder-a.json');
+    const second = join(dbDir, '.epoch-holder-b.json');
+    writeFileSync(first, `${JSON.stringify({ epoch: '1', pid: 999_999_991 })}\n`);
+    writeFileSync(second, `${JSON.stringify({ epoch: '2', pid: 999_999_992 })}\n`);
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'unlink') {
+          return async (path: string): Promise<void> => {
+            if (path === second) {
+              events.push('remove-failed');
+              throw Object.assign(new Error('injected holder deletion failure'), { code: 'EIO' });
+            }
+            await subject.unlink(path);
+            if (path === first) events.push('remove-succeeded');
+          };
+        }
+        if (property === 'syncDirectoryDurable') {
+          return async (path: string): Promise<boolean> => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurable(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe(
+      'deletion-failed',
+    );
+    expect(events).toEqual(['remove-succeeded', 'remove-failed', 'parent-sync']);
+    console.log('sweep-barrier-cell site=post-ready-holder-cleanup mutation=true exit=deletion-failed parent-sync=after');
+  });
+
+  it('tells release operators that holder cleanup failed before the target was attempted', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    const holder = join(dbDir, '.epoch-holder-stale.json');
+    writeFileSync(holder, `${JSON.stringify({ epoch: '1', pid: 999_999_991 })}\n`);
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'unlinkSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): void => {
+          if (path === holder) throw Object.assign(new Error('injected holder cleanup failure'), { code: 'EIO' });
+          subject.unlinkSync(path);
+        };
+      },
+    });
+
+    const result = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: '1' });
+
+    expect(result.kind).toBe('release-holder-cleanup-failed');
+    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+    expect(formatStoreResetRelease(result)).toContain('target deletion was not attempted');
+    console.log('release-disposition-cell phase=holder-cleanup target=present renderer-claim=not-attempted');
+  });
+
+  it('reclaims orphan epoch locks after unlink failure and process death between epoch and lock removal', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    for (const epoch of ['1', '2', '4']) publishAdversarialEpoch(join(dbDir, `epoch-${epoch}`), true);
+    const failedUnlinkLock = storeEpochLockPath(dbDir, '1');
+    let failedOnce = false;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'unlinkSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): void => {
+          if (path === failedUnlinkLock && !failedOnce) {
+            failedOnce = true;
+            throw Object.assign(new Error('injected lock unlink failure'), { code: 'EIO' });
+          }
+          subject.unlinkSync(path);
+        };
+      },
+    });
+
+    const failedCleanup = await releaseStoreReset({
+      target: 'gen2',
+      runtime: withStorage(runtime, storage),
+      epoch: '1',
+    });
+    expect(failedCleanup.kind).toBe('release-lock-cleanup-failed');
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
+    expect(existsSync(failedUnlinkLock)).toBe(true);
+
+    const processDeathLock = storeEpochLockPath(dbDir, '2');
+    const processDeathLease = acquireSharedFileLockSync(processDeathLock);
+    processDeathLease();
+    rmSync(epochDirectory(dbDir, '2'), { recursive: true });
+    expect(existsSync(processDeathLock)).toBe(true);
+    publishLiveCoordinator(runtime, runtime.env.pid(), '4');
+
+    expect(sweepStoreEpochs(runtime, dbDir, '4')).toBe('complete');
+    expect(existsSync(failedUnlinkLock)).toBe(false);
+    expect(existsSync(processDeathLock)).toBe(false);
+    console.log('lock-tombstone-recovery-cell unlink-failure=reclaimed process-death=reclaimed');
   });
 
   it.each(['synchronous', 'post-ready'] as const)(
@@ -1500,6 +1643,41 @@ describe('write-once store epochs', () => {
     expect((rollback.prepare('SELECT value FROM rollback_sentinel').get() as { value: string }).value).toBe('rollback');
     rollback.close();
     console.log('shutdown-sweep-cell result=cancelled successor=epoch-4 rollback=bootable');
+  });
+
+  it('syncs an epoch removal before returning cancellation after the sweep yield', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    for (const epoch of ['1', '2', '3']) publishAdversarialEpoch(join(dbDir, `epoch-${epoch}`), true);
+    const removedEpoch = epochDirectory(dbDir, '1');
+    const controller = new AbortController();
+    const events: string[] = [];
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property === 'rm') {
+          return async (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): Promise<void> => {
+            await subject.rm(path, rmOptions);
+            if (path === removedEpoch) {
+              events.push('epoch-removed');
+              controller.abort();
+            }
+          };
+        }
+        if (property === 'syncDirectoryDurable') {
+          return async (path: string): Promise<boolean> => {
+            if (path === dbDir) events.push('parent-sync');
+            return subject.syncDirectoryDurable(path);
+          };
+        }
+        return Reflect.get(subject, property, receiver) as unknown;
+      },
+    });
+
+    await expect(
+      sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3', { signal: controller.signal }),
+    ).resolves.toBe('cancelled');
+    expect(events).toEqual(['epoch-removed', 'parent-sync']);
+    console.log('sweep-barrier-cell site=post-ready-cancellation mutation=true exit=cancelled parent-sync=after');
   });
 
   it('releases the socket guard when discard cannot acquire the adoption lock', async () => {
