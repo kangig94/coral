@@ -1,8 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-five design revisions, thirty-four unbiased tier-1 review rounds, and
-eighty distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen earlier
-revisions inherited; 15 through 25 are the corrections it earned.
+**Status**: in flight. Twenty-six design revisions, thirty-five unbiased tier-1 review rounds, and
+eighty-five distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 26 are the corrections it earned. One scope question is open at
+the end of Revision 26.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2573,6 +2574,85 @@ effects.
 
 The guardian was checking, when it was stopped, whether the post-ready sweep can delete an epoch whose
 already-held lock later becomes unproven. That question is unanswered and belongs in the next review.
+
+## Revision 26 — resolve the root once, and reporting means reporting
+
+Round 36's reviewers agreed on six blocking findings. Five are unambiguous and two of those were
+introduced by Revision 25 itself. The sixth is a scope question and is recorded below unresolved.
+
+### A symlinked store root silently abandons every epoch
+
+`observeContainedDirectory` compares a child's device against `lstat(dbDir).dev`, and for a symlinked
+`dbDir` that is the device holding the **symlink inode**, not the directory it names. Construction follows
+the symlink and publishes successfully inside the target; the next boot then proves nothing, finds no
+current epoch, and mints another. Both reviewers reproduced it with a store root symlinked onto another
+volume: after a successful `discard`, `list` called the fresh epoch `garbage`, and every subsequent start
+published a successor instead of reopening its data.
+
+This does not refuse to boot. It **silently starts from an empty store every time**, which is worse,
+because nothing reports it. And putting the store on another volume by symlink is an ordinary thing to do.
+
+> **Resolve the store root once, and prove every child against the resolved root's identity.**
+
+Comparing against an unresolved path was the mistake; `lstat` on the root is the one place the design
+must follow the link.
+
+### `list` was fixed and the other two reporting paths were not
+
+Revision 25 removed SQLite from `store-reset list` and stopped there. `store-reset report` runs its
+diagnostic child directly against the epoch database, and `backend recovery-quarantine list` opens the
+store twice — to classify and to query. Measured against the built commands: on a canonical epoch both
+added a persistent 32 KiB `store.db-shm` and a zero-length `store.db-wal`; on a crashed-WAL lock `report`
+grew `.lock` from 4 KiB to 8 KiB and deleted `.lock-wal`. **Reporting on evidence rewrote the evidence.**
+
+Every reporting surface is byte-identical around the live namespace, proved by snapshot rather than by
+intent, and the documented read-only contract covers all three.
+
+### The proof is incomplete where it is reused
+
+`provenStoreEpochAtPath` proves the directory and `store.db`; the read-lock path adds `.lock`; **neither
+proves `epoch.json`**, which epoch discovery requires. So `openWritableStoreDbNoReset` accepts an epoch the
+canonical selector calls garbage. With malformed metadata, `list` correctly said `garbage/malformed` while
+the built smoke opener and `recovery-quarantine list` both opened it and exited 0 — and the generated
+hook, which does validate metadata, disagreed with all of them.
+
+The material case is not the CLI: **expansion installation uses that writable opener**, so it can commit
+catalog changes into an epoch the next boot replaces. One proof, used by every opener, or the openers
+disagree — which is §7 with a data-loss consequence.
+
+### The classification column describes the wrong epoch
+
+Revision 25 made `list` read its classification from `epoch.json`, on my claim that the sidecar "records
+the classification at publication". It does not. It records **why the predecessor was superseded**. Both
+reviewers reproduced the result: a freshly initialised, valid, current epoch rendered as
+`unavailable | operator-discard`, and a replacement for a corrupt store rendered as
+`corrupt-or-unsupported | 0.10.9` — the previous store's classification and the previous store's version,
+under a column headed `Classification`.
+
+Nothing destructive consumes it, so this is operator-facing provenance rather than a safety defect, and it
+is still a lie. The field says what it is — the reason this epoch was published, and the superseded
+store's version — or it is derived honestly at publication time from the build's own facts.
+
+### `sameDevice` is a one-line exported helper
+
+It hides `left === right` and exists for its own test. §9. Inline it and test the proof's behaviour
+against real filesystem identities instead.
+
+### Unresolved: same-device bind mounts
+
+Both reviewers reproduced a bind mount whose source shares the store's device passing every part of the
+proof — kind, `nlink`, `dev`, lexical containment — after which the built smoke opener initialised the
+external file to 45 schema objects. Closing it needs mount identity, which on Linux means `statx`
+`STATX_MNT_ID` and has no portable equivalent.
+
+This is the fourth alias class in four rounds — symlink, hard link, cross-device mount, same-device mount
+— and each was found because the brief asked for the next one. That is a reason to ask where the boundary
+is rather than to keep adding axes. Revision 17 placed a same-user process that actively races the
+coordinator out of scope, because it can already replace the plugin bundle; someone with mount privileges
+is at least as capable. The innocent configurations — a symlinked root, a dedicated volume — are in scope
+and are fixed above.
+
+**The owner has not ruled on this one, and it is not decided here.**
 
 ## Invariants to add
 
