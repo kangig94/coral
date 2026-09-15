@@ -12,7 +12,7 @@ import {
 import type { StoragePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
-import { classifyStoreFile, openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
+import { openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
@@ -165,10 +165,14 @@ type StoreEpochObservation = Readonly<{
 type ProvenStoreEpochObservation = StoreEpochObservation &
   Readonly<{ proof: Extract<StoreEpochProof, { readonly kind: 'proven' }> }>;
 
-function observeRegularFile(storage: Pick<StoragePort, 'lstatSync'>, path: string): StoreEpochProof {
+export function sameDevice(left: bigint, right: bigint): boolean {
+  return left === right;
+}
+
+function observeRegularFile(storage: Pick<StoragePort, 'lstatSync'>, path: string, device: bigint): StoreEpochProof {
   try {
     const entry = storage.lstatSync(path, { bigint: true });
-    return entry.isFile() && entry.nlink === 1n ? { kind: 'proven' } : { kind: 'disproven' };
+    return entry.isFile() && entry.nlink === 1n && entry.dev === device ? { kind: 'proven' } : { kind: 'disproven' };
   } catch (error: unknown) {
     return errorCode(error) === 'ENOENT'
       ? { kind: 'disproven' }
@@ -182,8 +186,9 @@ function observeContainedDirectory(
   path: string,
 ): StoreEpochProof {
   try {
-    const entry = storage.lstatSync(path);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) return { kind: 'disproven' };
+    const parentEntry = storage.lstatSync(parent, { bigint: true });
+    const entry = storage.lstatSync(path, { bigint: true });
+    if (!entry.isDirectory() || entry.dev !== parentEntry.dev) return { kind: 'disproven' };
     return dirname(storage.realpathSync(path)) === storage.realpathSync(parent)
       ? { kind: 'proven' }
       : { kind: 'disproven' };
@@ -201,9 +206,10 @@ function observeContainedRegularFile(
   directoryProof: StoreEpochProof = observeContainedDirectory(storage, dirname(directory), directory),
 ): StoreEpochProof {
   if (directoryProof.kind !== 'proven') return directoryProof;
-  const regular = observeRegularFile(storage, path);
-  if (regular.kind !== 'proven') return regular;
   try {
+    const directoryEntry = storage.lstatSync(directory, { bigint: true });
+    const regular = observeRegularFile(storage, path, directoryEntry.dev);
+    if (regular.kind !== 'proven') return regular;
     return dirname(storage.realpathSync(path)) === storage.realpathSync(directory)
       ? { kind: 'proven' }
       : { kind: 'disproven' };
@@ -296,14 +302,24 @@ export function openWritableStoreDbNoReset(
     storeDbPath === ':memory:'
       ? { kind: 'disproven' as const }
       : epoch === null
-        ? observeRegularFile(runtime.storage, storeDbPath)
+        ? observeContainedRegularFile(runtime.storage, dirname(storeDbPath), storeDbPath, { kind: 'proven' })
         : provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) === epoch
           ? observeStoreEpochLock(runtime.storage, runtime.paths.coral.store.dbDir, epoch)
           : { kind: 'disproven' as const };
   if (proof.kind === 'proven') {
     const lease =
       epoch === null ? null : acquireSharedFileLockSync(storeEpochLockPath(runtime.paths.coral.store.dbDir, epoch));
-    if (epoch !== null && observeRegularFile(runtime.storage, storeDbPath).kind !== 'proven') {
+    if (
+      epoch !== null &&
+      observeContainedRegularFile(
+        runtime.storage,
+        epochDirectory(runtime.paths.coral.store.dbDir, epoch),
+        storeDbPath,
+        {
+          kind: 'proven',
+        },
+      ).kind !== 'proven'
+    ) {
       lease?.();
     } else {
       try {
@@ -473,9 +489,33 @@ function auditSweepSkip(path: string): void {
   writeAuditEvent('store_epoch_sweep_skipped', { path, reason: 'live-holder' }, 'info');
 }
 
-function removeDuringSweep(storage: StoragePort, path: string): boolean {
+function treeStaysOnDevice(storage: StoragePort, path: string, device: bigint): boolean {
+  const entry = storage.lstatSync(path, { bigint: true });
+  if (!sameDevice(entry.dev, device)) return false;
+  return (
+    !entry.isDirectory() ||
+    storage.readdirSync(path).every((child) => treeStaysOnDevice(storage, join(path, child), device))
+  );
+}
+
+async function treeStaysOnDeviceAsync(storage: StoragePort, path: string, device: bigint): Promise<boolean> {
+  const entry = storage.lstatSync(path, { bigint: true });
+  if (!sameDevice(entry.dev, device)) return false;
+  if (!entry.isDirectory()) return true;
+  for (const child of await storage.readdir(path)) {
+    if (!(await treeStaysOnDeviceAsync(storage, join(path, child), device))) return false;
+  }
+  return true;
+}
+
+function removeDuringSweep(storage: StoragePort, dbDir: string, path: string): boolean {
   try {
     const observed = storage.lstatSync(path);
+    const device = storage.lstatSync(dbDir, { bigint: true }).dev;
+    if (!treeStaysOnDevice(storage, path, device)) {
+      auditSweepFailure(path, new Error('Recursive removal crossed the store device boundary.'));
+      return false;
+    }
     if (observed.isDirectory() && !observed.isSymbolicLink()) {
       storage.rmSync(path, { recursive: true, force: true });
     } else {
@@ -507,7 +547,7 @@ function removeAfterReapingRename(runtime: Runtime, dbDir: string, targetPath: s
   const reapingPath = renameForReaping(runtime, dbDir, targetPath);
   if (reapingPath === null) return 'removed';
   if (reapingPath === targetPath) return 'target-failed';
-  return removeDuringSweep(runtime.storage, reapingPath) ? 'removed' : 'target-failed';
+  return removeDuringSweep(runtime.storage, dbDir, reapingPath) ? 'removed' : 'target-failed';
 }
 
 function removeWhileExclusivelyLocked(
@@ -540,9 +580,12 @@ function removeEpochEntry(runtime: Runtime, dbDir: string, epoch: StoreEpoch): L
   if (root.kind === 'disproven') return removeAfterReapingRename(runtime, dbDir, targetPath);
   const lock = observeStoreEpochLock(runtime.storage, dbDir, epoch, root);
   if (lock.kind === 'unobservable') return 'target-failed';
-  return lock.kind === 'proven'
-    ? removeWhileExclusivelyLocked(runtime, dbDir, storeEpochLockPath(dbDir, epoch), targetPath)
-    : removeAfterReapingRename(runtime, dbDir, targetPath);
+  if (lock.kind === 'disproven') {
+    return readEpochMetadata(runtime.storage, targetPath).kind === 'valid'
+      ? 'target-failed'
+      : removeAfterReapingRename(runtime, dbDir, targetPath);
+  }
+  return removeWhileExclusivelyLocked(runtime, dbDir, storeEpochLockPath(dbDir, epoch), targetPath);
 }
 
 function proveReleaseTarget(
@@ -578,8 +621,8 @@ function observeStoreEpochHolder(runtime: Runtime, dbDir: string, entry: string)
     proof: null,
   });
   try {
-    const kind = runtime.storage.lstatSync(path);
-    if (!kind.isFile() || kind.isSymbolicLink()) return unobservable(true);
+    const proof = observeContainedRegularFile(runtime.storage, dbDir, path, { kind: 'proven' });
+    if (proof.kind !== 'proven') return unobservable(proof.kind === 'disproven');
     if (runtime.storage.statSync(path).size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(true);
     const value: unknown = JSON.parse(runtime.storage.readFileSync(path, 'utf-8'));
     if (
@@ -693,7 +736,7 @@ export function sweepStoreEpochs(
     }
     try {
       holdersChanged = true;
-      const removed = removeDuringSweep(storage, holder.path);
+      const removed = removeDuringSweep(storage, dbDir, holder.path);
       holderDeletionFailed ||= !removed;
       if (holder.state === 'unobservable') unobservableHolder = true;
     } finally {
@@ -786,7 +829,7 @@ export function sweepStoreEpochs(
     const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
     if (invalidEpochEntry || (epoch !== current && (disprovenEpochEntry || garbageEpoch))) {
       if (epoch === null) {
-        complete = removeDuringSweep(storage, join(dbDir, entry)) && complete;
+        complete = removeDuringSweep(storage, dbDir, join(dbDir, entry)) && complete;
       } else {
         const removal = removeEpochEntry(runtime, dbDir, epoch);
         if (removal === 'locked') {
@@ -801,7 +844,7 @@ export function sweepStoreEpochs(
   }
 
   if (compareEpoch(current, '1') >= 0) {
-    complete = removeDuringSweep(storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY)) && complete;
+    complete = removeDuringSweep(storage, dbDir, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY)) && complete;
   }
   try {
     if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
@@ -818,11 +861,11 @@ async function yieldSweepTurn(): Promise<void> {
   await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
 }
 
-async function observeRegularFileAsync(storage: StoragePort, path: string): Promise<StoreEpochProof> {
+async function observeRegularFileAsync(storage: StoragePort, path: string, device: bigint): Promise<StoreEpochProof> {
   try {
     const entry = await storage.lstat(path);
     const identity = storage.lstatSync(path, { bigint: true });
-    return entry.isFile() && !entry.isSymbolicLink() && identity.nlink === 1n
+    return entry.isFile() && !entry.isSymbolicLink() && identity.nlink === 1n && identity.dev === device
       ? { kind: 'proven' }
       : { kind: 'disproven' };
   } catch (error: unknown) {
@@ -839,7 +882,11 @@ async function observeContainedDirectoryAsync(
 ): Promise<StoreEpochProof> {
   try {
     const entry = await storage.lstat(path);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) return { kind: 'disproven' };
+    const parentEntry = storage.lstatSync(parent, { bigint: true });
+    const identity = storage.lstatSync(path, { bigint: true });
+    if (!entry.isDirectory() || entry.isSymbolicLink() || identity.dev !== parentEntry.dev) {
+      return { kind: 'disproven' };
+    }
     return dirname(storage.realpathSync(path)) === storage.realpathSync(parent)
       ? { kind: 'proven' }
       : { kind: 'disproven' };
@@ -858,9 +905,10 @@ async function observeContainedRegularFileAsync(
 ): Promise<StoreEpochProof> {
   directoryProof ??= await observeContainedDirectoryAsync(storage, dirname(directory), directory);
   if (directoryProof.kind !== 'proven') return directoryProof;
-  const regular = await observeRegularFileAsync(storage, path);
-  if (regular.kind !== 'proven') return regular;
   try {
+    const directoryEntry = storage.lstatSync(directory, { bigint: true });
+    const regular = await observeRegularFileAsync(storage, path, directoryEntry.dev);
+    if (regular.kind !== 'proven') return regular;
     return dirname(storage.realpathSync(path)) === storage.realpathSync(directory)
       ? { kind: 'proven' }
       : { kind: 'disproven' };
@@ -887,10 +935,12 @@ async function readEpochMetadataAsync(storage: StoragePort, directory: string): 
   try {
     const entry = await storage.lstat(metadataPath);
     const identity = storage.lstatSync(metadataPath, { bigint: true });
+    const directoryEntry = storage.lstatSync(directory, { bigint: true });
     if (
       !entry.isFile() ||
       entry.isSymbolicLink() ||
       identity.nlink !== 1n ||
+      identity.dev !== directoryEntry.dev ||
       entry.size > MAX_STORE_EPOCH_METADATA_BYTES
     ) {
       return { kind: 'malformed' };
@@ -955,8 +1005,9 @@ async function observeStoreEpochHolderAsync(
     proof: null,
   });
   try {
+    const proof = await observeContainedRegularFileAsync(runtime.storage, dbDir, path, { kind: 'proven' });
+    if (proof.kind !== 'proven') return unobservable(proof.kind === 'disproven');
     const kind = await runtime.storage.lstat(path);
-    if (!kind.isFile() || kind.isSymbolicLink()) return unobservable(true);
     if (kind.size > MAX_STORE_EPOCH_HOLDER_BYTES) return unobservable(true);
     const value: unknown = JSON.parse(await runtime.storage.readFile(path, 'utf-8'));
     if (
@@ -1006,9 +1057,14 @@ async function inspectStoreEpochHolderAsync(
   };
 }
 
-async function removeDuringPostReadySweep(storage: StoragePort, path: string): Promise<boolean> {
+async function removeDuringPostReadySweep(storage: StoragePort, dbDir: string, path: string): Promise<boolean> {
   try {
     const observed = await storage.lstat(path);
+    const device = storage.lstatSync(dbDir, { bigint: true }).dev;
+    if (!(await treeStaysOnDeviceAsync(storage, path, device))) {
+      auditSweepFailure(path, new Error('Recursive removal crossed the store device boundary.'));
+      return false;
+    }
     if (observed.isDirectory() && !observed.isSymbolicLink()) {
       await storage.rm(path, { recursive: true, force: true });
     } else {
@@ -1041,7 +1097,7 @@ async function removeWhileExclusivelyLockedAsync(
       ? 'removed'
       : reapingPath === targetPath
         ? 'target-failed'
-        : (await removeDuringPostReadySweep(runtime.storage, reapingPath))
+        : (await removeDuringPostReadySweep(runtime.storage, dbDir, reapingPath))
           ? 'removed'
           : 'target-failed';
   try {
@@ -1061,7 +1117,7 @@ async function removeAfterReapingRenameAsync(
   const reapingPath = renameForReaping(runtime, dbDir, targetPath);
   if (reapingPath === null) return 'removed';
   if (reapingPath === targetPath) return 'target-failed';
-  return (await removeDuringPostReadySweep(runtime.storage, reapingPath)) ? 'removed' : 'target-failed';
+  return (await removeDuringPostReadySweep(runtime.storage, dbDir, reapingPath)) ? 'removed' : 'target-failed';
 }
 
 async function removeEpochEntryAsync(runtime: Runtime, dbDir: string, epoch: StoreEpoch): Promise<LockedRemoval> {
@@ -1071,9 +1127,12 @@ async function removeEpochEntryAsync(runtime: Runtime, dbDir: string, epoch: Sto
   if (root.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, targetPath);
   const lock = await observeStoreEpochLockAsync(runtime.storage, dbDir, epoch, root);
   if (lock.kind === 'unobservable') return 'target-failed';
-  return lock.kind === 'proven'
-    ? removeWhileExclusivelyLockedAsync(runtime, dbDir, storeEpochLockPath(dbDir, epoch), targetPath)
-    : removeAfterReapingRenameAsync(runtime, dbDir, targetPath);
+  if (lock.kind === 'disproven') {
+    return (await readEpochMetadataAsync(runtime.storage, targetPath)).kind === 'valid'
+      ? 'target-failed'
+      : removeAfterReapingRenameAsync(runtime, dbDir, targetPath);
+  }
+  return removeWhileExclusivelyLockedAsync(runtime, dbDir, storeEpochLockPath(dbDir, epoch), targetPath);
 }
 
 async function removeAbandonedStoreDirectory(
@@ -1087,9 +1146,8 @@ async function removeAbandonedStoreDirectory(
   const lockPath = join(path, STORE_LOCK_FILE_NAME);
   const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
   if (lock.kind === 'unobservable') return 'unobservable';
-  return lock.kind === 'proven'
-    ? removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path)
-    : removeAfterReapingRenameAsync(runtime, dbDir, path);
+  if (lock.kind === 'disproven') return 'unobservable';
+  return removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path);
 }
 
 async function syncDirectoryDurable(storage: StoragePort, path: string): Promise<boolean> {
@@ -1144,7 +1202,7 @@ export async function sweepStoreEpochsPostReady(
     if (holder !== null) {
       try {
         unsyncedMutation = true;
-        const removed = await removeDuringPostReadySweep(runtime.storage, holder.path);
+        const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, holder.path);
         holderDeletionFailed ||= !removed;
       } finally {
         holder.proof?.();
@@ -1189,7 +1247,7 @@ export async function sweepStoreEpochsPostReady(
       const removal = abandonedStoreDirectory
         ? await removeAbandonedStoreDirectory(runtime, dbDir, join(dbDir, entry))
         : epoch === null
-          ? (await removeDuringPostReadySweep(runtime.storage, join(dbDir, entry)))
+          ? (await removeDuringPostReadySweep(runtime.storage, dbDir, join(dbDir, entry)))
             ? 'removed'
             : 'target-failed'
           : await removeEpochEntryAsync(runtime, dbDir, epoch);
@@ -1214,7 +1272,11 @@ export async function sweepStoreEpochsPostReady(
   if (options.signal?.aborted) return finish('cancelled');
   if (compareEpoch(openEpoch, '1') >= 0) {
     unsyncedMutation = true;
-    const removed = await removeDuringPostReadySweep(runtime.storage, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY));
+    const removed = await removeDuringPostReadySweep(
+      runtime.storage,
+      dbDir,
+      join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
+    );
     complete = removed && complete;
   }
   if (!(await syncMutations())) return 'durability-sync-failed';
@@ -1263,7 +1325,7 @@ function mintNextEpoch(
   classification: StoreEpochClassification,
 ): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
   const id = runtime.ids.uuid();
-  const construction = join(dirname(dbDir), `${PRIVATE_MINT_CONSTRUCTION_PREFIX}${id}`);
+  const construction = join(dbDir, `${PRIVATE_MINT_CONSTRUCTION_PREFIX}${id}`);
   const preparation = join(dbDir, `${MINT_PREPARATION_DIRECTORY_PREFIX}${id}`);
   const mint = join(dbDir, `${MINT_DIRECTORY_PREFIX}${id}`);
   let mintLease: FileLockLease;
@@ -1499,15 +1561,21 @@ export function parseStoreEpochMetadata(value: unknown): StoreEpochMetadata | nu
 }
 
 function readEpochMetadata(
-  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'statSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
   directory: string,
 ): StoreEpochMetadataDisposition {
   const metadataPath = join(directory, STORE_EPOCH_METADATA_FILE_NAME);
   try {
-    const entry = storage.lstatSync(metadataPath);
-    if (!entry.isFile() || entry.isSymbolicLink()) return { kind: 'malformed' };
-    const stat = storage.statSync(metadataPath, { bigint: true });
-    if (stat.nlink !== 1n || stat.size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return { kind: 'malformed' };
+    const directoryEntry = storage.lstatSync(directory, { bigint: true });
+    const entry = storage.lstatSync(metadataPath, { bigint: true });
+    if (
+      !entry.isFile() ||
+      entry.nlink !== 1n ||
+      entry.dev !== directoryEntry.dev ||
+      entry.size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)
+    ) {
+      return { kind: 'malformed' };
+    }
   } catch (error: unknown) {
     return errorCode(error) === 'ENOENT'
       ? { kind: 'missing' }
@@ -1552,6 +1620,7 @@ function isStoreEpochResidue(name: string): boolean {
   return (
     name.startsWith(MINT_DIRECTORY_PREFIX) ||
     name.startsWith(MINT_PREPARATION_DIRECTORY_PREFIX) ||
+    name.startsWith(PRIVATE_MINT_CONSTRUCTION_PREFIX) ||
     name.startsWith(REAPING_DIRECTORY_PREFIX)
   );
 }
@@ -1567,25 +1636,18 @@ export function listStoreEpochResidues(
     .sort()
     .map((name) => {
       const path = join(dbDir, name);
-      const lockPath = join(path, STORE_LOCK_FILE_NAME);
       const root = observeContainedDirectory(runtime.storage, dbDir, path);
-      const proof = observeContainedRegularFile(runtime.storage, path, lockPath, root);
       let state: StoreEpochResidueListEntry['state'];
-      if (proof.kind === 'unobservable') {
+      if (root.kind === 'unobservable' || root.kind === 'proven') {
         state = 'unobservable';
-      } else if (proof.kind === 'disproven') {
-        state = 'reclaimable';
       } else {
-        state = 'unobservable';
+        state = 'reclaimable';
       }
       return { name, bytes: entryBytes(runtime.storage, path), state };
     });
 }
 
-export function listStoreEpochs(
-  runtime: Pick<Runtime, 'paths' | 'storage'>,
-  storeFormat: StoreFormatDescription,
-): readonly StoreEpochListEntry[] {
+export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): readonly StoreEpochListEntry[] {
   const dbDir = runtime.paths.coral.store.dbDir;
   if (!runtime.storage.existsSync(dbDir)) return [];
   const observations = observeStoreEpochs(runtime.storage, dbDir);
@@ -1598,18 +1660,10 @@ export function listStoreEpochs(
     .sort((left, right) => compareEpoch(right.epoch, left.epoch))
     .map((observation) => {
       const { epoch } = observation;
-      let classification: StoreEpochClassification;
-      if (observation.proof.kind !== 'proven') {
-        classification = unavailableClassification(new Error('Epoch entry is not proven.'));
-      } else {
-        try {
-          classification = classifyStoreFile(epochPath(dbDir, epoch), runtime.storage, storeFormat, () =>
-            acquireSharedFileLockSync(storeEpochLockPath(dbDir, epoch)),
-          );
-        } catch (error: unknown) {
-          classification = unavailableClassification(error);
-        }
-      }
+      const classification =
+        observation.epochJson.kind === 'valid'
+          ? observation.epochJson.value.classification
+          : unavailableClassification(new Error('Epoch metadata is not valid.'));
       return {
         epoch,
         role:
@@ -1630,7 +1684,7 @@ export function listStoreEpochs(
 
 export function storeEpochHookSource(): string {
   return String.raw`// Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from '${'node:' + 'fs'}';
+import { lstatSync, readFileSync, readdirSync, realpathSync } from '${'node:' + 'fs'}';
 import { DatabaseSync } from '${'node:' + 'sqlite'}';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -1665,10 +1719,10 @@ function isValidEpochMetadata(value) {
   );
 }
 
-function isRegularFile(path) {
+function isRegularFile(path, device) {
   try {
-    const entry = lstatSync(path);
-    return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;
+    const entry = lstatSync(path, { bigint: true });
+    return entry.isFile() && entry.nlink === 1n && entry.dev === device;
   } catch {
     return false;
   }
@@ -1677,8 +1731,9 @@ function isRegularFile(path) {
 function isPublishedEpoch(dbDir, name) {
   const directory = join(dbDir, name);
   try {
-    const entry = lstatSync(directory);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) return false;
+    const root = lstatSync(dbDir, { bigint: true });
+    const entry = lstatSync(directory, { bigint: true });
+    if (!entry.isDirectory() || entry.dev !== root.dev) return false;
     const relativePath = relative(realpathSync(dbDir), realpathSync(directory));
     if (
       relativePath === '' ||
@@ -1691,12 +1746,18 @@ function isPublishedEpoch(dbDir, name) {
     const metadataPath = join(directory, 'epoch.json');
     const databasePath = join(directory, 'store.db');
     const lockPath = join(directory, '.lock');
-    if (!isRegularFile(databasePath) || !isRegularFile(metadataPath) || !isRegularFile(lockPath)) return false;
+    if (
+      !isRegularFile(databasePath, entry.dev) ||
+      !isRegularFile(metadataPath, entry.dev) ||
+      !isRegularFile(lockPath, entry.dev)
+    ) {
+      return false;
+    }
     const realDirectory = realpathSync(directory);
     if (dirname(realpathSync(databasePath)) !== realDirectory || dirname(realpathSync(lockPath)) !== realDirectory) {
       return false;
     }
-    if (statSync(metadataPath, { bigint: true }).size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return false;
+    if (lstatSync(metadataPath, { bigint: true }).size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return false;
     return isValidEpochMetadata(JSON.parse(readFileSync(metadataPath, 'utf8')));
   } catch {
     return false;

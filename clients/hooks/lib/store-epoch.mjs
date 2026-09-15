@@ -1,5 +1,5 @@
 // Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
-import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
@@ -34,10 +34,10 @@ function isValidEpochMetadata(value) {
   );
 }
 
-function isRegularFile(path) {
+function isRegularFile(path, device) {
   try {
-    const entry = lstatSync(path);
-    return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;
+    const entry = lstatSync(path, { bigint: true });
+    return entry.isFile() && entry.nlink === 1n && entry.dev === device;
   } catch {
     return false;
   }
@@ -46,8 +46,9 @@ function isRegularFile(path) {
 function isPublishedEpoch(dbDir, name) {
   const directory = join(dbDir, name);
   try {
-    const entry = lstatSync(directory);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) return false;
+    const root = lstatSync(dbDir, { bigint: true });
+    const entry = lstatSync(directory, { bigint: true });
+    if (!entry.isDirectory() || entry.dev !== root.dev) return false;
     const relativePath = relative(realpathSync(dbDir), realpathSync(directory));
     if (
       relativePath === '' ||
@@ -60,12 +61,18 @@ function isPublishedEpoch(dbDir, name) {
     const metadataPath = join(directory, 'epoch.json');
     const databasePath = join(directory, 'store.db');
     const lockPath = join(directory, '.lock');
-    if (!isRegularFile(databasePath) || !isRegularFile(metadataPath) || !isRegularFile(lockPath)) return false;
+    if (
+      !isRegularFile(databasePath, entry.dev) ||
+      !isRegularFile(metadataPath, entry.dev) ||
+      !isRegularFile(lockPath, entry.dev)
+    ) {
+      return false;
+    }
     const realDirectory = realpathSync(directory);
     if (dirname(realpathSync(databasePath)) !== realDirectory || dirname(realpathSync(lockPath)) !== realDirectory) {
       return false;
     }
-    if (statSync(metadataPath, { bigint: true }).size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return false;
+    if (lstatSync(metadataPath, { bigint: true }).size > BigInt(MAX_STORE_EPOCH_METADATA_BYTES)) return false;
     return isValidEpochMetadata(JSON.parse(readFileSync(metadataPath, 'utf8')));
   } catch {
     return false;

@@ -210,7 +210,7 @@ export function listStoreResetIncidentsLocal(
     });
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     return {
-      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime, currentCoralStoreFormat()),
+      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime),
       holders: target === 'legacy' ? [] : listStoreEpochHolders(runtime),
       residues: target === 'legacy' ? [] : listStoreEpochResidues(runtime),
       legacyIncidents: legacy.incidents,
@@ -255,9 +255,7 @@ export async function reportStoreResetLocal(
   if (target === 'gen2' && isCanonicalEpoch(reference)) {
     const manifest = requireCurrentBuild(dependencies);
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
-    const epoch = listStoreEpochs(runtime, currentCoralStoreFormat()).find(
-      (candidate) => candidate.epoch === reference,
-    );
+    const epoch = listStoreEpochs(runtime).find((candidate) => candidate.epoch === reference);
     if (epoch === undefined) throw new StoreResetCliError('store_reset_incident_not_found');
     const diagnostic =
       epoch.bytes === null || epoch.bytes > MAX_SQLITE_DIAGNOSTIC_BYTES

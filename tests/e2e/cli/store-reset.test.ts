@@ -360,6 +360,29 @@ describe('bundled store-reset CLI', () => {
     },
   );
 
+  it.each(['canonical', 'crashed-wal-lock'] as const)(
+    'keeps the complete epoch namespace byte-identical while built list classifies a %s epoch',
+    (state) => {
+      const build = readBuildManifest();
+      const home = temporaryHome(`coral-list-byte-identical-${state}-`);
+      mkdirSync(join(home, 'tmp'));
+      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+      expect(discard.status, discard.stderr).toBe(0);
+      const dbDir = dirname(activeStorePath(home, build));
+      if (state === 'crashed-wal-lock') createCrashedWalStore(join(dbDir, 'epoch-1', '.lock'));
+      const before = fileTreeSnapshot(dbDir);
+
+      const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
+      const after = fileTreeSnapshot(dbDir);
+
+      console.log(
+        `built-list-byte-identity-cell state=${state} status=${list.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
+      );
+      expect(list.status, list.stderr).toBe(0);
+      expect(after).toEqual(before);
+    },
+  );
+
   it.each(['absent-root', 'empty-root'] as const)('initializes epoch one on discard with %s', (state) => {
     const build = readBuildManifest();
     const home = temporaryHome(`coral-store-reset-discard-${state}-`);

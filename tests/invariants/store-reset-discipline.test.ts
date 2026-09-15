@@ -4,7 +4,7 @@ import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { garbageStoreEpochs } from '#src/store/epoch.js';
+import { garbageStoreEpochs, sameDevice } from '#src/store/epoch.js';
 
 const ROOT = process.cwd();
 const STORE_ROOT = join(ROOT, 'src/store');
@@ -163,7 +163,7 @@ describe('write-once store epoch invariants', () => {
     expect(new Set(deletionOwners)).toEqual(new Set(['removeAfterReapingRename', 'sweepStoreEpochs']));
     const epoch = source('src/store/epoch.ts');
     const rename = epoch.indexOf('renameForReaping(runtime, dbDir, targetPath)');
-    const remove = epoch.indexOf('removeDuringSweep(runtime.storage, reapingPath)', rename);
+    const remove = epoch.indexOf('removeDuringSweep(runtime.storage, dbDir, reapingPath)', rename);
     expect(rename).toBeGreaterThanOrEqual(0);
     expect(remove).toBeGreaterThan(rename);
   });
@@ -175,6 +175,14 @@ describe('write-once store epoch invariants', () => {
       );
       const retained = new Set([...proven].sort((left, right) => Number(left) - Number(right)).slice(-2));
       expect(garbageStoreEpochs(proven)).toEqual(new Set(proven.filter((epoch) => !retained.has(epoch))));
+    }
+  });
+
+  it('compares every store device pair by exact identity', () => {
+    for (let left = -8; left <= 8; left += 1) {
+      for (let right = -8; right <= 8; right += 1) {
+        expect(sameDevice(BigInt(left), BigInt(right))).toBe(left === right);
+      }
     }
   });
 
@@ -202,13 +210,24 @@ describe('write-once store epoch invariants', () => {
     expect(epoch).toContain('attemptExclusiveFileLockSync');
   });
 
-  it('requires private inode identity for every required epoch file in source and generated hooks', () => {
+  it('requires private device identity for every required epoch file in source and generated hooks', () => {
     const epoch = source('src/store/epoch.ts');
     const hook = source('clients/hooks/lib/store-epoch.mjs');
     expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.nlink === 1n');
+    expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.dev === device');
+    expect(functionSource('src/store/epoch.ts', 'observeContainedDirectory')).toContain(
+      'entry.dev !== parentEntry.dev',
+    );
     expect(functionSource('src/store/epoch.ts', 'readEpochMetadata')).toContain('nlink !== 1n');
-    expect(epoch).toContain('return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;');
-    expect(hook).toContain('return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;');
+    expect(epoch).toContain('entry.dev !== directoryEntry.dev');
+    expect(epoch).toContain('return entry.isFile() && entry.nlink === 1n && entry.dev === device;');
+    expect(hook).toContain('return entry.isFile() && entry.nlink === 1n && entry.dev === device;');
+  });
+
+  it('keeps list classification on the sidecar without opening SQLite', () => {
+    const list = functionSource('src/store/epoch.ts', 'listStoreEpochs');
+    expect(list).not.toMatch(/classifyStoreFile|acquireSharedFileLockSync|openStoreDatabase/u);
+    expect(list).toContain('observation.epochJson.value.classification');
   });
 
   it('keeps reporting paths free of exclusive lock acquisition', () => {
@@ -220,9 +239,13 @@ describe('write-once store epoch invariants', () => {
     expect(functionSource('src/store/epoch.ts', 'listStoreEpochHolders')).not.toContain('inspectStoreEpochHolder');
   });
 
-  it('keeps incomplete lock construction outside every sweepable residue namespace', () => {
+  it('constructs on the store device in a namespace only the post-ready sweep reclaims', () => {
     const mint = functionSource('src/store/epoch.ts', 'mintNextEpoch');
+    const postReady = functionSource('src/store/epoch.ts', 'sweepStoreEpochsPostReady');
+    expect(mint).toContain('join(dbDir, `${PRIVATE_MINT_CONSTRUCTION_PREFIX}${id}`)');
     expect(mint).not.toContain('createSharedFileLockSync(join(preparation');
+    expect(postReady).toContain('isStoreEpochResidue(entry)');
+    expect(source('src/store/epoch.ts')).toContain('name.startsWith(PRIVATE_MINT_CONSTRUCTION_PREFIX)');
   });
 
   it('keeps every store lock inside its store directory', () => {

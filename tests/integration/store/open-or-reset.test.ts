@@ -654,36 +654,27 @@ describe('write-once store epochs', () => {
     },
   );
 
-  it.each(['post-ready sweep', 'release'] as const)(
-    'takes the list classification shared lock before opening SQLite for %s',
-    (operation) => {
-      const runtime = harness();
-      const dbDir = runtime.paths.coral.store.dbDir;
-      publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
-      publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
-      let observedLocked = false;
-      const storage = new Proxy(runtime.storage, {
-        get(subject, property, receiver) {
-          if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
-          return (path: string, options?: { readOnly?: boolean; busyTimeoutMs?: number }) => {
-            if (path === epochPath(dbDir, '1')) {
-              const exclusive = tryAcquireExclusiveFileLockSync(storeEpochLockPath(dbDir, '1'));
-              observedLocked = exclusive === null;
-              exclusive?.();
-            }
-            return subject.openSqliteDatabaseSync(path, options);
-          };
-        },
-      });
+  it('takes list classification from epoch.json without opening SQLite', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    let sqliteOpens = 0;
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (...args: Parameters<StoragePort['openSqliteDatabaseSync']>) => {
+          sqliteOpens += 1;
+          return subject.openSqliteDatabaseSync(...args);
+        };
+      },
+    });
 
-      listStoreEpochs(withStorage(runtime, storage), storeFormat);
+    const entries = listStoreEpochs(withStorage(runtime, storage));
 
-      expect(observedLocked).toBe(true);
-      console.log(
-        `read-only-opener-cell opener=list-classification operation=${operation.replaceAll(' ', '-')} lock-before-sqlite=true`,
-      );
-    },
-  );
+    expect(sqliteOpens).toBe(0);
+    expect(entries[0]?.classification).toEqual({ kind: 'unavailable', cause: 'adversary' });
+    console.log('read-only-list-cell classification=epoch.json sqlite-opens=0');
+  });
   it('does not treat an epoch symlink to the store root as a published epoch', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -943,7 +934,7 @@ describe('write-once store epochs', () => {
         },
       });
 
-      const rows = listStoreEpochs(withStorage(runtime, storage), storeFormat);
+      const rows = listStoreEpochs(withStorage(runtime, storage));
 
       expect(rows.filter(({ role }) => role === 'current').map(({ epoch }) => epoch)).toEqual(['1']);
       expect(Object.fromEntries(rows.map(({ epoch, epochJson }) => [epoch, epochJson.kind]))).toEqual({
@@ -974,7 +965,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
     settled.db.close();
-    const oversized = listStoreEpochs(withStorage(runtime, storage), storeFormat).find(({ epoch }) => epoch === '1');
+    const oversized = listStoreEpochs(withStorage(runtime, storage)).find(({ epoch }) => epoch === '1');
 
     expect(settled.epoch).toBe('2');
     expect(oversized?.epochJson.kind).toBe('malformed');
@@ -1070,12 +1061,12 @@ describe('write-once store epochs', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
-    const before = listStoreEpochs(runtime, storeFormat)[0]?.bytes;
+    const before = listStoreEpochs(runtime)[0]?.bytes;
     mkdirSync(join(dbDir, 'epoch-1', 'nested'));
     writeFileSync(join(dbDir, 'epoch-1', 'extra.bin'), '12345');
     writeFileSync(join(dbDir, 'epoch-1', 'nested', 'extra.bin'), '678');
 
-    const after = listStoreEpochs(runtime, storeFormat)[0]?.bytes;
+    const after = listStoreEpochs(runtime)[0]?.bytes;
 
     expect(before).not.toBeNull();
     expect(after).toBe((before ?? 0) + 8);
@@ -1233,7 +1224,7 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
     settled.db.close();
     expect(sweepStoreEpochs(runtime, dbDir, settled.epoch)).toBe('complete');
-    const rows = listStoreEpochs(runtime, storeFormat);
+    const rows = listStoreEpochs(runtime);
     expect(rows.map((row) => [row.epoch, row.role])).toEqual([
       [String(count), 'current'],
       [String(count - 1), 'preserved'],
@@ -1626,6 +1617,47 @@ describe('write-once store epochs', () => {
     console.log('mint-process-death-cell seeded=12 remaining=0');
   });
 
+  it('reclaims construction locks left by process death before the first rename', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-construction-death-'));
+    roots.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const deaths = 4;
+    for (let index = 0; index < deaths; index += 1) {
+      const construction = join(dbDir, `.coral-store-epoch-construction-process-death-${index}`);
+      const preparation = join(dbDir, `.preparing-process-death-${index}`);
+      const child = spawn(
+        process.execPath,
+        [join(process.cwd(), 'tests/fixtures/store-epoch-construction-death.mjs'), construction, preparation],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      const line = await new Promise<string>((resolveLine, reject) => {
+        child.stdout.once('data', (chunk) => resolveLine(String(chunk)));
+        child.once('error', reject);
+        child.once('exit', (code) => reject(new Error(`Construction child exited before interposition (${code}).`)));
+      });
+      const observed = JSON.parse(line) as { source: string; destination: string };
+      expect(dirname(observed.source)).toBe(dbDir);
+      expect(dirname(observed.destination)).toBe(dbDir);
+      expect(existsSync(join(observed.source, '.lock'))).toBe(true);
+      child.kill('SIGKILL');
+      await new Promise<void>((resolveExit) => child.once('exit', () => resolveExit()));
+    }
+    const before = readdirSync(dbDir).filter((name) => name.startsWith('.coral-store-epoch-construction-'));
+    expect(before).toHaveLength(deaths);
+
+    const settled = settleStoreEpoch(runtime, options());
+    settled.db.close();
+    const result = await sweepStoreEpochsPostReady(runtime, dbDir, settled.epoch);
+    const after = readdirSync(dbDir).filter((name) => name.startsWith('.coral-store-epoch-construction-'));
+
+    console.log(
+      `construction-process-death-cell deaths=${deaths} before=${before.length} result=${result} after=${after.length}`,
+    );
+    expect(result).toBe('complete');
+    expect(after).toEqual([]);
+  });
+
   it('does not sweep a live concurrent mint through the production post-ready path', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -1874,9 +1906,7 @@ describe('write-once store epochs', () => {
 
       let settled: ReturnType<typeof settleStoreEpoch> | undefined;
       try {
-        expect(listStoreEpochs(runtime, storeFormat).find(({ epoch }) => epoch === '1')?.classification.kind).toBe(
-          'unavailable',
-        );
+        expect(listStoreEpochs(runtime).find(({ epoch }) => epoch === '1')?.classification.kind).toBe('unavailable');
         expect(() => openReadOnlyStoreDatabase(runtime, { path: epochPath(dbDir, '1'), storeFormat })).toThrow();
         settled = settleStoreEpoch(runtime, options());
         const legacyAfter = fileTreeSnapshot(legacyRoot);
@@ -1918,7 +1948,7 @@ describe('write-once store epochs', () => {
     expect(after).toEqual(before);
   });
 
-  it('lists and converges K lockless mints and K partial-cleanup residues', async () => {
+  it('keeps lockless mint directories unobservable and untouched', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
@@ -1930,15 +1960,15 @@ describe('write-once store epochs', () => {
 
     const listed = listStoreEpochResidues(runtime);
     expect(listed).toHaveLength(residueCount * 2);
-    expect(new Set(listed.map(({ state }) => state))).toEqual(new Set(['reclaimable']));
+    expect(new Set(listed.map(({ state }) => state))).toEqual(new Set(['unobservable']));
 
     const result = await sweepStoreEpochsPostReady(runtime, dbDir, '1');
     const remaining = listStoreEpochResidues(runtime);
     console.log(
       `mint-residue-cell lockless=${residueCount} partial-cleanup=${residueCount} listed-state=${listed[0]?.state} result=${result} remaining=${remaining.length}`,
     );
-    expect(result).toBe('complete');
-    expect(remaining).toEqual([]);
+    expect(result).toBe('unobservable-metadata');
+    expect(remaining).toEqual(listed);
   });
 
   it('does not sweep the coordinator epoch while its settled database is open', async () => {
@@ -1994,6 +2024,49 @@ describe('write-once store epochs', () => {
       console.log('post-ready-kb-descriptor-cell holder-after-snapshot=true epoch-1=present');
     } finally {
       kbDatabase.close();
+    }
+  });
+
+  it('keeps an epoch when an already-held lock later becomes unproven', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
+    publishAdversarialEpoch(join(dbDir, 'epoch-5'), true);
+    let releaseSnapshot!: () => void;
+    let snapshotTaken!: () => void;
+    const snapshot = new Promise<void>((resolveSnapshot) => {
+      snapshotTaken = resolveSnapshot;
+    });
+    const resume = new Promise<void>((resolveResume) => {
+      releaseSnapshot = resolveResume;
+    });
+    const storage = new Proxy(runtime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'readdir') return Reflect.get(subject, property, receiver) as unknown;
+        return async (path: string): Promise<string[]> => {
+          const entries = await subject.readdir(path);
+          if (path === dbDir) {
+            snapshotTaken();
+            await resume;
+          }
+          return entries;
+        };
+      },
+    });
+    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
+    await snapshot;
+    const held = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
+    const alias = join(dirname(dbDir), 'held-lock-alias');
+    linkSync(storeEpochLockPath(dbDir, '1'), alias);
+    releaseSnapshot();
+    try {
+      expect(await sweep).toBe('deletion-failed');
+      expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+      console.log('post-ready-later-unproven-lock-cell held=true proof=disproven epoch-1=present');
+    } finally {
+      held.close();
+      rmSync(alias, { force: true });
     }
   });
 
@@ -2322,7 +2395,7 @@ describe('write-once store epochs', () => {
       backups.clear();
     }
 
-    expect(listStoreEpochs(runtime, storeFormat).filter(({ role }) => role === 'garbage')).toEqual([]);
+    expect(listStoreEpochs(runtime).filter(({ role }) => role === 'garbage')).toEqual([]);
     console.log('post-publication-sweep-power-loss-cell repetitions=3 accumulated-garbage=0');
   });
 });
