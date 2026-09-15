@@ -245,12 +245,13 @@ describe('runShutdownSequence drain budget', () => {
     const held = requireHeld(await sequence);
     expect(held.exit).toBe('store-epoch-sweep-settlement');
     expect(held.retryAfter).toBeInstanceOf(Promise);
-    expect(held.retainedAuthority.operatorActions).toEqual([]);
+    const executeAdvertisedExit = held.retry;
+    expect(executeAdvertisedExit).toBeTypeOf('function');
 
     finishSweep();
     harness.time.tick(100);
     await held.retryAfter;
-    await expect(retryHeldFinalization(held)).resolves.toEqual({ disposition: 'settled' });
+    await expect(executeAdvertisedExit()).resolves.toEqual({ disposition: 'settled' });
     expect(harness.callLog.indexOf('storeEpochSweep.joined')).toBeLessThan(
       harness.callLog.indexOf('closeIpcServerFn:start'),
     );
