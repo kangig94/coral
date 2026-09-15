@@ -213,8 +213,11 @@ describe('write-once store epoch invariants', () => {
 
   it('keeps reporting paths free of exclusive lock acquisition', () => {
     for (const name of ['observeStoreEpochHolder', 'observeStoreEpochHolderAsync', 'listStoreEpochResidues']) {
-      expect(functionSource('src/store/epoch.ts', name), name).not.toContain('tryAcquireExclusiveFileLockSync');
+      expect(functionSource('src/store/epoch.ts', name), name).not.toMatch(
+        /(?:attempt|tryAcquire)ExclusiveFileLockSync/u,
+      );
     }
+    expect(functionSource('src/store/epoch.ts', 'listStoreEpochHolders')).not.toContain('inspectStoreEpochHolder');
   });
 
   it('keeps incomplete lock construction outside every sweepable residue namespace', () => {
