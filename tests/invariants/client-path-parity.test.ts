@@ -179,7 +179,7 @@ describe('self-contained client path parity', () => {
       },
       {
         name: 'legacy flat file',
-        expected: '0',
+        expected: null,
         arrange(dbDir: string) {
           writeFileSync(join(dbDir, 'store.db'), 'flat');
         },
@@ -279,18 +279,8 @@ describe('self-contained client path parity', () => {
       try {
         fixture.arrange(dbDir);
         const backendEpoch = resolveCurrentStoreEpoch(createRealRuntime('prod').storage, dbDir);
-        const backendPath =
-          backendEpoch === null
-            ? null
-            : backendEpoch === '0'
-              ? join(dbDir, 'store.db')
-              : join(dbDir, `epoch-${backendEpoch}`, 'store.db');
-        const expectedPath =
-          fixture.expected === null
-            ? null
-            : fixture.expected === '0'
-              ? join(dbDir, 'store.db')
-              : join(dbDir, `epoch-${fixture.expected}`, 'store.db');
+        const backendPath = backendEpoch === null ? null : join(dbDir, `epoch-${backendEpoch}`, 'store.db');
+        const expectedPath = fixture.expected === null ? null : join(dbDir, `epoch-${fixture.expected}`, 'store.db');
 
         expect(backendPath, `backend: ${fixture.name}`).toBe(expectedPath);
         expect(resolveCurrentStoreDbPath(dbDir), `hook: ${fixture.name}`).toBe(expectedPath);

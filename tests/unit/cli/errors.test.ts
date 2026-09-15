@@ -186,7 +186,7 @@ describe('cli errors', () => {
     it.each([
       [
         'invalid_store_reset_incident_id',
-        'Report target must be a numeric epoch or canonical lowercase legacy incident UUID.',
+        'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID.',
         'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
         2,
       ],
