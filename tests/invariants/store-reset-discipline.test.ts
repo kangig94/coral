@@ -222,7 +222,7 @@ describe('write-once store epoch invariants', () => {
 
   it('uses the metadata-complete epoch proof for every production opener', () => {
     expect(functionSource('src/store/epoch.ts', 'provenStoreEpochAtPath')).toContain('observeStoreEpoch');
-    expect(functionSource('src/store/epoch.ts', 'openWritableStoreDbNoReset')).toContain('provenStoreEpochAtPath');
+    expect(functionSource('src/store/epoch.ts', 'openWritableStoreDbNoReset')).toContain('acquireStoreEpochReadLock');
     expect(functionSource('src/store/epoch.ts', 'acquireStoreEpochReadLock')).toContain('provenStoreEpochAtPath');
     expect(functionSource('src/store/read-port.ts', 'openReadOnlyStoreDatabase')).toContain(
       'acquireStoreEpochReadLock',

@@ -301,38 +301,31 @@ export function openWritableStoreDbNoReset(
 ): Database {
   const storeDbPath = resolveCurrentStorePath(runtime, options.path);
   const epoch = storeEpochAtPath(runtime.paths.coral.store.dbDir, storeDbPath);
+  const lease = epoch === null ? null : acquireStoreEpochReadLock(runtime, storeDbPath);
   const proof =
     storeDbPath === ':memory:'
       ? { kind: 'disproven' as const }
       : epoch === null
         ? observeContainedRegularFile(runtime.storage, dirname(storeDbPath), storeDbPath, { kind: 'proven' })
-        : provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) === epoch
+        : lease !== null
           ? { kind: 'proven' as const }
           : { kind: 'disproven' as const };
   if (proof.kind === 'proven') {
-    const lease = epoch === null ? null : acquireStoreEpochReadLock(runtime, storeDbPath);
-    if (
-      epoch !== null &&
-      (lease === null ||
-        provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) !== epoch)
-    ) {
+    try {
+      const db = openStoreDatabase({
+        path: storeDbPath,
+        storage: runtime.storage,
+        storeFormat: options.storeFormat,
+        flavor: runtime.flavor,
+        busyTimeoutMs: options.busyTimeoutMs,
+      });
+      return epoch === null || lease === null ? db : registerStoreEpochHolder(runtime, epoch, db, lease);
+    } catch (error: unknown) {
       lease?.();
-    } else {
-      try {
-        const db = openStoreDatabase({
-          path: storeDbPath,
-          storage: runtime.storage,
-          storeFormat: options.storeFormat,
-          flavor: runtime.flavor,
-          busyTimeoutMs: options.busyTimeoutMs,
-        });
-        return epoch === null || lease === null ? db : registerStoreEpochHolder(runtime, epoch, db, lease);
-      } catch (error: unknown) {
-        lease?.();
-        throw error;
-      }
+      throw error;
     }
   }
+  lease?.();
   throw documentedCoralSetupError('store_not_initialized', { path: storeDbPath });
 }
 
@@ -343,11 +336,24 @@ export function storeEpochAtPath(dbDir: string, path: string): StoreEpoch | null
 }
 
 export function provenStoreEpochAtPath(storage: StoragePort, dbDir: string, path: string): StoreEpoch | null {
+  return resolveProvenStoreEpochAtPath(storage, dbDir, path)?.epoch ?? null;
+}
+
+function resolveProvenStoreEpochAtPath(
+  storage: StoragePort,
+  dbDir: string,
+  path: string,
+): Readonly<{ epoch: StoreEpoch; storeRoot: string }> | null {
   const epoch = storeEpochAtPath(dbDir, path);
   if (epoch === null) return null;
-  const storeRoot = storage.realpathSync(dbDir);
+  let storeRoot: string;
+  try {
+    storeRoot = storage.realpathSync(dbDir);
+  } catch {
+    return null;
+  }
   const observation = observeStoreEpoch(storage, storeRoot, `epoch-${epoch}`);
-  return observation?.proof.kind === 'proven' ? epoch : null;
+  return observation?.proof.kind === 'proven' ? { epoch, storeRoot } : null;
 }
 
 export function acquireStoreEpochReadLock(
@@ -355,11 +361,11 @@ export function acquireStoreEpochReadLock(
   storeDbPath: string,
 ): FileLockLease | null {
   const dbDir = runtime.paths.coral.store.dbDir;
-  const epoch = provenStoreEpochAtPath(runtime.storage, dbDir, storeDbPath);
-  if (epoch === null) return null;
-  const storeRoot = runtime.storage.realpathSync(dbDir);
-  const lease = acquireSharedFileLockSync(storeEpochLockPath(storeRoot, epoch));
-  if (provenStoreEpochAtPath(runtime.storage, dbDir, storeDbPath) === epoch) return lease;
+  const proven = resolveProvenStoreEpochAtPath(runtime.storage, dbDir, storeDbPath);
+  if (proven === null) return null;
+  const lease = acquireSharedFileLockSync(storeEpochLockPath(proven.storeRoot, proven.epoch));
+  const observation = observeStoreEpoch(runtime.storage, proven.storeRoot, `epoch-${proven.epoch}`);
+  if (observation?.proof.kind === 'proven') return lease;
   lease();
   return null;
 }
