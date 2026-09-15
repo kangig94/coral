@@ -4,7 +4,7 @@ import { dirname, join, normalize, relative, resolve } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 
-import { garbageStoreEpochs, sameDevice } from '#src/store/epoch.js';
+import { garbageStoreEpochs } from '#src/store/epoch.js';
 
 const ROOT = process.cwd();
 const STORE_ROOT = join(ROOT, 'src/store');
@@ -178,12 +178,8 @@ describe('write-once store epoch invariants', () => {
     }
   });
 
-  it('compares every store device pair by exact identity', () => {
-    for (let left = -8; left <= 8; left += 1) {
-      for (let right = -8; right <= 8; right += 1) {
-        expect(sameDevice(BigInt(left), BigInt(right))).toBe(left === right);
-      }
-    }
+  it('keeps filesystem identity comparisons at their proof sites', () => {
+    expect(source('src/store/epoch.ts')).not.toContain('sameDevice');
   });
 
   it('does not retain the deleted reset authority and resume mechanisms', () => {

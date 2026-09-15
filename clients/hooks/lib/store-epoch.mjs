@@ -43,13 +43,19 @@ function isRegularFile(path, device) {
   }
 }
 
-function isPublishedEpoch(dbDir, name) {
-  const directory = join(dbDir, name);
+function resolveStoreRoot(dbDir) {
+  const path = realpathSync(dbDir);
+  const entry = lstatSync(path, { bigint: true });
+  if (!entry.isDirectory()) throw new Error('Store root is not a directory.');
+  return { path, device: entry.dev };
+}
+
+function isPublishedEpoch(root, name) {
+  const directory = join(root.path, name);
   try {
-    const root = lstatSync(dbDir, { bigint: true });
     const entry = lstatSync(directory, { bigint: true });
-    if (!entry.isDirectory() || entry.dev !== root.dev) return false;
-    const relativePath = relative(realpathSync(dbDir), realpathSync(directory));
+    if (!entry.isDirectory() || entry.dev !== root.device) return false;
+    const relativePath = relative(root.path, realpathSync(directory));
     if (
       relativePath === '' ||
       relativePath === '..' ||
@@ -82,8 +88,10 @@ function isPublishedEpoch(dbDir, name) {
 export function resolveCurrentStoreDbPath(dbDir) {
   let current = null;
   let entries;
+  let root;
   try {
-    entries = readdirSync(dbDir);
+    root = resolveStoreRoot(dbDir);
+    entries = readdirSync(root.path);
   } catch {
     return null;
   }
@@ -92,13 +100,13 @@ export function resolveCurrentStoreDbPath(dbDir) {
     if (
       epoch !== null &&
       (current === null || BigInt(epoch) > BigInt(current)) &&
-      isPublishedEpoch(dbDir, entry)
+      isPublishedEpoch(root, entry)
     ) {
       current = epoch;
     }
   }
   if (current === null) return null;
-  return join(dbDir, 'epoch-' + current, 'store.db');
+  return join(root.path, 'epoch-' + current, 'store.db');
 }
 
 function storeEpochForDbPath(dbDir, dbPath) {
@@ -130,13 +138,14 @@ function acquireSharedStoreEpochLock(dbDir, epoch) {
 
 export function openLockedReadOnlyStoreDatabase(dbDir, dbPath) {
   const epoch = storeEpochForDbPath(dbDir, dbPath);
-  if (epoch === null || !isPublishedEpoch(dbDir, 'epoch-' + epoch)) {
+  const root = resolveStoreRoot(dbDir);
+  if (epoch === null || !isPublishedEpoch(root, 'epoch-' + epoch)) {
     throw new Error('Resolved store database is outside the proven canonical epoch layout.');
   }
-  const releaseLock = acquireSharedStoreEpochLock(dbDir, epoch);
+  const releaseLock = acquireSharedStoreEpochLock(root.path, epoch);
   let db;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = new DatabaseSync(join(root.path, 'epoch-' + epoch, 'store.db'), { readOnly: true });
   } catch (error) {
     releaseLock();
     throw error;

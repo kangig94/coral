@@ -277,6 +277,46 @@ afterEach(() => {
 });
 
 describe('write-once store epochs', () => {
+  it('reopens the same epoch and reclaims residue through a cross-device symlinked store root', async () => {
+    const baseDir = mkdtempSync('/tmp/coral-store-epoch-symlink-base-');
+    roots.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const target = mkdtempSync('/dev/shm/coral-store-epoch-root-');
+    roots.push(target);
+    mkdirSync(dirname(dbDir), { recursive: true });
+    expect(statSync(target).dev).not.toBe(statSync(dirname(dbDir)).dev);
+    symlinkSync(target, dbDir, 'dir');
+
+    const published = discardCurrentStoreEpoch(runtime, options());
+    published.db.exec("CREATE TABLE symlink_root_sentinel (value TEXT NOT NULL); INSERT INTO symlink_root_sentinel VALUES ('reopened')");
+    published.db.close();
+    const residue = join(dbDir, '.reaping-abandoned');
+    mkdirSync(residue);
+    createSharedFileLockSync(join(residue, '.lock'))();
+
+    const reopened = settleStoreEpoch(runtime, options());
+    let sentinel: string | null = null;
+    try {
+      sentinel =
+        reopened.db.prepare<[], { value: string }>('SELECT value FROM symlink_root_sentinel').get()?.value ?? null;
+    } catch {
+      sentinel = null;
+    }
+    const sweep = await sweepStoreEpochsPostReady(runtime, dbDir, reopened.epoch);
+    const epochs = readdirSync(dbDir).filter((entry) => /^epoch-\d+$/u.test(entry));
+    console.log(
+      `symlinked-root-cell published=epoch-${published.epoch} reopened=epoch-${reopened.epoch} sentinel=${sentinel ?? 'missing'} epochs=${epochs.join(',')} sweep=${sweep} residue=${existsSync(residue) ? 'present' : 'removed'}`,
+    );
+
+    reopened.db.close();
+    expect(reopened.epoch).toBe(published.epoch);
+    expect(sentinel).toBe('reopened');
+    expect(epochs).toEqual(['epoch-1']);
+    expect(sweep).toBe('complete');
+    expect(existsSync(residue)).toBe(false);
+  });
+
   it.each(['post-ready sweep', 'release'] as const)(
     'holds the shared epoch lock for the read-only port through %s',
     async (operation) => {
