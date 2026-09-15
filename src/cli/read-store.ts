@@ -56,6 +56,10 @@ class ReadCoralStoreRegistry {
     }
   }
 
+  close(): void {
+    this.closeCached();
+  }
+
   private closeCached(): void {
     if (!this.cached) {
       return;
@@ -95,6 +99,10 @@ export function clearPendingReadStoreNote(): void {
 
 export function flushPendingReadStoreNote(outputFormat: 'text' | 'json'): void {
   defaultRegistry.flushPendingNote(outputFormat);
+}
+
+export function closeSharedReadCoralStore(): void {
+  defaultRegistry.close();
 }
 
 export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {

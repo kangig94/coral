@@ -244,17 +244,24 @@ export function classifyStoreFile(
   path: string,
   storage: Pick<StoragePort, 'existsSync' | 'lstatSync' | 'openSqliteDatabaseSync'>,
   current: StoreFormatClassificationTarget,
+  acquireLock: (() => () => void) | null = null,
 ): StoreFormatClassification {
   if (path !== ':memory:' && !storage.existsSync(path)) return { kind: 'absent' };
   if (path !== ':memory:' && storage.lstatSync(path).isSymbolicLink()) {
     const target = validatedStoreFormatTarget(current);
     return corruptOrUnsupported(target.fingerprint, target.productVersion, null, null, 'unavailable');
   }
-  const db = storage.openSqliteDatabaseSync(path, { readOnly: path !== ':memory:' });
+  const releaseLock = acquireLock?.();
+  let db: ReturnType<typeof storage.openSqliteDatabaseSync> | undefined;
   try {
+    db = storage.openSqliteDatabaseSync(path, { readOnly: path !== ':memory:' });
     return classifyStoreFormat(db as unknown as Database, current);
   } finally {
-    db.close();
+    try {
+      db?.close();
+    } finally {
+      releaseLock?.();
+    }
   }
 }
 

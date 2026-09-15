@@ -49,11 +49,18 @@ export type StoreResetReleasePresentation =
   | { readonly kind: 'current'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | { readonly kind: 'absent'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | {
+      readonly kind: 'release-legacy-reader-unproven';
+      readonly epoch: '0';
+      readonly target: 'gen2';
+      readonly flavor: BuildFlavor;
+    }
+  | {
       readonly kind:
         | 'release-metadata-unobservable'
         | 'release-holder-live'
         | 'release-holder-unobservable'
         | 'release-deletion-failed'
+        | 'release-pre-deletion-durability-sync-failed'
         | 'release-durability-sync-failed';
       readonly epoch: StoreEpoch;
       readonly target: 'gen2';
@@ -161,7 +168,16 @@ export async function releaseStoreReset(options: {
   readonly runtime: Runtime;
   readonly epoch: StoreEpoch;
   readonly acquireSocketGuard: AcquireStoreResetSocketGuard;
+  readonly allowUnprovenLegacyReader?: boolean;
 }): Promise<StoreResetReleasePresentation> {
+  if (options.epoch === '0' && options.allowUnprovenLegacyReader !== true) {
+    return {
+      kind: 'release-legacy-reader-unproven',
+      epoch: '0',
+      target: 'gen2',
+      flavor: options.runtime.flavor,
+    };
+  }
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
   const socket = await options.acquireSocketGuard(paths, options.runtime);
   try {
@@ -179,6 +195,9 @@ export async function releaseStoreReset(options: {
       if (result === 'live-holder') return { kind: 'release-holder-live', ...base };
       if (result === 'unobservable-holder') return { kind: 'release-holder-unobservable', ...base };
       if (result === 'deletion-failed') return { kind: 'release-deletion-failed', ...base };
+      if (result === 'pre-deletion-durability-sync-failed') {
+        return { kind: 'release-pre-deletion-durability-sync-failed', ...base };
+      }
       return { kind: 'release-durability-sync-failed', ...base };
     } finally {
       adoption();

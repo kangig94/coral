@@ -508,6 +508,7 @@ export interface StoreResetCommandOperations {
     target: StoreResetReleaseTarget,
     flavor: BuildFlavor,
     incidentId: string,
+    allowUnprovenLegacyReader?: boolean,
   ): ReturnType<typeof releaseStoreResetLocal>;
 }
 
@@ -2018,20 +2019,38 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       parseStoreResetReleaseTarget,
     )
     .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
-    .action(async (epoch: string, options: { target: StoreResetReleaseTarget; flavor: BuildFlavor }) => {
-      try {
-        const result = await storeReset.release(options.target, options.flavor, epoch);
-        const output = `${formatStoreResetRelease(result)}\n`;
-        if (result.kind === 'released') {
-          process.stdout.write(output);
-          return;
+    .option(
+      '--allow-unproven-legacy-reader',
+      'For epoch 0 only: explicitly authorize deletion despite an unobservable pre-epoch reader',
+    )
+    .action(
+      async (
+        epoch: string,
+        options: {
+          target: StoreResetReleaseTarget;
+          flavor: BuildFlavor;
+          allowUnprovenLegacyReader?: boolean;
+        },
+      ) => {
+        try {
+          const result = await storeReset.release(
+            options.target,
+            options.flavor,
+            epoch,
+            options.allowUnprovenLegacyReader ?? false,
+          );
+          const output = `${formatStoreResetRelease(result)}\n`;
+          if (result.kind === 'released') {
+            process.stdout.write(output);
+            return;
+          }
+          process.stderr.write(output);
+          process.exitCode = result.kind === 'current' || result.kind === 'absent' ? 1 : errorCodeToExit('transient');
+        } catch (error: unknown) {
+          emitError(boundStoreResetCliError(error));
         }
-        process.stderr.write(output);
-        process.exitCode = result.kind === 'current' || result.kind === 'absent' ? 1 : errorCodeToExit('transient');
-      } catch (error: unknown) {
-        emitError(boundStoreResetCliError(error));
-      }
-    });
+      },
+    );
 
   const kbCommitCommand = backend.command('kb-commit').description('Operate on retained blocking KB commit evidence');
   kbCommitCommand.configureOutput({ writeErr: () => undefined });

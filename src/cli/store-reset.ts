@@ -146,6 +146,7 @@ export function releaseStoreResetLocal(
   target: StoreResetReleaseTarget,
   flavor: BuildFlavor,
   epoch: string,
+  allowUnprovenLegacyReader = false,
 ): Promise<StoreResetReleasePresentation> {
   if (!/^(0|[1-9]\d*)$/.test(epoch)) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
@@ -154,6 +155,7 @@ export function releaseStoreResetLocal(
     target,
     runtime: createRealRuntime(flavor),
     epoch,
+    allowUnprovenLegacyReader,
     acquireSocketGuard: acquireStoreResetSocketGuard,
   });
 }

@@ -1,6 +1,6 @@
 import type { Runtime } from '../runtime/ports.js';
 import { openStoreDatabase, type Database } from './db.js';
-import { resolveCurrentStorePath } from './epoch.js';
+import { acquireStoreEpochReadLock, holdStoreEpochLockUntilClose, resolveCurrentStorePath } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 
 /**
@@ -38,12 +38,19 @@ export function openReadOnlyStoreDatabase(
   options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
   const path = resolveCurrentStorePath(runtime, options.path);
-  return openStoreDatabase({
-    path: path,
-    storage: runtime.storage,
-    storeFormat: options.storeFormat,
-    flavor: runtime.flavor,
-    readonly: true,
-    busyTimeoutMs: options.busyTimeoutMs,
-  });
+  const lease = acquireStoreEpochReadLock(runtime, path);
+  try {
+    const db = openStoreDatabase({
+      path,
+      storage: runtime.storage,
+      storeFormat: options.storeFormat,
+      flavor: runtime.flavor,
+      readonly: true,
+      busyTimeoutMs: options.busyTimeoutMs,
+    });
+    return holdStoreEpochLockUntilClose(db, lease);
+  } catch (error: unknown) {
+    lease?.();
+    throw error;
+  }
 }

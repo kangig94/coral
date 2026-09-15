@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { DatabaseSync } from 'node:sqlite';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -17,7 +16,7 @@ import {
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
 import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
-import { resolveCurrentStoreDbPath } from './lib/store-epoch.mjs';
+import { openLockedReadOnlyStoreDatabase, resolveCurrentStoreDbPath } from './lib/store-epoch.mjs';
 
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -89,7 +88,8 @@ await failOpen(async () => {
     return;
   }
 
-  const db = new DatabaseSync(dbPath, { readOnly: true });
+  const storeHandle = openLockedReadOnlyStoreDatabase(storeDbDir(), dbPath);
+  const { db } = storeHandle;
   try {
     // Default SQLITE_BUSY timeout is 0ms: a backend mid-write would make the
     // read throw immediately and silently skip the snapshot. Give the lock a
@@ -180,6 +180,6 @@ await failOpen(async () => {
       snapshotPath,
     });
   } finally {
-    db.close();
+    storeHandle.close();
   }
 }, 'pre-compact');

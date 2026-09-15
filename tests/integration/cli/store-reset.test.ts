@@ -181,7 +181,9 @@ describe('store-reset operator epochs', () => {
     openTestStoreDatabase({ path: flat, storage: runtime.storage, storeFormat }).close();
     const discarded = discardCurrentStoreEpoch(runtime, { storeFormat, build });
     discarded.db.close();
-    await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '0' })).resolves.toMatchObject({
+    await expect(
+      releaseStoreReset({ target: 'gen2', runtime, epoch: '0', allowUnprovenLegacyReader: true }),
+    ).resolves.toMatchObject({
       kind: 'released',
       epoch: '0',
     });
