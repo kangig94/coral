@@ -28,6 +28,17 @@ function enclosingFunctionName(node: ts.Node): string | null {
   return null;
 }
 
+function functionSource(path: string, name: string): string {
+  const text = source(path);
+  const parsed = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
+  const declaration = parsed.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === name,
+  );
+  if (declaration === undefined) throw new Error(`Missing function ${name} in ${path}`);
+  return declaration.getText(parsed);
+}
+
 function storeSemanticRefusalCount(): number {
   const paths = new Set(storeSources());
   const parsed = new Map<string, ts.SourceFile>();
@@ -189,6 +200,26 @@ describe('write-once store epoch invariants', () => {
     const epoch = source('src/store/epoch.ts');
     expect(epoch).not.toContain('observeLiveness');
     expect(epoch).toContain('tryAcquireExclusiveFileLockSync');
+  });
+
+  it('requires private inode identity for every required epoch file in source and generated hooks', () => {
+    const epoch = source('src/store/epoch.ts');
+    const hook = source('clients/hooks/lib/store-epoch.mjs');
+    expect(functionSource('src/store/epoch.ts', 'observeRegularFile')).toContain('entry.nlink === 1');
+    expect(functionSource('src/store/epoch.ts', 'readEpochMetadata')).toContain('nlink === 1n');
+    expect(epoch).toContain('return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;');
+    expect(hook).toContain('return entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1;');
+  });
+
+  it('keeps reporting paths free of exclusive lock acquisition', () => {
+    for (const name of ['observeStoreEpochHolder', 'observeStoreEpochHolderAsync', 'listStoreEpochResidues']) {
+      expect(functionSource('src/store/epoch.ts', name), name).not.toContain('tryAcquireExclusiveFileLockSync');
+    }
+  });
+
+  it('keeps incomplete lock construction outside every sweepable residue namespace', () => {
+    const mint = functionSource('src/store/epoch.ts', 'mintNextEpoch');
+    expect(mint).not.toContain('createSharedFileLockSync(join(preparation');
   });
 
   it('keeps every store lock inside its store directory', () => {

@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import {
   existsSync,
   chmodSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -30,6 +31,7 @@ import {
   epochDirectory,
   epochPath,
   listStoreEpochResidues,
+  listStoreEpochHolders,
   listStoreEpochs,
   openWritableStoreDbNoReset,
   resolveCurrentStoreEpoch,
@@ -1704,6 +1706,116 @@ describe('write-once store epochs', () => {
     } finally {
       closeOpened?.();
     }
+  });
+
+  it.each(['store.db', '.lock'] as const)(
+    'rejects an epoch whose required %s has another hard link during ordinary settlement',
+    (artifact) => {
+      const runtime = harness();
+      const dbDir = runtime.paths.coral.store.dbDir;
+      publishAdversarialEpoch(epochDirectory(dbDir, '1'), true);
+      const artifactPath = join(epochDirectory(dbDir, '1'), artifact);
+      const aliasPath = join(dirname(dbDir), `protected-${artifact.replace('.', '')}`);
+      linkSync(artifactPath, aliasPath);
+      const before = readFileSync(aliasPath);
+
+      const settled = settleStoreEpoch(runtime, options());
+      settled.db.close();
+
+      console.log(
+        `settlement-hardlink-cell artifact=${artifact} selected-epoch=${settled.epoch} nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
+      );
+      expect(settled.epoch).toBe('2');
+      expect(readFileSync(aliasPath)).toEqual(before);
+    },
+  );
+
+  it.each(['store.db', '.lock'] as const)(
+    'keeps the generated hook out of an epoch whose required %s has another hard link',
+    async (artifact) => {
+      const runtime = harness();
+      const dbDir = runtime.paths.coral.store.dbDir;
+      publishAdversarialEpoch(epochDirectory(dbDir, '1'), true);
+      const artifactPath = join(epochDirectory(dbDir, '1'), artifact);
+      const aliasPath = join(dirname(dbDir), `hook-protected-${artifact.replace('.', '')}`);
+      linkSync(artifactPath, aliasPath);
+      const before = readFileSync(aliasPath);
+      const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?hardlink-proof=${artifact}-${Date.now()}`;
+      const hook = (await import(helperUrl)) as {
+        resolveCurrentStoreDbPath(path: string): string | null;
+        openLockedReadOnlyStoreDatabase(dbDir: string, dbPath: string): { close(): void };
+      };
+
+      expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
+      expect(() => hook.openLockedReadOnlyStoreDatabase(dbDir, epochPath(dbDir, '1'))).toThrow();
+      console.log(
+        `generated-hook-hardlink-cell artifact=${artifact} resolved=none nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
+      );
+      expect(readFileSync(aliasPath)).toEqual(before);
+    },
+  );
+
+  it.each(['.mint-invalid', '.preparing-invalid', '.reaping-invalid', 'epoch-1'] as const)(
+    'reclaims %s when its regular lock is not a SQLite database',
+    async (name) => {
+      const runtime = harness();
+      const dbDir = runtime.paths.coral.store.dbDir;
+      publishAdversarialEpoch(epochDirectory(dbDir, '3'), true);
+      publishAdversarialEpoch(epochDirectory(dbDir, '5'), true);
+      const target = join(dbDir, name);
+      if (name === 'epoch-1') publishAdversarialEpoch(target, true);
+      else mkdirSync(target);
+      writeFileSync(join(target, '.lock'), 'not a SQLite database');
+
+      const result = await sweepStoreEpochsPostReady(runtime, dbDir, '5');
+
+      console.log(`malformed-lock-reclamation-cell namespace=${name} result=${result} remaining=${existsSync(target)}`);
+      expect(result).toBe('complete');
+      expect(existsSync(target)).toBe(false);
+    },
+  );
+
+  it.each(['.mint-wrong-kind', '.preparing-wrong-kind', '.reaping-wrong-kind'] as const)(
+    'lists and sweeps a wrong-kind %s residue consistently',
+    async (name) => {
+      const runtime = harness();
+      const dbDir = runtime.paths.coral.store.dbDir;
+      publishAdversarialEpoch(epochDirectory(dbDir, '1'), true);
+      const target = join(dbDir, name);
+      writeFileSync(target, 'wrong-kind');
+
+      const listed = listStoreEpochResidues(runtime);
+      const result = await sweepStoreEpochsPostReady(runtime, dbDir, '1');
+
+      console.log(
+        `wrong-kind-residue-cell namespace=${name} listed=${listed[0]?.state ?? 'missing'} result=${result} remaining=${existsSync(target)}`,
+      );
+      expect(listed).toEqual([{ name, bytes: 'wrong-kind'.length, state: 'reclaimable' }]);
+      expect(result).toBe('complete');
+      expect(existsSync(target)).toBe(false);
+    },
+  );
+
+  it('does not acquire an exclusive lock while listing holders and residues', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(epochDirectory(dbDir, '1'), true);
+    writeFileSync(join(dbDir, '.epoch-holder-list.json'), JSON.stringify({ epoch: '1', pid: process.pid }));
+    const residue = join(dbDir, '.mint-list');
+    mkdirSync(residue);
+    createSharedFileLockSync(join(residue, '.lock'))();
+    const lockBefore = fileTreeSnapshot(dbDir);
+
+    const holders = listStoreEpochHolders(runtime);
+    const residues = listStoreEpochResidues(runtime);
+    const lockAfter = fileTreeSnapshot(dbDir);
+
+    console.log(
+      `read-only-list-cell holders=${holders.map(({ state }) => state).join(',')} residues=${residues.map(({ state }) => state).join(',')} byte-identical=${JSON.stringify(lockAfter) === JSON.stringify(lockBefore)}`,
+    );
+    expect(lockAfter).toEqual(lockBefore);
+    expect(holders).toEqual([{ id: 'list', epoch: '1', pid: process.pid, state: 'unobservable' }]);
+    expect(residues).toEqual([{ name: '.mint-list', bytes: expect.any(Number), state: 'unobservable' }]);
   });
 
   it.each(['directory', 'legacy-symlink', 'external-symlink', 'socket'] as const)(

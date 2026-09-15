@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -103,6 +104,37 @@ function storeMetadataValue(path: string, key: string): string | null {
   } finally {
     db.close();
   }
+}
+
+function fileTreeSnapshot(root: string): readonly Readonly<{ path: string; bytes: Buffer }>[] {
+  const snapshot: Array<Readonly<{ path: string; bytes: Buffer }>> = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else snapshot.push({ path: path.slice(root.length + 1), bytes: readFileSync(path) });
+    }
+  };
+  visit(root);
+  return snapshot;
+}
+
+function createCrashedWalStore(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const crashed = spawnSync(
+    process.execPath,
+    [
+      '--no-warnings',
+      '-e',
+      "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec(\"PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE sentinel(value TEXT NOT NULL); INSERT INTO sentinel VALUES ('untouched');\"); process.kill(process.pid, 'SIGKILL');",
+      path,
+    ],
+    { encoding: 'utf-8' },
+  );
+  expect(crashed.signal).toBe('SIGKILL');
+  rmSync(`${path}-shm`, { force: true });
 }
 
 function writeIncident(options: {
@@ -270,6 +302,63 @@ describe('bundled store-reset CLI', () => {
     expect(storeMetadataValue(storePath, 'store_product_version')).toBeNull();
     expect(readFileSync(storePath)).toEqual(before);
   });
+
+  it.each(['store.db', '.lock'] as const)(
+    'refuses to smoke-open an epoch whose required %s has another hard link',
+    (artifact) => {
+      const build = readBuildManifest();
+      const home = temporaryHome(`coral-smoke-hardlinked-${artifact.replace('.', '')}-`);
+      mkdirSync(join(home, 'tmp'));
+      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+      expect(discard.status, discard.stderr).toBe(0);
+      const epochPath = epochStorePath(home, build, 1);
+      const artifactPath = join(dirname(epochPath), artifact);
+      const alias = join(root(`coral-smoke-hardlink-alias-${artifact.replace('.', '')}-`), artifact);
+      linkSync(artifactPath, alias);
+      const before = readFileSync(artifactPath);
+
+      const result = spawnSync(process.execPath, [BACKEND_BUNDLE, '--smoke-open-store', '--path', epochPath], {
+        encoding: 'utf-8',
+        env: { ...process.env, ...temporaryHomes.environment(home), TMPDIR: join(home, 'tmp') },
+      });
+
+      console.log(
+        `smoke-hardlink-cell artifact=${artifact} status=${result.status} nlink=${statSync(artifactPath).nlink} byte-identical=${readFileSync(artifactPath).equals(before)}`,
+      );
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(readFileSync(artifactPath)).toEqual(before);
+    },
+  );
+
+  it.each(['residue', 'holder'] as const)(
+    'keeps an external crashed WAL tree byte-identical while built list inspects an aliased %s root',
+    (kind) => {
+      const build = readBuildManifest();
+      const home = temporaryHome(`coral-list-aliased-${kind}-`);
+      mkdirSync(join(home, 'tmp'));
+      const dbDir = dirname(activeStorePath(home, build));
+      mkdirSync(dbDir, { recursive: true });
+      const external = root(`coral-list-aliased-${kind}-external-`);
+      createCrashedWalStore(join(external, '.lock'));
+      if (kind === 'residue') {
+        symlinkSync(external, join(dbDir, '.reaping-alias'));
+      } else {
+        symlinkSync(external, join(dbDir, 'epoch-1'));
+        writeFileSync(join(dbDir, '.epoch-holder-alias.json'), JSON.stringify({ epoch: '1', pid: process.pid }));
+      }
+      const before = fileTreeSnapshot(external);
+
+      const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
+      const after = fileTreeSnapshot(external);
+
+      console.log(
+        `built-list-alias-cell kind=${kind} status=${list.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
+      );
+      expect(list.status, list.stderr).toBe(0);
+      expect(after).toEqual(before);
+    },
+  );
 
   it.each(['absent-root', 'empty-root'] as const)('initializes epoch one on discard with %s', (state) => {
     const build = readBuildManifest();
