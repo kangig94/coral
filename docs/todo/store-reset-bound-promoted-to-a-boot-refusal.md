@@ -2128,7 +2128,7 @@ The asynchronous sweep still does unbounded synchronous work: `JSON.parse` on a 
 inside the scans; the responsiveness cell should scale, not sit at 300 entries.
 
 And the hook's second selector still disagrees with the canonical one: the backend rejects an
-`epoch.json` over 64 KiB and the hook reads it unbounded (`observeStoreEpoch` in `src/store/epoch.ts`,
+`epoch.json` over 64 KiB and the hook reads it unbounded (`readEpochMetadata` in `src/store/epoch.ts`,
 `isPublishedEpoch` in `clients/hooks/lib/store-epoch.mjs`), so a 70 KB valid document makes the backend choose epoch 1 while
 `pre-compact` opens epoch 2 — reproduced. §7 has been asking for one home since Revision 15; the parity
 corpus keeps being a sample rather than a proof. Generate the hook's copy from the owner.
