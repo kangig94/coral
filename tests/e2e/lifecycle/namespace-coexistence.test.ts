@@ -88,7 +88,7 @@ function createPluginFixture(): {
 
   const scratchCwd = mkdtempSync(join(tmpdir(), `coral-fixture-smoke-${sourceManifest.flavor}-`));
   tempRoots.push(scratchCwd);
-  const smokeHome = join(scratchCwd, 'home');
+  const smokeHome = temporaryHomes.create(`coral-fixture-smoke-${sourceManifest.flavor}-home-`, sourceManifest.flavor);
   const smokeRuntime = createRealRuntime(sourceManifest.flavor, { baseDir: join(smokeHome, '.coral') });
   const smokeEpochDir = join(smokeRuntime.paths.coral.store.dbDir, 'epoch-1');
   const smokeDbPath = join(smokeEpochDir, 'store.db');
@@ -120,7 +120,7 @@ function createPluginFixture(): {
     {
       cwd: scratchCwd,
       encoding: 'utf-8',
-      env: { ...process.env, HOME: smokeHome },
+      env: { ...process.env, ...temporaryHomes.environment(smokeHome) },
     },
   );
   if (smokeOut.trim() !== 'ok') {
