@@ -2243,10 +2243,10 @@ it goes, and with it:
   it closes without a mechanism.
 
 `legacy-adoptable` does **not** follow them out. It is produced when the fingerprint matches and the
-product-version row is absent (`src/store/db.ts:218`), which no epoch writer can produce because
-`applyBundledStoreSchema` stamps both rows — but `classifyStoreFile` also serves the pre-epoch
-legacy-generation store (`src/store/generation-mutation-coordination.ts:142`), which this design does not
-touch. Verify reachability there before removing anything; Revision 12's adoption stays correct where it
+product-version row is absent — see `classifyStoreFormat` in `src/store/db.ts` — which no epoch writer
+can produce because `applyBundledStoreSchema` stamps both rows. But `classifyStoreFile` also serves the
+pre-epoch legacy-generation store, reached from `inspectGenerationReadiness` in
+`src/store/generation-mutation-coordination.ts`, which this design does not touch. Verify reachability there before removing anything; Revision 12's adoption stays correct where it
 is still reachable.
 
 ### The cost, stated
