@@ -3,6 +3,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
 import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_DRAIN_TIMEOUT_MS, runShutdownSequence } from '#src/coordinator/shutdown.js';
 import {
   createShutdownSettlementLedger,
@@ -195,29 +196,63 @@ function heldFailureDetail(held: ShutdownSequenceHold): string {
 }
 
 describe('runShutdownSequence drain budget', () => {
-  it('joins the store epoch sweep before destructive teardown and socket release', async () => {
+  it('keeps a destructive sweep join and process-exit gate held through the budget and a second signal', async () => {
     let finishSweep!: () => void;
     const sweepSettlement = new Promise<void>((resolve) => {
       finishSweep = resolve;
     });
+    const acceptProcessExitRemainder = vi.fn<(remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance>(
+      (remainder) => ({
+        kind: 'accepted',
+        remainder,
+        requestExit: () => undefined,
+      }),
+    );
     const harness = buildHarness({
       stopStoreEpochSweepFn: async () => {
         harness.callLog.push('storeEpochSweep.stop');
         await sweepSettlement;
         harness.callLog.push('storeEpochSweep.joined');
       },
+      acceptProcessExitRemainder,
     });
 
-    const sequence = runShutdownSequence(harness.ctx);
+    let sequence: ReturnType<typeof runShutdownSequence> | undefined;
+    const recordExitCode = vi.fn();
+    const onRepeatedSignal = vi.fn();
+    const handleSignal = createCoordinatorShutdownSignalHandler({
+      shutdown: () => (sequence ??= runShutdownSequence(harness.ctx)),
+      recordExitCode,
+      onRepeatedSignal,
+    });
+    handleSignal('sigterm');
     await flush();
 
     expect(harness.callLog).toEqual(['setLifecycle:draining', 'idleTimer.stopWatching', 'storeEpochSweep.stop']);
     expect(harness.closeIpcCalled()).toBe(false);
 
+    handleSignal('sigint');
+    expect(recordExitCode).toHaveBeenCalledWith(1);
+    expect(onRepeatedSignal).toHaveBeenCalledOnce();
+    for (let advanced = 0; advanced <= HANDOFF_DRAIN_TIMEOUT_MS + 100; advanced += 100) {
+      harness.time.tick(100);
+      await flush();
+    }
+    expect(acceptProcessExitRemainder).not.toHaveBeenCalled();
+    expect(harness.closeIpcCalled()).toBe(false);
+
+    if (sequence === undefined) throw new Error('shutdown signal did not start the sequence');
+    const held = requireHeld(await sequence);
+
     finishSweep();
-    await sequence;
+    harness.time.tick(100);
+    await held.retryAfter;
+    await retryHeldFinalization(held);
     expect(harness.callLog.indexOf('storeEpochSweep.joined')).toBeLessThan(
       harness.callLog.indexOf('closeIpcServerFn:start'),
+    );
+    console.log(
+      'shutdown-sweep-cell syscall=outlasted-budget exit-gate=held second-signal=nonzero join-before-ipc=true',
     );
   });
 

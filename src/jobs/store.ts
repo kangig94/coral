@@ -820,6 +820,28 @@ export class JobStore implements JobProgressStore {
     return appended?.seq ?? 0;
   }
 
+  appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number {
+    const emittedAt = nowIsoString(this.runtime.time);
+    const appended =
+      this.commitEvents((commit) => {
+        commit.append({
+          type: 'job.progress.emitted',
+          stream: { kind: 'job', id: jobId },
+          namespace: this.namespace,
+          refs: buildJobEventRefs({ jobId, sessionId }),
+          body: {
+            kind: 'message',
+            message,
+            timing: { origin: 'runtime', originAt: emittedAt, emittedAt, elapsedMs: 0 },
+          },
+        });
+        return undefined;
+      }) ?? [];
+    const published = this.publishAppendedEvents(appended, new Map());
+    if (published.length > 0) this.observer?.(published);
+    return appended[0]?.seq ?? 0;
+  }
+
   private countLiveOverrideJobs(): number {
     let count = 0;
 

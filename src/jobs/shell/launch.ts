@@ -1233,7 +1233,15 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     try {
       currentStatus = this.deps.progressStore.readStatus(jobId);
     } catch (statusError: unknown) {
-      if (statusError instanceof StoreCodecError) return;
+      if (statusError instanceof StoreCodecError) {
+        this.deps.progressStore.appendUnreadableStatusProgress(
+          jobId,
+          sessionId,
+          `Released live job ${jobId} without a terminal after provider failure (${errorMessage(error)}) because its latest persisted event could not be decoded (${statusError.message}).`,
+        );
+        this.releaseTerminalJob(jobId, sessionId);
+        return;
+      }
       throw statusError;
     }
     if (!currentStatus || isTerminalPhase(currentStatus.phase)) {

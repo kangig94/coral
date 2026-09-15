@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { handoffStartupToSelectedBuild, main } from '#src/coordinator/bootstrap.js';
+import {
+  createCoordinatorShutdownSignalHandler,
+  handoffStartupToSelectedBuild,
+  main,
+} from '#src/coordinator/bootstrap.js';
 import { StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
 import { HandoffRunError } from '#src/coordinator/handoff-routing/runner.js';
 import { backendLog } from '#src/infra/backend-log.js';
@@ -44,6 +48,23 @@ beforeEach(() => {
   mockState.processIncarnationProbeRegistrySize.mockReset().mockReturnValue(0);
   mockState.snapshotProcessIncarnationProbeSubjects.mockReset().mockReturnValue([]);
   mockState.terminateProcessIncarnationProbes.mockReset().mockResolvedValue({ disposition: 'settled' });
+});
+
+it('makes a second shutdown signal demand a nonzero exit without bypassing the in-flight join', () => {
+  const inFlightJoin = new Promise<void>(() => {});
+  const shutdown = vi.fn(() => inFlightJoin);
+  const recordExitCode = vi.fn();
+  const onRepeatedSignal = vi.fn();
+  const handle = createCoordinatorShutdownSignalHandler({ shutdown, recordExitCode, onRepeatedSignal });
+
+  handle('sigterm');
+  handle('sigint');
+
+  expect(shutdown).toHaveBeenNthCalledWith(1, 'sigterm');
+  expect(shutdown).toHaveBeenNthCalledWith(2, 'sigint');
+  expect(recordExitCode).toHaveBeenCalledWith(1);
+  expect(onRepeatedSignal).toHaveBeenCalledOnce();
+  console.log('second-signal-cell shutdown=cached safe-join=held eventual-exit=nonzero');
 });
 
 describe('backend bootstrap store handoff', () => {

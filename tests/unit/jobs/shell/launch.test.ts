@@ -63,6 +63,7 @@ import { formatAbortResult } from '#src/cli/format/jobs.js';
 import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
+import { StoreCodecError } from '#src/store/body-codec.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import {
   toProviderDefinition,
@@ -780,6 +781,52 @@ describe('ExecutionService launch', () => {
     expect(abortRegistry.has(jobId)).toBe(false);
     expect(launchCoordinator.getActiveJobIds()).not.toContain(jobId);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('releases a live job and records why when provider failure meets a malformed latest event', async () => {
+    let rejectProvider!: (error: Error) => void;
+    const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const { provider } = makeProvider({ execute: () => providerResult });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { abortRegistry, progressStore, sessionManager } = getInternals(service);
+    const decision = await service.start('codex', { prompt: 'malformed latest event' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    const readStatus = progressStore.readStatus.bind(progressStore);
+    const statusSpy = vi.spyOn(progressStore, 'readStatus').mockImplementation((jobId) => {
+      if (jobId === decision.jobId) {
+        throw new StoreCodecError('Malformed latest job event', {
+          seq: 41,
+          type: 'job.progress.emitted',
+          streamKind: 'job',
+          streamId: jobId,
+          column: 'body',
+        });
+      }
+      return readStatus(jobId);
+    });
+
+    rejectProvider(new Error('provider failed after malformed latest event'));
+
+    await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
+    await vi.waitFor(() => expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBeUndefined());
+    statusSpy.mockRestore();
+    const disposition = progressStore
+      .readJobEvents(decision.jobId)
+      .find(
+        (event): event is Extract<JobEvent, { type: 'progress' }> =>
+          event.type === 'progress' &&
+          event.message?.includes(decision.jobId) === true &&
+          event.message.includes('Malformed latest job event'),
+      );
+    expect(disposition?.message).toContain('provider failed after malformed latest event');
+    console.log(
+      `store-codec-live-job-cell job=${decision.jobId} abort=false claim=released disposition=${JSON.stringify(disposition?.message)}`,
+    );
   });
 
   it.each([

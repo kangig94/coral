@@ -445,7 +445,7 @@ function removeWhileExclusivelyLocked(
   runtime: Runtime,
   lockPath: string,
   targetPath: string,
-  removeLockFile = false,
+  removeLockFile: boolean,
 ): LockedRemoval {
   let lease: FileLockLease | null;
   try {
@@ -891,7 +891,7 @@ async function removeWhileExclusivelyLockedAsync(
   runtime: Runtime,
   lockPath: string,
   targetPath: string,
-  removeLockFile = false,
+  removeLockFile: boolean,
 ): Promise<LockedRemoval> {
   let lease: FileLockLease | null;
   try {
@@ -1337,7 +1337,7 @@ export function listStoreEpochs(
 export function storeEpochHookSource(): string {
   return String.raw`// Generated from src/store/epoch.ts by scripts/build-server.mjs. Do not edit directly.
 import { lstatSync, readFileSync, readdirSync, realpathSync, statSync } from '${'node:' + 'fs'}';
-import { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from '${'node:' + 'sqlite'}';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const EPOCH_DIRECTORY_PATTERN = /^epoch-([1-9]\d*)$/;

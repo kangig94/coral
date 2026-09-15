@@ -41,7 +41,7 @@ export function openReadOnlyStoreDatabase(
   const lease = acquireStoreEpochReadLock(runtime, path);
   try {
     const db = openStoreDatabase({
-      path,
+      path: path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,

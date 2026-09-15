@@ -5,11 +5,12 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type { Runtime } from '#src/runtime/ports.js';
+import type * as RealRuntimeMod from '#src/runtime/real.js';
 
 const injected = vi.hoisted(() => ({ runtime: null as Runtime | null }));
 
 vi.mock('#src/runtime/real.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#src/runtime/real.js')>();
+  const actual = await importOriginal<typeof RealRuntimeMod>();
   return {
     ...actual,
     createRealRuntime: () => {
@@ -59,7 +60,7 @@ function publishEpoch(runtime: Runtime, epoch: string): void {
 }
 
 it('keeps the cached CLI reader shared lock until its cached SQLite handle closes', async () => {
-  const realRuntime = await vi.importActual<typeof import('#src/runtime/real.js')>('#src/runtime/real.js');
+  const realRuntime = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
   root = mkdtempSync(join(tmpdir(), 'coral-cached-read-lock-'));
   const runtime = realRuntime.createRealRuntime('prod', { baseDir: root });
   injected.runtime = runtime;

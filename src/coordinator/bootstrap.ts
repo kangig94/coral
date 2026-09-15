@@ -120,6 +120,22 @@ function createBootstrapProbeExitGate(): Readonly<{
 
 const bootstrapProbeExitGate = createBootstrapProbeExitGate();
 
+export function createCoordinatorShutdownSignalHandler(options: {
+  readonly shutdown: (reason: 'sigterm' | 'sigint') => Promise<unknown>;
+  readonly recordExitCode: (code: number) => void;
+  readonly onRepeatedSignal?: () => void;
+}): (reason: 'sigterm' | 'sigint') => void {
+  let signalCount = 0;
+  return (reason) => {
+    signalCount += 1;
+    if (signalCount > 1) {
+      options.recordExitCode(1);
+      options.onRepeatedSignal?.();
+    }
+    void options.shutdown(reason).catch(() => {});
+  };
+}
+
 async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
   const pathIdx = argv.indexOf('--path');
   if (pathIdx === -1 || !argv[pathIdx + 1]) {
@@ -329,12 +345,13 @@ export async function main(): Promise<number> {
       },
     });
 
-    process.on('SIGTERM', () => {
-      void coordinator.shutdown('sigterm').catch(() => {});
+    const handleShutdownSignal = createCoordinatorShutdownSignalHandler({
+      shutdown: coordinator.shutdown,
+      recordExitCode: bootstrapProbeExitGate.recordExitCode,
+      onRepeatedSignal: () => backendLog.warn('Repeated shutdown signal received; eventual safe exit is now nonzero.'),
     });
-    process.on('SIGINT', () => {
-      void coordinator.shutdown('sigint').catch(() => {});
-    });
+    process.on('SIGTERM', () => handleShutdownSignal('sigterm'));
+    process.on('SIGINT', () => handleShutdownSignal('sigint'));
 
     const info = await coordinator.start();
     backendLog.info(`Running on ${info.host}:${info.port}`);

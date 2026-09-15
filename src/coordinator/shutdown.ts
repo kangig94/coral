@@ -1133,7 +1133,7 @@ export async function runShutdownSequence({
       label: 'store epoch sweep cancellation',
       task: () => confirmedTask(stopStoreEpochSweepFn),
       retainedAuthority: () => cleanupContribution('store epoch sweep cancellation'),
-      remainder: { owner: 'process-exit' },
+      remainder: { owner: 'none' },
     }));
   }
 

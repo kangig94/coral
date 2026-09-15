@@ -50,4 +50,5 @@ export interface JobProgressStore {
   listJobIds(): string[];
   liveJobCount(): number;
   appendProgress(jobId: string, sessionId: string | null, message: string): number;
+  appendUnreadableStatusProgress(jobId: string, sessionId: string, message: string): number;
 }
