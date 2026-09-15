@@ -1129,11 +1129,25 @@ export async function runShutdownSequence({
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
   if (stopStoreEpochSweepFn !== undefined) {
+    const storeEpochSweepCancellation = createJoinableSettlementTask(stopStoreEpochSweepFn);
     void (await ledger.run({
       label: 'store epoch sweep cancellation',
-      task: () => confirmedTask(stopStoreEpochSweepFn),
+      task: () => confirmedTask(storeEpochSweepCancellation.run),
       retainedAuthority: () => cleanupContribution('store epoch sweep cancellation'),
       remainder: { owner: 'none' },
+      hold: () => {
+        const settlement = storeEpochSweepCancellation.settlement();
+        return settlement === null
+          ? {
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'store-epoch-sweep-settlement',
+            }
+          : {
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'store-epoch-sweep-settlement',
+              retryAfter: settlement,
+            };
+      },
     }));
   }
 

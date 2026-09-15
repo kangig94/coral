@@ -28,6 +28,7 @@ export type ShutdownHoldExit =
   | 'kb-daemon-process-close'
   | 'process-incarnation-probe-settlement'
   | 'lifecycle-reactor-disposal-settlement'
+  | 'store-epoch-sweep-settlement'
   | 'admitted-provider-operation-mutation-settlement'
   | 'provider-operation-mutation-admission-availability'
   | 'provider-proxy-set-release-retry'
