@@ -14,7 +14,7 @@ import { quarantineKbCommit } from '#src/cli/kb-commit-quarantine.js';
 import { acquireStoreResetSocketGuard } from '#src/cli/store-reset-socket.js';
 import { serializeCoralSetupError } from '#src/runtime/errors.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
+import { releaseStoreReset, resolveStoreResetTargetPaths } from '#src/store/operator-store-reset.js';
 import { bindSocket } from '#src/transport/ipc/server.js';
 
 const roots: string[] = [];
@@ -126,7 +126,10 @@ describe('operator coordinator socket bind failures', () => {
       let refusal: unknown;
       try {
         if (command === 'store-reset') {
-          await acquireStoreResetSocketGuard(resolveStoreResetTargetPaths(runtime, 'gen2'), runtime);
+          await acquireStoreResetSocketGuard(resolveStoreResetTargetPaths(runtime, 'gen2'), runtime, {
+            kind: 'discard',
+            target: 'gen2',
+          });
         } else {
           await quarantineKbCommit({ runtime, commitId: 'blocking-commit' });
         }
@@ -182,6 +185,34 @@ describe('operator coordinator socket bind failures', () => {
       }
     },
   );
+
+  it('names the refused release command in the socket-guard remediation', async () => {
+    const runtime = createRealRuntime('prod', { baseDir: root() });
+    const incumbent = await holdSocket(runtime.paths.coral.coordinator.socketPath);
+
+    try {
+      let refusal: unknown;
+      try {
+        await releaseStoreReset({
+          target: 'gen2',
+          runtime,
+          epoch: '1',
+          acquireSocketGuard: acquireStoreResetSocketGuard,
+        });
+      } catch (error: unknown) {
+        refusal = error;
+      }
+
+      expect(serializeCoralSetupError(refusal)).toMatchObject({
+        code: 'coordinator_socket_in_use',
+        context: {
+          retryCommand: 'coral-cli backend store-reset release 1 --target gen2 --flavor prod',
+        },
+      });
+    } finally {
+      await closeServer(incumbent);
+    }
+  });
 
   it('leaves a non-socket published address in place and refuses the guard', async () => {
     const runtime = createRealRuntime('prod', {

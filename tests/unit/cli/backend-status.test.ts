@@ -1,4 +1,7 @@
 import { Command } from 'commander';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -10,6 +13,8 @@ import {
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { releaseStoreReset } from '#src/store/operator-store-reset.js';
 import type { createIpcClient, IpcClient } from '#src/transport/ipc/client.js';
 import {
   formatBackendStatus,
@@ -136,6 +141,7 @@ const noDirectProviderProxySetHolders = async () => [] as const;
 
 let stdout = '';
 let stderr = '';
+const storeResetRoots: string[] = [];
 
 beforeEach(() => {
   stdout = '';
@@ -153,6 +159,82 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   process.exitCode = undefined;
+  for (const root of storeResetRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('backend store-reset release failures', () => {
+  function programForRelease(runtime: Runtime, releaseSocket: () => Promise<void>): Command {
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset: {
+        ...storeReset,
+        release: (target, _flavor, epoch, allowUnprovenLegacyReader) =>
+          releaseStoreReset({
+            target,
+            runtime,
+            epoch,
+            allowUnprovenLegacyReader,
+            acquireSocketGuard: async () => ({ release: releaseSocket }),
+          }),
+      },
+    });
+    return program;
+  }
+
+  async function runRelease(program: Command): Promise<void> {
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'store-reset',
+      'release',
+      '1',
+      '--target',
+      'gen2',
+      '--flavor',
+      'prod',
+    ]);
+  }
+
+  it('does not label a raw generation-lock parent EACCES as a reporting failure', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-release-cli-eacces-'));
+    storeResetRoots.push(baseDir);
+    const baseRuntime = createRealRuntime('prod', { baseDir });
+    const runtime = {
+      ...baseRuntime,
+      storage: new Proxy(baseRuntime.storage, {
+        get(subject, property, receiver) {
+          if (property !== 'mkdirSync') return Reflect.get(subject, property, receiver) as unknown;
+          return () => {
+            throw Object.assign(new Error('generation lock parent creation refused'), { code: 'EACCES' });
+          };
+        },
+      }),
+    };
+
+    await runRelease(programForRelease(runtime, async () => undefined));
+
+    expect(stderr).toContain('Store-reset release failed. [code=store_reset_release_failed]');
+    expect(stderr).not.toContain('Store-reset reporting failed');
+    expect(process.exitCode).toBe(70);
+  });
+
+  it('does not label a throwing socket-lock release as a reporting failure', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-release-cli-lock-release-'));
+    storeResetRoots.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+
+    await runRelease(
+      programForRelease(runtime, async () => {
+        throw new Error('socket lock release failed');
+      }),
+    );
+
+    expect(stderr).toContain('Store-reset release failed. [code=store_reset_release_failed]');
+    expect(stderr).not.toContain('Store-reset reporting failed');
+    expect(process.exitCode).toBe(70);
+  });
 });
 
 describe('backend shutdown recovery commands', () => {

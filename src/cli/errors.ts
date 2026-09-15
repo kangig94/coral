@@ -20,7 +20,8 @@ export type StoreResetCliErrorCode =
   | 'store_reset_incident_not_found'
   | 'store_reset_build_mismatch'
   | 'store_reset_incident_build_mismatch'
-  | 'store_reset_reporting_failed';
+  | 'store_reset_reporting_failed'
+  | 'store_reset_release_failed';
 
 const STORE_RESET_ERRORS = {
   invalid_store_reset_incident_id: {
@@ -57,6 +58,12 @@ const STORE_RESET_ERRORS = {
     message: 'Store-reset reporting failed.',
     remediation:
       'Retry once. If it still fails, file a Store-reset incident issue with this fixed error output; do not move, restore, delete, or attach DB, WAL, SHM, or raw logs.',
+    exitCode: 70,
+  },
+  store_reset_release_failed: {
+    message: 'Store-reset release failed.',
+    remediation:
+      'Correct the reported filesystem or lock condition, then retry the same store-reset release command. Preserve the store directory and do not run store-reset discard as a substitute.',
     exitCode: 70,
   },
 } as const satisfies Readonly<

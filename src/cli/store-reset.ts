@@ -282,3 +282,9 @@ export function boundStoreResetCliError(error: unknown): StoreResetCliError | Co
     ? error
     : new StoreResetCliError('store_reset_reporting_failed');
 }
+
+export function boundStoreResetReleaseCliError(error: unknown): StoreResetCliError | CoralSetupError {
+  return error instanceof StoreResetCliError || error instanceof CoralSetupError
+    ? error
+    : new StoreResetCliError('store_reset_release_failed');
+}

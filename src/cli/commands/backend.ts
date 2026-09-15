@@ -467,6 +467,7 @@ export function handoffPublicationIncidentsExitContribution(
 import { quarantineKbCommitLocal } from '../kb-commit-quarantine.js';
 import type { StoreResetReleaseTarget, StoreResetTarget } from '../../store/operator-store-reset.js';
 import {
+  boundStoreResetReleaseCliError,
   boundStoreResetCliError,
   discardStoreResetLocal,
   listStoreResetIncidentsLocal,
@@ -2053,7 +2054,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           process.stderr.write(output);
           process.exitCode = result.kind === 'current' || result.kind === 'absent' ? 1 : errorCodeToExit('transient');
         } catch (error: unknown) {
-          emitError(boundStoreResetCliError(error));
+          emitError(boundStoreResetReleaseCliError(error));
         }
       },
     );
