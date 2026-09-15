@@ -152,13 +152,12 @@ describe('write-once store epoch invariants', () => {
     expect(new Set(deletionOwners)).toEqual(new Set(['removeWhileExclusivelyLocked', 'sweepStoreEpochs']));
   });
 
-  it('retains epoch zero and the highest two proven epochs across numbering gaps', () => {
+  it('retains exactly the highest two proven epochs across numbering gaps', () => {
     for (let mask = 0; mask < 1 << 8; mask += 1) {
-      const proven = Array.from({ length: 8 }, (_, epoch) => String(epoch)).filter(
+      const proven = Array.from({ length: 8 }, (_, epoch) => String(epoch + 1)).filter(
         (_epoch, index) => mask & (1 << index),
       );
       const retained = new Set([...proven].sort((left, right) => Number(left) - Number(right)).slice(-2));
-      if (proven.includes('0')) retained.add('0');
       expect(garbageStoreEpochs(proven)).toEqual(new Set(proven.filter((epoch) => !retained.has(epoch))));
     }
   });

@@ -63,7 +63,7 @@ function publishEpoch(runtime: Runtime, epoch: string): void {
   writeFileSync(
     join(directory, STORE_EPOCH_METADATA_FILE_NAME),
     JSON.stringify({
-      supersedes: '0',
+      supersedes: null,
       classification: { kind: 'unavailable', cause: 'test' },
       build,
       publishedAt: '2026-09-15T00:00:00.000Z',
@@ -111,19 +111,6 @@ describe('store epoch lock-release durability barriers', () => {
 
     expect(sweepStoreEpochs(tracked.runtime, dbDir, null, { releaseEpoch: '1' })).toBe('lock-release-failed');
     expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
-    expect(tracked.syncs()).toBeGreaterThan(0);
-  });
-
-  it('syncs a removed epoch-zero release target when its lock release throws', () => {
-    const base = harness();
-    const dbDir = base.paths.coral.store.dbDir;
-    openTestStoreDatabase({ path: epochPath(dbDir, '0'), storage: base.storage, storeFormat }).close();
-    publishEpoch(base, '2');
-    const tracked = trackingRootSync(base);
-    lockReleaseFault.paths.add(storeEpochLockPath(dbDir, '0'));
-
-    expect(sweepStoreEpochs(tracked.runtime, dbDir, null, { releaseEpoch: '0' })).toBe('lock-release-failed');
-    expect(existsSync(epochPath(dbDir, '0'))).toBe(false);
     expect(tracked.syncs()).toBeGreaterThan(0);
   });
 

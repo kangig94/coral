@@ -37,7 +37,7 @@ function seedStore(homeDir: string, projectRoot: string, fingerprint: string, jo
     writeFileSync(
       join(epochDir, 'epoch.json'),
       JSON.stringify({
-        supersedes: epoch - 1,
+        supersedes: epoch === 1 ? null : epoch - 1,
         classification: { kind: 'unavailable', cause: 'hook-test' },
         build: {
           version: '0.10.9',

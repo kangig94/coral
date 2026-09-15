@@ -146,22 +146,20 @@ export function releaseStoreResetLocal(
   target: StoreResetReleaseTarget,
   flavor: BuildFlavor,
   epoch: string,
-  allowUnprovenLegacyReader = false,
 ): Promise<StoreResetReleasePresentation> {
-  if (!/^(0|[1-9]\d*)$/.test(epoch)) {
+  if (!/^[1-9]\d*$/.test(epoch)) {
     throw new StoreResetCliError('invalid_store_reset_release_incident_id');
   }
   return releaseStoreReset({
     target,
     runtime: createRealRuntime(flavor),
     epoch,
-    allowUnprovenLegacyReader,
     acquireSocketGuard: acquireStoreResetSocketGuard,
   });
 }
 
 function isCanonicalEpoch(value: string): boolean {
-  return /^(0|[1-9]\d*)$/.test(value);
+  return /^[1-9]\d*$/.test(value);
 }
 
 export function discardStoreResetLocal(

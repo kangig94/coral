@@ -1,13 +1,4 @@
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { reportStoreResetLocal, type StoreResetCliDependencies } from '#src/cli/store-reset.js';
+import { releaseStoreResetLocal, reportStoreResetLocal, type StoreResetCliDependencies } from '#src/cli/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { acquireSharedFileLockSync } from '#src/infra/fs-lock.js';
@@ -75,7 +66,7 @@ function publishEpoch(dbDir: string, epoch: string): void {
   writeFileSync(
     join(directory, 'epoch.json'),
     JSON.stringify({
-      supersedes: '0',
+      supersedes: null,
       classification: { kind: 'unavailable', cause: 'test' },
       build,
       publishedAt: '2026-09-15T00:00:00.000Z',
@@ -96,6 +87,13 @@ afterEach(() => {
 });
 
 describe('store-reset operator epochs', () => {
+  it('rejects release zero because the flat store is not addressable', () => {
+    expect(() => releaseStoreResetLocal('gen2', 'prod', '0')).toThrowError(
+      expect.objectContaining({ code: 'invalid_store_reset_release_incident_id' }),
+    );
+    console.log('release-address-cell epoch=0 addressable=false');
+  });
+
   it('records the diagnostic child pid before that child opens SQLite', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -177,15 +175,13 @@ describe('store-reset operator epochs', () => {
 
   it('releases a preserved epoch and reports an absent epoch', async () => {
     const runtime = harness();
-    const flat = epochPath(runtime.paths.coral.store.dbDir, '0');
-    openTestStoreDatabase({ path: flat, storage: runtime.storage, storeFormat }).close();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    opened.db.close();
     const discarded = discardCurrentStoreEpoch(runtime, { storeFormat, build });
     discarded.db.close();
-    await expect(
-      releaseStoreReset({ target: 'gen2', runtime, epoch: '0', allowUnprovenLegacyReader: true }),
-    ).resolves.toMatchObject({
+    await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
       kind: 'released',
-      epoch: '0',
+      epoch: '1',
     });
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '99' })).resolves.toMatchObject({
       kind: 'absent',
@@ -296,37 +292,6 @@ describe('store-reset operator epochs', () => {
     await expect(reportStoreResetLocal('gen2', '1', dependencies)).resolves.toMatchObject({ kind: 'epoch' });
 
     expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toHaveLength(1);
-  });
-
-  it('does not inventory or diagnose a statically disproven store symlink', async () => {
-    const runtime = harness();
-    const dbDir = runtime.paths.coral.store.dbDir;
-    const external = join(dbDir, '..', 'external.db');
-    openTestStoreDatabase({ path: external, storage: runtime.storage, storeFormat }).close();
-    mkdirSync(dbDir, { recursive: true });
-    symlinkSync(external, epochPath(dbDir, '0'));
-    let diagnostics = 0;
-    const dependencies: StoreResetCliDependencies = {
-      resolveIdentity: () => ({ ok: true, manifest: build }),
-      createInspectionFs: () => {
-        throw new Error('legacy inspection is not used');
-      },
-      createDiagnosticRunner: () => {
-        throw new Error('legacy diagnostics are not used');
-      },
-      diagnoseEpoch: async () => {
-        diagnostics += 1;
-        return { integrity: 'ok', termination: 'completed', cleanup: 'not_required' };
-      },
-      quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
-      runtime: () => runtime,
-    };
-
-    const report = await reportStoreResetLocal('gen2', '0', dependencies);
-
-    expect(report).toMatchObject({ kind: 'epoch', epoch: { bytes: null }, diagnostic: { integrity: 'unavailable' } });
-    expect(diagnostics).toBe(0);
-    expect(existsSync(external)).toBe(true);
   });
 
   it('lists and reaps a stale holder only after rechecking its absent pid', () => {

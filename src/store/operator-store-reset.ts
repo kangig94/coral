@@ -38,7 +38,6 @@ export type StoreResetSocketGuardOperation =
       kind: 'release';
       target: StoreResetReleaseTarget;
       epoch: StoreEpoch;
-      allowUnprovenLegacyReader: boolean;
     }>;
 
 export type StoreResetDiscardResult = {
@@ -57,12 +56,6 @@ export type StoreResetReleasePresentation =
   | { readonly kind: 'released'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | { readonly kind: 'current'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
   | { readonly kind: 'absent'; readonly epoch: StoreEpoch; readonly target: 'gen2'; readonly flavor: BuildFlavor }
-  | {
-      readonly kind: 'release-legacy-reader-unproven';
-      readonly epoch: '0';
-      readonly target: 'gen2';
-      readonly flavor: BuildFlavor;
-    }
   | {
       readonly kind:
         | 'release-metadata-unobservable'
@@ -182,22 +175,12 @@ export async function releaseStoreReset(options: {
   readonly runtime: Runtime;
   readonly epoch: StoreEpoch;
   readonly acquireSocketGuard: AcquireStoreResetSocketGuard;
-  readonly allowUnprovenLegacyReader?: boolean;
 }): Promise<StoreResetReleasePresentation> {
-  if (options.epoch === '0' && options.allowUnprovenLegacyReader !== true) {
-    return {
-      kind: 'release-legacy-reader-unproven',
-      epoch: '0',
-      target: 'gen2',
-      flavor: options.runtime.flavor,
-    };
-  }
   const paths = resolveStoreResetTargetPaths(options.runtime, 'gen2');
   const socket = await options.acquireSocketGuard(paths, options.runtime, {
     kind: 'release',
     target: options.target,
     epoch: options.epoch,
-    allowUnprovenLegacyReader: options.allowUnprovenLegacyReader === true,
   });
   try {
     const adoption = await acquireGenerationAdoptionLock(options.runtime);

@@ -14,7 +14,7 @@ export async function acquireStoreResetSocketGuard(
   const retryCommand =
     command.kind === 'discard'
       ? `coral-cli backend store-reset discard --target ${command.target} --flavor ${runtime.flavor}`
-      : `coral-cli backend store-reset release ${command.epoch} --target ${command.target} --flavor ${runtime.flavor}${command.allowUnprovenLegacyReader ? ' --allow-unproven-legacy-reader' : ''}`;
+      : `coral-cli backend store-reset release ${command.epoch} --target ${command.target} --flavor ${runtime.flavor}`;
   return acquireOperatorSocketGuard({
     runtime,
     operation: `${paths.target} store reset ${command.kind}`,

@@ -116,7 +116,7 @@ function publishCompatibleEpoch(runtime: ReturnType<typeof createRealRuntime>, e
   writeFileSync(
     join(directory, 'epoch.json'),
     `${JSON.stringify({
-      supersedes: '0',
+      supersedes: null,
       classification: { kind: 'unavailable', cause: 'test publication' },
       build: {
         version: currentCoralStoreFormat().productVersion,

@@ -19,8 +19,9 @@ function isRecord(value) {
 function isValidEpochMetadata(value) {
   if (!isRecord(value)) return false;
   const validSupersedes =
-    (typeof value.supersedes === 'string' && /^(0|[1-9]\d*)$/.test(value.supersedes)) ||
-    (Number.isSafeInteger(value.supersedes) && value.supersedes >= 0);
+    value.supersedes === null ||
+    (typeof value.supersedes === 'string' && /^[1-9]\d*$/.test(value.supersedes)) ||
+    (Number.isSafeInteger(value.supersedes) && value.supersedes >= 1);
   if (!validSupersedes) return false;
   if (!isRecord(value.classification) || typeof value.classification.kind !== 'string') return false;
   if (!isRecord(value.build) || typeof value.build.version !== 'string') return false;
@@ -66,18 +67,17 @@ function isPublishedEpoch(dbDir, name) {
 }
 
 export function resolveCurrentStoreDbPath(dbDir) {
-  let current = isRegularFile(join(dbDir, 'store.db')) ? '0' : null;
+  let current = null;
   let entries;
   try {
     entries = readdirSync(dbDir);
   } catch {
-    return join(dbDir, 'store.db');
+    return null;
   }
   for (const entry of entries) {
     const epoch = epochNumber(entry);
     if (
       epoch !== null &&
-      epoch !== '0' &&
       (current === null || BigInt(epoch) > BigInt(current)) &&
       isPublishedEpoch(dbDir, entry)
     ) {
@@ -85,11 +85,10 @@ export function resolveCurrentStoreDbPath(dbDir) {
     }
   }
   if (current === null) return null;
-  return current === '0' ? join(dbDir, 'store.db') : join(dbDir, 'epoch-' + current, 'store.db');
+  return join(dbDir, 'epoch-' + current, 'store.db');
 }
 
 function storeEpochForDbPath(dbDir, dbPath) {
-  if (resolve(dbPath) === resolve(dbDir, 'store.db')) return '0';
   const directory = dirname(resolve(dbPath));
   return dirname(directory) === resolve(dbDir) ? epochNumber(basename(directory)) : null;
 }

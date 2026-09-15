@@ -75,7 +75,7 @@ const coordinatorDiscoveryRecordSchema = z
     incarnation: durableProcessIncarnationSchema.optional(),
     storeEpoch: z
       .string()
-      .regex(/^(0|[1-9]\d*)$/u)
+      .regex(/^[1-9]\d*$/u)
       .optional(),
   })
   // A build older than a future field must still read this record — `.strict()` would make that build's

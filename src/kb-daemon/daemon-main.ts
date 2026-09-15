@@ -100,7 +100,7 @@ export function resolveKbDaemonParentPid(value: string | undefined, selfPid = pr
 
 export function resolveKbDaemonStoreEpoch(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
-  return trimmed !== undefined && /^(0|[1-9]\d*)$/u.test(trimmed) ? trimmed : undefined;
+  return trimmed !== undefined && /^[1-9]\d*$/u.test(trimmed) ? trimmed : undefined;
 }
 
 export async function handleKbDaemonExpansionRpcRequest(

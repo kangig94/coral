@@ -138,7 +138,7 @@ describe('self-contained client path parity', () => {
       writeFileSync(
         join(published, 'epoch.json'),
         JSON.stringify({
-          supersedes: 0,
+          supersedes: null,
           classification: { kind: 'unavailable' },
           build: {
             version: '0.10.9',
@@ -160,7 +160,7 @@ describe('self-contained client path parity', () => {
 
   it('runs both epoch selectors over the same proof-state corpus', () => {
     const validMetadata = JSON.stringify({
-      supersedes: '0',
+      supersedes: null,
       classification: { kind: 'unavailable' },
       build: {
         version: '0.10.9',

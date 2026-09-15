@@ -509,7 +509,6 @@ export interface StoreResetCommandOperations {
     target: StoreResetReleaseTarget,
     flavor: BuildFlavor,
     incidentId: string,
-    allowUnprovenLegacyReader?: boolean,
   ): ReturnType<typeof releaseStoreResetLocal>;
 }
 
@@ -1977,7 +1976,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   storeResetCommand
     .command('report')
     .description('Run a bounded read-only epoch diagnostic or report a legacy incident')
-    .argument('<epoch-or-legacy-incident-id>', 'Numeric epoch or canonical legacy incident UUID shown by the list')
+    .argument(
+      '<epoch-or-legacy-incident-id>',
+      'Positive numeric epoch or canonical legacy incident UUID shown by the list',
+    )
     .requiredOption(
       '--target <target>',
       'Store generation to inspect (legacy or current; gen2 also accepted)',
@@ -2019,33 +2021,23 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   storeResetCommand
     .command('release')
     .description('Permanently remove one non-current store epoch')
-    .argument('<epoch>', 'Numeric epoch shown by backend store-reset list')
+    .argument('<epoch>', 'Positive numeric epoch shown by backend store-reset list')
     .requiredOption(
       '--target <target>',
       'Store generation containing the incident (current or gen2)',
       parseStoreResetReleaseTarget,
     )
     .requiredOption('--flavor <flavor>', OFFLINE_OPERATOR_FLAVOR_HELP, parseFlavor)
-    .option(
-      '--allow-unproven-legacy-reader',
-      'For epoch 0 only: explicitly authorize deletion despite an unobservable pre-epoch reader',
-    )
     .action(
       async (
         epoch: string,
         options: {
           target: StoreResetReleaseTarget;
           flavor: BuildFlavor;
-          allowUnprovenLegacyReader?: boolean;
         },
       ) => {
         try {
-          const result = await storeReset.release(
-            options.target,
-            options.flavor,
-            epoch,
-            options.allowUnprovenLegacyReader ?? false,
-          );
+          const result = await storeReset.release(options.target, options.flavor, epoch);
           const output = `${formatStoreResetRelease(result)}\n`;
           if (result.kind === 'released') {
             process.stdout.write(output);

@@ -169,12 +169,11 @@ describe('backend store-reset release failures', () => {
     registerBackendCommands(program, {
       storeReset: {
         ...storeReset,
-        release: (target, _flavor, epoch, allowUnprovenLegacyReader) =>
+        release: (target, _flavor, epoch) =>
           releaseStoreReset({
             target,
             runtime,
             epoch,
-            allowUnprovenLegacyReader,
             acquireSocketGuard: async () => ({ release: releaseSocket }),
           }),
       },

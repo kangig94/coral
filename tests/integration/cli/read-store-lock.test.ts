@@ -45,7 +45,7 @@ function publishEpoch(runtime: Runtime, epoch: string): void {
   writeFileSync(
     join(directory, 'epoch.json'),
     JSON.stringify({
-      supersedes: '0',
+      supersedes: null,
       classification: { kind: 'unavailable', cause: 'test' },
       build: {
         version: '0.10.9',

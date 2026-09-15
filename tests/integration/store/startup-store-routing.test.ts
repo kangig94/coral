@@ -92,7 +92,7 @@ function publishEpoch(runtime: Runtime, epoch: string, build: StrictBundleManife
   writeFileSync(
     join(directory, STORE_EPOCH_METADATA_FILE_NAME),
     JSON.stringify({
-      supersedes: '0',
+      supersedes: null,
       classification: { kind: 'unavailable', cause: 'test' },
       build,
       publishedAt: '2026-09-15T00:00:00.000Z',
