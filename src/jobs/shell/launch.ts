@@ -969,7 +969,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
 
   private releaseTerminalJob(jobId: string, sessionId: string): void {
     const { abortRegistry, sessionManager } = this.deps;
-    sessionManager.releaseJob(sessionId, jobId);
+    void sessionManager.releaseJob(sessionId, jobId);
     abortRegistry.remove(jobId);
   }
 
