@@ -9,7 +9,7 @@ import type * as FsLockMod from '#src/infra/fs-lock.js';
 const interposition = vi.hoisted(() => ({ dbDir: null as string | null, lockOpenObserved: false, swept: false }));
 
 vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
-  const actual = await importOriginal<FsLockMod>();
+  const actual = await importOriginal<typeof FsLockMod>();
   const fs = await import('node:fs');
   const path = await import('node:path');
   const sqlite = await import('node:sqlite');

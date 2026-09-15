@@ -893,7 +893,7 @@ describe('write-once store epochs', () => {
     const ids = ['occupied', 'fresh', 'holder'];
     const collisionRuntime: Runtime = {
       ...runtime,
-      ids: { uuid: () => ids.shift() ?? 'fallback' },
+      ids: { ...runtime.ids, uuid: () => ids.shift() ?? 'fallback' },
     };
 
     const settled = settleStoreEpoch(collisionRuntime, options());
