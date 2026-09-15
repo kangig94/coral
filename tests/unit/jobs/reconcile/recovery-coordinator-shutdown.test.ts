@@ -1123,7 +1123,7 @@ describe('recovery coordinator shutdown', () => {
       releaseFinalizer = resolve;
     });
     vi.spyOn(runtime.process, 'observeLiveness').mockImplementation((candidatePid: number) =>
-      candidatePid === pid && pidAlive ? 'alive' : 'absent',
+      (candidatePid === pid || candidatePid === -pid) && pidAlive ? 'alive' : 'absent',
     );
 
     const harness = createCoordinatorShutdownHarness({
@@ -1144,7 +1144,14 @@ describe('recovery coordinator shutdown', () => {
       jobId: RUNNING_ADOPTION_JOB_ID,
       pid,
     });
-    const incarnation = testIncarnation(pid);
+    const runtimeEvidence = readDurableCliProcessRuntimeEvidence(
+      harness.progressStore.getDb(),
+      RUNNING_ADOPTION_JOB_ID,
+      pid,
+    );
+    expect(runtimeEvidence.kind).toBe('current');
+    if (runtimeEvidence.kind !== 'current') throw new Error('Expected current durable process evidence');
+    const { incarnation } = runtimeEvidence.record;
     vi.spyOn(runtime.process, 'readProcessIncarnation').mockImplementation((candidatePid) =>
       candidatePid === pid && pidAlive ? incarnation : null,
     );
