@@ -553,11 +553,11 @@ export function sweepStoreEpochs(
   if (holderRead.kind === 'unobservable') return 'unobservable-holder';
   let holdersChanged = false;
   let holderDeletionFailed = false;
-  let liveHolder = false;
+  let releaseHolderLive = false;
   let unobservableHolder = false;
   for (const holder of holderRead.holders) {
     if (holder.state === 'live') {
-      liveHolder = true;
+      releaseHolderLive ||= holder.epoch === options.releaseEpoch;
       continue;
     }
     if (holder.state === 'unobservable' && (options.releaseEpoch === undefined || !holder.removable)) {
@@ -583,7 +583,7 @@ export function sweepStoreEpochs(
     }
   }
   if (unobservableHolder) return 'unobservable-holder';
-  if (liveHolder) return 'live-holder';
+  if (releaseHolderLive) return 'live-holder';
 
   try {
     const coordinator = probeCoordinator(runtime);
