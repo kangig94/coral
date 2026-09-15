@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import {
   existsSync,
@@ -138,6 +138,7 @@ function interceptRename(runtime: Runtime, beforeRename: (source: string, destin
 
 function publishAdversarialEpoch(destination: string, compatible = false): void {
   mkdirSync(destination, { recursive: true });
+  writeFileSync(join(destination, '.lock'), '');
   if (compatible) createCompatibleStore(join(destination, 'store.db'), 'concurrent-winner');
   else createIncompatibleStore(join(destination, 'store.db'));
   writeFileSync(
@@ -149,6 +150,37 @@ function publishAdversarialEpoch(destination: string, compatible = false): void 
       publishedAt: '2026-09-15T00:00:00.000Z',
     }),
   );
+}
+
+function createCrashedWalStore(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const crashed = spawnSync(
+    process.execPath,
+    [
+      '--no-warnings',
+      '-e',
+      "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec(\"PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE legacy_sentinel(value TEXT NOT NULL); INSERT INTO legacy_sentinel VALUES ('untouched');\"); process.kill(process.pid, 'SIGKILL');",
+      path,
+    ],
+    { encoding: 'utf-8' },
+  );
+  expect(crashed.signal).toBe('SIGKILL');
+  rmSync(`${path}-shm`, { force: true });
+}
+
+function fileTreeSnapshot(root: string): readonly Readonly<{ path: string; bytes: Buffer }>[] {
+  const snapshot: Array<Readonly<{ path: string; bytes: Buffer }>> = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) =>
+      left.name.localeCompare(right.name),
+    )) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else snapshot.push({ path: path.slice(root.length + 1), bytes: readFileSync(path) });
+    }
+  };
+  visit(root);
+  return snapshot;
 }
 
 async function withLiveSqliteDescriptor<T>(
@@ -1625,48 +1657,100 @@ describe('write-once store epochs', () => {
     expect(afterRelease).not.toBeNull();
   });
 
-  it('keeps a live epoch across the former orphan-lock release-to-unlink window', async () => {
+  it('removes the public epoch address before recursive deletion can erase its lock', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
-    const legacyOrphanLock = join(dbDir, '.epoch-lock-1.sqlite');
-    acquireSharedFileLockSync(legacyOrphanLock)();
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
     publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
     publishAdversarialEpoch(join(dbDir, 'epoch-5'), true);
-    let closeOpened: (() => void) | null = null;
-    let publicationRanInUnlinkWindow = false;
+    let closeOpened: (() => void) | undefined;
+    let openedValue: string | undefined;
+    let interpositionRan = false;
     const storage = new Proxy(runtime.storage, {
       get(subject, property, receiver) {
-        if (property !== 'unlink') return Reflect.get(subject, property, receiver) as unknown;
-        return async (path: string): Promise<void> => {
-          if (path === legacyOrphanLock) {
-            publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
-            const opened = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
-            closeOpened = () => opened.close();
-            publicationRanInUnlinkWindow = true;
+        if (property !== 'rm') return Reflect.get(subject, property, receiver) as unknown;
+        return async (path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void> => {
+          if (path === epochDirectory(dbDir, '1') || basename(path).startsWith('.reaping-')) {
+            await subject.unlink(join(path, '.lock'));
+            interpositionRan = true;
+            try {
+              const opened = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
+              closeOpened = () => opened.close();
+              openedValue = opened
+                .prepare<[], { value: string }>('SELECT value FROM rollback_sentinel')
+                .get()?.value;
+            } catch {
+              openedValue = undefined;
+            }
           }
-          await subject.unlink(path);
+          await subject.rm(path, options);
         };
       },
     });
 
     try {
-      await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
-      if (closeOpened === null) {
-        publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
-        const opened = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
-        closeOpened = () => opened.close();
-      }
-      const result = await sweepStoreEpochsPostReady(runtime, dbDir, '5');
+      const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
       const present = existsSync(epochPath(dbDir, '1'));
       console.log(
-        `orphan-reuse-live-store-cell publication-in-unlink-window=${publicationRanInUnlinkWindow} result=${result} epoch-1-present=${present}`,
+        `deletion-window-cell interposition-ran=${interpositionRan} opener=${openedValue === undefined ? 'refused' : 'opened'} live-query=${openedValue ?? 'none'} result=${result} epoch-1-present=${present}`,
       );
-      expect(result).toBe('live-holder');
-      expect(present).toBe(true);
+      expect(interpositionRan).toBe(true);
+      expect(openedValue).toBeUndefined();
+      expect(result).toBe('complete');
+      expect(present).toBe(false);
     } finally {
       closeOpened?.();
     }
   });
+
+  it.each(['directory', 'legacy-symlink', 'external-symlink', 'socket'] as const)(
+    'classifies a valid current epoch with a %s lock as unusable without touching legacy state',
+    async (lockKind) => {
+      const runtime = harness();
+      const dbDir = runtime.paths.coral.store.dbDir;
+      publishAdversarialEpoch(epochDirectory(dbDir, '1'), true);
+      const lock = storeEpochLockPath(dbDir, '1');
+      rmSync(lock, { force: true });
+
+      const legacyRoot = join(dirname(dbDir), 'legacy-tree');
+      const legacyStore = join(legacyRoot, 'store.db');
+      createCrashedWalStore(legacyStore);
+      const externalStore = join(dirname(dbDir), 'external-lock.db');
+      writeFileSync(externalStore, 'external-lock-sentinel');
+      let closeSocket: (() => Promise<void>) | undefined;
+      if (lockKind === 'directory') mkdirSync(lock);
+      if (lockKind === 'legacy-symlink') symlinkSync(legacyStore, lock);
+      if (lockKind === 'external-symlink') symlinkSync(externalStore, lock);
+      if (lockKind === 'socket') {
+        const server = createServer();
+        await new Promise<void>((resolveListen, reject) => {
+          server.once('error', reject);
+          server.listen(lock, resolveListen);
+        });
+        closeSocket = () =>
+          new Promise<void>((resolveClose, reject) =>
+            server.close((error) => (error ? reject(error) : resolveClose())),
+          );
+      }
+      const legacyBefore = fileTreeSnapshot(legacyRoot);
+      const externalBefore = readFileSync(externalStore);
+
+      let settled: ReturnType<typeof settleStoreEpoch> | undefined;
+      try {
+        settled = settleStoreEpoch(runtime, options());
+        const legacyAfter = fileTreeSnapshot(legacyRoot);
+        console.log(
+          `malformed-lock-cell kind=${lockKind} boot=proceeded selected-epoch=${settled.epoch} legacy-byte-identical=${JSON.stringify(legacyAfter) === JSON.stringify(legacyBefore)}`,
+        );
+        expect(settled.epoch).toBe('2');
+        expect(legacyAfter).toEqual(legacyBefore);
+        expect(readFileSync(externalStore)).toEqual(externalBefore);
+      } finally {
+        settled?.db.close();
+        await closeSocket?.();
+      }
+    },
+  );
 
   it('treats a mint directory without its lock as unobservable', async () => {
     const runtime = harness();
