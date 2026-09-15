@@ -86,6 +86,7 @@ import type {
 import type { SessionInitialLaunchPort, SessionJobClaimPort } from '../../sessions/contracts.js';
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { CommitEventsFn } from '../../store/append.js';
+import { StoreCodecError } from '../../store/body-codec.js';
 import { consumeJobStream } from './continuity-consumer.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import { SessionClaimError } from '../../sessions/claim-error.js';
@@ -1228,7 +1229,13 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   }
 
   private handleProviderJobError(jobId: string, sessionId: string, signal: AbortSignal, error: unknown): void {
-    const currentStatus = this.deps.progressStore.readStatus(jobId);
+    let currentStatus;
+    try {
+      currentStatus = this.deps.progressStore.readStatus(jobId);
+    } catch (statusError: unknown) {
+      if (statusError instanceof StoreCodecError) return;
+      throw statusError;
+    }
     if (!currentStatus || isTerminalPhase(currentStatus.phase)) {
       return;
     }
