@@ -1,13 +1,15 @@
-import { basename, dirname, join } from 'node:path';
+import { basename, join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { afterEach, expect, it, vi } from 'vitest';
 
+import type * as FsLockMod from '#src/infra/fs-lock.js';
+
 const interposition = vi.hoisted(() => ({ dbDir: null as string | null, lockOpenObserved: false, swept: false }));
 
 vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#src/infra/fs-lock.js')>();
+  const actual = await importOriginal<FsLockMod>();
   const fs = await import('node:fs');
   const path = await import('node:path');
   const sqlite = await import('node:sqlite');
@@ -86,7 +88,7 @@ it('does not expose a sweepable preparation directory before constructing its SQ
   }
 
   console.log(
-    `mint-construction-window-cell lock-open-observed=${interposition.lockOpenObserved} sweepable-before-lock=${interposition.swept} result=${failure === null ? `epoch-${epoch}` : basename(String(failure))}`,
+    `mint-construction-window-cell lock-open-observed=${interposition.lockOpenObserved} sweepable-before-lock=${interposition.swept} result=${failure === null ? `epoch-${epoch}` : basename(failure instanceof Error ? failure.message : typeof failure === 'string' ? failure : 'unknown failure')}`,
   );
   expect(interposition.lockOpenObserved).toBe(true);
   expect(interposition.swept).toBe(false);
