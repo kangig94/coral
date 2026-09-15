@@ -1272,18 +1272,14 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     } catch (statusError: unknown) {
       if (statusError instanceof StoreCodecError) {
         try {
-          const committed = this.deps.sessionManager.releaseJobWithRecoveryDisposition(
-            sessionId,
-            jobId,
-            (commit, releaseResult) => {
-              this.deps.progressStore.appendUnreadableStatusProgressInCommit(
-                commit,
-                jobId,
-                sessionId,
-                this.unreadableStatusDisposition(releaseResult, jobId, error, statusError),
-              );
-            },
-          );
+          this.deps.sessionManager.releaseJobWithRecoveryDisposition(sessionId, jobId, (commit, releaseResult) => {
+            this.deps.progressStore.appendUnreadableStatusProgressInCommit(
+              commit,
+              jobId,
+              sessionId,
+              this.unreadableStatusDisposition(releaseResult, jobId, error, statusError),
+            );
+          });
           this.deps.abortRegistry.remove(jobId);
         } catch (releaseError: unknown) {
           this.appendUnreadableStatusDisposition(

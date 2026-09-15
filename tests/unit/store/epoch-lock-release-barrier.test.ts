@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { StoragePort } from '#src/infra/port-types.js';
+import type * as FsLockMod from '#src/infra/fs-lock.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -13,7 +13,7 @@ import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 const lockReleaseFault = vi.hoisted(() => ({ paths: new Set<string>() }));
 
 vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('#src/infra/fs-lock.js')>();
+  const actual = await importOriginal<typeof FsLockMod>();
   return {
     ...actual,
     tryAcquireExclusiveFileLockSync: (path: string) => {
@@ -90,7 +90,7 @@ function trackingRootSync(runtime: Runtime): { runtime: Runtime; syncs: () => nu
       }
       return Reflect.get(subject, property, receiver) as unknown;
     },
-  }) as StoragePort;
+  });
   return { runtime: { ...runtime, storage }, syncs: () => rootSyncs };
 }
 
