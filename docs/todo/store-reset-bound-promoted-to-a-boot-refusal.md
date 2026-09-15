@@ -1,8 +1,8 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Nineteen design revisions, twenty-six unbiased tier-1 review rounds, and
-forty-nine distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 19 are the correction rounds its reviewers earned.
+**Status**: in flight. Twenty design revisions, twenty-seven unbiased tier-1 review rounds, and
+fifty-five distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
+earlier revisions inherited; 15 through 20 are the correction rounds its reviewers earned.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2132,6 +2132,85 @@ And the hook's second selector still disagrees with the canonical one: the backe
 `isPublishedEpoch` in `clients/hooks/lib/store-epoch.mjs`), so a 70 KB valid document makes the backend choose epoch 1 while
 `pre-compact` opens epoch 2 — reproduced. §7 has been asking for one home since Revision 15; the parity
 corpus keeps being a sample rather than a proof. Generate the hook's copy from the owner.
+
+## Revision 20 — the lock is only a proof if everyone takes it
+
+Round 27's reviewers confirmed ordinal retention, the generated hook, and the lock primitive's death
+semantics among participating processes, and then found the assumption underneath all of it:
+
+> Successful exclusive acquisition proves that no one holds the database **only in a closed world**, and
+> the world is not closed.
+
+`openReadOnlyStoreDatabase` resolves the current epoch and opens SQLite with no shared lock
+(`src/store/read-port.ts:36`); the CLI caches that handle for the command's life
+(`src/cli/read-store.ts:31`); `pre-compact` opens its own (`clients/hooks/pre-compact.mjs:57`, `:92`);
+even `store-reset list` classifies through an unprotected read-only handle (`src/store/db.ts:243`). A
+reviewer's probe took the exclusive lock, removed the epoch, and watched the reader keep querying — which
+was offered as reassurance and is the opposite. **Recursive removal deletes `store.db-wal` and
+`store.db-shm` out from under an open connection**, and that is SQLite's own documented corruption case,
+not a harmless POSIX unlink. I had been about to write down that unlinking an open database is safe;
+checking the citation is what stopped me.
+
+> **Every canonical opener takes the shared lock for as long as it holds the database.** The read-only
+> port, the CLI's cached reader, the classification handle inside `list`, and the generated hook all
+> participate — the hook with a bounded, fail-open equivalent, since it is generated from the same owner.
+
+One opener cannot participate, and it is the reason epoch 0 is already exempt from automatic sweeping: a
+`v0.10.9` build knows nothing about epoch locks. That leaves exactly one hole, **explicit `release 0`**,
+and it is on an operator path. It says what it cannot prove — that no pre-epoch build holds the flat
+database — and proceeds only on the operator's explicit confirmation. That is §11's authority empowered to
+override uncertainty, and it is not a boot refusal.
+
+Revision 14's sentence was also too strong and is corrected here: **nothing renames or replaces a database
+a live writer holds, and no automatic path deletes one.** Deletion under an explicit operator command,
+having said what it could not prove, is a different act.
+
+### One contended lock stops the whole pass
+
+The deletion loop returns `live-holder` on its **first** contended lock (`src/store/epoch.ts:929`, `:954`;
+the synchronous pass has the same shape at `:683`, `:693`), skipping every later garbage entry and the
+final directory sync at `:966`. An orphaned holder on old epoch 1 therefore stops the pass wherever
+`readdir` places it — a stable ordering — so K later discards accumulate forever, and any entry already
+removed in that pass loses its durability barrier and can be resurrected by a power loss.
+
+A contended entry is a **skip, not a stop**. The pass continues, reports per-entry dispositions, and syncs
+at the end.
+
+### Three boundaries that say more than they established
+
+**`release` can claim a removal it never attempted.** Stale-holder cleanup runs first; if its directory
+sync then fails, the sweep returns `durability-sync-failed` **before reaching the target**
+(`epoch.ts:552`, `:577`), and the operator layer maps every such result to one variant
+(`operator-store-reset.ts:171`) whose renderer says the epoch "was removed"
+(`cli/format/store-reset.ts:192`). One result carrying a pre-deletion and a post-deletion disposition is
+`decision-union-results.md` exactly.
+
+**The sweep's join is delegable, so it can outlive the authority that started it.** Shutdown registers the
+cancellation join as a `process-exit` remainder (`coordinator/shutdown.ts:1131`); when the drain budget
+expires the ledger accepts the remainder and commits the authority-release boundary
+(`obligation/settlement.ts:409`, `:753`), after which discovery is removed
+(`coordinator/lifecycle.ts:1416`) while a destructive `rm` may still be in flight. A second signal only
+awaits the same cached promise (`coordinator/bootstrap.ts:332`). No *new* deletion starts after
+cancellation, so the syscall qualification in Revision 19 was honest; the stronger claim that the sweep is
+joined before addresses are released was not. This join is not delegable.
+
+**A `StoreCodecError` abandons a live job.** The handler added last round returns early when reading
+current status meets a malformed persisted event (`src/jobs/shell/launch.ts:1231`), and the outer
+`finally` releases the launch permit but not the abort-registry entry or the session claim (`:860`,
+`:970`). A malformed latest event for a live job whose provider then fails leaves no terminal and a
+stranded claim — tolerance without the visible durable disposition §10 and §11 both require. It arrived as
+collateral from a shutdown-ordering change, which is how this kind of thing always arrives.
+
+### Two leaks
+
+Every exclusive probe creates `.epoch-lock-<N>.sqlite` and positive-epoch deletion leaves it behind,
+because `removeLockFile` defaults to false (`epoch.ts:846`, `:953`). K publications leave O(K) entries
+that every future scan walks. They need a race-safe reclamation — the lock file is removable exactly when
+its own lock is free, which is the same proof the sweep already performs.
+
+And a directory literally named `epoch-0` is accepted by the grammar but skipped by both observers
+(`:20`, `:205`, `:739`), so it is neither proven, nor disproven, nor garbage, and survives every cycle at
+any size. `epoch-0` is not a valid epoch directory name: the flat `store.db` is epoch 0's only address.
 
 ## Invariants to add
 
