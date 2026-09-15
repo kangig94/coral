@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-seven design revisions and thirty-five unbiased tier-1 review rounds.
+**Status**: in flight. Twenty-eight design revisions and thirty-six unbiased tier-1 review rounds.
 Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 through 26 are the
-corrections it earned; **Revision 27 withdraws a boundary four of those rounds were spent defending, on
-the owner’s ruling that it was never worth defending.**
+corrections it earned; Revision 27 withdraws a boundary four of those rounds were spent defending, on the
+owner’s ruling that it was never worth defending.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2712,6 +2712,74 @@ instance, after the retention rules the owner had to cut twice.
 
 The check is not more review. It is asking, before writing a boundary into a brief, who is on the other
 side of it.
+
+## Revision 28 — carry the root you resolved
+
+Round 37's reviewers took the re-scoped brief exactly as written — both stated they treated no
+hand-constructed alias as a finding — and then found four defects in states that arise with no operator
+action. Two of the four were introduced by Revision 26.
+
+### The resolved root is computed and then discarded
+
+Revision 26 resolves the store root before proving anything under it, and then every consumer re-derives
+the path it actually uses. Three manifestations, all reproduced:
+
+- **The generated hook refuses its own discovery's answer.** `resolveCurrentStoreDbPath` resolves the root
+  and returns a path beneath the real target; `storeEpochForDbPath` then compares that path against
+  `resolve(dbDir)`, which keeps the symlink's spelling, derives `epoch === null`, and rejects it.
+  `pre-compact` composes the two directly, so under a symlinked root it discovers a valid epoch and then
+  declines to open it, failing open with no snapshot. This is deterministic, needs no race, and arrived in
+  Revision 26.
+- **Settlement can lock one store and open another.** `tryOpenCurrentEpoch` discards the resolved root and
+  rebuilds from `runtime.paths.coral.store.dbDir`, so if the root's target changes after selection the
+  proof and lease land on the new target while SQLite is opened on the old path — a live writer whose
+  decisive lease and holder record describe a different store, and whose own epoch stays exclusively
+  acquirable by the reaper.
+- **The writable and read-only openers** prove the resolved path and then hand SQLite the unresolved one.
+
+> **The resolved root is part of the capability.** It is carried through proof, lease acquisition, opening
+> and holder publication, and never recomputed from configuration.
+
+This is Revision 18's sentence at a different layer — *carry the epoch you opened* — and it is the third
+time this branch has been bitten by re-deriving a value it had already decided, after the epoch itself and
+the commit adapter. The rule generalises: **a decision that has been made is carried, not recomputed; if
+two places can compute it, they will eventually disagree.**
+
+### An empty recovery quarantine became an internal error
+
+`resolveCurrentStorePath` maps an absent root to a passive candidate, and `listRecoveryQuarantineLocal`
+then demands a proven epoch and throws a raw `Error`. Its return type admits only an array of entries, so
+a refusal has nowhere to go. With an absent or empty store root the installed command now exits 70 with
+`Resolved recovery-quarantine store path is outside the canonical epoch layout. [code=internal]`, where it
+used to print `Recovery quarantine is empty.` The same raw path is reached when staging exceeds the
+diagnostic byte bound or the proof is unreadable.
+
+Three answers again, in a return type that has room for one: absent, unobservable and over-bound are
+dispositions an operator can read, not internal errors.
+
+### Verification cannot see a sidecar that was absent
+
+Private-copy staging skips a missing WAL or SHM **without recording that it was missing**, and
+verification then hashes only the names it recorded. A reviewer copied `store.db` while no WAL existed,
+let a live writer commit into a newly created WAL immediately afterwards, and `verify()` returned true for
+a copy that was already stale. `recovery-quarantine list` can therefore report an empty or incomplete list
+while claiming the inspection succeeded.
+
+Absence is an observation and is recorded as one. Verification proves what it observed, including that
+what was absent stayed absent.
+
+### The report copies have no owner after a crash
+
+Each report stages up to 256 MiB beneath the system temporary directory. Ordinary completion cleans up,
+but an unconfirmed child termination returns without attempting cleanup by design, and a kill or power
+loss after staging leaves the copy behind. Nothing scans for `coral-store-report-*` afterwards — not the
+store sweep, which does not recognise the prefix even when `TMPDIR` is the store root.
+
+K interrupted reports therefore retain roughly K × 256 MiB with no reclamation and no operator-visible
+path. Left alone it ends in a full disk, which is the one filesystem failure this document allows to stop
+a boot — a reporting command that can eventually prevent startup is the shape this branch exists to
+remove. The copies get an owned namespace, an aggregate bound, and a reclaimer that runs where the
+existing sweeps already run.
 
 ## Invariants to add
 
