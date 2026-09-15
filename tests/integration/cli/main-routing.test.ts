@@ -1,4 +1,3 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, rmSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -24,8 +23,7 @@ import {
 import { formatDiscussAbort, formatDiscussParticipate, formatDiscussWatch } from '#src/cli/format/discuss.js';
 import { formatWaitProgress, formatWaitTerminal, formatWaitWaiting } from '#src/cli/format/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
-import { storePaths } from '#src/infra/path/store.js';
+import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import { IpcRpcError } from '#src/transport/ipc/client.js';
 import { ProviderHostUnserviceableError } from '#src/providers/host-admission.js';
 import { encodeHostRef } from '#src/providers/host-ref-codec.js';
@@ -320,12 +318,8 @@ function makeJobDetailResponse(): JobDetailResponse {
 
 function createCauseRenderFixture(): { home: string; cleanup(): void } {
   const home = mkdtempSync(join(tmpdir(), 'coral-wait-home-'));
-  const runtime = createRealRuntime('prod');
-  const db = openTestStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: join(storePaths('prod', { baseDir: join(home, '.coral') }).dbDir, 'store.db'),
-    storage: runtime.storage,
-  });
+  const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+  const db = openSettledTestStoreDb(runtime);
 
   try {
     const insertEvent = db.prepare(

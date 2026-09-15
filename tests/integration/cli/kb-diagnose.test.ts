@@ -1,4 +1,3 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type * as MainMod from '#src/cli/program.js';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 
 const REPO_ROOT = process.cwd();
 
@@ -37,11 +36,7 @@ function seedRetryQueue(
   }>,
 ): void {
   const runtime = createRealRuntime('prod');
-  const db = openTestStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: join(runtime.paths.coral.store.dbDir, 'store.db'),
-    storage: runtime.storage,
-  });
+  const db = openSettledTestStoreDb(runtime);
 
   try {
     const statement = db.prepare(

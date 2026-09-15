@@ -1,4 +1,3 @@
-import { currentCoralStoreFormat } from '#src/store-format.js';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,8 +9,7 @@ import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import { type WaitStreamEvent, serializeWaitCursor } from '#src/jobs/wait.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createDeferred } from '#tools/testing/deferred.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
-import { storePaths } from '#src/infra/path/store.js';
+import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 import type * as FollowMod from '#src/cli/follow.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import { buildErrorEnvelope } from '#src/cli/errors.js';
@@ -177,12 +175,8 @@ function createCauseRenderFixture(workflowChildren: readonly WorkflowChildFixtur
     'utf-8',
   );
 
-  const runtime = createRealRuntime('prod');
-  const db = openTestStoreDatabase({
-    storeFormat: currentCoralStoreFormat(),
-    path: join(storePaths('prod', { baseDir: join(home, '.coral') }).dbDir, 'store.db'),
-    storage: runtime.storage,
-  });
+  const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+  const db = openSettledTestStoreDb(runtime);
 
   try {
     const insertEvent = db.prepare(
