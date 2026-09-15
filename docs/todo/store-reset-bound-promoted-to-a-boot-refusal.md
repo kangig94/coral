@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-six design revisions, thirty-five unbiased tier-1 review rounds, and
-eighty-five distinct instances of the same defect so far. Revision 14 replaced the premise all thirteen
-earlier revisions inherited; 15 through 26 are the corrections it earned. One scope question is open at
-the end of Revision 26.
+**Status**: in flight. Twenty-seven design revisions and thirty-five unbiased tier-1 review rounds.
+Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 through 26 are the
+corrections it earned; **Revision 27 withdraws a boundary four of those rounds were spent defending, on
+the owner’s ruling that it was never worth defending.**
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2653,6 +2653,65 @@ is at least as capable. The innocent configurations — a symlinked root, a dedi
 and are fixed above.
 
 **The owner has not ruled on this one, and it is not decided here.**
+
+## Revision 27 — the promise that was not mine to make
+
+The owner, on being shown the same-device bind-mount finding: *"what were we even defending, for this
+whole review loop? Are you talking about someone mounting over `~/.coral`? I never once imagined defending
+that."*
+
+That is the correct reading, and four review rounds went into a boundary nobody asked for.
+
+### Where it came from
+
+Revision 21 said: **"this build never opens it, never locks it, and never deletes it."** I wrote that to
+protect a rolled-back `v0.10.9`'s live store. Reviewers then did what that sentence invites — looked for
+any path that could still reach the flat store — and found four, in order: a symlinked `epoch-N`, a
+hard-linked `store.db`, a cross-device bind mount, a same-device bind mount.
+
+**Every one of them requires someone to construct an alias by hand inside `~/.coral/gen2/data/store/`**,
+pointing a new epoch's address at the old store, and then to start Coral. Nobody does that. The data it
+would protect is the store the owner has called worthless three times. And each was found because the
+brief I wrote asked for the next one.
+
+### What the promise should have said
+
+> **The ordinary boot path does not open the previous generation's flat store.**
+
+That is the claim worth having, and it was worth the round that produced it: round 33 found
+`inspectGenerationReadiness` classifying the legacy store during a normal start, which opened SQLite and
+created `store.db-shm` on a crashed WAL tree — **no operator action, no alias, just booting.** Revision 21's
+stronger sentence bought nothing beyond that and cost four rounds.
+
+Revision 17 already placed a same-user process that races the coordinator out of scope, on the grounds
+that it can replace the plugin bundle outright. That scope now says so explicitly for the filesystem too:
+
+> **Aliases constructed by hand inside the Coral data directory — symlinks, hard links, bind mounts —
+> are out of scope, for the same reason. Someone who can create them can replace the binary that reads
+> them.**
+
+### What stays, and what stops
+
+The `nlink` and `dev` checks that landed in Revisions 24 and 25 stay: they are cheap, they are tested, and
+round 37 is repairing the one real bug the `dev` check caused — a symlinked store root proving children
+against the symlink's own device. **They are not a boundary and must not be extended.** No mount identity,
+no `statx`, no fifth axis. A future reader finding them should not conclude that anything here is
+tamper-resistant, because it is not and is not trying to be.
+
+Review briefs stop asking for the next alias class. What they ask for instead is what the rest of this
+document has always been about: states that arise with **no operator action** — a crash, a power loss, a
+rolled-back build, a full disk, a store on another volume, an ordinary command run twice.
+
+### Why this is in the record rather than in a commit message
+
+Four rounds of reviewer time, three of my design revisions, and a chunk of the owner's patience went into
+defending something the owner never imagined defending. The mechanism that produced it is the one this
+document has already named twice: **I write the briefs, so a premise I invent becomes a given that
+thirty-five rounds of review will elaborate rather than question.** Revision 21's promise is the third
+instance, after the retention rules the owner had to cut twice.
+
+The check is not more review. It is asking, before writing a boundary into a brief, who is on the other
+side of it.
 
 ## Invariants to add
 
