@@ -1,8 +1,7 @@
 # TODO — a format change starts a fresh store epoch, because there is no migration
 
-**Status**: open, unscheduled. Recorded 2026-09-12 while designing
-[`store-reset-bound-promoted-to-a-boot-refusal.md`](store-reset-bound-promoted-to-a-boot-refusal.md),
-whose epoch layout prevents reset work from refusing boot. That layout does not carry data forward.
+**Status**: open, unscheduled. Recorded 2026-09-12 while designing the write-once epoch layout that
+prevents store-reset work from refusing a boot. That layout does not carry data forward.
 
 ## The fact
 
