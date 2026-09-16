@@ -387,10 +387,9 @@ describe('bundled store-reset CLI', () => {
     console.log(
       `built-reporting-byte-identity-cell surface=${surface} state=${state} status=${result.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
     );
+    expect(result.status, result.stderr).toBe(0);
     if (surface === 'recovery-quarantine-list' && state === 'malformed-metadata') {
-      expect(result.status).not.toBe(0);
-    } else {
-      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('could not be observed safely');
     }
     expect(after).toEqual(before);
   });
