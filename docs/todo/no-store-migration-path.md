@@ -1,41 +1,43 @@
-# TODO — a DDL change destroys the store, because there is no migration
+# TODO — a format change starts a fresh store epoch, because there is no migration
 
 **Status**: open, unscheduled. Recorded 2026-09-12 while designing
 [`store-reset-bound-promoted-to-a-boot-refusal.md`](store-reset-bound-promoted-to-a-boot-refusal.md),
-which is damage control around this. Fixing the quarantine does not fix this.
+whose epoch layout prevents reset work from refusing boot. That layout does not carry data forward.
 
 ## The fact
 
-`classifyStoreFormat` in `src/store/db.ts` has exactly one non-destructive outcome for a store carrying
-version metadata:
+`classifyStoreFormat` in `src/store/db.ts` classifies a store with user tables as follows:
 
 | Observation | Result |
 | --- | --- |
-| stored product version newer than current | `newer-incompatible` — refuse |
-| stored fingerprint equals current | `compatible` |
-| stored product version older than current | `older-incompatible` — **automatic reset** |
-| versions equal, fingerprints differ | `corrupt-or-unsupported` — **automatic reset** |
+| fingerprint or product-version metadata is absent or invalid | `corrupt-or-unsupported` |
+| stored product version is newer than current | `newer-incompatible` |
+| stored fingerprint equals current and the product version is not newer | `compatible` |
+| stored product version is older and fingerprints differ | `older-incompatible` |
+| versions equal and fingerprints differ | `corrupt-or-unsupported` |
 
-`legacy-adoptable` is not a migration: it requires version metadata to be **absent** *and* the fingerprint
-to match, which is a rewrite-era adoption of a store that predates the version key.
+Absent product-version metadata is `corrupt-or-unsupported`, even when a fingerprint is present; there
+is no adoption classification.
 
-The fingerprint is a hash over the DDL. So **any release whose `src/store/schema.sql` changes destroys
-every existing store on upgrade**, with no path that carries the data forward. Measured on 2026-09-12:
-9 commits have touched `src/store/schema.sql`, against 33 release tags. Roughly one release in four is a
-guaranteed total loss of jobs, sessions, journal and KB projection history.
+`tryOpenCurrentEpoch` in `src/store/epoch.ts` maps every non-opened classification to replacement, and
+`settleStoreEpoch` publishes a complete successor epoch. The previous positive epoch remains as retained
+data until positive-epoch retention removes it, but the successor carries none of its jobs, sessions,
+journal, or KB projection history. The previous generation's flat `store/store.db` is outside discovery
+and remains untouched.
 
-Nobody notices, because the reset is silent, automatic, and — until a store crosses 1 GiB — always
-succeeds. The incident that exposed it was a *reporting* limit failing, not the reset.
+The fingerprint covers the executable SQL manifest and persisted codecs. A release that changes
+`src/store/schema.sql` therefore changes the fingerprint and starts a fresh active epoch unless it also
+provides a migration path. Measured on 2026-09-12, 9 commits had touched `src/store/schema.sql` against
+33 release tags. The epoch design removed the former copy, quarantine, and 1-GiB boot veto; it did not
+make incompatible data readable by the successor.
 
-## Why this is not the quarantine's problem to solve
+## Why retention is not migration
 
-Quarantine preserves the bytes. It cannot make them readable: a quarantined store is
-`older-incompatible` for the build that quarantined it, by construction. Reading it requires installing
-the matching older Coral. That is a real exit for the one person who maintains this repository, and no
-exit at all for anyone else — Coral's end user does not install old builds, and the model that reads the
-CLI output for them cannot either.
+Keeping the superseded positive epoch preserves its bytes temporarily. It does not make those rows part
+of the current authority: this build does not copy from it, transform it, or open it as the active store.
+The flat previous-generation artifact is preserved for rollback but is never an epoch candidate.
 
-So preservation buys an audit trail and a manual recovery, not continuity.
+Preservation therefore buys rollback or manual inspection, not continuity.
 
 ## What the shape of a fix would have to answer
 
@@ -44,11 +46,12 @@ So preservation buys an audit trail and a manual recovery, not continuity.
   monotonic schema generation with its own owner is the candidate, with the fingerprint retained as the
   integrity check rather than as the version.
 - **Which direction is supported.** Forward-only migration still leaves a rollback meeting a store it
-  cannot read — today that is `newer-incompatible`, which refuses rather than destroys, and that refusal
-  is correct and must stay.
-- **What happens to a migration that fails halfway**, on the startup path, where a throw is an unbootable
-  coordinator. The rule from the quarantine work applies unchanged: every observation selects a
-  mechanism, never a refusal.
+  cannot read. Today `newer-incompatible` selects another fresh successor rather than carrying data
+  backward, so a migration design must decide whether rollback refuses, routes to a compatible epoch, or
+  transforms the data.
+- **What happens to a migration that fails halfway**, on the startup path. A failed candidate must not
+  become current or make the previously published epoch unavailable; publication needs an atomic commit
+  boundary at least as strong as the epoch directory rename.
 - **Whether every DDL change needs one.** Many are additive — a new table, a new nullable column — and
   additive changes are exactly what a tolerant reader survives. The fingerprint does not distinguish
   additive from destructive, so it reports every change as fatal. Distinguishing them may be most of the
@@ -59,7 +62,7 @@ So preservation buys an audit trail and a manual recovery, not continuity.
 [`store-format-routing.md`](store-format-routing.md) is the sibling half and the two do not close
 together. It asks how an **older** build finds and opens a store in its own format — a layout question,
 answered by keeping more than one store. This asks how a **newer** build carries an older store's data
-forward — a transformation question, answered by changing one store in place. Fingerprint-keyed routing
+forward — a transformation question. Fingerprint-keyed routing
 would let both builds run without either destroying the other's store, and would still leave every
 upgrade starting from nothing.
 

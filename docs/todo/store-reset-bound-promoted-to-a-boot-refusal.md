@@ -1,11 +1,35 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: review loop closed. Thirty-five design revisions and forty-three unbiased tier-1 review
-rounds; round 43 returned zero findings at every severity from both lenses. Revision 14 replaced the
-premise all thirteen earlier revisions inherited, and 15 onward are the corrections it earned. Revision 27
-withdraws a boundary four rounds were spent defending, Revision 32 deletes a subsystem five rounds were
-spent repairing, and Revision 34 stops making the reclaimer timid and makes the writers survive it — all
-three on the owner’s ruling.
+**Status**: closed historical design record. The tier-1, hook-safety, code, and test lenses closed with
+zero blocking findings; this documentation correction followed that closure. Thirty-five design
+revisions and forty-three unbiased tier-1 review rounds are retained below.
+
+## Current state
+
+Coral publishes complete stores under positive write-once `epoch-<N>` directories. Startup selects the
+highest proven epoch, publishes `epoch-1` when none exists, and publishes a successor when the current
+epoch cannot be opened. A private `.mint-<uuid>` becomes the successor with one directory rename; sweep
+retains the highest two proven epochs. The previous generation's flat `store/store.db` and sidecars are
+never opened, locked, renamed, or deleted by this build. The copy, quarantine, hash-budget, resume, and
+reclaimer designs described early in this record did not ship.
+
+The design deliberately does not migrate data into a successor; that remains
+[`no-store-migration-path.md`](no-store-migration-path.md). Partially erased `.reaping-*` residue remains
+[`partially-erased-store-epoch-reaping-residue.md`](partially-erased-store-epoch-reaping-residue.md),
+minting under sustained external interference remains
+[`store-epoch-minting-under-sustained-external-interference.md`](store-epoch-minting-under-sustained-external-interference.md),
+and the broader atomic-write result ambiguity remains
+[`write-atomic-durable-sync-result-overloads-two-dispositions.md`](write-atomic-durable-sync-result-overloads-two-dispositions.md).
+
+Everything below this lead is history in chronological order. It deliberately preserves rejected and
+superseded designs; a later revision may overturn any earlier claim.
+
+## Historical record
+
+Revision 14 replaced the premise all thirteen earlier revisions inherited, and 15 onward are the
+corrections it earned. Revision 27 withdraws a boundary four rounds were spent defending, Revision 32
+deletes a subsystem five rounds were spent repairing, and Revision 34 stops making the reclaimer timid
+and makes the writers survive it — all three on the owner's ruling.
 
 A coordinator refused to start because the store was too large to _report on_. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of

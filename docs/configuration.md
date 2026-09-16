@@ -298,7 +298,7 @@ coral-cli backend store-reset release <epoch> --target <current|gen2> --flavor <
 
 - `store-reset discard` is the explicit offline path that publishes the next epoch regardless of the current epoch's classification. `current` maps to the internal `gen2` generation; `legacy` is inspection-only and a discard request always refuses before path resolution or socket binding.
 - `kb-commit quarantine` accepts the exact safe single-segment commit ID from `kb_commit_corrupt_or_unsupported` and moves only that commit plus matching index evidence.
-- `store-reset list` inspects every visible epoch without opening SQLite. Each row includes epoch number, `current | preserved | garbage | unobservable` role, recursive store-file bytes or `null`, the reason that epoch was published, the superseded store's Coral version when the publication reason observed one, and parsed `epoch.json`. While the old `store-reset-quarantine/` root exists, legacy incident rows are appended through the bounded legacy reader. `store-reset report <epoch>` reports the same observable filesystem and provenance facts, identifies the relative database path, and names the `sqlite3` command an operator can run; it does not open SQLite. A legacy incident UUID still routes through the bounded legacy reader. `backend recovery-quarantine list` is an ordinary product read of the current epoch under a shared lease, so SQLite may create or refresh that current database's WAL/SHM sidecars.
+- `store-reset list` inspects every visible epoch without opening SQLite. Each row includes epoch number, `current | preserved | garbage | unobservable` role, recursive store-file bytes or `null`, the reason that epoch was published, the superseded store's Coral version when the publication reason observed one, and parsed `epoch.json`. While the old `store-reset-quarantine/` root exists, legacy incident rows are appended through the bounded legacy reader. `store-reset report <epoch>` reports the same observable filesystem and provenance facts, identifies the relative database path, and names the `sqlite3` command an operator can run; it does not open SQLite. A legacy incident UUID still routes through the bounded legacy reader. `backend recovery-quarantine list` is an ordinary product read of the current epoch under a shared lease, so SQLite may create or refresh that current database's WAL/SHM sidecars. If the current epoch cannot be observed or read, the command returns `{ kind: 'unavailable', reason: 'unobservable' }`: no rows were read, and the result is not an empty quarantine.
 - `store-reset release` permanently removes one positive numeric non-current epoch. The flat store is not addressable. Its complete result vocabulary is `released | current | absent | release-metadata-unobservable | release-holder-live | release-holder-unobservable | release-holder-cleanup-failed | release-deletion-failed | release-lock-release-failed | release-pre-deletion-durability-sync-failed | release-absent-durability-sync-failed | release-durability-sync-failed`. It takes the operator socket guard and then the adoption lock; settlement correctness does not depend on the adoption lock.
 
 `store-reset release` and `store-reset discard` require the coordinator to be stopped because both take the operator socket guard. A live incumbent refuses the guard with `coordinator_socket_in_use` before either mutation proceeds.
@@ -406,11 +406,12 @@ clients/bridge/manifest.json                    -> embedded build identity + has
 
 ~/.coral/gen2/run*/coordinator.json            -> active coordinator discovery record
 ~/.coral/gen2/run*/coordinator.lock            -> per-flavor coordinator singleton lock
-~/.coral/gen2/data*/store/store.db              -> Journal authority and projections by flavor
-projection_sessions in store.db                -> projected provider session continuity and scope
-projection_discuss in store.db                 -> projected discuss snapshots and source indexes
-projection_jobs.diagnostics in store.db        -> projected job terminal diagnostics, including canonical usage summaries
-recovery_quarantine in store.db                -> exact retained recovery failures and continuations
+~/.coral/gen2/data*/store/epoch-<N>/store.db   -> Journal authority and projections by flavor; N is positive and the highest proven epoch is current
+~/.coral/gen2/data*/store/store.db              -> untouched previous-generation flat-store data; never opened, locked, or deleted by this build
+projection_sessions in the current store.db    -> projected provider session continuity and scope
+projection_discuss in the current store.db     -> projected discuss snapshots and source indexes
+projection_jobs.diagnostics in current store.db -> projected job terminal diagnostics, including canonical usage summaries
+recovery_quarantine in the current store.db    -> exact retained recovery failures and continuations
 ~/.coral/exports/jobs/<jobId>/result.md        -> durable job result export (prod)
 ~/.coral/exports-dev/jobs/<jobId>/result.md    -> durable job result export (dev)
 <os-tmpdir>/coral-jobs/<jobId>/                -> live job scratch artifacts
