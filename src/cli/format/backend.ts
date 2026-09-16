@@ -1350,7 +1350,6 @@ export type RecoveryQuarantineListResult =
 
 export function formatRecoveryQuarantineList(result: RecoveryQuarantineListResult): string {
   if (!Array.isArray(result)) {
-    const unavailable = result as Exclude<RecoveryQuarantineListResult, readonly RecoveryQuarantineListEntry[]>;
     return 'Recovery quarantine inspection is unavailable because the current store could not be observed safely; no rows were read.';
   }
   const entries = result as readonly RecoveryQuarantineListEntry[];
