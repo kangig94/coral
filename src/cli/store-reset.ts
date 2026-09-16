@@ -30,7 +30,7 @@ import {
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
 import {
-  acquireStoreEpochReadLock,
+  acquireStoreEpochInspectionLock,
   listStoreEpochHolders,
   listStoreEpochResidues,
   listStoreEpochs,
@@ -106,7 +106,7 @@ async function diagnoseHeldEpoch(
   store: ResolvedStoreEpoch,
   dependencies: StoreResetCliDependencies,
 ): Promise<StoreResetDiagnosticStatus> {
-  const lease = acquireStoreEpochReadLock(runtime, store);
+  const lease = acquireStoreEpochInspectionLock(runtime, store);
   if (lease === null) return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
   try {
     return await dependencies.diagnoseEpoch(store);

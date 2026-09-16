@@ -453,6 +453,22 @@ export function acquireStoreEpochReadLock(
   return null;
 }
 
+export function acquireStoreEpochInspectionLock(
+  runtime: Pick<Runtime, 'storage'>,
+  resolved: ResolvedStoreEpoch,
+): FileLockLease | null {
+  const lockPath = storeEpochLockPath(resolved.storeRoot, resolved.epoch);
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      runtime.storage.lstatSync(`${lockPath}${suffix}`);
+      return null;
+    } catch (error: unknown) {
+      if (errorCode(error) !== 'ENOENT') return null;
+    }
+  }
+  return acquireStoreEpochReadLock(runtime, resolved);
+}
+
 export function holdStoreEpochLockUntilClose(db: Database, lease: FileLockLease | null): Database {
   if (lease === null) return db;
   const close = db.close.bind(db);
