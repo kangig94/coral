@@ -2781,6 +2781,19 @@ a boot — a reporting command that can eventually prevent startup is the shape 
 remove. The copies get an owned namespace, an aggregate bound, and a reclaimer that runs where the
 existing sweeps already run.
 
+## Scope, ruled by the owner
+
+**Fix existing defects and defects introduced by this branch's own implementation. Nothing else.** A
+reviewer recommendation that amounts to a new guarantee, a new defence, or a new mechanism is recorded in
+`docs/todo/` and left there, however sound it is.
+
+This follows Revision 27, where four review rounds went into a boundary the owner had never imagined
+defending. The failure mode is not that reviewers propose too much — they are asked to find everything —
+it is that I was accepting proposals as work instead of sorting them. The sort is: *does this state arise
+from a defect that exists, or from one this branch introduced?* If neither, it is a todo entry.
+
+Applies to every brief from round 39 onward, and to the remainder of round 38.
+
 ## Invariants to add
 
 Two static facts, with no call-graph allowlist beneath them: the only rename whose destination matches
