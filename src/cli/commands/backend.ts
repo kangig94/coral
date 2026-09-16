@@ -43,6 +43,7 @@ import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
+import { prepareStoreReportTempRoot } from '../../infra/store-report-temp-root.js';
 import { createStoreResetInspectionFs } from '../../infra/store-reset-inspection-fs.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
@@ -99,7 +100,6 @@ import { classifyStoreFile, type Database } from '../../store/db.js';
 import { inspectCurrentStore } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
-  prepareStoreReportTempRoot,
   stageStoreDatabaseEvidence,
   StoreDatabaseEvidenceUnavailableError,
   type StagedStoreDatabaseEvidence,

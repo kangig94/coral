@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
+import { prepareStoreReportTempRoot } from '../infra/store-report-temp-root.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '../infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '../runtime/real.js';
@@ -19,7 +20,6 @@ import {
 import {
   createStoreResetIncidentDiagnosticRunner,
   diagnoseStoreDatabaseCopy,
-  prepareStoreReportTempRoot,
   type StoreResetIncidentDiagnosticRunner,
   type StoreResetDiagnosticStatus,
 } from '../store/reset-incident-diagnostic.js';
