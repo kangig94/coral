@@ -46,7 +46,6 @@ export type StoreResetDiscardResult = {
   readonly target: 'gen2';
   readonly flavor: BuildFlavor;
   readonly baseDir: string;
-  readonly storeDbPath: string;
   readonly previousEpoch: StoreEpoch | null;
   readonly currentEpoch: StoreEpoch;
 };
@@ -161,7 +160,6 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
         target: 'gen2',
         flavor: options.runtime.flavor,
         baseDir: paths.baseDir,
-        storeDbPath: settled.store.path,
         previousEpoch,
         currentEpoch: settled.store.epoch,
       };

@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -902,6 +903,49 @@ describe('backend recovery-quarantine commands', () => {
     publishEpochMetadata(runtime, '1');
 
     expect(listRecoveryQuarantineLocal(runtime)).toEqual({ kind: 'unavailable', reason: 'unobservable' });
+  });
+
+  it('should report unavailable when the recovery quarantine cannot be read', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-corrupt-read-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    publishCompatibleEpoch(runtime, '1');
+    const db = new DatabaseSync(epochPath(runtime.paths.coral.store.dbDir, '1'));
+    db.exec('DROP TABLE recovery_quarantine');
+    db.close();
+
+    expect(listRecoveryQuarantineLocal(runtime)).toEqual({ kind: 'unavailable', reason: 'unobservable' });
+  });
+
+  it('should report unavailable when unreadable provider operations cannot be scanned', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-provider-scan-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    publishCompatibleEpoch(runtime, '1');
+    const prepare = DatabaseSync.prototype.prepare;
+    vi.spyOn(DatabaseSync.prototype, 'prepare').mockImplementation(function (this: DatabaseSync, sql: string) {
+      if (sql.includes('SELECT key, value FROM meta')) throw new Error('injected provider scan failure');
+      return prepare.call(this, sql);
+    });
+
+    expect(listRecoveryQuarantineLocal(runtime)).toEqual({
+      kind: 'unavailable',
+      reason: 'unobservable',
+    });
+  });
+
+  it('should preserve a successful list result when closing the read-only database fails', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-close-failure-'));
+    tempDirectories.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    publishCompatibleEpoch(runtime, '1');
+    const close = DatabaseSync.prototype.close;
+    vi.spyOn(DatabaseSync.prototype, 'close').mockImplementation(function (this: DatabaseSync) {
+      close.call(this);
+      throw new Error('injected close failure');
+    });
+
+    expect(listRecoveryQuarantineLocal(runtime)).toEqual([]);
   });
 
   it.each([

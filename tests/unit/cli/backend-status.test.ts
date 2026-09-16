@@ -162,6 +162,41 @@ afterEach(() => {
   for (const root of storeResetRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
+describe('backend store-reset discard output', () => {
+  it('does not print the absolute store root', async () => {
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset: {
+        ...storeReset,
+        discard: async () => ({
+          kind: 'discarded',
+          target: 'gen2',
+          flavor: 'prod',
+          baseDir: '/sensitive/store/root',
+          previousEpoch: '4',
+          currentEpoch: '5',
+        }),
+      },
+    });
+
+    await program.parseAsync([
+      'node',
+      'coral-cli',
+      'backend',
+      'store-reset',
+      'discard',
+      '--target',
+      'gen2',
+      '--flavor',
+      'prod',
+    ]);
+
+    expect(stdout).toBe('Discarded store epoch 4; initialized epoch 5.\n');
+    expect(stdout).not.toContain('/sensitive/store/root');
+  });
+});
+
 describe('backend store-reset release failures', () => {
   function programForRelease(runtime: Runtime, releaseSocket: () => Promise<void>): Command {
     const program = new Command();

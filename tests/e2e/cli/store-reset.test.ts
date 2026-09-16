@@ -520,6 +520,7 @@ describe('bundled store-reset CLI', () => {
     const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
     expect(discard.status, discard.stderr).toBe(0);
     expect(discard.stdout).toContain('Discarded store epoch 1; initialized epoch 2');
+    expect(discard.stdout).not.toContain(home);
     expect(storeHasTable(epochOnePath, 'private_pre_reset')).toBe(true);
     expect(storeHasTable(epochStorePath(home, build, 2), 'private_pre_reset')).toBe(false);
     expect(existsSync(epochStorePath(home, build, 0))).toBe(true);

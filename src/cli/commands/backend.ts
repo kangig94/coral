@@ -521,9 +521,9 @@ type StoreResetDiscardCommandResult = Extract<
 function formatStoreResetDiscard(result: StoreResetDiscardCommandResult): string {
   result = constrainStoreResetRendererInput(result);
   if (result.previousEpoch === null) {
-    return `Initialized store epoch ${result.currentEpoch} at ${result.storeDbPath}.`;
+    return `Initialized store epoch ${result.currentEpoch}.`;
   }
-  return `Discarded store epoch ${result.previousEpoch}; initialized epoch ${result.currentEpoch} at ${result.storeDbPath}.`;
+  return `Discarded store epoch ${result.previousEpoch}; initialized epoch ${result.currentEpoch}.`;
 }
 
 export interface KbCommitCommandOperations {
@@ -1297,23 +1297,25 @@ export function listRecoveryQuarantineLocal(
   const current = inspectCurrentStore(runtime);
   if (current.kind === 'absent') return [];
   if (current.kind === 'unobservable') return { kind: 'unavailable', reason: 'unobservable' };
-  let db: Database;
+  let db: Database | undefined;
   try {
     db = openReadOnlyStoreDatabase(runtime, {
       resolved: { path: current.epoch.path, epoch: current.epoch, epochCandidate: true },
       storeFormat: currentCoralStoreFormat(),
     }) as unknown as Database;
-  } catch {
-    return { kind: 'unavailable', reason: 'unobservable' };
-  }
-  try {
     const stored = RecoveryQuarantineStore.readOnly(db).list();
     return [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
       const boundary = left.boundary.localeCompare(right.boundary);
       return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
     });
+  } catch {
+    return { kind: 'unavailable', reason: 'unobservable' };
   } finally {
-    db.close();
+    try {
+      db?.close();
+    } catch {
+      // Closing a read-only inspection must not replace its result.
+    }
   }
 }
 

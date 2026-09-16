@@ -834,6 +834,19 @@ describe('write-once store epochs', () => {
     console.log('read-only-list-cell publication-reason=epoch.json sqlite-opens=0');
   });
 
+  it('records operator discard provenance without claiming a superseded store version', () => {
+    const runtime = harness();
+    const initial = settleStoreEpoch(runtime, options());
+    initial.db.close();
+    const discarded = discardCurrentStoreEpoch(runtime, options());
+    discarded.db.close();
+
+    const successor = listStoreEpochs(runtime).find(({ epoch }) => epoch === discarded.store.epoch);
+
+    expect(successor?.publicationReason).toEqual({ kind: 'operator-discard' });
+    expect(successor?.supersededStoreVersion).toBeNull();
+  });
+
   it('renders replacement provenance as the publication reason and superseded store version', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -1828,6 +1841,45 @@ describe('write-once store epochs', () => {
     console.log('mint-process-death-cell seeded=12 remaining=0');
   });
 
+  it('reclaims an empty pre-lock construction directory', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    const construction = join(dbDir, '.coral-store-epoch-construction-before-lock');
+    mkdirSync(construction);
+
+    expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'))).toBe('complete');
+    expect(existsSync(construction)).toBe(false);
+  });
+
+  it('reclaims an orphaned holder temporary file', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
+    const temporaryHolder = join(dbDir, '.epoch-holder-crashed.json.tmp');
+    writeFileSync(temporaryHolder, '{"epoch":"1"}');
+
+    expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'))).toBe('complete');
+    expect(existsSync(temporaryHolder)).toBe(false);
+  });
+
+  it('keeps a live holder temporary file until the holder is gone', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    const settled = settleStoreEpoch(runtime, options());
+    const holder = readdirSync(dbDir).find((entry) => entry.startsWith('.epoch-holder-') && entry.endsWith('.json'));
+    if (holder === undefined) throw new Error('expected a published holder');
+    const temporaryHolder = join(dbDir, `${holder}.tmp`);
+    writeFileSync(temporaryHolder, '{"epoch":"1"}');
+
+    expect(await sweepStoreEpochsPostReady(runtime, settled.store)).toBe('complete');
+    expect(existsSync(temporaryHolder)).toBe(true);
+
+    settled.db.close();
+    expect(await sweepStoreEpochsPostReady(runtime, settled.store)).toBe('complete');
+    expect(existsSync(temporaryHolder)).toBe(false);
+  });
+
   it('reclaims construction locks left by process death before the first rename', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-construction-death-'));
     roots.push(baseDir);
@@ -2159,14 +2211,14 @@ describe('write-once store epochs', () => {
     expect(after).toEqual(before);
   });
 
-  it('keeps lockless mint directories unobservable and untouched', async () => {
+  it('reclaims empty lockless residue without recursively deleting nonempty residue', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
     const residueCount = 8;
     for (let index = 0; index < residueCount; index += 1) {
-      mkdirSync(join(dbDir, `.mint-lockless-${index}`));
-      createCompatibleStore(join(dbDir, `.mint-partial-cleanup-${index}`, 'store.db'), `partial-${index}`);
+      mkdirSync(join(dbDir, `.coral-store-epoch-construction-lockless-${index}`));
+      createCompatibleStore(join(dbDir, `.reaping-partial-cleanup-${index}`, 'store.db'), `partial-${index}`);
     }
 
     const listed = listStoreEpochResidues(runtime);
@@ -2179,7 +2231,8 @@ describe('write-once store epochs', () => {
       `mint-residue-cell lockless=${residueCount} partial-cleanup=${residueCount} listed-state=${listed[0]?.state} result=${result} remaining=${remaining.length}`,
     );
     expect(result).toBe('unobservable-metadata');
-    expect(remaining).toEqual(listed);
+    expect(remaining).toHaveLength(residueCount);
+    expect(remaining.every(({ name }) => name.startsWith('.reaping-partial-cleanup-'))).toBe(true);
   });
 
   it('does not sweep the coordinator epoch while its settled database is open', async () => {

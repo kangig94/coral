@@ -30,7 +30,10 @@ const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
 
-export type StoreEpochClassification = StoreFormatClassification | { readonly kind: 'unavailable' };
+export type StoreEpochClassification =
+  | StoreFormatClassification
+  | { readonly kind: 'unavailable' }
+  | { readonly kind: 'operator-discard' };
 
 export type StoreEpochMetadata = Readonly<{
   supersedes: StoreEpoch | null;
@@ -1254,7 +1257,18 @@ async function removeAbandonedStoreDirectory(
   const lockPath = join(path, STORE_LOCK_FILE_NAME);
   const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
   if (lock.kind === 'unobservable') return 'unobservable';
-  if (lock.kind === 'disproven') return 'unobservable';
+  if (lock.kind === 'disproven') {
+    try {
+      runtime.storage.rmdirSync(path);
+      return 'removed';
+    } catch (error: unknown) {
+      const code = errorCode(error);
+      if (code === 'ENOENT') return 'removed';
+      if (code === 'ENOTEMPTY' || code === 'EEXIST') return 'unobservable';
+      auditSweepFailure(path, error);
+      return 'target-failed';
+    }
+  }
   return removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path);
 }
 
@@ -1296,26 +1310,31 @@ export async function sweepStoreEpochsPostReady(
 
   let holderDeletionFailed = false;
   let unobservableHolder = false;
+  const inspectedHolders = new Set<string>();
   for (const entry of entries) {
     if (options.signal?.aborted) return finish('cancelled');
-    if (!entry.startsWith(EPOCH_HOLDER_PREFIX) || !entry.endsWith('.json')) {
+    if (!entry.startsWith(EPOCH_HOLDER_PREFIX) || (!entry.endsWith('.json') && !entry.endsWith('.json.tmp'))) {
       await yieldSweepTurn();
       continue;
     }
-    const holder = await inspectStoreEpochHolderAsync(runtime, dbDir, entry);
+    const holderEntry = entry.endsWith('.tmp') ? entry.slice(0, -'.tmp'.length) : entry;
+    if (inspectedHolders.has(holderEntry)) continue;
+    inspectedHolders.add(holderEntry);
+    const holder = await inspectStoreEpochHolderAsync(runtime, dbDir, holderEntry);
     if (holder?.state === 'live') continue;
     if (holder?.state === 'unobservable' && !holder.removable) {
       unobservableHolder = true;
       continue;
     }
-    if (holder !== null) {
-      try {
+    try {
+      for (const path of [holder?.path, join(dbDir, `${holderEntry}.tmp`)]) {
+        if (path === undefined) continue;
         unsyncedMutation = true;
-        const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, holder.path);
+        const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, path);
         holderDeletionFailed ||= !removed;
-      } finally {
-        holder.proof?.();
       }
+    } finally {
+      holder?.proof?.();
     }
     await yieldSweepTurn();
   }
@@ -1637,7 +1656,7 @@ export function discardCurrentStoreEpoch(runtime: Runtime, options: StoreEpochOp
     const current = resolveCurrentStoreEpoch(runtime.storage, dbDir);
     const successor = selectSuccessor(runtime, dbDir, current);
     const published = mintNextEpoch(runtime, options, dbDir, current, successor.epoch, {
-      kind: 'unavailable',
+      kind: 'operator-discard',
     });
     if (published.kind === 'published') {
       return openPublishedEpoch(runtime, options, dbDir, successor.epoch, published.lease);
