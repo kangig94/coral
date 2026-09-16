@@ -101,7 +101,11 @@ export function resolveCurrentStoreDbPath(dbDir) {
   const entries = readdirSync(root.path);
   for (const entry of entries) {
     const epoch = epochNumber(entry);
-    if (epoch !== null && (current === null || BigInt(epoch) > BigInt(current)) && isPublishedEpoch(root, entry)) {
+    if (
+      epoch !== null &&
+      (current === null || BigInt(epoch) > BigInt(current)) &&
+      isPublishedEpoch(root, entry)
+    ) {
       current = epoch;
     }
   }
