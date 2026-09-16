@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Thirty design revisions and thirty-eight unbiased tier-1 review rounds. Revision
-14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it earned.
-Revision 27 withdraws a boundary four rounds were spent defending, and the scope ruling below limits the
-remaining work to defects that exist or that this branch introduced.
+**Status**: in flight. Thirty-one design revisions and thirty-nine unbiased tier-1 review rounds.
+Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it
+earned. Revision 27 withdraws a boundary four rounds were spent defending; Revision 31 asks whether a
+subsystem added in Revision 25 is worth what it has cost. One question is open at the end of Revision 31.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2885,6 +2885,64 @@ My round 39 brief carried a stale sentence saying epoch 0 remains releasable. Re
 store from the epoch space and deleted `release 0`; the documentation agrees that only positive epochs are
 addressable. The reviewer was right not to report the CLI's rejection of `0` as a defect, and the stale
 text is mine to stop copying forward.
+
+## Revision 31 — the subsystem that is now producing the defects
+
+Round 40's reviewers confirmed that Revision 30 reached what it claimed — seven direct callers of the new
+observation, no store-resolution `existsSync` left under `src/store` — and then found four more defects.
+Three are worth fixing as stated. The fourth observation is about where they keep coming from.
+
+### The four findings
+
+**Absence is `ENOENT` was applied to the observation and not to the resolution.** `realpath` or `readdir`
+returning `ENOENT` *after* the configured root was observed present is still read as an empty store, in
+five sites in the epoch resolvers and in the generated hook. A symlinked root whose target disappears
+mid-resolution therefore makes `store-reset list` print no epochs, `report <known-epoch>` answer
+not-found, and `pre-compact` claim there are no relevant jobs. The rule was right; it stopped one call
+short. Again.
+
+**The direct CLI reader still re-derives the store.** `openReadCoralStore` reduces the resolution to a
+pathname through a one-line helper that discards the resolved root and epoch, checks that pathname without
+a lease, and then calls the read-only opener, which resolves again. Between the check and the open, a
+sweep can remove the selected epoch while a newer one exists — and the command returns an **in-memory**
+store with a "no store" note. §9's prohibition on one-line helpers that hide a value names this exact
+failure, and the helper is the failure.
+
+**A detached diagnostic child's private copy can be deleted underneath it.** On
+`termination_unconfirmed` the supervisor unrefs a possibly-live child and the parent CLI retains the
+report lock only in process-local memory; when the short-lived parent exits, the lock is released while
+the child may still hold `store.db` open, and the next report reclaims the active namespace. This is
+branch-introduced: `main` left the copy behind but had no reclaimer to race.
+
+**Epoch reports render raw errors and absolute paths.** Metadata observation and replacement
+classification preserve `Error.message`, and the renderer emits the cause directly or the whole stored
+`epoch.json` containing it — contradicting the documented path-free, exception-free report contract.
+
+### Where these are coming from
+
+Five rounds of findings now concentrate in one place: the **private-copy reporting subsystem**. Its
+history is staging duplicated in two namespaces, ownership proved by PID, cross-user collision on a shared
+`/tmp`, a reclaimer deleting what it did not own, a detached child's copy deleted underneath it, two
+disposition gaps, and raw errors in its output. It stands at roughly +355 lines net and has been the
+largest single source of defects since Revision 25.
+
+It exists to satisfy a guarantee I introduced in Revision 25: **reporting does not open the store.** The
+defect behind that was real and measured — a SQLite open with `readOnly: true` writes `-shm` and a
+zero-length `-wal` in WAL mode, so a nominally read-only command altered every epoch it reported on. What
+is not obvious in hindsight is that *copying the database* was the right answer to it.
+
+`list` already needs no copy: it classifies from `epoch.json`, which records the publication reason at
+publication time. That leaves two openers — `report <epoch>`, an operator-invoked diagnostic, and
+`recovery-quarantine list`. Both inspect SQLite contents, and both could instead be **restricted to an
+epoch nothing is writing**: a preserved or garbage epoch is never opened by the coordinator, so a plain
+read-only open of one mutates nothing anybody depends on, and no copy, staging root, lock, reclaimer,
+ownership proof or per-user namespace is needed.
+
+The cost is that deep inspection of the **current** epoch stops being offered. What it buys is the
+deletion of the subsystem that has produced most of this branch's recent defects.
+
+**This is recorded as a proposal, not a decision.** It is a reduction in what the tool offers, which is
+the owner's call — and the owner has already ruled once that the elaborate answer was not worth it.
 
 ## Scope, ruled by the owner
 
