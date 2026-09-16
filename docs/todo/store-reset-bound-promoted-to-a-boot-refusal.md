@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-eight design revisions and thirty-six unbiased tier-1 review rounds.
-Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 through 26 are the
-corrections it earned; Revision 27 withdraws a boundary four of those rounds were spent defending, on the
-owner’s ruling that it was never worth defending.
+**Status**: in flight. Twenty-nine design revisions and thirty-seven unbiased tier-1 review rounds.
+Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections
+it earned. Revision 27 withdraws a boundary four rounds were spent defending, and the scope ruling below
+limits the remaining work to defects that exist or that this branch introduced.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2780,6 +2780,62 @@ path. Left alone it ends in a full disk, which is the one filesystem failure thi
 a boot — a reporting command that can eventually prevent startup is the shape this branch exists to
 remove. The copies get an owned namespace, an aggregate bound, and a reclaimer that runs where the
 existing sweeps already run.
+
+## Revision 29 — a proof is a value, and a concept has one implementation
+
+Round 38's reviewers found six defects, all of them in this branch's own implementation, and none
+requiring a new guarantee. They divide cleanly in two.
+
+### The capability is carried as a string, so every boundary re-derives it
+
+Revision 28 made the resolved root part of the capability **inside the opener**, and every boundary above
+it still passes a pathname and resolves again:
+
+- **Lifecycle keeps only the ordinal.** Startup routing returns the resolved path; lifecycle retains
+  `routing.epoch`, the supervisor exports that ordinal, and the KB daemon rebuilds its database beneath
+  the *currently configured* root. Under a symlinked root that retargets, the coordinator writes
+  `oldRoot/epoch-1` while its own daemon writes `newRoot/epoch-1`.
+- **The smoke opener proves a path and then hands on a string.** The second resolution no longer
+  recognises it as an epoch beneath the configured root, downgrades it to an ordinary file, and opens it
+  **without a shared lease or holder record** — after which a sweep that resolved the old root can take
+  the supposedly exclusive lock and delete a live writable database.
+- The post-ready sweep and `store-reset report` selection re-read the configured root the same way.
+
+> **A proof is a value, not a pathname.** It crosses function, module and **process** boundaries as what
+> it is — root, epoch and path together — and no consumer reconstructs it from configuration.
+
+This is the fourth layer at which this branch has been bitten by re-deriving a decision it had already
+made: the epoch, the commit adapter, the root inside the opener, and now the root across the process
+boundary. The rule has been written down twice and implemented one layer at a time. It is not a layer
+problem.
+
+### Two implementations of a concept this branch already solved
+
+- **Report staging exists twice.** Revision 28 gave epoch reports and recovery-quarantine listing an
+  owned namespace with a reclaimer; legacy UUID reports still stage into the older random
+  `coral-store-reset-*` directory, which no reclaimer recognises. So K interrupted legacy reports retain
+  K × 256 MiB — **the exact accumulation Revision 28 claims to have eliminated**, ending in the disk-full
+  failure that is the one thing allowed to stop a boot.
+- **Ownership is proved by PID again.** The new report namespace records `.owner-<pid>` and tests
+  liveness with `kill(pid, 0)`. Revision 19 removed exactly this from holder records, because PID reuse
+  makes a dead owner look alive forever; here it makes the reporting surface refuse indefinitely once an
+  unrelated process inherits the number. The branch solved this with a lock and then built a second
+  answer that does not use it.
+
+§7 is the rule in both cases, and the cost is not theoretical in either.
+
+### Two boundaries that still collapse the third answer
+
+`recovery-quarantine list` gained an `unavailable` disposition and maps only *staging* failures into it.
+A live writer changing the source during inspection makes `verify()` return false, and a staged database
+classifying as `newer-incompatible` takes the same path: both throw plain errors, which render as
+`[code=internal]` and exit 70. The disposition exists; the two states that need it do not reach it.
+
+And `inspectCurrentStore` decides absence with `existsSync`, which returns false when traversal is
+refused. Verified on this host: a root whose parent lacks search permission gives
+`{"exists":false,"realpathCode":"EACCES"}`, so `recovery-quarantine list` prints *Recovery quarantine is
+empty* and `store-reset list` can report no epochs, for a store that could not be looked at. **Absence is
+`ENOENT`.** Everything else is unobservable, which both list contracts already have room for.
 
 ## Scope, ruled by the owner
 
