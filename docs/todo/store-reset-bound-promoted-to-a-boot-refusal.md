@@ -1,9 +1,11 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Thirty-four design revisions and forty-two unbiased tier-1 review rounds. Revision 14
-replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it earned.
-Revision 27 withdraws a boundary four rounds were spent defending, and Revision 32 deletes a subsystem five
-rounds were spent repairing — both on the owner’s ruling. Round 42 found that a reclaimer added to bound residue can itself refuse a boot.
+**Status**: review loop closed. Thirty-five design revisions and forty-three unbiased tier-1 review
+rounds; round 43 returned zero findings at every severity from both lenses. Revision 14 replaced the
+premise all thirteen earlier revisions inherited, and 15 onward are the corrections it earned. Revision 27
+withdraws a boundary four rounds were spent defending, Revision 32 deletes a subsystem five rounds were
+spent repairing, and Revision 34 stops making the reclaimer timid and makes the writers survive it — all
+three on the owner’s ruling.
 
 A coordinator refused to start because the store was too large to _report on_. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -3108,6 +3110,34 @@ therefore requires distinct or systematic interference, and exhaustion keeps the
 named successor. The storage port still overloads that lost race with a parent-directory durability failure; the
 broader correction is tracked in
 [`write-atomic-durable-sync-result-overloads-two-dispositions.md`](write-atomic-durable-sync-result-overloads-two-dispositions.md).
+
+## Revision 35 — the loop closes
+
+Round 43's two reviewers both returned **BLOCKING 0, STRONG 0, MINOR 0**. Forty-three unbiased tier-1
+rounds, and this is the first with nothing at any severity from either lens.
+
+What ended it was not another defense. It was the opposite: Revision 27 withdrew a boundary four rounds
+had been spent defending, Revision 32 deleted a subsystem five rounds had been spent repairing, and
+Revision 34 stopped making the reclaimer timid and made the writers survive it instead. All three came
+from the owner ruling scope, and each one removed more than the rounds before it had added.
+
+The shape that kept producing defects is worth naming once more, because it produced the last three too:
+**a site with two answers meets a fact that has three.** A lockless directory is not proven abandoned. A
+holder record absent during its own first write is not a holder that never existed. A `false` from an
+atomic write is not a lost race, because the same `false` is a durability failure. Every one of those was
+a third answer folded into whichever binary the code already had, and the fix was never a new mechanism —
+it was giving the third answer a name and a return type.
+
+The other thing that ended it is smaller and more uncomfortable. Round 42 failed because I wrote a false
+premise into a brief and the delegate reported verifying it without measuring. Round 43's first attempt
+stopped dead on another false premise of mine — and stopping was correct, and it is the only reason
+round 43 landed. **A delegate that refuses is worth more than one that agrees**, and the brief has to say
+so in a way that is believable, because the default is to implement what it is handed.
+
+Two things remain recorded rather than fixed, both by the owner's ruling and both in `docs/todo/`: the
+partially erased `.reaping-*` residue, and store-epoch minting under sustained external interference.
+`writeAtomicDurableSync`'s boolean still overloads a lost race with a durability failure everywhere
+except the one caller where that refused a boot; that is written up too.
 
 ## Scope, ruled by the owner
 
