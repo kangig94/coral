@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Twenty-nine design revisions and thirty-seven unbiased tier-1 review rounds.
-Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections
-it earned. Revision 27 withdraws a boundary four rounds were spent defending, and the scope ruling below
-limits the remaining work to defects that exist or that this branch introduced.
+**Status**: in flight. Thirty design revisions and thirty-eight unbiased tier-1 review rounds. Revision
+14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it earned.
+Revision 27 withdraws a boundary four rounds were spent defending, and the scope ruling below limits the
+remaining work to defects that exist or that this branch introduced.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2836,6 +2836,55 @@ refused. Verified on this host: a root whose parent lacks search permission give
 `{"exists":false,"realpathCode":"EACCES"}`, so `recovery-quarantine list` prints *Recovery quarantine is
 empty* and `store-reset list` can report no epochs, for a store that could not be looked at. **Absence is
 `ENOENT`.** Everything else is unobservable, which both list contracts already have room for.
+
+## Revision 30 — a fix applied to a call site is not a fix
+
+Round 39's architect found no blocking defect and one strong one; the guardian found three. Every one of
+the four is the **same shape**, and it is the shape the guard history already taught:
+
+> **The previous round fixed one instance of a thing and left the others.**
+
+- `existsSync` was replaced with an `ENOENT` test in `inspectCurrentStore` and **not** in
+  `resolveCurrentStore`. So an unreadable root still reads as absent, and its consumers produce credible
+  false output: the CLI read store silently opens an **in-memory** database, and expansion catalog reads
+  turn `store_not_initialized` into bundled defaults. A permission problem becomes an empty answer nobody
+  questions.
+- `recovery-quarantine list` routed **staging** failure and **post-open source mutation** into its
+  `unavailable` disposition, and left the other two sources throwing: a corrupt or torn private copy that
+  fails inside `classifyStoreFile` *before* verification, and a cleanup failure on a read-only or
+  unavailable filesystem. Both still render as `[code=internal]` and exit 70.
+- The report reclaimer was given one lock and one namespace, and then also deletes the **legacy**
+  `coral-store-reset-*` directories — which a rolled-back `main` process creates directly, without taking
+  that lock. A current-build report can therefore delete a live old-build report's evidence while it is
+  being written. Introduced by the round that consolidated the reclaimer.
+- The report namespace is scoped by the system temporary directory, and its reclaimer assumes every
+  matching entry is its own. On an ordinary multi-user host sharing `/tmp`, a crashed report from one user
+  leaves a `0700` directory a second user can neither remove nor reuse, and reporting stays unavailable
+  until the first user or root intervenes.
+
+Four rounds running, the correction has been applied where the reviewer pointed rather than to the
+concept. The remedy is the one this document reached for the structural guard and then failed to apply to
+its own fixes: **derive the set, do not enumerate it.** When a rule changes — absence is `ENOENT`,
+uncertainty is a disposition, deletion requires ownership — the change is made once, where the concept
+lives, and the call sites follow because they cannot do otherwise.
+
+Concretely:
+
+- **Absence is `ENOENT`, in one observation used by every resolver.** Not two functions that each decide
+  what absence means.
+- **A reporting command's uncertainty is one disposition**, produced by one wrapper around everything that
+  can fail between staging and rendering — not routed source by source as each is discovered.
+- **Deletion requires ownership of the namespace being deleted.** The reclaimer either owns the legacy
+  namespace — which means old builds took the lock, and they did not — or it does not delete it. A
+  namespace nobody can prove ownership of is left alone and reported, which is what `list` is for.
+- **The staging root is per-user**, because the ownership proof is per-user and `tmpdir()` is not.
+
+### One correction to the brief, from the reviewer
+
+My round 39 brief carried a stale sentence saying epoch 0 remains releasable. Revision 21 removed the flat
+store from the epoch space and deleted `release 0`; the documentation agrees that only positive epochs are
+addressable. The reviewer was right not to report the CLI's rejection of `0` as a defect, and the stale
+text is mine to stop copying forward.
 
 ## Scope, ruled by the owner
 
