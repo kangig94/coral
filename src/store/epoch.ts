@@ -1349,6 +1349,13 @@ async function syncDirectoryDurable(storage: StoragePort, path: string): Promise
   }
 }
 
+type PostReadyStoreEpochSweepContext = Readonly<{
+  runtime: Runtime;
+  dbDir: string;
+  openEpoch: StoreEpoch;
+  signal: AbortSignal | undefined;
+}>;
+
 type PostReadySweepMutationState = { pending: boolean };
 
 async function syncPostReadySweepMutations(
@@ -1372,12 +1379,11 @@ type PostReadyHolderCleanupResult =
     }>;
 
 async function cleanPostReadyStoreEpochHolders(
-  runtime: Runtime,
-  dbDir: string,
+  context: PostReadyStoreEpochSweepContext,
   entries: readonly string[],
-  signal: AbortSignal | undefined,
   mutations: PostReadySweepMutationState,
 ): Promise<PostReadyHolderCleanupResult> {
+  const { runtime, dbDir, signal } = context;
   let deletionFailed = false;
   let lockReleaseFailed = false;
   let unobservableHolder = false;
@@ -1422,11 +1428,10 @@ type PostReadyEpochObservationResult =
   | Readonly<{ kind: 'observed'; observations: readonly StoreEpochObservation[] }>;
 
 async function observePostReadyStoreEpochs(
-  runtime: Runtime,
-  dbDir: string,
+  context: PostReadyStoreEpochSweepContext,
   entries: readonly string[],
-  signal: AbortSignal | undefined,
 ): Promise<PostReadyEpochObservationResult> {
+  const { runtime, dbDir, signal } = context;
   const observations: StoreEpochObservation[] = [];
   for (const entry of entries) {
     if (signal?.aborted) return { kind: 'cancelled' };
@@ -1448,15 +1453,13 @@ type PostReadyEpochReapingResult =
     }>;
 
 async function reapPostReadyStoreEpochEntries(
-  runtime: Runtime,
-  dbDir: string,
-  openEpoch: StoreEpoch,
+  context: PostReadyStoreEpochSweepContext,
   entries: readonly string[],
   residueEntries: ReadonlySet<string>,
   retention: StoreEpochRetentionSelection,
-  signal: AbortSignal | undefined,
   mutations: PostReadySweepMutationState,
 ): Promise<PostReadyEpochReapingResult> {
+  const { runtime, dbDir, openEpoch, signal } = context;
   let complete = true;
   let liveHolder = false;
   let lockReleaseFailed = false;
@@ -1517,11 +1520,16 @@ export async function sweepStoreEpochsPostReady(
   openStore: ResolvedStoreEpoch,
   options: { readonly signal?: AbortSignal } = {},
 ): Promise<StoreEpochSweepResult> {
-  const dbDir = openStore.storeRoot;
-  const openEpoch = openStore.epoch;
+  const context: PostReadyStoreEpochSweepContext = {
+    runtime,
+    dbDir: openStore.storeRoot,
+    openEpoch: openStore.epoch,
+    signal: options.signal,
+  };
+  const { dbDir, openEpoch, signal } = context;
   const mutations: PostReadySweepMutationState = { pending: false };
 
-  if (options.signal?.aborted) return 'cancelled';
+  if (signal?.aborted) return 'cancelled';
   let entries: readonly string[];
   try {
     entries = await runtime.storage.readdir(dbDir);
@@ -1529,9 +1537,9 @@ export async function sweepStoreEpochsPostReady(
     auditSweepFailure(dbDir, error);
     return 'unobservable-metadata';
   }
-  if (options.signal?.aborted) return 'cancelled';
+  if (signal?.aborted) return 'cancelled';
 
-  const holderCleanup = await cleanPostReadyStoreEpochHolders(runtime, dbDir, entries, options.signal, mutations);
+  const holderCleanup = await cleanPostReadyStoreEpochHolders(context, entries, mutations);
   if (holderCleanup.kind === 'cancelled') {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
@@ -1540,27 +1548,18 @@ export async function sweepStoreEpochsPostReady(
   if (holderCleanup.deletionFailed) return 'deletion-failed';
   if (holderCleanup.unobservableHolder) return 'unobservable-holder';
 
-  const observation = await observePostReadyStoreEpochs(runtime, dbDir, entries, options.signal);
+  const observation = await observePostReadyStoreEpochs(context, entries);
   if (observation.kind === 'cancelled') {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
   const residueEntries = new Set(entries.filter((entry) => isStoreEpochResidue(entry)));
   const retention = selectStoreEpochRetention(observation.observations);
-  const reaping = await reapPostReadyStoreEpochEntries(
-    runtime,
-    dbDir,
-    openEpoch,
-    entries,
-    residueEntries,
-    retention,
-    options.signal,
-    mutations,
-  );
+  const reaping = await reapPostReadyStoreEpochEntries(context, entries, residueEntries, retention, mutations);
   if (reaping.kind === 'cancelled') {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
 
-  if (options.signal?.aborted) {
+  if (signal?.aborted) {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
   let complete = reaping.complete;
