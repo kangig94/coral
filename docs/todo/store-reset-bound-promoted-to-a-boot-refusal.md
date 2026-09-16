@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Thirty-one design revisions and thirty-nine unbiased tier-1 review rounds.
+**Status**: in flight. Thirty-two design revisions and thirty-nine unbiased tier-1 review rounds.
 Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it
-earned. Revision 27 withdraws a boundary four rounds were spent defending; Revision 31 asks whether a
-subsystem added in Revision 25 is worth what it has cost. One question is open at the end of Revision 31.
+earned. Revision 27 withdraws a boundary four rounds were spent defending, and Revision 32 deletes a
+subsystem five rounds were spent repairing — both on the owner’s ruling.
 
 A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2943,6 +2943,55 @@ deletion of the subsystem that has produced most of this branch's recent defects
 
 **This is recorded as a proposal, not a decision.** It is a reduction in what the tool offers, which is
 the owner's call — and the owner has already ruled once that the elaborate answer was not worth it.
+
+## Revision 32 — delete the machinery; the operator has sqlite3
+
+The owner, on the proposal in Revision 31: *"Delete. This looks like far too much machinery got built. If
+someone needs it, they can just open the store with sqlite and look, can't they?"*
+
+They can, and that settles it more cleanly than the proposal did.
+
+### What the machinery was for
+
+The diagnostic child's entire job is one statement: `PRAGMA quick_check(1)`. Around that pragma this
+branch built 694 lines — bounded private copies, a staging root, a report lock, a reclaimer, per-user
+namespaces, ownership proofs, child-process supervision with SIGTERM/SIGKILL escalation and an
+unconfirmed-termination disposition, holder records, and byte-identity tests for all of it. It has been
+the largest single source of defects since Revision 25 and produced findings in five consecutive rounds.
+
+An operator who wants `quick_check` can run it. Coral's job is to tell them where the database is.
+
+> **`report <epoch>` reports what it can observe without opening the database: the filesystem facts, the
+> `epoch.json` provenance, and the path.** For SQLite internals it names the command to run.
+
+`src/store/reset-incident-diagnostic.ts` and `src/infra/store-report-temp-root.ts` go, and with them the
+private copies, the staging root, the report lock, the reclaimer, the per-user namespace, the child
+supervision, `MAX_SQLITE_DIAGNOSTIC_BYTES`, and every disposition invented to describe their failures.
+The round-40 finding about a detached child's copy being deleted underneath it goes with the child.
+
+### And reading the current store was never the problem
+
+`recovery-quarantine list` is not a diagnostic. It reads quarantine rows — a real product read of the
+live store, which the read-only port, the CLI reader and the KB query all perform routinely under a shared
+lease. It does that too, with no copy.
+
+Revision 25's measurement stands and was worth having: a SQLite open with `readOnly: true` writes `-shm`
+and a zero-length `-wal` in WAL mode. What it actually condemned was narrower than I concluded:
+
+- **opening the previous generation's flat store**, which this build now never does, and
+- **opening an epoch we had promised not to alter** — which we now also never do, because `report` does
+  not open and `list` classifies from `epoch.json`.
+
+Ordinary reads of the **current** epoch, under its shared lease, were never in that set. I generalised a
+measured fact into a rule broader than the fact, and then built a subsystem to satisfy the rule.
+
+### The rest of round 40
+
+Three findings stand on their own and are fixed alongside the deletion: `ENOENT` means absent through the
+**whole** resolution and not only its first observation; the direct CLI reader carries the resolved
+capability instead of reducing it to a pathname and resolving again, so it can no longer return an
+in-memory store while a newer epoch exists; and operator output carries no raw exception text or absolute
+paths — much of which leaves with the diagnostic renderer.
 
 ## Scope, ruled by the owner
 
