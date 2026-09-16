@@ -1952,14 +1952,13 @@ observed progress (`:677`). A `store.db` at mode `0444` busy-spins. A proven epo
 names a refused syscall, which is the one refusal the governing rule allows — surface it rather than
 looping.
 
-**The holder record has no lifecycle.** Before this revision, the `diagnoseHeldEpoch` parent wrote it
-atomically (`src/cli/store-reset.ts`), while the child now owned by
-`createStoreResetIncidentDiagnosticRunner` (`src/store/reset-incident-diagnostic.ts`) then truncated and
-rewrote the same path with a plain writeFileSync, so a death mid-write leaves malformed JSON that is
-classified unobservable forever, blocking every later sweep and release with no command to clear it. The parent
-writes it once, naming the epoch and the PID; the child never rewrites it; the parent removes it in
-`finally`; a record whose PID is absent is stale, visible in `list`, and removable by the sweep that
-re-checks it.
+**The holder record has no lifecycle.** Before this revision, the report parent wrote it atomically, while
+the diagnostic child then truncated and rewrote the same path with a plain writeFileSync, so a death
+mid-write leaves malformed JSON that is classified unobservable forever, blocking every later sweep and
+release with no command to clear it. The parent writes it once, naming the epoch and the PID; the child
+never rewrites it; the parent removes it in `finally`; a record whose PID is absent is stale, visible in
+`list`, and removable by the sweep that re-checks it. Revision 32 later deletes the report parent,
+diagnostic child, and their holder records entirely.
 
 **`incomplete` collapses five outcomes** — unobservable metadata, a live holder, an unobservable holder,
 a failed deletion and a failed durability sync — and `release` maps all of them to `release-unproven`
@@ -2020,13 +2019,12 @@ start because it was hashing a big file. The mechanism changed; the shape did no
 
 ### The holder must name the process that holds
 
-The holder record names `runtime.env.pid()` in `diagnoseHeldEpoch` (`src/cli/store-reset.ts`) — the CLI
-parent — while SQLite is opened by the child spawned in `superviseStoreResetDiagnosticChild`
-(`src/store/reset-incident-diagnostic.ts`). Two consequences,
-both reproduced: a parent killed with SIGKILL leaves a record naming a dead PID while its child still
-holds the database, and the next sweep reaps the record as stale and unlinks underneath it; and on
-`termination_unconfirmed` the child is **detached while possibly still live** in
-`superviseStoreResetDiagnosticChild` and the parent removes the marker anyway in `diagnoseHeldEpoch`.
+The holder record named the CLI parent's PID, while SQLite was opened by its diagnostic child. Two
+consequences, both reproduced: a parent killed with SIGKILL leaves a record naming a dead PID while its
+child still holds the database, and the next sweep reaps the record as stale and unlinks underneath it;
+and on `termination_unconfirmed` the child is **detached while possibly still live** while the parent
+removes the marker anyway. Revision 32 removes this entire process relationship rather than carrying its
+holder protocol forward.
 
 The second is §11 exactly — unknown authorizing finalization — and the test in
 `tests/integration/cli/store-reset.test.ts` currently requires it. The record names the process that
@@ -2094,8 +2092,8 @@ snapshot is deleted anyway; a reviewer produced `result=complete epoch1Exists=fa
 
 PID-only identity makes the opposite failure just as reachable: after the child exits, PID reuse by any
 long-lived process makes every sweep and release answer `live-holder` forever, and the remediation names a
-process that no longer exists (`reset-incident-diagnostic.ts:37`, `epoch.ts:682`,
-`formatStoreResetRelease` in `src/cli/format/store-reset.ts`).
+process that no longer exists. Revision 32 deletes the diagnostic process and its holder; ordinary epoch
+leases remain lock-based.
 
 > **A process that opens a store holds a lock on it for as long as it holds the database, and liveness is
 > "can I take that lock", not "is this PID alive".**

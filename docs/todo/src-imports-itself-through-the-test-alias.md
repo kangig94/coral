@@ -1,18 +1,18 @@
-# TODO — nine `src/` files import `src/` through `#src/`, and the emitted `dist/` cannot be loaded
+# TODO — eight `src/` files import `src/` through `#src/`, and the emitted `dist/` cannot be loaded
 
 **Status**: open, not started. The reproduction and the file list are below; the work is one invariant plus
-nine static import rewrites.
+eight static import rewrites.
 
 ## What exists
 
 `package.json` maps `"#src/*.js": "./src/*.ts"` before `"#src/*": "./src/*"`. That alias exists so `tests/`,
 `tools/` and `vitest/` can name source modules by a stable path while running TypeScript directly.
 
-Nine files under `src/` use it to import other files under `src/`:
+Eight files under `src/` use it to import other files under `src/`:
 
 `engines/kiwi/analyzer-manager.ts`, `engines/kiwi/model-artifact.ts`, `engines/gemini/expansion.ts`,
 `engines/onnx/expansion.ts`, `engines/orama/expansion.ts`, `expansion/bundled.ts`, `recovery/containment.ts`,
-`infra/store-reset-inspection-fs.ts`, `infra/store-reset-diagnostic-supervisor.ts`.
+`infra/store-reset-inspection-fs.ts`.
 
 Every other file in `src/` uses a relative specifier.
 
@@ -21,7 +21,7 @@ Every other file in `src/` uses a relative specifier.
 `await import(entry.specifier)`. They are not import declarations and are not part of the nine rewrites.
 
 `tsc` does not rewrite module specifiers, so seven emitted artifacts carry the alias into `dist/`
-(the last two files import types only, which are erased). Loading one of those artifacts as an ES module
+(the last file imports types only, which are erased). Loading one of those artifacts as an ES module
 sends Node back out of `dist/` and into `src/`:
 
 `dist/recovery/containment.js` → `#src/infra/error-format.js` → the imports map → `src/infra/error-format.ts`
