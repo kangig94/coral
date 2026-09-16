@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Thirty-three design revisions and forty unbiased tier-1 review rounds. Revision 14
+**Status**: in flight. Thirty-four design revisions and forty-two unbiased tier-1 review rounds. Revision 14
 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it earned.
 Revision 27 withdraws a boundary four rounds were spent defending, and Revision 32 deletes a subsystem five
-rounds were spent repairing — both on the owner’s ruling. Round 41’s architect found no blocking defect.
+rounds were spent repairing — both on the owner’s ruling. Round 42 found that a reclaimer added to bound residue can itself refuse a boot.
 
 A coordinator refused to start because the store was too large to _report on_. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -3047,6 +3047,60 @@ name that only becomes the construction directory once it exists.
 
 It names the KB daemon's capability variable `CORAL_KB_DAEMON_STORE`. The supervisor writes, and the
 daemon reads, `CORAL_KB_DAEMON_STORE`. Production is coherent; the record is wrong.
+
+## Revision 34 — a sweep is not a filesystem failure
+
+Round 42's two reviewers found four BLOCKING defects and three of them are one defect wearing three
+faces. Both reviewers, independently, landed on the holder one.
+
+### The premise I asserted and did not check
+
+Revision 33's fix for the empty construction directory rested on a sentence I wrote: *losing the race in
+the other direction is already handled — the builder's open fails `ENOENT` and the mint returns swept.*
+It is false, and one command disproves it. `createSharedFileLockSync` creates its lock by opening a
+SQLite database, and `node:sqlite` wraps every open failure: a lock opened in a directory that has just
+been removed throws `code: 'ERR_SQLITE_ERROR'`, `errcode: 14`, *unable to open database file* — measured
+on Node 26 / linux 6.18. `mintNextEpoch` tests `errorCode(error) === 'ENOENT'`, which never matches, and
+rethrows. The sweep I added to reclaim residue therefore converts a microsecond race into the one thing
+this branch exists to prevent: a boot that refuses.
+
+I told the delegate to verify that sentence before relying on it. They reported they had. It is my
+sentence and my premise, and putting *verify this* next to a false claim is not the same as checking it.
+Revision 21 said briefs must invite attacks on their own premises. This one did invite the attack — and
+then I believed the report instead of the measurement.
+
+### The same defect, three times
+
+**The mint.** Above.
+
+**The holder.** `registerStoreEpochHolder` writes `<id>.json.tmp`, syncs, renames. Its `.json` is
+necessarily absent for that whole interval, because it is the first publication. My rule for reclaiming a
+temporary file — *remove it when its `.json` is not live* — reads that interval as abandonment, unlinks
+the tmp, and the writer's rename then fails `ENOENT`, `writeAtomicDurableSync` returns `false`, and
+`registerStoreEpochHolder` throws into `openPublishedEpoch`, which refuses the boot. Absent-because-not-yet
+and absent-because-never are the same observation, and I built a disposition that assumed one of them.
+That is §11's own defect, committed in a revision that cites §11.
+
+**The sweep's own lease release.** `holder?.proof?.()` runs unguarded in a `finally`. The lease is a
+SQLite transaction; `ROLLBACK` and `close` can both throw. A throw there escapes
+`Promise<StoreEpochSweepResult>` entirely and skips the durability barrier that was supposed to follow
+completed deletions — a refusal returned through a type whose values are all answers.
+
+### What this actually asks for
+
+Not a timid sweep. Making the reclaimer refuse to touch anything it cannot prove dead is what left the
+residue unbounded in the first place, and the residue finding was correct.
+
+**A writer must survive the removal of its own private, in-progress artifact, because a sweep is not a
+filesystem failure and this branch refuses to boot only on those.** Both writers have a natural retry
+already sitting there: the mint returns into a `for(;;)` that re-observes, and a holder record is
+rewritable at a fresh id. Neither uses it, because neither can currently tell a lost race from a broken
+disk — and that telling is a classification, owned where the fact is known: the minting process owns the
+uuid it just created and is the only thing that knows what its absence means.
+
+So the boundary that reports these failures has to report them as three answers rather than as an
+exception, and the cleanup that destroys the evidence must not run before the observation that reads it.
+`cleanupMint` currently runs first.
 
 ## Scope, ruled by the owner
 
