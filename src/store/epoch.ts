@@ -1895,7 +1895,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 
 const EPOCH_DIRECTORY_PATTERN = /^epoch-([1-9]\d*)$/;
 const MAX_STORE_EPOCH_METADATA_BYTES = ${MAX_STORE_EPOCH_METADATA_BYTES};
-const HOOK_LOCK_TIMEOUT_MS = 1000;
+const SQLITE_WAIT_BUDGET_EXHAUSTED = 'SQLite wait budget exhausted before the compact snapshot could be captured.';
 
 function epochNumber(name) {
   const match = EPOCH_DIRECTORY_PATTERN.exec(name);
@@ -1908,6 +1908,33 @@ function isRecord(value) {
 
 function errorCode(error) {
   return error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
+}
+
+function sqliteWaitBudgetError(cause) {
+  return new Error(SQLITE_WAIT_BUDGET_EXHAUSTED, { cause });
+}
+
+export function isSqliteWaitBudgetExhausted(error) {
+  return error instanceof Error && error.message === SQLITE_WAIT_BUDGET_EXHAUSTED;
+}
+
+function remainingSqliteWaitMs(deadlineMs) {
+  const remainingMs = Math.floor(deadlineMs - performance.now());
+  // A caller that passes no deadline yields NaN, which every ordering comparison answers false.
+  if (!(remainingMs > 0)) throw sqliteWaitBudgetError();
+  return remainingMs;
+}
+
+function runWithinSqliteWaitBudget(db, deadlineMs, operation) {
+  db.exec('PRAGMA busy_timeout = ' + remainingSqliteWaitMs(deadlineMs));
+  try {
+    return operation();
+  } catch (error) {
+    if (performance.now() >= deadlineMs) throw sqliteWaitBudgetError(error);
+    throw error;
+  } finally {
+    db.exec('PRAGMA busy_timeout = 0');
+  }
 }
 
 function isValidEpochMetadata(value) {
@@ -2011,15 +2038,20 @@ function storeEpochForDbPath(dbPath) {
   return epoch === null ? null : { epoch, storeRoot: dirname(directory), path: resolvedPath };
 }
 
-function acquireSharedStoreEpochLock(dbDir, epoch) {
+function acquireSharedStoreEpochLock(dbDir, epoch, sqliteWaitDeadlineMs) {
   const lock = new DatabaseSync(join(dbDir, 'epoch-' + epoch, '.lock'), {
     readOnly: true,
-    timeout: HOOK_LOCK_TIMEOUT_MS,
+    timeout: remainingSqliteWaitMs(sqliteWaitDeadlineMs),
   });
   try {
-    lock.exec('PRAGMA busy_timeout = ' + HOOK_LOCK_TIMEOUT_MS + '; BEGIN; SELECT count(*) FROM sqlite_schema');
+    lock.exec(
+      'PRAGMA busy_timeout = ' +
+        remainingSqliteWaitMs(sqliteWaitDeadlineMs) +
+        '; BEGIN; SELECT count(*) FROM sqlite_schema',
+    );
   } catch (error) {
     lock.close();
+    if (performance.now() >= sqliteWaitDeadlineMs) throw sqliteWaitBudgetError(error);
     throw error;
   }
   return () => {
@@ -2031,7 +2063,7 @@ function acquireSharedStoreEpochLock(dbDir, epoch) {
   };
 }
 
-export function openLockedReadOnlyStoreDatabase(dbPath) {
+export function openLockedReadOnlyStoreDatabase(dbPath, sqliteWaitDeadlineMs) {
   const resolved = storeEpochForDbPath(dbPath);
   if (resolved === null) {
     throw new Error('Resolved store database is outside the proven canonical epoch layout.');
@@ -2040,17 +2072,25 @@ export function openLockedReadOnlyStoreDatabase(dbPath) {
   if (!isPublishedEpoch(root, 'epoch-' + resolved.epoch)) {
     throw new Error('Resolved store database is outside the proven canonical epoch layout.');
   }
-  const releaseLock = acquireSharedStoreEpochLock(resolved.storeRoot, resolved.epoch);
+  const releaseLock = acquireSharedStoreEpochLock(resolved.storeRoot, resolved.epoch, sqliteWaitDeadlineMs);
   let db;
   try {
-    db = new DatabaseSync(resolved.path, { readOnly: true });
+    db = new DatabaseSync(resolved.path, {
+      readOnly: true,
+      timeout: remainingSqliteWaitMs(sqliteWaitDeadlineMs),
+    });
+    db.exec('PRAGMA busy_timeout = 0');
   } catch (error) {
     releaseLock();
+    if (performance.now() >= sqliteWaitDeadlineMs) throw sqliteWaitBudgetError(error);
     throw error;
   }
   let closed = false;
   return {
-    db,
+    get: (source, ...params) =>
+      runWithinSqliteWaitBudget(db, sqliteWaitDeadlineMs, () => db.prepare(source).get(...params)),
+    all: (source, ...params) =>
+      runWithinSqliteWaitBudget(db, sqliteWaitDeadlineMs, () => db.prepare(source).all(...params)),
     close: () => {
       if (closed) return;
       closed = true;

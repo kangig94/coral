@@ -230,7 +230,7 @@ async function withGeneratedHookReadStore<T>(runtime: Runtime, epoch: string, ru
       '--no-warnings',
       '--input-type=module',
       '-e',
-      "const { openLockedReadOnlyStoreDatabase } = await import(process.argv[1]); const handle = openLockedReadOnlyStoreDatabase(process.argv[2]); handle.db.prepare('SELECT 1').get(); process.stdout.write('ready\\n'); process.on('SIGTERM', () => { handle.close(); process.exit(0); }); setInterval(() => {}, 1000);",
+      "const { openLockedReadOnlyStoreDatabase } = await import(process.argv[1]); const handle = openLockedReadOnlyStoreDatabase(process.argv[2], performance.now() + 5000); handle.get('SELECT 1'); process.stdout.write('ready\\n'); process.on('SIGTERM', () => { handle.close(); process.exit(0); }); setInterval(() => {}, 1000);",
       helperUrl,
       epochPath(dbDir, epoch),
     ],
@@ -331,15 +331,18 @@ describe('write-once store epochs', () => {
     const helperUrl = `${pathToFileURL(join(process.cwd(), 'clients/hooks/lib/store-epoch.mjs')).href}?resolved-root=${Date.now()}`;
     const hook = (await import(helperUrl)) as {
       resolveCurrentStoreDbPath(path: string): string | null;
-      openLockedReadOnlyStoreDatabase(dbPath: string): { db: DatabaseSync; close(): void };
+      openLockedReadOnlyStoreDatabase(
+        dbPath: string,
+        sqliteWaitDeadlineMs: number,
+      ): { get(source: string, ...params: unknown[]): unknown; close(): void };
     };
 
     const dbPath = hook.resolveCurrentStoreDbPath(configuredDbDir);
     expect(dbPath).toBe(epochPath(targetDbDir, '1'));
     if (dbPath === null) throw new Error('generated hook did not resolve the published epoch');
-    const opened = hook.openLockedReadOnlyStoreDatabase(dbPath);
+    const opened = hook.openLockedReadOnlyStoreDatabase(dbPath, performance.now() + 5_000);
     try {
-      expect(opened.db.prepare('SELECT value FROM rollback_sentinel').get()).toEqual({
+      expect(opened.get('SELECT value FROM rollback_sentinel')).toEqual({
         value: 'concurrent-winner',
       });
     } finally {

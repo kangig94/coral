@@ -16,7 +16,11 @@ import {
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS, snapshotFileName } from './lib/jobs-state.mjs';
 import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
-import { openLockedReadOnlyStoreDatabase, resolveCurrentStoreDbPath } from './lib/store-epoch.mjs';
+import {
+  isSqliteWaitBudgetExhausted,
+  openLockedReadOnlyStoreDatabase,
+  resolveCurrentStoreDbPath,
+} from './lib/store-epoch.mjs';
 
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -46,6 +50,8 @@ function logSnapshotSkipped(projectDir, reason, remediation) {
 }
 
 const SAFE_JOB_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+// The 3s host timeout must retain margin for process startup, module loading, and snapshot I/O.
+const SQLITE_WAIT_DEADLINE_MS = performance.now() + 2000;
 
 await failOpen(async () => {
   const input = JSON.parse((await readStdin()) || '{}');
@@ -88,22 +94,18 @@ await failOpen(async () => {
     return;
   }
 
-  const storeHandle = openLockedReadOnlyStoreDatabase(dbPath);
-  const { db } = storeHandle;
+  const storeHandle = openLockedReadOnlyStoreDatabase(dbPath, SQLITE_WAIT_DEADLINE_MS);
   try {
-    // Default SQLITE_BUSY timeout is 0ms: a backend mid-write would make the
-    // read throw immediately and silently skip the snapshot. Give the lock a
-    // moment to clear while staying well inside the PreCompact hook budget.
-    db.exec('PRAGMA busy_timeout = 1000;');
     try {
-      const storedFingerprint = db
-        .prepare("SELECT value FROM meta WHERE key = 'store_format_fingerprint' LIMIT 1")
-        .get()?.value;
+      const storedFingerprint = storeHandle.get(
+        "SELECT value FROM meta WHERE key = 'store_format_fingerprint' LIMIT 1",
+      )?.value;
       if (storedFingerprint !== expectedFingerprint) {
         logSnapshotSkipped(projectDir, 'store format fingerprint mismatch', storeDiscardRemediation());
         return;
       }
     } catch (error) {
+      if (isSqliteWaitBudgetExhausted(error)) throw error;
       logNoRelevantJobs(projectDir, {
         reason: error instanceof Error ? error.message : String(error),
       });
@@ -111,16 +113,16 @@ await failOpen(async () => {
     }
     let rows;
     try {
-      rows = db
-        .prepare(
-          `SELECT job_id AS jobId, phase
+      rows = storeHandle.all(
+        `SELECT job_id AS jobId, phase
              FROM projection_jobs
             WHERE project_root = ?
             ORDER BY last_seq DESC
             LIMIT 20`,
-        )
-        .all(projectDir);
+        projectDir,
+      );
     } catch (error) {
+      if (isSqliteWaitBudgetExhausted(error)) throw error;
       logNoRelevantJobs(projectDir, {
         reason: error instanceof Error ? error.message : String(error),
       });
