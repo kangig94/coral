@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -54,7 +55,7 @@ function seedStore(
       join(epochDir, 'epoch.json'),
       JSON.stringify({
         supersedes: epoch === 1 ? null : epoch - 1,
-        classification: { kind: 'unavailable', cause: 'hook-test' },
+        classification: { kind: 'unavailable' },
         build: {
           version: '0.10.9',
           buildSetId: 'hook-test',
@@ -114,6 +115,37 @@ describe('pre-compact.mjs', () => {
       hook: 'pre-compact',
       message: 'no relevant jobs to snapshot',
     });
+  });
+
+  it('does not call a vanished symlinked store root an empty store', () => {
+    const fixture = createFixture();
+    const hook = seedPluginManifest(
+      fixture.pluginRoot,
+      'sha256:1111111111111111111111111111111111111111111111111111111111111111',
+    );
+    const storeRoot = join(fixture.root, '.coral', 'gen2', 'data', 'store');
+    const targetRoot = join(fixture.root, 'vanished-store-target');
+    mkdirSync(targetRoot, { recursive: true });
+    mkdirSync(join(storeRoot, '..'), { recursive: true });
+    symlinkSync(targetRoot, storeRoot, 'dir');
+    rmSync(targetRoot, { recursive: true });
+
+    const result = runHook(
+      hook,
+      { session_id: 'sess-vanished', cwd: fixture.projectRoot },
+      {
+        CLAUDE_PROJECT_DIR: fixture.projectRoot,
+        TMPDIR: fixture.tmpRoot,
+        HOME: fixture.root,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stderr.trim())).toMatchObject({
+      hook: 'pre-compact',
+      message: 'fail-open',
+    });
+    expect(result.stderr).not.toContain('no relevant jobs to snapshot');
   });
 
   it('does not read a projection from a mismatched store format', () => {

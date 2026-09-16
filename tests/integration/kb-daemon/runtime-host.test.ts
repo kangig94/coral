@@ -129,7 +129,7 @@ describe('KB daemon runtime host', () => {
         join(directory, STORE_EPOCH_METADATA_FILE_NAME),
         JSON.stringify({
           supersedes: null,
-          classification: { kind: 'unavailable', cause: 'test' },
+          classification: { kind: 'unavailable' },
           build: {
             version: storeFormat.productVersion,
             buildSetId: '123e4567-e89b-42d3-a456-426614174000',

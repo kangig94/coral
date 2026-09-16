@@ -109,10 +109,7 @@ export async function parseProgramWithHandoff(
   return null;
 }
 
-export function buildProgram(
-  providerRegistry: ProviderRegistry = createBuiltInProviderRegistry(),
-  options: { readonly shutdownSignal?: AbortSignal } = {},
-): Command {
+export function buildProgram(providerRegistry: ProviderRegistry = createBuiltInProviderRegistry()): Command {
   const program = new Command();
   program.exitOverride();
 
@@ -125,9 +122,9 @@ export function buildProgram(
   registerSessionCommands(program, providerRegistry);
   registerWorkflowCommands(program);
   registerBackendCommands(program, {
-    storeReset: createStoreResetCommandOperations(options.shutdownSignal),
+    storeReset: createStoreResetCommandOperations(),
     backendStatus: createBackendStatusCommandOperations(() => peekCliHandoffPreflightResult()),
-    recoveryQuarantine: createRecoveryQuarantineCommandOperations(options.shutdownSignal),
+    recoveryQuarantine: createRecoveryQuarantineCommandOperations(),
   });
   registerDiscussCommands(program);
   registerKbCommands(program);

@@ -1,7 +1,6 @@
 import { handleExpansionCommanderFailure, isCommanderDisplayOnlyError } from './commands/expansion.js';
 import { emitError } from './emit.js';
 import { buildProgram, parseProgramWithHandoff } from './program.js';
-import { isStoreResetReportInvocation } from './store-reset-signal.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 
 /**
@@ -22,21 +21,7 @@ export function runCli(): Promise<unknown> {
     return Promise.resolve();
   }
 
-  const ownsDiagnosticSignals = isStoreResetReportInvocation(process.argv.slice(2));
-  const shutdownController = ownsDiagnosticSignals ? new AbortController() : null;
-  const onSigint = (): void => {
-    process.exitCode = 130;
-    shutdownController?.abort();
-  };
-  const onSigterm = (): void => {
-    process.exitCode = 143;
-    shutdownController?.abort();
-  };
-  if (ownsDiagnosticSignals) {
-    process.once('SIGINT', onSigint);
-    process.once('SIGTERM', onSigterm);
-  }
-  const program = buildProgram(undefined, { shutdownSignal: shutdownController?.signal });
+  const program = buildProgram();
   // Keep the process alive while async command handlers are still awaiting unref'ed runtime timers such as
   // coordinator startup polling.
   const parseKeepAlive = setInterval(() => undefined, 2 ** 31 - 1);
@@ -63,11 +48,5 @@ export function runCli(): Promise<unknown> {
       emitError(error);
       process.exit(process.exitCode ?? 1);
     })
-    .finally(() => {
-      clearInterval(parseKeepAlive);
-      if (ownsDiagnosticSignals) {
-        process.off('SIGINT', onSigint);
-        process.off('SIGTERM', onSigterm);
-      }
-    });
+    .finally(() => clearInterval(parseKeepAlive));
 }

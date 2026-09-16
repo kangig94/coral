@@ -25,7 +25,6 @@ import {
   type StoreResetInspectionFs,
   type StoreResetInspectionStat,
 } from './reset-incident-inspection-fs.js';
-import type { StoreResetIncidentDiagnosticRunner } from './reset-incident-diagnostic.js';
 
 export type LegacyStoreResetIncidentListEntry = Readonly<{
   source: 'legacy-quarantine';
@@ -334,7 +333,6 @@ export async function readStoreResetIncidentReport(options: {
   readonly quarantineRoot: string;
   readonly incidentId: string;
   readonly expectedBuild: StrictBundleManifest;
-  readonly diagnose?: StoreResetIncidentDiagnosticRunner;
 }): Promise<StoreResetIncidentReportResult> {
   if (!isCanonicalStoreResetIncidentId(options.incidentId)) return { ok: false, state: 'invalid_id' };
   try {
@@ -402,11 +400,7 @@ export async function readStoreResetIncidentReport(options: {
       remainingBudget -= result.consumed;
       fileVerification.push({ name: file.name, status: result.status });
     }
-    const diagnostic =
-      options.diagnose === undefined
-        ? { integrity: 'unavailable' as const, termination: 'not_started' as const, cleanup: 'not_required' as const }
-        : await options.diagnose({ fs: options.fs, incidentPath, manifest });
-    const local: StoreResetIncidentLocalReport = { manifest, fileVerification, diagnostic };
+    const local: StoreResetIncidentLocalReport = { manifest, fileVerification };
     const incidentAfter = options.fs.lstat(incidentPath);
     const rootAfter = options.fs.lstat(options.quarantineRoot);
     if (

@@ -1,5 +1,4 @@
 import { InvalidArgumentError, type Command } from 'commander';
-import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
 import type { z } from 'zod';
 
@@ -43,8 +42,6 @@ import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
-import { prepareStoreReportTempRoot } from '../../infra/store-report-temp-root.js';
-import { createStoreResetInspectionFs } from '../../infra/store-reset-inspection-fs.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isRecord } from '../../infra/json.js';
 import { incarnationMayAuthorizeSignal, type ProcessIncarnation } from '../../infra/node-process.js';
@@ -96,15 +93,9 @@ import {
   type GenerationReadiness,
 } from '../../store/generation-mutation-coordination.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
-import { classifyStoreFile, type Database } from '../../store/db.js';
+import type { Database } from '../../store/db.js';
 import { inspectCurrentStore } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
-import {
-  stageStoreDatabaseEvidence,
-  StoreDatabaseEvidenceUnavailableError,
-  type StagedStoreDatabaseEvidence,
-} from '../../store/reset-incident-diagnostic.js';
-import type { StoreResetInspectionFs } from '../../store/reset-incident-inspection-fs.js';
 import {
   attributeUnreadableProviderOperations,
   readProviderOperations,
@@ -1302,63 +1293,28 @@ function unreadableProviderOperationEntries(
 
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
-  inspection?: Readonly<{ fs: StoreResetInspectionFs; tempRoot: string }>,
 ): RecoveryQuarantineListResult {
   const current = inspectCurrentStore(runtime);
   if (current.kind === 'absent') return [];
   if (current.kind === 'unobservable') return { kind: 'unavailable', reason: 'unobservable' };
-  const dbPath = current.epoch.path;
-  let staged: StagedStoreDatabaseEvidence | null = null;
-  let result: RecoveryQuarantineListResult;
+  let db: Database;
   try {
-    staged = stageStoreDatabaseEvidence({
-      fs: inspection?.fs ?? createStoreResetInspectionFs(),
-      sourceDirectory: dirname(dbPath),
-      tempRoot: inspection?.tempRoot ?? prepareStoreReportTempRoot(tmpdir()),
-      platform: process.platform,
+    db = openReadOnlyStoreDatabase(runtime, {
+      resolved: { path: current.epoch.path, epoch: current.epoch, epochCandidate: true },
+      storeFormat: currentCoralStoreFormat(),
+    }) as unknown as Database;
+  } catch {
+    return { kind: 'unavailable', reason: 'unobservable' };
+  }
+  try {
+    const stored = RecoveryQuarantineStore.readOnly(db).list();
+    return [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
+      const boundary = left.boundary.localeCompare(right.boundary);
+      return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
     });
-    const classification = classifyStoreFile(staged.dbPath, runtime.storage, currentCoralStoreFormat());
-    // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
-    // means rows this build cannot read may be there, and an empty list is then the opposite of what is
-    // true — an operator reading it concludes there is nothing to act on.
-    if (classification.kind === 'absent' || classification.kind === 'fresh') {
-      result = [];
-    } else if (classification.kind !== 'compatible') {
-      result = { kind: 'unavailable', reason: 'unobservable' };
-    } else {
-      const db = openReadOnlyStoreDatabase(runtime, {
-        path: staged.dbPath,
-        storeFormat: currentCoralStoreFormat(),
-      }) as unknown as Database;
-      try {
-        const stored = RecoveryQuarantineStore.readOnly(db).list();
-        const entries = [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
-          const boundary = left.boundary.localeCompare(right.boundary);
-          return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
-        });
-        result = entries;
-      } finally {
-        db.close();
-      }
-    }
-    if (!staged.verify()) result = { kind: 'unavailable', reason: 'unobservable' };
-  } catch (error: unknown) {
-    result = {
-      kind: 'unavailable',
-      reason:
-        error instanceof StoreDatabaseEvidenceUnavailableError && error.reason === 'over-bound'
-          ? 'over-bound'
-          : 'unobservable',
-    };
+  } finally {
+    db.close();
   }
-  if (staged !== null) {
-    try {
-      if (staged.cleanup() !== 'removed') result = { kind: 'unavailable', reason: 'unobservable' };
-    } catch {
-      result = { kind: 'unavailable', reason: 'unobservable' };
-    }
-  }
-  return result;
 }
 
 export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal): RecoveryQuarantineCommandOperations {
@@ -2012,7 +1968,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   storeResetCommand
     .command('report')
-    .description('Run a bounded read-only epoch diagnostic or report a legacy incident')
+    .description('Report observable epoch facts or inspect a legacy incident')
     .argument(
       '<epoch-or-legacy-incident-id>',
       'Positive numeric epoch or canonical legacy incident UUID shown by the list',

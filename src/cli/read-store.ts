@@ -2,8 +2,7 @@ import { createRealRuntime } from '../runtime/real.js';
 import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
 import { openMemoryStoreDatabase, type Database } from '../store/db.js';
-import { resolveCurrentStorePath } from '../store/epoch.js';
-import { observeStorePath } from '../store/path-observation.js';
+import { resolveCurrentStore } from '../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
@@ -110,12 +109,13 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   const pluginRoot = resolvePluginRoot();
   const flavor = readBuildFlavor(pluginRoot ?? projectRoot);
   const runtime = createRealRuntime(flavor);
-  const dbPath = resolveCurrentStorePath(runtime);
-  const hasStore = observeStorePath(runtime.storage, dbPath) === 'present';
+  const resolved = resolveCurrentStore(runtime);
+  const hasStore = resolved.epoch !== null;
 
   const db = hasStore
     ? (openReadOnlyStoreDatabase(runtime, {
         storeFormat: currentCoralStoreFormat(),
+        resolved,
       }) as unknown as Database)
     : openMemoryStoreDatabase(currentCoralStoreFormat());
 
@@ -125,7 +125,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
       projectRoot,
       ...(pluginRoot ? { pluginRoot } : {}),
     }),
-    ...(hasStore ? {} : { note: `(no store at ${dbPath} — showing empty results)` }),
+    ...(hasStore ? {} : { note: '(no current store — showing empty results)' }),
     close: () => db.close(),
   };
 }

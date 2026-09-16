@@ -31,9 +31,14 @@ function formatEpochMetadata(disposition: StoreEpochMetadataDisposition): string
     case 'malformed':
       return disposition.kind;
     case 'unreadable':
-      return `unreadable: ${disposition.cause}`;
+      return 'unreadable';
     case 'valid':
-      return JSON.stringify(disposition.value);
+      return JSON.stringify({
+        supersedes: disposition.value.supersedes,
+        classification: { kind: disposition.value.classification.kind },
+        build: disposition.value.build,
+        publishedAt: disposition.value.publishedAt,
+      });
     default:
       return assertNever(disposition);
   }
@@ -87,12 +92,6 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
       (file) => `| ${code(file.name)} | ${file.sizeBytes} | ${code(file.sha256)} | ${code(file.verification)} |`,
     ),
     '',
-    '## SQLite diagnostic',
-    '',
-    `- Integrity: ${code(report.diagnostic.integrity)}`,
-    `- Termination: ${code(report.diagnostic.termination)}`,
-    `- Cleanup: ${code(report.diagnostic.cleanup)}`,
-    '',
     '## Next step',
     '',
     'Paste this complete output into the Store-reset incident issue form in the Coral GitHub repository.',
@@ -114,12 +113,11 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
     `- Publication reason: ${code(result.epoch.publicationReason.kind)}`,
     `- Superseded store Coral version: ${result.epoch.supersededStoreVersion === null ? 'not observed' : code(result.epoch.supersededStoreVersion)}`,
     `- Epoch metadata: ${code(formatEpochMetadata(result.epoch.epochJson))}`,
+    `- Database: ${code(`epoch-${result.epoch.epoch}/store.db`)}`,
     '',
-    '## SQLite diagnostic',
+    '## SQLite inspection',
     '',
-    `- Integrity: ${code(result.diagnostic.integrity)}`,
-    `- Termination: ${code(result.diagnostic.termination)}`,
-    `- Cleanup: ${code(result.diagnostic.cleanup)}`,
+    `command=sqlite3 ${code(`<store-root>/epoch-${result.epoch.epoch}/store.db`)} ${code('PRAGMA quick_check(1)')}`,
     '',
     'No file was uploaded. Do not attach DB, WAL, SHM, raw logs, credentials, settings, or environment files.',
     '',
@@ -179,7 +177,7 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
       : []),
     ...(target === 'gen2' && result.epochs.length > 0
       ? [
-          'To run the bounded read-only diagnostic for an epoch:',
+          'To report an epoch without opening SQLite:',
           'command=coral-cli backend store-reset report --target gen2 <epoch>',
         ]
       : []),
@@ -195,7 +193,7 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
     case 'release-metadata-unobservable':
       return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because epoch or coordinator metadata could not be observed; inspect backend store-reset list, restore metadata readability, and retry.`;
     case 'release-holder-live':
-      return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a live holder remains; wait for the diagnostic or coordinator to exit, then retry.`;
+      return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a live holder remains; wait for the holder to exit, then retry.`;
     case 'release-holder-unobservable':
       return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because a holder record was unobservable; inspect backend store-reset list. This command clears a malformed record, while an unreadable liveness probe must become observable before retrying.`;
     case 'release-holder-cleanup-failed':

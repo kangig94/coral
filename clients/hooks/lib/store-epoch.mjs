@@ -91,22 +91,17 @@ function isPublishedEpoch(root, name) {
 
 export function resolveCurrentStoreDbPath(dbDir) {
   let current = null;
-  let entries;
-  let root;
   try {
-    root = resolveStoreRoot(dbDir);
-    entries = readdirSync(root.path);
+    lstatSync(dbDir);
   } catch (error) {
     if (errorCode(error) === 'ENOENT') return null;
     throw error;
   }
+  const root = resolveStoreRoot(dbDir);
+  const entries = readdirSync(root.path);
   for (const entry of entries) {
     const epoch = epochNumber(entry);
-    if (
-      epoch !== null &&
-      (current === null || BigInt(epoch) > BigInt(current)) &&
-      isPublishedEpoch(root, entry)
-    ) {
+    if (epoch !== null && (current === null || BigInt(epoch) > BigInt(current)) && isPublishedEpoch(root, entry)) {
       current = epoch;
     }
   }

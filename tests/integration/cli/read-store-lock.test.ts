@@ -20,7 +20,7 @@ vi.mock('#src/runtime/real.js', async (importOriginal) => {
   };
 });
 
-import { closeSharedReadCoralStore, getSharedReadCoralStore } from '#src/cli/read-store.js';
+import { closeSharedReadCoralStore, getSharedReadCoralStore, openReadCoralStore } from '#src/cli/read-store.js';
 import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
@@ -47,7 +47,7 @@ function publishEpoch(runtime: Runtime, epoch: string): void {
     join(directory, 'epoch.json'),
     JSON.stringify({
       supersedes: null,
-      classification: { kind: 'unavailable', cause: 'test' },
+      classification: { kind: 'unavailable' },
       build: {
         version: '0.10.9',
         buildSetId: '123e4567-e89b-42d3-a456-426614174000',
@@ -79,4 +79,34 @@ it('keeps the cached CLI reader shared lock until its cached SQLite handle close
   expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('live-holder');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
   console.log('read-only-opener-cell opener=cached-cli operation=release result=live-holder');
+});
+
+it('does not fall back to memory when the selected epoch is swept before its lease is acquired', async () => {
+  const realRuntime = await vi.importActual<typeof RealRuntimeMod>('#src/runtime/real.js');
+  root = mkdtempSync(join(tmpdir(), 'coral-read-capability-race-'));
+  const baseRuntime = realRuntime.createRealRuntime('prod', { baseDir: root });
+  publishEpoch(baseRuntime, '1');
+  const dbDir = baseRuntime.paths.coral.store.dbDir;
+  let interposed = false;
+  let epochDirectoryRealpaths = 0;
+  const storage = new Proxy(baseRuntime.storage, {
+    get(subject, property, receiver) {
+      if (property !== 'realpathSync') return Reflect.get(subject, property, receiver) as unknown;
+      return (path: string): string => {
+        const resolved = subject.realpathSync(path);
+        if (path === join(dbDir, 'epoch-1')) epochDirectoryRealpaths += 1;
+        if (!interposed && epochDirectoryRealpaths === 3) {
+          interposed = true;
+          publishEpoch(baseRuntime, '3');
+          rmSync(join(dbDir, 'epoch-1'), { recursive: true });
+        }
+        return resolved;
+      };
+    },
+  });
+  injected.runtime = { ...baseRuntime, storage };
+
+  expect(() => openReadCoralStore(process.cwd())).toThrow();
+  expect(interposed).toBe(true);
+  expect(existsSync(join(dbDir, 'epoch-3'))).toBe(true);
 });

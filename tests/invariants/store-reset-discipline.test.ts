@@ -208,23 +208,15 @@ describe('write-once store epoch invariants', () => {
     expect(epoch).toContain('attemptExclusiveFileLockSync');
   });
 
-  it('keeps report staging behind one lock-owned implementation and reclaimer', () => {
-    const diagnostic = source('src/store/reset-incident-diagnostic.ts');
-    const legacyRunner = functionSource(
-      'src/store/reset-incident-diagnostic.ts',
-      'createStoreResetIncidentDiagnosticRunner',
+  it('does not retain private-copy reporting or diagnostic child machinery', () => {
+    expect(storeSources()).not.toContain('src/store/reset-incident-diagnostic.ts');
+    expect(readdirSync(join(ROOT, 'src/infra'))).not.toEqual(
+      expect.arrayContaining(['store-report-temp-root.ts', 'store-reset-diagnostic-supervisor.ts']),
     );
-    const reclaimer = functionSource('src/store/reset-incident-diagnostic.ts', 'reclaimStoreReportNamespaces');
-
-    expect(diagnostic.match(/\.mkdtemp\(/gu)).toHaveLength(1);
-    expect(legacyRunner).toContain('stageStoreDatabaseEvidence');
-    expect(diagnostic).not.toMatch(/process\.kill|\.owner-/u);
-    expect(reclaimer).toContain('REPORT_NAMESPACE_PATTERN');
-    expect(reclaimer).not.toContain('LEGACY_REPORT_NAMESPACE_PATTERN');
-    expect(functionSource('src/cli/store-reset.ts', 'defaultDependencies')).not.toContain('tempRoot: tmpdir()');
-    expect(functionSource('src/cli/commands/backend.ts', 'listRecoveryQuarantineLocal')).not.toContain(
-      'tempRoot: tmpdir()',
-    );
+    expect(source('src/cli/store-reset.ts')).not.toMatch(/diagnos|tempRoot|tmpdir/u);
+    const quarantineList = functionSource('src/cli/commands/backend.ts', 'listRecoveryQuarantineLocal');
+    expect(quarantineList).toContain('openReadOnlyStoreDatabase');
+    expect(quarantineList).not.toMatch(/stage|copy|tempRoot/u);
   });
 
   it('uses one ENOENT-only observation for every store-path absence decision', () => {

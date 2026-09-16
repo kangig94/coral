@@ -28,11 +28,6 @@ const forged = {
   build: manifest.build,
   handoff: manifest.handoff,
   files: [],
-  diagnostic: {
-    integrity: 'ok' as const,
-    termination: 'completed' as const,
-    cleanup: 'removed' as const,
-  },
 };
 
 // @ts-expect-error a structurally matching object cannot forge the private brand.

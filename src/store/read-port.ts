@@ -1,7 +1,12 @@
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { openStoreDatabase, type Database } from './db.js';
-import { acquireStoreEpochReadLock, holdStoreEpochLockUntilClose, resolveCurrentStore } from './epoch.js';
+import {
+  acquireStoreEpochReadLock,
+  holdStoreEpochLockUntilClose,
+  resolveCurrentStore,
+  type ResolvedStorePath,
+} from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import type { ReadonlyDatabase } from './read-types.js';
 
@@ -14,9 +19,11 @@ import type { ReadonlyDatabase } from './read-types.js';
 
 type OpenReadOnlyStoreOptions = {
   readonly storeFormat: StoreFormatDescription;
-  readonly path?: string;
   readonly busyTimeoutMs?: number;
-};
+} & (
+  | { readonly path?: string; readonly resolved?: never }
+  | { readonly path?: never; readonly resolved: ResolvedStorePath }
+);
 
 export function asReadonlyDatabase(db: Database): ReadonlyDatabase {
   return db as unknown as ReadonlyDatabase;
@@ -26,7 +33,7 @@ export function openReadOnlyStoreDatabase(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
   options: OpenReadOnlyStoreOptions,
 ): ReadonlyDatabase {
-  const resolved = resolveCurrentStore(runtime, options.path);
+  const resolved = options.resolved ?? resolveCurrentStore(runtime, options.path);
   const lease = resolved.epoch === null ? null : acquireStoreEpochReadLock(runtime, resolved.epoch);
   if (resolved.epochCandidate && lease === null) {
     throw documentedCoralSetupError('store_not_initialized', { path: resolved.path });

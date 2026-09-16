@@ -23,7 +23,7 @@ import { CoralStore } from '#src/read-model/coral-store.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { createRealRuntime } from '#src/runtime/real.js';
-import { resolveCurrentStorePath } from '#src/store/epoch.js';
+import { resolveCurrentStore } from '#src/store/epoch.js';
 import { readProviderOperationForJob } from '#src/store/provider-operation-journal.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
@@ -330,7 +330,7 @@ function readDurableOperation(fixture: Fixture, jobId: string): ProviderOperatio
   const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
   const db = openTestStoreDatabase({
     storeFormat: currentCoralStoreFormat(),
-    path: resolveCurrentStorePath(runtime),
+    path: resolveCurrentStore(runtime).path,
     storage: runtime.storage,
     readonly: true,
   });
@@ -442,7 +442,7 @@ describe('mutating commands via IPC', () => {
     const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
     const db = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
-      path: resolveCurrentStorePath(runtime),
+      path: resolveCurrentStore(runtime).path,
       storage: runtime.storage,
       readonly: true,
     });
@@ -574,7 +574,7 @@ describe('mutating commands via IPC', () => {
     const runtime = createRealRuntime(fixture.flavor, { baseDir: join(fixture.home, '.coral') });
     const db = openTestStoreDatabase({
       storeFormat: currentCoralStoreFormat(),
-      path: resolveCurrentStorePath(runtime),
+      path: resolveCurrentStore(runtime).path,
       storage: runtime.storage,
       readonly: true,
     });

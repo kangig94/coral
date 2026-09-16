@@ -7,8 +7,8 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
   discardCurrentStoreEpoch,
+  resolveCurrentStore,
   resolveCurrentStoreEpoch,
-  resolveCurrentStorePath,
   sweepStoreEpochs,
   type StoreEpoch,
 } from './epoch.js';
@@ -100,7 +100,7 @@ export function resolveStoreResetTargetPaths(
     return {
       target,
       baseDir: boundary.baseDir,
-      storeDbPath: resolveCurrentStorePath(runtime),
+      storeDbPath: resolveCurrentStore(runtime).path,
       dbDir,
       quarantineRoot: join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY),
       socketPath: runtime.paths.coral.coordinator.socketPath,

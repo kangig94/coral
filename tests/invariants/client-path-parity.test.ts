@@ -172,6 +172,17 @@ describe('self-contained client path parity', () => {
     }
   });
 
+  it('does not resolve a vanished symlink target as an absent generated-hook store root', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'coral-client-epoch-vanished-'));
+    const dbDir = join(parent, 'store');
+    symlinkSync(join(parent, 'vanished-target'), dbDir, 'dir');
+    try {
+      expect(() => resolveCurrentStoreDbPath(dbDir)).toThrowError(expect.objectContaining({ code: 'ENOENT' }));
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   it('runs both epoch selectors over the same proof-state corpus', () => {
     const validMetadata = JSON.stringify({
       supersedes: null,

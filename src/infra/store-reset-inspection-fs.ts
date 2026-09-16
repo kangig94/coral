@@ -3,16 +3,12 @@ import {
   constants,
   fstatSync,
   lstatSync,
-  mkdtempSync,
   openSync,
   opendirSync,
   readSync,
   realpathSync,
-  renameSync,
-  rmSync,
   type BigIntStats,
   type Dir,
-  writeSync,
 } from 'node:fs';
 
 import type { StoreResetInspectionFs, StoreResetInspectionStat } from '#src/store/reset-incident-inspection-fs.js';
@@ -39,21 +35,10 @@ function isNoEntryError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
 
-function sameDirectoryIdentity(left: StoreResetInspectionStat, right: StoreResetInspectionStat): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.kind === 'directory' &&
-    right.kind === 'directory'
-  );
-}
-
 export function createStoreResetInspectionFs(): StoreResetInspectionFs {
   return {
     openFlags: {
       readOnly: constants.O_RDONLY,
-      createExclusiveWrite: constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
     },
     lstat(path) {
       try {
@@ -85,33 +70,8 @@ export function createStoreResetInspectionFs(): StoreResetInspectionFs {
     read(descriptor, buffer, offset, length, position) {
       return readSync(descriptor as number, buffer, offset, length, position);
     },
-    write(descriptor, buffer, offset, length, position) {
-      return writeSync(descriptor as number, buffer, offset, length, position);
-    },
     close(descriptor) {
       closeSync(descriptor as number);
-    },
-    mkdtemp(prefix) {
-      return mkdtempSync(prefix);
-    },
-    rename(source, destination) {
-      renameSync(source, destination);
-    },
-    removeTreeGuarded(path, expected) {
-      let current: StoreResetInspectionStat | null;
-      try {
-        current = inspectionStat(lstatSync(path, { bigint: true }));
-      } catch (error: unknown) {
-        return isNoEntryError(error);
-      }
-      if (!sameDirectoryIdentity(current, expected)) return false;
-      rmSync(path, { recursive: true, force: false });
-      try {
-        lstatSync(path);
-        return false;
-      } catch (error: unknown) {
-        return isNoEntryError(error);
-      }
     },
   };
 }

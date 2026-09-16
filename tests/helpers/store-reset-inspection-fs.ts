@@ -7,9 +7,7 @@ import type {
 
 export type StoreResetInspectionFaultScript = {
   readonly maxReadBytes?: number;
-  readonly maxWriteBytes?: number;
   readonly zeroReadCall?: number;
-  readonly zeroWriteCall?: number;
   readonly failFileClose?: boolean;
   readonly failDirectoryClose?: boolean;
   readonly lstat?: (
@@ -24,7 +22,6 @@ export type StoreResetInspectionFaultScript = {
   ) => StoreResetInspectionStat;
   readonly realpath?: (path: string, call: number, current: string) => string;
   readonly open?: (path: string, flags: number, call: number) => void;
-  readonly rename?: (source: string, destination: string, call: number) => void;
   readonly readDirectory?: (
     cursor: StoreResetDirectoryCursor,
     call: number,
@@ -37,12 +34,10 @@ export function scriptedStoreResetInspectionFs(
   script: StoreResetInspectionFaultScript,
 ): StoreResetInspectionFs {
   let readCalls = 0;
-  let writeCalls = 0;
   let lstatCalls = 0;
   let fstatCalls = 0;
   let realpathCalls = 0;
   let openCalls = 0;
-  let renameCalls = 0;
   let readDirectoryCalls = 0;
   return {
     openFlags: base.openFlags,
@@ -83,25 +78,9 @@ export function scriptedStoreResetInspectionFs(
       if (script.zeroReadCall === readCalls) return 0;
       return base.read(descriptor, buffer, offset, Math.min(length, script.maxReadBytes ?? length), position);
     },
-    write(descriptor: StoreResetFileDescriptor, buffer, offset, length, position) {
-      writeCalls += 1;
-      if (script.zeroWriteCall === writeCalls) return 0;
-      return base.write(descriptor, buffer, offset, Math.min(length, script.maxWriteBytes ?? length), position);
-    },
     close(descriptor: StoreResetFileDescriptor) {
       base.close(descriptor);
       if (script.failFileClose) throw new Error('scripted file close failure');
-    },
-    mkdtemp(prefix) {
-      return base.mkdtemp(prefix);
-    },
-    rename(source, destination) {
-      renameCalls += 1;
-      script.rename?.(source, destination, renameCalls);
-      base.rename(source, destination);
-    },
-    removeTreeGuarded(path, expected) {
-      return base.removeTreeGuarded(path, expected);
     },
   };
 }

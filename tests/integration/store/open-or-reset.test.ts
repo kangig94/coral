@@ -152,7 +152,7 @@ function publishAdversarialEpoch(destination: string, compatible = false): void 
     join(destination, STORE_EPOCH_METADATA_FILE_NAME),
     JSON.stringify({
       supersedes: null,
-      classification: { kind: 'unavailable', cause: 'adversary' },
+      classification: { kind: 'unavailable' },
       build,
       publishedAt: '2026-09-15T00:00:00.000Z',
     }),
@@ -830,7 +830,7 @@ describe('write-once store epochs', () => {
     const entries = listStoreEpochs(withStorage(runtime, storage));
 
     expect(sqliteOpens).toBe(0);
-    expect(entries[0]?.publicationReason).toEqual({ kind: 'unavailable', cause: 'adversary' });
+    expect(entries[0]?.publicationReason).toEqual({ kind: 'unavailable' });
     console.log('read-only-list-cell publication-reason=epoch.json sqlite-opens=0');
   });
 

@@ -1,18 +1,6 @@
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
-import { spawn } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -25,22 +13,17 @@ import {
 import { formatStoreEpochReport, formatStoreResetList } from '#src/cli/format/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
-import { tryAcquireExclusiveFileLockSync } from '#src/infra/fs-lock.js';
-import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   discardCurrentStoreEpoch,
   epochPath,
   listStoreEpochHolders,
-  resolvedStoreEpoch,
   settleStoreEpoch,
   storeEpochHolderPath,
   sweepStoreEpochs,
-  sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
 import { releaseStoreReset as releaseStoreResetWithSocketGuard } from '#src/store/operator-store-reset.js';
-import { SQLITE_DIAGNOSTIC_PROGRAM, superviseStoreResetDiagnosticChild } from '#src/store/reset-incident-diagnostic.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
@@ -85,19 +68,11 @@ function publishEpoch(dbDir: string, epoch: string): void {
     join(directory, 'epoch.json'),
     JSON.stringify({
       supersedes: null,
-      classification: { kind: 'unavailable', cause: 'test' },
+      classification: { kind: 'unavailable' },
       build,
       publishedAt: '2026-09-15T00:00:00.000Z',
     }),
   );
-}
-
-async function waitUntil(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!predicate()) {
-    if (Date.now() >= deadline) throw new Error('timed out waiting for condition');
-    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
-  }
 }
 
 afterEach(() => {
@@ -113,10 +88,6 @@ describe('store-reset operator epochs', () => {
     const dependencies: StoreResetCliDependencies = {
       resolveIdentity: () => ({ ok: true, manifest: build }),
       createInspectionFs: createStoreResetInspectionFs,
-      createDiagnosticRunner: () => {
-        throw new Error('not used');
-      },
-      diagnoseEpoch: async () => ({ integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' }),
       quarantineRoot: () => join(dirname(parent), 'legacy-quarantine'),
       runtime: () => runtime,
     };
@@ -133,79 +104,53 @@ describe('store-reset operator epochs', () => {
     expect(rendered).not.toContain('No gen2 store epochs');
   });
 
+  it('keeps a vanished symlink target unobservable through list and report resolution', async () => {
+    const baseRuntime = harness();
+    const configuredRoot = baseRuntime.paths.coral.store.dbDir;
+    const targetRoot = join(dirname(configuredRoot), 'store-target');
+    publishEpoch(targetRoot, '1');
+    mkdirSync(dirname(configuredRoot), { recursive: true });
+    symlinkSync(targetRoot, configuredRoot);
+    let removed = false;
+    const storage = new Proxy(baseRuntime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'realpathSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string): string => {
+          if (!removed && path === configuredRoot) {
+            removed = true;
+            rmSync(targetRoot, { recursive: true });
+          }
+          return subject.realpathSync(path);
+        };
+      },
+    });
+    const runtime = { ...baseRuntime, storage };
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(dirname(configuredRoot), 'legacy-quarantine'),
+      runtime: () => runtime,
+    };
+
+    const listed = listStoreResetIncidentsLocal('gen2', dependencies);
+    expect(listed.epochs).toEqual([
+      expect.objectContaining({ epoch: 'unobservable', role: 'unobservable', epochJson: { kind: 'unreadable' } }),
+    ]);
+    expect(listed.holders).toEqual([{ id: 'unobservable', epoch: null, pid: null, state: 'unobservable' }]);
+    expect(listed.residues).toEqual([{ name: 'unobservable', bytes: null, state: 'unobservable' }]);
+
+    publishEpoch(targetRoot, '1');
+    removed = false;
+    await expect(reportStoreResetLocal('gen2', '1', dependencies)).rejects.toMatchObject({
+      code: 'store_reset_reporting_failed',
+    });
+  });
+
   it('rejects release zero because the flat store is not addressable', () => {
     expect(() => releaseStoreResetLocal('gen2', 'prod', '0')).toThrowError(
       expect.objectContaining({ code: 'invalid_store_reset_release_incident_id' }),
     );
     console.log('release-address-cell epoch=0 addressable=false');
-  });
-
-  it('records the diagnostic child pid before that child opens SQLite', async () => {
-    const runtime = harness();
-    const dbDir = runtime.paths.coral.store.dbDir;
-    publishEpoch(dbDir, '1');
-    const holderPath = storeEpochHolderPath(dbDir, 'real-child');
-
-    await expect(
-      superviseStoreResetDiagnosticChild(
-        createNodeStoreResetDiagnosticSupervisor(),
-        process.execPath,
-        epochPath(dbDir, '1'),
-        { path: holderPath, epoch: '1' },
-      ),
-    ).resolves.toEqual({ integrity: 'ok', termination: 'completed' });
-
-    const holder = JSON.parse(readFileSync(holderPath, 'utf-8')) as { epoch: string; pid: number };
-    expect(holder).toMatchObject({ epoch: '1', pid: expect.any(Number) });
-    expect(holder.pid).not.toBe(runtime.env.pid());
-    expect(runtime.process.observeLiveness(holder.pid)).toBe('absent');
-  });
-
-  it('keeps a diagnostic child holder live after its parent is killed', async () => {
-    const runtime = harness();
-    const dbDir = runtime.paths.coral.store.dbDir;
-    publishEpoch(dbDir, '1');
-    publishEpoch(dbDir, '3');
-    publishEpoch(dbDir, '5');
-    const oldPath = epochPath(dbDir, '1');
-    const holderPath = storeEpochHolderPath(dbDir, 'parent-killed');
-    const programPath = join(dbDir, 'diagnostic-program.cjs');
-    writeFileSync(programPath, SQLITE_DIAGNOSTIC_PROGRAM);
-    const blocker = new DatabaseSync(oldPath);
-    blocker.exec('PRAGMA journal_mode = DELETE; BEGIN EXCLUSIVE');
-    const parent = spawn(
-      process.execPath,
-      [join(process.cwd(), 'tests/fixtures/store-reset-diagnostic-parent.cjs'), programPath, oldPath, holderPath, '1'],
-      { stdio: 'ignore' },
-    );
-    try {
-      await waitUntil(() => existsSync(holderPath));
-      const holder = JSON.parse(readFileSync(holderPath, 'utf-8')) as { epoch: string; pid: number };
-      expect(holder.pid).not.toBe(parent.pid);
-      parent.kill('SIGKILL');
-      await new Promise<void>((resolveExit) => parent.once('exit', () => resolveExit()));
-
-      expect(runtime.process.observeLiveness(holder.pid)).toBe('alive');
-      expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
-      expect(existsSync(oldPath)).toBe(true);
-      console.log(`diagnostic-parent-sigkill-cell parent=absent child=${holder.pid} holder=live removed=false`);
-
-      blocker.exec('ROLLBACK');
-      blocker.close();
-      await waitUntil(() => runtime.process.observeLiveness(holder.pid) === 'absent');
-    } finally {
-      if (parent.exitCode === null && parent.signalCode === null) parent.kill('SIGKILL');
-      try {
-        blocker.exec('ROLLBACK');
-      } catch {
-        // Already released on the primary path.
-      }
-      try {
-        blocker.close();
-      } catch {
-        // Already closed on the primary path.
-      }
-    }
   });
 
   it('refuses only the current epoch', async () => {
@@ -235,130 +180,86 @@ describe('store-reset operator epochs', () => {
     });
   });
 
-  it('does not publish a live-namespace holder while reporting an epoch copy', async () => {
+  it('reports current, preserved, garbage, and malformed epochs without opening SQLite', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishEpoch(dbDir, '1');
+    publishEpoch(dbDir, '2');
+    publishEpoch(dbDir, '3');
+    publishEpoch(dbDir, '4');
+    writeFileSync(join(dbDir, 'epoch-4', 'epoch.json'), '{malformed');
     const dependencies: StoreResetCliDependencies = {
       resolveIdentity: () => ({ ok: true, manifest: build }),
-      createInspectionFs: () => {
-        throw new Error('legacy inspection is not used');
-      },
-      createDiagnosticRunner: () => {
-        throw new Error('legacy diagnostics are not used');
-      },
-      diagnoseEpoch: async () => {
-        expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
-        return { integrity: 'ok', termination: 'completed', cleanup: 'removed' };
-      },
+      createInspectionFs: createStoreResetInspectionFs,
       quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
       runtime: () => runtime,
     };
 
-    const report = await reportStoreResetLocal('gen2', '1', dependencies);
-
-    expect(report.kind).toBe('epoch');
-    expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
-    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-  });
-
-  it('carries listed epoch provenance through report inspection after the configured root retargets', async () => {
-    const runtime = harness();
-    const configuredRoot = runtime.paths.coral.store.dbDir;
-    const oldRoot = join(dirname(configuredRoot), 'old-store-root');
-    const newRoot = join(dirname(configuredRoot), 'new-store-root');
-    publishEpoch(oldRoot, '1');
-    publishEpoch(newRoot, '1');
-    mkdirSync(dirname(configuredRoot), { recursive: true });
-    symlinkSync(oldRoot, configuredRoot);
-    let diagnosticPath: string | null = null;
-    const dependencies: StoreResetCliDependencies = {
-      resolveIdentity: () => ({ ok: true, manifest: build }),
-      createInspectionFs: () => {
-        throw new Error('legacy inspection is not used');
-      },
-      createDiagnosticRunner: () => {
-        throw new Error('legacy diagnostics are not used');
-      },
-      diagnoseEpoch: async (store) => {
-        rmSync(configuredRoot);
-        symlinkSync(newRoot, configuredRoot);
-        diagnosticPath = store.path;
-        const exclusive = tryAcquireExclusiveFileLockSync(join(oldRoot, 'epoch-1', '.lock'));
-        exclusive?.();
-        expect(exclusive).toBeNull();
-        return { integrity: 'ok', termination: 'completed', cleanup: 'removed' };
-      },
-      quarantineRoot: () => join(dirname(configuredRoot), 'store-reset-quarantine'),
-      runtime: () => runtime,
-    };
-
-    const report = await reportStoreResetLocal('gen2', '1', dependencies);
-    console.log(
-      `store-reset-report-retarget-cell listed=old diagnostic=${diagnosticPath === epochPath(oldRoot, '1') ? 'old' : 'other'} configured-root=new lease=held`,
-    );
-
-    expect(report.kind).toBe('epoch');
-    expect(diagnosticPath).toBe(epochPath(oldRoot, '1'));
-  });
-
-  it('does not publish a report holder when diagnostic child termination is unconfirmed', async () => {
-    const runtime = harness();
-    const dbDir = runtime.paths.coral.store.dbDir;
-    publishEpoch(dbDir, '1');
-    const dependencies: StoreResetCliDependencies = {
-      resolveIdentity: () => ({ ok: true, manifest: build }),
-      createInspectionFs: () => {
-        throw new Error('legacy inspection is not used');
-      },
-      createDiagnosticRunner: () => {
-        throw new Error('legacy diagnostics are not used');
-      },
-      diagnoseEpoch: async () => ({
-        integrity: 'unavailable',
-        termination: 'termination_unconfirmed',
-        cleanup: 'cleanup_unavailable',
-      }),
-      quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
-      runtime: () => runtime,
-    };
-
-    await expect(reportStoreResetLocal('gen2', '1', dependencies)).resolves.toMatchObject({ kind: 'epoch' });
-
-    expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
-  });
-
-  it.each(['private-copy inspection', 'staged-copy cleanup'])(
-    'renders %s uncertainty as an unavailable epoch diagnostic',
-    async (failure) => {
-      const runtime = harness();
-      const dbDir = runtime.paths.coral.store.dbDir;
-      publishEpoch(dbDir, '1');
-      const dependencies: StoreResetCliDependencies = {
-        resolveIdentity: () => ({ ok: true, manifest: build }),
-        createInspectionFs: () => {
-          throw new Error('legacy inspection is not used');
-        },
-        createDiagnosticRunner: () => {
-          throw new Error('legacy diagnostics are not used');
-        },
-        diagnoseEpoch: async () => {
-          throw new Error(failure);
-        },
-        quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
-        runtime: () => runtime,
-      };
-
-      const report = await reportStoreResetLocal('gen2', '1', dependencies);
+    for (const [epoch, role] of [
+      ['3', 'current'],
+      ['2', 'preserved'],
+      ['1', 'garbage'],
+      ['4', 'garbage'],
+    ] as const) {
+      const dbPath = epochPath(dbDir, epoch);
+      expect(existsSync(`${dbPath}-wal`)).toBe(false);
+      expect(existsSync(`${dbPath}-shm`)).toBe(false);
+      const report = await reportStoreResetLocal('gen2', epoch, dependencies);
       if (report.kind !== 'epoch') throw new Error('expected epoch report');
+      expect(report.epoch.role).toBe(role);
       const rendered = formatStoreEpochReport(report);
-      console.log(
-        `store-reset-report-uncertainty-cell source=${JSON.stringify(failure)} integrity=${report.diagnostic.integrity} cleanup=${report.diagnostic.cleanup}`,
-      );
-      expect(rendered).toContain('- Integrity: `unavailable`');
-      expect(rendered).toContain('- Cleanup: `cleanup_unavailable`');
-    },
-  );
+      expect(rendered).toContain(`- Database: \`epoch-${epoch}/store.db\``);
+      expect(rendered).toContain(`command=sqlite3 \`<store-root>/epoch-${epoch}/store.db\` \`PRAGMA quick_check(1)\``);
+      expect(rendered).not.toContain(dbDir);
+      expect(existsSync(`${dbPath}-wal`)).toBe(false);
+      expect(existsSync(`${dbPath}-shm`)).toBe(false);
+    }
+  });
+
+  it('does not render raw metadata failures or stored absolute-path causes', async () => {
+    const baseRuntime = harness();
+    const dbDir = baseRuntime.paths.coral.store.dbDir;
+    publishEpoch(dbDir, '1');
+    const metadataPath = join(dbDir, 'epoch-1', 'epoch.json');
+    const rawCause = join(dbDir, 'private-source.db') + ': permission denied';
+    writeFileSync(
+      metadataPath,
+      JSON.stringify({
+        supersedes: null,
+        classification: { kind: 'unavailable', cause: rawCause },
+        build,
+        publishedAt: '2026-09-15T00:00:00.000Z',
+      }),
+    );
+    const dependencies = (runtime: typeof baseRuntime): StoreResetCliDependencies => ({
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    });
+
+    const unavailable = await reportStoreResetLocal('gen2', '1', dependencies(baseRuntime));
+    if (unavailable.kind !== 'epoch') throw new Error('expected epoch report');
+    const unavailableOutput = formatStoreEpochReport(unavailable);
+    expect(unavailableOutput).not.toContain(rawCause);
+    expect(unavailableOutput).not.toContain(dbDir);
+
+    const storage = new Proxy(baseRuntime.storage, {
+      get(subject, property, receiver) {
+        if (property !== 'readFileSync') return Reflect.get(subject, property, receiver) as unknown;
+        return (path: string, encoding: 'utf-8'): string => {
+          if (path === metadataPath) throw Object.assign(new Error(rawCause), { code: 'EACCES' });
+          return subject.readFileSync(path, encoding);
+        };
+      },
+    });
+    const unreadable = await reportStoreResetLocal('gen2', '1', dependencies({ ...baseRuntime, storage }));
+    if (unreadable.kind !== 'epoch') throw new Error('expected epoch report');
+    const unreadableOutput = formatStoreEpochReport(unreadable);
+    expect(unreadableOutput).toContain('- Epoch metadata: `unreadable`');
+    expect(unreadableOutput).not.toContain(rawCause);
+    expect(unreadableOutput).not.toContain(dbDir);
+  });
 
   it('lists holder liveness as unknown and reaps a stale holder during the sweep', () => {
     const runtime = harness();

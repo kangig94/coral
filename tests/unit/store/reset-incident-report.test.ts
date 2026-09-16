@@ -38,11 +38,6 @@ function localReport(): StoreResetIncidentLocalReport {
       ],
     },
     fileVerification: [{ name: 'store.db', status: 'match' }],
-    diagnostic: {
-      integrity: 'ok',
-      termination: 'completed',
-      cleanup: 'removed',
-    },
   };
 }
 
@@ -72,12 +67,6 @@ describe('store reset public report', () => {
       | File | Size (bytes) | Recorded SHA-256 | Verification |
       |---|---:|---|---|
       | \`store.db\` | 123 | \`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\` | \`match\` |
-
-      ## SQLite diagnostic
-
-      - Integrity: \`ok\`
-      - Termination: \`completed\`
-      - Cleanup: \`removed\`
 
       ## Next step
 
@@ -117,7 +106,6 @@ describe('store reset public report', () => {
       'build',
       'handoff',
       'files',
-      'diagnostic',
     ]);
   });
 });

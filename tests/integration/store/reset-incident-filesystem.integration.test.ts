@@ -1,15 +1,11 @@
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
-import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
-import { createStoreResetIncidentDiagnosticRunner } from '#src/store/reset-incident-diagnostic.js';
-import type { StoreResetInspectionStat } from '#src/store/reset-incident-inspection-fs.js';
 import { readStoreResetIncidentReport } from '#src/store/reset-incident-reader.js';
 import {
   parseStoreResetIncidentManifest,
@@ -302,7 +298,7 @@ describe('real store reset inspection filesystem', () => {
     expect(walOpens).toBe(0);
   });
 
-  it('stops incident traversal at cap plus one and never diagnoses after an identity race', async () => {
+  it('stops incident traversal at cap plus one and rejects an identity race', async () => {
     const overflowing = fixture();
     for (let index = 0; index < 5; index += 1) {
       writeFileSync(join(overflowing.incidentPath, `unexpected-${index}`), 'x');
@@ -326,7 +322,6 @@ describe('real store reset inspection filesystem', () => {
 
     const raced = fixture();
     let evidenceOpened = false;
-    const diagnose = vi.fn();
     const racedFs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
       open(path) {
         if (path === raced.evidencePath) evidenceOpened = true;
@@ -341,81 +336,7 @@ describe('real store reset inspection filesystem', () => {
         quarantineRoot: raced.quarantineRoot,
         incidentId: INCIDENT_ID,
         expectedBuild: BUILD,
-        diagnose,
       }),
     ).toEqual({ ok: false, state: 'unsafe' });
-    expect(diagnose).not.toHaveBeenCalled();
-  });
-
-  it('creates files exclusively and removes only the recorded directory identity', () => {
-    const fs = createStoreResetInspectionFs();
-    const base = root();
-    const staged = fs.mkdtemp(join(base, 'staged-'));
-    const output = join(staged, 'store.db');
-    const descriptor = fs.open(output, fs.openFlags.createExclusiveWrite, 0o600);
-    const bytes = new TextEncoder().encode('copy');
-    expect(fs.write(descriptor, bytes, 0, bytes.length, 0)).toBe(bytes.length);
-    fs.close(descriptor);
-    expect(() => fs.open(output, fs.openFlags.createExclusiveWrite, 0o600)).toThrow();
-
-    const expected = fs.lstat(staged);
-    expect(expected?.kind).toBe('directory');
-    expect(fs.removeTreeGuarded(staged, expected as StoreResetInspectionStat)).toBe(true);
-    expect(fs.lstat(staged)).toBeNull();
-  });
-
-  it('diagnoses a real private SQLite copy without changing incident evidence', async () => {
-    const paths = fixture();
-    rmSync(paths.evidencePath);
-    const db = new DatabaseSync(paths.evidencePath);
-    db.exec("CREATE TABLE sample(value TEXT); INSERT INTO sample VALUES ('private sentinel');");
-    db.close();
-
-    const fs = createStoreResetInspectionFs();
-    const evidence = readFileSync(paths.evidencePath);
-    const evidenceStat = fs.lstat(paths.evidencePath);
-    if (evidenceStat === null) throw new Error('SQLite evidence missing');
-    const previous = parseStoreResetIncidentManifest(readFileSync(paths.manifestPath));
-    if (previous.schemaVersion !== 2) throw new Error('Expected a V2 fixture manifest.');
-    const manifest: StoreResetIncidentManifestV2 = {
-      ...previous,
-      files: [
-        {
-          name: 'store.db',
-          sizeBytes: evidence.length,
-          mtimeMs: Number(evidenceStat.mtimeNs) / 1_000_000,
-          sha256: sha256(evidence),
-        },
-      ],
-    };
-    writeFileSync(paths.manifestPath, serializeStoreResetIncidentManifest(manifest), { mode: 0o600 });
-    const diagnosticTempRoot = join(root(), 'diagnostics');
-    mkdirSync(diagnosticTempRoot, { mode: 0o700 });
-
-    const result = await readStoreResetIncidentReport({
-      fs,
-      quarantineRoot: paths.quarantineRoot,
-      incidentId: INCIDENT_ID,
-      expectedBuild: BUILD,
-      diagnose: createStoreResetIncidentDiagnosticRunner({
-        tempRoot: diagnosticTempRoot,
-        platform: process.platform,
-        executable: process.execPath,
-        supervisor: createNodeStoreResetDiagnosticSupervisor(),
-      }),
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      report: {
-        diagnostic: {
-          integrity: 'ok',
-          termination: 'completed',
-          cleanup: 'removed',
-        },
-      },
-    });
-    expect(sha256(readFileSync(paths.evidencePath))).toBe(sha256(evidence));
-    expect(readdirSync(diagnosticTempRoot)).toEqual(['coral-store-report.lock']);
   });
 });

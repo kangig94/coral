@@ -31,7 +31,6 @@ export type StoreResetFileDescriptor = unknown;
 export interface StoreResetInspectionFs {
   readonly openFlags: {
     readonly readOnly: number;
-    readonly createExclusiveWrite: number;
   };
   lstat(path: string): StoreResetInspectionStat | null;
   fstat(descriptor: StoreResetFileDescriptor): StoreResetInspectionStat;
@@ -47,15 +46,5 @@ export interface StoreResetInspectionFs {
     length: number,
     position: number,
   ): number;
-  write(
-    descriptor: StoreResetFileDescriptor,
-    buffer: Uint8Array,
-    offset: number,
-    length: number,
-    position: number,
-  ): number;
   close(descriptor: StoreResetFileDescriptor): void;
-  mkdtemp(prefix: string): string;
-  rename(source: string, destination: string): void;
-  removeTreeGuarded(path: string, expected: StoreResetInspectionStat): boolean;
 }

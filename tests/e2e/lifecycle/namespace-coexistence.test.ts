@@ -103,7 +103,7 @@ function createPluginFixture(): {
     join(smokeEpochDir, 'epoch.json'),
     JSON.stringify({
       supersedes: null,
-      classification: { kind: 'unavailable', cause: 'lifecycle smoke fixture' },
+      classification: { kind: 'unavailable' },
       build: {
         version: sourceManifest.version,
         buildSetId: sourceManifest.buildSetId,

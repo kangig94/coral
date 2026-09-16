@@ -30,9 +30,7 @@ const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
 
-export type StoreEpochClassification =
-  | StoreFormatClassification
-  | { readonly kind: 'unavailable'; readonly cause: string };
+export type StoreEpochClassification = StoreFormatClassification | { readonly kind: 'unavailable' };
 
 export type StoreEpochMetadata = Readonly<{
   supersedes: StoreEpoch | null;
@@ -94,7 +92,7 @@ export type StoreEpochMetadataDisposition =
   | Readonly<{ kind: 'valid'; value: StoreEpochMetadata }>
   | Readonly<{ kind: 'missing' }>
   | Readonly<{ kind: 'malformed' }>
-  | Readonly<{ kind: 'unreadable'; cause: string }>;
+  | Readonly<{ kind: 'unreadable' }>;
 
 export type StoreEpochOptions = Readonly<{
   path?: string;
@@ -261,6 +259,14 @@ function observeStoreEpochs(
   return observations;
 }
 
+function resolveObservedStoreRoot(
+  storage: Pick<StoragePort, 'lstatSync' | 'realpathSync'>,
+  configuredDbDir: string,
+): Readonly<{ kind: 'absent' }> | Readonly<{ kind: 'present'; path: string }> {
+  if (observeStorePath(storage, configuredDbDir) === 'absent') return { kind: 'absent' };
+  return { kind: 'present', path: storage.realpathSync(configuredDbDir) };
+}
+
 function observeStoreEpoch(
   storage: StoreEpochDiscoveryStorage,
   dbDir: string,
@@ -274,13 +280,12 @@ function observeStoreEpoch(
     return {
       epoch,
       proof: contained,
-      epochJson:
-        contained.kind === 'unobservable' ? { kind: 'unreadable', cause: contained.cause } : { kind: 'malformed' },
+      epochJson: contained.kind === 'unobservable' ? { kind: 'unreadable' } : { kind: 'malformed' },
     };
   }
   const epochJson = readEpochMetadata(storage, directory);
   if (epochJson.kind === 'unreadable') {
-    return { epoch, proof: { kind: 'unobservable', cause: epochJson.cause }, epochJson };
+    return { epoch, proof: { kind: 'unobservable', cause: 'epoch metadata is unreadable' }, epochJson };
   }
   const database = observeContainedRegularFile(storage, directory, epochPath(dbDir, epoch), contained);
   const lock = database.kind === 'proven' ? observeStoreEpochLock(storage, dbDir, epoch, contained) : database;
@@ -307,8 +312,9 @@ type CurrentStoreObservation =
 
 function observeCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>): CurrentStoreObservation {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
-  if (observeStorePath(runtime.storage, configuredDbDir) === 'absent') return { kind: 'absent' };
-  const storeRoot = runtime.storage.realpathSync(configuredDbDir);
+  const root = resolveObservedStoreRoot(runtime.storage, configuredDbDir);
+  if (root.kind === 'absent') return root;
+  const storeRoot = root.path;
   return { kind: 'present', storeRoot, epochs: observeStoreEpochs(runtime.storage, storeRoot) };
 }
 
@@ -385,10 +391,6 @@ export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>,
   return { path: epoch.path, epoch, epochCandidate: true };
 }
 
-export function resolveCurrentStorePath(runtime: Pick<Runtime, 'paths' | 'storage'>, path?: string): string {
-  return resolveCurrentStore(runtime, path).path;
-}
-
 export function openWritableStoreDbNoReset(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'storage'>,
   options: ({ readonly path?: string; readonly resolved?: never } | { readonly resolved: ResolvedStoreEpoch }) & {
@@ -441,14 +443,15 @@ export function resolveProvenStoreEpochAtPath(
   dbDir: string,
   path: string,
 ): ResolvedStoreEpoch | null {
-  let storeRoot: string;
+  const root = resolveObservedStoreRoot(storage, dbDir);
+  if (root.kind === 'absent') return null;
   let addressedPath: string;
   try {
-    storeRoot = storage.realpathSync(dbDir);
     addressedPath = storage.realpathSync(path);
   } catch {
     return null;
   }
+  const storeRoot = root.path;
   const epoch = storeEpochAtPath(storeRoot, addressedPath);
   if (epoch === null) return null;
   const observation = observeStoreEpoch(storage, storeRoot, `epoch-${epoch}`);
@@ -556,11 +559,8 @@ function errorCode(error: unknown): string | null {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null;
 }
 
-function unavailableClassification(error: unknown): StoreEpochClassification {
-  return {
-    kind: 'unavailable',
-    cause: error instanceof Error ? error.message : String(error),
-  };
+function unavailableClassification(): StoreEpochClassification {
+  return { kind: 'unavailable' };
 }
 
 function metadataFor(
@@ -798,8 +798,8 @@ function observeStoreEpochHolders(
   let entries: readonly string[];
   try {
     entries = runtime.storage.readdirSync(dbDir);
-  } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT' ? { kind: 'observed', holders: [] } : { kind: 'unobservable' };
+  } catch {
+    return { kind: 'unobservable' };
   }
   const holders: StoreEpochHolderObservation[] = [];
   for (const entry of entries) {
@@ -813,12 +813,14 @@ function observeStoreEpochHolders(
 }
 
 export function listStoreEpochHolders(runtime: Runtime): readonly StoreEpochHolderListEntry[] {
-  let dbDir: string;
+  let root: ReturnType<typeof resolveObservedStoreRoot>;
   try {
-    dbDir = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
-  } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT' ? [] : [{ id: 'unobservable', epoch: null, pid: null, state: 'unobservable' }];
+    root = resolveObservedStoreRoot(runtime.storage, runtime.paths.coral.store.dbDir);
+  } catch {
+    return [{ id: 'unobservable', epoch: null, pid: null, state: 'unobservable' }];
   }
+  if (root.kind === 'absent') return [];
+  const dbDir = root.path;
   const observed = observeStoreEpochHolders(runtime, dbDir);
   if (observed.kind === 'unobservable') {
     return [{ id: 'unobservable', epoch: null, pid: null, state: 'unobservable' }];
@@ -1073,17 +1075,13 @@ async function readEpochMetadataAsync(storage: StoragePort, directory: string): 
       return { kind: 'malformed' };
     }
   } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT'
-      ? { kind: 'missing' }
-      : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
+    return errorCode(error) === 'ENOENT' ? { kind: 'missing' } : { kind: 'unreadable' };
   }
   try {
     const parsed = parseStoreEpochMetadata(JSON.parse(await storage.readFile(metadataPath, 'utf-8')));
     return parsed === null ? { kind: 'malformed' } : { kind: 'valid', value: parsed };
   } catch (error: unknown) {
-    return error instanceof SyntaxError
-      ? { kind: 'malformed' }
-      : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
+    return error instanceof SyntaxError ? { kind: 'malformed' } : { kind: 'unreadable' };
   }
 }
 
@@ -1100,13 +1098,12 @@ async function observeStoreEpochAsync(
     return {
       epoch,
       proof: contained,
-      epochJson:
-        contained.kind === 'unobservable' ? { kind: 'unreadable', cause: contained.cause } : { kind: 'malformed' },
+      epochJson: contained.kind === 'unobservable' ? { kind: 'unreadable' } : { kind: 'malformed' },
     };
   }
   const epochJson = await readEpochMetadataAsync(storage, directory);
   if (epochJson.kind === 'unreadable') {
-    return { epoch, proof: { kind: 'unobservable', cause: epochJson.cause }, epochJson };
+    return { epoch, proof: { kind: 'unobservable', cause: 'epoch metadata is unreadable' }, epochJson };
   }
   const database = await observeContainedRegularFileAsync(storage, directory, epochPath(dbDir, epoch), contained);
   const lock =
@@ -1578,15 +1575,13 @@ function tryOpenCurrentEpoch(
     if (lease === null) {
       return {
         kind: 'replace',
-        classification: unavailableClassification(
-          new Error(`Store epoch ${resolved.epoch} did not retain its canonical proof.`),
-        ),
+        classification: unavailableClassification(),
       };
     }
     assertProvenStoreOpenable(runtime.storage, resolved.path);
-  } catch (error: unknown) {
+  } catch {
     lease?.();
-    return { kind: 'replace', classification: unavailableClassification(error) };
+    return { kind: 'replace', classification: unavailableClassification() };
   }
   try {
     const decision = openWritableStoreDatabase({
@@ -1601,9 +1596,9 @@ function tryOpenCurrentEpoch(
       return { kind: 'replace', classification: decision.classification };
     }
     return { kind: 'opened', db: registerStoreEpochHolder(runtime, resolved, decision.db, lease) };
-  } catch (error: unknown) {
+  } catch {
     lease();
-    return { kind: 'replace', classification: unavailableClassification(error) };
+    return { kind: 'replace', classification: unavailableClassification() };
   }
 }
 
@@ -1659,7 +1654,6 @@ export function discardCurrentStoreEpoch(runtime: Runtime, options: StoreEpochOp
     const successor = selectSuccessor(runtime, dbDir, current);
     const published = mintNextEpoch(runtime, options, dbDir, current, successor.epoch, {
       kind: 'unavailable',
-      cause: 'operator-discard',
     });
     if (published.kind === 'published') {
       return openPublishedEpoch(runtime, options, dbDir, successor.epoch, published.lease);
@@ -1714,17 +1708,13 @@ function readEpochMetadata(
       return { kind: 'malformed' };
     }
   } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT'
-      ? { kind: 'missing' }
-      : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
+    return errorCode(error) === 'ENOENT' ? { kind: 'missing' } : { kind: 'unreadable' };
   }
   try {
     const parsed = parseStoreEpochMetadata(JSON.parse(storage.readFileSync(metadataPath, 'utf-8')));
     return parsed === null ? { kind: 'malformed' } : { kind: 'valid', value: parsed };
   } catch (error: unknown) {
-    return error instanceof SyntaxError
-      ? { kind: 'malformed' }
-      : { kind: 'unreadable', cause: error instanceof Error ? error.message : String(error) };
+    return error instanceof SyntaxError ? { kind: 'malformed' } : { kind: 'unreadable' };
   }
 }
 
@@ -1766,17 +1756,19 @@ export function listStoreEpochResidues(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
 ): readonly StoreEpochResidueListEntry[] {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
-  let dbDir: string;
+  let root: ReturnType<typeof resolveObservedStoreRoot>;
   try {
-    dbDir = runtime.storage.realpathSync(configuredDbDir);
-  } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT' ? [] : [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
+    root = resolveObservedStoreRoot(runtime.storage, configuredDbDir);
+  } catch {
+    return [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
   }
+  if (root.kind === 'absent') return [];
+  const dbDir = root.path;
   let entries: readonly string[];
   try {
     entries = runtime.storage.readdirSync(dbDir);
-  } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT' ? [] : [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
+  } catch {
+    return [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
   }
   return entries
     .filter(isStoreEpochResidue)
@@ -1796,38 +1788,36 @@ export function listStoreEpochResidues(
 
 export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): readonly StoreEpochListEntry[] {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
-  let dbDir: string;
+  let root: ReturnType<typeof resolveObservedStoreRoot>;
   try {
-    dbDir = runtime.storage.realpathSync(configuredDbDir);
-  } catch (error: unknown) {
-    if (errorCode(error) === 'ENOENT') return [];
-    const cause = error instanceof Error ? error.message : String(error);
+    root = resolveObservedStoreRoot(runtime.storage, configuredDbDir);
+  } catch {
     return [
       {
         epoch: 'unobservable',
         role: 'unobservable',
         bytes: null,
-        publicationReason: unavailableClassification(error),
+        publicationReason: unavailableClassification(),
         supersededStoreVersion: null,
-        epochJson: { kind: 'unreadable', cause },
+        epochJson: { kind: 'unreadable' },
         resolved: null,
       },
     ];
   }
+  if (root.kind === 'absent') return [];
+  const dbDir = root.path;
   let observations: readonly StoreEpochObservation[];
   try {
     observations = observeStoreEpochs(runtime.storage, dbDir);
-  } catch (error: unknown) {
-    if (errorCode(error) === 'ENOENT') return [];
-    const cause = error instanceof Error ? error.message : String(error);
+  } catch {
     return [
       {
         epoch: 'unobservable',
         role: 'unobservable',
         bytes: null,
-        publicationReason: unavailableClassification(error),
+        publicationReason: unavailableClassification(),
         supersededStoreVersion: null,
-        epochJson: { kind: 'unreadable', cause },
+        epochJson: { kind: 'unreadable' },
         resolved: null,
       },
     ];
@@ -1844,7 +1834,7 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
       const publicationReason =
         observation.epochJson.kind === 'valid'
           ? observation.epochJson.value.classification
-          : unavailableClassification(new Error('Epoch metadata is not valid.'));
+          : unavailableClassification();
       return {
         epoch,
         role:
@@ -1959,15 +1949,14 @@ function isPublishedEpoch(root, name) {
 
 export function resolveCurrentStoreDbPath(dbDir) {
   let current = null;
-  let entries;
-  let root;
   try {
-    root = resolveStoreRoot(dbDir);
-    entries = readdirSync(root.path);
+    lstatSync(dbDir);
   } catch (error) {
     if (errorCode(error) === 'ENOENT') return null;
     throw error;
   }
+  const root = resolveStoreRoot(dbDir);
+  const entries = readdirSync(root.path);
   for (const entry of entries) {
     const epoch = epochNumber(entry);
     if (

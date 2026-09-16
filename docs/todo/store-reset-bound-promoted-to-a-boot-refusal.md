@@ -5,7 +5,7 @@ Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 on
 earned. Revision 27 withdraws a boundary four rounds were spent defending, and Revision 32 deletes a
 subsystem five rounds were spent repairing — both on the owner’s ruling.
 
-A coordinator refused to start because the store was too large to *report on*. Recovering it needed a
+A coordinator refused to start because the store was too large to _report on_. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
 them introduced by the drafts meant to remove it, so the rule matters more than any mechanism here:
 
@@ -21,8 +21,8 @@ The ladders, written here so "the next mechanism down" is not the author's inven
 - **For the name itself**: **link** a store minted in the quarantine onto it, then (on `EXDEV` only)
   create by path. Link has no bound: `EEXIST` is the next epoch, not a failure.
 
-This replaces an earlier sentence — *"every observation selects a mechanism; none selects a refusal; only
-a genuine filesystem failure may stop the boot"* — which was the defect rather than the cure. It named
+This replaces an earlier sentence — _"every observation selects a mechanism; none selects a refusal; only
+a genuine filesystem failure may stop the boot"_ — which was the defect rather than the cure. It named
 two categories, observations of the world and filesystem failure, and **a bound running out is neither**.
 Each time, its own author reasoned that exhaustion is not an observation of the store, reached for §11's
 "a bounded retry must reach a named successor", found that a documented refusal naming `store-reset
@@ -44,7 +44,7 @@ copies each evidence file while hashing it, against a budget seeded from `MAX_RE
 (1 GiB). The store measured 1,174,228,992 bytes. `copyCandidateForPublication` threw, `publishIncident`
 wrapped it as `store_reset_quarantine_failed`, and the daemon did not start — on any attempt, for hours.
 
-The remediation named an exit that was not the cause: *"Check permissions and free disk space."* The
+The remediation named an exit that was not the cause: _"Check permissions and free disk space."_ The
 real cause appeared only inside `startup-diagnostic.json`.
 
 The measured facts that shape the fix, all taken on the affected machine:
@@ -57,7 +57,7 @@ The measured facts that shape the fix, all taken on the affected machine:
 ## The budget was never a brake
 
 `classifyStoreFormat` resets on `older-incompatible` and on `corrupt-or-unsupported`, and
-`legacy-adoptable` requires version metadata *absent* alongside an identical fingerprint. So the reset is
+`legacy-adoptable` requires version metadata _absent_ alongside an identical fingerprint. So the reset is
 already automatic for every store under 1 GiB. The budget vetoes on **size**, which carries no
 information about whether resetting is correct, and fires only on the largest stores. Removing it does
 not introduce automatic reset; it removes an accidental size-keyed veto.
@@ -129,24 +129,24 @@ and its database handle closes at the end of disposal rather than the start.
 
 The primitive follows from the lease's answer:
 
-| Lease answer | Primitive | Cost |
-| --- | --- | --- |
-| drained | `link` | zero bytes |
-| `writer-live` | `copy`, no budget | 2x disk, one read and one write |
-| `writer-unobservable` | `copy`, no budget | same |
-| lock timeout — we could not even ask | `copy`, no budget | same |
-| `EXDEV` / `EMLINK` / `EPERM` / `EOPNOTSUPP` | `copy`, no budget | same |
+| Lease answer                                | Primitive         | Cost                            |
+| ------------------------------------------- | ----------------- | ------------------------------- |
+| drained                                     | `link`            | zero bytes                      |
+| `writer-live`                               | `copy`, no budget | 2x disk, one read and one write |
+| `writer-unobservable`                       | `copy`, no budget | same                            |
+| lock timeout — we could not even ask        | `copy`, no budget | same                            |
+| `EXDEV` / `EMLINK` / `EPERM` / `EOPNOTSUPP` | `copy`, no budget | same                            |
 
 The lease's failure is **caught and mapped, never propagated**. That is what makes the invariant below
 mechanical rather than aspirational:
 
-| From `acquireGenerationMaintenanceLease` | Disposition |
-| --- | --- |
-| resolves | `proven` — link |
-| `legacy_source_not_quiescent` | `unproven`, `writer-live` — copy |
-| `legacy_source_writer_observation_unknown` | `unproven`, `writer-unobservable` — copy |
-| a raw admission or maintenance directory-lock timeout | `unproven`, `lock-timeout` — copy |
-| anything else | rethrow — a genuine I/O failure, the only thing allowed to stop a boot |
+| From `acquireGenerationMaintenanceLease`              | Disposition                                                            |
+| ----------------------------------------------------- | ---------------------------------------------------------------------- |
+| resolves                                              | `proven` — link                                                        |
+| `legacy_source_not_quiescent`                         | `unproven`, `writer-live` — copy                                       |
+| `legacy_source_writer_observation_unknown`            | `unproven`, `writer-unobservable` — copy                               |
+| a raw admission or maintenance directory-lock timeout | `unproven`, `lock-timeout` — copy                                      |
+| anything else                                         | rethrow — a genuine I/O failure, the only thing allowed to stop a boot |
 
 ```ts
 type WriterExclusion =
@@ -255,18 +255,18 @@ evict, which is what makes the bound real. Per-item history goes to the audit lo
 current status, the audit log owns history.
 
 `preserved` and `excess.latest` carry **`storedProductVersion: string | null`** — the Coral version
-recorded *inside* the quarantined store, taken from `classification.storedProductVersion` at publication.
+recorded _inside_ the quarantined store, taken from `classification.storedProductVersion` at publication.
 `raiseStoredProductVersion` bumps it on every compatible open, so it names the last build that could open
 that store, which is the build to install to read it. `null` is a real third answer: the store carried no
 version metadata. Incidents published by builds predating this ledger have no entry and render `unknown`
 rather than a guess.
 
 A quarantined store is unreadable by the build that quarantined it by construction, so preserved evidence
-is only ever useful to someone who installs the matching older build. A row reading *"1.17 GB, incident
-`bdd75824…`"* is actionable by nobody, which is why the field exists.
+is only ever useful to someone who installs the matching older build. A row reading _"1.17 GB, incident
+`bdd75824…`"_ is actionable by nobody, which is why the field exists.
 
 It is **not** derivable from the manifest, and the obvious projection is inverted: `createIncidentManifest`
-writes `build.version` from `authority.version` — the build *performing* the reset, the one that rejected
+writes `build.version` from `authority.version` — the build _performing_ the reset, the one that rejected
 the store — and no manifest field records the store's own version. It is not derivable at read time
 either: `store-reset-discipline.test.ts` asserts the support import closure rooted at
 `reset-incident-reader.ts` excludes `src/store/db.ts`, so the reader cannot classify, and routing through
@@ -280,7 +280,12 @@ Every variant boots. There is no refusal variant, and that absence is the invari
 
 ```ts
 type IncidentPublication =
-  | { kind: 'preserved'; incident: BackendStoreResetIncident; preservation: PreservationMechanism; retention: PreservedRetention }
+  | {
+      kind: 'preserved';
+      incident: BackendStoreResetIncident;
+      preservation: PreservationMechanism;
+      retention: PreservedRetention;
+    }
   | { kind: 'discarded'; receipt: DiscardReceipt }
   | { kind: 'no-evidence' };
 
@@ -298,7 +303,12 @@ type PreservedRetention =
   | { slot: 'claimed' }
   | { slot: 'excess'; holder: string; lineage: 'unrelated' | 'undeterminable' };
 
-type DiscardReceipt = { resetAt: string; resetPolicyCause: StoreResetPolicyCause; evidenceBytes: number; deferredTo: string };
+type DiscardReceipt = {
+  resetAt: string;
+  resetPolicyCause: StoreResetPolicyCause;
+  evidenceBytes: number;
+  deferredTo: string;
+};
 ```
 
 `errno: 'other'` beside the raw `code` is the third answer for an errno nobody enumerated — carried rather
@@ -312,10 +322,7 @@ Today they are a single loop, which is how a question about the active side beca
 
 ```ts
 /** Whether the committed evidence is intact. Decisive, and the only producer of a refusal. */
-type StagedEvidenceIntegrity =
-  | { kind: 'intact' }
-  | { kind: 'corrupt' }
-  | { kind: 'undeterminable'; cause: string };
+type StagedEvidenceIntegrity = { kind: 'intact' } | { kind: 'corrupt' } | { kind: 'undeterminable'; cause: string };
 
 /** Whether the active name is provably the file this incident published. Never blocks the commit. */
 type ActiveEvidenceObservation =
@@ -372,8 +379,8 @@ survives a 1.17 GB store while the writer does not.
   and only when the inodes differ while size and mtime agree. **The budget was the veto; the hash was
   never the problem** — measured at 3.99 s per gigabyte, and the resume hashes staged and active, so
   roughly 8 s on the store that caused this. Inside the 15 s incumbent deadline with less margin than
-  publication has. Measure before shipping. The rule is *identity where identity exists, content where it
-  does not.*
+  publication has. Measure before shipping. The rule is _identity where identity exists, content where it
+  does not._
 - Reader, both sites: **kept unchanged**.
 - The two active-store-transition sites: keep the number, rehome the name
   (`MAX_ACTIVE_STORE_TRANSITION_BYTES`). They never bounded a report; inheriting the report's number was
@@ -394,8 +401,8 @@ model, which yields three rules — and the first carries the design.
    deletes user data irreversibly, so no `store_reset_*` remediation may name it. Because nothing blocks
    on retention, this holds by construction rather than by discipline — and it is mechanically checkable,
    so it becomes an invariant.
-2. **Prohibitions are the safe form; authorizations are not.** The existing *"Do not move, delete,
-   restore, or upload DB, WAL, or SHM evidence"* is the right shape. Add nothing that reads as permission
+2. **Prohibitions are the safe form; authorizations are not.** The existing _"Do not move, delete,
+   restore, or upload DB, WAL, or SHM evidence"_ is the right shape. Add nothing that reads as permission
    to touch the quarantine root.
 3. **Every fact a model must relay lives in a field, not a sentence.** A model paraphrases prose wrongly
    and relays fields correctly. Which disposition occurred, whether disk doubled and why, that the bound
@@ -415,7 +422,7 @@ copy, so the artifact and its manifest agree and the reader reports `match` — 
 writes to that separate inode afterward. Whether the copy is a coherent point-in-time snapshot is a
 property of the evidence, recorded in the ledger's `coherence`, not a failure of the operation. A torn
 copy is still nearly all of the data, and for evidence that will only ever be read forensically by an
-older build, nearly all is not nothing. Discharging a *byte* obligation on *coherence* evidence would be
+older build, nearly all is not nothing. Discharging a _byte_ obligation on _coherence_ evidence would be
 the same category error as concluding that preservation is impossible because linking is.
 
 So `hashExactDescriptor` gains an overrun disposition and returns the bytes it actually consumed. The
@@ -490,7 +497,7 @@ At a new call site, ask which of three things is being touched:
    identity bracket, and a frozen manifest has no field to carry a broken one, so it **throws**. Every
    such throw happens before the first active unlink, where the existing `activeRemovalStarted === false`
    cleanup makes it a refusal-to-begin with nothing moved.
-2. **A name** — the active pathname *after* the claim is minted. Present? Same inode? May I unlink?
+2. **A name** — the active pathname _after_ the claim is minted. Present? Same inode? May I unlink?
    **A disposition, never an exception.** `ENOENT` is the answer `absent`. The name's fate always has a
    field (`coherence`, `leftActive`) and classification judges what remains.
 3. **A refused mutation** — a non-`ENOENT` errno on a mkdir, write, link, rename, sync, or an unlink the
@@ -506,7 +513,7 @@ pins it. It becomes `left`. `PreservationMechanism.linked` gains `coherence` so 
 after the manifest is recorded rather than refused.
 
 The copy arm's re-hash of the whole active file at removal also goes: `copyCandidateForPublication`
-already returned the identity, and the rule is *identity where identity exists, content where it does not*.
+already returned the identity, and the rule is _identity where identity exists, content where it does not_.
 
 ### The discard arm shares the owner
 
@@ -570,7 +577,7 @@ joined paths, never proving the quarantine root is a non-symlink directory or th
 realpath-contained child — while the read boundary already refuses a symlinked root. `assertQuarantineRoot`
 and `assertContainedDirectory` move into `reset-retention.ts` and run before the removal, and the result
 union gains `unsafe`, which is the read boundary's own word and distinct from `undeterminable`: a
-symlinked root *is* verified, as not ours.
+symlinked root _is_ verified, as not ours.
 
 **`store_product_version` stops being raw at the classifier.** Today the corrupt arm returns the
 unparseable string under a field name that elsewhere means "a version", and it flows to the ledger and
@@ -595,7 +602,7 @@ still-incompatible database is opened anyway. The two-pass loop was dead code on
 
 **Seven fields are not an identity.** `sameEvidenceIdentity` compares `dev`, `ino`, `mode`, `size`,
 `mtimeNs` and both type predicates, and `openActiveEvidence` uses it — so ordinary WAL growth between
-enumeration and descriptor open fails the check and refuses the boot, on the arm that exists *because* a
+enumeration and descriptor open fails the check and refuses the boot, on the arm that exists _because_ a
 writer is live. The same module already answers the same question correctly elsewhere:
 `linkActiveEvidence` compares `dev` and `ino` alone. That inconsistency was the tell.
 
@@ -603,7 +610,7 @@ writer is live. The same module already answers the same question correctly else
 inside the module created to eliminate it.
 
 **"Claims throw" is not an extendable category.** It is defined by what the manifest asserts, so an
-author reasoning backward from manifest to descriptor to enumerated identity lands a throw on a *source*
+author reasoning backward from manifest to descriptor to enumerated identity lands a throw on a _source_
 path. Nothing in it says which namespace a path lives in, and namespace is the only thing that decides
 whether a surprise is a fault.
 
@@ -634,7 +641,7 @@ present is a smoke test.
 **Read it, rename it, or link it back; inspect only what you own.**
 
 Two categories replace three. "Claim" disappears because the manifest is written only once every name of
-every inode it describes is owned. The single shared-directory refusal that remains is a *precondition*
+every inode it describes is owned. The single shared-directory refusal that remains is a _precondition_
 stated once at the top of the sequence — enumeration refuses an entry that is not a regular file, before
 anything has moved — so no author can generalize from it.
 
@@ -645,7 +652,7 @@ actor is already excluded from replacing an inode by the adoption lock, the rese
 maintenance lease, and SQLite never renames over `store.db`. The racing party is foreign, and POSIX
 offers no mandatory lock and no conditional unlink. So the answer is a primitive, not a lock.
 
-You cannot inspect-then-act on a name you do not own. You *can* move whatever is at that name into a name
+You cannot inspect-then-act on a name you do not own. You _can_ move whatever is at that name into a name
 you do own, and then inspect what arrived:
 
 ```
@@ -706,7 +713,7 @@ permanently `mismatch`.
 
 It enters through `coordinateActiveStoreSelection` — by construction, once there is no other function
 that publishes. Mutations are applied before the Nth active-path call: deleted, replaced (by a
-*compatible* store carrying a sentinel table, so a run can prove the replacement was classified rather
+_compatible_ store carrying a sentinel table, so a run can prove the replacement was classified rather
 than merely surviving), appended (same inode, WAL growth), sidecar, and crash — crossed with the others
 applied between crash and resume.
 
@@ -778,7 +785,7 @@ and one `link`. Nothing is ever inspected on the shared name — an occupant is 
 sits on a path Coral owns, which is Revision 3's own maxim applied to the step it forgot.
 
 **A refused mutation throws.** Revision 3 softened Revision 2's rule by mapping any non-`ENOENT` rename
-errno to `undeterminable`; that clause was about *observations* and was over-applied to a mutation. An
+errno to `undeterminable`; that clause was about _observations_ and was over-applied to a mutation. An
 immovable occupant is then reported as what it is, and `store_reset_quarantine_failed`'s existing
 "check permissions" text is finally the true cause instead of a second incident of the same bytes.
 
@@ -829,7 +836,7 @@ rows. The reviewer's finding is literally K = 3.
 ## Revision 5 — prove what you opened, and make the guard semantic
 
 Revision 4 removed the cap and the fifth instance. A fourth review round found a **sixth**, and it is the
-most instructive one yet: the parking helpers `rename` successfully and *then* throw because the parked
+most instructive one yet: the parking helpers `rename` successfully and _then_ throw because the parked
 object is not a regular file. **No syscall was refused.** The governing sentence already forbids this —
 the rule did not fail, the implementation never consulted it.
 
@@ -846,7 +853,7 @@ the non-regular-file throw, and it does not need rewriting when the next call si
 
 ### A successfully parked occupant is never a refusal
 
-Enumeration may refuse a non-regular file *before anything has moved* — that is a precondition, stated
+Enumeration may refuse a non-regular file _before anything has moved_ — that is a precondition, stated
 once. After a successful `rename` the object is in owned space and nothing about it can refuse a boot: it
 is parked, recorded in its sidecar with what it actually is, and left for `list` and `release`. The
 occupant being a directory or a symlink is a fact about the intruder, not a fault of ours.
@@ -976,16 +983,16 @@ readers ran out of ideas; this one can end when a number reaches zero.
 
 ### Two findings are limits, not bugs, and their answers follow from the maxim
 
-**A hard link cannot be made immutable.** The maintenance lease drains *registered* writer leases; it
+**A hard link cannot be made immutable.** The maintenance lease drains _registered_ writer leases; it
 cannot prove that no uncooperative process holds a writable descriptor. So an append during the post-park
-rehash raises a mutation error that becomes `store_reset_quarantine_failed`, and an append *after* the
+rehash raises a mutation error that becomes `store_reset_quarantine_failed`, and an append _after_ the
 rehash leaves a committed manifest that no longer describes its own evidence — staging validation checks
 entry names and count, not digests. The link arm's premise is therefore false in general. **Describing
 linked evidence must be tolerant — `torn`, never a throw — and a manifest may only claim what a separate
 inode guarantees.**
 
 **A writable SQLite handle cannot prove its inode before opening.** `DatabaseSync` opens by path, and
-`openWritableStoreDatabase` applies schema, pragmas and version metadata *before* any identity check — so
+`openWritableStoreDatabase` applies schema, pragmas and version metadata _before_ any identity check — so
 a foreign actor who replaces `store.db` with a symlink to an external file between the link and the open
 gets that file mutated by us, outside our owned namespace, with no undo. The answer is the maxim taken to
 its conclusion: **open only owned paths.** Mint and open inside the owned directory, then `link` the
@@ -1032,7 +1039,7 @@ proves nothing; a number that may only fall cannot be satisfied by blessing.
 
 Round seven brought the count from 142 to 137 and deleted the link arm — a hard link cannot make retained
 evidence immutable against a descriptor nobody registered, so incident evidence is always copied onto a
-separate inode. It also refuted one sentence of Revision 7 correctly: the shared name must be *observed*,
+separate inode. It also refuted one sentence of Revision 7 correctly: the shared name must be _observed_,
 since the protocol has to `lstat` and identity-check it. The boundary is that shared-name **mutations**
 are `rename` and `link` only, and a writable SQLite handle never receives a shared path.
 
@@ -1050,8 +1057,8 @@ descendant, and then asserts the discard receipt rather than conservation of tha
 
 **Fingerprint and version may no longer authorize a discard.** Without a durable causal-lineage token
 proving ancestry, lineage is `undeterminable`, and `undeterminable` preserves over the bound — the path
-that already exists. A discard is authorized only by evidence about *where the bytes came from*, never by
-evidence about *what shape they have*.
+that already exists. A discard is authorized only by evidence about _where the bytes came from_, never by
+evidence about _what shape they have_.
 
 ### `legacy-adoptable` is silently replaced with an empty store
 
@@ -1059,7 +1066,7 @@ It is excluded from incident publication, but settlement still mints and enters 
 `compatible` and `fresh` can take the adoption path — so a legacy database is parked as terminal evidence
 and an empty minted store is linked into its place. The established contract raises `store_schema_outdated`
 rather than adopting implicitly. The unit test does not catch it because its helper mocks every writable
-open, and the one invocation it makes throw is the *minted* store, not the parked legacy one.
+open, and the one invocation it makes throw is the _minted_ store, not the parked legacy one.
 
 Handle the classification **before** mint and claim, and make the settlement total over the whole
 `StoreFormatClassification` union rather than over the subset the reset path happens to care about.
@@ -1073,7 +1080,7 @@ only parsed `in-flight` records, so both are ignored; the next claim recreates t
 as noncanonical — a state with no operator exit.
 
 Worse, publication's cleanup recursively deletes that fixed directory on a failure path it reaches
-*before* it ever owned it, so a pre-existing coordinate's bytes are erased by an invocation that neither
+_before_ it ever owned it, so a pre-existing coordinate's bytes are erased by an invocation that neither
 created nor validated it. **Recovery must be total over absent, malformed, unreadable, in-flight and
 terminal, and cleanup may only remove what this invocation created.**
 
@@ -1263,12 +1270,12 @@ B existed.
 
 So the count is four, and they are all one sentence:
 
-| round | the guard | the level it missed |
-|---|---|---|
-| 5 | call text in a module | the lexical loop body |
-| 6 | the lexical loop body | a second module |
-| 7 | a single module | the import-reachable closure |
-| 18 | a list of function names | the function nobody listed |
+| round | the guard                | the level it missed          |
+| ----- | ------------------------ | ---------------------------- |
+| 5     | call text in a module    | the lexical loop body        |
+| 6     | the lexical loop body    | a second module              |
+| 7     | a single module          | the import-reachable closure |
+| 18    | a list of function names | the function nobody listed   |
 
 > **A guard that enumerates its subjects fails at exactly the subject nobody enumerated. Derive the set
 > from the tree — imports, types, call edges — or do not claim a guard.**
@@ -1280,7 +1287,7 @@ that computes its closure from imports instead of naming modules. That is not a 
 
 The second half of the same defect, and it is a flaw in Revision 10 itself rather than in its
 implementation. `Held` is a callable value that can be stored, passed on, and invoked whenever — so a
-parameter of type `Held` proves that a function *could* re-prove authority, never that it *did*, and
+parameter of type `Held` proves that a function _could_ re-prove authority, never that it _did_, and
 never that it did **immediately before the syscall**. `commitTerminalParking` holds, runs an arbitrary
 caller-supplied `populate()`, and then renames the fixed coordinate (`backend-store-reset.ts:1794`,
 `:1800`). Nothing about that is ill-typed under Revision 10.
@@ -1308,7 +1315,7 @@ settled that observing a shared name is unavoidable.
 ### A refusal that cannot re-prove its evidence parks instead
 
 The one remaining `legacy-adoptable` refusal is reached after restoring the parked inode, but it cites
-the classification taken *before* restoration (`backend-store-reset.ts:2849`, `:2884`). A reviewer
+the classification taken _before_ restoration (`backend-store-reset.ts:2849`, `:2884`). A reviewer
 reproduced the gap with a writable descriptor opened before parking: the foreign descriptor changed the
 same inode immediately after the parked classifier closed it, Coral restored the changed bytes, and then
 refused the boot with `store_schema_outdated` naming a classification that no longer described anything.
@@ -1352,13 +1359,13 @@ are the same defect the previous revision was written to remove, arriving one la
 
 ### The guard failed a fifth time, and adding a third derived axis will not stop a sixth
 
-| round | the guard | the level it missed |
-|---|---|---|
-| 5 | call text in a module | the lexical loop body |
-| 6 | the lexical loop body | a second module |
-| 7 | a single module | the import-reachable closure |
-| 18 | a list of function names | the function nobody listed |
-| 19 | a derived closure **and** a derived member set | what the supplied proof proves |
+| round | the guard                                      | the level it missed            |
+| ----- | ---------------------------------------------- | ------------------------------ |
+| 5     | call text in a module                          | the lexical loop body          |
+| 6     | the lexical loop body                          | a second module                |
+| 7     | a single module                                | the import-reachable closure   |
+| 18    | a list of function names                       | the function nobody listed     |
+| 19    | a derived closure **and** a derived member set | what the supplied proof proves |
 
 Revision 11's invariant genuinely derives both of its sets and is still blind, because
 `createStorageActuator(storage, prove)` takes **any** callback. Fourteen construction sites exist; four in
@@ -1374,9 +1381,9 @@ side. So the answer is not a third axis.
 
 > **Do not police a degree of freedom. Remove it.**
 
-`createStorageActuator` stops being exported. An actuator is obtainable only *from* a lease —
+`createStorageActuator` stops being exported. An actuator is obtainable only _from_ a lease —
 `SettlementAuthority.actuator`, `DirectoryLockLease.actuator` — so there is no construction site to audit
-and no callback to supply: possessing an actuator *is* the provenance. The one genuine pre-authority act,
+and no callback to supply: possessing an actuator _is_ the provenance. The one genuine pre-authority act,
 creating the directory a lock will live in, becomes a single named function that does that one `mkdir`
 and nothing else, and whose name says it is the exception.
 
@@ -1446,14 +1453,14 @@ and tolerantly read, per §10.
 Round 20's reviewers agreed on two blocking findings, found two more separately, and the guard failed for
 the sixth consecutive round.
 
-| round | the guard | the carrier it missed |
-|---|---|---|
-| 5 | call text in a module | the lexical loop body |
-| 6 | the lexical loop body | a second module |
-| 7 | a single module | the import-reachable closure |
-| 18 | a list of function names | the function nobody listed |
-| 19 | a derived closure **and** a derived member set | what the supplied proof proved |
-| 20 | an unexported constructor and a lease-owned actuator | **SQL, which is not a syscall at all** |
+| round | the guard                                            | the carrier it missed                  |
+| ----- | ---------------------------------------------------- | -------------------------------------- |
+| 5     | call text in a module                                | the lexical loop body                  |
+| 6     | the lexical loop body                                | a second module                        |
+| 7     | a single module                                      | the import-reachable closure           |
+| 18    | a list of function names                             | the function nobody listed             |
+| 19    | a derived closure **and** a derived member set       | what the supplied proof proved         |
+| 20    | an unexported constructor and a lease-owned actuator | **SQL, which is not a syscall at all** |
 
 `openWritableStoreDatabase` in `src/store/db.ts` proves authority once through `held.makeDirectory`,
 then opens a `DatabaseSync` and commits DDL and metadata rows with no further check; the next actuator
@@ -1544,7 +1551,7 @@ lease that cannot back one.
 ## Revision 14 — a live store's name is write-once
 
 Seven guards failed in seven rounds, and round 21's failure was not an implementation gap: revocation is
-lazy because the lease is lost when the *other* process takes it and we learn at our *next* check.
+lazy because the lease is lost when the _other_ process takes it and we learn at our _next_ check.
 Tightening a check cannot close a window whose existence is the check's premise. So the design question
 went to a pioneer, and it found the premise that all thirteen revisions inherited without examining.
 
@@ -1556,7 +1563,7 @@ vacate is the one act that is harmful when stale — it removes the winning proc
 it — and every lease, hold, revocation and membrane in Revisions 10 through 13 exists to serialize that
 single act.
 
-My own candidate was half right for the wrong reason. Conserving *inodes* does not make a stale act
+My own candidate was half right for the wrong reason. Conserving _inodes_ does not make a stale act
 harmless: `rename(store.db → parked)` conserves the inode and is the most harmful stale act in the tree.
 What must be conserved is the **live name**.
 
@@ -1596,7 +1603,7 @@ sides intact — measured on this machine, ext4, Node 26.3.1.
   cannot reach zero — the outcome two reviewers reached twice through the 200-line guarded-rename dance.
   K adversarial replacements land at `epoch-(e+1…e+K)`; the next boot publishes `e+K+1` and sweeps the
   rest. One copy, newest by number.
-- **The copy, the two hashes and the manifest.** The preserved copy *is* the superseded epoch, in place.
+- **The copy, the two hashes and the manifest.** The preserved copy _is_ the superseded epoch, in place.
   On the 1.17 GB store that opens this document, `publishIncident` reads and hashes it, writes it, then
   re-reads and re-hashes to verify (`:1558`, `:654`, `:710`) — the record's own 3.99 s/GB puts that near
   twelve seconds against a fifteen-second incumbent deadline. **That is the original bug wearing latency
@@ -1764,15 +1771,15 @@ Round 23's reviewers reproduced five and seven blocking failures respectively, a
 
 > "Not proven" was collapsed into whichever binary each site already had.
 
-| site | the third answer became |
-|---|---|
+| site                                        | the third answer became                                                                                                    |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `currentProvenEpoch` (`src/store/epoch.ts`) | **epoch 0 is proven** — the accumulator is initialised to `0`, so "nothing proven" and "epoch 0 proven" are the same value |
-| the sweep (`:302`, `:485`) | **garbage, delete it** — `missing`, `malformed` and `unreadable` all reduce to `proven: false` |
-| liveness (`:257`) | **nobody is live** — a missing `coordinator.json` reads as `absent`, which permits deletion |
-| the settle loop (`:442`) | **no progress, refuse** — an unobservable entry blocks the rename and the loop throws |
+| the sweep (`:302`, `:485`)                  | **garbage, delete it** — `missing`, `malformed` and `unreadable` all reduce to `proven: false`                             |
+| liveness (`:257`)                           | **nobody is live** — a missing `coordinator.json` reads as `absent`, which permits deletion                                |
+| the settle loop (`:442`)                    | **no progress, refuse** — an unobservable entry blocks the rename and the loop throws                                      |
 
-This is `design-philosophy.md` §11 verbatim — *"the recurring defect is collapsing it into whichever
-binary the site already had"* — in a document that has quoted that rule since Revision 1. What each
+This is `design-philosophy.md` §11 verbatim — _"the recurring defect is collapsing it into whichever
+binary the site already had"_ — in a document that has quoted that rule since Revision 1. What each
 collapse produced, all reproduced by a reviewer in an isolated directory:
 
 - A flat `store.db` that is a **symlink to an external compatible database** is not proven, so epoch 0 is
@@ -1783,7 +1790,7 @@ collapse produced, all reproduced by a reviewer in an isolated directory:
   while settlement still holds it open.
 - An incompatible epoch 0 beside a non-empty malformed `epoch-1/` publishes onto `epoch-1`, gets
   `ENOTEMPTY`, never advances, and **refuses the boot**: `Store epoch settlement made no progress beyond
-  epoch 0.` A regular file named `epoch-1` gives `ENOTDIR`, which is not even handled and escapes.
+epoch 0.` A regular file named `epoch-1` gives `ENOTDIR`, which is not even handled and escapes.
 
 So the distinction is three-valued, and the dispositions differ in every direction:
 
@@ -1918,7 +1925,7 @@ nobody.
 
 So the descriptor bridge, `O_NOFOLLOW`, the post-open re-verification and the platform fallback all go, and
 SQLite is handed the path. What stays is the cheap static classification the trichotomy actually needs:
-a `store.db` that *is* a symlink, a directory that *is* a symlink, an entry of the wrong kind — these are
+a `store.db` that _is_ a symlink, a directory that _is_ a symlink, an entry of the wrong kind — these are
 accidental states, they are disproven, and `lstat` decides them without pretending to be atomic.
 
 ### Deletion still acts on a classification it no longer holds
@@ -2082,7 +2089,7 @@ proving it is abandoned, so a concurrent publisher's mint disappears between its
 `mintNextEpoch` then sees `ENOENT` and settlement **throws instead of re-minting** (`:861`, `:869`,
 `:949`) — with a test that expects the throw (`open-or-reset.test.ts:582`), against Revision 14's
 explicit `ENOENT: continue`. An orphaned KB daemon holding epoch 1 has no record at all, so the sweep
-unlinks it (`stopForParentExit` in `src/kb-daemon/daemon-main.ts`). And a diagnostic holder published *after* the sweep's
+unlinks it (`stopForParentExit` in `src/kb-daemon/daemon-main.ts`). And a diagnostic holder published _after_ the sweep's
 snapshot is deleted anyway; a reviewer produced `result=complete epoch1Exists=false holderStillLive=true`.
 
 PID-only identity makes the opposite failure just as reachable: after the child exits, PID reuse by any
@@ -2191,7 +2198,7 @@ carrying a pre-deletion and a post-deletion disposition is
 expires, `SettlementLedger` in `src/obligation/settlement.ts` accepts the remainder and commits the
 authority-release boundary, after which `shutdown` in `src/coordinator/lifecycle.ts` removes discovery while a
 destructive `rm` may still be in flight. A second signal only awaits the same cached promise through `main` in
-`src/coordinator/bootstrap.ts`. No *new* deletion starts after
+`src/coordinator/bootstrap.ts`. No _new_ deletion starts after
 cancellation, so the syscall qualification in Revision 19 was honest; the stronger claim that the sweep is
 joined before addresses are released was not. This join is not delegable.
 
@@ -2265,8 +2272,8 @@ address for it.
 
 Twenty-eight review rounds did not question epoch 0, and the reason is in the briefs rather than in the
 reviewers. I wrote the review scope, so the premises entered it as givens — and for retention I protected
-them explicitly: *"do not report the absence of those mechanisms as a finding, and do not propose new
-retention rules."* That instruction was aimed at re-litigating the owner's decision, and it also fenced
+them explicitly: _"do not report the absence of those mechanisms as a finding, and do not propose new
+retention rules."_ That instruction was aimed at re-litigating the owner's decision, and it also fenced
 off the question of whether my encoding of that decision was right.
 
 Reviewers checked the implementation against the design. Nobody checked the design against the purpose.
@@ -2316,7 +2323,7 @@ Two reproduced chains, one cause:
   the order that triggers it.
 - Orphan-lock cleanup **releases its exclusive lease and then unlinks the pathname**. In that window a
   publisher can take `epoch-1` and an opener a shared lease on the old inode; the unlink then detaches the
-  name, later acquirers create a *new* inode under it and obtain "exclusive" while the live reader holds
+  name, later acquirers create a _new_ inode under it and obtain "exclusive" while the live reader holds
   the old one, and the next sweep deletes the live epoch. A reviewer drove the whole chain.
 
 The reviewer's own diagnosis is the design: lock safety rests on stable pathname-to-inode identity, and
@@ -2379,7 +2386,7 @@ then hands that pathname to SQLite before either error-conversion block, through
 symlinks and accepts anything SQLite can open. Two reproduced consequences:
 
 - A valid current epoch whose `.lock` is a **directory** aborts startup with `unable to open database
-  file`. That is a new boot refusal, on malformed store state, which is this document's subject.
+file`. That is a new boot refusal, on malformed store state, which is this document's subject.
 - A valid current epoch whose `.lock` **symlinks to the crashed legacy WAL store** makes ordinary
   settlement open and reconcile that database — `store.db + store.db-wal` became a reconciled `store.db`,
   and `store.db-shm` appeared. Revision 22 closed two doors into the legacy tree and left this third one
@@ -2656,9 +2663,9 @@ and are fixed above.
 
 ## Revision 27 — the promise that was not mine to make
 
-The owner, on being shown the same-device bind-mount finding: *"what were we even defending, for this
+The owner, on being shown the same-device bind-mount finding: _"what were we even defending, for this
 whole review loop? Are you talking about someone mounting over `~/.coral`? I never once imagined defending
-that."*
+that."_
 
 That is the correct reading, and four review rounds went into a boundary nobody asked for.
 
@@ -2740,7 +2747,7 @@ the path it actually uses. Three manifestations, all reproduced:
 > **The resolved root is part of the capability.** It is carried through proof, lease acquisition, opening
 > and holder publication, and never recomputed from configuration.
 
-This is Revision 18's sentence at a different layer — *carry the epoch you opened* — and it is the third
+This is Revision 18's sentence at a different layer — _carry the epoch you opened_ — and it is the third
 time this branch has been bitten by re-deriving a value it had already decided, after the epoch itself and
 the commit adapter. The rule generalises: **a decision that has been made is carried, not recomputed; if
 two places can compute it, they will eventually disagree.**
@@ -2793,7 +2800,7 @@ it still passes a pathname and resolves again:
 
 - **Lifecycle keeps only the ordinal.** Startup routing returns the resolved path; lifecycle retains
   `routing.epoch`, the supervisor exports that ordinal, and the KB daemon rebuilds its database beneath
-  the *currently configured* root. Under a symlinked root that retargets, the coordinator writes
+  the _currently configured_ root. Under a symlinked root that retargets, the coordinator writes
   `oldRoot/epoch-1` while its own daemon writes `newRoot/epoch-1`.
 - **The smoke opener proves a path and then hands on a string.** The second resolution no longer
   recognises it as an epoch beneath the configured root, downgrades it to an ordinary file, and opens it
@@ -2826,15 +2833,15 @@ problem.
 
 ### Two boundaries that still collapse the third answer
 
-`recovery-quarantine list` gained an `unavailable` disposition and maps only *staging* failures into it.
+`recovery-quarantine list` gained an `unavailable` disposition and maps only _staging_ failures into it.
 A live writer changing the source during inspection makes `verify()` return false, and a staged database
 classifying as `newer-incompatible` takes the same path: both throw plain errors, which render as
 `[code=internal]` and exit 70. The disposition exists; the two states that need it do not reach it.
 
 And `inspectCurrentStore` decides absence with `existsSync`, which returns false when traversal is
 refused. Verified on this host: a root whose parent lacks search permission gives
-`{"exists":false,"realpathCode":"EACCES"}`, so `recovery-quarantine list` prints *Recovery quarantine is
-empty* and `store-reset list` can report no epochs, for a store that could not be looked at. **Absence is
+`{"exists":false,"realpathCode":"EACCES"}`, so `recovery-quarantine list` prints _Recovery quarantine is
+empty_ and `store-reset list` can report no epochs, for a store that could not be looked at. **Absence is
 `ENOENT`.** Everything else is unobservable, which both list contracts already have room for.
 
 ## Revision 30 — a fix applied to a call site is not a fix
@@ -2851,7 +2858,7 @@ the four is the **same shape**, and it is the shape the guard history already ta
   questions.
 - `recovery-quarantine list` routed **staging** failure and **post-open source mutation** into its
   `unavailable` disposition, and left the other two sources throwing: a corrupt or torn private copy that
-  fails inside `classifyStoreFile` *before* verification, and a cleanup failure on a read-only or
+  fails inside `classifyStoreFile` _before_ verification, and a cleanup failure on a read-only or
   unavailable filesystem. Both still render as `[code=internal]` and exit 70.
 - The report reclaimer was given one lock and one namespace, and then also deletes the **legacy**
   `coral-store-reset-*` directories — which a rolled-back `main` process creates directly, without taking
@@ -2895,7 +2902,7 @@ Three are worth fixing as stated. The fourth observation is about where they kee
 ### The four findings
 
 **Absence is `ENOENT` was applied to the observation and not to the resolution.** `realpath` or `readdir`
-returning `ENOENT` *after* the configured root was observed present is still read as an empty store, in
+returning `ENOENT` _after_ the configured root was observed present is still read as an empty store, in
 five sites in the epoch resolvers and in the generated hook. A symlinked root whose target disappears
 mid-resolution therefore makes `store-reset list` print no epochs, `report <known-epoch>` answer
 not-found, and `pre-compact` claim there are no relevant jobs. The rule was right; it stopped one call
@@ -2929,7 +2936,7 @@ largest single source of defects since Revision 25.
 It exists to satisfy a guarantee I introduced in Revision 25: **reporting does not open the store.** The
 defect behind that was real and measured — a SQLite open with `readOnly: true` writes `-shm` and a
 zero-length `-wal` in WAL mode, so a nominally read-only command altered every epoch it reported on. What
-is not obvious in hindsight is that *copying the database* was the right answer to it.
+is not obvious in hindsight is that _copying the database_ was the right answer to it.
 
 `list` already needs no copy: it classifies from `epoch.json`, which records the publication reason at
 publication time. That leaves two openers — `report <epoch>`, an operator-invoked diagnostic, and
@@ -2946,8 +2953,8 @@ the owner's call — and the owner has already ruled once that the elaborate ans
 
 ## Revision 32 — delete the machinery; the operator has sqlite3
 
-The owner, on the proposal in Revision 31: *"Delete. This looks like far too much machinery got built. If
-someone needs it, they can just open the store with sqlite and look, can't they?"*
+The owner, on the proposal in Revision 31: _"Delete. This looks like far too much machinery got built. If
+someone needs it, they can just open the store with sqlite and look, can't they?"_
 
 They can, and that settles it more cleanly than the proposal did.
 
@@ -3001,8 +3008,8 @@ reviewer recommendation that amounts to a new guarantee, a new defence, or a new
 
 This follows Revision 27, where four review rounds went into a boundary the owner had never imagined
 defending. The failure mode is not that reviewers propose too much — they are asked to find everything —
-it is that I was accepting proposals as work instead of sorting them. The sort is: *does this state arise
-from a defect that exists, or from one this branch introduced?* If neither, it is a todo entry.
+it is that I was accepting proposals as work instead of sorting them. The sort is: _does this state arise
+from a defect that exists, or from one this branch introduced?_ If neither, it is a todo entry.
 
 Applies to every brief from round 39 onward, and to the remainder of round 38.
 
@@ -3027,9 +3034,13 @@ store, and sweep failure. Tests for staging, parking, copy/hash selection, reten
 classification, and settlement lease revocation are deleted with the machinery they described.
 
 The operator surface addresses epochs by number: `list` classifies each epoch read-only, `report <K>`
-runs the existing bounded SQLite diagnostic child directly against that epoch, `release <K>` removes a
-non-current epoch through the sweep owner, and `discard` publishes the next epoch. A UUID report remains
-only as compatibility for rows found by the legacy quarantine reader; no new legacy manifest is written.
+reports observable filesystem facts and allowlisted `epoch.json` provenance without opening SQLite and
+names the command an operator can run, `release <K>` removes a non-current epoch through the sweep owner,
+and `discard` publishes the next epoch. `backend recovery-quarantine list` opens the current epoch under a
+shared lease and reads its rows directly. A UUID report remains only as compatibility for rows found by the
+bounded legacy quarantine reader; no new legacy manifest is written. The private-copy staging root, report
+lock, reclaimer, diagnostic child and its signal supervision, copy-size/output/termination limits, and their
+dispositions are deleted.
 
 Gates: `format:check`, `lint`, `typecheck:tests`, `knip`, `build`, `npm test`, `test:integration`,
 `test:store-reset:integration`, `verify:store-reset-build`, `test:e2e:build`, `test:e2e:lifecycle`.
@@ -3071,7 +3082,7 @@ lease itself.
 Then a fourth round that no amount of reviewing would have produced. The settled design was handed to an
 implementation delegate with explicit authority to refuse, and it refused before making a single edit,
 with six findings that all held. Two were fatal. The field this document had called its highest-value
-output was **inverted** — it would have named the build that *rejected* a store as the build that can read
+output was **inverted** — it would have named the build that _rejected_ a store as the build that can read
 it — and the copy arm's ordinary crash state was classified as tampering, which would have shipped a new
 unbootable coordinator inside the change built to remove one. Neither was findable by reading the design;
 both were findable in minutes by trying to write it. **Authorize the implementer to refuse, and treat a

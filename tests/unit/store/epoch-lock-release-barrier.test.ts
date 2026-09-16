@@ -69,7 +69,7 @@ function publishEpoch(runtime: Runtime, epoch: string): void {
     join(directory, STORE_EPOCH_METADATA_FILE_NAME),
     JSON.stringify({
       supersedes: null,
-      classification: { kind: 'unavailable', cause: 'test' },
+      classification: { kind: 'unavailable' },
       build,
       publishedAt: '2026-09-15T00:00:00.000Z',
     }),

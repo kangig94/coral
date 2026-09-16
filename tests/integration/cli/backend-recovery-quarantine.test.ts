@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -27,12 +27,10 @@ import {
 } from '#src/recovery/source-registry.js';
 import { createUnreadableProviderOperationDiscardService } from '#src/coordinator/services/recovery/unreadable-provider-operation-discard.js';
 import { sha256Hex } from '#src/infra/hash.js';
-import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema, classifyStoreFile } from '#src/store/db.js';
 import { epochPath } from '#src/store/epoch.js';
-import { MAX_SQLITE_DIAGNOSTIC_BYTES } from '#src/store/reset-incident.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import { PROVIDER_OPERATION_RECORD_VERSION } from '#src/store/provider-operation-record.js';
@@ -125,7 +123,7 @@ function publishEpochMetadata(runtime: ReturnType<typeof createRealRuntime>, epo
     join(directory, 'epoch.json'),
     `${JSON.stringify({
       supersedes: null,
-      classification: { kind: 'unavailable', cause: 'test publication' },
+      classification: { kind: 'unavailable' },
       build: {
         version: currentCoralStoreFormat().productVersion,
         buildSetId: '123e4567-e89b-42d3-a456-426614174000',
@@ -161,30 +159,6 @@ describe('backend recovery-quarantine commands', () => {
       `recovery-quarantine-${state}-cell output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`,
     );
     expect(stdout).toBe('Recovery quarantine is empty.\n');
-    expect(stderr).not.toContain('[code=internal]');
-    expect(process.exitCode).toBeUndefined();
-  });
-
-  it('prints a bounded disposition when the store exceeds the inspection budget', async () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-over-bound-'));
-    tempDirectories.push(baseDir);
-    const runtime = createRealRuntime('prod', { baseDir });
-    publishCompatibleEpoch(runtime, '1');
-    truncateSync(epochPath(runtime.paths.coral.store.dbDir, '1'), MAX_SQLITE_DIAGNOSTIC_BYTES + 1);
-    const clear: RecoveryQuarantineCommandOperations['clear'] = async (request) => ({
-      ...request,
-      disposition: 'advanced',
-    });
-
-    await programWith({ list: () => listRecoveryQuarantineLocal(runtime), clear }).parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'recovery-quarantine',
-      'list',
-    ]);
-
-    expect(stdout).toContain('exceeds the 256 MiB diagnostic bound');
     expect(stderr).not.toContain('[code=internal]');
     expect(process.exitCode).toBeUndefined();
   });
@@ -248,156 +222,7 @@ describe('backend recovery-quarantine commands', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('opens only a staged database copy while listing recovery quarantine', () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-list-lock-'));
-    tempDirectories.push(baseDir);
-    const runtime = createRealRuntime('prod', { baseDir });
-    const dbDir = runtime.paths.coral.store.dbDir;
-    publishCompatibleEpoch(runtime, '1');
-    const livePath = epochPath(dbDir, '1');
-    const openedPaths: string[] = [];
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string, options?: { readOnly?: boolean }) => {
-          openedPaths.push(path);
-          return subject.openSqliteDatabaseSync(path, options);
-        };
-      },
-    });
-
-    expect(listRecoveryQuarantineLocal({ ...runtime, storage })).toEqual([]);
-    expect(openedPaths.length).toBeGreaterThan(0);
-    expect(openedPaths).not.toContain(livePath);
-    console.log(
-      `recovery-quarantine-copy-cell live-opens=${openedPaths.filter((path) => path === livePath).length} staged-opens=${openedPaths.length}`,
-    );
-  });
-
-  it('renders a readable disposition when the source changes during inspection', async () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-source-change-'));
-    tempDirectories.push(baseDir);
-    const runtime = createRealRuntime('prod', { baseDir });
-    publishCompatibleEpoch(runtime, '1');
-    const livePath = epochPath(runtime.paths.coral.store.dbDir, '1');
-    let changed = false;
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string, options?: { readOnly?: boolean }) => {
-          if (!changed && path !== livePath) {
-            changed = true;
-            writeFileSync(`${livePath}-wal`, 'late transaction');
-          }
-          return subject.openSqliteDatabaseSync(path, options);
-        };
-      },
-    });
-
-    await programWith({
-      list: () => listRecoveryQuarantineLocal({ ...runtime, storage }),
-      clear: vi.fn(),
-    }).parseAsync(['node', 'coral-cli', 'backend', 'recovery-quarantine', 'list']);
-
-    console.log(
-      `recovery-quarantine-source-change-cell changed=${changed} output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`,
-    );
-    expect(changed).toBe(true);
-    expect(stdout).toContain('could not be observed safely');
-    expect(stderr).not.toContain('[code=internal]');
-    expect(process.exitCode).toBeUndefined();
-  });
-
-  it('renders a readable disposition when the staged private copy is corrupt', async () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-corrupt-copy-'));
-    tempDirectories.push(baseDir);
-    const runtime = createRealRuntime('prod', { baseDir });
-    publishCompatibleEpoch(runtime, '1');
-    const livePath = epochPath(runtime.paths.coral.store.dbDir, '1');
-    const storage = new Proxy(runtime.storage, {
-      get(subject, property, receiver) {
-        if (property !== 'openSqliteDatabaseSync') return Reflect.get(subject, property, receiver) as unknown;
-        return (path: string, options?: { readOnly?: boolean }) => {
-          if (path !== livePath) throw Object.assign(new Error('private copy is torn'), { code: 'SQLITE_CORRUPT' });
-          return subject.openSqliteDatabaseSync(path, options);
-        };
-      },
-    });
-
-    await programWith({ list: () => listRecoveryQuarantineLocal({ ...runtime, storage }), clear: vi.fn() }).parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'recovery-quarantine',
-      'list',
-    ]);
-
-    console.log(
-      `recovery-quarantine-corrupt-copy-cell output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`,
-    );
-    expect(stdout).toContain('could not be observed safely');
-    expect(stderr).not.toContain('[code=internal]');
-    expect(process.exitCode).toBeUndefined();
-  });
-
-  it('renders a readable disposition when staged-copy cleanup fails', async () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-cleanup-failure-'));
-    tempDirectories.push(baseDir);
-    const runtime = createRealRuntime('prod', { baseDir });
-    publishCompatibleEpoch(runtime, '1');
-    const inspectionRoot = join(baseDir, 'inspection');
-    mkdirSync(inspectionRoot, { mode: 0o700 });
-    const baseFs = createStoreResetInspectionFs();
-
-    await programWith({
-      list: () =>
-        listRecoveryQuarantineLocal(runtime, {
-          fs: { ...baseFs, removeTreeGuarded: () => false },
-          tempRoot: inspectionRoot,
-        }),
-      clear: vi.fn(),
-    }).parseAsync(['node', 'coral-cli', 'backend', 'recovery-quarantine', 'list']);
-
-    console.log(
-      `recovery-quarantine-cleanup-failure-cell output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`,
-    );
-    expect(stdout).toContain('could not be observed safely');
-    expect(stderr).not.toContain('[code=internal]');
-    expect(process.exitCode).toBeUndefined();
-  });
-
-  it('does not scan another user report namespace beneath a shared staging parent', async () => {
-    const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-shared-parent-'));
-    tempDirectories.push(baseDir);
-    const runtime = createRealRuntime('prod', { baseDir });
-    publishCompatibleEpoch(runtime, '1');
-    const sharedParent = join(baseDir, 'shared-tmp');
-    const foreignNamespace = join(sharedParent, 'coral-store-report-active');
-    mkdirSync(foreignNamespace, { recursive: true, mode: 0o700 });
-    writeFileSync(join(foreignNamespace, 'store.db'), 'foreign in-progress report');
-    const previousTmpDir = process.env.TMPDIR;
-    process.env.TMPDIR = sharedParent;
-    try {
-      await programWith({ list: () => listRecoveryQuarantineLocal(runtime), clear: vi.fn() }).parseAsync([
-        'node',
-        'coral-cli',
-        'backend',
-        'recovery-quarantine',
-        'list',
-      ]);
-    } finally {
-      if (previousTmpDir === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = previousTmpDir;
-    }
-
-    console.log(
-      `report-per-user-root-cell foreign-retained=${createStoreResetInspectionFs().lstat(foreignNamespace) !== null}`,
-    );
-    expect(createStoreResetInspectionFs().lstat(foreignNamespace)).not.toBeNull();
-    expect(stderr).not.toContain('[code=internal]');
-  });
-
-  it('renders a readable disposition for a staged newer-incompatible database', async () => {
+  it('renders a readable disposition for a newer-incompatible current database', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-newer-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
@@ -429,7 +254,7 @@ describe('backend recovery-quarantine commands', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
-  it('should list retained rows directly while no daemon exists', async () => {
+  it('reads retained rows directly from the current epoch while no daemon exists', async () => {
     const baseDir = mkdtempSync(join(tmpdir(), 'coral-recovery-quarantine-cli-'));
     tempDirectories.push(baseDir);
     const runtime = createRealRuntime('prod', { baseDir });
