@@ -56,5 +56,6 @@ export interface StoreResetInspectionFs {
   ): number;
   close(descriptor: StoreResetFileDescriptor): void;
   mkdtemp(prefix: string): string;
+  rename(source: string, destination: string): void;
   removeTreeGuarded(path: string, expected: StoreResetInspectionStat): boolean;
 }

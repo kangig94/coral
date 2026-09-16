@@ -23,6 +23,8 @@ const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as 
 const COPY_BUFFER_BYTES = 64 * 1024;
 const REPORT_NAMESPACE_PREFIX = 'coral-store-report-';
 const REPORT_NAMESPACE_PATTERN = /^coral-store-report-(\d+)-/u;
+const REPORT_ACTIVE_NAMESPACE = 'coral-store-report-active';
+const REPORT_OWNER_PATTERN = /^\.owner-(\d+)$/u;
 
 export type StoreDatabaseEvidenceUnavailableReason = 'over-bound' | 'unobservable';
 
@@ -383,7 +385,7 @@ export function stageStoreDatabaseEvidence(options: {
   readonly platform: string;
 }): StagedStoreDatabaseEvidence {
   reclaimStoreReportNamespaces(options.fs, options.tempRoot, options.platform);
-  const tempDirectory = options.fs.mkdtemp(join(options.tempRoot, `${REPORT_NAMESPACE_PREFIX}${process.pid}-`));
+  let tempDirectory = options.fs.mkdtemp(join(options.tempRoot, `${REPORT_NAMESPACE_PREFIX}${process.pid}-`));
   let tempIdentity: StoreResetInspectionStat | null = null;
   let tempRealPath: string | null = null;
   let cleaned = false;
@@ -409,6 +411,19 @@ export function stageStoreDatabaseEvidence(options: {
     ) {
       throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'temporary directory is not private');
     }
+    tempRealPath = options.fs.realpath(tempDirectory);
+    writeReportNamespaceOwner(options.fs, tempDirectory, options.platform);
+    const activeDirectory = join(options.tempRoot, REPORT_ACTIVE_NAMESPACE);
+    try {
+      options.fs.rename(tempDirectory, activeDirectory);
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'EEXIST' || code === 'ENOTEMPTY') {
+        throw new StoreDatabaseEvidenceUnavailableError('over-bound', 'the aggregate report-copy bound is reserved');
+      }
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace reservation failed');
+    }
+    tempDirectory = activeDirectory;
     tempRealPath = options.fs.realpath(tempDirectory);
     let remaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
     const sourceHashes = new Map<string, string | null>();
@@ -458,6 +473,19 @@ export function stageStoreDatabaseEvidence(options: {
   }
 }
 
+function writeReportNamespaceOwner(fs: StoreResetInspectionFs, directory: string, platform: string): void {
+  const path = join(directory, `.owner-${process.pid}`);
+  const descriptor = fs.open(path, fs.openFlags.createExclusiveWrite, 0o600);
+  try {
+    const identity = fs.fstat(descriptor);
+    if (identity.kind !== 'file' || (platform !== 'win32' && (identity.mode & 0o777n) !== 0o600n)) {
+      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace owner is unobservable');
+    }
+  } finally {
+    fs.close(descriptor);
+  }
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -480,7 +508,7 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
     for (;;) {
       const entry = fs.readDirectory(cursor);
       if (entry === null) break;
-      if (REPORT_NAMESPACE_PATTERN.test(entry.name)) entries.push(entry.name);
+      if (entry.name === REPORT_ACTIVE_NAMESPACE || REPORT_NAMESPACE_PATTERN.test(entry.name)) entries.push(entry.name);
     }
   } catch {
     readFailed = true;
@@ -498,10 +526,9 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
   let liveReservations = 0;
   const realTempRoot = fs.realpath(tempRoot);
   for (const name of entries) {
-    const match = REPORT_NAMESPACE_PATTERN.exec(name);
-    const ownerPid = match === null ? null : Number(match[1]);
     const path = join(tempRoot, name);
     const identity = fs.lstat(path);
+    const ownerPid = identity?.kind === 'directory' ? reportNamespaceOwnerPid(fs, path, name) : null;
     if (
       ownerPid === null ||
       !Number.isSafeInteger(ownerPid) ||
@@ -524,6 +551,42 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
   if (liveReservations > 0) {
     throw new StoreDatabaseEvidenceUnavailableError('over-bound', 'the aggregate report-copy bound is reserved');
   }
+}
+
+function reportNamespaceOwnerPid(fs: StoreResetInspectionFs, path: string, name: string): number | null {
+  const match = REPORT_NAMESPACE_PATTERN.exec(name);
+  if (match !== null) return Number(match[1]);
+  if (name !== REPORT_ACTIVE_NAMESPACE) return null;
+  let cursor: ReturnType<StoreResetInspectionFs['openDirectory']>;
+  try {
+    cursor = fs.openDirectory(path);
+  } catch {
+    return null;
+  }
+  let ownerPid: number | null = null;
+  let valid = true;
+  try {
+    for (;;) {
+      const entry = fs.readDirectory(cursor);
+      if (entry === null) break;
+      const owner = REPORT_OWNER_PATTERN.exec(entry.name);
+      if (owner === null) continue;
+      if (ownerPid !== null) {
+        valid = false;
+        break;
+      }
+      ownerPid = Number(owner[1]);
+    }
+  } catch {
+    valid = false;
+  } finally {
+    try {
+      fs.closeDirectory(cursor);
+    } catch {
+      valid = false;
+    }
+  }
+  return valid ? ownerPid : null;
 }
 
 export async function diagnoseStoreDatabaseCopy(options: {

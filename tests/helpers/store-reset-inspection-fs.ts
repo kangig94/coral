@@ -24,6 +24,7 @@ export type StoreResetInspectionFaultScript = {
   ) => StoreResetInspectionStat;
   readonly realpath?: (path: string, call: number, current: string) => string;
   readonly open?: (path: string, flags: number, call: number) => void;
+  readonly rename?: (source: string, destination: string, call: number) => void;
   readonly readDirectory?: (
     cursor: StoreResetDirectoryCursor,
     call: number,
@@ -41,6 +42,7 @@ export function scriptedStoreResetInspectionFs(
   let fstatCalls = 0;
   let realpathCalls = 0;
   let openCalls = 0;
+  let renameCalls = 0;
   let readDirectoryCalls = 0;
   return {
     openFlags: base.openFlags,
@@ -92,6 +94,11 @@ export function scriptedStoreResetInspectionFs(
     },
     mkdtemp(prefix) {
       return base.mkdtemp(prefix);
+    },
+    rename(source, destination) {
+      renameCalls += 1;
+      script.rename?.(source, destination, renameCalls);
+      base.rename(source, destination);
     },
     removeTreeGuarded(path, expected) {
       return base.removeTreeGuarded(path, expected);

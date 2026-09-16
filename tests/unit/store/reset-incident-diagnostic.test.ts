@@ -363,6 +363,32 @@ describe('store-reset SQLite evidence staging', () => {
     }
   });
 
+  it('lets an atomic competing reservation keep the aggregate report-copy bound', () => {
+    const base = root('coral-reset-report-race-');
+    const sourceDirectory = join(base, 'source');
+    const tempRoot = join(base, 'tmp');
+    mkdirSync(sourceDirectory);
+    mkdirSync(tempRoot);
+    writeFileSync(join(sourceDirectory, 'store.db'), 'database');
+    const activeDirectory = join(tempRoot, 'coral-store-report-active');
+    const fs = scriptedStoreResetInspectionFs(createStoreResetInspectionFs(), {
+      rename(_source, destination) {
+        expect(destination).toBe(activeDirectory);
+        mkdirSync(activeDirectory, { mode: 0o700 });
+        writeFileSync(join(activeDirectory, `.owner-${process.pid}`), '', { mode: 0o600 });
+      },
+    });
+
+    expect(() =>
+      stageStoreDatabaseEvidence({ fs, sourceDirectory, tempRoot, platform: process.platform }),
+    ).toThrowError(
+      expect.objectContaining<Partial<StoreDatabaseEvidenceUnavailableError>>({
+        reason: 'over-bound',
+      }),
+    );
+    expect(readdirSync(tempRoot)).toEqual(['coral-store-report-active']);
+  });
+
   it('copies through partial I/O, passes only the staged DB, rehashes evidence, and cleans up', async () => {
     const fixture = diagnosticFixture();
     const child = new FakeDiagnosticChild();

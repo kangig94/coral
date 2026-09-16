@@ -8,6 +8,7 @@ import {
   opendirSync,
   readSync,
   realpathSync,
+  renameSync,
   rmSync,
   type BigIntStats,
   type Dir,
@@ -92,6 +93,9 @@ export function createStoreResetInspectionFs(): StoreResetInspectionFs {
     },
     mkdtemp(prefix) {
       return mkdtempSync(prefix);
+    },
+    rename(source, destination) {
+      renameSync(source, destination);
     },
     removeTreeGuarded(path, expected) {
       let current: StoreResetInspectionStat | null;
