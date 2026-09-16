@@ -407,12 +407,6 @@ describe('cli library-direct reads', () => {
 
     const fixture = createFixture();
     const artifacts = coordinatorArtifacts(fixture);
-    const expectedStorePath = join(
-      storePaths(fixture.flavor, { baseDir: join(fixture.home, '.coral') }).dbDir,
-      'epoch-1',
-      'store.db',
-    );
-
     const result = runCliSubprocess(fixture, ['jobs']);
     if (result.error) {
       throw result.error;
@@ -420,9 +414,7 @@ describe('cli library-direct reads', () => {
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stderr).toBe('');
-    expect(result.stdout).toBe(
-      `No jobs match live phases\n(no store at ${expectedStorePath} — showing empty results)\n`,
-    );
+    expect(result.stdout).toBe('No jobs match live phases\n(no current store — showing empty results)\n');
     expect(readProbeAttempts(fixture)).toEqual([]);
     expect(existsSync(artifacts.infoFile)).toBe(false);
     expect(existsSync(artifacts.socketPath)).toBe(false);

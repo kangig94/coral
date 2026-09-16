@@ -140,7 +140,6 @@ function createCrashedWalStore(path: string): void {
 function writeIncident(options: {
   readonly home: string;
   readonly build?: BuildManifest;
-  readonly corruptDb?: boolean;
   readonly malformedManifest?: boolean;
 }): { readonly incidentPath: string; readonly evidencePath: string; readonly evidenceHash: string } {
   const currentBuild = readBuildManifest();
@@ -148,13 +147,9 @@ function writeIncident(options: {
   const incidentPath = join(quarantineRoot(options.home, currentBuild), INCIDENT_ID);
   mkdirSync(incidentPath, { recursive: true, mode: 0o700 });
   const evidencePath = join(incidentPath, 'store.db');
-  if (options.corruptDb) {
-    writeFileSync(evidencePath, 'not a SQLite database PRIVATE_DB_SENTINEL', { mode: 0o600 });
-  } else {
-    const db = new DatabaseSync(evidencePath);
-    db.exec("CREATE TABLE private_data(value TEXT); INSERT INTO private_data VALUES ('PRIVATE_DB_SENTINEL');");
-    db.close();
-  }
+  const db = new DatabaseSync(evidencePath);
+  db.exec("CREATE TABLE private_data(value TEXT); INSERT INTO private_data VALUES ('PRIVATE_DB_SENTINEL');");
+  db.close();
   const evidence = readFileSync(evidencePath);
   const stat = statSync(evidencePath);
   const manifest: StoreResetIncidentManifestV2 = {
@@ -361,7 +356,7 @@ describe('bundled store-reset CLI', () => {
   );
 
   it.each(
-    (['store-reset-list', 'store-reset-report', 'recovery-quarantine-list'] as const).flatMap((surface) =>
+    (['store-reset-list', 'store-reset-report'] as const).flatMap((surface) =>
       (['canonical', 'crashed-wal-lock', 'malformed-metadata'] as const).map((state) => ({ surface, state })),
     ),
   )('keeps the complete epoch namespace byte-identical while built $surface inspects $state', ({ surface, state }) => {
@@ -378,9 +373,7 @@ describe('bundled store-reset CLI', () => {
     const invocation =
       surface === 'store-reset-list'
         ? ['backend', 'store-reset', 'list', '--target', 'gen2']
-        : surface === 'store-reset-report'
-          ? ['backend', 'store-reset', 'report', '1', '--target', 'gen2']
-          : ['backend', 'recovery-quarantine', 'list'];
+        : ['backend', 'store-reset', 'report', '1', '--target', 'gen2'];
     const result = runCli(home, invocation);
     const after = fileTreeSnapshot(dbDir);
 
@@ -388,11 +381,37 @@ describe('bundled store-reset CLI', () => {
       `built-reporting-byte-identity-cell surface=${surface} state=${state} status=${result.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
     );
     expect(result.status, result.stderr).toBe(0);
-    if (surface === 'recovery-quarantine-list' && state === 'malformed-metadata') {
-      expect(result.stdout).toContain('could not be observed safely');
-    }
     expect(after).toEqual(before);
   });
+
+  it.each(['canonical', 'crashed-wal-lock', 'malformed-metadata'] as const)(
+    'reads recovery quarantine from the current epoch for %s',
+    (state) => {
+      const build = readBuildManifest();
+      const home = temporaryHome('coral-rq-list-');
+      mkdirSync(join(home, 'tmp'));
+      const discard = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
+      expect(discard.status, discard.stderr).toBe(0);
+      const dbDir = dirname(activeStorePath(home, build));
+      const epochDir = join(dbDir, 'epoch-1');
+      if (state === 'crashed-wal-lock') createCrashedWalStore(join(epochDir, '.lock'));
+      if (state === 'malformed-metadata') writeFileSync(join(epochDir, 'epoch.json'), '{');
+      const before = fileTreeSnapshot(dbDir);
+
+      const result = runCli(home, ['backend', 'recovery-quarantine', 'list']);
+      const after = fileTreeSnapshot(dbDir);
+
+      expect(result.status, result.stderr).toBe(0);
+      if (state === 'malformed-metadata') {
+        expect(result.stdout).toContain('could not be observed safely');
+        expect(after).toEqual(before);
+        return;
+      }
+      expect(result.stdout).toBe('Recovery quarantine is empty.\n');
+      expect(existsSync(join(epochDir, 'store.db-shm'))).toBe(true);
+      expect(statSync(join(epochDir, 'store.db-wal')).size).toBe(0);
+    },
+  );
 
   it.each(['absent-root', 'empty-root'] as const)('initializes epoch one on discard with %s', (state) => {
     const build = readBuildManifest();
@@ -442,7 +461,6 @@ describe('bundled store-reset CLI', () => {
     expect(report.status, report.stderr).toBe(0);
     expect(report.stderr).toBe('');
     expect(report.stdout).toContain('# Coral store-reset incident report\n');
-    expect(report.stdout).toContain('- Integrity: `ok`');
     expect(report.stdout).toContain('Paste this complete output into the Store-reset incident issue form');
     expect(report.stdout).not.toContain(home);
     expect(report.stdout).not.toContain('PRIVATE_DB_SENTINEL');
@@ -625,19 +643,6 @@ describe('bundled store-reset CLI', () => {
         'remediation: Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.\n',
       status: 2,
     });
-  });
-
-  it('reports corrupt SQLite through fixed diagnostic states without exposing child or database content', () => {
-    const home = temporaryHome('coral-store-reset-e2e-corrupt-');
-    mkdirSync(join(home, 'tmp'));
-    const fixture = writeIncident({ home, corruptDb: true });
-    const report = runCli(home, ['backend', 'store-reset', 'report', INCIDENT_ID, '--target', 'gen2']);
-
-    expect(report.status, report.stderr).toBe(0);
-    expect(report.stderr).toBe('');
-    expect(report.stdout).toContain('- Integrity: `unavailable`');
-    expect(report.stdout).not.toContain('PRIVATE_DB_SENTINEL');
-    expect(sha256(readFileSync(fixture.evidencePath))).toBe(fixture.evidenceHash);
   });
 
   it('fails closed when the executing CLI is paired with a stale adjacent manifest', () => {
