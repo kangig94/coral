@@ -148,19 +148,18 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
   try {
     const runtime = createRealRuntime(resolveBuildFlavor(process.env));
-    const { openWritableStoreDbNoReset, provenStoreEpochAtPath } = await import('../store/epoch.js');
+    const { openWritableStoreDbNoReset, resolveProvenStoreEpochAtPath } = await import('../store/epoch.js');
     const smokeStorePathInput = z
       .string()
-      .refine((path) => resolve(path) === path, 'path is not a canonical absolute path')
-      .refine(
-        (path) => provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, path) !== null,
-        'path is not a proven canonical positive store epoch',
-      );
+      .refine((path) => resolve(path) === path, 'path is not a canonical absolute path');
     const parsed = smokeStorePathInput.safeParse(argv[pathIdx + 1]);
     if (!parsed.success) {
       throw new Error(`smoke open-store path refused: ${parsed.error.issues.map(({ message }) => message).join('; ')}`);
     }
-    const storePath = parsed.data;
+    const store = resolveProvenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, parsed.data);
+    if (store === null) {
+      throw new Error('smoke open-store path refused: path is not a proven canonical positive store epoch');
+    }
     const writerLease = await generationMutationCoordinationSeam.acquireWriterLease(runtime, {
       kind: 'routing-status',
       name: 'smoke-open-store',
@@ -168,7 +167,7 @@ async function handleSmokeOpenStore(argv: readonly string[]): Promise<number> {
 
     try {
       const db = openWritableStoreDbNoReset(runtime, {
-        path: storePath,
+        resolved: store,
         storeFormat: currentCoralStoreFormat(),
       });
 

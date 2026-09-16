@@ -34,7 +34,10 @@ import {
   listStoreEpochHolders,
   listStoreEpochs,
   openWritableStoreDbNoReset,
+  resolvedStoreEpoch,
+  resolveCurrentStore,
   resolveCurrentStoreEpoch,
+  resolveProvenStoreEpochAtPath,
   settleStoreEpoch,
   storeEpochLockPath,
   storeMintLockPath,
@@ -304,14 +307,14 @@ describe('write-once store epochs', () => {
     } catch {
       sentinel = null;
     }
-    const sweep = await sweepStoreEpochsPostReady(runtime, dbDir, reopened.epoch);
+    const sweep = await sweepStoreEpochsPostReady(runtime, reopened.store);
     const epochs = readdirSync(dbDir).filter((entry) => /^epoch-\d+$/u.test(entry));
     console.log(
-      `symlinked-root-cell published=epoch-${published.epoch} reopened=epoch-${reopened.epoch} sentinel=${sentinel ?? 'missing'} epochs=${epochs.join(',')} sweep=${sweep} residue=${existsSync(residue) ? 'present' : 'removed'}`,
+      `symlinked-root-cell published=epoch-${published.store.epoch} reopened=epoch-${reopened.store.epoch} sentinel=${sentinel ?? 'missing'} epochs=${epochs.join(',')} sweep=${sweep} residue=${existsSync(residue) ? 'present' : 'removed'}`,
     );
 
     reopened.db.close();
-    expect(reopened.epoch).toBe(published.epoch);
+    expect(reopened.store.epoch).toBe(published.store.epoch);
     expect(sentinel).toBe('reopened');
     expect(epochs).toEqual(['epoch-1']);
     expect(sweep).toBe('complete');
@@ -377,10 +380,10 @@ describe('write-once store epochs', () => {
     const newLease = tryAcquireExclusiveFileLockSync(storeEpochLockPath(newRoot, '1'));
     try {
       console.log(
-        `carried-root-cell path=${settled.path === epochPath(oldRoot, '1') ? 'old' : 'other'} holder=${oldHolder === undefined ? 'missing' : 'old'} old-lease=${oldLease === null ? 'held' : 'free'} new-lease=${newLease === null ? 'held' : 'free'}`,
+        `carried-root-cell path=${settled.store.path === epochPath(oldRoot, '1') ? 'old' : 'other'} holder=${oldHolder === undefined ? 'missing' : 'old'} old-lease=${oldLease === null ? 'held' : 'free'} new-lease=${newLease === null ? 'held' : 'free'}`,
       );
       expect(retargeted).toBe(true);
-      expect(settled.path).toBe(epochPath(oldRoot, '1'));
+      expect(settled.store.path).toBe(epochPath(oldRoot, '1'));
       expect(settled.db.prepare('SELECT value FROM rollback_sentinel').get()).toEqual({
         value: 'concurrent-winner',
       });
@@ -392,6 +395,37 @@ describe('write-once store epochs', () => {
       newLease?.();
       oldLease?.();
       settled.db.close();
+    }
+  });
+
+  it('carries the smoke ingress proof across a root retarget into the opener', () => {
+    const runtime = harness();
+    const configuredDbDir = runtime.paths.coral.store.dbDir;
+    const oldRoot = join(dirname(configuredDbDir), 'smoke-old-root');
+    const newRoot = join(dirname(configuredDbDir), 'smoke-new-root');
+    publishAdversarialEpoch(epochDirectory(oldRoot, '1'), true);
+    publishAdversarialEpoch(epochDirectory(newRoot, '1'), true);
+    mkdirSync(dirname(configuredDbDir), { recursive: true });
+    symlinkSync(oldRoot, configuredDbDir, 'dir');
+    const proven = resolveProvenStoreEpochAtPath(runtime.storage, configuredDbDir, epochPath(oldRoot, '1'));
+    expect(proven).not.toBeNull();
+    if (proven === null) return;
+
+    rmSync(configuredDbDir);
+    symlinkSync(newRoot, configuredDbDir, 'dir');
+    const rederived = resolveCurrentStore(runtime, proven.path);
+    const db = openWritableStoreDbNoReset(runtime, { resolved: proven, storeFormat });
+    const oldLease = tryAcquireExclusiveFileLockSync(storeEpochLockPath(oldRoot, '1'));
+    try {
+      console.log(
+        `smoke-retarget-cell before=${rederived.epoch === null ? 'unleased' : 'leased'} after=${oldLease === null ? 'leased' : 'unleased'} path=${db.location() === proven.path ? 'old' : 'other'}`,
+      );
+      expect(rederived.epoch).toBeNull();
+      expect(db.location()).toBe(proven.path);
+      expect(oldLease).toBeNull();
+    } finally {
+      oldLease?.();
+      db.close();
     }
   });
 
@@ -407,7 +441,7 @@ describe('write-once store epochs', () => {
       try {
         const result =
           operation === 'post-ready sweep'
-            ? await sweepStoreEpochsPostReady(runtime, dbDir, '5')
+            ? await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))
             : sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
         expect(result).toBe('live-holder');
         expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
@@ -453,7 +487,7 @@ describe('write-once store epochs', () => {
         const result =
           kind === 'synchronous'
             ? sweepStoreEpochs(withStorage(runtime, storage), dbDir, '5')
-            : await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
+            : await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
         expect(result).toBe('live-holder');
         expect(existsSync(epochPath(dbDir, '1'))).toBe(false);
         expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
@@ -571,7 +605,9 @@ describe('write-once store epochs', () => {
       },
     });
 
-    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe('deletion-failed');
+    await expect(
+      sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3')),
+    ).resolves.toBe('deletion-failed');
     expect(events).toEqual(['holder-removed', 'parent-sync']);
     console.log('ambiguous-removal-cell site=post-ready-holder post-effect=EIO parent-sync=after');
   });
@@ -605,7 +641,9 @@ describe('write-once store epochs', () => {
       },
     });
 
-    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe('deletion-failed');
+    await expect(
+      sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3')),
+    ).resolves.toBe('deletion-failed');
     expect(events).toEqual(['quarantine-removed', 'parent-sync']);
     console.log('ambiguous-removal-cell site=legacy-quarantine post-effect=EIO parent-sync=after');
   });
@@ -680,7 +718,9 @@ describe('write-once store epochs', () => {
       },
     });
 
-    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).resolves.toBe('deletion-failed');
+    await expect(
+      sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3')),
+    ).resolves.toBe('deletion-failed');
     expect(events).toEqual(['remove-succeeded', 'remove-failed', 'parent-sync']);
     console.log(
       'sweep-barrier-cell site=post-ready-holder-cleanup mutation=true exit=deletion-failed parent-sync=after',
@@ -726,7 +766,7 @@ describe('write-once store epochs', () => {
       const result =
         kind === 'synchronous'
           ? sweepStoreEpochs(runtime, dbDir, '1')
-          : await sweepStoreEpochsPostReady(runtime, dbDir, '1');
+          : await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
 
       expect(result).toBe('complete');
       expect(existsSync(invalid)).toBe(false);
@@ -761,7 +801,7 @@ describe('write-once store epochs', () => {
       await withGeneratedHookReadStore(runtime, '1', async () => {
         const result =
           operation === 'post-ready sweep'
-            ? await sweepStoreEpochsPostReady(runtime, dbDir, '5')
+            ? await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))
             : sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
         expect(result).toBe('live-holder');
         expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
@@ -832,7 +872,7 @@ describe('write-once store epochs', () => {
     const flat = new DatabaseSync(flatPath, { readOnly: true });
     const values = flat.prepare('SELECT value FROM rollback_sentinel ORDER BY rowid').all() as { value: string }[];
     flat.close();
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     expect(values.map(({ value }) => value)).toEqual(['flat-epoch-zero']);
     console.log('symlink-cell alias=epoch-1->. selected=epoch-2 flat-write=untouched');
   });
@@ -853,7 +893,7 @@ describe('write-once store epochs', () => {
       value: string;
     }[];
     externalDb.close();
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     expect(values.map(({ value }) => value)).toEqual(['external-flat']);
     console.log('flat-symlink-cell proven=none external-write=false selected=epoch-1');
   });
@@ -876,7 +916,7 @@ describe('write-once store epochs', () => {
       value: string;
     }[];
     externalDb.close();
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     expect(values.map(({ value }) => value)).toEqual(['external-flat']);
     console.log('flat-symlink-cell proven=epoch-1 external-write=false selected=epoch-1');
   });
@@ -891,7 +931,7 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(runtime, options());
     settled.db.close();
 
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     expect(existsSync(flatPath)).toBe(true);
     console.log('regular-file-cell entry=epoch-1 selected=epoch-2 flat-store=untouched');
   });
@@ -949,10 +989,10 @@ describe('write-once store epochs', () => {
     expect(() => hook.openLockedReadOnlyStoreDatabase(malformedPath)).toThrow();
     const settled = settleStoreEpoch(runtime, options());
     console.log(
-      `malformed-metadata-openers-cell writable=refused read-only=refused hook=refused settlement=epoch-${settled.epoch}`,
+      `malformed-metadata-openers-cell writable=refused read-only=refused hook=refused settlement=epoch-${settled.store.epoch}`,
     );
     settled.db.close();
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
   });
 
   it('does not select an epoch symlink to an external directory', () => {
@@ -966,7 +1006,7 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(runtime, options());
     settled.db.close();
 
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     expect(existsSync(join(external, 'store.db'))).toBe(true);
   });
 
@@ -1026,7 +1066,7 @@ describe('write-once store epochs', () => {
 
       const settled = settleStoreEpoch(runtime, options());
 
-      expect(settled.epoch).toBe(scenario.successor);
+      expect(settled.store.epoch).toBe(scenario.successor);
       settled.db.close();
       expect(existsSync(blockerPath)).toBe(true);
       const externalSentinel = join(dbDir, '..', `epoch-${scenario.blocker}-external`, 'sentinel');
@@ -1060,9 +1100,9 @@ describe('write-once store epochs', () => {
     settled.db.close();
 
     console.log(
-      `mint-collision-cell selected=epoch-${settled.epoch} blocker-present=${existsSync(occupied)} blocker-byte-identical=${readFileSync(join(occupied, 'sentinel'), 'utf-8') === 'pre-existing mint'}`,
+      `mint-collision-cell selected=epoch-${settled.store.epoch} blocker-present=${existsSync(occupied)} blocker-byte-identical=${readFileSync(join(occupied, 'sentinel'), 'utf-8') === 'pre-existing mint'}`,
     );
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     expect(readFileSync(join(occupied, 'sentinel'), 'utf-8')).toBe('pre-existing mint');
   });
 
@@ -1075,7 +1115,7 @@ describe('write-once store epochs', () => {
 
       const settled = settleStoreEpoch(runtime, options());
 
-      expect(String(settled.epoch)).toBe((BigInt(epoch) + 1n).toString());
+      expect(String(settled.store.epoch)).toBe((BigInt(epoch) + 1n).toString());
       settled.db.close();
       expect(existsSync(join(dbDir, `epoch-${BigInt(epoch) + 1n}`, 'store.db'))).toBe(true);
       console.log(`unbounded-successor-cell current=${epoch} successor=${BigInt(epoch) + 1n}`);
@@ -1136,7 +1176,7 @@ describe('write-once store epochs', () => {
     settled.db.close();
     const oversized = listStoreEpochs(withStorage(runtime, storage)).find(({ epoch }) => epoch === '1');
 
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     expect(oversized?.epochJson.kind).toBe('malformed');
     console.log(`oversized-epoch-json-cell bytes=${MAX_STORE_EPOCH_METADATA_BYTES + 1} classification=malformed`);
   });
@@ -1149,7 +1189,7 @@ describe('write-once store epochs', () => {
     chmodSync(path, 0o444);
 
     const settled = settleStoreEpoch(runtime, options());
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     settled.db.close();
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
   });
@@ -1174,7 +1214,7 @@ describe('write-once store epochs', () => {
     });
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     settled.db.close();
     expect(attempts).toBe(1);
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
@@ -1197,7 +1237,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
 
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     settled.db.close();
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     console.log(`unobservable-metadata-cell phase=selection code=${code} removed=false`);
@@ -1220,7 +1260,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
 
-    expect(settled.epoch).toBe('2');
+    expect(settled.store.epoch).toBe('2');
     settled.db.close();
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     console.log('unobservable-successor-cell blocked=epoch-1 selected=epoch-2 removed=false');
@@ -1264,7 +1304,7 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(runtime, options());
     settled.db.close();
 
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     expect(readFileSync(flatPath)).toEqual(before);
     const oldReader = new DatabaseSync(flatPath, { readOnly: true });
     const row = oldReader.prepare('SELECT value FROM rollback_sentinel').get() as { value: string };
@@ -1350,7 +1390,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
 
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     settled.db.close();
     expect(collisionInjected).toBe(true);
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
@@ -1368,7 +1408,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
 
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     settled.db.close();
     expect(swept).toBe(true);
   });
@@ -1392,7 +1432,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
     settled.db.close();
-    expect(sweepStoreEpochs(runtime, dbDir, settled.epoch)).toBe('complete');
+    expect(sweepStoreEpochs(runtime, dbDir, settled.store.epoch)).toBe('complete');
     const rows = listStoreEpochs(runtime);
     expect(rows.map((row) => [row.epoch, row.role])).toEqual([
       [String(count), 'current'],
@@ -1429,7 +1469,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(runtime, options());
 
-    expect(settled.epoch).toBe('1');
+    expect(settled.store.epoch).toBe('1');
     settled.db.close();
   });
 
@@ -1721,7 +1761,7 @@ describe('write-once store epochs', () => {
     const address = server.address();
     if (address === null || typeof address === 'string') throw new Error('health server did not bind TCP');
     let sweepSettled = false;
-    const sweep = sweepStoreEpochsPostReady(runtime, dbDir, '3').finally(() => {
+    const sweep = sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '3')).finally(() => {
       sweepSettled = true;
     });
     const signalHandled = new Promise<boolean>((resolveSignal) => {
@@ -1765,7 +1805,9 @@ describe('write-once store epochs', () => {
       },
     });
 
-    expect(await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3')).toBe('complete');
+    expect(await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3'))).toBe(
+      'complete',
+    );
     expect(holderReads).toBe(0);
     expect(existsSync(holderPath)).toBe(false);
     console.log(`holder-bound-cell bytes=${MAX_STORE_EPOCH_HOLDER_BYTES + 1} parsed=false`);
@@ -1781,7 +1823,7 @@ describe('write-once store epochs', () => {
       createSharedFileLockSync(storeMintLockPath(dbDir, id))();
     }
 
-    expect(await sweepStoreEpochsPostReady(runtime, dbDir, '1')).toBe('complete');
+    expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'))).toBe('complete');
     expect(readdirSync(dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
     console.log('mint-process-death-cell seeded=12 remaining=0');
   });
@@ -1817,7 +1859,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(runtime, options());
     settled.db.close();
-    const result = await sweepStoreEpochsPostReady(runtime, dbDir, settled.epoch);
+    const result = await sweepStoreEpochsPostReady(runtime, settled.store);
     const after = readdirSync(dbDir).filter((name) => name.startsWith('.coral-store-epoch-construction-'));
 
     console.log(
@@ -1849,7 +1891,7 @@ describe('write-once store epochs', () => {
       },
     });
     try {
-      const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3');
+      const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3'));
       const present = existsSync(join(mint, 'store.db'));
       console.log(`post-ready-live-mint-cell lock-before-directory=true result=${result} mint-present=${present}`);
       expect(result).toBe('live-holder');
@@ -1917,7 +1959,7 @@ describe('write-once store epochs', () => {
     });
 
     try {
-      const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
+      const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
       const present = existsSync(epochPath(dbDir, '1'));
       console.log(
         `deletion-window-cell interposition-ran=${interpositionRan} opener=${openedValue === undefined ? 'refused' : 'opened'} live-query=${openedValue ?? 'none'} result=${result} epoch-1-present=${present}`,
@@ -1946,9 +1988,9 @@ describe('write-once store epochs', () => {
       settled.db.close();
 
       console.log(
-        `settlement-hardlink-cell artifact=${artifact} selected-epoch=${settled.epoch} nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
+        `settlement-hardlink-cell artifact=${artifact} selected-epoch=${settled.store.epoch} nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
       );
-      expect(settled.epoch).toBe('2');
+      expect(settled.store.epoch).toBe('2');
       expect(readFileSync(aliasPath)).toEqual(before);
     },
   );
@@ -1990,7 +2032,7 @@ describe('write-once store epochs', () => {
       else mkdirSync(target);
       writeFileSync(join(target, '.lock'), 'not a SQLite database');
 
-      const result = await sweepStoreEpochsPostReady(runtime, dbDir, '5');
+      const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'));
 
       console.log(`malformed-lock-reclamation-cell namespace=${name} result=${result} remaining=${existsSync(target)}`);
       expect(result).toBe('complete');
@@ -2008,7 +2050,7 @@ describe('write-once store epochs', () => {
       writeFileSync(target, 'wrong-kind');
 
       const listed = listStoreEpochResidues(runtime);
-      const result = await sweepStoreEpochsPostReady(runtime, dbDir, '1');
+      const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
 
       console.log(
         `wrong-kind-residue-cell namespace=${name} listed=${listed[0]?.state ?? 'missing'} result=${result} remaining=${existsSync(target)}`,
@@ -2080,9 +2122,9 @@ describe('write-once store epochs', () => {
         settled = settleStoreEpoch(runtime, options());
         const legacyAfter = fileTreeSnapshot(legacyRoot);
         console.log(
-          `malformed-lock-cell kind=${lockKind} boot=proceeded selected-epoch=${settled.epoch} legacy-byte-identical=${JSON.stringify(legacyAfter) === JSON.stringify(legacyBefore)}`,
+          `malformed-lock-cell kind=${lockKind} boot=proceeded selected-epoch=${settled.store.epoch} legacy-byte-identical=${JSON.stringify(legacyAfter) === JSON.stringify(legacyBefore)}`,
         );
-        expect(settled.epoch).toBe('2');
+        expect(settled.store.epoch).toBe('2');
         expect(legacyAfter).toEqual(legacyBefore);
         expect(readFileSync(externalStore)).toEqual(externalBefore);
       } finally {
@@ -2131,7 +2173,7 @@ describe('write-once store epochs', () => {
     expect(listed).toHaveLength(residueCount * 2);
     expect(new Set(listed.map(({ state }) => state))).toEqual(new Set(['unobservable']));
 
-    const result = await sweepStoreEpochsPostReady(runtime, dbDir, '1');
+    const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
     const remaining = listStoreEpochResidues(runtime);
     console.log(
       `mint-residue-cell lockless=${residueCount} partial-cleanup=${residueCount} listed-state=${listed[0]?.state} result=${result} remaining=${remaining.length}`,
@@ -2148,7 +2190,7 @@ describe('write-once store epochs', () => {
     publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
     publishAdversarialEpoch(join(dbDir, 'epoch-5'), true);
     try {
-      expect(await sweepStoreEpochsPostReady(runtime, dbDir, '5')).toBe('live-holder');
+      expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
       console.log('post-ready-coordinator-descriptor-cell result=live-holder epoch-1=present');
     } finally {
@@ -2183,7 +2225,7 @@ describe('write-once store epochs', () => {
         };
       },
     });
-    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
+    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
     await snapshot;
     const kbDatabase = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
     releaseSnapshot();
@@ -2223,7 +2265,7 @@ describe('write-once store epochs', () => {
         };
       },
     });
-    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '5');
+    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
     await snapshot;
     const held = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
     const alias = join(dirname(dbDir), 'held-lock-alias');
@@ -2267,7 +2309,7 @@ describe('write-once store epochs', () => {
       },
     });
     const controller = new AbortController();
-    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3', {
+    const sweep = sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3'), {
       signal: controller.signal,
     });
     await snapshot;
@@ -2278,7 +2320,7 @@ describe('write-once store epochs', () => {
     expect(existsSync(flatStorePath(dbDir))).toBe(true);
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     const successor = settleStoreEpoch(runtime, options());
-    expect(successor.epoch).toBe('4');
+    expect(successor.store.epoch).toBe('4');
     successor.db.close();
     const rollback = new DatabaseSync(flatStorePath(dbDir), { readOnly: true });
     expect((rollback.prepare('SELECT value FROM rollback_sentinel').get() as { value: string }).value).toBe('rollback');
@@ -2314,7 +2356,9 @@ describe('write-once store epochs', () => {
     });
 
     await expect(
-      sweepStoreEpochsPostReady(withStorage(runtime, storage), dbDir, '3', { signal: controller.signal }),
+      sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3'), {
+        signal: controller.signal,
+      }),
     ).resolves.toBe('cancelled');
     expect(events).toEqual(['epoch-removed', 'parent-sync']);
     console.log('sweep-barrier-cell site=post-ready-cancellation mutation=true exit=cancelled parent-sync=after');
@@ -2408,7 +2452,7 @@ describe('write-once store epochs', () => {
     expect(() => settleStoreEpoch(interruptedRuntime, options())).toThrow('Failed to durably sync store epoch root');
     const adopted = settleStoreEpoch(interruptedRuntime, options());
 
-    expect(adopted.epoch).toBe('1');
+    expect(adopted.store.epoch).toBe('1');
     adopted.db.close();
     expect(rootSyncs).toBeGreaterThanOrEqual(2);
   });
@@ -2466,11 +2510,11 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
 
-    expect(settled.epoch).toBe('3');
+    expect(settled.store.epoch).toBe('3');
     publishLiveCoordinator(runtime, runtime.env.pid());
-    await expect(
-      sweepStoreEpochsPostReady(withStorage(runtime, storage), runtime.paths.coral.store.dbDir, settled.epoch),
-    ).resolves.toBe('deletion-failed');
+    await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), settled.store)).resolves.toBe(
+      'deletion-failed',
+    );
     settled.db.close();
     expect(existsSync(flatStorePath(runtime.paths.coral.store.dbDir))).toBe(true);
   });
@@ -2508,7 +2552,7 @@ describe('write-once store epochs', () => {
 
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
     settled.db.close();
-    expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, settled.epoch)).toBe('complete');
+    expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, settled.store.epoch)).toBe('complete');
 
     let lastRemoval = -1;
     let lastRootSync = -1;
@@ -2558,7 +2602,7 @@ describe('write-once store epochs', () => {
       publishAdversarialEpoch(join(dbDir, `epoch-${incompatible}`));
       const settled = settleStoreEpoch(withStorage(runtime, storage), options());
       settled.db.close();
-      expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, settled.epoch)).toBe('complete');
+      expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, settled.store.epoch)).toBe('complete');
 
       for (const [original, backup] of backups) renameSync(backup, original);
       backups.clear();

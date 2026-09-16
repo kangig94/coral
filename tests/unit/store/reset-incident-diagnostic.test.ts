@@ -322,19 +322,53 @@ describe('store-reset SQLite evidence staging', () => {
     }
   });
 
-  it('reclaims interrupted report namespaces before reserving the aggregate bound', () => {
-    const base = root('coral-reset-report-reclaim-');
+  it('reclaims K interrupted legacy UUID reports before running a later report', async () => {
+    const fixture = diagnosticFixture();
+    const interrupted = 4;
+    for (let index = 0; index < interrupted; index += 1) {
+      const namespace = mkdtempSync(join(fixture.tempRoot, 'coral-store-reset-'));
+      writeFileSync(join(namespace, 'store.db'), 'abandoned copy');
+    }
+    const child = new FakeDiagnosticChild();
+    let retainedDuringReport = 0;
+    const runner = createStoreResetIncidentDiagnosticRunner({
+      tempRoot: fixture.tempRoot,
+      platform: process.platform,
+      executable: '/node',
+      supervisor: supervisor(child, () => {
+        retainedDuringReport = readdirSync(fixture.tempRoot).filter(
+          (name) => name.startsWith('coral-store-report-') || name.startsWith('coral-store-reset-'),
+        ).length;
+        queueMicrotask(() => {
+          child.stdout('ok');
+          child.close(0, null);
+        });
+      }),
+    });
+
+    await expect(
+      runner({ fs: createStoreResetInspectionFs(), incidentPath: fixture.incidentPath, manifest: fixture.manifest }),
+    ).resolves.toEqual({ integrity: 'ok', termination: 'completed', cleanup: 'removed' });
+    const retainedAfterReport = readdirSync(fixture.tempRoot).filter(
+      (name) => name.startsWith('coral-store-report-') || name.startsWith('coral-store-reset-'),
+    ).length;
+    console.log(
+      `legacy-report-reclamation-cell incident=uuid interrupted=${interrupted} active=${retainedDuringReport} retained=${retainedAfterReport}`,
+    );
+    expect(retainedDuringReport).toBe(1);
+    expect(retainedAfterReport).toBe(0);
+  });
+
+  it('reclaims an abandoned reservation even when its recorded pid is live again', () => {
+    const base = root('coral-reset-report-reused-pid-');
     const sourceDirectory = join(base, 'source');
     const tempRoot = join(base, 'tmp');
     mkdirSync(sourceDirectory);
     mkdirSync(tempRoot);
     writeFileSync(join(sourceDirectory, 'store.db'), 'database');
-    const interrupted = 4;
-    for (let index = 0; index < interrupted; index += 1) {
-      const namespace = join(tempRoot, `coral-store-report-2147483647-interrupted-${index}`);
-      mkdirSync(namespace, { mode: 0o700 });
-      writeFileSync(join(namespace, 'store.db'), 'abandoned copy');
-    }
+    const abandoned = join(tempRoot, 'coral-store-report-active');
+    mkdirSync(abandoned, { mode: 0o700 });
+    writeFileSync(join(abandoned, `.owner-${process.pid}`), '', { mode: 0o600 });
 
     const staged = stageStoreDatabaseEvidence({
       fs: createStoreResetInspectionFs(),
@@ -343,21 +377,8 @@ describe('store-reset SQLite evidence staging', () => {
       platform: process.platform,
     });
     try {
-      const namespaces = readdirSync(tempRoot).filter((name) => name.startsWith('coral-store-report-'));
-      console.log(`report-reclamation-cell interrupted=${interrupted} retained=${namespaces.length}`);
-      expect(namespaces).toHaveLength(1);
-      expect(() =>
-        stageStoreDatabaseEvidence({
-          fs: createStoreResetInspectionFs(),
-          sourceDirectory,
-          tempRoot,
-          platform: process.platform,
-        }),
-      ).toThrowError(
-        expect.objectContaining<Partial<StoreDatabaseEvidenceUnavailableError>>({
-          reason: 'over-bound',
-        }),
-      );
+      console.log(`report-lock-ownership-cell reused-pid=${process.pid} reclaimed=true staged=true`);
+      expect(readFileSync(staged.dbPath, 'utf-8')).toBe('database');
     } finally {
       staged.cleanup();
     }
@@ -386,7 +407,7 @@ describe('store-reset SQLite evidence staging', () => {
         reason: 'over-bound',
       }),
     );
-    expect(readdirSync(tempRoot)).toEqual(['coral-store-report-active']);
+    expect(readdirSync(tempRoot).sort()).toEqual(['coral-store-report-active', 'coral-store-report.lock']);
   });
 
   it('copies through partial I/O, passes only the staged DB, rehashes evidence, and cleans up', async () => {

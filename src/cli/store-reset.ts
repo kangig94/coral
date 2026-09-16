@@ -30,11 +30,11 @@ import {
   type StoreResetIncidentReportResult,
 } from '../store/reset-incident-reader.js';
 import {
-  epochPath,
+  acquireStoreEpochReadLock,
   listStoreEpochHolders,
   listStoreEpochResidues,
   listStoreEpochs,
-  provenStoreEpochAtPath,
+  type ResolvedStoreEpoch,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
   type StoreEpochResidueListEntry,
@@ -52,7 +52,7 @@ export interface StoreResetCliDependencies {
   resolveIdentity(): { readonly ok: true; readonly manifest: StrictBundleManifest } | { readonly ok: false };
   createInspectionFs(): StoreResetInspectionFs;
   createDiagnosticRunner(): StoreResetIncidentDiagnosticRunner;
-  diagnoseEpoch(storeDbPath: string): Promise<StoreResetDiagnosticStatus>;
+  diagnoseEpoch(store: ResolvedStoreEpoch): Promise<StoreResetDiagnosticStatus>;
   quarantineRoot(manifest: StrictBundleManifest, target: StoreResetTarget): string;
   runtime?(manifest: StrictBundleManifest): ReturnType<typeof createRealRuntime>;
 }
@@ -84,10 +84,10 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
       }),
-    diagnoseEpoch: (storeDbPath) =>
+    diagnoseEpoch: (store) =>
       diagnoseStoreDatabaseCopy({
         fs: createStoreResetInspectionFs(),
-        sourceDirectory: dirname(storeDbPath),
+        sourceDirectory: dirname(store.path),
         tempRoot: tmpdir(),
         platform: process.platform,
         executable: process.execPath,
@@ -103,13 +103,16 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
 
 async function diagnoseHeldEpoch(
   runtime: ReturnType<typeof createRealRuntime>,
-  epoch: string,
-  storeDbPath: string,
+  store: ResolvedStoreEpoch,
   dependencies: StoreResetCliDependencies,
 ): Promise<StoreResetDiagnosticStatus> {
-  return provenStoreEpochAtPath(runtime.storage, runtime.paths.coral.store.dbDir, storeDbPath) === epoch
-    ? dependencies.diagnoseEpoch(storeDbPath)
-    : { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
+  const lease = acquireStoreEpochReadLock(runtime, store);
+  if (lease === null) return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
+  try {
+    return await dependencies.diagnoseEpoch(store);
+  } finally {
+    lease();
+  }
 }
 
 export function createStoreResetCommandOperations(shutdownSignal?: AbortSignal): {
@@ -244,14 +247,9 @@ export async function reportStoreResetLocal(
     const epoch = listStoreEpochs(runtime).find((candidate) => candidate.epoch === reference);
     if (epoch === undefined) throw new StoreResetCliError('store_reset_incident_not_found');
     const diagnostic =
-      epoch.bytes === null || epoch.bytes > MAX_SQLITE_DIAGNOSTIC_BYTES
+      epoch.resolved === null || epoch.bytes === null || epoch.bytes > MAX_SQLITE_DIAGNOSTIC_BYTES
         ? ({ integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' } as const)
-        : await diagnoseHeldEpoch(
-            runtime,
-            epoch.epoch,
-            epochPath(runtime.paths.coral.store.dbDir, epoch.epoch),
-            dependencies,
-          );
+        : await diagnoseHeldEpoch(runtime, epoch.resolved, dependencies);
     return { kind: 'epoch', epoch, diagnostic };
   }
   if (!isCanonicalStoreResetIncidentId(reference)) {

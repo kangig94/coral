@@ -1322,19 +1322,16 @@ export function listRecoveryQuarantineLocal(
           : 'unobservable',
     };
   }
-  let entries: readonly RecoveryQuarantineListEntry[];
+  let result: RecoveryQuarantineListResult;
   try {
     const classification = classifyStoreFile(staged.dbPath, runtime.storage, currentCoralStoreFormat());
     // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
     // means rows this build cannot read may be there, and an empty list is then the opposite of what is
     // true — an operator reading it concludes there is nothing to act on.
     if (classification.kind === 'absent' || classification.kind === 'fresh') {
-      if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
-      entries = [];
+      result = staged.verify() ? [] : { kind: 'unavailable', reason: 'unobservable' };
     } else if (classification.kind !== 'compatible') {
-      throw new Error(
-        `Recovery quarantine cannot be inspected while the local store is ${classification.kind}. Run coral-cli backend status and start or repair the coordinator so it can perform the supported store transition, then retry recovery-quarantine list.`,
-      );
+      result = { kind: 'unavailable', reason: 'unobservable' };
     } else {
       const db = openReadOnlyStoreDatabase(runtime, {
         path: staged.dbPath,
@@ -1342,11 +1339,11 @@ export function listRecoveryQuarantineLocal(
       }) as unknown as Database;
       try {
         const stored = RecoveryQuarantineStore.readOnly(db).list();
-        entries = [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
+        const entries = [...stored, ...unreadableProviderOperationEntries(db, stored)].sort((left, right) => {
           const boundary = left.boundary.localeCompare(right.boundary);
           return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
         });
-        if (!staged.verify()) throw new Error('Recovery quarantine evidence changed during inspection.');
+        result = staged.verify() ? entries : { kind: 'unavailable', reason: 'unobservable' };
       } finally {
         db.close();
       }
@@ -1360,7 +1357,7 @@ export function listRecoveryQuarantineLocal(
   if (staged.cleanup() !== 'removed') {
     throw new Error('Recovery quarantine inspection cleanup failed.');
   }
-  return entries;
+  return result;
 }
 
 export function createRecoveryQuarantineCommandOperations(signal?: AbortSignal): RecoveryQuarantineCommandOperations {

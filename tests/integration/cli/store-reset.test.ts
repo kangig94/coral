@@ -1,20 +1,39 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { releaseStoreResetLocal, reportStoreResetLocal, type StoreResetCliDependencies } from '#src/cli/store-reset.js';
+import {
+  listStoreResetIncidentsLocal,
+  releaseStoreResetLocal,
+  reportStoreResetLocal,
+  type StoreResetCliDependencies,
+} from '#src/cli/store-reset.js';
+import { formatStoreResetList } from '#src/cli/format/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { tryAcquireExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { createNodeStoreResetDiagnosticSupervisor } from '#src/infra/store-reset-diagnostic-supervisor.js';
+import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   discardCurrentStoreEpoch,
   epochPath,
   listStoreEpochHolders,
+  resolvedStoreEpoch,
   settleStoreEpoch,
   storeEpochHolderPath,
   sweepStoreEpochs,
@@ -86,6 +105,34 @@ afterEach(() => {
 });
 
 describe('store-reset operator epochs', () => {
+  it('reports an unreadable store root as unobservable rather than empty', () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    mkdirSync(dbDir, { recursive: true });
+    const parent = dirname(dbDir);
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      createDiagnosticRunner: () => {
+        throw new Error('not used');
+      },
+      diagnoseEpoch: async () => ({ integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' }),
+      quarantineRoot: () => join(dirname(parent), 'legacy-quarantine'),
+      runtime: () => runtime,
+    };
+    chmodSync(parent, 0o600);
+    let rendered: string;
+    try {
+      rendered = formatStoreResetList(listStoreResetIncidentsLocal('gen2', dependencies), 'gen2');
+    } finally {
+      chmodSync(parent, 0o700);
+    }
+
+    console.log(`store-reset-unreadable-root-cell output=${JSON.stringify(rendered.split('\n')[1])}`);
+    expect(rendered).toContain('unobservable');
+    expect(rendered).not.toContain('No gen2 store epochs');
+  });
+
   it('rejects release zero because the flat store is not addressable', () => {
     expect(() => releaseStoreResetLocal('gen2', 'prod', '0')).toThrowError(
       expect.objectContaining({ code: 'invalid_store_reset_release_incident_id' }),
@@ -139,7 +186,7 @@ describe('store-reset operator epochs', () => {
       await new Promise<void>((resolveExit) => parent.once('exit', () => resolveExit()));
 
       expect(runtime.process.observeLiveness(holder.pid)).toBe('alive');
-      expect(await sweepStoreEpochsPostReady(runtime, dbDir, '5')).toBe('live-holder');
+      expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
       expect(existsSync(oldPath)).toBe(true);
       console.log(`diagnostic-parent-sigkill-cell parent=absent child=${holder.pid} holder=live removed=false`);
 
@@ -166,9 +213,9 @@ describe('store-reset operator epochs', () => {
     const opened = settleStoreEpoch(runtime, { storeFormat, build });
     opened.db.close();
 
-    await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: opened.epoch })).resolves.toMatchObject({
+    await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: opened.store.epoch })).resolves.toMatchObject({
       kind: 'current',
-      epoch: opened.epoch,
+      epoch: opened.store.epoch,
     });
   });
 
@@ -213,6 +260,46 @@ describe('store-reset operator epochs', () => {
     expect(report.kind).toBe('epoch');
     expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+  });
+
+  it('carries listed epoch provenance through report inspection after the configured root retargets', async () => {
+    const runtime = harness();
+    const configuredRoot = runtime.paths.coral.store.dbDir;
+    const oldRoot = join(dirname(configuredRoot), 'old-store-root');
+    const newRoot = join(dirname(configuredRoot), 'new-store-root');
+    publishEpoch(oldRoot, '1');
+    publishEpoch(newRoot, '1');
+    mkdirSync(dirname(configuredRoot), { recursive: true });
+    symlinkSync(oldRoot, configuredRoot);
+    let diagnosticPath: string | null = null;
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: () => {
+        throw new Error('legacy inspection is not used');
+      },
+      createDiagnosticRunner: () => {
+        throw new Error('legacy diagnostics are not used');
+      },
+      diagnoseEpoch: async (store) => {
+        rmSync(configuredRoot);
+        symlinkSync(newRoot, configuredRoot);
+        diagnosticPath = store.path;
+        const exclusive = tryAcquireExclusiveFileLockSync(join(oldRoot, 'epoch-1', '.lock'));
+        exclusive?.();
+        expect(exclusive).toBeNull();
+        return { integrity: 'ok', termination: 'completed', cleanup: 'removed' };
+      },
+      quarantineRoot: () => join(dirname(configuredRoot), 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+
+    const report = await reportStoreResetLocal('gen2', '1', dependencies);
+    console.log(
+      `store-reset-report-retarget-cell listed=old diagnostic=${diagnosticPath === epochPath(oldRoot, '1') ? 'old' : 'other'} configured-root=new lease=held`,
+    );
+
+    expect(report.kind).toBe('epoch');
+    expect(diagnosticPath).toBe(epochPath(oldRoot, '1'));
   });
 
   it('does not publish a report holder when diagnostic child termination is unconfirmed', async () => {

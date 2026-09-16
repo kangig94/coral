@@ -11,7 +11,7 @@ import {
   type GracefulKillPendingDisposition,
 } from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
-import type { StoreEpoch } from '../../store/epoch.js';
+import { encodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../../store/epoch.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
   KB_DAEMON_PARENT_RESPONSE_MESSAGE,
@@ -99,7 +99,7 @@ export type KbDaemonDisposalSettlement =
 export interface KbDaemonSupervisor {
   read(): KbDaemonHealthSnapshot;
   onExit?(listener: (snapshot: KbDaemonHealthSnapshot) => void): () => void;
-  start(storeEpoch?: StoreEpoch): Promise<KbDaemonHealthSnapshot>;
+  start(store?: ResolvedStoreEpoch): Promise<KbDaemonHealthSnapshot>;
   probe(): Promise<KbDaemonHealthSnapshot>;
   warmup(): Promise<KbDaemonHealthSnapshot>;
   readKb(request: KbDaemonKbReadRequest, options?: { signal?: AbortSignal }): Promise<KbDaemonKbReadResult>;
@@ -416,7 +416,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
   let kbWriteHealth: KbDaemonKbReadHealth | undefined;
   let requestRecoveryEnabled = true;
   let disposed = false;
-  let openedStoreEpoch: StoreEpoch | undefined;
+  let openedStore: ResolvedStoreEpoch | undefined;
   const exitListeners = new Set<(snapshot: KbDaemonHealthSnapshot) => void>();
 
   const read = (): KbDaemonHealthSnapshot => ({
@@ -981,7 +981,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           CORAL_KB_DAEMON_PARENT_PID: String(process.pid),
           CORAL_KB_DAEMON_BACKEND_NAMESPACE: backendNamespace,
           CORAL_KB_DAEMON_BUNDLE_HASH: bundleHash,
-          ...(openedStoreEpoch === undefined ? {} : { CORAL_KB_DAEMON_STORE_EPOCH: openedStoreEpoch }),
+          ...(openedStore === undefined ? {} : { CORAL_KB_DAEMON_STORE: encodeResolvedStoreEpoch(openedStore) }),
           ...(options.instanceId === undefined ? {} : { CORAL_KB_DAEMON_INSTANCE_ID: options.instanceId }),
         },
       });
@@ -1233,12 +1233,12 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
         exitListeners.delete(listener);
       };
     },
-    start: (storeEpoch) =>
+    start: (store) =>
       runExclusive(async () => {
         if (disposed) {
           return read();
         }
-        openedStoreEpoch = storeEpoch ?? openedStoreEpoch;
+        openedStore = store ?? openedStore;
         requestRecoveryEnabled = true;
         return startNow();
       }),

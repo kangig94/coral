@@ -21,7 +21,7 @@ vi.mock('#src/runtime/real.js', async (importOriginal) => {
 });
 
 import { closeSharedReadCoralStore, getSharedReadCoralStore } from '#src/cli/read-store.js';
-import { sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
+import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
@@ -72,7 +72,7 @@ it('keeps the cached CLI reader shared lock until its cached SQLite handle close
   publishEpoch(runtime, '3');
   publishEpoch(runtime, '5');
 
-  expect(await sweepStoreEpochsPostReady(runtime, dbDir, '5')).toBe('live-holder');
+  expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
   console.log('read-only-opener-cell opener=cached-cli operation=post-ready-sweep result=live-holder');
 

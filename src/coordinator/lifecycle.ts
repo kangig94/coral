@@ -78,7 +78,7 @@ import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } fr
 import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
-import type { StoreEpoch } from '../store/epoch.js';
+import type { ResolvedStoreEpoch } from '../store/epoch.js';
 import {
   acquireProviderOperationMutationAdmission,
   type ProviderOperationMutationAdmission,
@@ -798,7 +798,7 @@ export type LifecycleDeps = {
    * so carrier readers cannot advance the startup boundary themselves.
    */
   readonly startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
-  readonly scheduleStoreEpochSweepFn?: (openEpoch: StoreEpoch) => void;
+  readonly scheduleStoreEpochSweepFn?: (openStore: ResolvedStoreEpoch) => void;
   readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -1050,7 +1050,7 @@ async function runLifecycleStartup({
     const preinjectedStoreServices = storeServicesRef.tryGet();
     const shouldScheduleStoreEpochSweep = preinjectedStoreServices === null;
     let storeDb: Database;
-    let storeEpoch: StoreEpoch | null = null;
+    let openedStore: ResolvedStoreEpoch | null = null;
     if (preinjectedStoreServices !== null) {
       // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
       // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
@@ -1089,7 +1089,7 @@ async function runLifecycleStartup({
         );
       }
       storeDb = routing.db;
-      storeEpoch = routing.epoch;
+      openedStore = routing.store;
     }
     let storeServices: CoordinatorStoreServices;
     try {
@@ -1155,14 +1155,14 @@ async function runLifecycleStartup({
       namespace,
       instanceId,
       startedAt,
-      ...(storeEpoch === null ? {} : { storeEpoch }),
+      ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
     });
     if (discoveryPublished === false) {
       throw new Error('Coordinator discovery publication failed.');
     }
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
-    if (shouldScheduleStoreEpochSweep && storeEpoch !== null) deps.scheduleStoreEpochSweepFn?.(storeEpoch);
+    if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
     const serverInfo = {
       port,
       host,
@@ -1235,7 +1235,7 @@ async function runLifecycleStartup({
     runtimeState.setLifecycle('running');
     state.started = true;
     void kbDaemonSupervisor
-      ?.start(storeEpoch ?? undefined)
+      ?.start(openedStore ?? undefined)
       .then((health) => {
         if (health.phase !== 'online') {
           return;

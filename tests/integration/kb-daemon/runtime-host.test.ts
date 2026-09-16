@@ -17,7 +17,7 @@ import { ConsumerDriver } from '#src/projection-consumers/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
-import { STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch.js';
+import { resolvedStoreEpoch, STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
@@ -147,7 +147,7 @@ describe('KB daemon runtime host', () => {
       bundleHash: 'test-bundle',
       curateUsageBudget: { isExhausted: async () => false },
       runtime,
-      storeEpoch: '1',
+      store: resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1'),
     });
 
     try {

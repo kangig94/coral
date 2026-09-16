@@ -18,13 +18,16 @@ import {
   type StoreResetInspectionStat,
 } from './reset-incident-inspection-fs.js';
 import { storeEpochLockPath } from './epoch.js';
+import { createSharedFileLockSync, tryAcquireExclusiveFileLockSync, type FileLockLease } from '../infra/fs-lock.js';
 
 const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as const;
 const COPY_BUFFER_BYTES = 64 * 1024;
 const REPORT_NAMESPACE_PREFIX = 'coral-store-report-';
-const REPORT_NAMESPACE_PATTERN = /^coral-store-report-(\d+)-/u;
+const REPORT_NAMESPACE_PATTERN = /^coral-store-report-/u;
+const LEGACY_REPORT_NAMESPACE_PATTERN = /^coral-store-reset-/u;
 const REPORT_ACTIVE_NAMESPACE = 'coral-store-report-active';
-const REPORT_OWNER_PATTERN = /^\.owner-(\d+)$/u;
+const REPORT_LOCK_NAME = 'coral-store-report.lock';
+const abandonedReportLeases = new Set<FileLockLease>();
 
 export type StoreDatabaseEvidenceUnavailableReason = 'over-bound' | 'unobservable';
 
@@ -42,6 +45,7 @@ export type StagedStoreDatabaseEvidence = Readonly<{
   dbPath: string;
   verify(): boolean;
   cleanup(): StoreResetDiagnosticStatus['cleanup'];
+  abandon(): void;
 }>;
 
 export const SQLITE_DIAGNOSTIC_PROGRAM = String.raw`
@@ -383,15 +387,40 @@ export function stageStoreDatabaseEvidence(options: {
   readonly sourceDirectory: string;
   readonly tempRoot: string;
   readonly platform: string;
+  readonly evidence?: readonly Readonly<{ name: string; sizeBytes: number; sha256: string }>[];
 }): StagedStoreDatabaseEvidence {
-  reclaimStoreReportNamespaces(options.fs, options.tempRoot, options.platform);
-  let tempDirectory = options.fs.mkdtemp(join(options.tempRoot, `${REPORT_NAMESPACE_PREFIX}${process.pid}-`));
+  const reportLockPath = join(options.tempRoot, REPORT_LOCK_NAME);
+  if (options.fs.lstat(reportLockPath) === null) createSharedFileLockSync(reportLockPath)();
+  let ownership = tryAcquireExclusiveFileLockSync(reportLockPath);
+  if (ownership === null) {
+    throw new StoreDatabaseEvidenceUnavailableError('over-bound', 'the aggregate report-copy bound is reserved');
+  }
+  try {
+    reclaimStoreReportNamespaces(options.fs, options.tempRoot, options.platform);
+  } catch (error: unknown) {
+    ownership();
+    throw error;
+  }
+  let tempDirectory: string;
+  try {
+    tempDirectory = options.fs.mkdtemp(join(options.tempRoot, REPORT_NAMESPACE_PREFIX));
+  } catch (error: unknown) {
+    ownership();
+    throw error;
+  }
   let tempIdentity: StoreResetInspectionStat | null = null;
   let tempRealPath: string | null = null;
   let cleaned = false;
+  const releaseOwnership = (): void => {
+    ownership?.();
+    ownership = null;
+  };
   const cleanup = (): StoreResetDiagnosticStatus['cleanup'] => {
     if (cleaned) return 'removed';
-    if (tempIdentity === null || tempRealPath === null) return 'cleanup_unavailable';
+    if (tempIdentity === null || tempRealPath === null) {
+      releaseOwnership();
+      return 'cleanup_unavailable';
+    }
     try {
       if (options.fs.realpath(tempDirectory) !== tempRealPath) return 'cleanup_unavailable';
       if (!options.fs.removeTreeGuarded(tempDirectory, tempIdentity)) return 'cleanup_unavailable';
@@ -399,7 +428,14 @@ export function stageStoreDatabaseEvidence(options: {
       return 'removed';
     } catch {
       return 'cleanup_unavailable';
+    } finally {
+      releaseOwnership();
     }
+  };
+  const abandon = (): void => {
+    if (ownership === null) return;
+    abandonedReportLeases.add(ownership);
+    ownership = null;
   };
 
   try {
@@ -412,7 +448,6 @@ export function stageStoreDatabaseEvidence(options: {
       throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'temporary directory is not private');
     }
     tempRealPath = options.fs.realpath(tempDirectory);
-    writeReportNamespaceOwner(options.fs, tempDirectory, options.platform);
     const activeDirectory = join(options.tempRoot, REPORT_ACTIVE_NAMESPACE);
     try {
       options.fs.rename(tempDirectory, activeDirectory);
@@ -427,9 +462,14 @@ export function stageStoreDatabaseEvidence(options: {
     tempRealPath = options.fs.realpath(tempDirectory);
     let remaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
     const sourceHashes = new Map<string, string | null>();
-    for (const name of DIAGNOSTIC_SOURCE_NAMES) {
+    const evidence = options.evidence ?? DIAGNOSTIC_SOURCE_NAMES.map((name) => ({ name }));
+    for (const expected of evidence) {
+      const { name } = expected;
       const source = join(options.sourceDirectory, name);
       if (options.fs.lstat(source) === null) {
+        if ('sha256' in expected) {
+          throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'store database evidence is unavailable');
+        }
         sourceHashes.set(name, null);
         continue;
       }
@@ -440,6 +480,9 @@ export function stageStoreDatabaseEvidence(options: {
         remainingBudget: remaining,
         platform: options.platform,
       });
+      if ('sha256' in expected && (copied.bytes !== expected.sizeBytes || copied.sha256 !== expected.sha256)) {
+        throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'store database evidence changed');
+      }
       remaining -= copied.bytes;
       sourceHashes.set(name, copied.sha256);
     }
@@ -466,32 +509,11 @@ export function stageStoreDatabaseEvidence(options: {
         }
       },
       cleanup,
+      abandon,
     };
   } catch (error: unknown) {
     cleanup();
     throw error;
-  }
-}
-
-function writeReportNamespaceOwner(fs: StoreResetInspectionFs, directory: string, platform: string): void {
-  const path = join(directory, `.owner-${process.pid}`);
-  const descriptor = fs.open(path, fs.openFlags.createExclusiveWrite, 0o600);
-  try {
-    const identity = fs.fstat(descriptor);
-    if (identity.kind !== 'file' || (platform !== 'win32' && (identity.mode & 0o777n) !== 0o600n)) {
-      throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace owner is unobservable');
-    }
-  } finally {
-    fs.close(descriptor);
-  }
-}
-
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: unknown) {
-    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -508,7 +530,13 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
     for (;;) {
       const entry = fs.readDirectory(cursor);
       if (entry === null) break;
-      if (entry.name === REPORT_ACTIVE_NAMESPACE || REPORT_NAMESPACE_PATTERN.test(entry.name)) entries.push(entry.name);
+      if (
+        entry.name === REPORT_ACTIVE_NAMESPACE ||
+        REPORT_NAMESPACE_PATTERN.test(entry.name) ||
+        LEGACY_REPORT_NAMESPACE_PATTERN.test(entry.name)
+      ) {
+        entries.push(entry.name);
+      }
     }
   } catch {
     readFailed = true;
@@ -523,16 +551,11 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
     throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
   }
 
-  let liveReservations = 0;
   const realTempRoot = fs.realpath(tempRoot);
   for (const name of entries) {
     const path = join(tempRoot, name);
     const identity = fs.lstat(path);
-    const ownerPid = identity?.kind === 'directory' ? reportNamespaceOwnerPid(fs, path, name) : null;
     if (
-      ownerPid === null ||
-      !Number.isSafeInteger(ownerPid) ||
-      ownerPid <= 0 ||
       identity === null ||
       identity.kind !== 'directory' ||
       (platform !== 'win32' && (identity.mode & 0o777n) !== 0o700n) ||
@@ -540,53 +563,10 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
     ) {
       throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace is unobservable');
     }
-    if (processIsAlive(ownerPid)) {
-      liveReservations += 1;
-      continue;
-    }
     if (!fs.removeTreeGuarded(path, identity)) {
       throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report namespace reclamation failed');
     }
   }
-  if (liveReservations > 0) {
-    throw new StoreDatabaseEvidenceUnavailableError('over-bound', 'the aggregate report-copy bound is reserved');
-  }
-}
-
-function reportNamespaceOwnerPid(fs: StoreResetInspectionFs, path: string, name: string): number | null {
-  const match = REPORT_NAMESPACE_PATTERN.exec(name);
-  if (match !== null) return Number(match[1]);
-  if (name !== REPORT_ACTIVE_NAMESPACE) return null;
-  let cursor: ReturnType<StoreResetInspectionFs['openDirectory']>;
-  try {
-    cursor = fs.openDirectory(path);
-  } catch {
-    return null;
-  }
-  let ownerPid: number | null = null;
-  let valid = true;
-  try {
-    for (;;) {
-      const entry = fs.readDirectory(cursor);
-      if (entry === null) break;
-      const owner = REPORT_OWNER_PATTERN.exec(entry.name);
-      if (owner === null) continue;
-      if (ownerPid !== null) {
-        valid = false;
-        break;
-      }
-      ownerPid = Number(owner[1]);
-    }
-  } catch {
-    valid = false;
-  } finally {
-    try {
-      fs.closeDirectory(cursor);
-    } catch {
-      valid = false;
-    }
-  }
-  return valid ? ownerPid : null;
 }
 
 export async function diagnoseStoreDatabaseCopy(options: {
@@ -605,6 +585,7 @@ export async function diagnoseStoreDatabaseCopy(options: {
   }
   const supervision = await superviseStoreResetDiagnosticChild(options.supervisor, options.executable, staged.dbPath);
   if (supervision.termination === 'termination_unconfirmed') {
+    staged.abandon();
     return { integrity: 'unavailable', termination: 'termination_unconfirmed', cleanup: 'cleanup_unavailable' };
   }
   const sourceUnchanged = staged.verify();
@@ -642,86 +623,41 @@ export function createStoreResetIncidentDiagnosticRunner(options: {
       };
     }
 
-    let tempDirectory: string | null = null;
-    let tempIdentity: StoreResetInspectionStat | null = null;
-    let tempRealPath: string | null = null;
-    let supervision: Awaited<ReturnType<typeof superviseStoreResetDiagnosticChild>> | null = null;
-    const cleanup = (): StoreResetDiagnosticStatus['cleanup'] => {
-      if (tempDirectory === null) {
-        return 'not_required';
-      }
-      if (tempIdentity === null || tempRealPath === null) return 'cleanup_unavailable';
-      try {
-        if (fs.realpath(tempDirectory) !== tempRealPath) return 'cleanup_unavailable';
-        return fs.removeTreeGuarded(tempDirectory, tempIdentity) ? 'removed' : 'cleanup_unavailable';
-      } catch {
-        return 'cleanup_unavailable';
-      }
-    };
-
+    let staged: StagedStoreDatabaseEvidence;
     try {
-      tempDirectory = fs.mkdtemp(join(options.tempRoot, 'coral-store-reset-'));
-      tempIdentity = fs.lstat(tempDirectory);
-      if (
-        tempIdentity === null ||
-        tempIdentity.kind !== 'directory' ||
-        (options.platform !== 'win32' && (tempIdentity.mode & 0o777n) !== 0o700n)
-      ) {
-        throw new Error('temporary directory is not private');
-      }
-      tempRealPath = fs.realpath(tempDirectory);
-
-      let remaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
-      const sourceHashes = new Map<string, string>();
-      for (const { name, entry } of evidence) {
-        const copied = copyEvidence({
-          fs,
-          source: join(incidentPath, name),
-          destination: join(tempDirectory, name),
-          remainingBudget: remaining,
-          platform: options.platform,
-        });
-        if (copied.bytes !== entry.sizeBytes || copied.sha256 !== entry.sha256) {
-          throw new Error('source differs from manifest');
-        }
-        remaining -= copied.bytes;
-        sourceHashes.set(name, copied.sha256);
-      }
-
-      supervision = await superviseStoreResetDiagnosticChild(
-        options.supervisor,
-        options.executable,
-        join(tempDirectory, 'store.db'),
-      );
-
-      let verificationRemaining = MAX_SQLITE_DIAGNOSTIC_BYTES;
-      for (const { name } of evidence) {
-        const verified = hashEvidence(fs, join(incidentPath, name), verificationRemaining);
-        if (verified.sha256 !== sourceHashes.get(name)) {
-          throw new Error('source changed during diagnostic');
-        }
-        verificationRemaining -= verified.bytes;
-      }
-      if (supervision.termination === 'termination_unconfirmed') {
-        return {
-          integrity: 'unavailable',
-          termination: 'termination_unconfirmed',
-          cleanup: 'cleanup_unavailable',
-        };
-      }
-
-      const cleanupState = cleanup();
-      return {
-        integrity: cleanupState === 'removed' ? supervision.integrity : 'unavailable',
-        termination: supervision.termination,
-        cleanup: cleanupState,
-      };
+      staged = stageStoreDatabaseEvidence({
+        fs,
+        sourceDirectory: incidentPath,
+        tempRoot: options.tempRoot,
+        platform: options.platform,
+        evidence: evidence.map(({ name, entry }) => ({
+          name,
+          sizeBytes: entry.sizeBytes,
+          sha256: entry.sha256,
+        })),
+      });
     } catch {
       return {
         integrity: 'unavailable',
-        termination: supervision?.termination ?? 'not_started',
-        cleanup: supervision?.termination === 'termination_unconfirmed' ? 'cleanup_unavailable' : cleanup(),
+        termination: 'not_started',
+        cleanup: 'not_required',
       };
     }
+    const supervision = await superviseStoreResetDiagnosticChild(options.supervisor, options.executable, staged.dbPath);
+    if (supervision.termination === 'termination_unconfirmed') {
+      staged.abandon();
+      return {
+        integrity: 'unavailable',
+        termination: 'termination_unconfirmed',
+        cleanup: 'cleanup_unavailable',
+      };
+    }
+    const sourceUnchanged = staged.verify();
+    const cleanup = staged.cleanup();
+    return {
+      integrity: sourceUnchanged && cleanup === 'removed' ? supervision.integrity : 'unavailable',
+      termination: supervision.termination,
+      cleanup,
+    };
   };
 }

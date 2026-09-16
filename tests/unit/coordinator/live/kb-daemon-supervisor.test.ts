@@ -207,10 +207,16 @@ describe('KB daemon supervisor', () => {
       command: '/node',
     });
 
-    void supervisor.start('7');
+    void supervisor.start({ storeRoot: '/store', epoch: '7', path: '/store/epoch-7/store.db' });
     await flushMicrotasks();
 
-    expect(spawnCalls[0]?.envAdditions).toMatchObject({ CORAL_KB_DAEMON_STORE_EPOCH: '7' });
+    expect(spawnCalls[0]?.envAdditions).toMatchObject({
+      CORAL_KB_DAEMON_STORE: JSON.stringify({
+        storeRoot: '/store',
+        epoch: '7',
+        path: '/store/epoch-7/store.db',
+      }),
+    });
   });
 
   it('forwards every inherited CORAL_KB_* config var into the spawn env (composeChildEnv strips inherited CORAL_*)', async () => {

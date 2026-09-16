@@ -1738,7 +1738,7 @@ export function createCoordinatorCore(
     startProviderOperationReconciler: services.startProviderOperationReconciler,
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
-    scheduleStoreEpochSweepFn: (openEpoch) => {
+    scheduleStoreEpochSweepFn: (openStore) => {
       const controller = new AbortController();
       storeEpochSweepAbort = controller;
       storeEpochSweepSettlement = new Promise<void>((resolveSweep) => {
@@ -1746,8 +1746,7 @@ export function createCoordinatorCore(
       });
       storeEpochSweepTimer = runtime.time.setTimeout(() => {
         storeEpochSweepTimer = null;
-        const dbDir = runtime.paths.coral.store.dbDir;
-        void sweepStoreEpochsPostReady(runtime, dbDir, openEpoch, { signal: controller.signal })
+        void sweepStoreEpochsPostReady(runtime, openStore, { signal: controller.signal })
           .catch((error: unknown) => {
             world.log(`Store epoch retention sweep could not start: ${formatError(error)}\n`);
           })

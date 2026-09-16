@@ -48,8 +48,7 @@ export type StoreEpochMetadata = Readonly<{
 
 export type StoreEpochSettlement = Readonly<{
   db: Database;
-  epoch: StoreEpoch;
-  path: string;
+  store: ResolvedStoreEpoch;
 }>;
 
 export type StoreEpochListEntry = Readonly<{
@@ -59,6 +58,7 @@ export type StoreEpochListEntry = Readonly<{
   publicationReason: StoreEpochClassification;
   supersededStoreVersion: string | null;
   epochJson: StoreEpochMetadataDisposition;
+  resolved: ResolvedStoreEpoch | null;
 }>;
 
 export type StoreEpochHolderListEntry = Readonly<{
@@ -303,19 +303,47 @@ export function resolveCurrentStoreEpoch(storage: StoreEpochDiscoveryStorage, db
 export function inspectCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>): CurrentStoreInspection {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
   try {
-    if (!runtime.storage.existsSync(configuredDbDir)) return { kind: 'absent' };
     const storeRoot = runtime.storage.realpathSync(configuredDbDir);
     const observations = observeStoreEpochs(runtime.storage, storeRoot);
     const current = currentProvenEpoch(observations);
     if (current !== null) return { kind: 'current', epoch: resolvedStoreEpoch(storeRoot, current.epoch) };
     return { kind: observations.length === 0 ? 'absent' : 'unobservable' };
-  } catch {
-    return { kind: 'unobservable' };
+  } catch (error: unknown) {
+    return { kind: errorCode(error) === 'ENOENT' ? 'absent' : 'unobservable' };
   }
 }
 
-function resolvedStoreEpoch(storeRoot: string, epoch: StoreEpoch): ResolvedStoreEpoch {
+export function resolvedStoreEpoch(storeRoot: string, epoch: StoreEpoch): ResolvedStoreEpoch {
   return { storeRoot, epoch, path: epochPath(storeRoot, epoch) };
+}
+
+export function encodeResolvedStoreEpoch(resolved: ResolvedStoreEpoch): string {
+  return JSON.stringify(resolved);
+}
+
+export function decodeResolvedStoreEpoch(value: string | undefined): ResolvedStoreEpoch | undefined {
+  if (value === undefined) return undefined;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    if (
+      typeof decoded !== 'object' ||
+      decoded === null ||
+      !('storeRoot' in decoded) ||
+      !('epoch' in decoded) ||
+      !('path' in decoded) ||
+      typeof decoded.storeRoot !== 'string' ||
+      typeof decoded.epoch !== 'string' ||
+      typeof decoded.path !== 'string' ||
+      resolve(decoded.storeRoot) !== decoded.storeRoot ||
+      epochNumber(`epoch-${decoded.epoch}`) !== decoded.epoch ||
+      epochPath(decoded.storeRoot, decoded.epoch) !== decoded.path
+    ) {
+      return undefined;
+    }
+    return { storeRoot: decoded.storeRoot, epoch: decoded.epoch, path: decoded.path };
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>, path?: string): ResolvedStorePath {
@@ -350,13 +378,15 @@ export function resolveCurrentStorePath(runtime: Pick<Runtime, 'paths' | 'storag
 
 export function openWritableStoreDbNoReset(
   runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'storage'>,
-  options: {
-    readonly path?: string;
+  options: ({ readonly path?: string; readonly resolved?: never } | { readonly resolved: ResolvedStoreEpoch }) & {
     readonly busyTimeoutMs?: number;
     readonly storeFormat: StoreFormatDescription;
   },
 ): Database {
-  const resolved = resolveCurrentStore(runtime, options.path);
+  const resolved =
+    options.resolved === undefined
+      ? resolveCurrentStore(runtime, options.path)
+      : { path: options.resolved.path, epoch: options.resolved, epochCandidate: true };
   const lease = resolved.epoch === null ? null : acquireStoreEpochReadLock(runtime, resolved.epoch);
   const proof =
     resolved.path === ':memory:'
@@ -393,11 +423,11 @@ export function storeEpochAtPath(dbDir: string, path: string): StoreEpoch | null
   return resolve(directory, '..') === resolve(dbDir) ? epochNumber(basename(directory)) : null;
 }
 
-export function provenStoreEpochAtPath(storage: StoragePort, dbDir: string, path: string): StoreEpoch | null {
-  return resolveProvenStoreEpochAtPath(storage, dbDir, path)?.epoch ?? null;
-}
-
-function resolveProvenStoreEpochAtPath(storage: StoragePort, dbDir: string, path: string): ResolvedStoreEpoch | null {
+export function resolveProvenStoreEpochAtPath(
+  storage: StoragePort,
+  dbDir: string,
+  path: string,
+): ResolvedStoreEpoch | null {
   let storeRoot: string;
   let addressedPath: string;
   try {
@@ -757,8 +787,8 @@ export function listStoreEpochHolders(runtime: Runtime): readonly StoreEpochHold
   let dbDir: string;
   try {
     dbDir = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
-  } catch {
-    return [];
+  } catch (error: unknown) {
+    return errorCode(error) === 'ENOENT' ? [] : [{ id: 'unobservable', epoch: null, pid: null, state: 'unobservable' }];
   }
   const observed = observeStoreEpochHolders(runtime, dbDir);
   if (observed.kind === 'unobservable') {
@@ -1229,11 +1259,11 @@ async function syncDirectoryDurable(storage: StoragePort, path: string): Promise
 
 export async function sweepStoreEpochsPostReady(
   runtime: Runtime,
-  configuredDbDir: string,
-  openEpoch: StoreEpoch,
+  openStore: ResolvedStoreEpoch,
   options: { readonly signal?: AbortSignal } = {},
 ): Promise<StoreEpochSweepResult> {
-  const dbDir = runtime.storage.realpathSync(configuredDbDir);
+  const dbDir = openStore.storeRoot;
+  const openEpoch = openStore.epoch;
   let unsyncedMutation = false;
   const syncMutations = async (): Promise<boolean> => {
     if (!unsyncedMutation) return true;
@@ -1482,11 +1512,7 @@ function openPublishedEpoch(
       busyTimeoutMs: options.startupBusyTimeoutMs,
     });
     db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-    return {
-      db: registerStoreEpochHolder(runtime, resolved, db, lease),
-      epoch: resolved.epoch,
-      path: resolved.path,
-    };
+    return { db: registerStoreEpochHolder(runtime, resolved, db, lease), store: resolved };
   } catch (error: unknown) {
     lease();
     throw error;
@@ -1563,7 +1589,7 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
       busyTimeoutMs: options.startupBusyTimeoutMs,
     });
     if (opened.kind !== 'opened') throw new Error('An in-memory store cannot be incompatible before opening.');
-    return { db: opened.db, epoch: '1', path: ':memory:' };
+    return { db: opened.db, store: { storeRoot: ':memory:', epoch: '1', path: ':memory:' } };
   }
 
   runtime.storage.mkdirSync(configuredDbDir, { recursive: true, mode: 0o700 });
@@ -1581,7 +1607,7 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
           throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
         }
         opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-        return { db: opened.db, epoch: resolved.epoch, path: resolved.path };
+        return { db: opened.db, store: resolved };
       }
       classification = opened.classification;
     }
@@ -1711,10 +1737,19 @@ export function listStoreEpochResidues(
   runtime: Pick<Runtime, 'paths' | 'storage'>,
 ): readonly StoreEpochResidueListEntry[] {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
-  if (!runtime.storage.existsSync(configuredDbDir)) return [];
-  const dbDir = runtime.storage.realpathSync(configuredDbDir);
-  return runtime.storage
-    .readdirSync(dbDir)
+  let dbDir: string;
+  try {
+    dbDir = runtime.storage.realpathSync(configuredDbDir);
+  } catch (error: unknown) {
+    return errorCode(error) === 'ENOENT' ? [] : [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
+  }
+  let entries: readonly string[];
+  try {
+    entries = runtime.storage.readdirSync(dbDir);
+  } catch (error: unknown) {
+    return errorCode(error) === 'ENOENT' ? [] : [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
+  }
+  return entries
     .filter(isStoreEpochResidue)
     .sort()
     .map((name) => {
@@ -1732,9 +1767,42 @@ export function listStoreEpochResidues(
 
 export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): readonly StoreEpochListEntry[] {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
-  if (!runtime.storage.existsSync(configuredDbDir)) return [];
-  const dbDir = runtime.storage.realpathSync(configuredDbDir);
-  const observations = observeStoreEpochs(runtime.storage, dbDir);
+  let dbDir: string;
+  try {
+    dbDir = runtime.storage.realpathSync(configuredDbDir);
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') return [];
+    const cause = error instanceof Error ? error.message : String(error);
+    return [
+      {
+        epoch: 'unobservable',
+        role: 'unobservable',
+        bytes: null,
+        publicationReason: unavailableClassification(error),
+        supersededStoreVersion: null,
+        epochJson: { kind: 'unreadable', cause },
+        resolved: null,
+      },
+    ];
+  }
+  let observations: readonly StoreEpochObservation[];
+  try {
+    observations = observeStoreEpochs(runtime.storage, dbDir);
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') return [];
+    const cause = error instanceof Error ? error.message : String(error);
+    return [
+      {
+        epoch: 'unobservable',
+        role: 'unobservable',
+        bytes: null,
+        publicationReason: unavailableClassification(error),
+        supersededStoreVersion: null,
+        epochJson: { kind: 'unreadable', cause },
+        resolved: null,
+      },
+    ];
+  }
   const current = currentProvenEpoch(observations)?.epoch ?? null;
   const garbageEpochs = garbageStoreEpochs(
     observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
@@ -1763,6 +1831,7 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
         supersededStoreVersion:
           'storedProductVersion' in publicationReason ? publicationReason.storedProductVersion : null,
         epochJson: observation.epochJson,
+        resolved: observation.proof.kind === 'proven' ? resolvedStoreEpoch(dbDir, epoch) : null,
       };
     });
 }

@@ -81,7 +81,7 @@ it('does not expose a sweepable preparation directory before constructing its SQ
 
   try {
     const settled = settleStoreEpoch(runtime, { storeFormat, build });
-    epoch = settled.epoch;
+    epoch = settled.store.epoch;
     settled.db.close();
   } catch (error: unknown) {
     failure = error;

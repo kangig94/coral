@@ -159,9 +159,9 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
         target: 'gen2',
         flavor: options.runtime.flavor,
         baseDir: paths.baseDir,
-        storeDbPath: settled.path,
+        storeDbPath: settled.store.path,
         previousEpoch,
-        currentEpoch: settled.epoch,
+        currentEpoch: settled.store.epoch,
       };
     } finally {
       adoption();

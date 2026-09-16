@@ -416,6 +416,6 @@ describe('real store reset inspection filesystem', () => {
       },
     });
     expect(sha256(readFileSync(paths.evidencePath))).toBe(sha256(evidence));
-    expect(readdirSync(diagnosticTempRoot)).toEqual([]);
+    expect(readdirSync(diagnosticTempRoot)).toEqual(['coral-store-report.lock']);
   });
 });

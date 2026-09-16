@@ -208,6 +208,21 @@ describe('write-once store epoch invariants', () => {
     expect(epoch).toContain('attemptExclusiveFileLockSync');
   });
 
+  it('keeps report staging behind one lock-owned implementation and reclaimer', () => {
+    const diagnostic = source('src/store/reset-incident-diagnostic.ts');
+    const legacyRunner = functionSource(
+      'src/store/reset-incident-diagnostic.ts',
+      'createStoreResetIncidentDiagnosticRunner',
+    );
+    const reclaimer = functionSource('src/store/reset-incident-diagnostic.ts', 'reclaimStoreReportNamespaces');
+
+    expect(diagnostic.match(/\.mkdtemp\(/gu)).toHaveLength(1);
+    expect(legacyRunner).toContain('stageStoreDatabaseEvidence');
+    expect(diagnostic).not.toMatch(/process\.kill|\.owner-/u);
+    expect(reclaimer).toContain('REPORT_NAMESPACE_PATTERN');
+    expect(reclaimer).toContain('LEGACY_REPORT_NAMESPACE_PATTERN');
+  });
+
   it('requires private device identity for every required epoch file in source and generated hooks', () => {
     const epoch = source('src/store/epoch.ts');
     const hook = source('clients/hooks/lib/store-epoch.mjs');
@@ -223,7 +238,6 @@ describe('write-once store epoch invariants', () => {
   });
 
   it('uses the metadata-complete epoch proof for every production opener', () => {
-    expect(functionSource('src/store/epoch.ts', 'provenStoreEpochAtPath')).toContain('resolveProvenStoreEpochAtPath');
     expect(functionSource('src/store/epoch.ts', 'resolveProvenStoreEpochAtPath')).toContain('observeStoreEpoch');
     expect(functionSource('src/store/epoch.ts', 'openWritableStoreDbNoReset')).toContain('acquireStoreEpochReadLock');
     expect(functionSource('src/store/epoch.ts', 'resolveCurrentStore')).toContain('resolveProvenStoreEpochAtPath');

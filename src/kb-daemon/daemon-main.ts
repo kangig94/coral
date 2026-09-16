@@ -28,6 +28,7 @@ import { errorMessage } from '../infra/error-format.js';
 import { rehydrateCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 import { AbortError } from '../runtime/abort.js';
 import type { CurateAssistantPort } from '../kb/curate/assistant.js';
+import { decodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../store/epoch.js';
 import type { CurateUsageBudgetPort } from '../kb/curate/usage-budget.js';
 import { parsePrincipalWire, principalToWire } from '../security/principal-wire.js';
 import { authorizeCapability, authorizeResourceBinding } from '../security/policy/authorize.js';
@@ -98,9 +99,8 @@ export function resolveKbDaemonParentPid(value: string | undefined, selfPid = pr
   return pid;
 }
 
-export function resolveKbDaemonStoreEpoch(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed !== undefined && /^[1-9]\d*$/u.test(trimmed) ? trimmed : undefined;
+export function resolveKbDaemonStore(value: string | undefined): ResolvedStoreEpoch | undefined {
+  return decodeResolvedStoreEpoch(value);
 }
 
 export async function handleKbDaemonExpansionRpcRequest(
@@ -406,7 +406,7 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     curateUsageBudget: parentCurateUsageBudget,
     backendNamespace: process.env.CORAL_KB_DAEMON_BACKEND_NAMESPACE,
     bundleHash: process.env.CORAL_KB_DAEMON_BUNDLE_HASH,
-    storeEpoch: resolveKbDaemonStoreEpoch(process.env.CORAL_KB_DAEMON_STORE_EPOCH),
+    store: resolveKbDaemonStore(process.env.CORAL_KB_DAEMON_STORE),
     onJournalEvents: (appended) =>
       writeControlMessage({
         type: KB_DAEMON_EVENT_MESSAGE,

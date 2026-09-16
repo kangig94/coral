@@ -34,6 +34,7 @@ import {
   STORE_EPOCH_METADATA_FILE_NAME,
   epochDirectory,
   epochPath,
+  resolvedStoreEpoch,
   storeEpochLockPath,
   sweepStoreEpochs,
   sweepStoreEpochsPostReady,
@@ -127,7 +128,9 @@ describe('store epoch lock-release durability barriers', () => {
     const tracked = trackingRootSync(base);
     lockReleaseFault.paths.add(storeEpochLockPath(dbDir, '1'));
 
-    await expect(sweepStoreEpochsPostReady(tracked.runtime, dbDir, '5')).resolves.toBe('lock-release-failed');
+    await expect(sweepStoreEpochsPostReady(tracked.runtime, resolvedStoreEpoch(dbDir, '5'))).resolves.toBe(
+      'lock-release-failed',
+    );
     expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
     expect(tracked.syncs()).toBeGreaterThan(0);
   });

@@ -5,12 +5,11 @@ import {
   type ActiveStoreSelectionProtocolOptions,
 } from './active-store-selection-coordination.js';
 import type { Database } from './db.js';
-import type { StoreEpoch } from './epoch.js';
+import type { ResolvedStoreEpoch } from './epoch.js';
 
 type OpenedStartupBackendStore = Readonly<{
   db: Database;
-  epoch: StoreEpoch;
-  path: string;
+  store: ResolvedStoreEpoch;
 }>;
 
 export type StartupBackendStoreRoutingResult =
@@ -47,9 +46,8 @@ export async function routeOrOpenBackendStoreAtStartup(
       kind: 'reset-newer-invalid',
       evidence: result.invalidTargetEvidence,
       db: result.db,
-      epoch: result.epoch,
-      path: result.path,
+      store: result.store,
     };
   }
-  return { kind: 'open', db: result.db, epoch: result.epoch, path: result.path };
+  return { kind: 'open', db: result.db, store: result.store };
 }
