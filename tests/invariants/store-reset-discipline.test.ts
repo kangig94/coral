@@ -104,7 +104,9 @@ describe('write-once store epoch invariants', () => {
     };
     visit(parsed);
     expect(deletionOwners.length).toBeGreaterThan(0);
-    expect(new Set(deletionOwners)).toEqual(new Set(['removeAfterReapingRename', 'sweepStoreEpochs']));
+    expect(new Set(deletionOwners)).toEqual(
+      new Set(['removeAfterReapingRename', 'cleanStoreEpochHolders', 'reapStoreEpochEntries', 'sweepStoreEpochs']),
+    );
   });
 
   it('retains exactly the highest two proven epochs across numbering gaps', () => {

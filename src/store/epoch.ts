@@ -830,6 +830,158 @@ export function listStoreEpochHolders(runtime: Runtime): readonly StoreEpochHold
   });
 }
 
+type StoreEpochHolderCleanupResult =
+  | Readonly<{ kind: 'unobservable' }>
+  | Readonly<{
+      kind: 'cleaned';
+      changed: boolean;
+      deletionFailed: boolean;
+      releaseHolderLive: boolean;
+      unobservableHolder: boolean;
+    }>;
+
+function cleanStoreEpochHolders(
+  runtime: Runtime,
+  dbDir: string,
+  releaseEpoch: StoreEpoch | undefined,
+): StoreEpochHolderCleanupResult {
+  const holderRead = observeStoreEpochHolders(runtime, dbDir, true);
+  if (holderRead.kind === 'unobservable') return holderRead;
+
+  let changed = false;
+  let deletionFailed = false;
+  let releaseHolderLive = false;
+  let unobservableHolder = false;
+  for (const holder of holderRead.holders) {
+    if (holder.state === 'live') {
+      releaseHolderLive ||= holder.epoch === releaseEpoch;
+      continue;
+    }
+    if (holder.state === 'unobservable' && (releaseEpoch === undefined || !holder.removable)) {
+      unobservableHolder = true;
+      continue;
+    }
+    try {
+      changed = true;
+      const removed = removeDuringSweep(runtime.storage, dbDir, holder.path);
+      deletionFailed ||= !removed;
+      if (holder.state === 'unobservable') unobservableHolder = true;
+    } finally {
+      holder.proof?.();
+    }
+  }
+  return { kind: 'cleaned', changed, deletionFailed, releaseHolderLive, unobservableHolder };
+}
+
+function syncStoreEpochSweepDirectory(storage: StoragePort, dbDir: string): boolean {
+  try {
+    return storage.syncDirectoryDurableSync(dbDir);
+  } catch (error: unknown) {
+    auditSweepFailure(dbDir, error);
+    return false;
+  }
+}
+
+function guardStoreEpochSweepCoordinator(
+  runtime: Runtime,
+  dbDir: string,
+  releaseEpoch: StoreEpoch | undefined,
+): StoreEpochSweepResult | null {
+  try {
+    const coordinator = probeCoordinator(runtime);
+    if (
+      coordinator.kind === 'unobservable' ||
+      (coordinator.kind === 'absent' && releaseEpoch === undefined) ||
+      (coordinator.kind === 'live' &&
+        coordinator.record.pid !== runtime.env.pid() &&
+        (releaseEpoch === undefined ||
+          coordinator.record.storeEpoch === undefined ||
+          coordinator.record.storeEpoch === releaseEpoch))
+    ) {
+      return coordinator.kind === 'live' ? 'live-holder' : 'unobservable-metadata';
+    }
+    return null;
+  } catch (error: unknown) {
+    auditSweepFailure(dbDir, error);
+    return 'unobservable-metadata';
+  }
+}
+
+function releaseStoreEpochDuringSweep(
+  runtime: Runtime,
+  dbDir: string,
+  releaseEpoch: StoreEpoch,
+  assertOwned: (() => void) | undefined,
+): StoreEpochSweepResult {
+  assertOwned?.();
+  const proof = proveReleaseTarget(runtime.storage, dbDir, releaseEpoch);
+  if (proof === 'current') return 'current';
+  if (proof === 'unobservable') return 'unobservable-metadata';
+  if (proof === 'absent') {
+    return syncStoreEpochSweepDirectory(runtime.storage, dbDir) ? 'absent' : 'absent-durability-sync-failed';
+  }
+
+  const removal = removeEpochEntry(runtime, dbDir, releaseEpoch);
+  if (removal === 'locked') return 'live-holder';
+  if (!syncStoreEpochSweepDirectory(runtime.storage, dbDir)) return 'durability-sync-failed';
+  if (removal === 'lock-release-failed') return 'lock-release-failed';
+  return removal === 'removed' ? 'complete' : 'deletion-failed';
+}
+
+type StoreEpochRetentionSelection = Readonly<{
+  byEpoch: ReadonlyMap<StoreEpoch, StoreEpochObservation>;
+  garbageEpochs: ReadonlySet<StoreEpoch>;
+}>;
+
+function selectStoreEpochRetention(observations: readonly StoreEpochObservation[]): StoreEpochRetentionSelection {
+  return {
+    byEpoch: new Map(observations.map((observation) => [observation.epoch, observation])),
+    garbageEpochs: garbageStoreEpochs(
+      observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
+    ),
+  };
+}
+
+type StoreEpochReapingResult = Readonly<{
+  complete: boolean;
+  liveHolder: boolean;
+  lockReleaseFailed: boolean;
+}>;
+
+function reapStoreEpochEntries(
+  runtime: Runtime,
+  dbDir: string,
+  current: StoreEpoch,
+  entries: readonly string[],
+  retention: StoreEpochRetentionSelection,
+): StoreEpochReapingResult {
+  let complete = true;
+  let liveHolder = false;
+  let lockReleaseFailed = false;
+  for (const entry of entries) {
+    const epoch = epochNumber(entry);
+    const observation = epoch === null ? undefined : retention.byEpoch.get(epoch);
+    const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
+    const disprovenEpochEntry = observation?.proof.kind === 'disproven';
+    const garbageEpoch = observation?.proof.kind === 'proven' && retention.garbageEpochs.has(observation.epoch);
+    if (!invalidEpochEntry && (epoch === current || (!disprovenEpochEntry && !garbageEpoch))) continue;
+
+    if (epoch === null) {
+      complete = removeDuringSweep(runtime.storage, dbDir, join(dbDir, entry)) && complete;
+      continue;
+    }
+    const removal = removeEpochEntry(runtime, dbDir, epoch);
+    if (removal === 'locked') {
+      liveHolder = true;
+      auditSweepSkip(join(dbDir, entry));
+      continue;
+    }
+    lockReleaseFailed ||= removal === 'lock-release-failed';
+    complete = removal === 'removed' && complete;
+  }
+  return { complete, liveHolder, lockReleaseFailed };
+}
+
 export function sweepStoreEpochs(
   runtime: Runtime,
   configuredDbDir: string,
@@ -847,88 +999,22 @@ export function sweepStoreEpochs(
     if (initialReleaseProof === 'unobservable') return 'unobservable-metadata';
   }
 
-  const holderRead = observeStoreEpochHolders(runtime, dbDir, true);
-  if (holderRead.kind === 'unobservable') return 'unobservable-holder';
-  let holdersChanged = false;
-  let holderDeletionFailed = false;
-  let releaseHolderLive = false;
-  let unobservableHolder = false;
-  for (const holder of holderRead.holders) {
-    if (holder.state === 'live') {
-      releaseHolderLive ||= holder.epoch === options.releaseEpoch;
-      continue;
-    }
-    if (holder.state === 'unobservable' && (options.releaseEpoch === undefined || !holder.removable)) {
-      unobservableHolder = true;
-      continue;
-    }
-    try {
-      holdersChanged = true;
-      const removed = removeDuringSweep(storage, dbDir, holder.path);
-      holderDeletionFailed ||= !removed;
-      if (holder.state === 'unobservable') unobservableHolder = true;
-    } finally {
-      holder.proof?.();
-    }
+  const holderCleanup = cleanStoreEpochHolders(runtime, dbDir, options.releaseEpoch);
+  if (holderCleanup.kind === 'unobservable') return 'unobservable-holder';
+  if (holderCleanup.changed && !syncStoreEpochSweepDirectory(storage, dbDir)) {
+    return options.releaseEpoch === undefined ? 'durability-sync-failed' : 'pre-deletion-durability-sync-failed';
   }
-  if (holdersChanged) {
-    try {
-      if (!storage.syncDirectoryDurableSync(dbDir)) {
-        return options.releaseEpoch === undefined ? 'durability-sync-failed' : 'pre-deletion-durability-sync-failed';
-      }
-    } catch (error: unknown) {
-      auditSweepFailure(dbDir, error);
-      return options.releaseEpoch === undefined ? 'durability-sync-failed' : 'pre-deletion-durability-sync-failed';
-    }
-  }
-  if (holderDeletionFailed) {
+  if (holderCleanup.deletionFailed) {
     return options.releaseEpoch === undefined ? 'deletion-failed' : 'holder-cleanup-failed';
   }
-  if (unobservableHolder) return 'unobservable-holder';
-  if (releaseHolderLive) return 'live-holder';
+  if (holderCleanup.unobservableHolder) return 'unobservable-holder';
+  if (holderCleanup.releaseHolderLive) return 'live-holder';
 
-  try {
-    const coordinator = probeCoordinator(runtime);
-    if (
-      coordinator.kind === 'unobservable' ||
-      (coordinator.kind === 'absent' && options.releaseEpoch === undefined) ||
-      (coordinator.kind === 'live' &&
-        coordinator.record.pid !== runtime.env.pid() &&
-        (options.releaseEpoch === undefined ||
-          coordinator.record.storeEpoch === undefined ||
-          coordinator.record.storeEpoch === options.releaseEpoch))
-    ) {
-      return coordinator.kind === 'live' ? 'live-holder' : 'unobservable-metadata';
-    }
-  } catch (error: unknown) {
-    auditSweepFailure(dbDir, error);
-    return 'unobservable-metadata';
-  }
+  const coordinatorResult = guardStoreEpochSweepCoordinator(runtime, dbDir, options.releaseEpoch);
+  if (coordinatorResult !== null) return coordinatorResult;
 
   if (options.releaseEpoch !== undefined) {
-    options.assertOwned?.();
-    const proof = proveReleaseTarget(storage, dbDir, options.releaseEpoch);
-    if (proof === 'current') return 'current';
-    if (proof === 'unobservable') return 'unobservable-metadata';
-    if (proof === 'absent') {
-      try {
-        return storage.syncDirectoryDurableSync(dbDir) ? 'absent' : 'absent-durability-sync-failed';
-      } catch (error: unknown) {
-        auditSweepFailure(dbDir, error);
-        return 'absent-durability-sync-failed';
-      }
-    }
-    const removal = removeEpochEntry(runtime, dbDir, options.releaseEpoch);
-    if (removal === 'locked') return 'live-holder';
-    const releaseRemoval: Exclude<LockedRemoval, 'locked'> = removal;
-    try {
-      if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
-      if (releaseRemoval === 'lock-release-failed') return 'lock-release-failed';
-      return releaseRemoval === 'removed' ? 'complete' : 'deletion-failed';
-    } catch (error: unknown) {
-      auditSweepFailure(dbDir, error);
-      return 'durability-sync-failed';
-    }
+    return releaseStoreEpochDuringSweep(runtime, dbDir, options.releaseEpoch, options.assertOwned);
   }
 
   if (current === null) return 'unobservable-metadata';
@@ -942,47 +1028,17 @@ export function sweepStoreEpochs(
   }
 
   const observations = observeStoreEpochs(storage, dbDir, entries);
-  const byEpoch = new Map(observations.map((observation) => [observation.epoch, observation]));
-  const garbageEpochs = garbageStoreEpochs(
-    observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
-  );
-  let complete = true;
-  let liveHolder = false;
-  let lockReleaseFailed = false;
-  for (const entry of entries) {
-    const epoch = epochNumber(entry);
-    const observation = epoch === null ? undefined : byEpoch.get(epoch);
-    const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
-    const disprovenEpochEntry = observation?.proof.kind === 'disproven';
-    const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
-    if (invalidEpochEntry || (epoch !== current && (disprovenEpochEntry || garbageEpoch))) {
-      if (epoch === null) {
-        complete = removeDuringSweep(storage, dbDir, join(dbDir, entry)) && complete;
-      } else {
-        const removal = removeEpochEntry(runtime, dbDir, epoch);
-        if (removal === 'locked') {
-          liveHolder = true;
-          auditSweepSkip(join(dbDir, entry));
-          continue;
-        }
-        lockReleaseFailed ||= removal === 'lock-release-failed';
-        complete = removal === 'removed' && complete;
-      }
-    }
-  }
+  const retention = selectStoreEpochRetention(observations);
+  const reaping = reapStoreEpochEntries(runtime, dbDir, current, entries, retention);
 
+  let complete = reaping.complete;
   if (compareEpoch(current, '1') >= 0) {
     complete = removeDuringSweep(storage, dbDir, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY)) && complete;
   }
-  try {
-    if (!storage.syncDirectoryDurableSync(dbDir)) return 'durability-sync-failed';
-    if (lockReleaseFailed) return 'lock-release-failed';
-    if (!complete) return 'deletion-failed';
-    return liveHolder ? 'live-holder' : 'complete';
-  } catch (error: unknown) {
-    auditSweepFailure(dbDir, error);
-    return 'durability-sync-failed';
-  }
+  if (!syncStoreEpochSweepDirectory(storage, dbDir)) return 'durability-sync-failed';
+  if (reaping.lockReleaseFailed) return 'lock-release-failed';
+  if (!complete) return 'deletion-failed';
+  return reaping.liveHolder ? 'live-holder' : 'complete';
 }
 
 async function yieldSweepTurn(): Promise<void> {
@@ -1293,39 +1349,41 @@ async function syncDirectoryDurable(storage: StoragePort, path: string): Promise
   }
 }
 
-export async function sweepStoreEpochsPostReady(
+type PostReadySweepMutationState = { pending: boolean };
+
+async function syncPostReadySweepMutations(
   runtime: Runtime,
-  openStore: ResolvedStoreEpoch,
-  options: { readonly signal?: AbortSignal } = {},
-): Promise<StoreEpochSweepResult> {
-  const dbDir = openStore.storeRoot;
-  const openEpoch = openStore.epoch;
-  let unsyncedMutation = false;
-  const syncMutations = async (): Promise<boolean> => {
-    if (!unsyncedMutation) return true;
-    if (!(await syncDirectoryDurable(runtime.storage, dbDir))) return false;
-    unsyncedMutation = false;
-    return true;
-  };
-  const finish = async (result: StoreEpochSweepResult): Promise<StoreEpochSweepResult> =>
-    (await syncMutations()) ? result : 'durability-sync-failed';
+  dbDir: string,
+  mutations: PostReadySweepMutationState,
+): Promise<boolean> {
+  if (!mutations.pending) return true;
+  if (!(await syncDirectoryDurable(runtime.storage, dbDir))) return false;
+  mutations.pending = false;
+  return true;
+}
 
-  if (options.signal?.aborted) return 'cancelled';
-  let entries: readonly string[];
-  try {
-    entries = await runtime.storage.readdir(dbDir);
-  } catch (error: unknown) {
-    auditSweepFailure(dbDir, error);
-    return 'unobservable-metadata';
-  }
-  if (options.signal?.aborted) return 'cancelled';
+type PostReadyHolderCleanupResult =
+  | Readonly<{ kind: 'cancelled' }>
+  | Readonly<{
+      kind: 'cleaned';
+      deletionFailed: boolean;
+      lockReleaseFailed: boolean;
+      unobservableHolder: boolean;
+    }>;
 
-  let holderDeletionFailed = false;
+async function cleanPostReadyStoreEpochHolders(
+  runtime: Runtime,
+  dbDir: string,
+  entries: readonly string[],
+  signal: AbortSignal | undefined,
+  mutations: PostReadySweepMutationState,
+): Promise<PostReadyHolderCleanupResult> {
+  let deletionFailed = false;
   let lockReleaseFailed = false;
   let unobservableHolder = false;
   const inspectedHolders = new Set<string>();
   for (const entry of entries) {
-    if (options.signal?.aborted) return finish('cancelled');
+    if (signal?.aborted) return { kind: 'cancelled' };
     if (!entry.startsWith(EPOCH_HOLDER_PREFIX) || (!entry.endsWith('.json') && !entry.endsWith('.json.tmp'))) {
       await yieldSweepTurn();
       continue;
@@ -1342,9 +1400,9 @@ export async function sweepStoreEpochsPostReady(
     try {
       for (const path of [holder?.path, join(dbDir, `${holderEntry}.tmp`)]) {
         if (path === undefined) continue;
-        unsyncedMutation = true;
+        mutations.pending = true;
         const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, path);
-        holderDeletionFailed ||= !removed;
+        deletionFailed ||= !removed;
       }
     } finally {
       try {
@@ -1356,40 +1414,68 @@ export async function sweepStoreEpochsPostReady(
     }
     await yieldSweepTurn();
   }
-  if (!(await syncMutations())) return 'durability-sync-failed';
-  if (lockReleaseFailed) return 'lock-release-failed';
-  if (holderDeletionFailed) return 'deletion-failed';
-  if (unobservableHolder) return 'unobservable-holder';
+  return { kind: 'cleaned', deletionFailed, lockReleaseFailed, unobservableHolder };
+}
 
+type PostReadyEpochObservationResult =
+  | Readonly<{ kind: 'cancelled' }>
+  | Readonly<{ kind: 'observed'; observations: readonly StoreEpochObservation[] }>;
+
+async function observePostReadyStoreEpochs(
+  runtime: Runtime,
+  dbDir: string,
+  entries: readonly string[],
+  signal: AbortSignal | undefined,
+): Promise<PostReadyEpochObservationResult> {
   const observations: StoreEpochObservation[] = [];
   for (const entry of entries) {
-    if (options.signal?.aborted) return finish('cancelled');
+    if (signal?.aborted) return { kind: 'cancelled' };
     const observation = await observeStoreEpochAsync(runtime.storage, dbDir, entry);
     if (observation !== null) observations.push(observation);
     await yieldSweepTurn();
   }
-  const byEpoch = new Map(observations.map((observation) => [observation.epoch, observation]));
-  const garbageEpochs = garbageStoreEpochs(
-    observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
-  );
+  return { kind: 'observed', observations };
+}
+
+type PostReadyEpochReapingResult =
+  | Readonly<{ kind: 'cancelled' }>
+  | Readonly<{
+      kind: 'reaped';
+      complete: boolean;
+      liveHolder: boolean;
+      lockReleaseFailed: boolean;
+      unobservableResidue: boolean;
+    }>;
+
+async function reapPostReadyStoreEpochEntries(
+  runtime: Runtime,
+  dbDir: string,
+  openEpoch: StoreEpoch,
+  entries: readonly string[],
+  residueEntries: ReadonlySet<string>,
+  retention: StoreEpochRetentionSelection,
+  signal: AbortSignal | undefined,
+  mutations: PostReadySweepMutationState,
+): Promise<PostReadyEpochReapingResult> {
   let complete = true;
   let liveHolder = false;
+  let lockReleaseFailed = false;
   let unobservableResidue = false;
   for (const entry of entries) {
-    if (options.signal?.aborted) return finish('cancelled');
+    if (signal?.aborted) return { kind: 'cancelled' };
     const epoch = epochNumber(entry);
-    const observation = epoch === null ? undefined : byEpoch.get(epoch);
+    const observation = epoch === null ? undefined : retention.byEpoch.get(epoch);
     const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
-    const abandonedStoreDirectory = isStoreEpochResidue(entry);
+    const abandonedStoreDirectory = residueEntries.has(entry);
     const disprovenEpochEntry = observation?.proof.kind === 'disproven';
-    const garbageEpoch = observation?.proof.kind === 'proven' && garbageEpochs.has(observation.epoch);
+    const garbageEpoch = observation?.proof.kind === 'proven' && retention.garbageEpochs.has(observation.epoch);
     if (
       abandonedStoreDirectory ||
       invalidEpochEntry ||
       (epoch !== openEpoch && (disprovenEpochEntry || garbageEpoch))
     ) {
-      const wasUnsynced: boolean = unsyncedMutation;
-      unsyncedMutation = true;
+      const wasPending = mutations.pending;
+      mutations.pending = true;
       const removal = abandonedStoreDirectory
         ? await removeAbandonedStoreDirectory(runtime, dbDir, join(dbDir, entry))
         : epoch === null
@@ -1398,7 +1484,7 @@ export async function sweepStoreEpochsPostReady(
             : 'target-failed'
           : await removeEpochEntryAsync(runtime, dbDir, epoch);
       if (removal === 'unobservable') {
-        unsyncedMutation = wasUnsynced;
+        mutations.pending = wasPending;
         unobservableResidue = true;
         await yieldSweepTurn();
         continue;
@@ -1414,10 +1500,72 @@ export async function sweepStoreEpochsPostReady(
     }
     await yieldSweepTurn();
   }
+  return { kind: 'reaped', complete, liveHolder, lockReleaseFailed, unobservableResidue };
+}
 
-  if (options.signal?.aborted) return finish('cancelled');
+async function finishPostReadyStoreEpochSweep(
+  runtime: Runtime,
+  dbDir: string,
+  mutations: PostReadySweepMutationState,
+  result: StoreEpochSweepResult,
+): Promise<StoreEpochSweepResult> {
+  return (await syncPostReadySweepMutations(runtime, dbDir, mutations)) ? result : 'durability-sync-failed';
+}
+
+export async function sweepStoreEpochsPostReady(
+  runtime: Runtime,
+  openStore: ResolvedStoreEpoch,
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<StoreEpochSweepResult> {
+  const dbDir = openStore.storeRoot;
+  const openEpoch = openStore.epoch;
+  const mutations: PostReadySweepMutationState = { pending: false };
+
+  if (options.signal?.aborted) return 'cancelled';
+  let entries: readonly string[];
+  try {
+    entries = await runtime.storage.readdir(dbDir);
+  } catch (error: unknown) {
+    auditSweepFailure(dbDir, error);
+    return 'unobservable-metadata';
+  }
+  if (options.signal?.aborted) return 'cancelled';
+
+  const holderCleanup = await cleanPostReadyStoreEpochHolders(runtime, dbDir, entries, options.signal, mutations);
+  if (holderCleanup.kind === 'cancelled') {
+    return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+  }
+  if (!(await syncPostReadySweepMutations(runtime, dbDir, mutations))) return 'durability-sync-failed';
+  if (holderCleanup.lockReleaseFailed) return 'lock-release-failed';
+  if (holderCleanup.deletionFailed) return 'deletion-failed';
+  if (holderCleanup.unobservableHolder) return 'unobservable-holder';
+
+  const observation = await observePostReadyStoreEpochs(runtime, dbDir, entries, options.signal);
+  if (observation.kind === 'cancelled') {
+    return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+  }
+  const residueEntries = new Set(entries.filter((entry) => isStoreEpochResidue(entry)));
+  const retention = selectStoreEpochRetention(observation.observations);
+  const reaping = await reapPostReadyStoreEpochEntries(
+    runtime,
+    dbDir,
+    openEpoch,
+    entries,
+    residueEntries,
+    retention,
+    options.signal,
+    mutations,
+  );
+  if (reaping.kind === 'cancelled') {
+    return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+  }
+
+  if (options.signal?.aborted) {
+    return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+  }
+  let complete = reaping.complete;
   if (compareEpoch(openEpoch, '1') >= 0) {
-    unsyncedMutation = true;
+    mutations.pending = true;
     const removed = await removeDuringPostReadySweep(
       runtime.storage,
       dbDir,
@@ -1425,11 +1573,16 @@ export async function sweepStoreEpochsPostReady(
     );
     complete = removed && complete;
   }
-  if (!(await syncMutations())) return 'durability-sync-failed';
-  if (lockReleaseFailed) return 'lock-release-failed';
-  if (!complete) return 'deletion-failed';
-  if (unobservableResidue) return 'unobservable-metadata';
-  return liveHolder ? 'live-holder' : 'complete';
+  const result: StoreEpochSweepResult = reaping.lockReleaseFailed
+    ? 'lock-release-failed'
+    : !complete
+      ? 'deletion-failed'
+      : reaping.unobservableResidue
+        ? 'unobservable-metadata'
+        : reaping.liveHolder
+          ? 'live-holder'
+          : 'complete';
+  return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, result);
 }
 
 function cleanupMint(storage: StoragePort, mint: string): void {
@@ -1437,6 +1590,27 @@ function cleanupMint(storage: StoragePort, mint: string): void {
     storage.rmSync(mint, { recursive: true, force: true });
   } catch (error: unknown) {
     auditSweepFailure(mint, error);
+  }
+}
+
+type MintStageMoveResult = Readonly<{ kind: 'moved' }> | Readonly<{ kind: 'contended' | 'swept' }>;
+
+function advanceMintStagingDirectory(
+  storage: StoragePort,
+  source: string,
+  destination: string,
+  lease: FileLockLease,
+): MintStageMoveResult {
+  try {
+    storage.renameSync(source, destination);
+    return { kind: 'moved' };
+  } catch (error: unknown) {
+    lease();
+    cleanupMint(storage, source);
+    const code = errorCode(error);
+    if (code === 'ENOTDIR' || code === 'ENOTEMPTY' || code === 'EEXIST') return { kind: 'contended' };
+    if (code === 'ENOENT') return { kind: 'swept' };
+    throw error;
   }
 }
 
@@ -1490,26 +1664,10 @@ function mintNextEpoch(
     }
     throw error;
   }
-  try {
-    runtime.storage.renameSync(construction, preparation);
-  } catch (error: unknown) {
-    mintLease();
-    cleanupMint(runtime.storage, construction);
-    const code = errorCode(error);
-    if (code === 'ENOTDIR' || code === 'ENOTEMPTY' || code === 'EEXIST') return { kind: 'contended' };
-    if (code === 'ENOENT') return { kind: 'swept' };
-    throw error;
-  }
-  try {
-    runtime.storage.renameSync(preparation, mint);
-  } catch (error: unknown) {
-    mintLease();
-    cleanupMint(runtime.storage, preparation);
-    const code = errorCode(error);
-    if (code === 'ENOTDIR' || code === 'ENOTEMPTY' || code === 'EEXIST') return { kind: 'contended' };
-    if (code === 'ENOENT') return { kind: 'swept' };
-    throw error;
-  }
+  const preparationMove = advanceMintStagingDirectory(runtime.storage, construction, preparation, mintLease);
+  if (preparationMove.kind !== 'moved') return preparationMove;
+  const mintMove = advanceMintStagingDirectory(runtime.storage, preparation, mint, mintLease);
+  if (mintMove.kind !== 'moved') return mintMove;
   let leaseTransferred = false;
   try {
     const opened = openWritableStoreDatabase({

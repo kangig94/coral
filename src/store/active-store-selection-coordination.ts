@@ -26,6 +26,7 @@ import {
   resolveActiveStoreRecordPaths,
   type ActiveStoreRecordReadFailureCode,
   type ActiveStoreSelection,
+  type ActiveStoreSelectionCoordinationReadResult,
   type ActiveStoreTransition,
   type ActiveStoreTransitionEvidence,
   type ActiveStoreTransitionFailureCode,
@@ -345,6 +346,54 @@ async function recoverCurrentSelectionFromEvidence(
   };
 }
 
+type NormalizedActiveStoreSelection =
+  | Readonly<{ kind: 'selected-newer'; selection: ActiveStoreSelection }>
+  | Readonly<{ kind: 'settle-current'; publishCurrent: boolean }>;
+
+function normalizeActiveStoreSelection(
+  runtime: Runtime,
+  currentSelection: ActiveStoreSelection,
+  selection: Extract<ActiveStoreSelectionCoordinationReadResult, { readonly kind: 'valid' | 'v1' }>,
+): NormalizedActiveStoreSelection {
+  if (selection.kind === 'valid') {
+    const relation = classifyActiveStoreSelection(selection.selection, currentSelection);
+    return relation === 'selected-newer'
+      ? { kind: 'selected-newer', selection: selection.selection }
+      : { kind: 'settle-current', publishCurrent: relation !== 'exact' };
+  }
+
+  const relation = classifyActiveStoreSelectionV1(selection.selection, currentSelection);
+  if (relation !== 'selected-newer') return { kind: 'settle-current', publishCurrent: true };
+
+  const adjacent = readBoundedAdjacentManifest(selection.selection.bundleDir);
+  const parsed = adjacent.ok ? strictBundleManifestSchema.safeParse(adjacent.value) : null;
+  const resolved = parsed?.success ? resolveActiveStoreSelectionV1(selection.selection, parsed.data) : null;
+  if (resolved === null) {
+    refuseActiveStoreCoordination(runtime, 'selection', 'record_incoherent');
+  }
+  return { kind: 'selected-newer', selection: resolved };
+}
+
+async function handoffOrRecoverSelectedStore(
+  runtime: Runtime,
+  options: ActiveStoreSelectionProtocolOptions,
+  selection: ActiveStoreSelection,
+  adoption: GenerationAdoptionLockLease,
+): Promise<ActiveStoreSelectionProtocolResult> {
+  const validation = options.dependencies.validateSelectedTarget(selection.bundleDir, selection.manifest);
+  adoption.assertOwned();
+  if (validation.kind === 'validated') {
+    return { kind: 'handoff', target: validation.target };
+  }
+  const transition = transitionForSelectionEvidence(
+    runtime,
+    options.currentSelection,
+    { kind: 'valid', selection },
+    validation.evidence,
+  );
+  return await recoverCurrentSelectionFromEvidence(runtime, options, transition, adoption);
+}
+
 export async function coordinateActiveStoreSelection(
   runtime: Runtime,
   options: ActiveStoreSelectionProtocolOptions,
@@ -398,54 +447,11 @@ export async function coordinateActiveStoreSelection(
       return await recoverCurrentSelectionFromEvidence(runtime, options, transition, adoption);
     }
 
-    if (selection.kind === 'v1') {
-      if (classifyActiveStoreSelectionV1(selection.selection, options.currentSelection) === 'selected-newer') {
-        const adjacent = readBoundedAdjacentManifest(selection.selection.bundleDir);
-        const parsed = adjacent.ok ? strictBundleManifestSchema.safeParse(adjacent.value) : null;
-        const resolved = parsed?.success ? resolveActiveStoreSelectionV1(selection.selection, parsed.data) : null;
-        if (resolved === null) {
-          refuseActiveStoreCoordination(runtime, 'selection', 'record_incoherent');
-        }
-        const validation = options.dependencies.validateSelectedTarget(resolved.bundleDir, resolved.manifest);
-        adoption.assertOwned();
-        if (validation.kind === 'validated') {
-          return { kind: 'handoff', target: validation.target };
-        }
-        const transition = transitionForSelectionEvidence(
-          runtime,
-          options.currentSelection,
-          { kind: 'valid', selection: resolved },
-          validation.evidence,
-        );
-        return await recoverCurrentSelectionFromEvidence(runtime, options, transition, adoption);
-      }
-      publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
-      return {
-        kind: 'opened',
-        ...(await settleActiveStore(runtime, options, null, adoption)),
-      };
+    const normalized = normalizeActiveStoreSelection(runtime, options.currentSelection, selection);
+    if (normalized.kind === 'selected-newer') {
+      return await handoffOrRecoverSelectedStore(runtime, options, normalized.selection, adoption);
     }
-
-    const relation = classifyActiveStoreSelection(selection.selection, options.currentSelection);
-    if (relation === 'selected-newer') {
-      const validation = options.dependencies.validateSelectedTarget(
-        selection.selection.bundleDir,
-        selection.selection.manifest,
-      );
-      adoption.assertOwned();
-      if (validation.kind === 'validated') {
-        return { kind: 'handoff', target: validation.target };
-      }
-      const transition = transitionForSelectionEvidence(
-        runtime,
-        options.currentSelection,
-        selection,
-        validation.evidence,
-      );
-      return await recoverCurrentSelectionFromEvidence(runtime, options, transition, adoption);
-    }
-
-    if (relation !== 'exact') {
+    if (normalized.publishCurrent) {
       publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
     }
     return { kind: 'opened', ...(await settleActiveStore(runtime, options, null, adoption)) };

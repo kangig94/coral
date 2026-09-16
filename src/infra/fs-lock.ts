@@ -516,6 +516,33 @@ function quarantineClaimedLock(
   return true;
 }
 
+function tryClaimAndQuarantineStaleMarker(
+  lockDir: string,
+  markerPath: string,
+  restorePath: string,
+  deps: DirectoryLockDeps,
+): boolean {
+  if (!markerIsStale(markerPath, deps)) return false;
+
+  const claimPath = join(lockDir, `claim-${randomUUID()}.lock`);
+  try {
+    deps.storage.renameSync(markerPath, claimPath);
+  } catch (error) {
+    if (isMissingPathError(error)) return false;
+    throw error;
+  }
+
+  if (!markerIsStale(claimPath, deps)) {
+    try {
+      deps.storage.renameSync(claimPath, restorePath);
+    } catch {
+      /* recoverable after the marker becomes stale */
+    }
+    return false;
+  }
+  return quarantineClaimedLock(lockDir, claimPath, restorePath, deps);
+}
+
 /**
  * Claims a stale owner marker with an atomic rename before deleting anything.
  * Heartbeats rename that same marker through a claim-prefixed refresh path, so
@@ -529,27 +556,7 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
     const claimEntries = claimMarkerEntries(lockDir, deps);
     if (claimEntries.length === 1) {
       const staleClaimPath = join(lockDir, claimEntries[0]);
-      if (!markerIsStale(staleClaimPath, deps)) {
-        return false;
-      }
-      const recoveryClaimPath = join(lockDir, `claim-${randomUUID()}.lock`);
-      try {
-        deps.storage.renameSync(staleClaimPath, recoveryClaimPath);
-      } catch (error) {
-        if (isMissingPathError(error)) {
-          return false;
-        }
-        throw error;
-      }
-      if (!markerIsStale(recoveryClaimPath, deps)) {
-        try {
-          deps.storage.renameSync(recoveryClaimPath, staleClaimPath);
-        } catch {
-          /* recoverable after the marker becomes stale */
-        }
-        return false;
-      }
-      return quarantineClaimedLock(lockDir, recoveryClaimPath, staleClaimPath, deps);
+      return tryClaimAndQuarantineStaleMarker(lockDir, staleClaimPath, staleClaimPath, deps);
     }
     if (claimEntries.length > 1) {
       return false;
@@ -573,30 +580,7 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
     return false;
   }
   const ownerPath = join(lockDir, ownerEntry);
-  if (!markerIsStale(ownerPath, deps)) {
-    return false;
-  }
-
-  const claimPath = join(lockDir, `claim-${randomUUID()}.lock`);
-  try {
-    deps.storage.renameSync(ownerPath, claimPath);
-  } catch (error) {
-    if (isMissingPathError(error)) {
-      return false;
-    }
-    throw error;
-  }
-
-  if (!markerIsStale(claimPath, deps)) {
-    try {
-      deps.storage.renameSync(claimPath, ownerPath);
-    } catch {
-      // The holder may have released while its refreshed claim was restored.
-    }
-    return false;
-  }
-
-  return quarantineClaimedLock(lockDir, claimPath, ownerPath, deps);
+  return tryClaimAndQuarantineStaleMarker(lockDir, ownerPath, ownerPath, deps);
 }
 
 function createDirectoryLockLease(
