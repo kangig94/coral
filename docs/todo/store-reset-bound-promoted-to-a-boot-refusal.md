@@ -1,9 +1,9 @@
 # TODO — a store-reset bound became a boot refusal, seven times
 
-**Status**: in flight. Thirty-two design revisions and thirty-nine unbiased tier-1 review rounds.
-Revision 14 replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it
-earned. Revision 27 withdraws a boundary four rounds were spent defending, and Revision 32 deletes a
-subsystem five rounds were spent repairing — both on the owner’s ruling.
+**Status**: in flight. Thirty-three design revisions and forty unbiased tier-1 review rounds. Revision 14
+replaced the premise all thirteen earlier revisions inherited; 15 onward are the corrections it earned.
+Revision 27 withdraws a boundary four rounds were spent defending, and Revision 32 deletes a subsystem five
+rounds were spent repairing — both on the owner’s ruling. Round 41’s architect found no blocking defect.
 
 A coordinator refused to start because the store was too large to _report on_. Recovering it needed a
 plugin rollback by hand. Removing that refusal has so far surfaced six more of the same shape, four of
@@ -2998,6 +2998,56 @@ capability instead of reducing it to a pathname and resolving again, so it can n
 in-memory store while a newer epoch exists; and operator output carries no raw exception text or absolute
 paths — much of which leaves with the diagnostic renderer.
 
+## Revision 33 — what the deletion took with it, and two crash cuts
+
+Round 41's architect found **no blocking defect** and confirmed the deletion coherent: reporting opens no
+database, the resolved-root/proof/lease model is consistent, retention is ordinal, and no automatic path
+renames or unlinks a database a live reader or writer holds. The guardian found three contract defects and
+said the same thing in its verdict — *"not evidence that the epoch publication or boot-safety design is
+unsound."*
+
+### The deletion took a fact with it
+
+`store-reset discard` used to record `operator-discard` as the successor's provenance. That fixed value
+went out with the unsafe raw causes, so an ordinary successful discard of a **healthy** epoch now mints
+its successor with `{ kind: 'unavailable' }`, persists it, and prints *Publication reason: unavailable*.
+The reason was known exactly — an operator asked for it — and the field now says the opposite of known.
+
+A deletion removes what the thing did **and** what it happened to carry. The carried fact needs putting
+back on its own terms: an operator discard is its own publication reason, not an absence of one.
+
+### Two wrappers and a renderer that stop short
+
+`recovery-quarantine list` converts proof and open failures into `unavailable`, and its catch **ends
+before the queries run**. A proven epoch can have intact format metadata and a corrupt
+`recovery_quarantine` B-tree after a power failure; classification accepts the database, the query then
+throws, and the raw SQLite exception reaches the generic envelope and exits 70. The wrapper covers the
+opening and not the reading — the same shape as Revision 30's four partial applications, one round later.
+
+And a successful discard returns and prints the absolute store path, against the contract this document
+states. The path-free rule was applied to the report renderer and not to the command beside it.
+
+### Two crash cuts leave residue nothing can reclaim
+
+`createSharedFileLockSync` creates the construction directory and then its lock; a kill between the two
+leaves an empty `.coral-store-epoch-construction-<uuid>` that the sweep sees, classifies `unobservable`
+because it has no `.lock`, and keeps forever. And the durable writer creates `<holder>.json.tmp`, syncs,
+then renames; a kill between the sync and the rename leaves `.epoch-holder-<uuid>.json.tmp`, which holder
+cleanup ignores because it accepts only `.json`, and which the residue grammar has no arm for.
+
+Neither is large, and K crashes make root cardinality unbounded, which ends where every unbounded thing in
+this document ends.
+
+The architect's warning is the load-bearing part of the fix: **do not simply delete a lockless
+construction directory after observing it**, because `.lock` can appear between the observation and the
+deletion. The pre-lock state needs a bounded, ownership-proven form — or the lock is created first, at a
+name that only becomes the construction directory once it exists.
+
+### One inaccuracy in this record
+
+It names the KB daemon's capability variable `CORAL_KB_DAEMON_STORE`. The supervisor writes, and the
+daemon reads, `CORAL_KB_DAEMON_STORE`. Production is coherent; the record is wrong.
+
 ## Scope, ruled by the owner
 
 **Fix existing defects and defects introduced by this branch's own implementation. Nothing else.** A
@@ -3023,7 +3073,7 @@ The sweep predicate itself is property-tested over integer pairs.
 discard, and release deletion. `backend-store-reset.ts`, `reset-retention.ts`,
 `reset-active-evidence.ts`, and `settlement-authority.ts` are deleted. Runtime paths retain only `dbDir`.
 The coordinator settles the active positive epoch before opening consumers, and passes that selected epoch
-to the KB daemon in `CORAL_KB_DAEMON_STORE_EPOCH`; the daemon opens that exact epoch rather than selecting
+to the KB daemon in `CORAL_KB_DAEMON_STORE`; the daemon opens that exact epoch rather than selecting
 again.
 
 The reset test matrix is reduced to dimensions the epoch design still has: concurrent publication,
