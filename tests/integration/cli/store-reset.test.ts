@@ -99,7 +99,6 @@ describe('store-reset operator epochs', () => {
       chmodSync(parent, 0o700);
     }
 
-    console.log(`store-reset-unreadable-root-cell output=${JSON.stringify(rendered.split('\n')[1])}`);
     expect(rendered).toContain('unobservable');
     expect(rendered).not.toContain('No gen2 store epochs');
   });
@@ -150,7 +149,6 @@ describe('store-reset operator epochs', () => {
     expect(() => releaseStoreResetLocal('gen2', 'prod', '0')).toThrowError(
       expect.objectContaining({ code: 'invalid_store_reset_release_incident_id' }),
     );
-    console.log('release-address-cell epoch=0 addressable=false');
   });
 
   it('refuses only the current epoch', async () => {

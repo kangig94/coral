@@ -623,9 +623,6 @@ function ensureActiveStoreCoordinationDirectory(runtime: Runtime, actuator: Stor
       'Active-store coordination directory is not a directory.',
     );
   }
-  // Unix permission bits are not meaningful on win32 (chmod there only toggles the read-only attribute), so the
-  // Private-mode assertion is platform-gated because Windows does not expose POSIX permission bits.
-  // Windows is not a supported Coral platform; this guard is defensive only.
   if (runtime.env.platform() !== 'win32' && (stat.mode & PERMISSION_BITS) !== 0o700n) {
     throw new ActiveStoreCoordinationWriteError(
       'coordination_directory_not_canonical',

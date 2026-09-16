@@ -156,9 +156,6 @@ describe('backend recovery-quarantine commands', () => {
       'list',
     ]);
 
-    console.log(
-      `recovery-quarantine-${state}-cell output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`,
-    );
     expect(stdout).toBe('Recovery quarantine is empty.\n');
     expect(stderr).not.toContain('[code=internal]');
     expect(process.exitCode).toBeUndefined();
@@ -215,9 +212,6 @@ describe('backend recovery-quarantine commands', () => {
       chmodSync(parent, 0o700);
     }
 
-    console.log(
-      `recovery-quarantine-unreadable-root-cell output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`,
-    );
     expect(stdout).toContain('could not be observed safely');
     expect(stderr).not.toContain('[code=internal]');
     expect(process.exitCode).toBeUndefined();
@@ -249,7 +243,6 @@ describe('backend recovery-quarantine commands', () => {
       'list',
     ]);
 
-    console.log(`recovery-quarantine-newer-cell output=${JSON.stringify(stdout.trim())} exit=${process.exitCode ?? 0}`);
     expect(stdout).toContain('could not be observed safely');
     expect(stderr).not.toContain('[code=internal]');
     expect(process.exitCode).toBeUndefined();

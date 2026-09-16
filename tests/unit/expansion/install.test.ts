@@ -94,9 +94,6 @@ describe('installExpansion', () => {
     } catch (error: unknown) {
       refusal = error;
     }
-    console.log(
-      `expansion-malformed-epoch-cell refusal=${refusal instanceof Error && 'code' in refusal ? String(refusal.code) : 'other'}`,
-    );
     expect(refusal).toMatchObject({ code: 'store_not_initialized' });
   });
 

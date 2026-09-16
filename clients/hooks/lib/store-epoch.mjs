@@ -30,7 +30,6 @@ export function isSqliteWaitBudgetExhausted(error) {
 
 function remainingSqliteWaitMs(deadlineMs) {
   const remainingMs = Math.floor(deadlineMs - performance.now());
-  // A caller that passes no deadline yields NaN, which every ordering comparison answers false.
   if (!(remainingMs > 0)) throw sqliteWaitBudgetError();
   return remainingMs;
 }

@@ -1,4 +1,4 @@
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
@@ -97,9 +97,6 @@ it('does not expose a sweepable preparation directory before constructing its SQ
     failure = error;
   }
 
-  console.log(
-    `mint-construction-window-cell lock-open-observed=${interposition.lockOpenObserved} sweepable-before-lock=${interposition.swept} result=${failure === null ? `epoch-${epoch}` : basename(failure instanceof Error ? failure.message : typeof failure === 'string' ? failure : 'unknown failure')}`,
-  );
   expect(interposition.lockOpenObserved).toBe(true);
   expect(interposition.swept).toBe(false);
   expect(failure).toBeNull();

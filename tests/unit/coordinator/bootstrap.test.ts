@@ -64,7 +64,6 @@ it('makes a second shutdown signal demand a nonzero exit without bypassing the i
   expect(shutdown).toHaveBeenNthCalledWith(2, 'sigint');
   expect(recordExitCode).toHaveBeenCalledWith(1);
   expect(onRepeatedSignal).toHaveBeenCalledOnce();
-  console.log('second-signal-cell shutdown=cached safe-join=held eventual-exit=nonzero');
 });
 
 describe('backend bootstrap store handoff', () => {

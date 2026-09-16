@@ -255,9 +255,6 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.callLog.indexOf('storeEpochSweep.joined')).toBeLessThan(
       harness.callLog.indexOf('closeIpcServerFn:start'),
     );
-    console.log(
-      'shutdown-sweep-cell syscall=outlasted-budget exit=store-epoch-sweep-settlement action=wait-and-retry executed=true second-signal=nonzero join-before-ipc=true',
-    );
   });
 
   it('runs provider-host recovery before closing provider-operation mutation admission', async () => {

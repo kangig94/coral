@@ -309,9 +309,6 @@ describe('write-once store epochs', () => {
     }
     const sweep = await sweepStoreEpochsPostReady(runtime, reopened.store);
     const epochs = readdirSync(dbDir).filter((entry) => /^epoch-\d+$/u.test(entry));
-    console.log(
-      `symlinked-root-cell published=epoch-${published.store.epoch} reopened=epoch-${reopened.store.epoch} sentinel=${sentinel ?? 'missing'} epochs=${epochs.join(',')} sweep=${sweep} residue=${existsSync(residue) ? 'present' : 'removed'}`,
-    );
 
     reopened.db.close();
     expect(reopened.store.epoch).toBe(published.store.epoch);
@@ -382,9 +379,6 @@ describe('write-once store epochs', () => {
     const oldLease = tryAcquireExclusiveFileLockSync(oldLock);
     const newLease = tryAcquireExclusiveFileLockSync(storeEpochLockPath(newRoot, '1'));
     try {
-      console.log(
-        `carried-root-cell path=${settled.store.path === epochPath(oldRoot, '1') ? 'old' : 'other'} holder=${oldHolder === undefined ? 'missing' : 'old'} old-lease=${oldLease === null ? 'held' : 'free'} new-lease=${newLease === null ? 'held' : 'free'}`,
-      );
       expect(retargeted).toBe(true);
       expect(settled.store.path).toBe(epochPath(oldRoot, '1'));
       expect(settled.db.prepare('SELECT value FROM rollback_sentinel').get()).toEqual({
@@ -420,9 +414,6 @@ describe('write-once store epochs', () => {
     const db = openWritableStoreDbNoReset(runtime, { resolved: proven, storeFormat });
     const oldLease = tryAcquireExclusiveFileLockSync(storeEpochLockPath(oldRoot, '1'));
     try {
-      console.log(
-        `smoke-retarget-cell before=${rederived.epoch === null ? 'unleased' : 'leased'} after=${oldLease === null ? 'leased' : 'unleased'} path=${db.location() === proven.path ? 'old' : 'other'}`,
-      );
       expect(rederived.epoch).toBeNull();
       expect(db.location()).toBe(proven.path);
       expect(oldLease).toBeNull();
@@ -450,9 +441,6 @@ describe('write-once store epochs', () => {
         expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
         expect(db.prepare<[], { value: string }>('SELECT value FROM rollback_sentinel').get()?.value).toBe(
           'concurrent-winner',
-        );
-        console.log(
-          `read-only-opener-cell opener=read-port operation=${operation.replaceAll(' ', '-')} result=live-holder sqlite=usable`,
         );
       } finally {
         db.close();
@@ -496,9 +484,6 @@ describe('write-once store epochs', () => {
         expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
         expect(existsSync(epochPath(dbDir, '3'))).toBe(false);
         expect(rootSyncs).toBeGreaterThan(0);
-        console.log(
-          `contended-skip-cell sweep=${kind} before=removed contended=present after=removed parent-sync=${rootSyncs}`,
-        );
       } finally {
         held();
       }
@@ -522,7 +507,6 @@ describe('write-once store epochs', () => {
 
     expect(result.kind).toBe('release-pre-deletion-durability-sync-failed');
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-    console.log('release-disposition-cell phase=pre-deletion target=present renderer-claim=not-removed');
   });
 
   it('distinguishes an absent second proof with a failed barrier from a removed release target', async () => {
@@ -543,7 +527,6 @@ describe('write-once store epochs', () => {
     expect(existsSync(epochDirectory(dbDir, '17'))).toBe(false);
     expect(formatStoreResetRelease(result)).toContain('was already absent');
     expect(formatStoreResetRelease(result)).not.toContain('was removed');
-    console.log('release-disposition-cell phase=absent-second-proof target=absent renderer-claim=already-absent');
   });
 
   it('syncs after synchronous holder unlink mutates and then throws', () => {
@@ -577,7 +560,6 @@ describe('write-once store epochs', () => {
 
     expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, '3')).toBe('deletion-failed');
     expect(events).toEqual(['holder-removed', 'parent-sync']);
-    console.log('ambiguous-removal-cell site=sync-holder post-effect=EIO parent-sync=after');
   });
 
   it('syncs after post-ready holder unlink mutates and then throws', async () => {
@@ -612,7 +594,6 @@ describe('write-once store epochs', () => {
       sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3')),
     ).resolves.toBe('deletion-failed');
     expect(events).toEqual(['holder-removed', 'parent-sync']);
-    console.log('ambiguous-removal-cell site=post-ready-holder post-effect=EIO parent-sync=after');
   });
 
   it('syncs after legacy-quarantine removal mutates and then throws', async () => {
@@ -648,7 +629,6 @@ describe('write-once store epochs', () => {
       sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3')),
     ).resolves.toBe('deletion-failed');
     expect(events).toEqual(['quarantine-removed', 'parent-sync']);
-    console.log('ambiguous-removal-cell site=legacy-quarantine post-effect=EIO parent-sync=after');
   });
 
   it('syncs successful synchronous holder cleanup before reporting a later holder deletion failure', () => {
@@ -686,7 +666,6 @@ describe('write-once store epochs', () => {
 
     expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, '3')).toBe('deletion-failed');
     expect(events).toEqual(['remove-succeeded', 'remove-failed', 'parent-sync']);
-    console.log('sweep-barrier-cell site=sync-holder-cleanup mutation=true exit=deletion-failed parent-sync=after');
   });
 
   it('syncs successful post-ready holder cleanup before reporting a later holder deletion failure', async () => {
@@ -725,9 +704,6 @@ describe('write-once store epochs', () => {
       sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3')),
     ).resolves.toBe('deletion-failed');
     expect(events).toEqual(['remove-succeeded', 'remove-failed', 'parent-sync']);
-    console.log(
-      'sweep-barrier-cell site=post-ready-holder-cleanup mutation=true exit=deletion-failed parent-sync=after',
-    );
   });
 
   it('tells release operators that holder cleanup failed before the target was attempted', async () => {
@@ -752,7 +728,6 @@ describe('write-once store epochs', () => {
     expect(result.kind).toBe('release-holder-cleanup-failed');
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     expect(formatStoreResetRelease(result)).toContain('target deletion was not attempted');
-    console.log('release-disposition-cell phase=holder-cleanup target=present renderer-claim=not-attempted');
   });
 
   it.each(['synchronous', 'post-ready'] as const)(
@@ -773,7 +748,6 @@ describe('write-once store epochs', () => {
 
       expect(result).toBe('complete');
       expect(existsSync(invalid)).toBe(false);
-      console.log(`epoch-zero-directory-cell sweep=${kind} bytes=${512 * 1024} remaining=false`);
     },
   );
 
@@ -789,7 +763,6 @@ describe('write-once store epochs', () => {
     const entries = readdirSync(dbDir);
     expect(entries.filter((entry) => entry.startsWith('.epoch-lock-'))).toEqual([]);
     expect(entries).toEqual(['epoch-9']);
-    console.log('contained-lock-lifecycle-cell cycles=8 raw-cardinality=1 root-lock-files=0');
   });
 
   it.each(['post-ready sweep', 'release'] as const)(
@@ -808,9 +781,6 @@ describe('write-once store epochs', () => {
             : sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
         expect(result).toBe('live-holder');
         expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-        console.log(
-          `read-only-opener-cell opener=generated-hook operation=${operation.replaceAll(' ', '-')} result=live-holder`,
-        );
       });
     },
   );
@@ -834,7 +804,6 @@ describe('write-once store epochs', () => {
 
     expect(sqliteOpens).toBe(0);
     expect(entries[0]?.publicationReason).toEqual({ kind: 'unavailable' });
-    console.log('read-only-list-cell publication-reason=epoch.json sqlite-opens=0');
   });
 
   it('records operator discard provenance without claiming a superseded store version', () => {
@@ -871,9 +840,6 @@ describe('write-once store epochs', () => {
     );
     expect(rendered).toContain('2 | current |');
     expect(rendered).toContain('| newer-incompatible | 0.0.1 |');
-    console.log(
-      `epoch-provenance-cell epoch=2 publication-reason=${replacement?.publicationReason.kind} superseded-version=${replacement?.supersededStoreVersion}`,
-    );
   });
   it('does not treat an epoch symlink to the store root as a published epoch', () => {
     const runtime = harness();
@@ -890,7 +856,6 @@ describe('write-once store epochs', () => {
     flat.close();
     expect(settled.store.epoch).toBe('2');
     expect(values.map(({ value }) => value)).toEqual(['flat-epoch-zero']);
-    console.log('symlink-cell alias=epoch-1->. selected=epoch-2 flat-write=untouched');
   });
 
   it('does not open or stamp a flat store symlink when no epoch is proven', () => {
@@ -911,7 +876,6 @@ describe('write-once store epochs', () => {
     externalDb.close();
     expect(settled.store.epoch).toBe('1');
     expect(values.map(({ value }) => value)).toEqual(['external-flat']);
-    console.log('flat-symlink-cell proven=none external-write=false selected=epoch-1');
   });
 
   it('does not open or stamp a flat store symlink when a positive epoch is proven', () => {
@@ -934,7 +898,6 @@ describe('write-once store epochs', () => {
     externalDb.close();
     expect(settled.store.epoch).toBe('1');
     expect(values.map(({ value }) => value)).toEqual(['external-flat']);
-    console.log('flat-symlink-cell proven=epoch-1 external-write=false selected=epoch-1');
   });
 
   it('does not let a regular file named as an epoch address the flat store', () => {
@@ -949,7 +912,6 @@ describe('write-once store epochs', () => {
 
     expect(settled.store.epoch).toBe('2');
     expect(existsSync(flatPath)).toBe(true);
-    console.log('regular-file-cell entry=epoch-1 selected=epoch-2 flat-store=untouched');
   });
 
   it('recognizes the former numeric ceiling as an epoch with a successor', () => {
@@ -961,7 +923,6 @@ describe('write-once store epochs', () => {
     const current = resolveCurrentStoreEpoch(runtime.storage, dbDir);
 
     expect(current).toBe(String(Number.MAX_SAFE_INTEGER));
-    console.log(`max-safe-integer-cell entry=${Number.MAX_SAFE_INTEGER} selected=epoch-${current}`);
   });
 
   it.each([
@@ -1004,9 +965,6 @@ describe('write-once store epochs', () => {
     expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
     expect(() => hook.openLockedReadOnlyStoreDatabase(malformedPath)).toThrow();
     const settled = settleStoreEpoch(runtime, options());
-    console.log(
-      `malformed-metadata-openers-cell writable=refused read-only=refused hook=refused settlement=epoch-${settled.store.epoch}`,
-    );
     settled.db.close();
     expect(settled.store.epoch).toBe('2');
   });
@@ -1094,9 +1052,6 @@ describe('write-once store epochs', () => {
       expect(survivors).toEqual(scenario.survivors);
       expect(existsSync(flatStorePath(dbDir))).toBe(true);
       if (_description === 'symlink') expect(existsSync(externalSentinel)).toBe(true);
-      console.log(
-        `successor-blocker-cell kind=${_description} retained-evidence=${scenario.retained.length + (scenario.current === null ? 0 : 1)} selected=epoch-${scenario.successor} survivors=${survivors.join(',')} flat=untouched`,
-      );
     }
   });
 
@@ -1115,9 +1070,6 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(collisionRuntime, options());
     settled.db.close();
 
-    console.log(
-      `mint-collision-cell selected=epoch-${settled.store.epoch} blocker-present=${existsSync(occupied)} blocker-byte-identical=${readFileSync(join(occupied, 'sentinel'), 'utf-8') === 'pre-existing mint'}`,
-    );
     expect(settled.store.epoch).toBe('1');
     expect(readFileSync(join(occupied, 'sentinel'), 'utf-8')).toBe('pre-existing mint');
   });
@@ -1134,7 +1086,6 @@ describe('write-once store epochs', () => {
       expect(String(settled.store.epoch)).toBe((BigInt(epoch) + 1n).toString());
       settled.db.close();
       expect(existsSync(join(dbDir, `epoch-${BigInt(epoch) + 1n}`, 'store.db'))).toBe(true);
-      console.log(`unbounded-successor-cell current=${epoch} successor=${BigInt(epoch) + 1n}`);
     },
   );
 
@@ -1194,7 +1145,6 @@ describe('write-once store epochs', () => {
 
     expect(settled.store.epoch).toBe('2');
     expect(oversized?.epochJson.kind).toBe('malformed');
-    console.log(`oversized-epoch-json-cell bytes=${MAX_STORE_EPOCH_METADATA_BYTES + 1} classification=malformed`);
   });
 
   it('replaces a mode-0444 store rather than refusing to boot', () => {
@@ -1256,7 +1206,6 @@ describe('write-once store epochs', () => {
     expect(settled.store.epoch).toBe('2');
     settled.db.close();
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-    console.log(`unobservable-metadata-cell phase=selection code=${code} removed=false`);
   });
 
   it('steps over an unobservable successor while replacing an incompatible current epoch', () => {
@@ -1279,7 +1228,6 @@ describe('write-once store epochs', () => {
     expect(settled.store.epoch).toBe('2');
     settled.db.close();
     expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-    console.log('unobservable-successor-cell blocked=epoch-1 selected=epoch-2 removed=false');
   });
 
   it('inventories every file recursively removed with a directory epoch', () => {
@@ -1326,7 +1274,6 @@ describe('write-once store epochs', () => {
     const row = oldReader.prepare('SELECT value FROM rollback_sentinel').get() as { value: string };
     oldReader.close();
     expect(row.value).toBe('v0.10.9-data');
-    console.log('first-boot-cell flat=compatible selected=epoch-1 flat=untouched');
   });
 
   it('never touches the flat store while a v0.10.9-shaped reader holds it across publication and sweep', async () => {
@@ -1391,7 +1338,6 @@ describe('write-once store epochs', () => {
     oldReader.close();
     expect(row.value).toBe('v0.10.9-data');
     expect(resolveCurrentStoreEpoch(runtime.storage, dbDir)).toBe('3');
-    console.log('rollback-cell flat=untouched operations=0 reader=held-through-publish-and-sweep current=3');
   });
 
   it('adopts the winner when two publishers mint the same next epoch', () => {
@@ -1410,7 +1356,6 @@ describe('write-once store epochs', () => {
     settled.db.close();
     expect(collisionInjected).toBe(true);
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
-    console.log('concurrent-publish-cell publishers=2 winner=epoch-1 loser=adopted-on-ENOTEMPTY current=1');
   });
 
   it('re-mints when a private mint disappears before publication', () => {
@@ -1459,7 +1404,6 @@ describe('write-once store epochs', () => {
         .filter((entry) => entry === 'store.db' || /^epoch-[1-9]\d*$/u.test(entry))
         .sort(),
     ).toEqual([`epoch-${count - 1}`, `epoch-${count}`, 'store.db'].sort());
-    console.log(`K-publication-cell K=${count} epoch-directories=2 survivors=${count - 1},${count} flat=untouched`);
   });
 
   it.each(['empty-mint', 'opened-mint', 'described-mint'])(
@@ -1506,9 +1450,6 @@ describe('write-once store epochs', () => {
 
       expect(existsSync(mintPath)).toBe(true);
       expect(existsSync(oldPath)).toBe(true);
-      console.log(
-        'live-descriptor-sweep-cell targets=.mint-live-publisher/store.db,epoch-1/store.db current=3 descriptors=live removed=false',
-      );
     });
   });
 
@@ -1524,7 +1465,6 @@ describe('write-once store epochs', () => {
       settled.db.close();
 
       expect(existsSync(heldPath)).toBe(true);
-      console.log('missing-discovery-cell holder=unregistered-live removed=false');
     });
   });
 
@@ -1548,7 +1488,6 @@ describe('write-once store epochs', () => {
       settled.db.close();
 
       expect(existsSync(heldPath)).toBe(true);
-      console.log('missing-discovery-cell holder=coordinator-write-false removed=false');
     });
   });
 
@@ -1601,7 +1540,6 @@ describe('write-once store epochs', () => {
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
       kind: 'released',
     });
-    console.log('release-socket-guard-cell discovery-published=false guarded=true descriptor-preserved=true');
   });
 
   it('re-reads current before a stale release can delete a concurrently published epoch', async () => {
@@ -1661,7 +1599,6 @@ describe('write-once store epochs', () => {
 
     expect(released.kind).toBe('current');
     expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
-    console.log('release-race-cell resolved=epoch-1 deletion-proof=epoch-2 removed=false');
   });
 
   it.each(['EACCES', 'EIO'])(
@@ -1691,7 +1628,6 @@ describe('write-once store epochs', () => {
 
       expect(released.kind).toBe('current');
       expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
-      console.log(`unobservable-metadata-cell phase=release code=${code} removed=false`);
     },
   );
 
@@ -1799,9 +1735,6 @@ describe('write-once store epochs', () => {
     expect(healthLatencyMs).toBeLessThan(500);
     expect(await sweep).toBe('complete');
     await new Promise<void>((resolveClosed) => server.close(() => resolveClosed()));
-    console.log(
-      `event-loop-cell entries=${entryCount} health-status=${health.status} latency-ms=${healthLatencyMs.toFixed(1)} signal-handled-during-sweep=${signalHandledDuringSweep}`,
-    );
   });
 
   it('bounds an oversized holder before parsing it', async () => {
@@ -1826,7 +1759,6 @@ describe('write-once store epochs', () => {
     );
     expect(holderReads).toBe(0);
     expect(existsSync(holderPath)).toBe(false);
-    console.log(`holder-bound-cell bytes=${MAX_STORE_EPOCH_HOLDER_BYTES + 1} parsed=false`);
   });
 
   it('reclaims K abandoned private mints during the post-ready sweep', async () => {
@@ -1841,7 +1773,6 @@ describe('write-once store epochs', () => {
 
     expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'))).toBe('complete');
     expect(readdirSync(dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
-    console.log('mint-process-death-cell seeded=12 remaining=0');
   });
 
   it('reclaims an empty pre-lock construction directory', async () => {
@@ -1917,9 +1848,6 @@ describe('write-once store epochs', () => {
     const result = await sweepStoreEpochsPostReady(runtime, settled.store);
     const after = readdirSync(dbDir).filter((name) => name.startsWith('.coral-store-epoch-construction-'));
 
-    console.log(
-      `construction-process-death-cell deaths=${deaths} before=${before.length} result=${result} after=${after.length}`,
-    );
     expect(result).toBe('complete');
     expect(after).toEqual([]);
   });
@@ -1948,7 +1876,6 @@ describe('write-once store epochs', () => {
     try {
       const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '3'));
       const present = existsSync(join(mint, 'store.db'));
-      console.log(`post-ready-live-mint-cell lock-before-directory=true result=${result} mint-present=${present}`);
       expect(result).toBe('live-holder');
       expect(present).toBe(true);
     } finally {
@@ -1976,9 +1903,6 @@ describe('write-once store epochs', () => {
     afterRelease?.();
 
     const sameInode = before.dev === after.dev && before.ino === after.ino;
-    console.log(
-      `lease-rename-cell before=${before.dev}:${before.ino} after=${after.dev}:${after.ino} same-inode=${sameInode} exclusive-while-held=${whileHeld === null ? 'blocked' : 'acquired'} exclusive-after-release=${afterRelease === null ? 'blocked' : 'acquired'}`,
-    );
     expect(sameInode).toBe(true);
     expect(whileHeld).toBeNull();
     expect(afterRelease).not.toBeNull();
@@ -2016,9 +1940,6 @@ describe('write-once store epochs', () => {
     try {
       const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
       const present = existsSync(epochPath(dbDir, '1'));
-      console.log(
-        `deletion-window-cell interposition-ran=${interpositionRan} opener=${openedValue === undefined ? 'refused' : 'opened'} live-query=${openedValue ?? 'none'} result=${result} epoch-1-present=${present}`,
-      );
       expect(interpositionRan).toBe(true);
       expect(openedValue).toBeUndefined();
       expect(result).toBe('complete');
@@ -2042,9 +1963,6 @@ describe('write-once store epochs', () => {
       const settled = settleStoreEpoch(runtime, options());
       settled.db.close();
 
-      console.log(
-        `settlement-hardlink-cell artifact=${artifact} selected-epoch=${settled.store.epoch} nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
-      );
       expect(settled.store.epoch).toBe('2');
       expect(readFileSync(aliasPath)).toEqual(before);
     },
@@ -2068,9 +1986,6 @@ describe('write-once store epochs', () => {
 
       expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
       expect(() => hook.openLockedReadOnlyStoreDatabase(epochPath(dbDir, '1'))).toThrow();
-      console.log(
-        `generated-hook-hardlink-cell artifact=${artifact} resolved=none nlink=${statSync(aliasPath).nlink} byte-identical=${readFileSync(aliasPath).equals(before)}`,
-      );
       expect(readFileSync(aliasPath)).toEqual(before);
     },
   );
@@ -2089,7 +2004,6 @@ describe('write-once store epochs', () => {
 
       const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'));
 
-      console.log(`malformed-lock-reclamation-cell namespace=${name} result=${result} remaining=${existsSync(target)}`);
       expect(result).toBe('complete');
       expect(existsSync(target)).toBe(false);
     },
@@ -2107,9 +2021,6 @@ describe('write-once store epochs', () => {
       const listed = listStoreEpochResidues(runtime);
       const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
 
-      console.log(
-        `wrong-kind-residue-cell namespace=${name} listed=${listed[0]?.state ?? 'missing'} result=${result} remaining=${existsSync(target)}`,
-      );
       expect(listed).toEqual([{ name, bytes: 'wrong-kind'.length, state: 'reclaimable' }]);
       expect(result).toBe('complete');
       expect(existsSync(target)).toBe(false);
@@ -2130,9 +2041,6 @@ describe('write-once store epochs', () => {
     const residues = listStoreEpochResidues(runtime);
     const lockAfter = fileTreeSnapshot(dbDir);
 
-    console.log(
-      `read-only-list-cell holders=${holders.map(({ state }) => state).join(',')} residues=${residues.map(({ state }) => state).join(',')} byte-identical=${JSON.stringify(lockAfter) === JSON.stringify(lockBefore)}`,
-    );
     expect(lockAfter).toEqual(lockBefore);
     expect(holders).toEqual([{ id: 'list', epoch: '1', pid: process.pid, state: 'unobservable' }]);
     expect(residues).toEqual([{ name: '.mint-list', bytes: expect.any(Number), state: 'unobservable' }]);
@@ -2176,9 +2084,6 @@ describe('write-once store epochs', () => {
         expect(() => openReadOnlyStoreDatabase(runtime, { path: epochPath(dbDir, '1'), storeFormat })).toThrow();
         settled = settleStoreEpoch(runtime, options());
         const legacyAfter = fileTreeSnapshot(legacyRoot);
-        console.log(
-          `malformed-lock-cell kind=${lockKind} boot=proceeded selected-epoch=${settled.store.epoch} legacy-byte-identical=${JSON.stringify(legacyAfter) === JSON.stringify(legacyBefore)}`,
-        );
         expect(settled.store.epoch).toBe('2');
         expect(legacyAfter).toEqual(legacyBefore);
         expect(readFileSync(externalStore)).toEqual(externalBefore);
@@ -2208,9 +2113,6 @@ describe('write-once store epochs', () => {
     expect(hook.resolveCurrentStoreDbPath(dbDir)).toBeNull();
     expect(() => hook.openLockedReadOnlyStoreDatabase(epochPath(dbDir, '1'))).toThrow();
     const after = fileTreeSnapshot(legacyRoot);
-    console.log(
-      `generated-hook-malformed-lock-cell resolved=none open=refused legacy-byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
-    );
     expect(after).toEqual(before);
   });
 
@@ -2230,9 +2132,6 @@ describe('write-once store epochs', () => {
 
     const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
     const remaining = listStoreEpochResidues(runtime);
-    console.log(
-      `mint-residue-cell lockless=${residueCount} partial-cleanup=${residueCount} listed-state=${listed[0]?.state} result=${result} remaining=${remaining.length}`,
-    );
     expect(result).toBe('unobservable-metadata');
     expect(remaining).toHaveLength(residueCount);
     expect(remaining.every(({ name }) => name.startsWith('.reaping-partial-cleanup-'))).toBe(true);
@@ -2248,7 +2147,6 @@ describe('write-once store epochs', () => {
     try {
       expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-      console.log('post-ready-coordinator-descriptor-cell result=live-holder epoch-1=present');
     } finally {
       settled.db.close();
     }
@@ -2288,7 +2186,6 @@ describe('write-once store epochs', () => {
     try {
       expect(await sweep).toBe('live-holder');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-      console.log('post-ready-kb-descriptor-cell holder-after-snapshot=true epoch-1=present');
     } finally {
       kbDatabase.close();
     }
@@ -2330,7 +2227,6 @@ describe('write-once store epochs', () => {
     try {
       expect(await sweep).toBe('deletion-failed');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
-      console.log('post-ready-later-unproven-lock-cell held=true proof=disproven epoch-1=present');
     } finally {
       held.close();
       rmSync(alias, { force: true });
@@ -2381,7 +2277,6 @@ describe('write-once store epochs', () => {
     const rollback = new DatabaseSync(flatStorePath(dbDir), { readOnly: true });
     expect((rollback.prepare('SELECT value FROM rollback_sentinel').get() as { value: string }).value).toBe('rollback');
     rollback.close();
-    console.log('shutdown-sweep-cell result=cancelled successor=epoch-4 rollback=bootable');
   });
 
   it('syncs an epoch removal before returning cancellation after the sweep yield', async () => {
@@ -2417,7 +2312,6 @@ describe('write-once store epochs', () => {
       }),
     ).resolves.toBe('cancelled');
     expect(events).toEqual(['epoch-removed', 'parent-sync']);
-    console.log('sweep-barrier-cell site=post-ready-cancellation mutation=true exit=cancelled parent-sync=after');
   });
 
   it('releases the socket guard when discard cannot acquire the adoption lock', async () => {
@@ -2527,7 +2421,6 @@ describe('write-once store epochs', () => {
 
       expect(released.kind).toBe('release-holder-live');
       expect(existsSync(oldPath)).toBe(true);
-      console.log('ordinary-live-release-cell target=epoch-1 current=3 released=false reason=open-epoch');
     });
   });
 
@@ -2542,7 +2435,6 @@ describe('write-once store epochs', () => {
       publishLiveCoordinator(runtime, 999_999_991);
       expect(sweepStoreEpochs(runtime, dbDir, '3')).toBe('unobservable-metadata');
       expect(existsSync(oldPath)).toBe(true);
-      console.log('dead-parent-live-child-cell parent=absent child=live removed=false');
     });
   });
 
@@ -2618,7 +2510,6 @@ describe('write-once store epochs', () => {
     });
     expect(lastRemoval).toBeGreaterThanOrEqual(0);
     expect(lastRootSync).toBeGreaterThan(lastRemoval);
-    console.log('post-publication-sweep-durability-cell removals=1 parent-sync=after');
   });
 
   it('prevents K crash-resurrected sweep removals from accumulating', () => {
@@ -2665,6 +2556,5 @@ describe('write-once store epochs', () => {
     }
 
     expect(listStoreEpochs(runtime).filter(({ role }) => role === 'garbage')).toEqual([]);
-    console.log('post-publication-sweep-power-loss-cell repetitions=3 accumulated-garbage=0');
   });
 });

@@ -30,7 +30,8 @@ const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
 const STORE_EPOCH_HOLDER_PUBLICATION_ATTEMPTS = 2;
-// node:sqlite reports SQLITE_BUSY as errcode 5 while its public code remains ERR_SQLITE_ERROR.
+// Measured on Node 26 / Linux 6.18: node:sqlite reports SQLITE_BUSY as errcode 5 and a removed directory as
+// errcode 14 while its public code remains ERR_SQLITE_ERROR.
 const SQLITE_BUSY_ERRCODE = 5;
 
 export type StoreEpochClassification =
@@ -253,10 +254,6 @@ function observeStoreEpochs(
   dbDir: string,
   entries: readonly string[] = storage.readdirSync(dbDir),
 ): readonly StoreEpochObservation[] {
-  // This is a static classification, not an atomic pathname proof. Symlinks and wrong-kind entries are
-  // disproven at observation time. A same-user process actively replacing entries inside ~/.coral between
-  // this lstat and SQLite's path open is outside the threat model: it can already replace Coral's executable,
-  // plugin bundle, hooks, and CLI.
   const observations: StoreEpochObservation[] = [];
   for (const entry of entries) {
     const observation = observeStoreEpoch(storage, dbDir, entry);
@@ -383,7 +380,7 @@ export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>,
       const addressedPath = runtime.storage.realpathSync(path);
       epochCandidate = storeEpochAtPath(storeRoot, addressedPath) !== null;
     } catch {
-      // An explicit non-epoch path is proven as a regular file by its opener.
+      /* unresolved path accepted */
     }
     return { path, epoch: null, epochCandidate };
   }
@@ -541,7 +538,7 @@ function registerStoreEpochHolder(
           runtime.storage.unlinkSync(holderPath);
           runtime.storage.syncDirectoryDurableSync(resolved.storeRoot);
         } catch {
-          // The lock is decisive; a stale diagnostic record is cleaned by the next sweep.
+          /* best-effort holder cleanup */
         } finally {
           lease();
         }
@@ -1590,7 +1587,7 @@ function assertProvenStoreOpenable(storage: StoragePort, path: string): void {
   try {
     storage.closeSync(descriptor);
   } catch {
-    // This descriptor is only an openability probe. SQLite owns the database handle it opens by pathname.
+    /* best-effort probe cleanup */
   }
 }
 
@@ -1920,7 +1917,6 @@ export function isSqliteWaitBudgetExhausted(error) {
 
 function remainingSqliteWaitMs(deadlineMs) {
   const remainingMs = Math.floor(deadlineMs - performance.now());
-  // A caller that passes no deadline yields NaN, which every ordering comparison answers false.
   if (!(remainingMs > 0)) throw sqliteWaitBudgetError();
   return remainingMs;
 }

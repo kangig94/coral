@@ -261,9 +261,6 @@ describe('bundled store-reset CLI', () => {
       },
     );
 
-    console.log(
-      `smoke-symlinked-epoch-cell status=${result.status} legacy-lock=${existsSync(join(legacyRoot, '.lock')) ? 'created' : 'absent'} product-version=${storeMetadataValue(legacyStore, 'store_product_version') ?? 'absent'}`,
-    );
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     expect(existsSync(join(legacyRoot, '.lock'))).toBe(false);
@@ -288,9 +285,6 @@ describe('bundled store-reset CLI', () => {
       env: { ...process.env, ...temporaryHomes.environment(home), TMPDIR: join(home, 'tmp') },
     });
 
-    console.log(
-      `smoke-flat-refusal-cell status=${result.status} product-version=${storeMetadataValue(storePath, 'store_product_version') ?? 'absent'}`,
-    );
     expect(result.status).toBe(1);
     expect(result.stdout).toBe('');
     expect(result.stderr).toContain('path is not a proven canonical positive store epoch');
@@ -317,9 +311,6 @@ describe('bundled store-reset CLI', () => {
         env: { ...process.env, ...temporaryHomes.environment(home), TMPDIR: join(home, 'tmp') },
       });
 
-      console.log(
-        `smoke-hardlink-cell artifact=${artifact} status=${result.status} nlink=${statSync(artifactPath).nlink} byte-identical=${readFileSync(artifactPath).equals(before)}`,
-      );
       expect(result.status).toBe(1);
       expect(result.stdout).toBe('');
       expect(readFileSync(artifactPath)).toEqual(before);
@@ -347,9 +338,6 @@ describe('bundled store-reset CLI', () => {
       const list = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2']);
       const after = fileTreeSnapshot(external);
 
-      console.log(
-        `built-list-alias-cell kind=${kind} status=${list.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
-      );
       expect(list.status, list.stderr).toBe(0);
       expect(after).toEqual(before);
     },
@@ -377,9 +365,6 @@ describe('bundled store-reset CLI', () => {
     const result = runCli(home, invocation);
     const after = fileTreeSnapshot(dbDir);
 
-    console.log(
-      `built-reporting-byte-identity-cell surface=${surface} state=${state} status=${result.status} byte-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
-    );
     expect(result.status, result.stderr).toBe(0);
     expect(after).toEqual(before);
   });
@@ -421,9 +406,6 @@ describe('bundled store-reset CLI', () => {
 
     const result = runCli(home, ['backend', 'store-reset', 'discard', '--target', 'gen2', '--flavor', build.flavor]);
 
-    console.log(
-      `discard-no-epoch-cell state=${state} status=${result.status} stdout=${JSON.stringify(result.stdout.trim())} stderr=${JSON.stringify(result.stderr.trim())}`,
-    );
     expect(result.status).toBe(0);
     expect(result.stderr).toBe('');
     expect(result.stdout).toContain('Initialized store epoch 1');
@@ -538,7 +520,6 @@ describe('bundled store-reset CLI', () => {
     expect(release.status, release.stderr).toBe(0);
     expect(release.stdout).toContain('Released store epoch 1');
     expect(existsSync(epochOnePath)).toBe(false);
-    console.log('ordinary-release-cell fabricated-discovery=false target=epoch-1 released=true');
   });
 
   it('sweeps after discovery publication across clean reset cycles', async () => {
@@ -573,7 +554,6 @@ describe('bundled store-reset CLI', () => {
       .filter((name) => /^epoch-\d+$/u.test(name))
       .sort();
     expect(epochEntries).toEqual(['epoch-3', 'epoch-4']);
-    console.log(`lifecycle-ordering-cell K=${cycles} current=4 preserved=3 garbage=0`);
   });
 
   it('uses fixed envelopes for invalid IDs, malformed incidents, and wrong-build incidents', () => {

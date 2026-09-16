@@ -74,11 +74,9 @@ it('keeps the cached CLI reader shared lock until its cached SQLite handle close
 
   expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
-  console.log('read-only-opener-cell opener=cached-cli operation=post-ready-sweep result=live-holder');
 
   expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('live-holder');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
-  console.log('read-only-opener-cell opener=cached-cli operation=release result=live-holder');
 });
 
 it('does not fall back to memory when the selected epoch is swept before its lease is acquired', async () => {

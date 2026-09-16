@@ -171,33 +171,9 @@ function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRec
   return read.kind === 'record' ? read.record : null;
 }
 
-/**
- * The pid can be unobservable; so can the record itself.
- *
- * The record axis and the process axis fail independently, and neither one failing is the other one
- * answering. `readBackendInfo`'s `null` covers a missing file, an undecodable one, *and* a record omitting
- * `version`/`instanceId`, so anything gating on it reports a confident `not_running` from evidence it could
- * not read.
- *
- * Only a missing record is an `'absent'` coordinator. A present record whose pid is absent says its parent
- * died, not that the children it spawned released their resources. There is no invariant test behind that sentence and one was
- * tried — see the rejection recorded in `tests/invariants/liveness-is-never-a-boolean.test.ts`. The rule is
- * held by these return types and by the tests that assert what each variant does, so a fourth site adding
- * itself is caught by review, not by a scan.
- */
 export type CoordinatorProbe =
-  /** A record exists and its pid names a live process. */
   | Readonly<{ kind: 'live'; record: CoordinatorDiscoveryRecord }>
-  /** No record was written. */
   | Readonly<{ kind: 'absent' }>
-  /**
-   * Nothing here is proof of absence, from either input. `unreadable-record` is a file that exists and could
-   * not be decoded; `unreadable-process` and `recorded-process-absent` retain a record whose coordinator
-   * process cannot establish the state of its children — those variants carry the
-   * record deliberately, because the record holds the `bootToken` a contender needs to ask an incumbent to
-   * stand down, and discarding it over an unanswered probe is what makes "could not observe" read as "nobody
-   * is there".
-   */
   | Readonly<{ kind: 'unobservable'; reason: 'unreadable-record' }>
   | Readonly<{
       kind: 'unobservable';

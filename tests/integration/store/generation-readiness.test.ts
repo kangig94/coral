@@ -255,9 +255,6 @@ describe('generation readiness', () => {
     await openGeneratedStore(runtime);
 
     const after = storeFileSnapshot(storeDir);
-    console.log(
-      `crashed-wal-cell before=${before.map(({ name }) => name).join(',')} after=${after.map(({ name }) => name).join(',')} metadata-and-bytes-identical=${JSON.stringify(after) === JSON.stringify(before)}`,
-    );
     expect(after).toEqual(before);
   });
 

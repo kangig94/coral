@@ -11,7 +11,7 @@ import { enginePaths } from '#src/infra/path/engine.js';
 import { storePaths } from '#src/infra/path/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { resolveCurrentStoreEpoch, storeEpochHookSource } from '#src/store/epoch.js';
-// @ts-expect-error — hook libs are plain Node ESM (.mjs) with no type surface.
+// @ts-expect-error -- ../../clients/hooks/lib/store-epoch.mjs
 import { resolveCurrentStoreDbPath } from '../../clients/hooks/lib/store-epoch.mjs';
 
 const REPO_ROOT = process.cwd();

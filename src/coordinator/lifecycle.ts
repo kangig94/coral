@@ -285,22 +285,8 @@ export function verifiedIncumbentFromDiscovery(
 }
 
 /**
- * The same question asked of a probe rather than a record: which probe outcomes still leave an
- * incumbent to contend with.
- *
- * Two of the four outcomes are only correct for a stated reason:
- *
- * - `unreadable-process` and `recorded-process-absent` keep their record. Neither an unanswered probe nor a
- *   dead recorded parent establishes that its children are gone, and the
- *   record carries the `bootToken` a contender needs to ask it to stand down. `verifiedIncumbentFromDiscovery`
- *   then refuses on its own terms if the record cannot be tied to the socket, which is the check that belongs
- *   here — not a pid probe standing in for it.
- * - `unreadable-record` has no record to agree with, so `null` is the only value available. It is not a claim
- *   that nobody is there: `probeCoordinator` warns, while coordinator startup separately refuses the
- *   undecodable pre-bind discovery disposition.
- *
  * The switch is exhaustive on purpose. A new `CoordinatorProbe` shape leaves `record` unassigned and fails
- * the build, rather than defaulting into the `null` that reads as "no incumbent".
+ * the typecheck.
  */
 export function verifiedIncumbentFromProbe(
   probe: CoordinatorProbe,

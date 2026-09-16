@@ -919,9 +919,6 @@ describe('ExecutionService launch', () => {
       const disposition = progressMessages(progressStore, decision.jobId).at(-1);
       expect(disposition).toContain('Released live job');
       expect(disposition).toContain('provider failed through production composition');
-      console.log(
-        `store-codec-production-composition-cell abort=false claim=absent permit=released disposition=${JSON.stringify(disposition)}`,
-      );
     } finally {
       composed.stop();
     }
@@ -1001,9 +998,6 @@ describe('ExecutionService launch', () => {
           ? expect.arrayContaining(['job.progress.emitted', 'session.claim.released'])
           : expect.arrayContaining(['job.progress.emitted']),
       );
-      console.log(
-        `store-codec-live-job-cell source=persisted-malformed-terminal result=${releaseResult} abort=false claim=${expectedActiveJobId ?? 'absent'} disposition=${JSON.stringify(disposition)}`,
-      );
     },
   );
 
@@ -1055,7 +1049,6 @@ describe('ExecutionService launch', () => {
     expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(decision.jobId);
     expect(abortRegistry.has(decision.jobId)).toBe(true);
     expect(launchCoordinator.getActiveJobIds()).toContain(decision.jobId);
-    console.log('store-codec-atomicity-cell cut=process-death claim=held abort=true permit=held disposition=absent');
   });
 
   it('rolls back the claim release when the malformed-status disposition insert fails', async () => {
@@ -1094,7 +1087,6 @@ describe('ExecutionService launch', () => {
     expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(decision.jobId);
     expect(abortRegistry.has(decision.jobId)).toBe(true);
     expect(launchCoordinator.getActiveJobIds()).toContain(decision.jobId);
-    console.log('store-codec-atomicity-cell cut=second-transaction-failure claim=held abort=true permit=held');
   });
 
   it('does not claim release or drop abort ownership when unreadable-status session release fails', async () => {
@@ -1139,7 +1131,6 @@ describe('ExecutionService launch', () => {
     expect(disposition).not.toContain('Released live job');
     expect(abortRegistry.has(decision.jobId)).toBe(true);
     expect(sessionManager.get('codex', decision.sessionId)?.activeJobId).toBe(decision.jobId);
-    console.log('store-codec-release-failure-cell disposition=not-released abort=true claim=held');
   });
 
   it.each([

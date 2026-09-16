@@ -50,7 +50,6 @@ function logSnapshotSkipped(projectDir, reason, remediation) {
 }
 
 const SAFE_JOB_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
-// The 3s host timeout must retain margin for process startup, module loading, and snapshot I/O.
 const SQLITE_WAIT_DEADLINE_MS = performance.now() + 2000;
 
 await failOpen(async () => {

@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -26,9 +27,13 @@ import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   ACTIVE_STORE_SELECTION_VERSION,
+  ACTIVE_STORE_TRANSITION_VERSION,
   publishActiveStoreSelection,
+  publishActiveStoreTransition,
   readActiveStoreSelection,
+  resolveActiveStoreRecordPaths,
   type ActiveStoreSelection,
+  type ActiveStoreTransition,
 } from '#src/store/active-store-selection.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import {
@@ -217,9 +222,6 @@ describe('startup store routing', () => {
     const sweepEpoch = result.store.epoch;
     const sweep = sweepStoreEpochs(routedRuntime, runtime.paths.coral.store.dbDir, sweepEpoch);
     const openDatabasePresent = existsSync(epochPath(runtime.paths.coral.store.dbDir, '1'));
-    console.log(
-      `re-derivation-cell settlement=epoch-1 metadata-after=epoch-3 sweep=${sweepEpoch} open-database-present=${openDatabasePresent}`,
-    );
     result.db.close();
 
     expect(result).toMatchObject({
@@ -258,9 +260,6 @@ describe('startup store routing', () => {
     );
     const daemonMarker = result.db.prepare<[], { value: string }>('SELECT value FROM daemon_marker').get()?.value;
     const configuredTarget = realpathSync(configuredRoot) === newRoot ? 'new' : 'old';
-    console.log(
-      `coordinator-daemon-retarget-cell coordinator=${String(coordinatorEpoch)} daemon=${daemon.epoch} same-database=${String(daemonMarker === 'opened-by-daemon')} configured-root=${configuredTarget}`,
-    );
     result.db.close();
 
     expect(coordinatorEpoch).toBe('1');
@@ -318,6 +317,95 @@ describe('startup store routing', () => {
     expect(syncedDirectories).toContain(retainedRoot);
     expect(syncedDirectories).toContain(resolveGenerationBoundaryPaths(runtime).coordinationRoot);
     expect(readActiveStoreSelection(runtime)).toEqual({ kind: 'valid', selection: current });
+  });
+
+  it.each(['current', 'v1'] as const)(
+    'supersedes a mismatched pre-existing %s transition and durably retains its evidence',
+    async (generation) => {
+      const { root, runtime, current } = harness('2.0.0');
+      publish(runtime, current);
+      const paths = resolveActiveStoreRecordPaths(runtime);
+      const staleBuild = manifest('1.0.0', '223e4567-e89b-42d3-a456-426614174000');
+      const staleTransition: ActiveStoreTransition = {
+        version: ACTIVE_STORE_TRANSITION_VERSION,
+        transitionId: '323e4567-e89b-42d3-a456-426614174000',
+        kind: 'selection-recovery',
+        evidence: { kind: 'selection-absent', storeEvidence: { kind: 'pending-classification' } },
+        currentManifest: staleBuild,
+        currentBundleDir: createBundle(root, staleBuild),
+      };
+      if (generation === 'current') {
+        const lockRoot = mkdtempSync(join(tmpdir(), 'coral-startup-transition-publish-'));
+        roots.push(lockRoot);
+        const lease = acquireDirectoryLockSync(join(lockRoot, 'lease.lock'), {
+          storage: runtime.storage,
+          time: runtime.time,
+        });
+        try {
+          publishActiveStoreTransition(runtime, staleTransition, lease.actuator);
+        } finally {
+          lease();
+        }
+      } else {
+        writeFileSync(paths.transitionV1File, 'legacy transition evidence');
+      }
+      const transitionFile = generation === 'current' ? paths.transitionFile : paths.transitionV1File;
+      const evidence = readFileSync(transitionFile);
+      const syncedDirectories: string[] = [];
+      const storage = new Proxy(runtime.storage, {
+        get(subject, property, receiver) {
+          if (property !== 'syncDirectoryDurableSync') return Reflect.get(subject, property, receiver) as unknown;
+          return (path: string): boolean => {
+            syncedDirectories.push(path);
+            return subject.syncDirectoryDurableSync(path);
+          };
+        },
+      });
+
+      const result = await route({ ...runtime, storage }, current);
+
+      expect(result.kind).toBe('open');
+      if (result.kind === 'open') result.db.close();
+      const retainedRoot = join(paths.coordinationRoot, 'retained-active-store-transitions');
+      const retained = readdirSync(retainedRoot);
+      expect(retained).toHaveLength(1);
+      const retainedFile = retained[0];
+      if (retainedFile === undefined) throw new Error('Superseded transition evidence was not retained.');
+      expect(readFileSync(join(retainedRoot, retainedFile))).toEqual(evidence);
+      expect(existsSync(transitionFile)).toBe(false);
+      expect(syncedDirectories).toContain(retainedRoot);
+      expect(syncedDirectories).toContain(paths.coordinationRoot);
+    },
+  );
+
+  it('refuses a rejected current transition without discarding its evidence', async () => {
+    const { root, runtime, current } = harness();
+    publish(runtime, current);
+    const paths = resolveActiveStoreRecordPaths(runtime);
+    const evidencePath = join(root, 'linked-transition-evidence');
+    writeFileSync(evidencePath, 'linked transition evidence');
+    symlinkSync(evidencePath, paths.transitionFile);
+
+    await expect(route(runtime, current)).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: { record: 'transition', failureCode: 'record_link' },
+    });
+    expect(readFileSync(paths.transitionFile, 'utf8')).toBe('linked transition evidence');
+  });
+
+  it('refuses an unsafe active-store coordination directory', async () => {
+    const { root, runtime, current } = harness();
+    const { coordinationRoot } = resolveActiveStoreRecordPaths(runtime);
+    const target = join(root, 'linked-coordination-root');
+    mkdirSync(dirname(coordinationRoot), { recursive: true });
+    mkdirSync(target);
+    symlinkSync(target, coordinationRoot);
+
+    await expect(route(runtime, current)).rejects.toMatchObject({
+      code: 'active_store_coordination_invalid',
+      context: { record: 'transition', failureCode: 'coordination_directory_link' },
+    });
+    expect(realpathSync(coordinationRoot)).toBe(target);
   });
 
   it('rejects retained transition success when its destination sync is unproven', async () => {
