@@ -16,6 +16,10 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function errorCode(error) {
+  return error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
+}
+
 function isValidEpochMetadata(value) {
   if (!isRecord(value)) return false;
   const validSupersedes =
@@ -92,8 +96,9 @@ export function resolveCurrentStoreDbPath(dbDir) {
   try {
     root = resolveStoreRoot(dbDir);
     entries = readdirSync(root.path);
-  } catch {
-    return null;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return null;
+    throw error;
   }
   for (const entry of entries) {
     const epoch = epochNumber(entry);

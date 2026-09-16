@@ -14,6 +14,7 @@ import { recordedProcessIdentitySchema, type RecordedProcessIdentity } from '../
 import type { StorageActuator } from '../infra/storage-actuator.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { Runtime } from '../runtime/ports.js';
+import { observeStorePath } from './path-observation.js';
 
 export type GenerationMutationKind = 'install' | 'update' | 'uninstall' | 'kb-child' | 'routing-status';
 
@@ -117,10 +118,10 @@ export function inspectGenerationReadiness(
   runtime: Pick<Runtime, 'flavor' | 'paths' | 'storage'>,
 ): GenerationReadiness {
   const paths = resolveGenerationBoundaryPaths(runtime);
-  if (runtime.storage.existsSync(paths.generatedFlavorRoot)) {
+  if (observeStorePath(runtime.storage, paths.generatedFlavorRoot) === 'present') {
     return { kind: 'generated-ready' };
   }
-  if (!runtime.storage.existsSync(paths.legacyFlavorRoot)) {
+  if (observeStorePath(runtime.storage, paths.legacyFlavorRoot) === 'absent') {
     return { kind: 'no-legacy' };
   }
 

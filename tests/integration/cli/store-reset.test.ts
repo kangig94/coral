@@ -22,7 +22,7 @@ import {
   reportStoreResetLocal,
   type StoreResetCliDependencies,
 } from '#src/cli/store-reset.js';
-import { formatStoreResetList } from '#src/cli/format/store-reset.js';
+import { formatStoreEpochReport, formatStoreResetList } from '#src/cli/format/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { tryAcquireExclusiveFileLockSync } from '#src/infra/fs-lock.js';
@@ -327,6 +327,38 @@ describe('store-reset operator epochs', () => {
 
     expect(readdirSync(dbDir).filter((name) => name.startsWith('.epoch-holder-'))).toEqual([]);
   });
+
+  it.each(['private-copy inspection', 'staged-copy cleanup'])(
+    'renders %s uncertainty as an unavailable epoch diagnostic',
+    async (failure) => {
+      const runtime = harness();
+      const dbDir = runtime.paths.coral.store.dbDir;
+      publishEpoch(dbDir, '1');
+      const dependencies: StoreResetCliDependencies = {
+        resolveIdentity: () => ({ ok: true, manifest: build }),
+        createInspectionFs: () => {
+          throw new Error('legacy inspection is not used');
+        },
+        createDiagnosticRunner: () => {
+          throw new Error('legacy diagnostics are not used');
+        },
+        diagnoseEpoch: async () => {
+          throw new Error(failure);
+        },
+        quarantineRoot: () => join(dbDir, 'store-reset-quarantine'),
+        runtime: () => runtime,
+      };
+
+      const report = await reportStoreResetLocal('gen2', '1', dependencies);
+      if (report.kind !== 'epoch') throw new Error('expected epoch report');
+      const rendered = formatStoreEpochReport(report);
+      console.log(
+        `store-reset-report-uncertainty-cell source=${JSON.stringify(failure)} integrity=${report.diagnostic.integrity} cleanup=${report.diagnostic.cleanup}`,
+      );
+      expect(rendered).toContain('- Integrity: `unavailable`');
+      expect(rendered).toContain('- Cleanup: `cleanup_unavailable`');
+    },
+  );
 
   it('lists holder liveness as unknown and reaps a stale holder during the sweep', () => {
     const runtime = harness();

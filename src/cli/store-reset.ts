@@ -19,6 +19,7 @@ import {
 import {
   createStoreResetIncidentDiagnosticRunner,
   diagnoseStoreDatabaseCopy,
+  prepareStoreReportTempRoot,
   type StoreResetIncidentDiagnosticRunner,
   type StoreResetDiagnosticStatus,
 } from '../store/reset-incident-diagnostic.js';
@@ -79,7 +80,7 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
     createInspectionFs: createStoreResetInspectionFs,
     createDiagnosticRunner: () =>
       createStoreResetIncidentDiagnosticRunner({
-        tempRoot: tmpdir(),
+        tempRoot: prepareStoreReportTempRoot(tmpdir()),
         platform: process.platform,
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
@@ -88,7 +89,7 @@ function defaultDependencies(shutdownSignal?: AbortSignal): StoreResetCliDepende
       diagnoseStoreDatabaseCopy({
         fs: createStoreResetInspectionFs(),
         sourceDirectory: dirname(store.path),
-        tempRoot: tmpdir(),
+        tempRoot: prepareStoreReportTempRoot(tmpdir()),
         platform: process.platform,
         executable: process.execPath,
         supervisor: createNodeStoreResetDiagnosticSupervisor({ signal: shutdownSignal }),
@@ -109,7 +110,11 @@ async function diagnoseHeldEpoch(
   const lease = acquireStoreEpochInspectionLock(runtime, store);
   if (lease === null) return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
   try {
-    return await dependencies.diagnoseEpoch(store);
+    try {
+      return await dependencies.diagnoseEpoch(store);
+    } catch {
+      return { integrity: 'unavailable', termination: 'not_started', cleanup: 'cleanup_unavailable' };
+    }
   } finally {
     lease();
   }

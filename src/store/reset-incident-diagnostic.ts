@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { lstatSync, mkdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
@@ -24,7 +25,6 @@ const DIAGNOSTIC_SOURCE_NAMES = ['store.db', 'store.db-wal', 'store.db-shm'] as 
 const COPY_BUFFER_BYTES = 64 * 1024;
 const REPORT_NAMESPACE_PREFIX = 'coral-store-report-';
 const REPORT_NAMESPACE_PATTERN = /^coral-store-report-/u;
-const LEGACY_REPORT_NAMESPACE_PATTERN = /^coral-store-reset-/u;
 const REPORT_ACTIVE_NAMESPACE = 'coral-store-report-active';
 const REPORT_LOCK_NAME = 'coral-store-report.lock';
 const abandonedReportLeases = new Set<FileLockLease>();
@@ -39,6 +39,28 @@ export class StoreDatabaseEvidenceUnavailableError extends Error {
     this.name = 'StoreDatabaseEvidenceUnavailableError';
     this.reason = reason;
   }
+}
+
+export function prepareStoreReportTempRoot(systemTempRoot: string): string {
+  const userId = process.getuid?.();
+  const tempRoot = join(systemTempRoot, `coral-store-report-user-${userId ?? 'current'}`);
+  try {
+    mkdirSync(tempRoot, { mode: 0o700 });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  const identity = lstatSync(tempRoot, { bigint: true });
+  const owned = userId === undefined || identity.uid === BigInt(userId);
+  if (
+    !identity.isDirectory() ||
+    identity.isSymbolicLink() ||
+    (process.platform !== 'win32' && (identity.mode & 0o777n) !== 0o700n) ||
+    !owned ||
+    dirname(realpathSync(tempRoot)) !== realpathSync(systemTempRoot)
+  ) {
+    throw new StoreDatabaseEvidenceUnavailableError('unobservable', 'report staging root is not private');
+  }
+  return tempRoot;
 }
 
 export type StagedStoreDatabaseEvidence = Readonly<{
@@ -530,11 +552,7 @@ function reclaimStoreReportNamespaces(fs: StoreResetInspectionFs, tempRoot: stri
     for (;;) {
       const entry = fs.readDirectory(cursor);
       if (entry === null) break;
-      if (
-        entry.name === REPORT_ACTIVE_NAMESPACE ||
-        REPORT_NAMESPACE_PATTERN.test(entry.name) ||
-        LEGACY_REPORT_NAMESPACE_PATTERN.test(entry.name)
-      ) {
+      if (entry.name === REPORT_ACTIVE_NAMESPACE || REPORT_NAMESPACE_PATTERN.test(entry.name)) {
         entries.push(entry.name);
       }
     }
@@ -583,18 +601,44 @@ export async function diagnoseStoreDatabaseCopy(options: {
   } catch {
     return { integrity: 'unavailable', termination: 'not_started', cleanup: 'not_required' };
   }
-  const supervision = await superviseStoreResetDiagnosticChild(options.supervisor, options.executable, staged.dbPath);
-  if (supervision.termination === 'termination_unconfirmed') {
-    staged.abandon();
-    return { integrity: 'unavailable', termination: 'termination_unconfirmed', cleanup: 'cleanup_unavailable' };
+  return diagnoseStagedStoreDatabase(staged, options.executable, options.supervisor);
+}
+
+function cleanupStagedStoreDatabase(staged: StagedStoreDatabaseEvidence): StoreResetDiagnosticStatus['cleanup'] {
+  try {
+    return staged.cleanup();
+  } catch {
+    return 'cleanup_unavailable';
   }
-  const sourceUnchanged = staged.verify();
-  const cleanup = staged.cleanup();
-  return {
-    integrity: sourceUnchanged && cleanup === 'removed' ? supervision.integrity : 'unavailable',
-    termination: supervision.termination,
-    cleanup,
-  };
+}
+
+async function diagnoseStagedStoreDatabase(
+  staged: StagedStoreDatabaseEvidence,
+  executable: string,
+  supervisor: StoreResetDiagnosticSupervisorPort,
+): Promise<StoreResetDiagnosticStatus> {
+  let termination: StoreResetDiagnosticStatus['termination'] = 'not_started';
+  try {
+    const supervision = await superviseStoreResetDiagnosticChild(supervisor, executable, staged.dbPath);
+    termination = supervision.termination;
+    if (termination === 'termination_unconfirmed') {
+      staged.abandon();
+      return { integrity: 'unavailable', termination, cleanup: 'cleanup_unavailable' };
+    }
+    const sourceUnchanged = staged.verify();
+    const cleanup = cleanupStagedStoreDatabase(staged);
+    return {
+      integrity: sourceUnchanged && cleanup === 'removed' ? supervision.integrity : 'unavailable',
+      termination,
+      cleanup,
+    };
+  } catch {
+    return {
+      integrity: 'unavailable',
+      termination,
+      cleanup: cleanupStagedStoreDatabase(staged),
+    };
+  }
 }
 
 export function createStoreResetIncidentDiagnosticRunner(options: {
@@ -643,21 +687,6 @@ export function createStoreResetIncidentDiagnosticRunner(options: {
         cleanup: 'not_required',
       };
     }
-    const supervision = await superviseStoreResetDiagnosticChild(options.supervisor, options.executable, staged.dbPath);
-    if (supervision.termination === 'termination_unconfirmed') {
-      staged.abandon();
-      return {
-        integrity: 'unavailable',
-        termination: 'termination_unconfirmed',
-        cleanup: 'cleanup_unavailable',
-      };
-    }
-    const sourceUnchanged = staged.verify();
-    const cleanup = staged.cleanup();
-    return {
-      integrity: sourceUnchanged && cleanup === 'removed' ? supervision.integrity : 'unavailable',
-      termination: supervision.termination,
-      cleanup,
-    };
+    return diagnoseStagedStoreDatabase(staged, options.executable, options.supervisor);
   };
 }

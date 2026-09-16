@@ -54,7 +54,7 @@ await failOpen(async () => {
   sweepStale(snapshotDir, SNAPSHOT_PREFIX, SNAPSHOT_TTL_MS);
 
   const dbPath = resolveCurrentStoreDbPath(storeDbDir());
-  if (dbPath === null || !existsSync(dbPath)) {
+  if (dbPath === null) {
     logNoRelevantJobs(projectDir);
     return;
   }

@@ -99,10 +99,12 @@ import { classifyStoreFile, type Database } from '../../store/db.js';
 import { inspectCurrentStore } from '../../store/epoch.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import {
+  prepareStoreReportTempRoot,
   stageStoreDatabaseEvidence,
   StoreDatabaseEvidenceUnavailableError,
   type StagedStoreDatabaseEvidence,
 } from '../../store/reset-incident-diagnostic.js';
+import type { StoreResetInspectionFs } from '../../store/reset-incident-inspection-fs.js';
 import {
   attributeUnreadableProviderOperations,
   readProviderOperations,
@@ -1300,36 +1302,27 @@ function unreadableProviderOperationEntries(
 
 export function listRecoveryQuarantineLocal(
   runtime: RecoveryQuarantineReadRuntime = createRecoveryQuarantineRuntime(),
+  inspection?: Readonly<{ fs: StoreResetInspectionFs; tempRoot: string }>,
 ): RecoveryQuarantineListResult {
   const current = inspectCurrentStore(runtime);
   if (current.kind === 'absent') return [];
   if (current.kind === 'unobservable') return { kind: 'unavailable', reason: 'unobservable' };
   const dbPath = current.epoch.path;
-  let staged: StagedStoreDatabaseEvidence;
-  try {
-    staged = stageStoreDatabaseEvidence({
-      fs: createStoreResetInspectionFs(),
-      sourceDirectory: dirname(dbPath),
-      tempRoot: tmpdir(),
-      platform: process.platform,
-    });
-  } catch (error: unknown) {
-    return {
-      kind: 'unavailable',
-      reason:
-        error instanceof StoreDatabaseEvidenceUnavailableError && error.reason === 'over-bound'
-          ? 'over-bound'
-          : 'unobservable',
-    };
-  }
+  let staged: StagedStoreDatabaseEvidence | null = null;
   let result: RecoveryQuarantineListResult;
   try {
+    staged = stageStoreDatabaseEvidence({
+      fs: inspection?.fs ?? createStoreResetInspectionFs(),
+      sourceDirectory: dirname(dbPath),
+      tempRoot: inspection?.tempRoot ?? prepareStoreReportTempRoot(tmpdir()),
+      platform: process.platform,
+    });
     const classification = classifyStoreFile(staged.dbPath, runtime.storage, currentCoralStoreFormat());
     // `absent` and `fresh` are the only classifications under which no row can exist. Every other one
     // means rows this build cannot read may be there, and an empty list is then the opposite of what is
     // true — an operator reading it concludes there is nothing to act on.
     if (classification.kind === 'absent' || classification.kind === 'fresh') {
-      result = staged.verify() ? [] : { kind: 'unavailable', reason: 'unobservable' };
+      result = [];
     } else if (classification.kind !== 'compatible') {
       result = { kind: 'unavailable', reason: 'unobservable' };
     } else {
@@ -1343,19 +1336,27 @@ export function listRecoveryQuarantineLocal(
           const boundary = left.boundary.localeCompare(right.boundary);
           return boundary === 0 ? left.subject.key.localeCompare(right.subject.key) : boundary;
         });
-        result = staged.verify() ? entries : { kind: 'unavailable', reason: 'unobservable' };
+        result = entries;
       } finally {
         db.close();
       }
     }
+    if (!staged.verify()) result = { kind: 'unavailable', reason: 'unobservable' };
   } catch (error: unknown) {
-    if (staged.cleanup() !== 'removed') {
-      throw new Error('Recovery quarantine inspection cleanup failed.', { cause: error });
-    }
-    throw error;
+    result = {
+      kind: 'unavailable',
+      reason:
+        error instanceof StoreDatabaseEvidenceUnavailableError && error.reason === 'over-bound'
+          ? 'over-bound'
+          : 'unobservable',
+    };
   }
-  if (staged.cleanup() !== 'removed') {
-    throw new Error('Recovery quarantine inspection cleanup failed.');
+  if (staged !== null) {
+    try {
+      if (staged.cleanup() !== 'removed') result = { kind: 'unavailable', reason: 'unobservable' };
+    } catch {
+      result = { kind: 'unavailable', reason: 'unobservable' };
+    }
   }
   return result;
 }

@@ -7,7 +7,7 @@ import { settleStoreEpoch } from '#src/store/epoch.js';
 import type { StoreFormatDescription } from '#src/store/format-fingerprint.js';
 import { assertTestDatabaseLocation } from '#tools/testing/store-db-location.js';
 
-type ReadonlyStoreRuntime = Readonly<{ storage: Pick<StoragePort, 'existsSync'> }>;
+type ReadonlyStoreRuntime = Readonly<{ storage: Pick<StoragePort, 'lstatSync'> }>;
 
 export function openTestStoreDatabase(options: {
   readonly path: string;

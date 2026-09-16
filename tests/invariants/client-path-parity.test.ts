@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -156,6 +156,19 @@ describe('self-contained client path parity', () => {
       expect(resolveCurrentStoreDbPath(dbDir)).toBe(join(published, 'store.db'));
     } finally {
       rmSync(dbDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not resolve an unreadable generated-hook store root as absent', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'coral-client-epoch-unreadable-'));
+    const dbDir = join(parent, 'store');
+    mkdirSync(dbDir);
+    chmodSync(parent, 0o600);
+    try {
+      expect(() => resolveCurrentStoreDbPath(dbDir)).toThrowError(expect.objectContaining({ code: 'EACCES' }));
+    } finally {
+      chmodSync(parent, 0o700);
+      rmSync(parent, { recursive: true, force: true });
     }
   });
 

@@ -14,6 +14,7 @@ import {
   type StoreFormatDescription,
   type StoreFormatFingerprint,
 } from './format-fingerprint.js';
+import { observeStorePath } from './path-observation.js';
 
 const STORE_FORMAT_SIDECAR_SUFFIX = '.format';
 
@@ -55,7 +56,7 @@ export interface Database extends Omit<DatabaseSync, 'prepare'> {
 
 type ReadonlyStoreOptions = {
   readonly path: string;
-  readonly storage: Pick<StoragePort, 'existsSync'>;
+  readonly storage: Pick<StoragePort, 'lstatSync'>;
   readonly storeFormat: StoreFormatDescription;
   readonly flavor?: BuildFlavor;
   readonly readonly: true;
@@ -235,11 +236,11 @@ export function classifyStoreFormat(db: Database, current: StoreFormatClassifica
 
 export function classifyStoreFile(
   path: string,
-  storage: Pick<StoragePort, 'existsSync' | 'lstatSync' | 'openSqliteDatabaseSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'openSqliteDatabaseSync'>,
   current: StoreFormatClassificationTarget,
   acquireLock: (() => () => void) | null = null,
 ): StoreFormatClassification {
-  if (path !== ':memory:' && !storage.existsSync(path)) return { kind: 'absent' };
+  if (path !== ':memory:' && observeStorePath(storage, path) === 'absent') return { kind: 'absent' };
   if (path !== ':memory:' && storage.lstatSync(path).isSymbolicLink()) {
     const target = validatedStoreFormatTarget(current);
     return corruptOrUnsupported(target.fingerprint, target.productVersion, null, null, 'unavailable');
@@ -389,7 +390,7 @@ export function openStoreDatabase(options: OpenStoreOptions): Database {
     throw storeSchemaOutdatedError(options.path, decision.classification, options.storeFormat, options.flavor);
   }
 
-  if (options.path !== ':memory:' && !options.storage.existsSync(options.path)) {
+  if (options.path !== ':memory:' && observeStorePath(options.storage, options.path) === 'absent') {
     throw documentedCoralSetupError('store_not_initialized', { path: options.path });
   }
 

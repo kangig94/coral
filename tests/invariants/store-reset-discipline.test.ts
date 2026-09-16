@@ -220,7 +220,23 @@ describe('write-once store epoch invariants', () => {
     expect(legacyRunner).toContain('stageStoreDatabaseEvidence');
     expect(diagnostic).not.toMatch(/process\.kill|\.owner-/u);
     expect(reclaimer).toContain('REPORT_NAMESPACE_PATTERN');
-    expect(reclaimer).toContain('LEGACY_REPORT_NAMESPACE_PATTERN');
+    expect(reclaimer).not.toContain('LEGACY_REPORT_NAMESPACE_PATTERN');
+    expect(functionSource('src/cli/store-reset.ts', 'defaultDependencies')).not.toContain('tempRoot: tmpdir()');
+    expect(functionSource('src/cli/commands/backend.ts', 'listRecoveryQuarantineLocal')).not.toContain(
+      'tempRoot: tmpdir()',
+    );
+  });
+
+  it('uses one ENOENT-only observation for every store-path absence decision', () => {
+    for (const path of storeSources()) {
+      if (path === 'src/store/path-observation.ts') continue;
+      expect(source(path), path).not.toContain('.existsSync(');
+    }
+    expect(source('src/cli/read-store.ts')).not.toContain('.existsSync(');
+    expect(source('clients/hooks/pre-compact.mjs')).not.toContain('existsSync(dbPath)');
+    expect(functionSource('src/store/path-observation.ts', 'observeStorePath')).toContain("code === 'ENOENT'");
+    expect(functionSource('src/store/epoch.ts', 'inspectCurrentStore')).toContain('observeCurrentStore(runtime)');
+    expect(functionSource('src/store/epoch.ts', 'resolveCurrentStore')).toContain('observeCurrentStore(runtime)');
   });
 
   it('requires private device identity for every required epoch file in source and generated hooks', () => {

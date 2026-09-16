@@ -11,6 +11,7 @@ import type { StorageActuator } from '../infra/storage-actuator.js';
 import { compareProductVersions } from '../infra/product-version.js';
 import type { Runtime } from '../runtime/ports.js';
 import { resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
+import { observeStorePath } from './path-observation.js';
 
 export const ACTIVE_STORE_SELECTION_MAX_BYTES = 16 * 1024;
 export const ACTIVE_STORE_TRANSITION_MAX_BYTES = 32 * 1024;
@@ -578,7 +579,7 @@ function sameIdentity(left: StorageBigIntStat, right: StorageBigIntStat): boolea
 
 function ensureActiveStoreCoordinationDirectory(runtime: Runtime, actuator: StorageActuator): void {
   const { coordinationRoot } = resolveActiveStoreRecordPaths(runtime);
-  if (!runtime.storage.existsSync(coordinationRoot)) {
+  if (observeStorePath(runtime.storage, coordinationRoot) === 'absent') {
     actuator.makeDirectory(coordinationRoot, { recursive: true });
     const created = runtime.storage.lstatSync(coordinationRoot);
     if (created.isSymbolicLink()) {

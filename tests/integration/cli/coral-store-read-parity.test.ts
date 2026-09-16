@@ -1,5 +1,5 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import type { Command } from 'commander';
@@ -248,5 +248,31 @@ This note must not be read from a dev plugin.
 
     expect(result.title).toBe('KB Mode');
     expect(result.content).toContain('Keep the JSON index authoritative.');
+  });
+
+  it('does not present an unreadable store root as an empty direct-read store', async () => {
+    const runtime = createRealRuntime('prod');
+    const storeParent = dirname(runtime.paths.coral.store.dbDir);
+    const { openReadCoralStore } = await import('#src/cli/read-store.js');
+
+    chmodSync(storeParent, 0o600);
+    try {
+      expect(() => openReadCoralStore(projectRoot)).toThrowError(expect.objectContaining({ code: 'EACCES' }));
+    } finally {
+      chmodSync(storeParent, 0o700);
+    }
+  });
+
+  it('does not present an unreadable store root as the bundled expansion catalog', async () => {
+    const runtime = createRealRuntime('prod');
+    const storeParent = dirname(runtime.paths.coral.store.dbDir);
+    const { readExpansionCatalog } = await import('#src/cli/expansion/catalog.js');
+
+    chmodSync(storeParent, 0o600);
+    try {
+      expect(() => readExpansionCatalog(runtime)).toThrowError(expect.objectContaining({ code: 'EACCES' }));
+    } finally {
+      chmodSync(storeParent, 0o700);
+    }
   });
 });

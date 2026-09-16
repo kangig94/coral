@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createStoreResetIncidentDiagnosticRunner,
+  diagnoseStoreDatabaseCopy,
   stageStoreDatabaseEvidence,
   superviseStoreResetDiagnosticChild,
   type StoreDatabaseEvidenceUnavailableError,
@@ -322,12 +323,12 @@ describe('store-reset SQLite evidence staging', () => {
     }
   });
 
-  it('reclaims K interrupted legacy UUID reports before running a later report', async () => {
+  it('leaves legacy report namespaces alone while a current report runs', async () => {
     const fixture = diagnosticFixture();
     const interrupted = 4;
     for (let index = 0; index < interrupted; index += 1) {
       const namespace = mkdtempSync(join(fixture.tempRoot, 'coral-store-reset-'));
-      writeFileSync(join(namespace, 'store.db'), 'abandoned copy');
+      writeFileSync(join(namespace, 'store.db'), 'rolled-back reporter copy in progress');
     }
     const child = new FakeDiagnosticChild();
     let retainedDuringReport = 0;
@@ -355,8 +356,8 @@ describe('store-reset SQLite evidence staging', () => {
     console.log(
       `legacy-report-reclamation-cell incident=uuid interrupted=${interrupted} active=${retainedDuringReport} retained=${retainedAfterReport}`,
     );
-    expect(retainedDuringReport).toBe(1);
-    expect(retainedAfterReport).toBe(0);
+    expect(retainedDuringReport).toBe(interrupted + 1);
+    expect(retainedAfterReport).toBe(interrupted);
   });
 
   it('reclaims an abandoned reservation even when its recorded pid is live again', () => {
@@ -576,5 +577,32 @@ describe('store-reset SQLite evidence staging', () => {
       termination: 'completed',
       cleanup: 'cleanup_unavailable',
     });
+  });
+
+  it('bounds an exception before private-copy verification and still cleans the copy', async () => {
+    const fixture = diagnosticFixture();
+    const throwingSupervisor: StoreResetDiagnosticSupervisorPort = {
+      spawn() {
+        throw new Error('private copy could not be opened');
+      },
+      setTimeout(callback, milliseconds) {
+        return setTimeout(callback, milliseconds);
+      },
+      clearTimeout(handle) {
+        clearTimeout(handle as NodeJS.Timeout);
+      },
+    };
+
+    await expect(
+      diagnoseStoreDatabaseCopy({
+        fs: createStoreResetInspectionFs(),
+        sourceDirectory: fixture.incidentPath,
+        tempRoot: fixture.tempRoot,
+        platform: process.platform,
+        executable: '/node',
+        supervisor: throwingSupervisor,
+      }),
+    ).resolves.toEqual({ integrity: 'unavailable', termination: 'not_started', cleanup: 'removed' });
+    expect(readdirSync(fixture.tempRoot)).toEqual(['coral-store-report.lock']);
   });
 });

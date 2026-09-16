@@ -14,6 +14,7 @@ import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
+import { observeStorePath } from './path-observation.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
@@ -300,16 +301,28 @@ export function resolveCurrentStoreEpoch(storage: StoreEpochDiscoveryStorage, db
   return currentProvenEpoch(observeStoreEpochs(storage, storeRoot))?.epoch ?? null;
 }
 
-export function inspectCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>): CurrentStoreInspection {
+type CurrentStoreObservation =
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'present'; storeRoot: string; epochs: readonly StoreEpochObservation[] }>;
+
+function observeCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>): CurrentStoreObservation {
   const configuredDbDir = runtime.paths.coral.store.dbDir;
+  if (observeStorePath(runtime.storage, configuredDbDir) === 'absent') return { kind: 'absent' };
+  const storeRoot = runtime.storage.realpathSync(configuredDbDir);
+  return { kind: 'present', storeRoot, epochs: observeStoreEpochs(runtime.storage, storeRoot) };
+}
+
+export function inspectCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>): CurrentStoreInspection {
   try {
-    const storeRoot = runtime.storage.realpathSync(configuredDbDir);
-    const observations = observeStoreEpochs(runtime.storage, storeRoot);
-    const current = currentProvenEpoch(observations);
-    if (current !== null) return { kind: 'current', epoch: resolvedStoreEpoch(storeRoot, current.epoch) };
-    return { kind: observations.length === 0 ? 'absent' : 'unobservable' };
-  } catch (error: unknown) {
-    return { kind: errorCode(error) === 'ENOENT' ? 'absent' : 'unobservable' };
+    const observation = observeCurrentStore(runtime);
+    if (observation.kind === 'absent') return observation;
+    const current = currentProvenEpoch(observation.epochs);
+    if (current !== null) {
+      return { kind: 'current', epoch: resolvedStoreEpoch(observation.storeRoot, current.epoch) };
+    }
+    return { kind: observation.epochs.length === 0 ? 'absent' : 'unobservable' };
+  } catch {
+    return { kind: 'unobservable' };
   }
 }
 
@@ -362,13 +375,13 @@ export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>,
     }
     return { path, epoch: null, epochCandidate };
   }
-  if (!runtime.storage.existsSync(configuredDbDir)) {
+  const observation = observeCurrentStore(runtime);
+  if (observation.kind === 'absent') {
     return { path: epochPath(configuredDbDir, '1'), epoch: null, epochCandidate: true };
   }
-  const storeRoot = runtime.storage.realpathSync(configuredDbDir);
-  const current = currentProvenEpoch(observeStoreEpochs(runtime.storage, storeRoot));
-  if (current === null) return { path: epochPath(storeRoot, '1'), epoch: null, epochCandidate: true };
-  const epoch = resolvedStoreEpoch(storeRoot, current.epoch);
+  const current = currentProvenEpoch(observation.epochs);
+  if (current === null) return { path: epochPath(observation.storeRoot, '1'), epoch: null, epochCandidate: true };
+  const epoch = resolvedStoreEpoch(observation.storeRoot, current.epoch);
   return { path: epoch.path, epoch, epochCandidate: true };
 }
 
@@ -1871,6 +1884,10 @@ function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function errorCode(error) {
+  return error !== null && typeof error === 'object' && 'code' in error ? error.code : null;
+}
+
 function isValidEpochMetadata(value) {
   if (!isRecord(value)) return false;
   const validSupersedes =
@@ -1947,8 +1964,9 @@ export function resolveCurrentStoreDbPath(dbDir) {
   try {
     root = resolveStoreRoot(dbDir);
     entries = readdirSync(root.path);
-  } catch {
-    return null;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return null;
+    throw error;
   }
   for (const entry of entries) {
     const epoch = epochNumber(entry);

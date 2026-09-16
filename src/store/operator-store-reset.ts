@@ -14,6 +14,7 @@ import {
 } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import { acquireGenerationAdoptionLock, resolveGenerationBoundaryPaths } from './generation-mutation-coordination.js';
+import { observeStorePath } from './path-observation.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
 export type StoreResetTarget = 'legacy' | 'gen2';
@@ -146,9 +147,10 @@ export async function discardStoreReset(options: StoreResetDiscardOptions): Prom
   try {
     const adoption = await acquireGenerationAdoptionLock(options.runtime);
     try {
-      const previousEpoch = options.runtime.storage.existsSync(paths.dbDir)
-        ? resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir)
-        : null;
+      const previousEpoch =
+        observeStorePath(options.runtime.storage, paths.dbDir) === 'present'
+          ? resolveCurrentStoreEpoch(options.runtime.storage, paths.dbDir)
+          : null;
       const settled = discardCurrentStoreEpoch(options.runtime, {
         storeFormat: options.storeFormat,
         build: options.build,

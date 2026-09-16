@@ -3,6 +3,7 @@ import { readBuildFlavor } from '../infra/bundle-manifest.js';
 import { CoralStore } from '../read-model/coral-store.js';
 import { openMemoryStoreDatabase, type Database } from '../store/db.js';
 import { resolveCurrentStorePath } from '../store/epoch.js';
+import { observeStorePath } from '../store/path-observation.js';
 import { openReadOnlyStoreDatabase } from '../store/read-port.js';
 import { createDefaultStoreReadContext } from '../read-model/read-context.js';
 import { resolvePluginRoot } from './plugin-root.js';
@@ -110,7 +111,7 @@ export function openReadCoralStore(projectRoot: string): ReadCoralStoreHandle {
   const flavor = readBuildFlavor(pluginRoot ?? projectRoot);
   const runtime = createRealRuntime(flavor);
   const dbPath = resolveCurrentStorePath(runtime);
-  const hasStore = runtime.storage.existsSync(dbPath);
+  const hasStore = observeStorePath(runtime.storage, dbPath) === 'present';
 
   const db = hasStore
     ? (openReadOnlyStoreDatabase(runtime, {
