@@ -29,6 +29,9 @@ const MINT_PREPARATION_DIRECTORY_PREFIX = '.preparing-';
 const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
+const STORE_EPOCH_HOLDER_PUBLICATION_ATTEMPTS = 2;
+// node:sqlite reports SQLITE_BUSY as errcode 5 while its public code remains ERR_SQLITE_ERROR.
+const SQLITE_BUSY_ERRCODE = 5;
 
 export type StoreEpochClassification =
   | StoreFormatClassification
@@ -497,20 +500,32 @@ function registerStoreEpochHolder(
   db: Database,
   lease: FileLockLease,
 ): Database {
-  const holderPath = storeEpochHolderPath(resolved.storeRoot, runtime.ids.uuid());
-  if (
-    !runtime.storage.writeAtomicDurableSync(
-      holderPath,
-      `${JSON.stringify({ epoch: resolved.epoch, pid: runtime.env.pid() })}\n`,
-      {
-        encoding: 'utf-8',
-        mode: 0o600,
-      },
-    )
-  ) {
+  let holderPath: string | undefined;
+  try {
+    for (let attempt = 0; attempt < STORE_EPOCH_HOLDER_PUBLICATION_ATTEMPTS; attempt += 1) {
+      const candidate = storeEpochHolderPath(resolved.storeRoot, runtime.ids.uuid());
+      if (
+        runtime.storage.writeAtomicDurableSync(
+          candidate,
+          `${JSON.stringify({ epoch: resolved.epoch, pid: runtime.env.pid() })}\n`,
+          {
+            encoding: 'utf-8',
+            mode: 0o600,
+          },
+        )
+      ) {
+        holderPath = candidate;
+        break;
+      }
+      if (observeStorePath(runtime.storage, candidate) === 'present') break;
+    }
+    if (holderPath === undefined) {
+      throw new Error(`Failed to publish store epoch ${resolved.epoch} holder.`);
+    }
+  } catch (error: unknown) {
     db.close();
     lease();
-    throw new Error(`Failed to publish store epoch ${resolved.epoch} holder.`);
+    throw error;
   }
   const close = db.close.bind(db);
   let closed = false;
@@ -1309,6 +1324,7 @@ export async function sweepStoreEpochsPostReady(
   if (options.signal?.aborted) return 'cancelled';
 
   let holderDeletionFailed = false;
+  let lockReleaseFailed = false;
   let unobservableHolder = false;
   const inspectedHolders = new Set<string>();
   for (const entry of entries) {
@@ -1334,11 +1350,17 @@ export async function sweepStoreEpochsPostReady(
         holderDeletionFailed ||= !removed;
       }
     } finally {
-      holder?.proof?.();
+      try {
+        holder?.proof?.();
+      } catch (error: unknown) {
+        auditSweepFailure(holder?.path ?? join(dbDir, holderEntry), error);
+        lockReleaseFailed = true;
+      }
     }
     await yieldSweepTurn();
   }
   if (!(await syncMutations())) return 'durability-sync-failed';
+  if (lockReleaseFailed) return 'lock-release-failed';
   if (holderDeletionFailed) return 'deletion-failed';
   if (unobservableHolder) return 'unobservable-holder';
 
@@ -1355,7 +1377,6 @@ export async function sweepStoreEpochsPostReady(
   );
   let complete = true;
   let liveHolder = false;
-  let lockReleaseFailed = false;
   let unobservableResidue = false;
   for (const entry of entries) {
     if (options.signal?.aborted) return finish('cancelled');
@@ -1460,8 +1481,16 @@ function mintNextEpoch(
   try {
     mintLease = createSharedFileLockSync(join(construction, STORE_LOCK_FILE_NAME));
   } catch (error: unknown) {
-    cleanupMint(runtime.storage, construction);
-    if (errorCode(error) === 'ENOENT') return { kind: 'swept' };
+    let observation: ReturnType<typeof observeStorePath>;
+    try {
+      observation = observeStorePath(runtime.storage, construction);
+    } finally {
+      cleanupMint(runtime.storage, construction);
+    }
+    if (observation === 'absent') return { kind: 'swept' };
+    if (error instanceof Error && 'errcode' in error && error.errcode === SQLITE_BUSY_ERRCODE) {
+      return { kind: 'contended' };
+    }
     throw error;
   }
   try {

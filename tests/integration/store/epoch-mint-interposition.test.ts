@@ -6,7 +6,12 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import type * as FsLockMod from '#src/infra/fs-lock.js';
 
-const interposition = vi.hoisted(() => ({ dbDir: null as string | null, lockOpenObserved: false, swept: false }));
+const interposition = vi.hoisted(() => ({
+  dbDir: null as string | null,
+  lockOpenObserved: false,
+  sweepConstruction: false,
+  swept: false,
+}));
 
 vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
   const actual = await importOriginal<typeof FsLockMod>();
@@ -23,8 +28,12 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
       if (
         interposition.dbDir !== null &&
         path.dirname(directory) === interposition.dbDir &&
-        (name.startsWith('.mint-') || name.startsWith('.preparing-') || name.startsWith('.reaping-'))
+        ((interposition.sweepConstruction && name.startsWith('.coral-store-epoch-construction-')) ||
+          name.startsWith('.mint-') ||
+          name.startsWith('.preparing-') ||
+          name.startsWith('.reaping-'))
       ) {
+        interposition.sweepConstruction = false;
         interposition.swept = true;
         fs.rmSync(directory, { recursive: true, force: true });
       }
@@ -67,6 +76,7 @@ const build: StrictBundleManifest = {
 afterEach(() => {
   interposition.dbDir = null;
   interposition.lockOpenObserved = false;
+  interposition.sweepConstruction = false;
   interposition.swept = false;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -94,4 +104,19 @@ it('does not expose a sweepable preparation directory before constructing its SQ
   expect(interposition.swept).toBe(false);
   expect(failure).toBeNull();
   expect(epoch).toBe('1');
+});
+
+it('settles after a sweep removes the construction directory before the lock opens', () => {
+  const baseDir = mkdtempSync(join(tmpdir(), 'coral-mint-construction-sweep-'));
+  roots.push(baseDir);
+  const runtime = createRealRuntime('prod', { baseDir });
+  interposition.dbDir = runtime.paths.coral.store.dbDir;
+  interposition.sweepConstruction = true;
+
+  const settled = settleStoreEpoch(runtime, { storeFormat, build });
+
+  expect(interposition.lockOpenObserved).toBe(true);
+  expect(interposition.swept).toBe(true);
+  expect(settled.store.epoch).toBe('1');
+  settled.db.close();
 });

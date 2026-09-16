@@ -3102,6 +3102,13 @@ So the boundary that reports these failures has to report them as three answers 
 exception, and the cleanup that destroys the evidence must not run before the observation that reads it.
 `cleanupMint` currently runs first.
 
+Holder publication gets two total attempts, each with a fresh UUID. One post-ready sweep acts on one directory
+snapshot, so a sweep that removes the first temporary file cannot discover the retry UUID. Losing the retry
+therefore requires distinct or systematic interference, and exhaustion keeps the existing boot refusal as its
+named successor. The storage port still overloads that lost race with a parent-directory durability failure; the
+broader correction is tracked in
+[`write-atomic-durable-sync-result-overloads-two-dispositions.md`](write-atomic-durable-sync-result-overloads-two-dispositions.md).
+
 ## Scope, ruled by the owner
 
 **Fix existing defects and defects introduced by this branch's own implementation. Nothing else.** A

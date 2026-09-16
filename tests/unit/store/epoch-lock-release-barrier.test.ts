@@ -134,4 +134,20 @@ describe('store epoch lock-release durability barriers', () => {
     expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
     expect(tracked.syncs()).toBeGreaterThan(0);
   });
+
+  it('syncs a stale holder removal when its proof release throws', async () => {
+    const base = harness();
+    publishEpoch(base, '5');
+    const dbDir = base.paths.coral.store.dbDir;
+    const holderPath = join(dbDir, '.epoch-holder-stale.json');
+    writeFileSync(holderPath, JSON.stringify({ epoch: '5', pid: process.pid }));
+    const tracked = trackingRootSync(base);
+    lockReleaseFault.paths.add(storeEpochLockPath(dbDir, '5'));
+
+    await expect(sweepStoreEpochsPostReady(tracked.runtime, resolvedStoreEpoch(dbDir, '5'))).resolves.toBe(
+      'lock-release-failed',
+    );
+    expect(existsSync(holderPath)).toBe(false);
+    expect(tracked.syncs()).toBeGreaterThan(0);
+  });
 });
