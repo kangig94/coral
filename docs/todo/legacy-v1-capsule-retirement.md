@@ -66,18 +66,15 @@ incarnations the new decision needs, so retirement is justified for them without
 mint neither enlarges nor shrinks that set; it only guarantees that a boot which cannot prove an identity never
 claims one a second boot also claims. What survives here is this entry's three members, and only those.
 
-Two further between-boot effects follow from the same mint, and both are intended. A boot without a strict
+One further between-boot effect follows from the same mint, and it is intended. A boot without a strict
 identity does not inherit an earlier run's proxy set: `redeem`
 (`src/coordinator/services/provider-proxy-set/inheritance.ts`) refuses a durable provider-operation record
 whose `buildSetId` differs and answers `not-bequeathed` before reading a capsule at all, so the abandoned set
 is left to its own bounded enforcement and then to this retirement work. Stated as "no longer inherits _its
 own_ previous run's set", this was the same vacuous claim as the one above — the sets such a boot refuses were
-acquired by bundled builds. And an interrupted automatic store reset written by an earlier such boot no longer
-resumes: `authorizeAutomaticIncidentResume`
-(`src/store/backend-store-reset.ts`) compares the manifest's `buildSetId` against the running authority
-and refuses as `store_reset_interrupted_authority_mismatch`. That refusal already names its exit, and the exit
-is a command that exists rather than one this work would have to add — `interruptedStoreResetRemediation`
-(`src/runtime/errors.ts`) prints `coral-cli backend store-reset discard --target gen2 --flavor <prod|dev>`.
+acquired by bundled builds. The interrupted automatic store-reset resume mechanism is gone: a boot neither
+resumes an earlier reset incident nor refuses its resumption on an authority mismatch, so there is no live
+symbol or path to cite for that former effect.
 
 ## The correction this entry inherits, kept in place
 

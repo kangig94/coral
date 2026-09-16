@@ -20,29 +20,32 @@ pioneer pass caught only because both were considered together.
 > resolvable, the active-store selection protocol now also handles both newer-store cases
 > without operator action:
 >
-> | Store relative to the running build | Newer build installed | Current behaviour                                                                                                                | Status      |
-> | ----------------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-> | older                               | —                     | auto-quarantine with a V3 incident, initialize fresh                                                                             | implemented |
-> | corrupt or unsupported              | —                     | auto-quarantine with a V3 incident, initialize fresh                                                                             | implemented |
-> | newer                               | yes                   | the active-store selection names a valid newer local build, so startup hands off to it                                           | implemented |
-> | newer                               | no                    | an absent, malformed, or invalidated selection publishes a V3 `newer-incompatible-invalid-target` incident and initializes fresh | implemented |
+> | Store relative to the running build | Newer build installed | Current behaviour                                                                                    | Status      |
+> | ----------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- | ----------- |
+> | older                               | —                     | publish a fresh successor epoch and retain the superseded epoch                                      | implemented |
+> | corrupt or unsupported              | —                     | publish a fresh successor epoch and retain the superseded epoch                                      | implemented |
+> | newer                               | yes                   | the active-store selection names a valid newer local build, so startup hands off to it               | implemented |
+> | newer                               | no                    | retain the invalid-target evidence, publish a fresh successor epoch, and retain the superseded epoch | implemented |
 >
 > The implemented authority is the build-identity selection pointer
 > `active-store-selection.v1.json`. `coordinateActiveStoreSelection` consults it before
 > classifying store bytes, hands off to a valid newer local target, and records a durable
-> transition before resetting an invalid-target newer store. This remains one store path per
-> flavor; it is not the fingerprint-keyed multi-format routing proposed below.
+> transition before publishing a successor epoch for an invalid-target newer store. `settleStoreEpoch`
+> publishes the successor, while `garbageStoreEpochs` applies ordinal retention to proven epochs and keeps
+> the highest two (`src/store/epoch.ts`). This remains one store path per flavor; it is not the
+> fingerprint-keyed multi-format routing proposed below.
 >
 > Routing is a _further_ refinement: an older build would find its own store instead of
-> needing either branch, and quarantine would stop being necessary at all. Do not treat it
+> needing epoch replacement, and replacement would stop being necessary at all. Do not treat it
 > as the prerequisite for the already-implemented older/corrupt zero-step path — it is not.
 
 ## The problem it solves
 
 One store per flavor means a build can meet a store it cannot read. Ordinary boot now
-auto-quarantines older or corrupt/unsupported state. For a newer store, the build-selection
+publishes a fresh successor epoch for older or corrupt/unsupported state and retains the superseded epoch.
+For a newer store, the build-selection
 pointer hands off to a valid newer local build or, when the selection is absent, malformed,
-or invalidated, auto-quarantines with a V3 incident and initializes fresh. That is safe
+or invalidated, retains the invalid-target evidence and publishes a fresh successor epoch. That is safe
 cross-version ownership over one store path, not multi-format routing.
 
 The remaining routing problem is that an older build cannot find and open its own
@@ -96,7 +99,7 @@ The claim "no build ever meets an incompatible store" is false in four ways:
    the previous one.
 2. **A directory name does not authenticate its contents.** Corruption, a partial migration,
    an operator copy, or missing metadata still needs classification. The path is an address,
-   not proof — the store opener must keep classifying, automatically resetting older/corrupt
+   not proof — the store opener must keep classifying, publishing successor epochs for older/corrupt
    state, and applying the active-store selection protocol's handoff-or-reset decision for
    newer state.
 3. **Same-fingerprint semantic incompatibility remains possible.** The fingerprint hashes
@@ -141,10 +144,10 @@ installation provenance, not storage compatibility.
 ## Crash-path constraint from provider-host containment (2026-08-13)
 
 Durable recovery for coordinator-local provider hosts is not shipped. When it is added, it must run after
-coordinator authority is established but before store routing can discard the only evidence naming an orphaned
+coordinator authority is established but before store routing can hide the only evidence naming an orphaned
 group. `routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts`) currently runs before
-`runStartupRecovery` and may quarantine or reset the store, so a containment record inside that store
-could disappear while the detached app-server and its MCP children remain alive.
+`runStartupRecovery` and may replace the active epoch, so a containment record remains in the retained
+superseded epoch but is invisible to recovery while the detached app-server and its MCP children remain alive.
 
 The design therefore needs a format-neutral record and a pre-routing recovery window. Multiple
 fingerprint-keyed stores strengthen that constraint: a record written into any one store is invisible from the
@@ -172,9 +175,10 @@ ignore it, and this remains a pre-existing defect rather than a new one.
 
 Recorded so the next attempt starts from the end of the argument, not the beginning.
 
-- **A filesystem capsule, never SQLite.** Store routing may quarantine or reset the store _before_ recovery
-  runs (`src/coordinator/lifecycle.ts`'s `routeOrOpenBackendStoreAtStartup` vs `runStartupRecovery`), so a record inside the store can be destroyed while the group it names
-  keeps running. Not the host inventory either — `captureInventory`
+- **A filesystem capsule, never SQLite.** Store routing may publish a successor epoch _before_ recovery
+  runs (`src/coordinator/lifecycle.ts`'s `routeOrOpenBackendStoreAtStartup` vs `runStartupRecovery`), so a
+  record can remain in the retained superseded epoch while recovery opens the successor and never sees it.
+  Not the host inventory either — `captureInventory`
   (`src/coordinator/services/provider-host-administration.ts`) assembles rows on demand from live owners.
 - **Per-owner records, shared primitive.** A proxy set is _inheritable_ — a successor adopts it by redeeming a
   handoff capsule (`src/provider-proxy/handoff-capsule.ts`), and recovery races redemption against containment
