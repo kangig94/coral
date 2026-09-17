@@ -314,7 +314,7 @@ export function projectIgnoreStatus(artifacts) {
   // happen may not read as one that partly did.
   const hasProgress = selected.some(
     (artifact) =>
-      ['cleaned', 'published', 'created', 'repointed'].includes(artifact.state) ||
+      ['cleaned', 'published', 'removed', 'created', 'repointed'].includes(artifact.state) ||
       artifact.residue === 'owned-staging' ||
       (artifact.state !== 'refused' && artifact.durability && artifact.durability.state !== 'synced') ||
       (artifact.state === 'refused' && Number.isSafeInteger(artifact.count) && artifact.count > 0),
@@ -352,7 +352,7 @@ export function isProjectIgnoreResult(value) {
   if (
     !validateReplacement(
       artifacts.scopedIgnoreRetraction,
-      ['not-needed', 'unchanged', 'published', 'refused', 'skipped'],
+      ['not-needed', 'unchanged', 'published', 'removed', 'refused', 'skipped'],
       'scopedIgnoreRetraction',
     ) ||
     !validateReplacement(

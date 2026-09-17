@@ -35,6 +35,7 @@ import {
   safeUnlink,
 } from './artifacts.mjs';
 import {
+  atomicRemove,
   atomicReplace,
   cleanupFinalDurabilityMarker,
   durabilityMarker,
@@ -49,20 +50,58 @@ import { projectIgnoreResult } from './result.mjs';
 const CORAL_IGNORE_ENTRY = 'coral';
 const LEGACY_CORAL_IGNORE_ENTRY = '.claude/coral';
 
+// Measured on git 2.43.0: trailing spaces are dropped from a pattern unless a backslash escapes
+// them, and a backslash consumes the byte after it. `coral \n` and `coral  \n` both carry `coral`,
+// `coral\ \n` carries the pattern for the file `coral `, and a tab is not a trailing space, so
+// `coral \t\n` keeps both and does not ignore `coral`.
+function withoutTrailingSpaces(line) {
+  let lastSpace = -1;
+  for (let index = 0; index < line.length; index += 1) {
+    if (line[index] === 0x5c) {
+      index += 1;
+      if (index >= line.length) return line;
+      lastSpace = -1;
+    } else if (line[index] === 0x20) {
+      if (lastSpace === -1) lastSpace = index;
+    } else {
+      lastSpace = -1;
+    }
+  }
+  return lastSpace === -1 ? line : line.subarray(0, lastSpace);
+}
+
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+
+// Measured on git 2.43.0: one UTF-8 BOM at the very start of the file is skipped, so `<BOM>coral`
+// carries the pattern `coral` while a BOM anywhere later is pattern bytes. A pattern is a C string,
+// so an embedded NUL ends it: `coral\0junk` carries `coral` and `\0coral` carries nothing.
+function asGitPattern(line, atFileStart) {
+  const body =
+    atFileStart && line.subarray(0, UTF8_BOM.length).equals(UTF8_BOM)
+      ? line.subarray(UTF8_BOM.length)
+      : line;
+  const nul = body.indexOf(0x00);
+  return withoutTrailingSpaces(nul === -1 ? body : body.subarray(0, nul));
+}
+
+// Measured on git 2.43.0: only '\n' ends a line, exactly one trailing '\r' is stripped from what
+// remains, and a '\r' anywhere else is ordinary pattern text. So `coral\r\n` and a final `coral\r`
+// both carry the pattern `coral`, while `coral\r\r\n` carries `coral\r` and `coral\r# c` is the single
+// pattern `coral\r# c`. A line must be compared as Git reads it; a segment must carry every byte the
+// file spends on it, so that dropping one leaves the rest byte-identical.
 function lineSegments(content) {
   const segments = [];
   let cursor = 0;
   while (cursor < content.length) {
     let lineEnd = cursor;
-    while (lineEnd < content.length && content[lineEnd] !== 0x0a && content[lineEnd] !== 0x0d) {
-      lineEnd += 1;
-    }
-    let segmentEnd = lineEnd;
-    if (segmentEnd < content.length) {
-      segmentEnd += content[segmentEnd] === 0x0d && content[segmentEnd + 1] === 0x0a ? 2 : 1;
-    }
+    while (lineEnd < content.length && content[lineEnd] !== 0x0a) lineEnd += 1;
+    const segmentEnd = lineEnd < content.length ? lineEnd + 1 : lineEnd;
+    const lineHasCarriageReturn = lineEnd > cursor && content[lineEnd - 1] === 0x0d;
     segments.push({
-      line: content.subarray(cursor, lineEnd),
+      line: asGitPattern(
+        content.subarray(cursor, lineHasCarriageReturn ? lineEnd - 1 : lineEnd),
+        cursor === 0,
+      ),
       segment: content.subarray(cursor, segmentEnd),
     });
     cursor = segmentEnd;
@@ -89,11 +128,17 @@ function removeExactLines(content, entry) {
   return changed ? Buffer.concat(retained) : content;
 }
 
+// Measured on git 2.43.0: a line is a comment only when its first byte is '#'. A leading space makes
+// ' # x' a pattern matching the file named '# x', '\#x' is an escaped literal pattern, and a tab is
+// a pattern of its own — `\t\n` ignores the file named with a tab. Lines arrive already trimmed as
+// Git trims them, so only an empty one carries nothing.
+function ignoresNothing(content) {
+  return lineSegments(content).every(({ line }) => line.length === 0 || line[0] === 0x23);
+}
+
 function preferredNewline(content) {
   for (let index = 0; index < content.length; index += 1) {
-    if (content[index] === 0x0d) {
-      return content[index + 1] === 0x0a ? Buffer.from('\r\n') : Buffer.from('\r');
-    }
+    if (content[index] === 0x0d && content[index + 1] === 0x0a) return Buffer.from('\r\n');
     if (content[index] === 0x0a) return Buffer.from('\n');
   }
   return Buffer.from('\n');
@@ -102,8 +147,7 @@ function preferredNewline(content) {
 function appendExactLine(content, entry) {
   if (hasExactLine(content, entry)) return content;
   const newline = preferredNewline(content);
-  const needsBoundary =
-    content.length > 0 && content[content.length - 1] !== 0x0a && content[content.length - 1] !== 0x0d;
+  const needsBoundary = content.length > 0 && content[content.length - 1] !== 0x0a;
   return Buffer.concat([content, ...(needsBoundary ? [newline] : []), Buffer.from(entry), newline]);
 }
 
@@ -311,6 +355,12 @@ function prepareReplacement({
   const marker = durabilityMarker(durabilityDir, durabilityRunDir, target);
   if (!marker) return { ok: false, reason: 'durability-evidence-unavailable' };
   return { ok: true, replacement: { target, snapshot, next, durabilityMarker: marker } };
+}
+
+function prepareRemoval({ target, snapshot, durabilityDir, durabilityRunDir }) {
+  const marker = durabilityMarker(durabilityDir, durabilityRunDir, target);
+  if (!marker) return { ok: false, reason: 'durability-evidence-unavailable' };
+  return { ok: true, removal: { target, snapshot, durabilityMarker: marker } };
 }
 
 function excludeDevicePath(excludePath) {
@@ -669,18 +719,33 @@ function preflightProjectIgnoreArtifacts({
     });
   }
   let scopedIgnoreRetraction = null;
+  let scopedIgnoreRemoval = null;
   if (scopedSnapshot) {
-    scopedIgnoreRetraction = prepareReplacement({
-      target: join(claudeDir, '.gitignore'),
-      snapshot: scopedSnapshot,
-      next: removeExactLines(scopedSnapshot.content, CORAL_IGNORE_ENTRY),
-      contentChangeNeeded: hasExactLine(scopedSnapshot.content, CORAL_IGNORE_ENTRY),
-      devicePath: claudeDir,
-      stagingDir,
-      stagingRefusal,
-      durabilityDir,
-      durabilityRunDir,
-    });
+    const scopedTarget = join(claudeDir, '.gitignore');
+    const retracting = hasExactLine(scopedSnapshot.content, CORAL_IGNORE_ENTRY);
+    const retracted = removeExactLines(scopedSnapshot.content, CORAL_IGNORE_ENTRY);
+    // Retracting the entry is what authorizes discarding the file: Coral may only remove a scoped
+    // ignore file that this run is what emptied.
+    if (retracting && ignoresNothing(retracted)) {
+      scopedIgnoreRemoval = prepareRemoval({
+        target: scopedTarget,
+        snapshot: scopedSnapshot,
+        durabilityDir,
+        durabilityRunDir,
+      });
+    } else {
+      scopedIgnoreRetraction = prepareReplacement({
+        target: scopedTarget,
+        snapshot: scopedSnapshot,
+        next: retracted,
+        contentChangeNeeded: retracting,
+        devicePath: claudeDir,
+        stagingDir,
+        stagingRefusal,
+        durabilityDir,
+        durabilityRunDir,
+      });
+    }
   }
   const rootIgnoreRetraction = prepareReplacement({
     target: context.rootGitignore,
@@ -696,7 +761,7 @@ function preflightProjectIgnoreArtifacts({
 
   for (const [artifact, replacement] of [
     ['exclude', exclude],
-    ['scopedIgnoreRetraction', scopedIgnoreRetraction],
+    ['scopedIgnoreRetraction', scopedIgnoreRetraction ?? scopedIgnoreRemoval],
     ['rootIgnoreRetraction', rootIgnoreRetraction],
   ]) {
     if (replacement && !replacement.ok) {
@@ -716,6 +781,7 @@ function preflightProjectIgnoreArtifacts({
     replacements: {
       exclude: exclude?.replacement ?? null,
       scopedIgnoreRetraction: scopedIgnoreRetraction?.replacement ?? null,
+      scopedIgnoreRemoval: scopedIgnoreRemoval?.removal ?? null,
       rootIgnoreRetraction: rootIgnoreRetraction.replacement,
     },
   };
@@ -758,9 +824,10 @@ function maintainProjectIgnoreArtifacts({
       ? { state: 'unchanged', residue: 'none' }
       : { state: 'not-needed', residue: 'none' },
     symlink: { state: preflight.symlink.action },
-    scopedIgnoreRetraction: preflight.replacements.scopedIgnoreRetraction
-      ? { state: 'unchanged', residue: 'none' }
-      : { state: 'not-needed', residue: 'none' },
+    scopedIgnoreRetraction:
+      preflight.replacements.scopedIgnoreRetraction ?? preflight.replacements.scopedIgnoreRemoval
+        ? { state: 'unchanged', residue: 'none' }
+        : { state: 'not-needed', residue: 'none' },
     rootIgnoreRetraction: preflight.replacements.rootIgnoreRetraction
       ? { state: 'unchanged', residue: 'none' }
       : { state: 'not-needed', residue: 'none' },
@@ -812,16 +879,18 @@ function maintainProjectIgnoreArtifacts({
     return artifacts;
   }
 
-  if (preflight.replacements.scopedIgnoreRetraction) {
+  if (preflight.replacements.scopedIgnoreRemoval) {
+    artifacts.scopedIgnoreRetraction = atomicRemove(preflight.replacements.scopedIgnoreRemoval);
+  } else if (preflight.replacements.scopedIgnoreRetraction) {
     artifacts.scopedIgnoreRetraction = atomicReplace({
       ...preflight.replacements.scopedIgnoreRetraction,
       stagingDir,
       stagingName: 'scoped-ignore-retraction.tmp',
     });
-    if (artifacts.scopedIgnoreRetraction.state === 'refused') {
-      artifacts.rootIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
-      return artifacts;
-    }
+  }
+  if (artifacts.scopedIgnoreRetraction.state === 'refused') {
+    artifacts.rootIgnoreRetraction = { ...SKIPPED_REPLACEMENT };
+    return artifacts;
   }
 
   if (preflight.replacements.rootIgnoreRetraction) {

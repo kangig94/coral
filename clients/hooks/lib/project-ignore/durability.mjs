@@ -12,6 +12,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
@@ -354,6 +355,56 @@ export function atomicReplace({
           : { ...result, residue: 'owned-staging' };
     }
     if (markerCreated && result.state !== 'published') {
+      result = withDurability(result, cleanupFinalDurabilityMarker(durabilityMarker));
+    }
+  }
+  return result;
+}
+
+export function atomicRemove({ target, snapshot, durabilityMarker }) {
+  let markerCreated = false;
+  let result = { state: 'refused', reason: 'publish-failed', residue: 'none' };
+  try {
+    const recorded = recordPendingDurability(durabilityMarker);
+    markerCreated = recorded.created;
+    if (!recorded.ok) {
+      result = {
+        state: 'refused',
+        reason: 'durability-evidence-unavailable',
+        residue: recorded.residue,
+      };
+    } else {
+      const snapshotState = compareSnapshot(target, snapshot);
+      if (snapshotState !== 'unchanged') {
+        result = {
+          state: 'refused',
+          reason:
+            snapshotState === 'observation-failed' ? 'artifact-observation-failed' : 'artifact-changed',
+          residue: 'none',
+        };
+      } else {
+        try {
+          unlinkSync(target);
+          result = {
+            state: 'removed',
+            residue: 'none',
+            durability: syncPendingPublication(target, durabilityMarker),
+          };
+        } catch (error) {
+          // compareSnapshot observed the file, so a target that is gone now was removed by another
+          // writer; this run may not report that disappearance as its own discharge.
+          result = {
+            state: 'refused',
+            reason: isMissing(error) ? 'artifact-changed' : 'publish-failed',
+            residue: 'none',
+          };
+        }
+      }
+    }
+  } catch {
+    result = { state: 'refused', reason: 'publish-failed', residue: 'none' };
+  } finally {
+    if (markerCreated && result.state !== 'removed') {
       result = withDurability(result, cleanupFinalDurabilityMarker(durabilityMarker));
     }
   }

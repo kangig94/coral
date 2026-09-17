@@ -220,12 +220,14 @@ try {
 
   const host = hostKind();
 
+  const scopedDiscarded =
+    ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction?.state === 'removed';
   const migrationPublished = [
     ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction,
     ignoreOutcome.maintenance?.artifacts.rootIgnoreRetraction,
-  ].some((artifact) => artifact?.state === 'published');
+  ].some((artifact) => ['published', 'removed'].includes(artifact?.state));
   const migrationNotice = migrationPublished
-    ? 'Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.'
+    ? `Coral migration: retracted legacy coral ignore rule(s) from the working tree; the canonical anchored rule is in .git/info/exclude.${scopedDiscarded ? ' The .claude/.gitignore it emptied was discarded.' : ''}`
     : null;
   const legacySweep = ignoreOutcome.maintenance?.artifacts.legacySweep;
   const legacySweepNotice =

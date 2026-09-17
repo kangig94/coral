@@ -433,7 +433,7 @@ async function maintain(
       count?: number;
     };
     scopedIgnoreRetraction: {
-      state: 'not-needed' | 'unchanged' | 'published' | 'refused' | 'skipped';
+      state: 'not-needed' | 'unchanged' | 'published' | 'removed' | 'refused' | 'skipped';
       reason?: string;
       component?: 'coral' | 'staging' | 'project-ignore';
       residue: 'none' | 'owned-staging';
@@ -2040,6 +2040,233 @@ describe('project-ignore maintenance', () => {
       'Coral could not inspect or re-read an affected ignore file. Remedy: make the file and its parent directories observable by the current user, or repair the filesystem error blocking inspection. It is attempted again at the next session start.',
     ]);
     expect(readFileSync(scopedIgnore, 'utf-8')).toBe('coral\n');
+  });
+
+  it('discards the scoped ignore file when the retraction leaves only comments', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, '# kept by an older Coral build\ncoral\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({
+      state: 'removed',
+      residue: 'none',
+      durability: { state: 'synced', reasons: [] },
+    });
+    expect(existsSync(scopedIgnore)).toBe(false);
+    expect(durabilityMarkers()).toEqual([]);
+  });
+
+  it('discards the scoped ignore file when the retraction empties it', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, 'coral\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('removed');
+    expect(existsSync(scopedIgnore)).toBe(false);
+  });
+
+  it('keeps the scoped ignore file when a pattern outlives the retraction', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, '# notes\ncoral\nsettings.local.json\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: { state: 'synced', reasons: [] },
+    });
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe('# notes\nsettings.local.json\n');
+  });
+
+  it('keeps a comment-only scoped ignore file that carried no entry to retract', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, '# notes\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe('# notes\n');
+  });
+
+  it('keeps the scoped ignore file when an indented comment is a surviving pattern', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, 'coral\n # spaced\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('published');
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe(' # spaced\n');
+  });
+
+  it.each([
+    ['a bare CR joins the entry to the rest of its pattern', 'coral\r# comment\n'],
+    ['only one trailing CR is stripped', 'coral\r\r\n'],
+  ])('leaves a scoped ignore file untouched when %s', async (_name, content) => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, content);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({ state: 'not-needed', residue: 'none' });
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe(content);
+  });
+
+  it.each([
+    ['a CRLF entry', 'coral\r\n'],
+    ['a final CR with no line feed', 'coral\r'],
+    ['no final newline at all', 'coral'],
+  ])('discards a scoped ignore file carrying %s and nothing else', async (_name, content) => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, content);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('removed');
+    expect(existsSync(scopedIgnore)).toBe(false);
+  });
+
+  it.each([
+    ['trailing spaces, which Git drops', 'coral  \n'],
+    ['trailing spaces on a CRLF line', 'coral \r\n'],
+  ])('retracts a scoped ignore entry written with %s', async (_name, content) => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, content);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('removed');
+    expect(existsSync(scopedIgnore)).toBe(false);
+  });
+
+  it.each([
+    ['a tab is a pattern of its own', 'coral\n\t\n'],
+    ['a tab ends the trailing-space run', 'coral\ncoral \t\n'],
+    ['a backslash escapes the space it precedes', 'coral\ncoral\\ \n'],
+  ])('keeps a scoped ignore file because %s', async (_name, content) => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, content);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('published');
+    expect(existsSync(scopedIgnore)).toBe(true);
+  });
+
+  it.each([
+    ['a leading UTF-8 BOM, which Git skips', '\uFEFFcoral\n'],
+    ['a NUL that ends the pattern', 'coral\u0000junk\n'],
+    ['a line Git reads as an empty pattern', 'coral\n\u0000junk\n'],
+  ])('discards a scoped ignore file carrying %s', async (_name, content) => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, content);
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('removed');
+    expect(existsSync(scopedIgnore)).toBe(false);
+  });
+
+  it('keeps a scoped ignore file whose BOM is not at the start Git skips', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, 'coral\n\uFEFFkeep-me\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('published');
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe('\uFEFFkeep-me\n');
+  });
+
+  it('does not duplicate an exclude entry Git already reads past a BOM', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    mkdirSync(dirname(excludePath), { recursive: true });
+    writeFileSync(excludePath, '\uFEFF/.claude/coral\n');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.exclude).toEqual({ state: 'unchanged', residue: 'none' });
+    expect(readFileSync(excludePath, 'utf-8')).toBe('\uFEFF/.claude/coral\n');
+  });
+
+  it('anchors the exclude entry on its own line after content ending in a bare CR', async () => {
+    const excludePath = join(fixture.gitDir, 'info', 'exclude');
+    mkdirSync(dirname(excludePath), { recursive: true });
+    writeFileSync(excludePath, 'pre-existing\r');
+
+    const result = await maintain('prod');
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.exclude.state).toBe('published');
+    expect(readFileSync(excludePath, 'utf-8')).toBe('pre-existing\r\n/.claude/coral\n');
+  });
+
+  it('empties but never discards a Git-root gitignore carrying only the legacy entry', async () => {
+    const rootIgnore = join(projectDir, '.gitignore');
+    writeFileSync(rootIgnore, '.claude/coral\n');
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('complete');
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'published',
+      residue: 'none',
+      durability: { state: 'synced', reasons: [] },
+    });
+    expect(readFileSync(rootIgnore, 'utf-8')).toBe('');
+  });
+
+  it('reads a discarded scoped ignore file as progress when the root retraction then fails', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    const rootIgnore = join(projectDir, '.gitignore');
+    writeFileSync(scopedIgnore, '# notes\ncoral\n');
+    writeFileSync(rootIgnore, '.claude/coral\nkeep-me\n');
+    fixture.failRenameTo = rootIgnore;
+
+    const result = await maintain('prod', false);
+
+    expect(result.artifacts.scopedIgnoreRetraction.state).toBe('removed');
+    expect(result.artifacts.rootIgnoreRetraction.state).toBe('refused');
+    expect(result.status).toBe('partial');
+    expect(existsSync(scopedIgnore)).toBe(false);
+    expect(readFileSync(rootIgnore, 'utf-8')).toBe('.claude/coral\nkeep-me\n');
+  });
+
+  it('refuses without discarding the scoped ignore file when its removal fails', async () => {
+    const scopedIgnore = join(projectDir, '.claude', '.gitignore');
+    writeFileSync(scopedIgnore, '# notes\ncoral\n');
+    writeFileSync(join(projectDir, '.gitignore'), '.claude/coral\n');
+    fixture.failUnlinkPath = scopedIgnore;
+
+    const result = await maintain('prod', false);
+
+    expect(result.status).toBe('refused');
+    expect(result.artifacts.scopedIgnoreRetraction).toEqual({
+      state: 'refused',
+      reason: 'publish-failed',
+      residue: 'none',
+    });
+    expect(result.artifacts.rootIgnoreRetraction).toEqual({
+      state: 'skipped',
+      reason: 'upstream-refusal',
+      residue: 'none',
+    });
+    expect(readFileSync(scopedIgnore, 'utf-8')).toBe('# notes\ncoral\n');
+    expect(readFileSync(join(projectDir, '.gitignore'), 'utf-8')).toBe('.claude/coral\n');
+    expect(durabilityMarkers()).toEqual([]);
   });
 
   it('retracts the Git-root legacy line through a non-directory .claude when creation is off', async () => {
