@@ -578,15 +578,15 @@ function unattributableRetryDelayMs(attempts: number): number {
 }
 
 /**
- * Outcomes without confirmed absence must keep the role alive unless explicit operator authority abandons the hold.
- * Only confirmed absence may mark the deadline model exited. Close-and-exit must remain deferred so an
- * in-flight control response can reach its caller before the role closes its sockets.
+ * Only confirmed absence may mark the deadline model exited. Published roles release their authority after
+ * bounded retries so the durable set owner can recover; provisional roles keep retrying until acquisition settles.
+ * Close-and-exit must remain deferred so an in-flight control response can reach its caller before the role closes.
  */
 export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   options: RoleEnforcementOutcomeOptions<Scope>,
 ): RoleEnforcementOutcomeHandlers {
   let enforcementHoldStatus: RoleEnforcementHoldStatus | null = null;
-  let unattributableAbandoned = false;
+  let exitStarted = false;
 
   const closeAndExit = (exitCode: number): void => {
     void options
@@ -597,7 +597,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
 
   const handleOutcome = (outcome: EnforcementOutcome): void => {
     if (outcome.kind !== 'containment-absent') {
-      if (unattributableAbandoned) return;
+      if (exitStarted) return;
       if (outcome.kind === 'reap-failed') {
         backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
       }
@@ -607,12 +607,12 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
           : ({ kind: outcome.kind } as const);
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
       if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS && options.grantWasInstalled()) {
-        enforcementHoldStatus = enforcementHoldStatusSchema.parse({
-          ...reportedOutcome,
-          attempts,
-          roleIdentity: { role: options.role, ...options.roleIdentity },
-          retry: { state: 'operator-action-required' },
-        });
+        exitStarted = true;
+        enforcementHoldStatus = null;
+        backendLog.error(
+          `${options.role}: containment remained unconfirmed after ${attempts} attempts; releasing role authority and exiting`,
+        );
+        closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
         return;
       }
       const delayMs = unattributableRetryDelayMs(attempts);
@@ -624,7 +624,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       });
       options.schedule(() => {
         if (
-          unattributableAbandoned ||
+          exitStarted ||
           enforcementHoldStatus?.attempts !== attempts ||
           enforcementHoldStatus.retry.state !== 'scheduled'
         ) {
@@ -658,7 +658,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
     },
     enforcementHoldStatus: () => enforcementHoldStatus,
     abandonUnattributable: () => {
-      if (enforcementHoldStatus === null || unattributableAbandoned) return false;
+      if (enforcementHoldStatus === null || exitStarted) return false;
       if (enforcementHoldStatus.kind !== 'recorded-group-unattributable') {
         throw new ProxyControlProtocolError(
           'invalid_state',
@@ -671,7 +671,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
           `This ${options.role} cannot abandon its unattributable hold while a retry is in-progress and may already have sent a process signal. Retry the abandonment after the containment retry settles.`,
         );
       }
-      unattributableAbandoned = true;
+      exitStarted = true;
       enforcementHoldStatus = null;
       options.schedule(() => closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE), 0);
       return true;
@@ -1431,13 +1431,13 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     }
   }
 
-  let proxyShutdownStarted = false;
+  let shutdownStarted = false;
 
   const shutdown = (): void => {
     probeGate.requestCleanup();
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     if (handle.role === 'proxy') {
-      if (proxyShutdownStarted) return;
-      proxyShutdownStarted = true;
       void handle.close().then(
         () => probeGate.requestExit(0),
         (error: unknown) => {
@@ -1448,14 +1448,13 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
       return;
     }
     const role = handle.role;
-    void handle
-      .giveUp()
-      .catch((error: unknown) =>
-        backendLog.error(
-          `${role}: give-up on shutdown failed; containment remains held; SIGTERM or SIGINT retries teardown`,
-          error,
-        ),
-      );
+    void handle.giveUp().catch(async (error: unknown) => {
+      backendLog.error(`${role}: give-up on shutdown failed; releasing role authority and exiting`, error);
+      await handle
+        .close()
+        .catch((closeError: unknown) => backendLog.error(`${role}: close after failed give-up failed`, closeError));
+      probeGate.requestExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+    });
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

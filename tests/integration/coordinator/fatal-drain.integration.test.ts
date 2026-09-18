@@ -241,7 +241,7 @@ describe('coordinator fatal drain integration', () => {
     expect(await probeCoordinatorSocket(files.socketPath)).toBe('accepting');
   });
 
-  it('promotes an in-flight hard drain to the fatal handoff without running hard consequences', async () => {
+  it('aborts an in-flight provider-host hard drain and promotes it to the fatal handoff', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected clients/build artifacts to exist before running integration tests');
     }
@@ -276,8 +276,10 @@ describe('coordinator fatal drain integration', () => {
     expect(await waitForCoordinatorSocketRelease(files.socketPath, 5_000)).toBe('unlinked');
 
     const actions = readFileSync(join(home, FATAL_DRAIN_ACTIONS_FILE), 'utf-8').trim().split('\n');
+    expect(actions).toContain('provider-host-hard-shutdown-started');
+    expect(actions).toContain('provider-host-hard-shutdown-aborted');
     expect(actions).toContain('provider-host-handoff-drain');
-    expect(actions).not.toContain('provider-host-hard-shutdown');
+    expect(actions).not.toContain('provider-host-hard-shutdown-continued-without-abort');
     expect(actions).not.toContain('pending-launch-settlement');
     expect(actions).not.toContain('child-termination');
     expect(actions).not.toContain('job-terminalization');
@@ -289,15 +291,22 @@ describe('coordinator fatal drain integration', () => {
     expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
       mode: 'handoff',
-      entries: [
-        {
+      entries: expect.arrayContaining([
+        expect.objectContaining({
+          label: 'provider host shutdown',
+          settlement: {
+            cause: 'aborted',
+            detail: expect.stringContaining('AbortError'),
+          },
+        }),
+        expect.objectContaining({
           label: 'provider proxy lifecycle fatal incident',
           settlement: {
             cause: 'rejected',
             detail: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
           },
-        },
-      ],
+        }),
+      ]),
     });
   });
 });

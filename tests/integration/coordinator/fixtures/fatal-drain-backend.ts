@@ -5,21 +5,26 @@ import { join } from 'node:path';
 
 import { createBootstrapProbeExitGate } from '#src/coordinator/bootstrap.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
-import { IdleTimer } from '#src/coordinator/live/idle.js';
-import { createRealTimePort } from '#src/infra/time.js';
 
 const exitGate = createBootstrapProbeExitGate();
-const idleTimer = new IdleTimer({ time: createRealTimePort() });
 const actionPath = join(process.env.HOME ?? process.cwd(), 'fatal-drain-actions.log');
 const recordAction = (action: string): void => appendFileSync(actionPath, `${action}\n`, 'utf-8');
 let triggerFatal: ((error: unknown) => void) | undefined;
+let fatalDuringHardDrain: Error | null = null;
+
+function injectFatal(error: unknown): void {
+  const fatal = triggerFatal;
+  if (fatal === undefined) {
+    throw new Error('Coordinator composition did not expose its provider-proxy lifecycle fatal callback.');
+  }
+  fatal(error);
+}
 
 const coordinator = createCoordinatorServer({
   pluginRoot: __PLUGIN_ROOT__,
   captureProviderProxyLifecycleFatal: (handler) => {
     triggerFatal = handler;
   },
-  createIdleTimer: () => idleTimer,
   providerHostManager: {
     drainForHandoff: async () => {
       recordAction('provider-host-handoff-drain');
@@ -30,14 +35,32 @@ const coordinator = createCoordinatorServer({
         closingHosts: [],
       };
     },
-    shutdown: async () => {
-      recordAction('provider-host-hard-shutdown');
-      return {
+    shutdown: async (signal: AbortSignal) => {
+      recordAction('provider-host-hard-shutdown-started');
+      const receipt = {
         kind: 'provider-hosts-quiesced',
         liveProxySets: [],
         acquisitionCleanupHolds: [],
         closingHosts: [],
-      };
+      } as const;
+      const error = fatalDuringHardDrain;
+      if (error === null) return receipt;
+      fatalDuringHardDrain = null;
+      return await new Promise<typeof receipt>((resolve, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => {
+            recordAction('provider-host-hard-shutdown-aborted');
+            reject(signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason)));
+          },
+          { once: true },
+        );
+        injectFatal(error);
+        if (!signal.aborted) {
+          recordAction('provider-host-hard-shutdown-continued-without-abort');
+          resolve(receipt);
+        }
+      });
     },
   } as never,
   settlePendingLaunchesFn: () => {
@@ -64,8 +87,7 @@ const coordinator = createCoordinatorServer({
   },
 });
 
-const fatal = triggerFatal;
-if (fatal === undefined) {
+if (triggerFatal === undefined) {
   throw new Error('Coordinator composition did not expose its provider-proxy lifecycle fatal callback.');
 }
 
@@ -76,15 +98,11 @@ trigger.once('data', (chunk: string | Buffer) => {
     const error = new Error('deterministic corrupt provider-proxy lifecycle evidence');
     const triggerKind = typeof chunk === 'string' ? Buffer.from(chunk)[0] : chunk[0];
     if (triggerKind !== 2) {
-      fatal(error);
+      injectFatal(error);
       return;
     }
-    idleTimer.beginRequest();
+    fatalDuringHardDrain = error;
     void coordinator.shutdown('sigint').catch(() => undefined);
-    setTimeout(() => {
-      fatal(error);
-      idleTimer.endRequest();
-    }, 50);
   });
   trigger.destroy();
 });

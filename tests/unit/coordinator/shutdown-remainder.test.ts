@@ -16,7 +16,7 @@ const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
 
 type RemainderStorage = Pick<
   StoragePort,
-  'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync' | 'writeAtomicSync'
+  'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync' | 'writeAtomicDurableSync'
 > & {
   fileNames(): string[];
   readPublished(instanceId: string): string | null;
@@ -60,11 +60,9 @@ function storageWith(
       if (options.refusePrune === true) throw new Error('prune refused');
       files.delete(path);
     }),
-    mkdirSync: vi.fn(() => {
-      directoryExists = true;
-    }),
-    writeAtomicSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
+    writeAtomicDurableSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
       if (options.publish === false) return false;
+      directoryExists = true;
       const value =
         typeof data === 'string' ? data : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf-8');
       files.set(path, { value, mtimeMs: ++clock });
@@ -120,8 +118,7 @@ describe('shutdown remainder status', () => {
     ).toBe(true);
 
     expect(shutdownRemainderPath(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
-    expect(storage.mkdirSync).toHaveBeenCalledWith(REMAINDER_DIRECTORY, { recursive: true });
-    expect(storage.writeAtomicSync).toHaveBeenCalledWith(
+    expect(storage.writeAtomicDurableSync).toHaveBeenCalledWith(
       '/run/shutdown-remainder.v1/current-instance.json',
       `${JSON.stringify(
         {

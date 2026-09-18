@@ -1164,7 +1164,7 @@ describe('runProviderRoleMain', () => {
     },
   );
 
-  it('reports a rejected signal teardown without finalizing containment', async () => {
+  it('closes and exits with enforcement failure when signal teardown rejects', async () => {
     const directory = scopedTempDir('coral-reaper-role-signal-rejection-');
     enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(async (): Promise<never> => {
@@ -1198,14 +1198,15 @@ describe('runProviderRoleMain', () => {
 
     expect(giveUp).toHaveBeenCalledOnce();
     expect(errorLog).toHaveBeenCalledWith(
-      'reaper: give-up on shutdown failed; containment remains held; SIGTERM or SIGINT retries teardown',
+      'reaper: give-up on shutdown failed; releasing role authority and exiting',
       failure,
     );
-    (shutdown as (() => void) | null)?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(giveUp).toHaveBeenCalledTimes(2);
-    expect(reaperRoleCloseHarness.reaperClose).not.toHaveBeenCalled();
-    expect(exitProcess).not.toHaveBeenCalled();
+    expect(reaperRoleCloseHarness.reaperClose).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(reaperRoleCloseHarness.reaperClose.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it('exits 0 when signal-requested teardown confirms containment absence', async () => {
@@ -1383,17 +1384,18 @@ describe('buildEnforcementOutcomeHandlers', () => {
     expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
-  it('keeps an unattributable group as durable status through bounded backoff exhaustion', () => {
+  it('closes and exits with enforcement failure after bounded unattributable retries are exhausted', async () => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const retryUnattributable = vi.fn(() =>
       Promise.resolve({ kind: 'recorded-group-unattributable' as const, reason: 'still held' }),
     );
     const close = vi.fn(async () => undefined);
     const exitProcess = vi.fn();
+    const markExited = vi.fn();
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'reaper',
       roleIdentity: { pid: 4200, incarnation: testIncarnation(4200) },
-      deadlines: { markExited: vi.fn() },
+      deadlines: { markExited },
       close,
       exitProcess,
       grantWasInstalled: () => true,
@@ -1428,15 +1430,17 @@ describe('buildEnforcementOutcomeHandlers', () => {
     deferredOutcome.callback();
 
     expect(retryUnattributable).toHaveBeenCalledTimes(4);
-    expect(handlers.enforcementHoldStatus()).toEqual({
-      kind: 'recorded-group-unattributable',
-      attempts: 5,
-      roleIdentity: { role: 'reaper', pid: 4200, incarnation: testIncarnation(4200) },
-      retry: { state: 'operator-action-required' },
-    });
+    expect(handlers.enforcementHoldStatus()).toBeNull();
     expect(scheduled).toHaveLength(0);
-    expect(close).not.toHaveBeenCalled();
-    expect(exitProcess).not.toHaveBeenCalled();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(markExited).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it('keeps retrying at a fixed cadence until an ungranted role confirms absence', async () => {

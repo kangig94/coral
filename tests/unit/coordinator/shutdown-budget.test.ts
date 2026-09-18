@@ -228,7 +228,7 @@ function buildRemainderWriteRefusalHarness(
     storage: {
       ...harness.runtime.storage,
       existsSync: () => false,
-      writeAtomicSync: () => {
+      writeAtomicDurableSync: () => {
         order.push('record');
         return write();
       },
@@ -2201,7 +2201,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         if (remainderDocument === null) throw new Error('remainder document is absent');
         return remainderDocument;
       },
-      writeAtomicSync: (_path: string, data: string) => {
+      writeAtomicDurableSync: (_path: string, data: string) => {
         finalizationOrder.push('record');
         remainderDocument = data;
         remainderDocuments.push(data);

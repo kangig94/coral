@@ -24,7 +24,7 @@ type ShutdownRemainderPruneRuntime = Readonly<{
 }>;
 
 type ShutdownRemainderWriteRuntime = Readonly<{
-  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>;
+  storage: Pick<StoragePort, 'writeAtomicDurableSync'>;
   time: Pick<TimePort, 'now'>;
   runDir: string;
 }>;
@@ -117,8 +117,7 @@ export function recordShutdownRemainder(
     mode: input.mode,
     entries: input.undischarged,
   };
-  runtime.storage.mkdirSync(directory, { recursive: true });
-  return runtime.storage.writeAtomicSync(path, `${JSON.stringify(record, null, 2)}\n`, {
+  return runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record, null, 2)}\n`, {
     encoding: 'utf-8',
     mode: 0o600,
   });
