@@ -18,11 +18,15 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   scanShutdownRemainderRecords,
   shutdownRemainderRecordDirectory,
+  type DecodedShutdownRemainderRecord,
   type ShutdownRemainderRecord,
   type ShutdownRemainderRecordScan,
 } from '../../../infra/shutdown-remainder-record.js';
 
 const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
+const OPERATOR_FACING_ERROR_IDENTIFIER_MAX_LENGTH = 64;
+const OPERATOR_FACING_ERROR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/u;
+const OPERATOR_FACING_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
@@ -53,6 +57,7 @@ const OPERATOR_FACING_SHUTDOWN_LABELS = [
   'recovery coordinator teardown',
   'server close',
   'server connection close',
+  'store epoch sweep cancellation',
   'store services availability check',
 ] as const;
 type OperatorFacingShutdownLabel = (typeof OPERATOR_FACING_SHUTDOWN_LABELS)[number];
@@ -72,6 +77,7 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   reason: ShutdownRemainderRecord['reason'];
   mode: ShutdownRemainderRecord['mode'];
   entries: readonly Readonly<{
+    entryNumber: number;
     obligation: OperatorFacingShutdownObligation | null;
     remainder: ShutdownRemainderRecord['entries'][number]['remainder'];
     settlement: OperatorFacingShutdownSettlement;
@@ -223,21 +229,37 @@ function operatorFacingShutdownObligation(label: string): OperatorFacingShutdown
   return null;
 }
 
+function operatorFacingErrorName(name: string): string {
+  return name.length <= OPERATOR_FACING_ERROR_IDENTIFIER_MAX_LENGTH && OPERATOR_FACING_ERROR_NAME_PATTERN.test(name)
+    ? name
+    : 'Error';
+}
+
+function operatorFacingErrorCode(code: string | undefined): string | undefined {
+  return code !== undefined &&
+    code.length <= OPERATOR_FACING_ERROR_IDENTIFIER_MAX_LENGTH &&
+    OPERATOR_FACING_ERROR_CODE_PATTERN.test(code)
+    ? code
+    : undefined;
+}
+
 function operatorFacingShutdownSettlement(
   settlement: ShutdownRemainderRecord['entries'][number]['settlement'],
 ): OperatorFacingShutdownSettlement {
   switch (settlement.cause) {
     case 'rejected':
     case 'aborted': {
+      const nestedCause = settlement.error.kind === 'error' ? settlement.error.cause : undefined;
       const error =
-        settlement.error.kind === 'error' && settlement.error.cause?.code !== undefined
-          ? settlement.error.cause
+        nestedCause !== undefined && operatorFacingErrorCode(nestedCause.code) !== undefined
+          ? nestedCause
           : settlement.error;
+      const code = operatorFacingErrorCode(error.code);
       return {
         cause: settlement.cause,
         error: {
-          name: error.kind === 'error' ? error.name : 'UnknownThrown',
-          ...(error.code === undefined ? {} : { code: error.code }),
+          name: error.kind === 'error' ? operatorFacingErrorName(error.name) : 'UnknownThrown',
+          ...(code === undefined ? {} : { code }),
         },
       };
     }
@@ -274,13 +296,16 @@ function operatorFacingShutdownRemainderOwner(
   }
 }
 
-function operatorFacingShutdownRemainder(record: ShutdownRemainderRecord): OperatorFacingShutdownRemainderRecord {
+function operatorFacingShutdownRemainder(
+  record: DecodedShutdownRemainderRecord,
+): OperatorFacingShutdownRemainderRecord {
   return {
     instanceId: record.instanceId,
     recordedAt: record.recordedAt,
     reason: record.reason,
     mode: record.mode,
     entries: record.entries.map((entry) => ({
+      entryNumber: entry.entryNumber,
       obligation: operatorFacingShutdownObligation(entry.label),
       remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
       settlement: operatorFacingShutdownSettlement(entry.settlement),

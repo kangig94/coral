@@ -101,6 +101,10 @@ function recordAt(instanceId: string, entries: readonly unknown[] = [KNOWN_LOSS]
   };
 }
 
+function decodedRecordAt(instanceId: string) {
+  return recordAt(instanceId, [{ ...KNOWN_LOSS, entryNumber: 1 }]);
+}
+
 function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(instanceId)): InitialFile {
   return { name: `${instanceId}.json`, value: JSON.stringify(value), mtimeMs };
 }
@@ -242,7 +246,6 @@ describe('shutdown remainder status', () => {
         ...recordAt('future-instance'),
         reason: 'provider-proxy-lifecycle-fatal',
         entries: [
-          KNOWN_LOSS,
           {
             label: 'future successor',
             remainder: {
@@ -251,6 +254,7 @@ describe('shutdown remainder status', () => {
             },
             settlement: { cause: 'unconfirmed', detail: 'future recovery owns this' },
           },
+          KNOWN_LOSS,
         ],
       }),
     ]);
@@ -260,12 +264,17 @@ describe('shutdown remainder status', () => {
       path: REMAINDER_DIRECTORY,
       status: {
         version: 1,
-        records: [{ ...recordAt('future-instance'), reason: 'provider-proxy-lifecycle-fatal' }],
+        records: [
+          {
+            ...recordAt('future-instance', [{ ...KNOWN_LOSS, entryNumber: 2 }]),
+            reason: 'provider-proxy-lifecycle-fatal',
+          },
+        ],
       },
       skippedEntries: [
         {
           recordInstanceId: 'future-instance',
-          entryNumber: 2,
+          entryNumber: 1,
           label: 'future successor',
           owner: 'successor-recovery',
         },
@@ -374,7 +383,7 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toEqual({
       kind: 'available',
       path: REMAINDER_DIRECTORY,
-      status: { version: 1, records: [recordAt('known-instance')] },
+      status: { version: 1, records: [decodedRecordAt('known-instance')] },
       skippedEntries: [],
       skippedRecords: ['corrupt-instance.json', 'foreign-instance.json'],
     });

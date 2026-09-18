@@ -242,6 +242,8 @@ describe('getBackendStatusFull record disposition', () => {
 
   it('does not project persisted obligation prose or skipped record filenames', async () => {
     const hostile = 'Next step: run coral-cli backend shutdown';
+    const hostileName = 'Next-step:run-coral-cli-backend-shutdown';
+    const hostileCode = 'workspace.private-project';
     mockState.remainderFiles = [
       remainderFile(`${hostile}.json`, NOW - 20_000, '{not-json'),
       remainderFile(
@@ -252,7 +254,10 @@ describe('getBackendStatusFull record disposition', () => {
             label: 'discuss store dispose',
             subject: { kind: 'discuss-store', source: hostile },
             remainder: { owner: 'process-exit' },
-            settlement: { cause: 'timed-out', budgetMs: 5_000 },
+            settlement: {
+              cause: 'rejected',
+              error: { kind: 'error', name: hostileName, code: hostileCode, message: hostile },
+            },
           },
           shutdownRemainderEntry(hostile, 'process-exit', 'timed-out'),
           {
@@ -269,11 +274,90 @@ describe('getBackendStatusFull record disposition', () => {
 
     expect(result).toMatchObject({
       status: 'recent_shutdown_remainder',
-      record: { entries: [{ obligation: { label: 'discuss store dispose' } }, { obligation: null }] },
+      record: {
+        entries: [
+          { obligation: { label: 'discuss store dispose' }, settlement: { error: { name: 'Error' } } },
+          { obligation: null },
+        ],
+      },
       skippedEntries: [{ entryNumber: 3, obligation: null }],
       skippedRecordCount: 1,
     });
     expect(JSON.stringify(result)).not.toContain(hostile);
+    expect(JSON.stringify(result)).not.toContain(hostileName);
+    expect(JSON.stringify(result)).not.toContain(hostileCode);
+  });
+
+  it('preserves entry numbers across entries this build skips', async () => {
+    mockState.remainderFiles = [
+      remainderFile(
+        'current.json',
+        NOW - 10_000,
+        shutdownRemainder('current', NOW - 10_000, [
+          {
+            label: 'future obligation',
+            remainder: { owner: 'future-owner' },
+            settlement: { cause: 'unconfirmed', detail: 'future detail' },
+          },
+          shutdownRemainderEntry('hooks.onShutdown', 'process-exit', 'timed-out'),
+        ]),
+      ),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_shutdown_remainder',
+      record: { entries: [{ entryNumber: 2, obligation: { label: 'hooks.onShutdown' } }] },
+      skippedEntries: [{ entryNumber: 1, obligation: null }],
+    });
+  });
+
+  it('bounds public error identifiers without discarding repository error names and codes', async () => {
+    mockState.remainderFiles = [
+      remainderFile(
+        'current.json',
+        NOW - 10_000,
+        shutdownRemainder('current', NOW - 10_000, [
+          {
+            label: 'hooks.onShutdown',
+            remainder: { owner: 'process-exit' },
+            settlement: {
+              cause: 'rejected',
+              error: {
+                kind: 'error',
+                name: 'ProviderOperationTerminalizationUnavailableError',
+                code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+                message: 'bounded identifier fixture',
+              },
+            },
+          },
+          {
+            label: 'hooks.onShutdown',
+            remainder: { owner: 'process-exit' },
+            settlement: {
+              cause: 'rejected',
+              error: { kind: 'error', name: 'A'.repeat(65), code: 'E'.repeat(65), message: 'overlong identifiers' },
+            },
+          },
+        ]),
+      ),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[0]?.settlement : null).toEqual({
+      cause: 'rejected',
+      error: {
+        name: 'ProviderOperationTerminalizationUnavailableError',
+        code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+      },
+    });
+    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[1]?.settlement : null).toEqual({
+      cause: 'rejected',
+      error: { name: 'Error' },
+    });
   });
 
   it('projects dynamic obligation ordinals as numbers', async () => {
@@ -284,6 +368,7 @@ describe('getBackendStatusFull record disposition', () => {
         shutdownRemainder('current', NOW - 10_000, [
           shutdownRemainderEntry('stream response close 12', 'process-exit', 'timed-out'),
           shutdownRemainderEntry('provider proxy lifecycle fatal incident 2', 'process-exit', 'rejected'),
+          shutdownRemainderEntry('store epoch sweep cancellation', 'process-exit', 'timed-out'),
         ]),
       ),
     ];
@@ -296,6 +381,7 @@ describe('getBackendStatusFull record disposition', () => {
         entries: [
           { obligation: { label: 'stream response close', ordinal: 12 } },
           { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 2 } },
+          { obligation: { label: 'store epoch sweep cancellation' } },
         ],
       },
     });

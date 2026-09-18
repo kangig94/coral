@@ -1742,6 +1742,7 @@ describe('cli format', () => {
           mode: 'handoff',
           entries: [
             {
+              entryNumber: 2,
               obligation: { label: 'child termination' },
               remainder: {
                 owner: 'successor-recovery',
@@ -1760,6 +1761,7 @@ describe('cli format', () => {
               settlement: { cause: 'timed-out', budgetMs: 5_000 },
             },
             {
+              entryNumber: 3,
               obligation: { label: 'hooks.onShutdown' },
               remainder: { owner: 'process-exit' },
               settlement: {
@@ -1771,12 +1773,12 @@ describe('cli format', () => {
         },
         skippedEntries: [
           {
-            entryNumber: 3,
-            obligation: { label: 'stream response close', ordinal: 3 },
+            entryNumber: 1,
+            obligation: null,
           },
           {
             entryNumber: 4,
-            obligation: null,
+            obligation: { label: 'stream response close', ordinal: 3 },
           },
         ],
         skippedRecordCount: 1,
@@ -1785,24 +1787,26 @@ describe('cli format', () => {
       expect(text).toBe(
         [
           'Coral recorded a recent shutdown with unfinished obligations.',
+          'Instance: instance-1',
           'Recorded at: 2026-09-18T01:02:03.000Z',
           'Reason: sigterm',
           'Mode: handoff',
-          'Entry 1: child termination',
+          'Entry 2: child termination',
           '  Owner: successor-recovery',
           '  Cause: timed-out',
           '  Budget: 5000ms',
           '  Evidence: startup-adoption',
           '    Job: job-1',
           '    PID: 4242',
-          'Entry 2: hooks.onShutdown',
+          '    Leader incarnation: linux:00000000-0000-4000-8000-000000000000:job-1',
+          'Entry 3: hooks.onShutdown',
           '  Owner: process-exit',
           '  Cause: rejected',
           '  Error: Error',
           '  Code: ENOENT',
-          'Skipped entry 3: stream response close 3',
+          'Skipped entry 1: unrecognized obligation',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
-          'Skipped entry 4: unrecognized obligation',
+          'Skipped entry 4: stream response close 3',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
           'Skipped shutdown remainder records: 1',
           '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',

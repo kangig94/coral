@@ -1236,13 +1236,14 @@ function formatRecentShutdownRemainderStatus(
 ): string {
   const lines = [
     'Coral recorded a recent shutdown with unfinished obligations.',
+    `Instance: ${result.record.instanceId}`,
     `Recorded at: ${result.record.recordedAt}`,
     `Reason: ${result.record.reason}`,
     `Mode: ${result.record.mode}`,
   ];
-  for (const [index, entry] of result.record.entries.entries()) {
+  for (const entry of result.record.entries) {
     lines.push(
-      `Entry ${index + 1}: ${formatShutdownObligation(entry.obligation)}`,
+      `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
       `  Owner: ${entry.remainder.owner}`,
       ...formatShutdownSettlementLines(entry.settlement),
       ...formatShutdownRemainderEvidenceLines(entry.remainder),
@@ -1303,7 +1304,11 @@ function formatShutdownRemainderEvidenceLines(
   if (remainder.evidence.kind !== 'startup-adoption') return [`  Evidence: ${remainder.evidence.kind}`];
   return [
     '  Evidence: startup-adoption',
-    ...remainder.evidence.processes.flatMap((process) => [`    Job: ${process.jobId}`, `    PID: ${process.pid}`]),
+    ...remainder.evidence.processes.flatMap((process) => [
+      `    Job: ${process.jobId}`,
+      `    PID: ${process.pid}`,
+      `    Leader incarnation: ${process.leaderIncarnation}`,
+    ]),
   ];
 }
 

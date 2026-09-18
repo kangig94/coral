@@ -1573,22 +1573,24 @@ describe('runShutdownSequence drain budget', () => {
     expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
   });
 
-  it('joins an in-flight authority release instead of invoking it again after timeout', async () => {
+  it('joins an in-flight authority release and rejects its stale confirmation after timeout', async () => {
     let settleControl!: () => void;
     const controlSettlement = new Promise<void>((resolve) => {
       settleControl = resolve;
     });
     const authorityCalls: string[] = [];
-    const set = fakeSet('slow-control', authorityCalls, {
+    const slow = fakeSet('slow-control', authorityCalls, {
       initiateControlClose: () => {
         authorityCalls.push('control:slow-control');
         return controlSettlement;
       },
     });
+    const late = fakeSet('late-control', authorityCalls);
+    let live: readonly ProviderProxySetAuthority[] = [slow];
     const harness = buildHarness({
       reason: 'replaced',
       hooksOnShutdown: async () => {},
-      providerProxyAuthority: registryOf([set]),
+      providerProxyAuthority: { liveSets: () => live },
     });
     harness.ctx.closeIpcServerFn = async () => {
       authorityCalls.push('closeIpc');
@@ -1604,14 +1606,71 @@ describe('runShutdownSequence drain budget', () => {
     const held = await sequence;
     if (held.disposition !== 'held') throw new Error('expected held shutdown finalization');
 
+    live = [slow, late];
     const retry = held.retry();
     await flush();
     expect(authorityCalls.filter((call) => call === 'control:slow-control')).toHaveLength(1);
     settleControl();
-    await expect(retry).resolves.toEqual({ disposition: 'settled' });
+    const stale = requireHeld(await retry);
     expect(authorityCalls.filter((call) => call === 'control:slow-control')).toHaveLength(1);
+    expect(authorityCalls).not.toContain('control:late-control');
+    expect(authorityCalls).not.toContain('closeIpc');
+    expect(stale.retainedAuthority).toMatchObject({
+      providerControlProxyInstanceIds: ['late-control'],
+      ipcSocket: true,
+    });
+
+    await expect(stale.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls.filter((call) => call === 'control:slow-control')).toHaveLength(1);
+    expect(authorityCalls.filter((call) => call === 'control:late-control')).toHaveLength(1);
     expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
     expect(harness.callLog.filter((call) => call === 'lifecycleReactor.dispose')).toHaveLength(1);
+  });
+
+  it('rejects a confirmation made stale while the IPC release is settling', async () => {
+    let settleIpc!: () => void;
+    const ipcSettlement = new Promise<void>((resolve) => {
+      settleIpc = resolve;
+    });
+    const authorityCalls: string[] = [];
+    const initial = fakeSet('initial-control', authorityCalls);
+    const late = fakeSet('late-control', authorityCalls);
+    let live: readonly ProviderProxySetAuthority[] = [initial];
+    const harness = buildHarness({
+      reason: 'replaced',
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: { liveSets: () => live },
+    });
+    harness.ctx.closeIpcServerFn = () => {
+      authorityCalls.push('closeIpc');
+      return ipcSettlement;
+    };
+
+    const sequence = runShutdownSequence(harness.ctx);
+    for (let attempt = 0; attempt < 10 && !authorityCalls.includes('closeIpc'); attempt += 1) {
+      await flush();
+    }
+    expect(authorityCalls).toContain('closeIpc');
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS);
+    await flush();
+    const held = requireHeld(await sequence);
+
+    live = [initial, late];
+    const retry = held.retry();
+    await flush();
+    expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
+    settleIpc();
+    const stale = requireHeld(await retry);
+    expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
+    expect(authorityCalls).not.toContain('control:late-control');
+    expect(stale.retainedAuthority).toMatchObject({
+      providerControlProxyInstanceIds: ['late-control'],
+      ipcSocket: false,
+    });
+
+    await expect(stale.retry()).resolves.toEqual({ disposition: 'settled' });
+    expect(authorityCalls.filter((call) => call === 'control:late-control')).toHaveLength(1);
+    expect(authorityCalls.filter((call) => call === 'closeIpc')).toHaveLength(1);
   });
 
   it('snapshots handoff cleanup obligations as named losses after drain failure', async () => {

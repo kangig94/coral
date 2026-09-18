@@ -9,6 +9,8 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const OWNERSHIP_SCAN_ROOT = 'src';
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
 const SHUTDOWN_SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
+const LIFECYCLE_PATH = 'src/coordinator/lifecycle.ts';
+const BACKEND_STATUS_PATH = 'src/transport/http/backend/status.ts';
 const PROCESS_EXIT_OBLIGATION_INVENTORY = [
   'recovery coordinator teardown',
   'kb child shutdown',
@@ -53,6 +55,13 @@ function propertyAssignment(object: ts.ObjectLiteralExpression, name: string): t
     (property): property is ts.PropertyAssignment =>
       ts.isPropertyAssignment(property) && propertyName(property) === name,
   );
+}
+
+function propertyExpression(object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined {
+  const property = object.properties.find((candidate) => propertyName(candidate) === name);
+  if (property === undefined) return undefined;
+  if (ts.isPropertyAssignment(property)) return property.initializer;
+  return ts.isShorthandPropertyAssignment(property) ? property.name : undefined;
 }
 
 function unwrapExpression(expression: ts.Expression): ts.Expression {
@@ -235,6 +244,120 @@ function ownershipShapeViolations(): string[] {
   return violations;
 }
 
+function shutdownLabelProjectionViolations(): string[] {
+  const status = sourceFile(BACKEND_STATUS_PATH);
+  const statusLabels = new Set<string>();
+  const producerLabels = new Set<string>();
+  const violations: string[] = [];
+
+  function collectStatusLabels(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'OPERATOR_FACING_SHUTDOWN_LABELS' &&
+      node.initializer !== undefined
+    ) {
+      const initializer = unwrapExpression(node.initializer);
+      if (ts.isArrayLiteralExpression(initializer)) {
+        for (const element of initializer.elements) {
+          if (ts.isStringLiteral(element)) statusLabels.add(element.text);
+        }
+      }
+    }
+    ts.forEachChild(node, collectStatusLabels);
+  }
+  collectStatusLabels(status);
+
+  function collectProducedLabels(file: ts.SourceFile): void {
+    function recordProducedLabel(expression: ts.Expression, site: ts.Node): void {
+      const initializer = unwrapExpression(expression);
+      if (ts.isStringLiteral(initializer)) {
+        producerLabels.add(initializer.text);
+        return;
+      }
+      if (ts.isTemplateExpression(initializer)) {
+        const prefix = initializer.head.text;
+        if (prefix === 'stream response close ' || prefix === 'provider proxy lifecycle fatal incident') return;
+        violations.push(`${location(site)} has an unrecognized dynamic shutdown obligation label`);
+        return;
+      }
+      if (
+        ts.isPropertyAccessExpression(initializer) &&
+        ts.isIdentifier(initializer.expression) &&
+        initializer.expression.text === 'undischarged' &&
+        initializer.name.text === 'label'
+      ) {
+        return;
+      }
+      if (!ts.isIdentifier(initializer)) {
+        violations.push(`${location(site)} does not declare an enumerable shutdown obligation label`);
+        return;
+      }
+      const identifier = initializer.text;
+
+      let scope: ts.Node | undefined = site.parent;
+      while (scope !== undefined && !ts.isFunctionLike(scope)) scope = scope.parent;
+      const declarations: ts.Expression[] = [];
+      function findDeclaration(candidate: ts.Node): void {
+        if (candidate !== scope && ts.isFunctionLike(candidate)) return;
+        if (
+          ts.isVariableDeclaration(candidate) &&
+          ts.isIdentifier(candidate.name) &&
+          candidate.name.text === identifier &&
+          candidate.initializer !== undefined
+        ) {
+          declarations.push(candidate.initializer);
+        }
+        ts.forEachChild(candidate, findDeclaration);
+      }
+      if (scope !== undefined) findDeclaration(scope);
+      if (
+        scope !== undefined &&
+        scope.parameters.some((parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === identifier)
+      ) {
+        return;
+      }
+      if (declarations.length !== 1) {
+        violations.push(`${location(site)} does not resolve to one enumerable shutdown label`);
+        return;
+      }
+      recordProducedLabel(declarations[0], site);
+    }
+
+    function visit(node: ts.Node): void {
+      if (ts.isObjectLiteralExpression(node)) {
+        const label = propertyExpression(node, 'label');
+        const remainder = propertyExpression(node, 'remainder');
+        const boundary =
+          propertyExpression(node, 'prepare') !== undefined &&
+          propertyExpression(node, 'commit') !== undefined &&
+          propertyExpression(node, 'hold') !== undefined;
+        if (label !== undefined && (remainder !== undefined || boundary)) {
+          recordProducedLabel(label, node);
+        }
+      }
+      if (
+        ts.isPropertyAssignment(node) &&
+        propertyName(node) === 'acceptanceFailureLabel' &&
+        ts.isStringLiteral(unwrapExpression(node.initializer))
+      ) {
+        producerLabels.add((unwrapExpression(node.initializer) as ts.StringLiteral).text);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(file);
+  }
+
+  collectProducedLabels(sourceFile(SHUTDOWN_PATH));
+  collectProducedLabels(sourceFile(SHUTDOWN_SETTLEMENT_PATH));
+  collectProducedLabels(sourceFile(LIFECYCLE_PATH));
+
+  for (const label of producerLabels) {
+    if (!statusLabels.has(label)) violations.push(`shutdown obligation '${label}' has no structured status identity`);
+  }
+  return violations;
+}
+
 describe('shutdown remainder ownership inventory', () => {
   it('keeps every migrated obligation and the authority-release boundary assigned to process exit', () => {
     expect(processExitInventoryViolations()).toEqual([]);
@@ -242,5 +365,9 @@ describe('shutdown remainder ownership inventory', () => {
 
   it('rejects ownerless production state and untyped successor-recovery evidence across src', () => {
     expect(ownershipShapeViolations()).toEqual([]);
+  });
+
+  it('maps every shutdown remainder label this build produces to a structured status identity', () => {
+    expect(shutdownLabelProjectionViolations()).toEqual([]);
   });
 });

@@ -927,6 +927,20 @@ function buildAuthorityReleaseBoundary({
     left: readonly AuthorityReleaseCapability[],
     right: readonly AuthorityReleaseCapability[],
   ): boolean => left.length === right.length && left.every((capability, index) => capability === right[index]);
+  const authorityReleaseSnapshotIsCurrent = (prepared: AuthorityReleaseSnapshot): boolean => {
+    synchronizeProviderReleaseCapabilities();
+    const current = snapshotAuthorityRelease();
+    return (
+      prepared.generation === current.generation &&
+      sameCapabilities(prepared.heartbeats, current.heartbeats) &&
+      sameCapabilities(prepared.controls, current.controls) &&
+      prepared.ipc === current.ipc
+    );
+  };
+  const changedAuthorityRelease = (): SettlementConfirmation => ({
+    confirmed: false,
+    detail: 'authority capabilities changed after preparation',
+  });
 
   return {
     label: 'provider control and IPC authority release',
@@ -937,21 +951,17 @@ function buildAuthorityReleaseBoundary({
       return Promise.resolve({ confirmed: true, token });
     },
     commit: (token) => {
-      synchronizeProviderReleaseCapabilities();
       const prepared = authorityReleaseSnapshots.get(token);
-      const current = snapshotAuthorityRelease();
-      if (
-        prepared === undefined ||
-        prepared.generation !== current.generation ||
-        !sameCapabilities(prepared.heartbeats, current.heartbeats) ||
-        !sameCapabilities(prepared.controls, current.controls) ||
-        prepared.ipc !== current.ipc
-      ) {
-        return Promise.resolve({ confirmed: false, detail: 'authority capabilities changed after preparation' });
+      if (prepared === undefined || !authorityReleaseSnapshotIsCurrent(prepared)) {
+        return Promise.resolve(changedAuthorityRelease());
       }
       return settleAuthorityReleases([...prepared.heartbeats, ...prepared.controls]).then((providerControl) => {
         if (!providerControl.confirmed) return providerControl;
-        return prepared.ipc === null ? { confirmed: true as const } : settleAuthorityReleases([prepared.ipc]);
+        if (!authorityReleaseSnapshotIsCurrent(prepared)) return changedAuthorityRelease();
+        if (prepared.ipc === null) return { confirmed: true as const };
+        return settleAuthorityReleases([prepared.ipc]).then((ipc) =>
+          ipc.confirmed && !authorityReleaseSnapshotIsCurrent(prepared) ? changedAuthorityRelease() : ipc,
+        );
       });
     },
     retainedAuthority: () => {

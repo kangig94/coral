@@ -43,6 +43,8 @@ type ShutdownRemainderEntry = Readonly<{
   settlement: ShutdownRemainderSettlement;
 }>;
 
+type DecodedShutdownRemainderEntry = ShutdownRemainderEntry & Readonly<{ entryNumber: number }>;
+
 export type ShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
@@ -50,6 +52,9 @@ export type ShutdownRemainderRecord = Readonly<{
   mode: 'handoff' | 'hard';
   entries: readonly ShutdownRemainderEntry[];
 }>;
+
+export type DecodedShutdownRemainderRecord = Omit<ShutdownRemainderRecord, 'entries'> &
+  Readonly<{ entries: readonly DecodedShutdownRemainderEntry[] }>;
 
 export type ShutdownRemainderSkippedEntry = Readonly<{
   recordInstanceId: string;
@@ -59,7 +64,7 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
 }>;
 
 export type ShutdownRemainderRecordScan = Readonly<{
-  records: readonly ShutdownRemainderRecord[];
+  records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly string[];
 }>;
@@ -169,18 +174,18 @@ const shutdownRemainderRecordEnvelopeSchema = z
 export function decodeShutdownRemainderRecord(value: unknown):
   | Readonly<{
       kind: 'readable';
-      record: ShutdownRemainderRecord;
+      record: DecodedShutdownRemainderRecord;
       skippedEntries: readonly ShutdownRemainderSkippedEntry[];
     }>
   | Readonly<{ kind: 'unreadable'; detail: string }> {
   const parsedRecord = shutdownRemainderRecordEnvelopeSchema.safeParse(value);
   if (!parsedRecord.success) return { kind: 'unreadable', detail: parsedRecord.error.message };
 
-  const entries: ShutdownRemainderEntry[] = [];
+  const entries: DecodedShutdownRemainderEntry[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   for (const [index, rawEntry] of parsedRecord.data.entries.entries()) {
     const parsedEntry = shutdownRemainderEntrySchema.safeParse(rawEntry);
-    if (parsedEntry.success) entries.push(parsedEntry.data);
+    if (parsedEntry.success) entries.push({ ...parsedEntry.data, entryNumber: index + 1 });
     else {
       const rawRemainder = isRecord(rawEntry) && isRecord(rawEntry.remainder) ? rawEntry.remainder : null;
       skippedEntries.push({
@@ -209,7 +214,7 @@ export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
   directory: string,
 ): ShutdownRemainderRecordScan {
-  const records: ShutdownRemainderRecord[] = [];
+  const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: string[] = [];
   const recordFiles = storage

@@ -4,6 +4,7 @@ type ShutdownRemainderStatus = Extract<BackendStatusFull, { status: 'recent_shut
 type OperatorFacingSettlement = ShutdownRemainderStatus['record']['entries'][number]['settlement'];
 
 declare const entry: ShutdownRemainderStatus['record']['entries'][number];
+void entry.entryNumber;
 void entry.obligation;
 // @ts-expect-error persisted prose is absent from the status projection.
 void entry.label;
