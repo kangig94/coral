@@ -3,6 +3,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import type { BackendStatusFull, ShutdownRemainderReport } from '#src/transport/http/backend/status.js';
 import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
@@ -146,9 +147,8 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutdown_remainder_unreadable',
-      reason: 'records-skipped',
-      skippedRecordCount: 1,
+      status: 'no_record_no_socket',
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 1 },
     });
   });
 
@@ -223,43 +223,46 @@ describe('getBackendStatusFull record disposition', () => {
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: {
-        instanceId: 'newest',
-        reason: 'sigterm',
-        mode: 'handoff',
-        entries: [
-          {
-            obligation: { label: 'child termination' },
-            remainder: { owner: 'successor-recovery' },
-            settlement: { cause: 'timed-out', budgetMs: 5_000 },
-          },
-          {
-            obligation: { label: 'hooks.onShutdown' },
-            remainder: { owner: 'process-exit' },
-            settlement: { cause: 'rejected', error: { name: 'SystemError', code: 'ECONNRESET' } },
-          },
-          {
-            obligation: { label: 'provider host shutdown' },
-            remainder: { owner: 'process-exit' },
-            settlement: { cause: 'unconfirmed' },
-          },
-        ],
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: {
+          instanceId: 'newest',
+          reason: 'sigterm',
+          mode: 'handoff',
+          entries: [
+            {
+              obligation: { label: 'child termination' },
+              remainder: { owner: 'successor-recovery' },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
+            },
+            {
+              obligation: { label: 'hooks.onShutdown' },
+              remainder: { owner: 'process-exit' },
+              settlement: { cause: 'rejected', error: { name: 'SystemError', code: 'ECONNRESET' } },
+            },
+            {
+              obligation: { label: 'provider host shutdown' },
+              remainder: { owner: 'process-exit' },
+              settlement: { cause: 'unconfirmed' },
+            },
+          ],
+        },
+        skippedRecordCount: 1,
       },
-      skippedRecordCount: 1,
     });
-    expect(result.status === 'recent_shutdown_remainder' ? result.skippedEntries : null).toEqual([
+    expect(recentShutdownRemainder(result)?.skippedEntries ?? null).toEqual([
       {
         entryNumber: 4,
         obligation: null,
         owner: null,
       },
     ]);
-    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[1]?.settlement : null).toEqual({
+    expect(recentShutdownRemainder(result)?.record.entries[1]?.settlement ?? null).toEqual({
       cause: 'rejected',
       error: { name: 'SystemError', code: 'ECONNRESET' },
     });
-    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[2]?.settlement : null).toEqual({
+    expect(recentShutdownRemainder(result)?.record.entries[2]?.settlement ?? null).toEqual({
       cause: 'unconfirmed',
     });
   });
@@ -315,30 +318,33 @@ describe('getBackendStatusFull record disposition', () => {
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: {
-        entries: [
-          {
-            obligation: { label: 'discuss store dispose' },
-            subject: {
-              kind: 'discuss-store',
-              sourceDigest: '8193456f2fe5a02197b41ab74e10a087dba6c7b4b3bf23f692511f5011af2956',
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: {
+          entries: [
+            {
+              obligation: { label: 'discuss store dispose' },
+              subject: {
+                kind: 'discuss-store',
+                sourceDigest: '8193456f2fe5a02197b41ab74e10a087dba6c7b4b3bf23f692511f5011af2956',
+              },
+              settlement: { error: {} },
             },
-            settlement: { error: {} },
-          },
-          {
-            obligation: { label: 'child termination' },
-            remainder: {
-              evidence: {
-                processes: [{ leaderIncarnation: { present: true } }],
+            {
+              obligation: { label: 'child termination' },
+              remainder: {
+                evidence: {
+                  processes: [{ leaderIncarnation: { present: true } }],
+                },
               },
             },
-          },
-          { obligation: null },
-        ],
+            { obligation: null },
+          ],
+        },
+        skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
+        skippedRecordCount: 1,
       },
-      skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
-      skippedRecordCount: 1,
     });
     expect(JSON.stringify(result)).not.toContain(hostile);
     expect(JSON.stringify(result)).not.toContain(hostileName);
@@ -392,9 +398,10 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
     const result = await getBackendStatusFull('/plugin-root');
+    const remainder = recentShutdownRemainder(result);
 
     const paths = new Set<string>();
-    collectLeafPaths(result, '', paths);
+    collectLeafPaths(remainder, '', paths);
 
     expect([...paths].sort()).toEqual(
       [
@@ -453,7 +460,7 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
-    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries : []).toEqual(
+    expect(recentShutdownRemainder(result)?.record.entries ?? []).toEqual(
       codes.map((code, index) => ({
         entryNumber: index + 1,
         obligation: { label: 'hooks.onShutdown' },
@@ -482,9 +489,12 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: { entries: [{ entryNumber: 2, obligation: { label: 'hooks.onShutdown' } }] },
-      skippedEntries: [{ entryNumber: 1, obligation: null, owner: null }],
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { entries: [{ entryNumber: 2, obligation: { label: 'hooks.onShutdown' } }] },
+        skippedEntries: [{ entryNumber: 1, obligation: null, owner: null }],
+      },
     });
   });
 
@@ -511,11 +521,14 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      skippedEntries: [
-        { entryNumber: 1, obligation: { label: 'child termination' }, owner: 'successor-recovery' },
-        { entryNumber: 2, obligation: { label: 'child termination' }, owner: 'process-exit' },
-      ],
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        skippedEntries: [
+          { entryNumber: 1, obligation: { label: 'child termination' }, owner: 'successor-recovery' },
+          { entryNumber: 2, obligation: { label: 'child termination' }, owner: 'process-exit' },
+        ],
+      },
     });
   });
 
@@ -553,20 +566,23 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
-    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[0]?.settlement : null).toEqual({
+    expect(recentShutdownRemainder(result)?.record.entries[0]?.settlement ?? null).toEqual({
       cause: 'rejected',
       error: {
         name: 'ProviderOperationTerminalizationUnavailableError',
         code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
       },
     });
-    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[1]?.settlement : null).toEqual({
+    expect(recentShutdownRemainder(result)?.record.entries[1]?.settlement ?? null).toEqual({
       cause: 'rejected',
       error: {},
     });
   });
 
-  it('projects dynamic obligation ordinals as numbers', async () => {
+  // Boundary occurrences that cross the leading-1 digit (10, 19, 99, 100) are the direct measurement for the
+  // `[1-9][0-9]*` fix: `[2-9][0-9]*` rejected all of them, so this regresses to `obligation: null` on the old
+  // pattern.
+  it('projects dynamic obligation ordinals as numbers, including occurrences crossing the leading-1 boundary', async () => {
     mockState.remainderFiles = [
       remainderFile(
         'current.json',
@@ -574,6 +590,11 @@ describe('getBackendStatusFull record disposition', () => {
         shutdownRemainder('current', NOW - 10_000, [
           shutdownRemainderEntry('stream response close 12', 'process-exit', 'timed-out'),
           shutdownRemainderEntry('provider proxy lifecycle fatal incident 2', 'process-exit', 'rejected'),
+          shutdownRemainderEntry('provider proxy lifecycle fatal incident 9', 'process-exit', 'rejected'),
+          shutdownRemainderEntry('provider proxy lifecycle fatal incident 10', 'process-exit', 'rejected'),
+          shutdownRemainderEntry('provider proxy lifecycle fatal incident 19', 'process-exit', 'rejected'),
+          shutdownRemainderEntry('provider proxy lifecycle fatal incident 99', 'process-exit', 'rejected'),
+          shutdownRemainderEntry('provider proxy lifecycle fatal incident 100', 'process-exit', 'rejected'),
           shutdownRemainderEntry('store epoch sweep cancellation', 'process-exit', 'timed-out'),
         ]),
       ),
@@ -582,13 +603,21 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: {
-        entries: [
-          { obligation: { label: 'stream response close', ordinal: 12 } },
-          { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 2 } },
-          { obligation: { label: 'store epoch sweep cancellation' } },
-        ],
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: {
+          entries: [
+            { obligation: { label: 'stream response close', ordinal: 12 } },
+            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 2 } },
+            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 9 } },
+            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 10 } },
+            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 19 } },
+            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 99 } },
+            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 100 } },
+            { obligation: { label: 'store epoch sweep cancellation' } },
+          ],
+        },
       },
     });
   });
@@ -602,8 +631,8 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: { instanceId: 'fresh' },
+      status: 'no_record_no_socket',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'fresh' } },
     });
   });
 
@@ -616,9 +645,8 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutdown_remainder_unreadable',
-      reason: 'records-skipped',
-      skippedRecordCount: 2,
+      status: 'no_record_no_socket',
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 2 },
     });
   });
 
@@ -631,9 +659,8 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutdown_remainder_unreadable',
-      reason: 'records-skipped',
-      skippedRecordCount: 1,
+      status: 'no_record_no_socket',
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 1 },
     });
   });
 
@@ -654,9 +681,12 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: { instanceId: 'current' },
-      skippedRecordCount: 0,
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: 'current' },
+        skippedRecordCount: 0,
+      },
     });
   });
 
@@ -666,8 +696,8 @@ describe('getBackendStatusFull record disposition', () => {
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutdown_remainder_unreadable',
-      reason: 'scan-failed',
+      status: 'no_record_no_socket',
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
     });
   });
 
@@ -826,15 +856,20 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('does not read shutdown history while a coordinator socket is still present', async () => {
+  // A remainder is additional evidence about a departed instance's undischarged obligations, not a claim about
+  // whoever now holds the socket: a fresh boot recovering that very remainder is exactly what
+  // `successor-recovery` evidence describes, so hiding it here would repeat the same substitution defect this
+  // fix removes from the no-record fallbacks.
+  it('carries a directory-scoped shutdown remainder alongside a present coordinator socket', async () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
     mockState.remainderFiles = [remainderFile('recent.json', NOW - 10_000, shutdownRemainder('recent', NOW - 10_000))];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_socket_present',
       socketPath: '/tmp/coral.sock',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'recent' } },
     });
   });
 
@@ -1103,6 +1138,18 @@ function startupDiagnostic(
   });
 }
 
+/**
+ * The additive `shutdownRemainder` a `no_record_no_socket` / `recorded_process_absent` / `no_record_socket_present`
+ * fallback carries, narrowed to the `recent_shutdown_remainder` report — `null` when there is none or the
+ * fallback observed something a remainder cannot ride on.
+ */
+function recentShutdownRemainder(
+  result: BackendStatusFull,
+): Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }> | null {
+  const report = 'shutdownRemainder' in result ? result.shutdownRemainder : undefined;
+  return report?.status === 'recent_shutdown_remainder' ? report : null;
+}
+
 function remainderFile(name: string, mtimeMs: number, value: string, statErrorCode?: string) {
   return { name, mtimeMs, value, statErrorCode };
 }
@@ -1193,9 +1240,13 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: { instanceId: INSTANCE_ID },
-      skippedRecordCount: 0,
+      status: 'recorded_process_absent',
+      pid: PID,
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: INSTANCE_ID },
+        skippedRecordCount: 0,
+      },
     });
   });
 
@@ -1208,9 +1259,9 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutdown_remainder_unreadable',
-      reason: 'records-skipped',
-      skippedRecordCount: 1,
+      status: 'recorded_process_absent',
+      pid: PID,
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 1 },
     });
   });
 
@@ -1220,8 +1271,9 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutdown_remainder_unreadable',
-      reason: 'scan-failed',
+      status: 'recorded_process_absent',
+      pid: PID,
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
     });
   });
 
@@ -1234,9 +1286,13 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recent_shutdown_remainder',
-      record: { instanceId: INSTANCE_ID },
-      skippedRecordCount: 0,
+      status: 'recorded_process_absent',
+      pid: PID,
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: INSTANCE_ID },
+        skippedRecordCount: 0,
+      },
     });
   });
 

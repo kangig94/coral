@@ -279,11 +279,26 @@ type BackendStatus =
       status: 'shutting_down';
     };
 
+/**
+ * Evidence about a departed instance's undischarged shutdown obligations, carried alongside — never instead
+ * of — the fallback status that observed the coordinator's current absence or ambiguity. `status` is this
+ * report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
+ */
+export type ShutdownRemainderReport =
+  | Readonly<{
+      status: 'recent_shutdown_remainder';
+      record: OperatorFacingShutdownRemainderRecord;
+      skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
+      skippedRecordCount: number;
+    }>
+  | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
+  | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'records-skipped'; skippedRecordCount: number }>;
+
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' }
-  | { status: 'no_record_no_socket' }
-  | { status: 'recorded_process_absent'; pid: number }
+  | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
+  | { status: 'recorded_process_absent'; pid: number; shutdownRemainder?: ShutdownRemainderReport }
   /**
    * An unreadable discovery record must not imply whether a coordinator is running: a truncated write or a
    * record shaped by a build this one rejects can both exist while a coordinator is serving.
@@ -333,7 +348,7 @@ export type BackendStatusFull =
    * A surviving coordinator socket must not become an absence result: it may belong to a boot in progress or
    * be a stale leftover.
    */
-  | { status: 'no_record_socket_present'; socketPath: string }
+  | { status: 'no_record_socket_present'; socketPath: string; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
@@ -344,26 +359,11 @@ export type BackendStatusFull =
        * never cross it. see `readOperatorFacingCoralSetupError` in src/runtime/errors.ts
        */
       setupError?: OperatorFacingCoralSetupError;
-    }
-  | {
-      status: 'recent_shutdown_remainder';
-      record: OperatorFacingShutdownRemainderRecord;
-      skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
-      skippedRecordCount: number;
-    }
-  | {
-      status: 'shutdown_remainder_unreadable';
-      reason: 'scan-failed';
-    }
-  | {
-      status: 'shutdown_remainder_unreadable';
-      reason: 'records-skipped';
-      skippedRecordCount: number;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
-type RecentShutdownRemainderStatus = Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>;
-type ShutdownRemainderUnreadableStatus = Extract<BackendStatusFull, { status: 'shutdown_remainder_unreadable' }>;
+type RecentShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>;
+type ShutdownRemainderUnreadableStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
 type ShutdownRemainderEvidenceScope =
   | Readonly<{ kind: 'directory' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
@@ -383,7 +383,7 @@ function positiveSafeInteger(value: string): number | null {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
-function operatorFacingShutdownObligation(label: string): OperatorFacingShutdownObligation | null {
+export function operatorFacingShutdownObligation(label: string): OperatorFacingShutdownObligation | null {
   if (operatorFacingShutdownLabels.has(label)) return { label: label as OperatorFacingShutdownLabel };
 
   const stream = /^stream response close ([1-9][0-9]*)$/u.exec(label);
@@ -395,10 +395,13 @@ function operatorFacingShutdownObligation(label: string): OperatorFacingShutdown
   if (label === 'provider proxy lifecycle fatal incident') {
     return { label, occurrence: 1 };
   }
-  const incident = /^provider proxy lifecycle fatal incident ([2-9][0-9]*)$/u.exec(label);
+  // The producer never appends a numeral for occurrence 1 (`shutdownIncidentUndischarged`), so a bare "1" suffix
+  // here is malformed rather than a second occurrence; `[1-9][0-9]*` (not `[2-9][0-9]*`) is required because the
+  // excluded first digit rejected every occurrence with a leading 1 — 10-19, 100-199, and so on.
+  const incident = /^provider proxy lifecycle fatal incident ([1-9][0-9]*)$/u.exec(label);
   if (incident !== null) {
     const occurrence = positiveSafeInteger(incident[1] ?? '');
-    if (occurrence !== null) return { label: 'provider proxy lifecycle fatal incident', occurrence };
+    if (occurrence !== null && occurrence > 1) return { label: 'provider proxy lifecycle fatal incident', occurrence };
   }
 
   return null;
@@ -659,7 +662,8 @@ function noDaemonStatus(
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   fallback: Extract<
     BackendStatusFull,
-    { status: 'no_record_no_socket' | 'recorded_process_absent' } | { cause: 'foreign_peer' }
+    | { status: 'no_record_no_socket' | 'recorded_process_absent' | 'no_record_socket_present' }
+    | { cause: 'foreign_peer' }
   >,
   coordinator?: Readonly<{ instanceId?: string; startedAt: number; pid: number }>,
 ): BackendStatusFull {
@@ -672,8 +676,10 @@ function noDaemonStatus(
     coordinator?.pid,
   );
   if (diagnostic !== null) return diagnostic;
-  if (fallback.status === 'unreachable' && fallback.cause === 'foreign_peer') return fallback;
-  const remainder = readRecentShutdownRemainder(
+  // `fallback`'s type carries only the `cause: 'foreign_peer'` member of `unreachable`, so this single
+  // discriminant fully identifies it without a second `.cause` check.
+  if (fallback.status === 'unreachable') return fallback;
+  const shutdownRemainder = readRecentShutdownRemainder(
     storage,
     runDir,
     now,
@@ -681,11 +687,9 @@ function noDaemonStatus(
       ? { kind: 'directory' }
       : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt },
   );
-  if (remainder?.status === 'recent_shutdown_remainder') return remainder;
-  return (fallback.status === 'no_record_no_socket' || fallback.status === 'recorded_process_absent') &&
-    remainder !== null
-    ? remainder
-    : fallback;
+  // The remainder is additional evidence about a departed instance's obligations, never a replacement for what
+  // the fallback itself says about the coordinator's current absence or ambiguity — a reader needs both.
+  return shutdownRemainder === null ? fallback : { ...fallback, shutdownRemainder };
 }
 
 /**
@@ -787,13 +791,18 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
-      return (
-        readRecentFailureDiagnostic(
-          runtime.storage,
-          runtime.paths.coral.coordinator.startupDiagnosticFile,
-          runtime.time.now(),
-          provenSelfIdentity,
-        ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
+      // No recorded instanceId exists to scope a remainder to; a directory-wide, recency-only lookup is the
+      // same fallback `noDaemonStatus` already uses for `no-record`, and for the same reason: a departed
+      // instance's undischarged obligations remain relevant evidence whether or not something now holds the
+      // socket — a fresh boot recovering that very remainder is exactly the case `successor-recovery` evidence
+      // describes.
+      return noDaemonStatus(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'no_record_socket_present', socketPath: observed.socketPath },
       );
     case 'process-absent':
       // Startup diagnostics require both `startedAt` and `pid`; shutdown remainders require the recorded

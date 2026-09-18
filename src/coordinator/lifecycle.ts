@@ -3,7 +3,6 @@ import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
 import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import { type LaunchCoordinator } from './live/admission.js';
-import { BOUNDARY_TRANSFER_ATTEMPT_LIMIT } from '../obligation/settlement.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
@@ -838,9 +837,6 @@ export type LifecycleController = {
   getRecoveryRegistry(): RecoveryRegistry | null;
 };
 
-// The continuation's last attempt must be the ledger's terminal attempt, or the loop ends on a hold.
-const SHUTDOWN_ATTEMPT_LIMIT = BOUNDARY_TRANSFER_ATTEMPT_LIMIT;
-
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
 type LifecycleShutdownHoldReason = ShutdownHoldReason;
 
@@ -884,7 +880,6 @@ type LifecycleControlState = LifecycleWiringState & {
   shutdownContinuations: Set<Promise<void>>;
   shutdownContinuationAbort: AbortController | null;
   shutdownHardConsequencesAbort: AbortController | null;
-  shutdownAttemptsStarted: number;
   shutdownReason: ShutdownReason | null;
   shutdownIncidents: ShutdownIncidentOccurrence[];
   shutdownIncidentCount: number;
@@ -1302,13 +1297,17 @@ async function runLifecycleStartup({
     state.ownershipCheckerTeardown?.();
     state.ownershipCheckerTeardown = null;
     try {
-      let disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
-      while (disposal?.kind === 'holding') {
-        await disposal.retryAfter;
-        disposal = await disposal.retry();
+      // No retry: a `holding` result's `retryAfter` waits on the child's `close` event, which a grandchild
+      // holding its stdio pipes open can keep from ever firing — that wait must not sit ahead of the socket
+      // close and discovery withdrawal this cleanup still owes.
+      const disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
+      if (disposal?.kind === 'holding') {
+        backendLog.error(
+          `KB daemon disposal did not confirm absence during startup-failure cleanup (${disposal.reason})`,
+        );
       }
-    } catch {
-      // best effort
+    } catch (error: unknown) {
+      backendLog.error(`KB daemon disposal during startup-failure cleanup failed (${formatError(error)})`);
     }
     try {
       await closeServerFn(server);
@@ -1371,7 +1370,6 @@ export function createLifecycle(
     shutdownContinuations: new Set(),
     shutdownContinuationAbort: null,
     shutdownHardConsequencesAbort: null,
-    shutdownAttemptsStarted: 0,
     shutdownReason: null,
     shutdownIncidents: [],
     shutdownIncidentCount: 0,
@@ -1416,7 +1414,6 @@ export function createLifecycle(
     if (state.shutdownPromise) return state.shutdownPromise;
     const currentShutdownReason = (): ShutdownReason => state.shutdownReason ?? reason;
     const takeShutdownIncidents = (): readonly ShutdownIncidentOccurrence[] => state.shutdownIncidents.splice(0);
-    state.shutdownAttemptsStarted += 1;
     state.lastShutdownDisposition = null;
 
     // Calling `abort()` with no reason sets `signal.reason` to the platform
@@ -1460,7 +1457,7 @@ export function createLifecycle(
         try {
           const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
           return withdrawal !== undefined && withdrawal.kind === 'refused'
-            ? { detail: withdrawal.detail, error: serializeThrown(withdrawal.detail) }
+            ? { detail: withdrawal.detail, error: withdrawal.error }
             : null;
         } catch (error: unknown) {
           return { detail: formatError(error), error: serializeThrown(error) };
@@ -1499,8 +1496,8 @@ export function createLifecycle(
           },
           automaticRetry: {
             status: 'scheduled',
-            attemptsStarted: state.shutdownAttemptsStarted,
-            attemptLimit: SHUTDOWN_ATTEMPT_LIMIT,
+            attemptsStarted: disposition.attemptsStarted,
+            attemptLimit: disposition.attemptLimit,
           },
           retainedOwnership: {
             kind: 'coordinator-exclusive-authority',
@@ -1598,18 +1595,26 @@ export function createLifecycle(
         state.lastShutdownDisposition = disposition;
         if (!isLifecycleShutdownTerminal(disposition)) {
           state.shutdownPromise = null;
-          if (state.shutdownContinuations.size === 0 && state.shutdownAttemptsStarted < SHUTDOWN_ATTEMPT_LIMIT) {
+          const { attemptsStarted, attemptLimit } = disposition.recovery.automaticRetry;
+          if (state.shutdownContinuations.size === 0 && attemptsStarted < attemptLimit) {
             const continuationAbort = new AbortController();
             state.shutdownContinuationAbort = continuationAbort;
             const cancelled = new Promise<void>((resolve) => {
               continuationAbort.signal.addEventListener('abort', () => resolve(), { once: true });
             });
             const continuation = (async () => {
-              while (state.shutdownAttemptsStarted < SHUTDOWN_ATTEMPT_LIMIT) {
+              // The loop's own attempt count must come from the disposition the ledger just returned, not a
+              // continuation-local counter — a count kept here can diverge from the ledger's forced-terminal
+              // attempt and strand the loop on a hold with nothing left to schedule a retry.
+              let pending: LifecycleShutdownDisposition = disposition;
+              while (
+                !isLifecycleShutdownTerminal(pending) &&
+                pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
+              ) {
                 await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
                 if (continuationAbort.signal.aborted) return;
-                const retried = await shutdown(currentShutdownReason());
-                if (isLifecycleShutdownTerminal(retried)) return;
+                pending = await shutdown(currentShutdownReason());
+                if (isLifecycleShutdownTerminal(pending)) return;
               }
             })()
               .catch((error: unknown) => {

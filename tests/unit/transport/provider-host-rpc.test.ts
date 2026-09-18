@@ -226,9 +226,11 @@ describe('provider-host RPC authorization', () => {
       body: {
         code: 'provider_host_owner_torn_down',
         remediation:
-          'Run `coral-cli backend status`. If the coordinator is draining, its successor re-establishes control; retry the original command once the successor serves. If the drain is held on the control release, it ends by itself when its budget is exhausted; retry once `coral-cli backend status` no longer reports that coordinator as shutting down. If it is not draining, `coral-cli backend status` reports the released set under its own token. Coral keeps the set held while it waits for confirmed absence or succession; an unconfirmed result has no automatic deadline. Retry the original command once succession completes.',
+          "Run `coral-cli backend status`. If it reports this coordinator as draining, the drain ends by itself once its budget is exhausted; retry the original command once status no longer reports it as shutting down. If it does not report draining, status instead reports the released set under its own token together with that set's exact next action; take the action status reports for that token.",
       },
     });
+    // Neither destructive command is named directly: the reader is pointed at `backend status`'s own
+    // per-set `action=` line, which is the only surface that already knows which one currently applies.
     expect(result).not.toMatchObject({
       kind: 'unary',
       body: { remediation: expect.stringContaining('provider-proxy-set contain') },
@@ -236,6 +238,15 @@ describe('provider-host RPC authorization', () => {
     expect(result).not.toMatchObject({
       kind: 'unary',
       body: { remediation: expect.stringContaining('provider-proxy-set abandon') },
+    });
+    // A refusal must not tell the reader to wait on a condition no command reports.
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('succession') },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('no automatic deadline') },
     });
   });
 

@@ -406,6 +406,9 @@ describe('coordinator discovery', () => {
     if (result.kind !== 'refused') throw new Error(`expected refusal, got ${result.kind}`);
     expect(result.detail).toContain('read failed:');
     expect(result.detail).toContain('read denied');
+    // The thrown value's own `code` must survive into the structured fact, not just into the log-facing
+    // string — a caller that re-serializes `result.detail` instead of reading `result.error` loses it.
+    expect(result.error).toMatchObject({ kind: 'error', code: 'EACCES' });
   });
 
   it('returns a typed refusal when owned discovery cannot be unlinked', async () => {
@@ -443,6 +446,7 @@ describe('coordinator discovery', () => {
     if (result.kind !== 'refused') throw new Error(`expected refusal, got ${result.kind}`);
     expect(result.detail).toContain('unlink failed:');
     expect(result.detail).toContain('unlink denied');
+    expect(result.error).toMatchObject({ kind: 'error', code: 'EACCES' });
   });
 
   // The fourth outcome, and the only one that is not a variant: a file that exists and cannot be *opened* is

@@ -76,8 +76,8 @@ describe('shutdown abandonment status', () => {
     }
   });
 
-  it('reads durable receipts for every canonical shutdown-obligation subject', () => {
-    const entries = shutdownObligationSubjects.map((subject) => ({
+  it('reads durable receipts for every subject a released build may have recorded', () => {
+    const entries = legacyShutdownObligationSubjects.map((subject) => ({
       subject,
       instanceId: `${subject}-instance`,
       recordedAt: '2026-09-07T00:00:00.000Z',

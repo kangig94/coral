@@ -6,7 +6,7 @@ import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
 import { MAX_PROCESS_INCARNATION_LENGTH, observeProcessLiveness, type ProcessIncarnation } from './node-process.js';
 import { backendLog } from './backend-log.js';
-import { formatError } from './error-format.js';
+import { formatError, serializeThrown, type SerializedThrown } from './error-format.js';
 import { isNoEntryError } from './fs-errors.js';
 import type { Runtime } from '../runtime/ports.js';
 
@@ -245,7 +245,7 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
 export type BackendInfoRemovalResult =
   | Readonly<{ kind: 'removed' }>
   | Readonly<{ kind: 'unchanged' }>
-  | Readonly<{ kind: 'refused'; detail: string }>;
+  | Readonly<{ kind: 'refused'; detail: string; error: SerializedThrown }>;
 
 /**
  * Delete the discovery record, but only when this caller is provably the one that wrote it.
@@ -258,11 +258,12 @@ export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntim
   try {
     read = readDiscoveryRecordDisposition(runtime);
   } catch (error: unknown) {
-    return { kind: 'refused', detail: `read failed: ${formatError(error)}` };
+    return { kind: 'refused', detail: `read failed: ${formatError(error)}`, error: serializeThrown(error) };
   }
   if (read.kind === 'missing') return { kind: 'unchanged' };
   if (read.kind === 'undecodable') {
-    return { kind: 'refused', detail: `record undecodable (${read.reason})` };
+    const detail = `record undecodable (${read.reason})`;
+    return { kind: 'refused', detail, error: { kind: 'unknown', message: detail } };
   }
 
   const { record } = read;
@@ -281,7 +282,7 @@ export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntim
     if (isNoEntryError(error)) {
       return { kind: 'unchanged' };
     }
-    return { kind: 'refused', detail: `unlink failed: ${formatError(error)}` };
+    return { kind: 'refused', detail: `unlink failed: ${formatError(error)}`, error: serializeThrown(error) };
   }
   return { kind: 'removed' };
 }

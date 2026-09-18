@@ -793,8 +793,6 @@ describe('cli main routing', () => {
       ['shutting_down', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],
-      ['recent_shutdown_remainder', 0],
-      ['shutdown_remainder_unreadable', 0],
       ['undecodable_record', 75],
       ['unreachable', 75],
       ['no_record_socket_present', 75],

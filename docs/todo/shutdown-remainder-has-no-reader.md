@@ -8,11 +8,15 @@ entry retains only the live coordinator health-projection question.
 `recordShutdownRemainder` (`src/coordinator/shutdown-remainder.ts`) writes
 `shutdown-remainder.v1/<instanceId>.json` into the run directory whenever a shutdown finalizes with losses:
 one entry per undischarged obligation,
-keyed by the ledger's `label`, carrying `{ remainder, settlement: { cause, detail } }`, under a record that
-carries `instanceId`, `recordedAt`, `reason`, and `mode`. `readShutdownRemainderStatus` in the same module
-decodes it tolerantly — per record and per entry, skips counted. The no-daemon arm of `backend status` reads
-the newest record for the `no-record`, `process-absent`, and `foreign_peer` observations, scopes it to the
-same recent-record window as the startup diagnostic, and reports it without a next step.
+keyed by the ledger's `label`, carrying a `remainder` and a `settlement` shaped by its `cause` (the thrown
+error for `rejected`/`aborted`, `budgetMs` for `timed-out`, a free-text `detail` for `unconfirmed`, nothing
+further for `budget-exhausted`), under a record that carries `instanceId`, `recordedAt`, `reason`, and
+`mode`. `readShutdownRemainderStatus` in the same module decodes it tolerantly — per record and per entry,
+skips counted. The no-daemon arm of `backend status` reads the newest record for the `no_record_no_socket`,
+`no_record_socket_present`, and `recorded_process_absent` observations, scopes it to the same recent-record
+window as the startup diagnostic, and reports it without a next step. `foreign_peer` never reaches this
+reader: `noDaemonStatus` (`src/transport/http/backend/status.ts`) returns before consulting it whenever the
+fallback status is `unreachable`, which is what a decoded peer identity mismatch always is.
 
 ## What is wrong
 

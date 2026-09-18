@@ -57,6 +57,9 @@ export interface HeldSettlementDisposition<Reason, Exit, Failure, RetainedAuthor
   readonly retryAfter: Promise<void>;
   readonly undischarged: readonly Failure[];
   readonly retainedAuthority: RetainedAuthority;
+  /** The ledger's own boundary-transfer attempt count and forced-terminal limit, for a caller that reports it. */
+  readonly attemptsStarted: number;
+  readonly attemptLimit: number;
   readonly retry: () => Promise<Disposition>;
 }
 
@@ -600,6 +603,8 @@ export class SettlementLedger<
       retryAfter: hold.retryAfter ?? this.options.time.sleep(this.options.pollMs),
       undischarged: this.namedLosses(boundary, resolution.boundaryFailure),
       retainedAuthority: this.retainedAuthority(boundary),
+      attemptsStarted: this.boundaryTransferAttemptsStarted.get(boundary) ?? 0,
+      attemptLimit: BOUNDARY_TRANSFER_ATTEMPT_LIMIT,
       retry: () => this.retryBoundaryTransfer(boundary),
     });
   }

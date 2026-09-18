@@ -26,6 +26,7 @@ import type {
 import type { DurableProcessRetention } from '#src/coordinator/live/durable-transport.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import type { SerializedThrown } from '#src/infra/error-format.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
@@ -216,9 +217,20 @@ const rejectingHook = async (): Promise<void> => {
   throw new Error('hook failed');
 };
 
+// A refusal carrying a real errno code, standing in for the `unlink` failure `removeBackendInfoIfOwner`
+// (backend-discovery.ts) reports: proves `withdraw()` (lifecycle.ts) carries `error` through unchanged
+// rather than re-serializing the formatted `detail` string, which would collapse `code` into `unknown`.
+const unlinkDeniedRefusal = Object.freeze({
+  kind: 'refused' as const,
+  detail: 'unlink denied',
+  error: Object.freeze({ kind: 'error' as const, name: 'Error', code: 'EACCES', message: 'unlink denied' }),
+});
+
 function buildRemainderWriteRefusalHarness(
   write: () => boolean,
-  withdrawal: Readonly<{ kind: 'removed' }> | Readonly<{ kind: 'refused'; detail: string }> = { kind: 'removed' },
+  withdrawal: Readonly<{ kind: 'removed' }> | Readonly<{ kind: 'refused'; detail: string; error: SerializedThrown }> = {
+    kind: 'removed',
+  },
   hooksOnShutdown: () => Promise<void> = async () => {},
 ) {
   const harness = buildHarness({ hooksOnShutdown });
@@ -1121,7 +1133,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(childTerminationRemainder({ kind: 'all-children-observed-absent' })).toEqual({ owner: 'process-exit' });
   });
 
-  it('holds hard shutdown and names a durable child that remains alive at the deadline', async () => {
+  it('releases authority and names a durable child that remains alive at the deadline', async () => {
     const harness = buildHarness({ reason: 'test-teardown', hooksOnShutdown: async () => {} });
     harness.ctx.terminateRegisteredChildrenFn = async () => ({
       kind: 'children-unresolved-at-deadline',
@@ -1132,13 +1144,14 @@ describe('runShutdownSequence drain budget', () => {
       owner: 'launch-coordinator',
     });
 
-    const detail = await shutdownFailureDetail(harness.ctx);
+    const terminal = requireUnaccepted(await runShutdownSequence(harness.ctx));
+    const detail = failureDetail(terminal);
 
     expect(detail).toContain('child termination: unconfirmed');
     expect(detail).toContain('pid 4242: target-alive after-sigkill');
   });
 
-  it('holds hard shutdown and names unavailable signal authority at the deadline', async () => {
+  it('releases authority and names unavailable signal authority at the deadline', async () => {
     const harness = buildHarness({ reason: 'test-teardown', hooksOnShutdown: async () => {} });
     harness.ctx.terminateRegisteredChildrenFn = async () => ({
       kind: 'children-unresolved-at-deadline',
@@ -1155,7 +1168,8 @@ describe('runShutdownSequence drain budget', () => {
       owner: 'launch-coordinator',
     });
 
-    const detail = await shutdownFailureDetail(harness.ctx);
+    const terminal = requireUnaccepted(await runShutdownSequence(harness.ctx));
+    const detail = failureDetail(terminal);
 
     expect(detail).toContain('child termination: unconfirmed');
     expect(detail).toContain('pid 4243: recorded-incarnation-unavailable');
@@ -2359,7 +2373,11 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
       writeBackendInfoFn: () => {},
       removeBackendInfoIfOwnerFn: () => {
         finalizationOrder.push('withdraw');
-        return { kind: 'refused', detail: 'discovery read denied' };
+        return {
+          kind: 'refused',
+          detail: 'discovery read denied',
+          error: { kind: 'error', name: 'Error', code: 'EACCES', message: 'discovery read denied' },
+        };
       },
       cleanupStaleJobsFn: () => {},
       markJobsAsErrorFn: harness.ctx.markJobsAsErrorFn,
@@ -2825,7 +2843,7 @@ describe('required provider-proxy shutdown steps', () => {
   });
 
   it('writes a withdrawal loss as the only entry of an otherwise clean shutdown', async () => {
-    const harness = buildRemainderWriteRefusalHarness(() => true, { kind: 'refused', detail: 'unlink denied' });
+    const harness = buildRemainderWriteRefusalHarness(() => true, unlinkDeniedRefusal);
 
     const first = await harness.controller.shutdown('replaced');
     expect(first).toEqual({
@@ -2834,7 +2852,7 @@ describe('required provider-proxy shutdown steps', () => {
         {
           label: 'backend discovery withdrawal',
           remainder: { owner: 'process-exit' },
-          settlement: { cause: 'rejected', error: { kind: 'unknown', message: 'unlink denied' } },
+          settlement: { cause: 'rejected', error: unlinkDeniedRefusal.error },
         },
       ],
     });
@@ -2846,11 +2864,7 @@ describe('required provider-proxy shutdown steps', () => {
   });
 
   it('rewrites a withdrawal loss after the original remainder publication was refused', async () => {
-    const harness = buildRemainderWriteRefusalHarness(
-      () => false,
-      { kind: 'refused', detail: 'unlink denied' },
-      rejectingHook,
-    );
+    const harness = buildRemainderWriteRefusalHarness(() => false, unlinkDeniedRefusal, rejectingHook);
 
     await expect(harness.controller.shutdown('replaced')).resolves.toMatchObject({
       disposition: 'finalized-with-losses',
@@ -2872,7 +2886,7 @@ describe('required provider-proxy shutdown steps', () => {
         writes += 1;
         return writes === 1;
       },
-      { kind: 'refused', detail: 'unlink denied' },
+      unlinkDeniedRefusal,
       rejectingHook,
     );
 
@@ -2931,6 +2945,13 @@ describe('required provider-proxy shutdown steps', () => {
         expect.objectContaining({
           label: 'backend discovery withdrawal',
           remainder: { owner: 'process-exit' },
+          // The withdrawal's own `code` must reach the settlement record — a caller that re-serializes the
+          // formatted `detail` string instead of the carried `error` loses it (see backend-discovery.ts's
+          // `removeBackendInfoIfOwner`).
+          settlement: expect.objectContaining({
+            cause: 'rejected',
+            error: expect.objectContaining({ kind: 'error', code: 'EACCES' }),
+          }),
         }),
       ]),
     });
@@ -2941,12 +2962,17 @@ describe('required provider-proxy shutdown steps', () => {
     expect(remainderDocuments).toHaveLength(2);
     const rewritten = JSON.parse(remainderDocuments[1] ?? '{}') as {
       instanceId?: string;
-      entries?: Array<{ label?: string }>;
+      entries?: Array<{ label?: string; settlement?: { error?: { code?: string } } }>;
     };
     expect(rewritten).toEqual(
       expect.objectContaining({
         instanceId: 'boundary-exhaustion',
-        entries: expect.arrayContaining([expect.objectContaining({ label: 'backend discovery withdrawal' })]),
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            label: 'backend discovery withdrawal',
+            settlement: expect.objectContaining({ error: expect.objectContaining({ code: 'EACCES' }) }),
+          }),
+        ]),
       }),
     );
     expect(logLines).toContain('backend discovery withdrawal refused (discovery read denied)\n');

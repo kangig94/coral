@@ -571,7 +571,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toHaveLength(33);
   });
 
-  it('does not perform exit-path pruning when publication is refused', () => {
+  it('does not create a new record file when publication is refused', () => {
     const storage = storageWith([fileAt('existing-instance', 1)], { publish: false });
 
     expect(
@@ -580,7 +580,6 @@ describe('shutdown remainder status', () => {
         { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
       ),
     ).toBe(false);
-    expect(storage.readdirSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toEqual(['existing-instance.json']);
   });
 

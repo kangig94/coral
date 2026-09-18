@@ -1,6 +1,6 @@
-import type { BackendStatusFull } from '../../src/transport/http/backend/status.js';
+import type { ShutdownRemainderReport } from '../../src/transport/http/backend/status.js';
 
-type ShutdownRemainderStatus = Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>;
+type ShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>;
 type OperatorFacingSettlement = ShutdownRemainderStatus['record']['entries'][number]['settlement'];
 
 type ProjectionLeafPaths<Value, Prefix extends string = ''> = Value extends string | number | boolean | null | undefined

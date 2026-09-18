@@ -1731,69 +1731,73 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
-    it('formats a structured recent shutdown remainder projection', () => {
+    it('formats a structured recent shutdown remainder as a section on top of the fallback status', () => {
       const text = formatBackendStatus({
-        status: 'recent_shutdown_remainder',
-        record: {
-          instanceId: 'instance-1',
-          recordedAt: '2026-09-18T01:02:03.000Z',
-          reason: 'sigterm',
-          mode: 'handoff',
-          entries: [
-            {
-              entryNumber: 2,
-              obligation: { label: 'child termination' },
-              remainder: {
-                owner: 'successor-recovery',
-                evidence: {
-                  kind: 'startup-adoption',
-                  processes: [
-                    {
-                      kind: 'durable-cli-runtime',
-                      jobId: 'job-1',
-                      pid: 4_242,
-                      leaderIncarnation: { present: true },
-                    },
-                  ],
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: {
+            instanceId: 'instance-1',
+            recordedAt: '2026-09-18T01:02:03.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [
+              {
+                entryNumber: 2,
+                obligation: { label: 'child termination' },
+                remainder: {
+                  owner: 'successor-recovery',
+                  evidence: {
+                    kind: 'startup-adoption',
+                    processes: [
+                      {
+                        kind: 'durable-cli-runtime',
+                        jobId: 'job-1',
+                        pid: 4_242,
+                        leaderIncarnation: { present: true },
+                      },
+                    ],
+                  },
+                },
+                settlement: { cause: 'timed-out', budgetMs: 5_000 },
+              },
+              {
+                entryNumber: 3,
+                obligation: { label: 'hooks.onShutdown' },
+                remainder: { owner: 'process-exit' },
+                settlement: {
+                  cause: 'rejected',
+                  error: { name: 'Error', code: 'ENOENT' },
                 },
               },
-              settlement: { cause: 'timed-out', budgetMs: 5_000 },
-            },
-            {
-              entryNumber: 3,
-              obligation: { label: 'hooks.onShutdown' },
-              remainder: { owner: 'process-exit' },
-              settlement: {
-                cause: 'rejected',
-                error: { name: 'Error', code: 'ENOENT' },
+              {
+                entryNumber: 5,
+                obligation: { label: 'discuss store dispose' },
+                subject: { kind: 'discuss-store', sourceDigest: 'a'.repeat(64) },
+                remainder: { owner: 'process-exit' },
+                settlement: { cause: 'unconfirmed' },
               },
+            ],
+          },
+          skippedEntries: [
+            {
+              entryNumber: 1,
+              obligation: null,
+              owner: 'successor-recovery',
             },
             {
-              entryNumber: 5,
-              obligation: { label: 'discuss store dispose' },
-              subject: { kind: 'discuss-store', sourceDigest: 'a'.repeat(64) },
-              remainder: { owner: 'process-exit' },
-              settlement: { cause: 'unconfirmed' },
+              entryNumber: 4,
+              obligation: { label: 'stream response close', ordinal: 3 },
+              owner: 'process-exit',
             },
           ],
+          skippedRecordCount: 1,
         },
-        skippedEntries: [
-          {
-            entryNumber: 1,
-            obligation: null,
-            owner: 'successor-recovery',
-          },
-          {
-            entryNumber: 4,
-            obligation: { label: 'stream response close', ordinal: 3 },
-            owner: 'process-exit',
-          },
-        ],
-        skippedRecordCount: 1,
       });
 
       expect(text).toBe(
         [
+          'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
           'Coral recorded a recent shutdown with unfinished obligations.',
           'Instance: instance-1',
           'Recorded at: 2026-09-18T01:02:03.000Z',
@@ -1828,15 +1832,20 @@ describe('cli format', () => {
       );
     });
 
-    it('reports unreadable shutdown remainder records without soliciting an action', () => {
+    it('reports unreadable shutdown remainder records as a section on top of the fallback status', () => {
       expect(
         formatBackendStatus({
-          status: 'shutdown_remainder_unreadable',
-          reason: 'records-skipped',
-          skippedRecordCount: 1,
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'records-skipped',
+            skippedRecordCount: 1,
+          },
         }),
       ).toBe(
         [
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Coral found shutdown remainder records this build could not decode.',
           'Skipped shutdown remainder records: 1',
           '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
@@ -1844,13 +1853,14 @@ describe('cli format', () => {
       );
     });
 
-    it('reports a shutdown remainder scan failure without soliciting an action', () => {
+    it('reports a shutdown remainder scan failure as a section on top of the fallback status', () => {
       expect(
         formatBackendStatus({
-          status: 'shutdown_remainder_unreadable',
-          reason: 'scan-failed',
+          status: 'no_record_socket_present',
+          socketPath: '/run/coral/coordinator.sock',
+          shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
         }),
-      ).toBe('Coral could not inspect shutdown remainder records.');
+      ).toMatch(/\nCoral could not inspect shutdown remainder records\.$/u);
     });
 
     it('formats an unrecognized setup-error code without printing persisted text', () => {
@@ -2014,21 +2024,28 @@ describe('cli format', () => {
       { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
       { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
       {
-        status: 'recent_shutdown_remainder',
-        record: {
-          instanceId: 'instance-1',
-          recordedAt: '2026-09-18T01:02:03.000Z',
-          reason: 'sigterm',
-          mode: 'handoff' as const,
-          entries: [],
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: {
+            instanceId: 'instance-1',
+            recordedAt: '2026-09-18T01:02:03.000Z',
+            reason: 'sigterm',
+            mode: 'handoff' as const,
+            entries: [],
+          },
+          skippedEntries: [],
+          skippedRecordCount: 0,
         },
-        skippedEntries: [],
-        skippedRecordCount: 0,
       },
       {
-        status: 'shutdown_remainder_unreadable',
-        reason: 'records-skipped',
-        skippedRecordCount: 1,
+        status: 'recorded_process_absent',
+        pid: 4242,
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable' as const,
+          reason: 'records-skipped' as const,
+          skippedRecordCount: 1,
+        },
       },
       {
         status: 'recent_failure',

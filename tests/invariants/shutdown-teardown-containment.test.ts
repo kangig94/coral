@@ -14,7 +14,7 @@ const SETTLEMENT_IMPORTS = new Map([
   ['createShutdownSettlementLedger', './shutdown-settlement.js'],
   ['createJoinableSettlementTask', '../obligation/settlement.js'],
 ]);
-const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'transferPending']);
+const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'unaccepted']);
 
 type NamedFunction = ts.FunctionDeclaration | ts.MethodDeclaration;
 
@@ -94,10 +94,10 @@ function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: str
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
-type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'transfer-pending';
+type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'unaccepted';
 
 function isShutdownDispositionName(value: string): value is ShutdownDispositionName {
-  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'transfer-pending';
+  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'unaccepted';
 }
 
 function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string[] {
@@ -202,6 +202,10 @@ function hasShutdownDelegatedPayload(node: ts.ObjectLiteralExpression): boolean 
   return hasProperties(node, ['undischarged', 'acceptance']);
 }
 
+function hasShutdownUnacceptedPayload(node: ts.ObjectLiteralExpression): boolean {
+  return hasProperties(node, ['undischarged']);
+}
+
 function isSettlementGateConstruction(node: ts.ObjectLiteralExpression): boolean {
   if (node.getSourceFile().fileName !== SETTLEMENT_PATH) return false;
   for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
@@ -231,6 +235,9 @@ function shutdownDispositionConstructorViolations(sourceFile: ts.SourceFile): st
           hasShutdownDispositionContext(node) ||
           hasShutdownHeldPayload(node) ||
           (hasShutdownDelegatedPayload(node) && !hasExplicitUnrelatedDispositionContext(node)) ||
+          (disposition === 'unaccepted' &&
+            hasShutdownUnacceptedPayload(node) &&
+            !hasExplicitUnrelatedDispositionContext(node)) ||
           (disposition === 'settled' && !hasExplicitUnrelatedDispositionContext(node)))
       ) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -639,6 +646,19 @@ describe('shutdown teardown containment invariant', () => {
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
       `${competingPath}:2 constructs shutdown disposition 'delegated' outside SettlementGate`,
+    ]);
+  });
+
+  it('rejects an unannotated inferred unaccepted disposition outside the gate', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'unaccepted', undischarged: [] } as const;
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'unaccepted' outside SettlementGate`,
     ]);
   });
 

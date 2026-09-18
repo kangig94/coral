@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
+import { operatorFacingShutdownObligation } from '#src/transport/http/backend/status.js';
+import { shutdownIncidentUndischarged } from '#src/coordinator/shutdown.js';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const OWNERSHIP_SCAN_ROOT = 'src';
@@ -27,15 +29,18 @@ const PROCESS_EXIT_OBLIGATION_INVENTORY = [
 const DERIVED_REMAINDER_OBLIGATIONS: Readonly<Record<string, string>> = {
   'child termination': 'childTerminationRemainder',
 };
+// A dynamic label's template head text proves only that the prefix matches — not that
+// `operatorFacingShutdownObligation` round-trips the numeral the producer actually emits, which is the hole
+// that let `[2-9][0-9]*` reject every occurrence with a leading 1. Every prefix accepted below must carry a
+// matching case in `dynamicShutdownLabelOrdinalViolations`.
+const DYNAMIC_SHUTDOWN_LABEL_PREFIXES = ['stream response close ', 'provider proxy lifecycle fatal incident'] as const;
+
+function parseSource(canonicalPath: string, source: string): ts.SourceFile {
+  return ts.createSourceFile(canonicalPath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
 
 function sourceFile(canonicalPath: string): ts.SourceFile {
-  return ts.createSourceFile(
-    canonicalPath,
-    readFileSync(join(REPO_ROOT, canonicalPath), 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+  return parseSource(canonicalPath, readFileSync(join(REPO_ROOT, canonicalPath), 'utf8'));
 }
 
 function sourceFiles(canonicalDirectory: string): ts.SourceFile[] {
@@ -187,39 +192,53 @@ function processExitInventoryViolations(): string[] {
   return violations;
 }
 
-function ownershipShapeViolations(): string[] {
+function remainderPayload(initializer: ts.Expression): ts.Expression {
+  return remainderThunkBody(initializer) ?? unwrapExpression(initializer);
+}
+
+function ownershipShapeFileViolations(file: ts.SourceFile): string[] {
   const violations: string[] = [];
 
-  for (const file of sourceFiles(OWNERSHIP_SCAN_ROOT)) {
-    function visit(node: ts.Node): void {
-      if (
-        ts.isPropertyAssignment(node) &&
-        propertyName(node) === 'owner' &&
-        ownerLiteral(node) === 'successor-recovery'
-      ) {
-        if (!ts.isObjectLiteralExpression(node.parent)) {
-          violations.push(`${location(node)} successor-recovery owner must belong to an object literal`);
+  function visit(node: ts.Node): void {
+    if (ts.isPropertyAssignment(node) && propertyName(node) === 'remainder') {
+      const payload = remainderPayload(node.initializer);
+      if (ts.isObjectLiteralExpression(payload) && propertyAssignment(payload, 'owner') === undefined) {
+        violations.push(`${location(node)} remainder must declare an owner`);
+      }
+    }
+    if (
+      ts.isPropertyAssignment(node) &&
+      propertyName(node) === 'owner' &&
+      ownerLiteral(node) === 'successor-recovery'
+    ) {
+      if (!ts.isObjectLiteralExpression(node.parent)) {
+        violations.push(`${location(node)} successor-recovery owner must belong to an object literal`);
+      } else {
+        const evidence = propertyAssignment(node.parent, 'evidence');
+        const via = propertyAssignment(node.parent, 'via');
+        if (via !== undefined) {
+          violations.push(`${location(via)} successor-recovery remainder must not use free-form via evidence`);
+        }
+        const evidenceValue = evidence === undefined ? undefined : unwrapExpression(evidence.initializer);
+        if (evidence === undefined || evidenceValue === undefined || !ts.isObjectLiteralExpression(evidenceValue)) {
+          violations.push(`${location(node)} successor-recovery remainder must carry typed evidence`);
         } else {
-          const evidence = propertyAssignment(node.parent, 'evidence');
-          const via = propertyAssignment(node.parent, 'via');
-          if (via !== undefined) {
-            violations.push(`${location(via)} successor-recovery remainder must not use free-form via evidence`);
-          }
-          const evidenceValue = evidence === undefined ? undefined : unwrapExpression(evidence.initializer);
-          if (evidence === undefined || evidenceValue === undefined || !ts.isObjectLiteralExpression(evidenceValue)) {
-            violations.push(`${location(node)} successor-recovery remainder must carry typed evidence`);
-          } else {
-            const kind = propertyAssignment(evidenceValue, 'kind');
-            if (kind === undefined || !ts.isStringLiteral(unwrapExpression(kind.initializer))) {
-              violations.push(`${location(evidence)} successor-recovery evidence must carry a literal kind`);
-            }
+          const kind = propertyAssignment(evidenceValue, 'kind');
+          if (kind === undefined || !ts.isStringLiteral(unwrapExpression(kind.initializer))) {
+            violations.push(`${location(evidence)} successor-recovery evidence must carry a literal kind`);
           }
         }
       }
-      ts.forEachChild(node, visit);
     }
-    visit(file);
+    ts.forEachChild(node, visit);
   }
+  visit(file);
+
+  return violations;
+}
+
+function ownershipShapeViolations(): string[] {
+  const violations: string[] = sourceFiles(OWNERSHIP_SCAN_ROOT).flatMap(ownershipShapeFileViolations);
 
   const settlement = sourceFile(SHUTDOWN_SETTLEMENT_PATH);
   const remainder = settlement.statements.find(
@@ -278,7 +297,7 @@ function shutdownLabelProjectionViolations(): string[] {
       }
       if (ts.isTemplateExpression(initializer)) {
         const prefix = initializer.head.text;
-        if (prefix === 'stream response close ' || prefix === 'provider proxy lifecycle fatal incident') return;
+        if ((DYNAMIC_SHUTDOWN_LABEL_PREFIXES as readonly string[]).includes(prefix)) return;
         violations.push(`${location(site)} has an unrecognized dynamic shutdown obligation label`);
         return;
       }
@@ -359,6 +378,70 @@ function shutdownLabelProjectionViolations(): string[] {
   return violations;
 }
 
+/**
+ * Measures, rather than reads, that `operatorFacingShutdownObligation` decodes the exact labels each dynamic
+ * producer emits at occurrences that cross a leading-1 digit (10, 19, 100) as well as the un-crossed ones (1,
+ * 2, 9, 99) — the boundary `[2-9][0-9]*` got wrong. `stream response close` has no isolated producer function
+ * (`` `stream response close ${index + 1}` `` inline in shutdown.ts), so its one arithmetic step is reproduced
+ * here directly; the incident label is built through the real `shutdownIncidentUndischarged`.
+ */
+function dynamicShutdownLabelOrdinalViolations(): string[] {
+  const violations: string[] = [];
+  const boundaryOrdinals = [1, 2, 9, 10, 19, 99, 100];
+
+  for (const ordinal of boundaryOrdinals) {
+    const label = `stream response close ${ordinal}`;
+    const obligation = operatorFacingShutdownObligation(label);
+    if (obligation === null || obligation.label !== 'stream response close' || obligation.ordinal !== ordinal) {
+      violations.push(`shutdown obligation label '${label}' does not round-trip to ordinal ${ordinal}`);
+    }
+  }
+
+  for (const occurrence of boundaryOrdinals) {
+    const { label } = shutdownIncidentUndischarged({
+      incident: { kind: 'provider-proxy-lifecycle-fatal', error: new Error('fixture') },
+      occurrence,
+    });
+    const obligation = operatorFacingShutdownObligation(label);
+    if (
+      obligation === null ||
+      obligation.label !== 'provider proxy lifecycle fatal incident' ||
+      obligation.occurrence !== occurrence
+    ) {
+      violations.push(`shutdown obligation label '${label}' does not round-trip to occurrence ${occurrence}`);
+    }
+  }
+
+  return violations;
+}
+
+function classExtendsErrorLike(classNode: ts.ClassDeclaration): boolean {
+  const base = classNode.heritageClauses?.find((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword)?.types[0]
+    ?.expression;
+  return base !== undefined && ts.isIdentifier(base) && /Error$/u.test(base.text);
+}
+
+/** The class-field counterpart of a `this.name = 'X'` constructor assignment. */
+function classFieldErrorNames(file: ts.SourceFile): string[] {
+  const names: string[] = [];
+  function visit(node: ts.Node): void {
+    if (
+      ts.isPropertyDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === 'name' &&
+      node.initializer !== undefined &&
+      ts.isClassDeclaration(node.parent) &&
+      classExtendsErrorLike(node.parent)
+    ) {
+      const declaredName = unwrapExpression(node.initializer);
+      if (ts.isStringLiteral(declaredName)) names.push(declaredName.text);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(file);
+  return names;
+}
+
 function shutdownErrorProjectionViolations(): string[] {
   const status = sourceFile(BACKEND_STATUS_PATH);
   const projectedNames = new Set<string>();
@@ -388,6 +471,7 @@ function shutdownErrorProjectionViolations(): string[] {
 
   for (const file of sourceFiles(OWNERSHIP_SCAN_ROOT)) {
     if (file.fileName === BACKEND_STATUS_PATH) continue;
+    for (const name of classFieldErrorNames(file)) producedNames.add(name);
     function visit(node: ts.Node): void {
       if (
         ts.isBinaryExpression(node) &&
@@ -450,8 +534,46 @@ describe('shutdown remainder ownership inventory', () => {
     expect(ownershipShapeViolations()).toEqual([]);
   });
 
+  it('rejects an ownerless remainder mutation', () => {
+    const mutationPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      mutationPath,
+      `const competingObligation = {
+        label: 'competing obligation',
+        remainder: () => ({ evidence: { kind: 'startup-liveness-recovery' } }),
+      };`,
+    );
+    expect(ownershipShapeFileViolations(mutation)).toEqual([`${mutationPath}:3 remainder must declare an owner`]);
+  });
+
   it('maps every shutdown remainder label this build produces to a structured status identity', () => {
     expect(shutdownLabelProjectionViolations()).toEqual([]);
+  });
+
+  it('round-trips every dynamic shutdown obligation label at its leading-1-boundary occurrences', () => {
+    expect(dynamicShutdownLabelOrdinalViolations()).toEqual([]);
+  });
+
+  it('reads a class-field name declaration the same as a constructor assignment', () => {
+    const mutationPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      mutationPath,
+      `class FooError extends Error {
+        override readonly name = 'FooError';
+      }`,
+    );
+    expect(classFieldErrorNames(mutation)).toEqual(['FooError']);
+  });
+
+  it('ignores a same-named field on a class that does not extend Error', () => {
+    const mutationPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      mutationPath,
+      `class LocalOnnxProvider implements OnnxEmbeddingService {
+        readonly name = 'onnx';
+      }`,
+    );
+    expect(classFieldErrorNames(mutation)).toEqual([]);
   });
 
   it('maps every repository error name and handled system code to a structured status identity', () => {
