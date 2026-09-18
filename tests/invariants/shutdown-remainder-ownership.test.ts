@@ -34,6 +34,22 @@ const DERIVED_REMAINDER_OBLIGATIONS: Readonly<Record<string, string>> = {
 // that let `[2-9][0-9]*` reject every occurrence with a leading 1. Every prefix accepted below must carry a
 // matching case in `dynamicShutdownLabelOrdinalViolations`.
 const DYNAMIC_SHUTDOWN_LABEL_PREFIXES = ['stream response close ', 'provider proxy lifecycle fatal incident'] as const;
+// The AST-shape collector in `shutdownLabelProjectionViolations` finds a label only where the enclosing
+// object literal carries `remainder` (or the `prepare`/`commit`/`hold` triple) as its own property; a
+// producer that spreads that property in from elsewhere falls out of collection, and the vocabulary
+// check downstream is vacuously true over an empty set. Every label here must actually be found among
+// the collected producer labels, so LIFECYCLE_PATH cannot lose coverage by falling out of the shape match.
+const LIFECYCLE_SHUTDOWN_LABEL_INVENTORY = ['backend discovery withdrawal'] as const;
+// `shutdownErrorProjectionViolations` folds four independent AST shapes into `producedNames`/`handledCodes`:
+// a constructor `this.name = 'X'` assignment, a `new XError(...)` construction, an `instanceof XError` check,
+// and an error-code string literal. If a shape stops matching, both collected sets can still be non-empty
+// from the other shapes, so a bare emptiness check would not catch the loss. Each canary below is reachable
+// through exactly one shape among the files this build scans — `RangeError`/`AggregateError` are never
+// instanceof-checked or field-assigned, `SyntaxError` is excluded from the construction shape's own regex, and
+// `StoreResetIncidentReadError` is a project name no other shape produces — so a canary missing from its
+// collected set proves that one shape stopped matching, not that the codebase happened to stop using it.
+const SHUTDOWN_ERROR_PROJECTION_NAME_CANARIES = ['StoreResetIncidentReadError', 'RangeError', 'SyntaxError'] as const;
+const SHUTDOWN_ERROR_PROJECTION_CODE_CANARY = 'ENOENT';
 
 function parseSource(canonicalPath: string, source: string): ts.SourceFile {
   return ts.createSourceFile(canonicalPath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -372,6 +388,12 @@ function shutdownLabelProjectionViolations(): string[] {
   collectProducedLabels(sourceFile(SHUTDOWN_SETTLEMENT_PATH));
   collectProducedLabels(sourceFile(LIFECYCLE_PATH));
 
+  for (const label of LIFECYCLE_SHUTDOWN_LABEL_INVENTORY) {
+    if (!producerLabels.has(label)) {
+      violations.push(`${LIFECYCLE_PATH} must contribute shutdown obligation label '${label}'`);
+    }
+  }
+
   for (const label of producerLabels) {
     if (!statusLabels.has(label)) violations.push(`shutdown obligation '${label}' has no structured status identity`);
   }
@@ -521,6 +543,16 @@ function shutdownErrorProjectionViolations(): string[] {
     } else if (!(code in osConstants.errno)) {
       violations.push(`handled system error code '${code}' is absent from node:os.constants.errno`);
     }
+  }
+  for (const name of SHUTDOWN_ERROR_PROJECTION_NAME_CANARIES) {
+    if (!producedNames.has(name)) {
+      violations.push(`shutdown error projection lost its '${name}' produced-name collection canary`);
+    }
+  }
+  if (!handledCodes.has(SHUTDOWN_ERROR_PROJECTION_CODE_CANARY)) {
+    violations.push(
+      `shutdown error projection lost its '${SHUTDOWN_ERROR_PROJECTION_CODE_CANARY}' handled-code collection canary`,
+    );
   }
   return violations;
 }

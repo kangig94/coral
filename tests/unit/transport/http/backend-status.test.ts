@@ -141,16 +141,20 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
-  it.each(['EIO', 'EACCES'])('reports an undecodable record whose age cannot be measured after %s', async (code) => {
-    mockState.remainderFiles = [remainderFile('corrupt.json', NOW - 10_000, '{not-json', code)];
+  // A record here carries no evidence at all: content already failed to decode, and now age cannot be measured
+  // either. Unlike an unstattable-but-readable record (kept in `scan.records` and reported regardless of age),
+  // there is nothing left to preserve, so this must not become a permanent, unclearable status line — the read
+  // is retried fresh on every future call instead.
+  it.each(['EIO', 'EACCES'])(
+    'does not report a record with neither readable content nor provable age (%s)',
+    async (code) => {
+      mockState.remainderFiles = [remainderFile('corrupt.json', NOW - 10_000, '{not-json', code)];
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+      const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'no_record_no_socket',
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 1 },
-    });
-  });
+      await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+    },
+  );
 
   it('does not report a directory entry confirmed gone during the metadata race', async () => {
     mockState.remainderFiles = [remainderFile('vanished.json', NOW - 10_000, '{not-json', 'ENOENT')];
@@ -168,6 +172,29 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
       phase: 'startup_failed',
+    });
+  });
+
+  // The sequel a shutdown remainder exists for: instance A drains leaving obligations undischarged, instance B
+  // boots and fails before ever writing its own discovery record, so `observed.kind` is `no-record` and
+  // `coordinator` is `undefined` here — the one path where the remainder scope is directory-wide and a genuine
+  // predecessor's record (a different instance id than anything else in this fixture) is reachable at all.
+  it("attaches a predecessor instance's directory-scoped remainder to an unscoped startup diagnostic", async () => {
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
+    mockState.remainderFiles = [
+      remainderFile('predecessor-instance.json', NOW - 20_000, shutdownRemainder('predecessor-instance', NOW - 20_000)),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: 'predecessor-instance' },
+        skippedRecordCount: 0,
+      },
     });
   });
 
@@ -1007,6 +1034,34 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
+  // A diagnostic that supersedes the foreign-identity fallback is proof about this build's own departed
+  // instance, not about the foreign peer, so it must still carry that instance's own shutdown remainder —
+  // exactly like every other fallback member's `recent_failure` supersession.
+  it("attaches the departed instance's own remainder to a diagnostic that supersedes the foreign-identity fallback", async () => {
+    mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    mockState.diagnostic = startupDiagnostic(NOW - 10_000, 12345);
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 5_000, shutdownRemainder('test-instance', NOW - 5_000)),
+    ];
+    const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' } as Record<string, unknown>;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: 'test-instance' },
+        skippedRecordCount: 0,
+      },
+    });
+  });
+
   it('does not let an earlier coordinator remainder hide the foreign-identity evidence', async () => {
     mockState.observed = {
       kind: 'addressed',
@@ -1230,9 +1285,11 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     });
   });
 
-  // The sequel this branch exists for: a drain left obligations undischarged, and the very next boot at this
-  // address also failed. A reader of `recent_failure` must still learn what the previous instance left behind.
-  it('reports both a scoped startup diagnostic and the shutdown remainder it followed', async () => {
+  // Both the diagnostic and the remainder here name the exact same departed instance (`INSTANCE_ID`): this
+  // proves the coordinator-scoped lookup attaches a matching-instance remainder, not that a *predecessor*
+  // instance's remainder is reachable — the `coordinator !== undefined` scope requires an exact instance-id
+  // match, which a genuine predecessor could never satisfy. See the directory-scoped case below for that.
+  it('attaches the coordinator-scoped remainder of the exact instance a diagnostic explains', async () => {
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID);
     mockState.remainderFiles = [
       remainderFile(`${INSTANCE_ID}.json`, NOW - 20_000, shutdownRemainder(INSTANCE_ID, NOW - 20_000)),

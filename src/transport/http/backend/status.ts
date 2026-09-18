@@ -590,7 +590,12 @@ function readRecentShutdownRemainder(
     if (scope.kind === 'coordinator' && (scope.instanceId === undefined || name !== `${scope.instanceId}.json`)) {
       return false;
     }
-    if (age.kind === 'unknown') return true;
+    // Constraint: a `skippedRecords` entry already failed to decode (unlike `scan.records`, which is where an
+    // unstattable-but-*readable* record is kept and reported regardless of age). With age also unknown, no
+    // evidence survives at all — no content, no timestamp — so this is not the `unknown ⇒ absent` inversion
+    // design-philosophy.md principle 11 forbids: nothing is finalized, and the read is retried fresh on every
+    // call rather than latched to a permanently "recent" flag with no exit.
+    if (age.kind === 'unknown') return false;
     return (
       (scope.kind === 'directory' || age.mtimeMs >= scope.startedAt) &&
       age.mtimeMs <= now &&
@@ -676,25 +681,26 @@ function noDaemonStatus(
     coordinator?.startedAt,
     coordinator?.pid,
   );
+  const remainderScope: ShutdownRemainderEvidenceScope =
+    coordinator === undefined
+      ? { kind: 'directory' }
+      : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt };
+  // A startup diagnostic is proof about this build's own instance regardless of who now answers the recorded
+  // address, and it carries the same optional `shutdownRemainder` field as every other fallback member, so it
+  // always runs through the remainder lookup below rather than returning early.
+  if (diagnostic !== null) {
+    const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
+    return shutdownRemainder === null ? diagnostic : { ...diagnostic, shutdownRemainder };
+  }
   // `fallback`'s type carries only the `cause: 'foreign_peer'` member of `unreachable`, so this single
   // discriminant fully identifies it without a second `.cause` check. A foreign peer proves something else is
   // listening at the recorded address, so no remainder scoped to this build's own departed instance applies to
-  // it either way — a startup diagnostic still supersedes it, since that is proof about this build's own
-  // instance rather than about who now answers.
-  if (fallback.status === 'unreachable') return diagnostic ?? fallback;
-  const base = diagnostic ?? fallback;
-  const shutdownRemainder = readRecentShutdownRemainder(
-    storage,
-    runDir,
-    now,
-    coordinator === undefined
-      ? { kind: 'directory' }
-      : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt },
-  );
+  // it — it is the one member of `fallback`'s type with no `shutdownRemainder` field.
+  if (fallback.status === 'unreachable') return fallback;
+  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
   // The remainder is additional evidence about a departed instance's obligations, never a replacement for
-  // whichever status above already proved that instance's current absence or ambiguity — a reader needs both,
-  // whether that status is the fallback or a startup diagnostic that superseded it.
-  return shutdownRemainder === null ? base : { ...base, shutdownRemainder };
+  // whichever status above already proved that instance's current absence or ambiguity — a reader needs both.
+  return shutdownRemainder === null ? fallback : { ...fallback, shutdownRemainder };
 }
 
 /**

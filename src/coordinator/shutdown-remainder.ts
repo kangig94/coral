@@ -83,29 +83,21 @@ export function readShutdownRemainderStatus(runtime: ShutdownRemainderReadRuntim
 export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRuntime): void {
   const directory = shutdownRemainderPath(runtime.runDir);
   try {
-    const records: { name: string; age: { kind: 'known'; mtimeMs: number } | { kind: 'unknown' } }[] = [];
+    const known: { name: string; mtimeMs: number }[] = [];
     for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
       try {
-        records.push({
-          name,
-          age: { kind: 'known', mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs },
-        });
+        known.push({ name, mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs });
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
         // Constraint: a record this build cannot stat is not proven old, and unknown age must not authorize
-        // deletion (design-philosophy.md principle 11). It ranks as the newest record so the retention cap
-        // still reclaims it once genuinely newer records accumulate.
-        records.push({ name, age: { kind: 'unknown' } });
+        // deletion (design-philosophy.md principle 11). It is excluded from the retention count entirely —
+        // ranking it as newest still counts it against the cap, which evicts a genuinely newer known record in
+        // its place once enough unknowns accumulate.
+        continue;
       }
     }
-    records.sort((left, right) => {
-      if (left.age.kind === 'known' && right.age.kind === 'known') {
-        return right.age.mtimeMs - left.age.mtimeMs || right.name.localeCompare(left.name);
-      }
-      if (left.age.kind !== right.age.kind) return left.age.kind === 'unknown' ? -1 : 1;
-      return right.name.localeCompare(left.name);
-    });
-    for (const { name } of records.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+    known.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+    for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
       } catch {

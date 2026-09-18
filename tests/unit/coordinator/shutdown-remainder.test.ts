@@ -566,7 +566,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['readable.json', 'unstattable.json']);
   });
 
-  it('ranks a record it cannot stat as newest, so the retention cap prunes older known records first', () => {
+  it('excludes an unstattable record from the retention count, so it cannot displace a known record at the cap', () => {
     const storage = storageWith(
       [...Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 33)],
       { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
@@ -574,9 +574,23 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('unstattable.json');
+    expect(storage.fileNames()).toContain('instance-0.json');
+  });
+
+  it('prunes only the oldest known records once they exceed the cap, leaving an unstattable record untouched', () => {
+    const storage = storageWith(
+      [...Array.from({ length: 33 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 34)],
+      { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
+    );
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain('unstattable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
+    expect(storage.fileNames()).toContain('instance-32.json');
   });
 
   it('does not turn a best-effort startup prune refusal into an error', () => {

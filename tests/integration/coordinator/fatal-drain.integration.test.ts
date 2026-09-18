@@ -8,11 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { readShutdownRemainderStatus, shutdownRemainderPath } from '#src/coordinator/shutdown-remainder.js';
+import { shutdownRemainderPath } from '#src/coordinator/shutdown-remainder.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
-import { createRealRuntime } from '#src/runtime/real.js';
+import { getBackendStatusFull } from '#src/transport/http/backend/status.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,
@@ -49,6 +49,26 @@ function topLevelEnvironment(home: string): NodeJS.ProcessEnv {
   delete environment.CORAL_CLI_HANDOFF_DELEGATED;
   delete environment.CORAL_BACKEND_DISABLE_AUTOSTART;
   return environment;
+}
+
+/**
+ * `getBackendStatusFull` resolves paths through `createRealRuntime`, which reads `HOME`/`TMPDIR` at call time
+ * (not at import time), so this test process's own env can be swapped in and restored around one call — the
+ * same pattern `main-routing.test.ts` uses to point a production entry point at an isolated fixture home.
+ */
+async function withHomeOverride<T>(home: string, fn: () => Promise<T>): Promise<T> {
+  const originalHome = process.env.HOME;
+  const originalTmpdir = process.env.TMPDIR;
+  process.env.HOME = home;
+  process.env.TMPDIR = home;
+  try {
+    return await fn();
+  } finally {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalTmpdir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpdir;
+  }
 }
 
 async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
@@ -211,12 +231,10 @@ describe('coordinator fatal drain integration', () => {
     expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
     expect(await waitForCoordinatorSocketRelease(files.socketPath, 5_000)).toBe('unlinked');
 
-    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
-    const remainder = readShutdownRemainderStatus({ storage: runtime.storage, runDir: files.runDir });
-    expect(existsSync(join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`))).toBe(true);
-    expect(remainder.kind).toBe('available');
-    if (remainder.kind !== 'available') throw new Error(`Expected a shutdown remainder, got ${remainder.kind}`);
-    expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
+    const remainderRecordPath = join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`);
+    expect(existsSync(remainderRecordPath)).toBe(true);
+    const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
+    expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
       mode: 'handoff',
       entries: [
@@ -231,6 +249,28 @@ describe('coordinator fatal drain integration', () => {
           },
         },
       ],
+    });
+
+    // Reads through the same recency- and instance-scoped production path a reader of `backend status` sees,
+    // not just the raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets.
+    const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
+    expect(status).toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: {
+          instanceId: initial.instanceId,
+          reason: 'provider-proxy-lifecycle-fatal',
+          mode: 'handoff',
+          entries: [
+            {
+              obligation: { label: 'provider proxy lifecycle fatal incident' },
+              remainder: { owner: 'process-exit' },
+              settlement: { cause: 'rejected' },
+            },
+          ],
+        },
+      },
     });
 
     const command = await runMutatingCommand(fixture, home);
@@ -286,11 +326,9 @@ describe('coordinator fatal drain integration', () => {
     expect(actions).not.toContain('child-termination');
     expect(actions).not.toContain('job-terminalization');
 
-    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
-    const remainder = readShutdownRemainderStatus({ storage: runtime.storage, runDir: files.runDir });
-    expect(remainder.kind).toBe('available');
-    if (remainder.kind !== 'available') throw new Error(`Expected a shutdown remainder, got ${remainder.kind}`);
-    expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
+    const remainderRecordPath = join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`);
+    const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
+    expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
       mode: 'handoff',
       entries: expect.arrayContaining([
@@ -311,6 +349,34 @@ describe('coordinator fatal drain integration', () => {
           },
         }),
       ]),
+    });
+
+    // Reads through the same recency- and instance-scoped production path a reader of `backend status` sees,
+    // not just the raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets.
+    const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
+    expect(status).toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: {
+          instanceId: initial.instanceId,
+          reason: 'provider-proxy-lifecycle-fatal',
+          mode: 'handoff',
+          entries: expect.arrayContaining([
+            expect.objectContaining({
+              obligation: expect.objectContaining({ label: 'provider host shutdown' }),
+              settlement: expect.objectContaining({
+                cause: 'aborted',
+                error: expect.objectContaining({ name: 'AbortError' }),
+              }),
+            }),
+            expect.objectContaining({
+              obligation: expect.objectContaining({ label: 'provider proxy lifecycle fatal incident' }),
+              settlement: expect.objectContaining({ cause: 'rejected' }),
+            }),
+          ]),
+        },
+      },
     });
   });
 
@@ -352,11 +418,9 @@ describe('coordinator fatal drain integration', () => {
     expect(actions).toContain('provider-host-hard-shutdown-started');
     expect(actions).toContain('provider-host-hard-shutdown-budget-expired');
 
-    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
-    const remainder = readShutdownRemainderStatus({ storage: runtime.storage, runDir: files.runDir });
-    expect(remainder.kind).toBe('available');
-    if (remainder.kind !== 'available') throw new Error(`Expected a shutdown remainder, got ${remainder.kind}`);
-    expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
+    const remainderRecordPath = join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`);
+    const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
+    expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
       mode: 'handoff',
       entries: expect.arrayContaining([
@@ -377,6 +441,29 @@ describe('coordinator fatal drain integration', () => {
           },
         }),
       ]),
+    });
+
+    // Reads through the same recency- and instance-scoped production path a reader of `backend status` sees,
+    // not just the raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets.
+    // `AfterBudgetFatalError`/`FATAL_AFTER_BUDGET` are fixture-only, not on the operator-facing allowlist, so
+    // only `cause` survives that projection — the raw-bytes assertion above is what proves the rest.
+    const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
+    expect(status).toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: {
+          instanceId: initial.instanceId,
+          reason: 'provider-proxy-lifecycle-fatal',
+          mode: 'handoff',
+          entries: expect.arrayContaining([
+            expect.objectContaining({
+              obligation: expect.objectContaining({ label: 'provider proxy lifecycle fatal incident' }),
+              settlement: expect.objectContaining({ cause: 'rejected' }),
+            }),
+          ]),
+        },
+      },
     });
   });
 });
