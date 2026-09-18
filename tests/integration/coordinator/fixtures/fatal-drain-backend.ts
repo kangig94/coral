@@ -13,7 +13,6 @@ const coordinator = createCoordinatorServer({
   captureProviderProxyLifecycleFatal: (handler) => {
     triggerFatal = handler;
   },
-  disposeLifecycleReactor: () => new Promise<void>(() => {}),
   handoffDrainBudgetMs: 150,
   onStopped: (exitCode) => exitGate.requestExit(exitCode),
   acceptProcessExitRemainder: (remainder) => ({

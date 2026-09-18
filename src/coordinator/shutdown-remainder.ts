@@ -11,7 +11,10 @@ const SHUTDOWN_REMAINDER_VERSION = 1;
 const MAX_SHUTDOWN_REMAINDER_RECORDS = 32;
 
 type ShutdownRemainderRuntime = Readonly<{
-  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'writeAtomicDurableSync'>;
+  storage: Pick<
+    StoragePort,
+    'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync' | 'writeAtomicDurableSync'
+  >;
   time: Pick<TimePort, 'now'>;
   runDir: string;
 }>;
@@ -66,13 +69,6 @@ const shutdownRemainderRecordEnvelopeSchema = z
     entries: z.array(z.unknown()).readonly(),
   })
   .passthrough();
-const shutdownRemainderRecordInstanceSchema = z.object({ instanceId: z.string() }).passthrough();
-const shutdownRemainderStatusEnvelopeSchema = z
-  .object({
-    version: z.literal(SHUTDOWN_REMAINDER_VERSION),
-    records: z.array(z.unknown()).readonly(),
-  })
-  .passthrough();
 
 export type ShutdownRemainderRecord = Readonly<{
   instanceId: string;
@@ -105,59 +101,44 @@ export type ShutdownRemainderRecordInput = Readonly<{
   undischarged: readonly ShutdownUndischarged[];
 }>;
 
-type ReadableShutdownRemainderDocument = Readonly<{
-  document: z.infer<typeof shutdownRemainderStatusEnvelopeSchema>;
-  status: ShutdownRemainderStatus;
+type ReadableShutdownRemainderRecord = Readonly<{
+  record: ShutdownRemainderRecord;
   skippedEntries: number;
-  skippedRecords: number;
 }>;
 
-function decodeShutdownRemainderDocument(
+function decodeShutdownRemainderRecord(
   value: unknown,
 ):
-  | Readonly<{ kind: 'readable'; value: ReadableShutdownRemainderDocument }>
+  | Readonly<{ kind: 'readable'; value: ReadableShutdownRemainderRecord }>
   | Readonly<{ kind: 'unreadable'; detail: string }> {
-  const envelope = shutdownRemainderStatusEnvelopeSchema.safeParse(value);
-  if (!envelope.success) return { kind: 'unreadable', detail: envelope.error.message };
+  const parsedRecord = shutdownRemainderRecordEnvelopeSchema.safeParse(value);
+  if (!parsedRecord.success) return { kind: 'unreadable', detail: parsedRecord.error.message };
 
-  const records: ShutdownRemainderRecord[] = [];
+  const entries: ShutdownUndischarged[] = [];
   let skippedEntries = 0;
-  let skippedRecords = 0;
-  for (const rawRecord of envelope.data.records) {
-    const parsedRecord = shutdownRemainderRecordEnvelopeSchema.safeParse(rawRecord);
-    if (!parsedRecord.success) {
-      skippedRecords += 1;
-      continue;
-    }
-
-    const entries: ShutdownUndischarged[] = [];
-    for (const rawEntry of parsedRecord.data.entries) {
-      const parsedEntry = shutdownRemainderEntrySchema.safeParse(rawEntry);
-      if (parsedEntry.success) entries.push(parsedEntry.data);
-      else skippedEntries += 1;
-    }
-    records.push({
-      instanceId: parsedRecord.data.instanceId,
-      recordedAt: parsedRecord.data.recordedAt,
-      reason: parsedRecord.data.reason,
-      mode: parsedRecord.data.mode,
-      entries,
-    });
+  for (const rawEntry of parsedRecord.data.entries) {
+    const parsedEntry = shutdownRemainderEntrySchema.safeParse(rawEntry);
+    if (parsedEntry.success) entries.push(parsedEntry.data);
+    else skippedEntries += 1;
   }
 
   return {
     kind: 'readable',
     value: {
-      document: envelope.data,
-      status: { version: SHUTDOWN_REMAINDER_VERSION, records },
+      record: {
+        instanceId: parsedRecord.data.instanceId,
+        recordedAt: parsedRecord.data.recordedAt,
+        reason: parsedRecord.data.reason,
+        mode: parsedRecord.data.mode,
+        entries,
+      },
       skippedEntries,
-      skippedRecords,
     },
   };
 }
 
 export function shutdownRemainderPath(runDir: string): string {
-  return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_VERSION}.json`);
+  return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_VERSION}`);
 }
 
 export function readShutdownRemainderStatus(
@@ -166,16 +147,44 @@ export function readShutdownRemainderStatus(
   const path = shutdownRemainderPath(runtime.runDir);
   if (!runtime.storage.existsSync(path)) return { kind: 'absent', path };
   try {
-    const decoded = decodeShutdownRemainderDocument(JSON.parse(runtime.storage.readFileSync(path, 'utf-8')));
-    return decoded.kind === 'readable'
-      ? {
-          kind: 'available',
-          path,
-          status: decoded.value.status,
-          skippedEntries: decoded.value.skippedEntries,
-          skippedRecords: decoded.value.skippedRecords,
+    const records: ShutdownRemainderRecord[] = [];
+    let skippedEntries = 0;
+    let skippedRecords = 0;
+    const recordFiles = runtime.storage
+      .readdirSync(path)
+      .filter((name) => name.endsWith('.json'))
+      .map((name) => {
+        try {
+          return { name, mtimeMs: runtime.storage.statSync(join(path, name)).mtimeMs };
+        } catch {
+          return { name, mtimeMs: Number.NEGATIVE_INFINITY };
         }
-      : { kind: 'unreadable', path, detail: decoded.detail };
+      })
+      .sort((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name));
+
+    for (const { name } of recordFiles) {
+      try {
+        const decoded = decodeShutdownRemainderRecord(
+          JSON.parse(runtime.storage.readFileSync(join(path, name), 'utf-8')),
+        );
+        if (decoded.kind === 'unreadable') {
+          skippedRecords += 1;
+          continue;
+        }
+        records.push(decoded.value.record);
+        skippedEntries += decoded.value.skippedEntries;
+      } catch {
+        skippedRecords += 1;
+      }
+    }
+
+    return {
+      kind: 'available',
+      path,
+      status: { version: SHUTDOWN_REMAINDER_VERSION, records },
+      skippedEntries,
+      skippedRecords,
+    };
   } catch (error: unknown) {
     return {
       kind: 'unreadable',
@@ -185,31 +194,37 @@ export function readShutdownRemainderStatus(
   }
 }
 
-function namesInstance(record: unknown, instanceId: string): boolean {
-  const probe = shutdownRemainderRecordInstanceSchema.safeParse(record);
-  return probe.success && probe.data.instanceId === instanceId;
+function pruneShutdownRemainderRecords(runtime: ShutdownRemainderRuntime, directory: string): void {
+  try {
+    const records = runtime.storage
+      .readdirSync(directory)
+      .filter((name) => name.endsWith('.json'))
+      .flatMap((name) => {
+        try {
+          return [{ name, mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs }];
+        } catch {
+          return [];
+        }
+      })
+      .sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+    for (const { name } of records.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+      try {
+        runtime.storage.unlinkSync(join(directory, name));
+      } catch {
+        /* pruning cannot hold process exit */
+      }
+    }
+  } catch {
+    /* pruning cannot hold process exit */
+  }
 }
 
-/** A record this build cannot decode is carried forward verbatim; only an unreadable envelope refuses the write. */
 export function recordShutdownRemainder(
   runtime: ShutdownRemainderRuntime,
   input: ShutdownRemainderRecordInput,
 ): boolean {
-  const path = shutdownRemainderPath(runtime.runDir);
-  let document: ReadableShutdownRemainderDocument['document'] = {
-    version: SHUTDOWN_REMAINDER_VERSION,
-    records: [],
-  };
-  if (runtime.storage.existsSync(path)) {
-    try {
-      const decoded = decodeShutdownRemainderDocument(JSON.parse(runtime.storage.readFileSync(path, 'utf-8')));
-      if (decoded.kind === 'unreadable') return false;
-      document = decoded.value.document;
-    } catch {
-      return false;
-    }
-  }
-
+  const directory = shutdownRemainderPath(runtime.runDir);
+  const path = join(directory, `${input.instanceId}.json`);
   const record: ShutdownRemainderRecord = {
     instanceId: input.instanceId,
     recordedAt: nowIsoString(runtime.time),
@@ -217,15 +232,10 @@ export function recordShutdownRemainder(
     mode: input.mode,
     entries: input.undischarged,
   };
-  const records = [...document.records.filter((existing) => !namesInstance(existing, input.instanceId)), record].slice(
-    -MAX_SHUTDOWN_REMAINDER_RECORDS,
-  );
-  return runtime.storage.writeAtomicDurableSync(
-    path,
-    `${JSON.stringify({ ...document, version: SHUTDOWN_REMAINDER_VERSION, records }, null, 2)}\n`,
-    {
-      encoding: 'utf-8',
-      mode: 0o600,
-    },
-  );
+  const written = runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record, null, 2)}\n`, {
+    encoding: 'utf-8',
+    mode: 0o600,
+  });
+  if (written) pruneShutdownRemainderRecords(runtime, directory);
+  return written;
 }

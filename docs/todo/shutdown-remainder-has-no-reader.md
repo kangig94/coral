@@ -5,8 +5,9 @@ writer. The record exists so that what a shutdown left is visible; half of "visi
 
 ## What exists
 
-`recordShutdownRemainder` (`src/coordinator/shutdown-remainder.ts`) writes `shutdown-remainder.v1.json`
-into the run directory whenever a shutdown finalizes with losses: one entry per undischarged obligation,
+`recordShutdownRemainder` (`src/coordinator/shutdown-remainder.ts`) writes
+`shutdown-remainder.v1/<instanceId>.json` into the run directory whenever a shutdown finalizes with losses:
+one entry per undischarged obligation,
 keyed by the ledger's `label`, carrying `{ remainder, settlement: { cause, detail } }`, under a record that
 carries `instanceId`, `recordedAt`, `reason`, and `mode`. `readShutdownRemainderStatus` in the
 same module decodes it tolerantly — per record and per entry, skips counted — and **has no production
@@ -16,8 +17,9 @@ caller**. Its only readers are tests. The older abandonment family beside it doe
 
 ## What is wrong
 
-[`design-philosophy`](../../.claude/rules/design-philosophy.md) §11: a refusal is visible as durable status
-an operator can read, not only as a log line. The record is durable; nothing reads it. After a coordinator
+[`design-philosophy`](../../.claude/rules/design-philosophy.md) §§11–12 require a refusal to be visible on a
+surface its real reader can reach, not merely durable on disk. An artifact nothing renders cannot be acted on;
+the shutdown remainder is worth keeping only once a CLI or status surface renders it. After a coordinator
 exits `1` the LLM driving the next session — the only reader Coral has, per §12 — runs `backend status` and
 sees a fresh coordinator with no history. What the previous one left, and whether the successor adopted it
 or the loss was named as `process-exit`, is answerable only by opening a JSON file nobody is told exists.

@@ -2,13 +2,11 @@ import { formatError } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
 import {
   SettlementLedger,
-  type DeclinedSettlementObligation,
   type Settlement,
   type SettlementAuthorityReleaseBoundary,
   type SettlementDisposition,
   type SettlementObligation,
 } from '../obligation/settlement.js';
-import type { ShutdownObligationSubject } from '../obligation/shutdown-abandonment.js';
 import type { DurableCliRuntimePublicationEvidence } from './live/durable-transport.js';
 
 export type SuccessorRecoveryEvidence =
@@ -16,40 +14,25 @@ export type SuccessorRecoveryEvidence =
   | Readonly<{ kind: 'startup-store-recovery' }>
   | Readonly<{ kind: 'startup-liveness-recovery' }>;
 
+export type DurableWrapperFinalizerEvidence = Readonly<{
+  kind: 'durable-wrapper-finalizer-containment';
+  processes: readonly DurableCliRuntimePublicationEvidence[];
+  successorTransfer: Readonly<{ kind: 'startup-adoption'; status: 'pending-verification' }>;
+}>;
+
 export type UndischargedRemainder =
   | Readonly<{ owner: 'process-exit' }>
+  | Readonly<{ owner: 'durable-wrapper-finalizer'; evidence: DurableWrapperFinalizerEvidence }>
   | Readonly<{ owner: 'successor-recovery'; evidence: SuccessorRecoveryEvidence }>;
 
 export type ShutdownHoldReason = 'required-shutdown-step-unsettled';
 
 export type ShutdownHoldExit = 'shutdown-budget-exhaustion' | 'authority-release-settlement';
 
-export type ShutdownOperatorAction =
-  | Readonly<{
-      kind: 'retained-job-containment';
-      jobId: string;
-      provider: string;
-      jobDir: string;
-      actionCommand: string;
-    }>
-  | Readonly<{
-      kind: 'provider-proxy-set-containment';
-      proxyInstanceId: string;
-      inspectCommand: 'coral-cli backend status';
-      actionCommand: 'coral-cli backend provider-proxy-set abandon <set-token>';
-    }>
-  | Readonly<{
-      kind: 'shutdown-obligation-abandonment';
-      subject: ShutdownObligationSubject;
-      inspectCommand: 'coral-cli backend shutdown-recovery status';
-      actionCommand: `coral-cli backend shutdown-recovery abandon ${ShutdownObligationSubject}`;
-    }>;
-
 export type ShutdownRetainedAuthority = Readonly<{
   ipcSocket: boolean;
   providerControlProxyInstanceIds: readonly string[];
   cleanupObligations: readonly string[];
-  operatorActions: readonly ShutdownOperatorAction[];
 }>;
 
 export type ShutdownUndischarged = Readonly<{
@@ -121,7 +104,6 @@ function foldRetainedAuthority(
       contributions.flatMap(({ providerControlProxyInstanceIds }) => providerControlProxyInstanceIds ?? []),
     ),
     cleanupObligations: unique(contributions.flatMap(({ cleanupObligations }) => cleanupObligations ?? [])),
-    operatorActions: [],
   };
 }
 
@@ -138,13 +120,10 @@ function declinedFailure(
 }
 
 function acceptProcessExitRemainder(
-  declined: readonly DeclinedSettlementObligation<UndischargedRemainder, ShutdownRetainedAuthorityContribution>[],
+  undischarged: readonly ShutdownUndischarged[],
   accept: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance,
   log: (message: string) => void,
 ): AcceptedProcessExitRemainder | null {
-  const undischarged = declined.map(({ obligation, settlement }) =>
-    declinedFailure(obligation.label, obligation.remainder(), settlement),
-  );
   const remainder: ProcessExitRemainder = { undischarged };
   try {
     const acceptance = accept(remainder);
@@ -179,7 +158,7 @@ export function createShutdownSettlementLedger(options: ShutdownSettlementLedger
     ...(accept === undefined
       ? {}
       : {
-          acceptDelegatedRemainder: (declined) => acceptProcessExitRemainder(declined, accept, options.log),
+          acceptDelegatedRemainder: (undischarged) => acceptProcessExitRemainder(undischarged, accept, options.log),
         }),
     acceptedUndischarged: (acceptance) => acceptance.remainder.undischarged,
     acceptanceFailureLabel: 'process-exit-remainder-acceptance',

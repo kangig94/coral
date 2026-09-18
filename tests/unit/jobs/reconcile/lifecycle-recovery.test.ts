@@ -983,7 +983,7 @@ async function stopLifecycleController(
   if (disposition.disposition === 'held') {
     const { automaticRetry, retainedOwnership } = disposition.recovery;
     throw new Error(
-      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}; operatorActions=${JSON.stringify(retainedOwnership.operatorActions)}`,
+      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}`,
     );
   }
   return disposition;

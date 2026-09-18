@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { readShutdownRemainderStatus } from '#src/coordinator/shutdown-remainder.js';
+import { readShutdownRemainderStatus, shutdownRemainderPath } from '#src/coordinator/shutdown-remainder.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
@@ -159,7 +159,7 @@ afterEach(async () => {
 });
 
 describe('coordinator fatal drain integration', () => {
-  it('exits without an operator and leaves the socket available to a fresh coordinator', async () => {
+  it('records a clean-drain fatal, exits nonzero, and leaves the socket available to a fresh coordinator', async () => {
     if (!buildArtifactsAvailable()) {
       throw new Error('Expected clients/build artifacts to exist before running integration tests');
     }
@@ -212,6 +212,7 @@ describe('coordinator fatal drain integration', () => {
 
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const remainder = readShutdownRemainderStatus({ storage: runtime.storage, runDir: files.runDir });
+    expect(existsSync(join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`))).toBe(true);
     expect(remainder.kind).toBe('available');
     if (remainder.kind !== 'available') throw new Error(`Expected a shutdown remainder, got ${remainder.kind}`);
     expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
@@ -219,8 +220,12 @@ describe('coordinator fatal drain integration', () => {
       mode: 'handoff',
       entries: [
         {
-          label: 'lifecycle reactor dispose',
+          label: 'provider proxy lifecycle fatal incident',
           remainder: { owner: 'process-exit' },
+          settlement: {
+            cause: 'rejected',
+            detail: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
+          },
         },
       ],
     });

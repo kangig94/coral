@@ -28,9 +28,9 @@ vi.mock('node:fs', async (importOriginal) => {
         publicationRace.armed &&
         publicationRace.baseDir !== null &&
         publicationRace.fixturePath !== null &&
-        basename(source).startsWith('.epoch-holder-') &&
-        source.endsWith('.json.tmp') &&
-        destination === source.slice(0, -'.tmp'.length)
+        basename(destination).startsWith('.epoch-holder-') &&
+        destination.endsWith('.json') &&
+        source.startsWith(destination)
       ) {
         publicationRace.armed = false;
         publicationRace.lostHolderPath = destination;

@@ -15,9 +15,11 @@ judgement void — `retireFatal` (`src/coordinator/services/provider-proxy-recov
 coordinator will find it. The next CLI command spawns a successor, which reads the same capsule, asks the same
 guardian, and gets the same answer.
 
-Each iteration costs one CLI invocation an exit-`75` refusal and a fresh coordinator spawn, and writes one
-`shutdown-remainder.v1.json` record with reason `provider-proxy-lifecycle-fatal`, so the recurrence is at
-least visible in the run directory.
+Each iteration costs one CLI invocation an exit-`75` refusal and a fresh coordinator spawn. The originating
+fatal is itself a terminal shutdown incident, independent of cleanup losses, so even a completely clean drain
+exits nonzero and writes a `shutdown-remainder.v1.json` record with reason
+`provider-proxy-lifecycle-fatal`. The recurrence is therefore visible in the run directory without relying on
+an unrelated cleanup failure.
 
 ## What bounds it
 

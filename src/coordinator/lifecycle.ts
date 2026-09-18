@@ -41,6 +41,7 @@ import {
   type LifecycleWiringState,
   type SettlePendingLaunchesFn,
   type ShutdownMode,
+  type ShutdownIncident,
   type ShutdownReason,
   type TerminateRegisteredChildrenFn,
   HANDOFF_DRAIN_TIMEOUT_MS,
@@ -50,7 +51,6 @@ import type {
   ProcessExitRemainderAcceptance,
   ShutdownHoldExit,
   ShutdownHoldReason,
-  ShutdownOperatorAction,
   ShutdownSequenceDisposition,
   ShutdownUndischarged,
 } from './shutdown-settlement.js';
@@ -114,12 +114,10 @@ import {
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
-import { recordShutdownObligationAbandonment } from './shutdown-abandonment.js';
 import { recordShutdownRemainder } from './shutdown-remainder.js';
 import type {
   ShutdownObligationAbandonRequest,
   ShutdownObligationAbandonResult,
-  ShutdownObligationSubject,
 } from '../obligation/shutdown-abandonment.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
 import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
@@ -831,7 +829,7 @@ export type LifecycleDeps = {
 
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
-  shutdown(reason: ShutdownReason): Promise<LifecycleShutdownDisposition>;
+  shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition>;
   abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult;
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
@@ -855,7 +853,6 @@ type LifecycleShutdownRecovery = Readonly<{
     ipcSocket: boolean;
     providerControlProxyInstanceIds: readonly string[];
     cleanupObligations: readonly string[];
-    operatorActions: readonly ShutdownOperatorAction[];
   }>;
   retry(): Promise<LifecycleShutdownDisposition>;
 }>;
@@ -866,14 +863,6 @@ export type LifecycleShutdownDisposition =
   | Readonly<{
       disposition: 'held';
       reason: LifecycleShutdownHoldReason;
-      recovery: LifecycleShutdownRecovery;
-    }>
-  | Readonly<{
-      disposition: 'transfer-pending';
-      reason: LifecycleShutdownHoldReason;
-      undischarged: readonly ShutdownUndischarged[];
-      acceptance: Extract<ProcessExitRemainderAcceptance, { kind: 'accepted' }>;
-      boundaryFailure: ShutdownUndischarged;
       recovery: LifecycleShutdownRecovery;
     }>;
 
@@ -896,7 +885,6 @@ type LifecycleControlState = LifecycleWiringState & {
   shutdownRetryAfter: Promise<void> | null;
   shutdownRetry: Readonly<{ reason: ShutdownReason; retry: () => Promise<ShutdownSequenceDisposition> }> | null;
   lastShutdownDisposition: LifecycleShutdownDisposition | null;
-  operatorAbandonedShutdownObligations: Set<ShutdownObligationSubject>;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
   providerOperationMutationAdmission: ProviderOperationMutationAdmission | null;
@@ -1376,7 +1364,6 @@ export function createLifecycle(
     shutdownRetryAfter: null,
     shutdownRetry: null,
     lastShutdownDisposition: null,
-    operatorAbandonedShutdownObligations: new Set(),
     started: false,
     ownershipCheckerTeardown: null,
     recoveryCoordinator: null,
@@ -1402,7 +1389,7 @@ export function createLifecycle(
     return { projectRoot, pluginRoot, coralEnv: {}, principal };
   }
 
-  async function shutdown(reason: ShutdownReason): Promise<LifecycleShutdownDisposition> {
+  async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
     if (state.shutdownPromise) return state.shutdownPromise;
     const ledgerReason = state.shutdownRetry?.reason ?? reason;
     state.shutdownAttemptsStarted += 1;
@@ -1470,7 +1457,7 @@ export function createLifecycle(
       }
     };
     const acceptShutdownDisposition = (disposition: ShutdownSequenceDisposition): LifecycleShutdownDisposition => {
-      if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
+      if (disposition.disposition === 'held') {
         state.shutdownRetryAfter = disposition.retryAfter;
         state.shutdownRetry = { reason: ledgerReason, retry: disposition.retry };
         const recovery: LifecycleShutdownRecovery = {
@@ -1491,20 +1478,10 @@ export function createLifecycle(
             ipcSocket: disposition.retainedAuthority.ipcSocket,
             providerControlProxyInstanceIds: disposition.retainedAuthority.providerControlProxyInstanceIds,
             cleanupObligations: disposition.retainedAuthority.cleanupObligations,
-            operatorActions: disposition.retainedAuthority.operatorActions,
           },
           retry: () => shutdown(ledgerReason),
         };
-        return disposition.disposition === 'held'
-          ? { disposition: 'held', reason: disposition.reason, recovery }
-          : {
-              disposition: 'transfer-pending',
-              reason: disposition.reason,
-              undischarged: disposition.undischarged,
-              acceptance: disposition.acceptance,
-              boundaryFailure: disposition.boundaryFailure,
-              recovery,
-            };
+        return { disposition: 'held', reason: disposition.reason, recovery };
       }
       state.shutdownRetryAfter = null;
       state.shutdownRetry = null;
@@ -1540,6 +1517,7 @@ export function createLifecycle(
       return acceptShutdownDisposition(
         await runShutdownSequence({
           reason: ledgerReason,
+          ...(incident === undefined ? {} : { incident }),
           state,
           teardownRecoveryCoordinator: async () => {
             await state.recoveryCoordinator?.teardown();
@@ -1568,7 +1546,6 @@ export function createLifecycle(
           discussStores,
           stopStoreEpochSweepFn: deps.stopStoreEpochSweepFn,
           log,
-          isShutdownObligationAbandoned: (subject) => state.operatorAbandonedShutdownObligations.has(subject),
           ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
         }),
       );
@@ -1655,39 +1632,12 @@ export function createLifecycle(
       });
   }
 
-  function abandonmentDetail(subject: ShutdownObligationSubject): string {
-    return subject === 'app-server-handoff-quiesce'
-      ? 'App-server write completion was not observed; the write may or may not have landed.'
-      : `${subject} completion was not observed; the obligation may still be active.`;
-  }
-
   function abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult {
     const disposition = state.lastShutdownDisposition;
     if (disposition === null || isLifecycleShutdownTerminal(disposition)) {
       return { kind: 'not-held', subject: request.subject };
     }
-    const offered = disposition.recovery.retainedOwnership.operatorActions.some(
-      (action) => action.kind === 'shutdown-obligation-abandonment' && action.subject === request.subject,
-    );
-    if (!offered) return { kind: 'not-offered', subject: request.subject };
-
-    const recorded = recordShutdownObligationAbandonment(
-      {
-        storage: runtime.storage,
-        time: runtime.time,
-        runDir: runtime.paths.coral.coordinator.runDir,
-      },
-      {
-        subject: request.subject,
-        instanceId,
-        detail: abandonmentDetail(request.subject),
-      },
-    );
-    if (recorded.kind === 'refused') {
-      return { kind: 'status-write-refused', subject: request.subject, detail: recorded.detail };
-    }
-    state.operatorAbandonedShutdownObligations.add(request.subject);
-    return { kind: 'accepted', receipt: recorded.receipt };
+    return { kind: 'not-offered', subject: request.subject };
   }
 
   return {

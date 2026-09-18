@@ -1797,7 +1797,7 @@ describe('write-once store epochs', () => {
     expect(existsSync(temporaryHolder)).toBe(false);
   });
 
-  it('keeps a live holder temporary file until the holder is gone', async () => {
+  it('reclaims a holder temporary file without consulting the live holder', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     const settled = settleStoreEpoch(runtime, options());
@@ -1807,11 +1807,10 @@ describe('write-once store epochs', () => {
     writeFileSync(temporaryHolder, '{"epoch":"1"}');
 
     expect(await sweepStoreEpochsPostReady(runtime, settled.store)).toBe('complete');
-    expect(existsSync(temporaryHolder)).toBe(true);
+    expect(existsSync(temporaryHolder)).toBe(false);
+    expect(existsSync(join(dbDir, holder))).toBe(true);
 
     settled.db.close();
-    expect(await sweepStoreEpochsPostReady(runtime, settled.store)).toBe('complete');
-    expect(existsSync(temporaryHolder)).toBe(false);
   });
 
   it('reclaims construction locks left by process death before the first rename', async () => {

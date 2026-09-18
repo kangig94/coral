@@ -874,7 +874,9 @@ export function createCoordinatorCore(
   let lifecycleController: LifecycleController | null = null;
   const onProviderProxyLifecycleFatal = (error: unknown): void => {
     world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
-    void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
+    void lifecycleController
+      ?.shutdown('provider-proxy-lifecycle-fatal', { kind: 'provider-proxy-lifecycle-fatal', error })
+      .catch(() => undefined);
   };
   options.captureProviderProxyLifecycleFatal?.(onProviderProxyLifecycleFatal);
   const services = createExecutionServices({
