@@ -38,6 +38,8 @@ function storageWith(
     refusePrune?: boolean;
     refuseStatFor?: string;
     statErrorCode?: string;
+    refuseReadFor?: string;
+    readErrorCode?: string;
   }> = {},
 ): RemainderStorage {
   const files = new Map(
@@ -53,6 +55,9 @@ function storageWith(
       return [...files.keys()].filter((file) => dirname(file) === path).map((file) => basename(file));
     }) as unknown as StoragePort['readdirSync'],
     readFileSync: vi.fn((path: string) => {
+      if (basename(path) === options.refuseReadFor) {
+        throw Object.assign(new Error('read refused'), { code: options.readErrorCode ?? 'EIO' });
+      }
       const file = files.get(path);
       if (file === undefined) throw new Error('missing file');
       return file.value;
@@ -435,6 +440,19 @@ describe('shutdown remainder status', () => {
       skippedRecords: [],
     });
     expect(storage.readFileSync).not.toHaveBeenCalled();
+  });
+
+  it('omits a record confirmed absent during the stat-to-read race, the same as the directory-to-stat race', () => {
+    const storage = storageWith([{ name: 'vanished-after-stat.json', value: '{not-json', mtimeMs: 1 }], {
+      refuseReadFor: 'vanished-after-stat.json',
+      readErrorCode: 'ENOENT',
+    });
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      status: { records: [] },
+      skippedRecords: [],
+    });
   });
 
   it('decodes a record with additive fields', () => {

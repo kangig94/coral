@@ -51,13 +51,15 @@ type ExpectedProjectionLeafPaths =
   | 'record.entries[].obligation.label'
   | 'record.entries[].obligation.ordinal'
   | 'record.entries[].obligation.occurrence'
+  | 'record.entries[].subject'
+  | 'record.entries[].subject.kind'
+  | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.owner'
   | 'record.entries[].remainder.evidence.kind'
   | 'record.entries[].remainder.evidence.processes[].kind'
   | 'record.entries[].remainder.evidence.processes[].jobId'
   | 'record.entries[].remainder.evidence.processes[].pid'
   | 'record.entries[].remainder.evidence.processes[].leaderIncarnation.present'
-  | 'record.entries[].remainder.evidence.processes[].leaderIncarnation.sha256'
   | 'record.entries[].settlement.cause'
   | 'record.entries[].settlement.error.name'
   | 'record.entries[].settlement.error.code'
@@ -73,8 +75,8 @@ type ExpectedProjectionLeafPaths =
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
-  | 'record.entries[].remainder.evidence.processes[].jobId'
-  | 'record.entries[].remainder.evidence.processes[].leaderIncarnation.sha256';
+  | 'record.entries[].subject.sourceDigest'
+  | 'record.entries[].remainder.evidence.processes[].jobId';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -89,16 +91,23 @@ void entry.entryNumber;
 void entry.obligation;
 // @ts-expect-error persisted prose is absent from the status projection.
 void entry.label;
-// @ts-expect-error private record subjects are absent from the status projection.
-void entry.subject;
+
+if (entry.subject !== undefined) {
+  const subjectKind: 'discuss-store' = entry.subject.kind;
+  const subjectDigest: string = entry.subject.sourceDigest;
+  void subjectKind;
+  void subjectDigest;
+  // @ts-expect-error the raw discuss-store project source is absent from the status projection.
+  void entry.subject.source;
+}
 
 if (entry.remainder.owner === 'successor-recovery' && entry.remainder.evidence.kind === 'startup-adoption') {
   const process = entry.remainder.evidence.processes[0];
   if (process !== undefined) {
     const incarnationPresent: true = process.leaderIncarnation.present;
-    const incarnationDigest: string = process.leaderIncarnation.sha256;
     void incarnationPresent;
-    void incarnationDigest;
+    // @ts-expect-error no other Coral surface publishes a comparable digest, so a digest here is decoration.
+    void process.leaderIncarnation.sha256;
     // @ts-expect-error the opaque persisted incarnation is absent from the status projection.
     const rawIncarnation: string = process.leaderIncarnation;
     void rawIncarnation;

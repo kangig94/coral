@@ -230,12 +230,16 @@ type OperatorFacingShutdownRemainder =
               kind: 'durable-cli-runtime';
               jobId: string;
               pid: number;
-              leaderIncarnation: Readonly<{ present: true; sha256: string }>;
+              // No other Coral surface publishes a comparable digest of a live incarnation, so presence is the
+              // whole claim this projection can support.
+              leaderIncarnation: Readonly<{ present: true }>;
             }>[];
           }>
         | Readonly<{ kind: 'startup-store-recovery' }>
         | Readonly<{ kind: 'startup-liveness-recovery' }>;
     }>;
+
+type OperatorFacingShutdownRemainderSubject = Readonly<{ kind: 'discuss-store'; sourceDigest: string }>;
 
 type OperatorFacingShutdownRemainderRecord = Readonly<{
   instanceId: string;
@@ -245,6 +249,7 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   entries: readonly Readonly<{
     entryNumber: number;
     obligation: OperatorFacingShutdownObligation | null;
+    subject?: OperatorFacingShutdownRemainderSubject;
     remainder: OperatorFacingShutdownRemainder;
     settlement: OperatorFacingShutdownSettlement;
   }>[];
@@ -452,7 +457,7 @@ function operatorFacingShutdownRemainderOwner(
             kind: 'durable-cli-runtime',
             jobId: process.jobId,
             pid: process.pid,
-            leaderIncarnation: { present: true, sha256: sha256Hex(process.leaderIncarnation) },
+            leaderIncarnation: { present: true },
           })),
         },
       };
@@ -460,6 +465,19 @@ function operatorFacingShutdownRemainderOwner(
       return { owner: 'successor-recovery', evidence: { kind: 'startup-store-recovery' } };
     case 'startup-liveness-recovery':
       return { owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } };
+  }
+}
+
+// The raw subject carries a discuss store's project source (a git remote path or a local directory name), which
+// is exactly the prose this boundary must not print. A digest lets a reader tell two entries' subjects apart —
+// same digest, same store; different digest, different store — without ever seeing the path itself.
+function operatorFacingShutdownRemainderSubject(
+  subject: ShutdownRemainderRecord['entries'][number]['subject'],
+): OperatorFacingShutdownRemainderSubject | undefined {
+  if (subject === undefined) return undefined;
+  switch (subject.kind) {
+    case 'discuss-store':
+      return { kind: 'discuss-store', sourceDigest: sha256Hex(subject.source) };
   }
 }
 
@@ -471,12 +489,16 @@ function operatorFacingShutdownRemainder(
     recordedAt: record.recordedAt,
     reason: record.reason,
     mode: record.mode,
-    entries: record.entries.map((entry) => ({
-      entryNumber: entry.entryNumber,
-      obligation: operatorFacingShutdownObligation(entry.label),
-      remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
-      settlement: operatorFacingShutdownSettlement(entry.settlement),
-    })),
+    entries: record.entries.map((entry) => {
+      const subject = operatorFacingShutdownRemainderSubject(entry.subject);
+      return {
+        entryNumber: entry.entryNumber,
+        obligation: operatorFacingShutdownObligation(entry.label),
+        ...(subject === undefined ? {} : { subject }),
+        remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
+        settlement: operatorFacingShutdownSettlement(entry.settlement),
+      };
+    }),
   };
 }
 

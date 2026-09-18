@@ -625,18 +625,29 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const coordinatorCore = core;
   // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.
 
+  // `coordinatorCore.lifecycleController.shutdown`/`waitForShutdown` already ran the 'lifecycle
+  // reactor dispose' obligation through the settlement ledger (or budget-skipped it) and folded
+  // whatever it observed into the returned disposition's named losses. That promise settles on
+  // its own schedule regardless; triggering it again only covers the budget-skipped case, and must
+  // not become a second unbounded await on the identical promise the ledger already declined.
+  const triggerLifecycleReactorDisposal = (): void => {
+    void Promise.resolve(shutdownLifecycleReactor()).catch((error: unknown) => {
+      backendLog.warn(`Lifecycle reactor disposal after shutdown failed: ${errorMessage(error)}`);
+    });
+  };
+
   return {
     server: coordinatorCore.server,
     start: () => coordinatorCore.lifecycleController.start(),
     shutdown: async (reason) => {
       const disposition = await coordinatorCore.lifecycleController.shutdown(reason);
-      if (isLifecycleShutdownTerminal(disposition)) await disposeLifecycleReactor();
+      if (isLifecycleShutdownTerminal(disposition)) triggerLifecycleReactorDisposal();
       return disposition;
     },
     waitForShutdown: async () => {
       const disposition = await coordinatorCore.lifecycleController.waitForShutdown();
       if (isLifecycleShutdownTerminal(disposition)) {
-        await disposeLifecycleReactor();
+        triggerLifecycleReactorDisposal();
         await finalizeStoreServices(coordinatorCore.storeServicesRef);
       }
       return disposition;

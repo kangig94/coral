@@ -1244,6 +1244,7 @@ function formatRecentShutdownRemainderStatus(
   for (const entry of result.record.entries) {
     lines.push(
       `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+      ...formatShutdownRemainderSubjectLines(entry.subject),
       `  Owner: ${entry.remainder.owner}`,
       ...formatShutdownSettlementLines(entry.settlement),
       ...formatShutdownRemainderEvidenceLines(entry.remainder),
@@ -1269,6 +1270,12 @@ function formatShutdownObligation(
     default:
       return obligation.label;
   }
+}
+
+function formatShutdownRemainderSubjectLines(
+  subject: Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>['record']['entries'][number]['subject'],
+): string[] {
+  return subject === undefined ? [] : [`  Subject: ${subject.kind} sha256:${subject.sourceDigest}`];
 }
 
 function formatShutdownSettlementLines(
@@ -1307,7 +1314,7 @@ function formatShutdownRemainderEvidenceLines(
     ...remainder.evidence.processes.flatMap((process) => [
       `    Job: ${process.jobId}`,
       `    PID: ${process.pid}`,
-      `    Leader incarnation: present (SHA-256: ${process.leaderIncarnation.sha256})`,
+      '    Leader incarnation: present',
     ]),
   ];
 }

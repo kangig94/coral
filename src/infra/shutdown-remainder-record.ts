@@ -269,7 +269,10 @@ export function scanShutdownRemainderRecords(
       }
       records.push(decoded.record);
       skippedEntries.push(...decoded.skippedEntries);
-    } catch {
+    } catch (error: unknown) {
+      // Same race as the `statSync` step above, one step later: the file lost the race between `readdirSync`
+      // and this read. It is silently absent, not corrupt, so it must not become a skipped record.
+      if (thrownErrnoCode(error) === 'ENOENT') continue;
       skippedRecords.push({ name: reportedName, age });
     }
   }

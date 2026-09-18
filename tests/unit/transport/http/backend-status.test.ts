@@ -318,19 +318,19 @@ describe('getBackendStatusFull record disposition', () => {
       status: 'recent_shutdown_remainder',
       record: {
         entries: [
-          { obligation: { label: 'discuss store dispose' }, settlement: { error: {} } },
+          {
+            obligation: { label: 'discuss store dispose' },
+            subject: {
+              kind: 'discuss-store',
+              sourceDigest: '8193456f2fe5a02197b41ab74e10a087dba6c7b4b3bf23f692511f5011af2956',
+            },
+            settlement: { error: {} },
+          },
           {
             obligation: { label: 'child termination' },
             remainder: {
               evidence: {
-                processes: [
-                  {
-                    leaderIncarnation: {
-                      present: true,
-                      sha256: '8193456f2fe5a02197b41ab74e10a087dba6c7b4b3bf23f692511f5011af2956',
-                    },
-                  },
-                ],
+                processes: [{ leaderIncarnation: { present: true } }],
               },
             },
           },
@@ -343,6 +343,93 @@ describe('getBackendStatusFull record disposition', () => {
     expect(JSON.stringify(result)).not.toContain(hostile);
     expect(JSON.stringify(result)).not.toContain(hostileName);
     expect(JSON.stringify(result)).not.toContain(hostileCode);
+  });
+
+  it('projects exactly the declared shutdown remainder key paths, closing any field a spread could add unseen', async () => {
+    mockState.remainderFiles = [
+      remainderFile('corrupt.json', NOW - 15_000, '{not-json'),
+      remainderFile(
+        'current.json',
+        NOW - 10_000,
+        shutdownRemainder('current', NOW - 10_000, [
+          {
+            label: 'discuss store dispose',
+            subject: { kind: 'discuss-store', source: 'owner/repo' },
+            remainder: { owner: 'process-exit' },
+            settlement: {
+              cause: 'rejected',
+              error: { kind: 'error', name: 'Error', code: 'EIO', message: 'x' },
+            },
+          },
+          {
+            label: 'stream response close 7',
+            remainder: {
+              owner: 'successor-recovery',
+              evidence: {
+                kind: 'startup-adoption',
+                processes: [{ kind: 'durable-cli-runtime', jobId: 'job-x', pid: 99, leaderIncarnation: 'inc' }],
+              },
+            },
+            settlement: { cause: 'timed-out', budgetMs: 1_000 },
+          },
+          {
+            label: 'provider proxy lifecycle fatal incident 3',
+            remainder: { owner: 'successor-recovery', evidence: { kind: 'startup-store-recovery' } },
+            settlement: { cause: 'budget-exhausted' },
+          },
+          {
+            label: 'unrecognized obligation',
+            remainder: { owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } },
+            settlement: { cause: 'unconfirmed', detail: 'x' },
+          },
+          // Missing `settlement` fails whole-entry decode, exercising the skippedEntries projection instead.
+          { label: 'stream response close 5', remainder: { owner: 'process-exit' } },
+          { label: 'provider proxy lifecycle fatal incident 4', remainder: { owner: 'successor-recovery' } },
+          { label: 'forged\nlabel', remainder: { owner: 'process-exit' } },
+        ]),
+      ),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    const paths = new Set<string>();
+    collectLeafPaths(result, '', paths);
+
+    expect([...paths].sort()).toEqual(
+      [
+        'status',
+        'record.instanceId',
+        'record.recordedAt',
+        'record.reason',
+        'record.mode',
+        'record.entries[].entryNumber',
+        'record.entries[].obligation',
+        'record.entries[].obligation.label',
+        'record.entries[].obligation.ordinal',
+        'record.entries[].obligation.occurrence',
+        'record.entries[].subject.kind',
+        'record.entries[].subject.sourceDigest',
+        'record.entries[].remainder.owner',
+        'record.entries[].remainder.evidence.kind',
+        'record.entries[].remainder.evidence.processes[].kind',
+        'record.entries[].remainder.evidence.processes[].jobId',
+        'record.entries[].remainder.evidence.processes[].pid',
+        'record.entries[].remainder.evidence.processes[].leaderIncarnation.present',
+        'record.entries[].settlement.cause',
+        'record.entries[].settlement.error.name',
+        'record.entries[].settlement.error.code',
+        'record.entries[].settlement.budgetMs',
+        'skippedEntries[].entryNumber',
+        'skippedEntries[].obligation',
+        'skippedEntries[].obligation.label',
+        'skippedEntries[].obligation.ordinal',
+        'skippedEntries[].obligation.occurrence',
+        'skippedEntries[].owner',
+        'skippedRecordCount',
+      ].sort(),
+    );
+    expect(JSON.stringify(result)).not.toContain('owner/repo');
   });
 
   it('projects ordinary runtime errnos from the platform registry', async () => {
@@ -1049,6 +1136,26 @@ function shutdownRemainder(
   });
 }
 
+/**
+ * Every key path reachable from a projected value, `[]` marking array descent — the runtime counterpart of
+ * `ProjectionLeafPaths` in `tests/types/shutdown-remainder-status.test-d.ts`. Object-spread bypasses
+ * TypeScript's excess-property check, so only walking the constructed value, never its declared type, can
+ * prove no extra field reached it.
+ */
+function collectLeafPaths(value: unknown, prefix: string, paths: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) collectLeafPaths(item, `${prefix}[]`, paths);
+    return;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [key, child] of Object.entries(value)) {
+      collectLeafPaths(child, prefix === '' ? key : `${prefix}.${key}`, paths);
+    }
+    return;
+  }
+  paths.add(prefix);
+}
+
 // An absent coordinator is the one case where a diagnostic is allowed to explain the absence, so it is also
 // the one case where the wrong diagnostic becomes the reported cause. Two fields scope it and each admits
 // something alone: a pid is reused by the OS, and a `startedAt` floor without a pid admits any run after it.
@@ -1134,8 +1241,11 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   });
 
   it('ignores a prior coordinator remainder recorded before this coordinator started', async () => {
+    // Same instance id as the scoped coordinator: only the `recordedAt >= scope.startedAt` guard this case is
+    // named for can reject it. A different instance id (the prior fixture) is rejected by the identity check
+    // first, so the timestamp guard is never exercised.
     mockState.remainderFiles = [
-      remainderFile('prior.json', STARTED_AT - 10_000, shutdownRemainder('prior', STARTED_AT - 10_000)),
+      remainderFile(`${INSTANCE_ID}.json`, STARTED_AT - 10_000, shutdownRemainder(INSTANCE_ID, STARTED_AT - 10_000)),
     ];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');

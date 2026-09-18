@@ -41,11 +41,11 @@ describe('KB daemon work-directory context decoding', () => {
     ).toMatchObject({
       ok: false,
       code: 'invalid_work_directory',
-      message: expect.stringContaining(projectRoot),
       detail: { workDir: projectRoot, projectRoot: process.cwd() },
     });
     if (result.ok) throw new Error('Expected the daemon request context to be refused.');
     expect(result.message).toMatch(/ENOENT|no such file or directory/);
+    expect(result.message).not.toContain(projectRoot);
   });
 
   it('maps an unresolvable expansion context before invoking the daemon host', async () => {
@@ -70,10 +70,10 @@ describe('KB daemon work-directory context decoding', () => {
     ).toMatchObject({
       ok: false,
       code: 'invalid_work_directory',
-      message: expect.stringContaining(projectRoot),
     });
     if (result.ok) throw new Error('Expected the daemon expansion context to be refused.');
     expect(result.message).toMatch(/ENOENT|no such file or directory/);
+    expect(result.message).not.toContain(projectRoot);
     expect(expansionRpc).not.toHaveBeenCalled();
   });
 });

@@ -477,8 +477,10 @@ function providerHostAdministrationCopy(
       const owners = ownerIds.length === 0 ? 'one or more provider-host owners' : ownerIds.join(', ');
       const ownerPronoun = ownerIds.length === 1 ? 'it' : 'them';
       // The release is this coordinator's own act and says nothing about why it released.
-      const selected = workDir === null ? 'the selected provider host' : `any host for work directory ${workDir}`;
-      const subject = hostRefs[0] ?? selected;
+      // A POSIX path may contain any byte but NUL and '/', newline included, so workDir may not
+      // be interpolated into this prose: a rendered newline reads as a line `formatErrorEnvelope`
+      // did not write, indistinguishable from Coral's own output.
+      const subject = hostRefs[0] ?? 'the selected provider host';
       const exactReferenceExit =
         workDir === null
           ? ''
