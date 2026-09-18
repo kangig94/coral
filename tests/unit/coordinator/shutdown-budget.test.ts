@@ -68,6 +68,7 @@ function buildHarness(opts: {
       readFileSync: () => {
         throw new Error('unexpected read');
       },
+      writeAtomicSync: () => true,
       writeAtomicDurableSync: () => true,
     },
   } as unknown as Runtime;
@@ -227,7 +228,7 @@ function buildRemainderWriteRefusalHarness(
     storage: {
       ...harness.runtime.storage,
       existsSync: () => false,
-      writeAtomicDurableSync: () => {
+      writeAtomicSync: () => {
         order.push('record');
         return write();
       },
@@ -1023,7 +1024,7 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.closeIpcCalled()).toBe(true);
   });
 
-  it('derives a durable wrapper/finalizer remainder when every retained child is durably published', async () => {
+  it('derives successor-recovery when every retained child is durably published', async () => {
     const harness = buildHarness({ reason: 'test-teardown', hooksOnShutdown: async () => {} });
     const evidence = {
       kind: 'durable-cli-runtime',
@@ -1048,12 +1049,8 @@ describe('runShutdownSequence drain budget', () => {
       expect.objectContaining({
         label: 'child termination',
         remainder: {
-          owner: 'durable-wrapper-finalizer',
-          evidence: {
-            kind: 'durable-wrapper-finalizer-containment',
-            processes: [evidence],
-            successorTransfer: { kind: 'startup-adoption', status: 'pending-verification' },
-          },
+          owner: 'successor-recovery',
+          evidence: { kind: 'startup-adoption', processes: [evidence] },
         },
       }),
     );
@@ -2204,7 +2201,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         if (remainderDocument === null) throw new Error('remainder document is absent');
         return remainderDocument;
       },
-      writeAtomicDurableSync: (_path: string, data: string) => {
+      writeAtomicSync: (_path: string, data: string) => {
         finalizationOrder.push('record');
         remainderDocument = data;
         remainderDocuments.push(data);

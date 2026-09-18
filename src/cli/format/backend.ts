@@ -705,6 +705,8 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       return formatNoRecordSocketPresentStatus(result);
     case 'recent_failure':
       return formatRecentFailureStatus(result);
+    case 'recent_shutdown_remainder':
+      return formatRecentShutdownRemainderStatus(result);
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
@@ -1225,6 +1227,27 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
     return lines.join('\n');
   }
   return [...lines, ...formatSetupErrorLines(result.setupError)].join('\n');
+}
+
+function formatRecentShutdownRemainderStatus(
+  result: Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>,
+): string {
+  const lines = [
+    'Coral recorded a recent shutdown with unfinished obligations.',
+    `Recorded at: ${result.record.recordedAt}`,
+    `Reason: ${result.record.reason}`,
+    `Mode: ${result.record.mode}`,
+  ];
+  for (const [index, entry] of result.record.entries.entries()) {
+    lines.push(
+      `Entry ${index + 1}: ${entry.label}`,
+      `  Owner: ${entry.remainder.owner}`,
+      `  Cause: ${entry.settlement.cause}`,
+      `  Detail: ${entry.settlement.detail}`,
+    );
+  }
+  lines.push(`Skipped entries: ${result.skippedEntries}`, `Skipped records: ${result.skippedRecords}`);
+  return lines.join('\n');
 }
 
 export function formatShutdown(result: ShutdownResult): string {

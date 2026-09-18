@@ -15,8 +15,14 @@ import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
+import {
+  scanShutdownRemainderRecords,
+  shutdownRemainderRecordDirectory,
+  type ShutdownRemainderRecord,
+  type ShutdownRemainderRecordScan,
+} from '../../../infra/shutdown-remainder-record.js';
 
-const RECENT_STARTUP_DIAGNOSTIC_MS = 5 * 60_000;
+const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
@@ -109,9 +115,16 @@ export type BackendStatusFull =
        * never cross it. see `readOperatorFacingCoralSetupError` in src/runtime/errors.ts
        */
       setupError?: OperatorFacingCoralSetupError;
+    }
+  | {
+      status: 'recent_shutdown_remainder';
+      record: ShutdownRemainderRecord;
+      skippedEntries: number;
+      skippedRecords: number;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
+type RecentShutdownRemainderStatus = Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>;
 
 function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
@@ -155,7 +168,7 @@ export function statusFromStartupDiagnostic(
     !Number.isFinite(recordedAt) ||
     recordedAt < earliestRecordedAt ||
     recordedAt > now ||
-    now - recordedAt > RECENT_STARTUP_DIAGNOSTIC_MS ||
+    now - recordedAt > RECENT_COORDINATOR_RECORD_MS ||
     (expectedPid !== undefined && value.pid !== expectedPid)
   ) {
     return null;
@@ -178,6 +191,33 @@ export function statusFromStartupDiagnostic(
   };
 }
 
+function readRecentShutdownRemainder(
+  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
+  runDir: string,
+  now: number,
+): RecentShutdownRemainderStatus | null {
+  const directory = shutdownRemainderRecordDirectory(runDir);
+  if (!storage.existsSync(directory)) return null;
+  let scan: ShutdownRemainderRecordScan;
+  try {
+    scan = scanShutdownRemainderRecords(storage, directory);
+  } catch {
+    return null;
+  }
+  const record = scan.records.at(-1);
+  if (record === undefined) return null;
+  const recordedAt = parseIsoTimestamp(record.recordedAt);
+  if (!Number.isFinite(recordedAt) || recordedAt > now || now - recordedAt > RECENT_COORDINATOR_RECORD_MS) {
+    return null;
+  }
+  return {
+    status: 'recent_shutdown_remainder',
+    record,
+    skippedEntries: scan.skippedEntries,
+    skippedRecords: scan.skippedRecords,
+  };
+}
+
 function readRecentFailureDiagnostic(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
@@ -195,8 +235,9 @@ function readRecentFailureDiagnostic(
 }
 
 function noDaemonStatus(
-  storage: Pick<StoragePort, 'readFileSync'>,
+  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
   diagnosticFile: string,
+  runDir: string,
   now: number,
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   fallback: Extract<
@@ -208,6 +249,7 @@ function noDaemonStatus(
 ): BackendStatusFull {
   return (
     readRecentFailureDiagnostic(storage, diagnosticFile, now, provenSelfIdentity, earliestRecordedAt, expectedPid) ??
+    readRecentShutdownRemainder(storage, runDir, now) ??
     fallback
   );
 }
@@ -305,6 +347,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
         { status: 'no_record_no_socket' },
@@ -323,6 +366,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
         { status: 'recorded_process_absent', pid: observed.pid },
@@ -339,6 +383,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     noDaemonStatus(
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,
+      runtime.paths.coral.coordinator.runDir,
       runtime.time.now(),
       provenSelfIdentity,
       {

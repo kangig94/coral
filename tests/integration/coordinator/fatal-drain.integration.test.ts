@@ -31,6 +31,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
+const FATAL_DRAIN_ACTIONS_FILE = 'fatal-drain-actions.log';
 let successorPid: number | null = null;
 
 function topLevelEnvironment(home: string): NodeJS.ProcessEnv {
@@ -238,5 +239,65 @@ describe('coordinator fatal drain integration', () => {
     expect(successor.instanceId).not.toBe(initial.instanceId);
     expect(successor.bundleHash).toBe(fixture.bundleHash);
     expect(await probeCoordinatorSocket(files.socketPath)).toBe('accepting');
+  });
+
+  it('promotes an in-flight hard drain to the fatal handoff without running hard consequences', async () => {
+    if (!buildArtifactsAvailable()) {
+      throw new Error('Expected clients/build artifacts to exist before running integration tests');
+    }
+
+    const home = mkdtempSync(join(tmpdir(), 'coral-fatal-during-hard-drain-home-'));
+    tempRoots.push(home);
+    const fixture = createPluginFixture(tempRoots, { flavor: 'prod' });
+    const fatalBackendPath = await buildFatalDrainBackend(fixture);
+    const fatalCoordinator = spawnCoordinator({
+      fixture,
+      home,
+      tempRoots,
+      backendPath: fatalBackendPath,
+      triggerPipe: true,
+      env: {
+        CORAL_KB_ENABLE: '0',
+        CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
+      },
+    });
+    coordinators.push(fatalCoordinator);
+
+    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const files = coordinatorFilesForHome(home, 'prod');
+    if (fatalCoordinator.triggerPipe === null) throw new Error('Expected a parent-owned fatal trigger pipe');
+    fatalCoordinator.triggerPipe.end(Buffer.from([2]));
+
+    const exit = await waitForProcessExit(fatalCoordinator, 10_000);
+    expect(exit).toMatchObject({ signal: null });
+    expect(exit.code).not.toBeNull();
+    expect(exit.code).not.toBe(0);
+    expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
+    expect(await waitForCoordinatorSocketRelease(files.socketPath, 5_000)).toBe('unlinked');
+
+    const actions = readFileSync(join(home, FATAL_DRAIN_ACTIONS_FILE), 'utf-8').trim().split('\n');
+    expect(actions).toContain('provider-host-handoff-drain');
+    expect(actions).not.toContain('provider-host-hard-shutdown');
+    expect(actions).not.toContain('pending-launch-settlement');
+    expect(actions).not.toContain('child-termination');
+    expect(actions).not.toContain('job-terminalization');
+
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const remainder = readShutdownRemainderStatus({ storage: runtime.storage, runDir: files.runDir });
+    expect(remainder.kind).toBe('available');
+    if (remainder.kind !== 'available') throw new Error(`Expected a shutdown remainder, got ${remainder.kind}`);
+    expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
+      reason: 'provider-proxy-lifecycle-fatal',
+      mode: 'handoff',
+      entries: [
+        {
+          label: 'provider proxy lifecycle fatal incident',
+          settlement: {
+            cause: 'rejected',
+            detail: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
+          },
+        },
+      ],
+    });
   });
 });

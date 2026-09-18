@@ -51,6 +51,7 @@ a decision about what may end a hold when the only evidence is repetition.
 question is the same one from the other side — what may retire a capsule when no observation decides — and
 to [`foreign-capsule-retirement-terminal-recovery`](./foreign-capsule-retirement-terminal-recovery.md), which
 wants a durable receipt for a retirement that did happen. The observation this entry proposes is the same
-kind of record; whichever lands first pays for its shape. The reader in
-[`shutdown-remainder-has-no-reader`](./shutdown-remainder-has-no-reader.md) is where the recurrence would be
-seen, so that entry should land before this one is judged worth its cost.
+kind of record; whichever lands first pays for its shape. The no-daemon remainder reader is where the
+recurrence is seen; the remaining Track B work in
+[`shutdown-remainder-has-no-reader`](./shutdown-remainder-has-no-reader.md) concerns live held-state health
+projection and does not block observing this loop.

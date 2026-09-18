@@ -1731,6 +1731,56 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
+    it('reports a recent shutdown remainder without soliciting an action', () => {
+      const text = formatBackendStatus({
+        status: 'recent_shutdown_remainder',
+        record: {
+          instanceId: 'instance-1',
+          recordedAt: '2026-09-18T01:02:03.000Z',
+          reason: 'sigterm',
+          mode: 'handoff',
+          entries: [
+            {
+              label: 'child termination',
+              remainder: {
+                owner: 'successor-recovery',
+                evidence: { kind: 'startup-liveness-recovery' },
+              },
+              settlement: { cause: 'timed-out', detail: 'child remained alive' },
+            },
+            {
+              label: 'hooks.onShutdown',
+              remainder: { owner: 'process-exit' },
+              settlement: { cause: 'rejected', detail: 'hook failed' },
+            },
+          ],
+        },
+        skippedEntries: 2,
+        skippedRecords: 1,
+      });
+
+      expect(text).toBe(
+        [
+          'Coral recorded a recent shutdown with unfinished obligations.',
+          'Recorded at: 2026-09-18T01:02:03.000Z',
+          'Reason: sigterm',
+          'Mode: handoff',
+          'Entry 1: child termination',
+          '  Owner: successor-recovery',
+          '  Cause: timed-out',
+          '  Detail: child remained alive',
+          'Entry 2: hooks.onShutdown',
+          '  Owner: process-exit',
+          '  Cause: rejected',
+          '  Detail: hook failed',
+          'Skipped entries: 2',
+          'Skipped records: 1',
+        ].join('\n'),
+      );
+      expect(text).not.toContain('Next step:');
+      expect(text).not.toContain('command=');
+    });
+
     it('formats an unrecognized setup-error code without printing persisted text', () => {
       expect(
         formatBackendStatus({
@@ -1891,6 +1941,18 @@ describe('cli format', () => {
       { status: 'unreachable', detail: 'ETIMEDOUT', cause: 'no_response' as const },
       { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
       { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
+      {
+        status: 'recent_shutdown_remainder',
+        record: {
+          instanceId: 'instance-1',
+          recordedAt: '2026-09-18T01:02:03.000Z',
+          reason: 'sigterm',
+          mode: 'handoff' as const,
+          entries: [],
+        },
+        skippedEntries: 0,
+        skippedRecords: 0,
+      },
       {
         status: 'recent_failure',
         phase: 'startup_failed' as const,

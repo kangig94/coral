@@ -30,6 +30,7 @@ import {
   type ShutdownRetainedAuthorityContribution,
   type ShutdownSequenceDisposition,
   type ShutdownSettlementLedger,
+  type ShutdownUndischarged,
   type UndischargedRemainder,
 } from './shutdown-settlement.js';
 
@@ -55,9 +56,25 @@ export type ShutdownIncident = Readonly<{
   error: unknown;
 }>;
 
+export type ShutdownIncidentOccurrence = Readonly<{
+  incident: ShutdownIncident;
+  occurrence: number;
+}>;
+
 export function shutdownModeFromReason(reason: ShutdownReason): ShutdownMode {
   if (reason === 'replaced' || reason === 'sigterm' || reason === 'provider-proxy-lifecycle-fatal') return 'handoff';
   return 'hard';
+}
+
+export function shutdownIncidentUndischarged({
+  incident,
+  occurrence,
+}: ShutdownIncidentOccurrence): ShutdownUndischarged {
+  return {
+    label: `provider proxy lifecycle fatal incident${occurrence === 1 ? '' : ` ${occurrence}`}`,
+    remainder: { owner: 'process-exit' },
+    settlement: { cause: 'rejected', detail: formatError(incident.error) },
+  };
 }
 
 export type LifecycleWiringState = {
@@ -72,6 +89,9 @@ interface ShutdownRuntimeState {
 type RunShutdownSequenceContext = {
   reason: ShutdownReason;
   incident?: ShutdownIncident;
+  currentReason?: () => ShutdownReason;
+  takeIncidents?: () => readonly ShutdownIncidentOccurrence[];
+  hardConsequencesAbort?: AbortSignal;
   state: LifecycleWiringState;
   teardownRecoveryCoordinator: () => Promise<void>;
   runtimeState: ShutdownRuntimeState;
@@ -181,12 +201,8 @@ export function childTerminationRemainder(disposition: ChildTerminationDispositi
   );
   return retained.length > 0 && processes.length === retained.length
     ? {
-        owner: 'durable-wrapper-finalizer',
-        evidence: {
-          kind: 'durable-wrapper-finalizer-containment',
-          processes,
-          successorTransfer: { kind: 'startup-adoption', status: 'pending-verification' },
-        },
+        owner: 'successor-recovery',
+        evidence: { kind: 'startup-adoption', processes },
       }
     : { owner: 'process-exit' };
 }
@@ -547,6 +563,7 @@ type HardShutdownConsequencesContext = Pick<
   | 'storeServicesRef'
   | 'terminateRegisteredChildrenFn'
 > & {
+  readonly abortSignal?: AbortSignal;
   readonly ledger: ShutdownSettlementLedger;
   readonly providerCleanup: ProviderCleanupController;
   readonly providerProxyAuthority: RunShutdownSequenceContext['providerProxyAuthority'];
@@ -554,6 +571,7 @@ type HardShutdownConsequencesContext = Pick<
 };
 
 function buildHardShutdownConsequences({
+  abortSignal,
   ledger,
   markJobsAsErrorFn,
   providerCleanup,
@@ -564,6 +582,8 @@ function buildHardShutdownConsequences({
   storeServicesRef,
   terminateRegisteredChildrenFn,
 }: HardShutdownConsequencesContext): ModeShutdownConsequences {
+  const consequenceSignal = (signal: AbortSignal): AbortSignal =>
+    abortSignal === undefined ? signal : AbortSignal.any([signal, abortSignal]);
   let storeServicesAvailable = false;
   const storeServicesCheck: ShutdownObligation = {
     label: 'store services availability check',
@@ -577,14 +597,19 @@ function buildHardShutdownConsequences({
   const providerHostShutdown: ShutdownObligation = {
     label: 'provider host shutdown',
     task: async (signal) => {
+      const guardedSignal = consequenceSignal(signal);
       let receipt: ProviderHostQuiescenceReceipt | undefined;
       try {
-        receipt = await providerHostManager.shutdown(signal);
+        receipt = await providerHostManager.shutdown(guardedSignal);
       } finally {
         providerCleanup.refresh(receipt);
       }
       const snapshot = providerCleanup.current();
-      const cleanup = await reapProviderProxySets(snapshot.liveProxySets, snapshot.acquisitionCleanupHolds, signal);
+      const cleanup = await reapProviderProxySets(
+        snapshot.liveProxySets,
+        snapshot.acquisitionCleanupHolds,
+        guardedSignal,
+      );
       providerCleanup.refresh();
       if (cleanup.confirmed) providerCleanup.clearAcquisitionCleanupHolds();
       const refreshed = providerCleanup.current();
@@ -599,15 +624,23 @@ function buildHardShutdownConsequences({
     },
     remainder: () => ({ owner: 'process-exit' }),
   };
-  const providerOperationMutationDrain = buildProviderOperationMutationDrainObligation({
+  const providerOperationMutationDrainBase = buildProviderOperationMutationDrainObligation({
     ledger,
     providerProxyAuthority,
     providerRecoveryObligation: providerHostShutdown,
     stopProviderOperationReconciler,
   });
+  const providerOperationMutationDrain: ShutdownObligation =
+    abortSignal === undefined
+      ? providerOperationMutationDrainBase
+      : {
+          ...providerOperationMutationDrainBase,
+          task: (signal) => providerOperationMutationDrainBase.task(consequenceSignal(signal)),
+        };
   const pendingLaunchSettlement: ShutdownObligation = {
     label: 'pending launch settlement',
-    task: async (signal) => pendingLaunchSettlementConfirmation(await settlePendingLaunchesFn(signal)),
+    task: async (signal) =>
+      pendingLaunchSettlementConfirmation(await settlePendingLaunchesFn(consequenceSignal(signal))),
     retainedAuthority: () => cleanupContribution('pending launch settlement'),
     remainder: () => ({ owner: 'process-exit' }),
   };
@@ -615,7 +648,7 @@ function buildHardShutdownConsequences({
   const childTermination: ShutdownObligation = {
     label: 'child termination',
     task: async (signal) => {
-      retainedChildren = await terminateRegisteredChildrenFn(signal);
+      retainedChildren = await terminateRegisteredChildrenFn(consequenceSignal(signal));
       return childTerminationConfirmation(retainedChildren);
     },
     retainedAuthority: () => cleanupContribution('child termination'),
@@ -639,7 +672,7 @@ function buildHardShutdownConsequences({
           detail: 'terminalization awaits provider-host recovery, mutation drain, and child containment discharge',
         });
       }
-      return confirmedTask(() => markJobsAsErrorFn('Backend shutting down', signal));
+      return confirmedTask(() => markJobsAsErrorFn('Backend shutting down', consequenceSignal(signal)));
     },
     retainedAuthority: () => cleanupContribution('crashed job terminalization'),
     remainder: () => ({ owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } }),
@@ -957,6 +990,9 @@ function buildAuthorityReleaseBoundary({
 export async function runShutdownSequence({
   reason,
   incident,
+  currentReason,
+  takeIncidents,
+  hardConsequencesAbort,
   state,
   teardownRecoveryCoordinator,
   runtimeState,
@@ -985,8 +1021,11 @@ export async function runShutdownSequence({
   log,
   acceptProcessExitRemainder,
 }: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
-  const mode = shutdownModeFromReason(reason);
-  const budgetMs = mode === 'handoff' ? (handoffDrainBudgetMs ?? HANDOFF_DRAIN_TIMEOUT_MS) : SHUTDOWN_DRAIN_TIMEOUT_MS;
+  const activeReason = (): ShutdownReason => currentReason?.() ?? reason;
+  const initialReason = activeReason();
+  const initialMode = shutdownModeFromReason(initialReason);
+  const budgetMs =
+    initialMode === 'handoff' ? (handoffDrainBudgetMs ?? HANDOFF_DRAIN_TIMEOUT_MS) : SHUTDOWN_DRAIN_TIMEOUT_MS;
   const ledger = createShutdownSettlementLedger({
     budgetMs,
     time: runtime.time,
@@ -994,17 +1033,28 @@ export async function runShutdownSequence({
     pollMs: SHUTDOWN_POLL_MS,
     ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
   });
-  if (incident !== undefined) {
-    void (await ledger.run({
-      label: 'provider proxy lifecycle fatal incident',
-      task: async () => {
-        throw incident.error;
-      },
-      retainedAuthority: () => ({}),
-      remainder: () => ({ owner: 'process-exit' }),
-    }));
-  }
-  log(`Coral backend shutting down (${reason}, mode=${mode})...\n`);
+  let initialIncident = incident;
+  const recordPendingIncidents = (): void => {
+    const occurrences =
+      takeIncidents?.() ??
+      (initialIncident === undefined
+        ? []
+        : [{ incident: initialIncident, occurrence: 1 } satisfies ShutdownIncidentOccurrence]);
+    initialIncident = undefined;
+    for (const occurrence of occurrences) {
+      const undischarged = shutdownIncidentUndischarged(occurrence);
+      void ledger.run({
+        label: undischarged.label,
+        task: async () => {
+          throw occurrence.incident.error;
+        },
+        retainedAuthority: () => ({}),
+        remainder: () => undischarged.remainder,
+      });
+    }
+  };
+  recordPendingIncidents();
+  log(`Coral backend shutting down (${initialReason}, mode=${initialMode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
   if (stopStoreEpochSweepFn !== undefined) {
@@ -1021,7 +1071,7 @@ export async function runShutdownSequence({
     idleTimer,
     kbDaemonSupervisor,
     ledger,
-    reason,
+    reason: initialReason,
     runtime,
     server,
     state,
@@ -1031,35 +1081,68 @@ export async function runShutdownSequence({
   });
   for (const obligation of openingObligations.connectionDrain) {
     void (await ledger.run(obligation));
+    recordPendingIncidents();
   }
   for (const obligation of openingObligations.buildTeardownObligations()) {
     void (await ledger.run(obligation));
+    recordPendingIncidents();
   }
 
   const providerCleanup = createProviderCleanupController({ providerHostManager, providerProxyAuthority });
-  const modeConsequences =
-    mode === 'hard'
-      ? buildHardShutdownConsequences({
-          ledger,
-          markJobsAsErrorFn,
-          providerCleanup,
-          providerHostManager,
-          providerProxyAuthority,
-          settlePendingLaunchesFn,
-          stopProviderOperationReconciler,
-          storeServicesRef,
-          terminateRegisteredChildrenFn,
-        })
-      : buildHandoffShutdownConsequences({
-          handoffQuiescePorts,
-          ledger,
-          providerCleanup,
-          providerHostManager,
-          providerProxyAuthority,
-          stopProviderOperationReconciler,
-        });
-  for (const obligation of modeConsequences.obligations) {
-    void (await ledger.run(obligation));
+  const buildHandoffConsequences = (): ModeShutdownConsequences =>
+    buildHandoffShutdownConsequences({
+      handoffQuiescePorts,
+      ledger,
+      providerCleanup,
+      providerHostManager,
+      providerProxyAuthority,
+      stopProviderOperationReconciler,
+    });
+  let mode = shutdownModeFromReason(activeReason());
+  let modeConsequences: ModeShutdownConsequences;
+  if (mode === 'handoff') {
+    modeConsequences = buildHandoffConsequences();
+    for (const obligation of modeConsequences.obligations) {
+      void (await ledger.run(obligation));
+      recordPendingIncidents();
+    }
+  } else {
+    const hardConsequences = buildHardShutdownConsequences({
+      ...(hardConsequencesAbort === undefined ? {} : { abortSignal: hardConsequencesAbort }),
+      ledger,
+      markJobsAsErrorFn,
+      providerCleanup,
+      providerHostManager,
+      providerProxyAuthority,
+      settlePendingLaunchesFn,
+      stopProviderOperationReconciler,
+      storeServicesRef,
+      terminateRegisteredChildrenFn,
+    });
+    let hardMutationDrainStarted = false;
+    for (const obligation of hardConsequences.obligations) {
+      if (shutdownModeFromReason(activeReason()) === 'handoff') break;
+      if (obligation === hardConsequences.providerOperationMutationDrain) hardMutationDrainStarted = true;
+      void (await ledger.run(obligation));
+      recordPendingIncidents();
+    }
+    mode = shutdownModeFromReason(activeReason());
+    if (mode === 'hard') {
+      modeConsequences = hardConsequences;
+    } else {
+      const handoffConsequences = buildHandoffConsequences();
+      for (const obligation of handoffConsequences.obligations) {
+        if (hardMutationDrainStarted && obligation === handoffConsequences.providerOperationMutationDrain) continue;
+        void (await ledger.run(obligation));
+        recordPendingIncidents();
+      }
+      modeConsequences = {
+        obligations: handoffConsequences.obligations,
+        providerOperationMutationDrain: hardMutationDrainStarted
+          ? hardConsequences.providerOperationMutationDrain
+          : handoffConsequences.providerOperationMutationDrain,
+      };
+    }
   }
 
   const closingObligations = buildClosingShutdownObligations({
@@ -1074,9 +1157,11 @@ export async function runShutdownSequence({
   });
   for (const obligation of closingObligations.lifecycle) {
     void (await ledger.run(obligation));
+    recordPendingIncidents();
   }
   for (const obligation of closingObligations.buildStoreAndFinalizerObligations()) {
     void (await ledger.run(obligation));
+    recordPendingIncidents();
   }
 
   const authorityRelease = buildAuthorityReleaseBoundary({
@@ -1087,5 +1172,6 @@ export async function runShutdownSequence({
     time: runtime.time,
   });
 
+  recordPendingIncidents();
   return ledger.gate(authorityRelease);
 }

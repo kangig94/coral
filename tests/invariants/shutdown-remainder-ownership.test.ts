@@ -220,6 +220,10 @@ function ownershipShapeViolations(): string[] {
     violations.push(`${SHUTDOWN_SETTLEMENT_PATH} must declare UndischargedRemainder`);
   } else {
     const declaration = remainder.type.getText(settlement);
+    const armCount = ts.isUnionTypeNode(remainder.type) ? remainder.type.types.length : 1;
+    if (armCount !== 2) {
+      violations.push(`UndischargedRemainder must contain exactly two owner arms; found ${armCount}`);
+    }
     if (!/evidence\s*:\s*SuccessorRecoveryEvidence/u.test(declaration)) {
       violations.push('UndischargedRemainder successor-recovery owner must require SuccessorRecoveryEvidence');
     }

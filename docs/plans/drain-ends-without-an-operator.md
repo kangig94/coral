@@ -40,8 +40,8 @@ A provider-proxy lifecycle fatal starts a shutdown that cannot finish, and the c
 
 **The change, in one sentence:** at shutdown the coordinator releases what it holds and exits once the
 runtime and filesystem calls it invokes return — it never destroys on its own judgement, never waits for
-an unsettled asynchronous operation, and everything it leaves is owned by a durable successor or named as
-lost, in the type, the exit code and one record. Returned discovery read/unlink failures cannot suppress
+an unsettled asynchronous operation, and everything it leaves either has a durable outliving owner or is
+named as lost, in the type, the exit code and one record. Returned discovery read/unlink failures cannot suppress
 the exit request; an uninterruptible synchronous filesystem call remains outside any in-process deadline.
 
 **Why releasing is safe.** After exit every obligation has an owner that does **not** require a successor
@@ -127,12 +127,11 @@ publication throws remains a named `process-exit` loss.
   retained or throwing identity publication still releases the pending launch in a `finally` path. Thus
   every callback outcome leaves the child in exactly one staged obligation — today either throw can leave
   it in both `cleanupHandles` and `pendingDurableLaunches`.
-- **AC7** — Exhaustion publishes `shutdown-remainder.v1.json` in the run directory at mode `0o600`, one
+- **AC7** — Exhaustion publishes `shutdown-remainder.v1/<instanceId>.json` in the run directory at mode `0o600`, one
   entry per undischarged obligation keyed by the ledger's own `label`, through a **synchronous inline**
-  `runtime.storage.writeAtomicDurableSync` call — the same write `recordShutdownObligationAbandonment`
-  already makes on the coordinator thread. The requirement is **ordering**: the write is the statement
-  before `removeBackendInfoIfOwnerFn`. It is not a durability race, so `finalizeStoppedLifecycle` stays
-  synchronous and no process is spawned to perform it.
+  `runtime.storage.writeAtomicSync` call after explicitly creating the version directory. The requirement is
+  **ordering**: the write is the statement before `removeBackendInfoIfOwnerFn`. It is not a durability race,
+  so `finalizeStoppedLifecycle` stays synchronous and no process is spawned to perform it.
 - **AC8** — `shutdown-abandonment-status.v1.json` and
   `createShutdownObligationAbandonmentReceiptParser` are byte-for-byte unchanged; an older reader of the
   abandonment family still parses every record this build writes to it.
@@ -148,9 +147,16 @@ publication throws remains a named `process-exit` loss.
   unknown `SuccessorRecoveryEvidence` kind. Entries decode individually; an undecodable entry is skipped,
   counted, and the count is reported by the programmatic reader, per §10's own "skipped and reported by
   key" precedent. Records decode individually too: an undecodable record is counted by the reader and carried
-  forward verbatim by the writer, which refuses only when the envelope itself is unreadable. Publication retains at most the latest 32 instance records (one record keeps all of its
-  entries); writing an instance replaces its previous record before oldest-instance eviction, so recurring
-  fatal exits have bounded parse, serialization, and durable-write cost.
+  forward verbatim by the writer, which refuses only when the envelope itself is unreadable. Successor boot
+  retains at most the latest 32 instance records (one record keeps all of its entries), so recurring fatal
+  exits have bounded later read cost without putting the scan and unlink work on the predecessor's exit path.
+  **Pioneer correction:** the implemented vocabulary has two owners. A durably published child's wrapper
+  finalizer has custody as its enforcer, while the remainder remains `successor-recovery` because startup
+  re-derives adoption from durable truth. `LifecycleShutdownDisposition` has only `held` plus its two terminal
+  arms, and `GateResolution` has only `held` and `terminal`: a boundary refusal produces `held`, while
+  successful commit or final exhaustion produces `terminal`, where remainder acceptance is attempted. The
+  durable address is the per-instance `shutdown-remainder.v1/<instanceId>.json`, not a shared file. The
+  no-daemon arm of `backend status` renders the newest record only while recent and offers no next step.
 - **AC10** — The shutdown ledger contributes `0` only for `settled` and `1` for every other disposition
   through `recordExitCode`; the process exit code remains the maximum of all contributors. A prior repeated
   signal or startup contribution is therefore never lowered by a later settled ledger.
@@ -399,9 +405,9 @@ by the fix.
   fixtures and `'operator-recovery'`. *(AC1)*
 - Add `'provider-proxy-lifecycle-fatal'` to the handoff arm. *(AC2)*
 - `UndischargedRemainder` in `src/coordinator/shutdown-settlement.ts` loses `none` and free-form `via`;
-  `successor-recovery` instead carries a `SuccessorRecoveryEvidence` discriminated union. Start with
-  `startup-adoption` (carrying the durably published child processes), `startup-store-recovery`, and
-  `startup-liveness-recovery`. `remainderRole` is deleted together with its `blocking` role; `boundaryRemainder` is `process-exit` because process death is the final release when the
+  `successor-recovery` instead carries `SuccessorRecoveryEvidence`: `startup-adoption` with the retained
+  durably published processes, `startup-store-recovery`, or `startup-liveness-recovery`. `remainderRole` is
+  deleted together with its `blocking` role; `boundaryRemainder` is `process-exit` because process death is the final release when the
   explicit boundary cannot confirm. *(AC3, AC9)*
 - `SettlementLedger.settleInitially` loses `authorityBlocked`; obligation execution is a one-shot phase.
   Remove `retryDeclined` from the shutdown transition: later invocations retry only acceptance and boundary
@@ -478,9 +484,9 @@ ownership-inventory invariant enumerates this table and fails on either `none` o
   types, not one consumed twice; `childTerminationConfirmation` and `retainedChildActions` split with them.
   Delete `terminateAll` — its only production reference is `composition/defaults.ts`'s `terminateAllFn`
   injection, and every other caller is a test. *(AC5, AC6)*
-- **The remainder record.** New `shutdown-remainder.v1.json` in the same `runDir` as the abandonment
+- **The remainder record.** New `shutdown-remainder.v1/<instanceId>.json` in the same `runDir` as the abandonment
   family, bounded append-and-replace-by-instance shape and tolerant reader. Writing replaces the same
-  instance and then retains the newest 32 instance records as atomic groups. The serialized entries are the
+  instance; the successor boot path later retains the newest 32 instance records as atomic groups. The serialized entries are the
   ledger's `{ label, remainder, settlement }` values directly. Shape precedent: `HANDOFF_CAPSULE_FILENAME`
   in `src/provider-proxy/handoff-capsule-discovery.ts` — a generation admitted by address, derived from
   `SUPPORTED_HANDOFF_CAPSULE_VERSIONS`. *(AC7, AC9)*
@@ -496,21 +502,16 @@ ownership-inventory invariant enumerates this table and fails on either `none` o
     the identity the ledger already uses in `deferredFailures`.
   - **Why the run directory.** The store is finalized by the closing obligations before the boundary; at
     exit the run directory is the only writable durable address.
-  - **Written inline, and why no helper.** One synchronous `runtime.storage.writeAtomicDurableSync` at
-    `0o600`, on the coordinator thread, exactly as `recordShutdownObligationAbandonment`
-    (`src/coordinator/shutdown-abandonment.ts`) already writes its own record from inside an IPC handler.
+  - **Written inline, and why no helper.** One synchronous `runtime.storage.writeAtomicSync` at `0o600`, on
+    the coordinator thread after creating the version directory.
     A `false` return or a throw is the typed `refused` of AC12.
 
     An earlier draft put this in a separate `coral-shutdown-remainder-writer.cjs` process to bound a
-    filesystem stall. **That separation does not deliver the property it was introduced for.** AC11's very
-    next step is `removeBackendInfoIfOwnerFn` → `removeBackendInfoIfOwner`
-    (`src/infra/backend-discovery.ts`), which does `readDiscoveryRecord` then `unlinkSync` on
-    `runDir/coordinator.json` — the same directory, the same device, the same thread, unbounded, and not
-    optional, because it *is* the withdrawal. The one shared ext4 journal that blocks `fdatasync` blocks a
-    metadata unlink. So the guarded call would be followed one line later by an unguarded one, and
-    "the coordinator cannot be stalled by the filesystem at exit" would still be false. The same argument
-    refutes dropping `fdatasync`: `writeAtomicSync` still does `openSync(…,'w')` + `renameSync`, both
-    journal-bound. Stall exposure does not discriminate between these options at all — only cost does.
+    filesystem stall. The measured stall class is `jbd2_log_wait_commit`: the explicit commit wait entered
+    by `fdatasync` and directory sync inside `writeAtomicDurableSyncNode`. The non-durable atomic writer drops
+    both calls. Its open and rename, and the following discovery read and unlink, remain journal-bound but
+    join the running transaction and return without asking the kernel to wait for its commit. The helper is
+    therefore unnecessary once the record delivers only the ordering AC7 requires.
 
     What the helper costs, against that: a **fifth** released executable that must join
     `scripts/build-server.mjs`'s `entryPoints`, `receiptInputs`/`receiptOutputs`, `bridgeFiles`,
@@ -523,14 +524,14 @@ ownership-inventory invariant enumerates this table and fails on either `none` o
     directory sync has already published, while a helper blocked in uninterruptible kernel wait does not
     die on `SIGKILL` at all — it is reparented, and on device recovery renames a pre-stall snapshot over
     whatever a *successor* coordinator has since written to the same append-and-replace-by-instance file.
-    That is a lost update the single-writer abandonment family cannot have, and `writeAtomicDurableSync`
-    derives its temp name as `${path}.tmp`, so "a unique temporary path" is not even expressible through it.
+    That is a lost update the single-writer abandonment family cannot have, and the atomic writer derives its
+    temp name as `${path}.tmp`, so "a unique temporary path" is not even expressible through it.
 
     The requirement AC7 actually carries is **ordering**, not survival of a power cut. Across a power cut
     every obligation the record names — a proxy set, a durable child, a saga row — has been discharged by
     the same power cut, and the run directory's socket and discovery state are stale anyway. Ordering is
-    free: the write is the statement before the withdrawal. Durability is kept because the preplan settled
-    `writeAtomicDurableSync` and it costs nothing beyond the unlink already standing beside it.
+    free: the write is the statement before the withdrawal. The non-durable atomic writer omits the explicit
+    journal commit waits; open, rename, read, and unlink remain journal-bound without requesting a commit.
 
     An uninterruptible withdrawal call is the real version of the stall problem and remains outside what an
     in-process deadline can solve. Ordinary returned discovery read/unlink errors are in scope: convert them

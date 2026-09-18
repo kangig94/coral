@@ -2,10 +2,12 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  pruneShutdownRemainderRecords,
   readShutdownRemainderStatus,
   recordShutdownRemainder,
   shutdownRemainderPath,
 } from '#src/coordinator/shutdown-remainder.js';
+import { childTerminationRemainder } from '#src/coordinator/shutdown.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
@@ -14,7 +16,7 @@ const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
 
 type RemainderStorage = Pick<
   StoragePort,
-  'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync' | 'writeAtomicDurableSync'
+  'existsSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync' | 'writeAtomicSync'
 > & {
   fileNames(): string[];
   readPublished(instanceId: string): string | null;
@@ -58,9 +60,11 @@ function storageWith(
       if (options.refusePrune === true) throw new Error('prune refused');
       files.delete(path);
     }),
-    writeAtomicDurableSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
-      if (options.publish === false) return false;
+    mkdirSync: vi.fn(() => {
       directoryExists = true;
+    }),
+    writeAtomicSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
+      if (options.publish === false) return false;
       const value =
         typeof data === 'string' ? data : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf-8');
       files.set(path, { value, mtimeMs: ++clock });
@@ -116,7 +120,8 @@ describe('shutdown remainder status', () => {
     ).toBe(true);
 
     expect(shutdownRemainderPath(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
-    expect(storage.writeAtomicDurableSync).toHaveBeenCalledWith(
+    expect(storage.mkdirSync).toHaveBeenCalledWith(REMAINDER_DIRECTORY, { recursive: true });
+    expect(storage.writeAtomicSync).toHaveBeenCalledWith(
       '/run/shutdown-remainder.v1/current-instance.json',
       `${JSON.stringify(
         {
@@ -249,7 +254,7 @@ describe('shutdown remainder status', () => {
     expect(JSON.parse(storage.readPublished('current-instance') ?? '')).toEqual(recordAt('current-instance'));
   });
 
-  it('retains the newest 32 instance files by mtime', () => {
+  it('prunes the successor-visible directory to the newest 32 instance files by mtime', () => {
     const storage = storageWith(Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)));
 
     expect(
@@ -259,12 +264,14 @@ describe('shutdown remainder status', () => {
       ),
     ).toBe(true);
 
+    expect(storage.fileNames()).toHaveLength(33);
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
     expect(storage.fileNames()).toHaveLength(32);
     expect(storage.fileNames()).not.toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 
-  it('does not turn best-effort prune refusal into a write refusal', () => {
+  it('does not turn a best-effort startup prune refusal into an error', () => {
     const storage = storageWith(
       Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)),
       { refusePrune: true },
@@ -276,10 +283,11 @@ describe('shutdown remainder status', () => {
         { instanceId: 'instance-32', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
       ),
     ).toBe(true);
+    expect(() => pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR })).not.toThrow();
     expect(storage.fileNames()).toHaveLength(33);
   });
 
-  it('does not prune when publication is refused', () => {
+  it('does not perform exit-path pruning when publication is refused', () => {
     const storage = storageWith([fileAt('existing-instance', 1)], { publish: false });
 
     expect(
@@ -292,7 +300,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['existing-instance.json']);
   });
 
-  it('round-trips startup-adoption evidence for every retained durably-published child', () => {
+  it('round-trips startup-adoption evidence for a retained durable child', () => {
     const storage = storageWith();
     const evidence = {
       kind: 'durable-cli-runtime',
@@ -300,6 +308,28 @@ describe('shutdown remainder status', () => {
       pid: 4_242,
       leaderIncarnation: testIncarnation('adopted-child'),
     } as const;
+    const remainder = childTerminationRemainder({
+      kind: 'children-unresolved-at-deadline',
+      processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
+      cleanupHandles: 1,
+      retainedProcesses: [
+        {
+          kind: 'recorded-wrapper-group',
+          provider: 'codex',
+          jobId: 'adopted-job',
+          jobDir: '/tmp/coral/jobs/adopted-job',
+          publication: { kind: 'durably-published', owner: 'successor-recovery', evidence },
+          containment: {
+            pid: 4_242,
+            incarnation: testIncarnation('adopted-child'),
+            processGroupId: 4_242,
+            childRoot: null,
+          },
+        },
+      ],
+      cleanupFailures: 0,
+      owner: 'launch-coordinator',
+    });
 
     expect(
       recordShutdownRemainder(
@@ -311,7 +341,7 @@ describe('shutdown remainder status', () => {
           undischarged: [
             {
               label: 'child termination',
-              remainder: { owner: 'successor-recovery', evidence: { kind: 'startup-adoption', processes: [evidence] } },
+              remainder,
               settlement: { cause: 'timed-out', detail: '1 cleanup handle(s) remain owned by launch-coordinator' },
             },
           ],

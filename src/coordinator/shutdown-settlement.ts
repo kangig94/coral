@@ -14,15 +14,8 @@ export type SuccessorRecoveryEvidence =
   | Readonly<{ kind: 'startup-store-recovery' }>
   | Readonly<{ kind: 'startup-liveness-recovery' }>;
 
-export type DurableWrapperFinalizerEvidence = Readonly<{
-  kind: 'durable-wrapper-finalizer-containment';
-  processes: readonly DurableCliRuntimePublicationEvidence[];
-  successorTransfer: Readonly<{ kind: 'startup-adoption'; status: 'pending-verification' }>;
-}>;
-
 export type UndischargedRemainder =
   | Readonly<{ owner: 'process-exit' }>
-  | Readonly<{ owner: 'durable-wrapper-finalizer'; evidence: DurableWrapperFinalizerEvidence }>
   | Readonly<{ owner: 'successor-recovery'; evidence: SuccessorRecoveryEvidence }>;
 
 export type ShutdownHoldReason = 'required-shutdown-step-unsettled';
