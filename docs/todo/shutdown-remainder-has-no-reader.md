@@ -8,7 +8,7 @@ writer. The record exists so that what a shutdown left is visible; half of "visi
 `recordShutdownRemainder` (`src/coordinator/shutdown-remainder.ts`) writes `shutdown-remainder.v1.json`
 into the run directory whenever a shutdown finalizes with losses: one entry per undischarged obligation,
 keyed by the ledger's `label`, carrying `{ remainder, settlement: { cause, detail } }`, under a record that
-carries `instanceId`, `recordedAt`, `reason`, `mode`, and `exitCode`. `readShutdownRemainderStatus` in the
+carries `instanceId`, `recordedAt`, `reason`, and `mode`. `readShutdownRemainderStatus` in the
 same module decodes it tolerantly — per record and per entry, skips counted — and **has no production
 caller**. Its only readers are tests. The older abandonment family beside it does have a surface,
 `coral-cli backend shutdown-recovery status` (`src/cli/commands/backend.ts`), which reads

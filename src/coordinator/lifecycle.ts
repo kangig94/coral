@@ -1431,7 +1431,6 @@ export function createLifecycle(
               instanceId,
               reason: ledgerReason,
               mode: shutdownModeFromReason(ledgerReason),
-              exitCode: 1,
               undischarged: losses,
             },
           )

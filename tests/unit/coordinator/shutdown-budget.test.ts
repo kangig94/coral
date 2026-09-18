@@ -2747,12 +2747,11 @@ describe('required provider-proxy shutdown steps', () => {
     expect(finalizationOrder).toEqual(['boundary', 'stopped', 'record', 'withdraw', 'record', 'exit:1']);
     expect(remainderDocuments).toHaveLength(2);
     const rewritten = JSON.parse(remainderDocuments[1] ?? '{}') as {
-      records?: Array<{ instanceId?: string; exitCode?: number; entries?: Array<{ label?: string }> }>;
+      records?: Array<{ instanceId?: string; entries?: Array<{ label?: string }> }>;
     };
     expect(rewritten.records).toEqual([
       expect.objectContaining({
         instanceId: 'boundary-exhaustion',
-        exitCode: 1,
         entries: expect.arrayContaining([expect.objectContaining({ label: 'backend discovery withdrawal' })]),
       }),
     ]);
@@ -2811,7 +2810,7 @@ describe('required provider-proxy shutdown steps', () => {
     expect(exhausted).toMatchObject({ disposition: 'finalized-with-losses' });
     const written = JSON.parse(remainderDocuments.at(-1) ?? '{}') as { records?: Array<Record<string, unknown>> };
     expect(written.records).toEqual([
-      expect.objectContaining({ instanceId: 'interrupted-drain', reason: 'replaced', mode: 'handoff', exitCode: 1 }),
+      expect.objectContaining({ instanceId: 'interrupted-drain', reason: 'replaced', mode: 'handoff' }),
     ]);
   });
 

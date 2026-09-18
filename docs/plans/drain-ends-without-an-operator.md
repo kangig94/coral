@@ -140,8 +140,10 @@ publication throws remains a named `process-exit` loss.
   `{ label, remainder, settlement: { cause, detail } }`. `remainder` is either `{ owner: 'process-exit' }`
   or `{ owner: 'successor-recovery', evidence: SuccessorRecoveryEvidence }` (`startup-adoption`, carrying
   the list of durably published child processes, `startup-store-recovery`, or `startup-liveness-recovery`);
-  no free-form `via` string remains. The record also carries `instanceId`, `recordedAt`, `reason`, `mode`,
-  and `exitCode`, the lifecycle's exit contribution (1 for any record that exists). Tolerance is **per entry, not only per field**: `.passthrough()` on the entry
+  no free-form `via` string remains. The record also carries `instanceId`, `recordedAt`, `reason`, and `mode`.
+  **Corrected before release:** `exitCode` was removed from the record because every record already implies
+  the lifecycle's constant exit contribution of 1; older pre-release records that carry it still decode
+  through the record schema's `.passthrough()`. Tolerance is **per entry, not only per field**: `.passthrough()` on the entry
   object does not save a reader whose `entries: z.array(closedUnion)` rejects the whole file for one
   unknown `SuccessorRecoveryEvidence` kind. Entries decode individually; an undecodable entry is skipped,
   counted, and the count is reported by the programmatic reader, per §10's own "skipped and reported by

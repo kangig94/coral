@@ -217,7 +217,6 @@ describe('coordinator fatal drain integration', () => {
     expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
       mode: 'handoff',
-      exitCode: 1,
       entries: [
         {
           label: 'lifecycle reactor dispose',

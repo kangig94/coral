@@ -93,7 +93,10 @@ Design decisions settled by pioneer (`fable`), traced against the tree at `7ae70
   `shutdown-remainder.v1.json` in the same `runDir`, same append-and-replace-by-instance shape,
   `writeAtomicDurableSync` at mode `0o600`, reader tolerant (`.passthrough()`), additive-only per §10.
   Entry shape: `{ label, owner: 'process-exit' | 'successor-recovery', via?, settlement: { cause, detail } }`,
-  with `instanceId`, `recordedAt`, `reason`, `mode`, `exitCode` on the record. Keyed by obligation
+  with `instanceId`, `recordedAt`, `reason`, and `mode` on the record. **Corrected before release:**
+  `exitCode` was removed because the record exists only for losses and therefore already implies the
+  lifecycle's exit contribution of 1; older pre-release records carrying it remain readable through
+  `.passthrough()`. Keyed by obligation
   `label` — the identity the ledger already uses in `deferredFailures` — not by a subject enum: the
   abandonment subjects are an enum because they are *arguments to a command*, while a remainder record is
   diagnostic, and a closed enum there would need extending for every obligation the ledger ever gains.

@@ -63,7 +63,6 @@ const shutdownRemainderRecordEnvelopeSchema = z
     recordedAt: z.string().datetime(),
     reason: z.string().min(1),
     mode: z.enum(['handoff', 'hard']),
-    exitCode: z.number().int().nonnegative(),
     entries: z.array(z.unknown()).readonly(),
   })
   .passthrough();
@@ -80,7 +79,6 @@ export type ShutdownRemainderRecord = Readonly<{
   recordedAt: string;
   reason: string;
   mode: ShutdownMode;
-  exitCode: number;
   entries: readonly ShutdownUndischarged[];
 }>;
 
@@ -104,7 +102,6 @@ export type ShutdownRemainderRecordInput = Readonly<{
   instanceId: string;
   reason: ShutdownReason;
   mode: ShutdownMode;
-  exitCode: number;
   undischarged: readonly ShutdownUndischarged[];
 }>;
 
@@ -144,7 +141,6 @@ function decodeShutdownRemainderDocument(
       recordedAt: parsedRecord.data.recordedAt,
       reason: parsedRecord.data.reason,
       mode: parsedRecord.data.mode,
-      exitCode: parsedRecord.data.exitCode,
       entries,
     });
   }
@@ -219,7 +215,6 @@ export function recordShutdownRemainder(
     recordedAt: nowIsoString(runtime.time),
     reason: input.reason,
     mode: input.mode,
-    exitCode: input.exitCode,
     entries: input.undischarged,
   };
   const records = [...document.records.filter((existing) => !namesInstance(existing, input.instanceId)), record].slice(

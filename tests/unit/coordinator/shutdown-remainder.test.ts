@@ -38,7 +38,6 @@ function recordAt(instanceId: string, entries: readonly unknown[] = [KNOWN_LOSS]
     recordedAt: '2026-09-07T00:00:00.000Z',
     reason: 'sigterm',
     mode: 'handoff',
-    exitCode: 1,
     entries,
   };
 }
@@ -54,7 +53,6 @@ describe('shutdown remainder status', () => {
           instanceId: 'current-instance',
           reason: 'provider-proxy-lifecycle-fatal',
           mode: 'handoff',
-          exitCode: 1,
           undischarged: [
             {
               label: 'pending durable launch settlement',
@@ -83,7 +81,6 @@ describe('shutdown remainder status', () => {
               recordedAt: '2026-09-07T00:00:00.000Z',
               reason: 'provider-proxy-lifecycle-fatal',
               mode: 'handoff',
-              exitCode: 1,
               entries: [
                 {
                   label: 'pending durable launch settlement',
@@ -116,7 +113,6 @@ describe('shutdown remainder status', () => {
             recordedAt: '2026-09-07T00:00:00.000Z',
             reason: 'provider-proxy-lifecycle-fatal',
             mode: 'handoff',
-            exitCode: 1,
             entries: [
               {
                 label: 'known loss',
@@ -148,7 +144,6 @@ describe('shutdown remainder status', () => {
             recordedAt: '2026-09-07T00:00:00.000Z',
             reason: 'provider-proxy-lifecycle-fatal',
             mode: 'handoff',
-            exitCode: 1,
             entries: [
               {
                 label: 'known loss',
@@ -174,7 +169,6 @@ describe('shutdown remainder status', () => {
             recordedAt: '2026-09-07T00:00:00.000Z',
             reason: 'sigterm',
             mode: 'handoff',
-            exitCode: 1,
             entries: [
               {
                 label: 'known loss',
@@ -195,16 +189,32 @@ describe('shutdown remainder status', () => {
     expect(read.status.records[0]?.entries).toHaveLength(1);
   });
 
+  it('decodes an older record that carries exitCode', () => {
+    const storage = storageWith(
+      JSON.stringify({
+        version: 1,
+        records: [{ ...recordAt('older-instance'), exitCode: 1 }],
+      }),
+    );
+
+    expect(readShutdownRemainderStatus({ storage, runDir: '/run' })).toEqual({
+      kind: 'available',
+      path: '/run/shutdown-remainder.v1.json',
+      status: { version: 1, records: [recordAt('older-instance')] },
+      skippedEntries: 0,
+      skippedRecords: 0,
+    });
+  });
+
   it('replaces an instance before retaining only the latest 32 whole records', () => {
     const storage = storageWith(null);
     let now = 1_788_739_200_000;
     const runtime = { storage, time: { now: () => now++ }, runDir: '/run' };
-    const write = (instanceId: string, exitCode: number, entryCount = 1) =>
+    const write = (instanceId: string, entryCount = 1) =>
       recordShutdownRemainder(runtime, {
         instanceId,
         reason: 'sigterm',
         mode: 'handoff',
-        exitCode,
         undischarged: Array.from({ length: entryCount }, (_, index) => ({
           label: `${instanceId} loss`,
           remainder: { owner: 'process-exit' },
@@ -212,16 +222,16 @@ describe('shutdown remainder status', () => {
         })),
       });
 
-    for (let index = 0; index < 32; index += 1) expect(write(`instance-${index}`, 1)).toBe(true);
-    expect(write('instance-31', 2, 40)).toBe(true);
+    for (let index = 0; index < 32; index += 1) expect(write(`instance-${index}`)).toBe(true);
+    expect(write('instance-31', 40)).toBe(true);
     let read = readShutdownRemainderStatus({ storage, runDir: '/run' });
     if (read.kind !== 'available') throw new Error('expected readable remainder status');
     expect(read.status.records).toHaveLength(32);
     expect(read.status.records[0]?.instanceId).toBe('instance-0');
-    expect(read.status.records.at(-1)).toMatchObject({ instanceId: 'instance-31', exitCode: 2 });
+    expect(read.status.records.at(-1)?.instanceId).toBe('instance-31');
     expect(read.status.records.at(-1)?.entries).toHaveLength(40);
 
-    expect(write('instance-32', 1)).toBe(true);
+    expect(write('instance-32')).toBe(true);
     read = readShutdownRemainderStatus({ storage, runDir: '/run' });
     if (read.kind !== 'available') throw new Error('expected readable remainder status');
     expect(read.status.records).toHaveLength(32);
@@ -246,7 +256,6 @@ describe('shutdown remainder status', () => {
           instanceId: 'current-instance',
           reason: 'test-teardown',
           mode: 'hard',
-          exitCode: 1,
           undischarged: [
             {
               label: 'child termination',
@@ -304,7 +313,7 @@ describe('shutdown remainder status', () => {
     expect(
       recordShutdownRemainder(
         { storage, time: { now: () => 1_788_739_200_000 }, runDir: '/run' },
-        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', exitCode: 1, undischarged: [KNOWN_LOSS] },
+        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
       ),
     ).toBe(true);
 
@@ -324,7 +333,7 @@ describe('shutdown remainder status', () => {
     expect(
       recordShutdownRemainder(
         { storage, time: { now: () => 1_788_739_200_000 }, runDir: '/run' },
-        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', exitCode: 1, undischarged: [KNOWN_LOSS] },
+        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
       ),
     ).toBe(true);
 
@@ -340,7 +349,6 @@ describe('shutdown remainder status', () => {
       instanceId: 'current-instance',
       reason: 'sigterm',
       mode: 'handoff',
-      exitCode: 1,
       undischarged: [KNOWN_LOSS],
     } as const;
 
