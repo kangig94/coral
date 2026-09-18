@@ -1775,10 +1775,12 @@ describe('cli format', () => {
           {
             entryNumber: 1,
             obligation: null,
+            owner: 'successor-recovery',
           },
           {
             entryNumber: 4,
             obligation: { label: 'stream response close', ordinal: 3 },
+            owner: 'process-exit',
           },
         ],
         skippedRecordCount: 1,
@@ -1805,8 +1807,10 @@ describe('cli format', () => {
           '  Error: Error',
           '  Code: ENOENT',
           'Skipped entry 1: unrecognized obligation',
+          '  Owner: successor-recovery',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
           'Skipped entry 4: stream response close 3',
+          '  Owner: process-exit',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
           'Skipped shutdown remainder records: 1',
           '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',

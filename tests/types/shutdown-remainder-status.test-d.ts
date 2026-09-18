@@ -14,10 +14,10 @@ void entry.subject;
 declare const skippedEntry: ShutdownRemainderStatus['skippedEntries'][number];
 void skippedEntry.entryNumber;
 void skippedEntry.obligation;
+const skippedOwner: 'process-exit' | 'successor-recovery' | null = skippedEntry.owner;
+void skippedOwner;
 // @ts-expect-error skipped persisted labels are absent from the status projection.
 void skippedEntry.label;
-// @ts-expect-error skipped persisted owners are absent from the status projection.
-void skippedEntry.owner;
 // @ts-expect-error skipped record identities are absent from the status projection.
 void skippedEntry.recordInstanceId;
 
@@ -40,6 +40,14 @@ void settlement.stack;
 if (settlement.cause === 'rejected' || settlement.cause === 'aborted') {
   void settlement.error.name;
   void settlement.error.code;
+  type ErrorName = NonNullable<typeof settlement.error.name>;
+  type ErrorCode = NonNullable<typeof settlement.error.code>;
+  // @ts-expect-error the projected error name is a closed repository vocabulary.
+  const hostileName: ErrorName = 'RunCoralCliBackendShutdown';
+  // @ts-expect-error the projected error code is a closed repository vocabulary.
+  const hostileCode: ErrorCode = 'RUN_CORAL_CLI_BACKEND_SHUTDOWN';
+  void hostileName;
+  void hostileCode;
   // @ts-expect-error the thrown fingerprint excludes the persisted message.
   void settlement.error.message;
   // @ts-expect-error the thrown fingerprint excludes the persisted stack.

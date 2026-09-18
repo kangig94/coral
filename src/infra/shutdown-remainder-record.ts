@@ -63,10 +63,15 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
   owner: string | null;
 }>;
 
+export type ShutdownRemainderSkippedRecord = Readonly<{
+  name: string;
+  mtimeMs: number;
+}>;
+
 export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
-  skippedRecords: readonly string[];
+  skippedRecords: readonly ShutdownRemainderSkippedRecord[];
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
@@ -216,7 +221,7 @@ export function scanShutdownRemainderRecords(
 ): ShutdownRemainderRecordScan {
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
-  const skippedRecords: string[] = [];
+  const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
   const recordFiles = storage
     .readdirSync(directory)
     .filter((name) => name.endsWith('.json'))
@@ -238,17 +243,17 @@ export function scanShutdownRemainderRecords(
     })
     .sort((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name));
 
-  for (const { name, reportedName } of recordFiles) {
+  for (const { name, reportedName, mtimeMs } of recordFiles) {
     try {
       const decoded = decodeShutdownRemainderRecord(JSON.parse(storage.readFileSync(join(directory, name), 'utf-8')));
       if (decoded.kind === 'unreadable') {
-        skippedRecords.push(reportedName);
+        skippedRecords.push({ name: reportedName, mtimeMs });
         continue;
       }
       records.push(decoded.record);
       skippedEntries.push(...decoded.skippedEntries);
     } catch {
-      skippedRecords.push(reportedName);
+      skippedRecords.push({ name: reportedName, mtimeMs });
     }
   }
 

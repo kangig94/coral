@@ -359,7 +359,7 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
       status: { records: [] },
-      skippedRecords: ['bounded-instance.json'],
+      skippedRecords: [{ name: 'bounded-instance.json', mtimeMs: 1 }],
     });
   });
 
@@ -368,7 +368,7 @@ describe('shutdown remainder status', () => {
 
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
-      skippedRecords: ['invalid-record-name'],
+      skippedRecords: [{ name: 'invalid-record-name', mtimeMs: 1 }],
     });
   });
 
@@ -385,7 +385,10 @@ describe('shutdown remainder status', () => {
       path: REMAINDER_DIRECTORY,
       status: { version: 1, records: [decodedRecordAt('known-instance')] },
       skippedEntries: [],
-      skippedRecords: ['corrupt-instance.json', 'foreign-instance.json'],
+      skippedRecords: [
+        { name: 'corrupt-instance.json', mtimeMs: 2 },
+        { name: 'foreign-instance.json', mtimeMs: 3 },
+      ],
     });
   });
 

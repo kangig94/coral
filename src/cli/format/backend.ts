@@ -1283,7 +1283,7 @@ function formatShutdownSettlementLines(
     case 'aborted':
       return [
         ...lines,
-        `  Error: ${settlement.error.name}`,
+        `  Error: ${settlement.error.name ?? 'unavailable'}`,
         ...(settlement.error.code === undefined ? [] : [`  Code: ${settlement.error.code}`]),
       ];
     case 'timed-out':
@@ -1329,6 +1329,7 @@ function formatSkippedShutdownRemainderEntries(
 ): string[] {
   return entries.flatMap((entry) => [
     `Skipped entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+    `  Owner: ${entry.owner ?? 'unavailable'}`,
     '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
   ]);
 }

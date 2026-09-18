@@ -24,14 +24,172 @@ import {
 } from '../../../infra/shutdown-remainder-record.js';
 
 const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
-const OPERATOR_FACING_ERROR_IDENTIFIER_MAX_LENGTH = 64;
-const OPERATOR_FACING_ERROR_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/u;
-const OPERATOR_FACING_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]*$/u;
+const OPERATOR_FACING_ERROR_NAMES = [
+  'AbortError',
+  'ActiveStoreCoordinationWriteError',
+  'ActiveStoreSelectionDecodeError',
+  'ActiveStoreTransitionDecodeError',
+  'AgentNamespaceNotFoundError',
+  'AgentNotFoundError',
+  'AggregateError',
+  'AssertionError',
+  'BackendAlreadyRunningError',
+  'BackendToolHttpError',
+  'BackendUnreachableError',
+  'ChildPrincipalBindingError',
+  'ClaudeBrokerRpcError',
+  'ClaudeControllerCleanupHeldError',
+  'CliBusyError',
+  'ConsumerDrainTimeout',
+  'ContainmentIdentityObservationError',
+  'ContinuityCommitDeliveryError',
+  'ControlAdmissionRefusedError',
+  'ControlClientError',
+  'ControlEndpointError',
+  'ControlHeartbeatRefusedError',
+  'CoordinatorRecoveryCommitError',
+  'CoordinatorSocketReleaseTimeout',
+  'CoralAppendError',
+  'CoralSetupError',
+  'CorpusScanLimitError',
+  'CurateJsonParseError',
+  'CurateRunError',
+  'DirectoryLockOwnershipLostError',
+  'DirectoryLockTimeoutError',
+  'DiscussManagerError',
+  'DiscussStaleWriteError',
+  'DiscussWatchReadError',
+  'DuplicateLaunchReservationError',
+  'EnforcementError',
+  'Error',
+  'FrameTooLargeError',
+  'FreshnessApplyFailure',
+  'FreshnessTimeout',
+  'FrontmatterMergeUnavailableError',
+  'GuardianConstructionCleanupHeldError',
+  'HandoffCapsuleError',
+  'HandoffEscalationError',
+  'HandoffGuardError',
+  'HandoffRunError',
+  'HttpBodyReadError',
+  'IncumbentMatchesError',
+  'InterruptedRecoveryCommitError',
+  'InvalidAgentRefError',
+  'IpcDeadlineExceededError',
+  'IpcDrainRequestUnanswered',
+  'IpcLifecycleRefusal',
+  'IpcRequestTimeout',
+  'IpcRpcError',
+  'JsonRpcLineTooLargeError',
+  'KiwiAnalyzerMissingArtifactError',
+  'KiwiAnalyzerTerminalLoadError',
+  'LedgerError',
+  'ProcessContainmentError',
+  'ProviderArtifactArchiveInvariantError',
+  'ProviderArtifactDefinitiveFailure',
+  'ProviderArtifactProtocolInvariantError',
+  'ProviderBindingRuntimeError',
+  'ProviderBootstrapCapsuleError',
+  'ProviderEventBackpressureError',
+  'ProviderEventDurableStateUncommittedError',
+  'ProviderEventIdentityMismatchError',
+  'ProviderEventInvalidSeqError',
+  'ProviderHostAdministrationError',
+  'ProviderHostFault',
+  'ProviderHostOwnerTornDown',
+  'ProviderHostUnserviceableError',
+  'ProviderHostUnserviceableResponseError',
+  'ProviderHostUnsupportedPlatformError',
+  'ProviderOperationAtomicTerminalizationError',
+  'ProviderOperationJournalError',
+  'ProviderOperationReconcilerFatalError',
+  'ProviderOperationRecordCodecError',
+  'ProviderOperationTerminalizationUnavailableError',
+  'ProviderOperationTerminalMetadataError',
+  'ProviderProxyEndpointError',
+  'ProviderProxyOperationControlHeldError',
+  'ProviderProxyRecoveryDeadlineError',
+  'ProviderProxyRoleControlRemoteError',
+  'ProviderProxyRoleControlUnavailableError',
+  'ProviderProxySetInheritanceCorruptionError',
+  'ProviderProxySetLifecycleFatalError',
+  'ProviderRpcError',
+  'ProviderSelectionError',
+  'ProviderServerLineTooLargeError',
+  'ProviderServerSpawnCleanupSettledError',
+  'ProxyControlProtocolError',
+  'ProxyProviderRootCapacityError',
+  'RangeError',
+  'RecoveryCoordinatorRequiredError',
+  'RecoveryOwnershipReleaseError',
+  'RecoveryQuarantineArgumentError',
+  'RecoveryQuarantineClearError',
+  'RecoveryQuarantineContractError',
+  'RecoveryQuarantineOperationError',
+  'ReplayAdmissionError',
+  'RepresentationDriveFencedError',
+  'RoleSpawnError',
+  'SemanticOperationAdmissionClosedError',
+  'SemanticOperationCancellationTimeoutError',
+  'SemanticOperationCancellationUnconfirmedError',
+  'SemanticOperationShutdownError',
+  'SessionClaimError',
+  'SocketDirectoryError',
+  'StartupStoreHandoffError',
+  'StoreCodecError',
+  'StoreDecodeError',
+  'StoreFormatChangedDuringAdoptionError',
+  'StoreResetCliError',
+  'StoreResetIncidentReadError',
+  'StoreResetManifestDecodeError',
+  'SyntaxError',
+  'SystemError',
+  'TerminalWriteError',
+  'TransientHttpError',
+  'TypeError',
+  'UnconfirmedClaudeOneShotCancellationError',
+  'UnconfirmedClaudeTurnCancellationError',
+  'UnknownControlMethodError',
+  'UnknownThrown',
+  'UnknownWorkflowRecoveryOutcome',
+  'UsageError',
+  'UserInputError',
+  'WaitResumeError',
+  'WorkDirectoryError',
+  'WorkflowExecutionError',
+  'WorkflowInputError',
+] as const;
+const OPERATOR_FACING_ERROR_CODES = [
+  'EACCES',
+  'EADDRINUSE',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EEXIST',
+  'ENOBUFS',
+  'ENOENT',
+  'ENOSPC',
+  'ENOTDIR',
+  'ENOTEMPTY',
+  'EPIPE',
+  'EPERM',
+  'EROFS',
+  'ERR_BUFFER_TOO_LARGE',
+  'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+  'ERR_SQLITE_ERROR',
+  'ESRCH',
+  'ETIMEDOUT',
+] as const;
+type OperatorFacingErrorName = (typeof OPERATOR_FACING_ERROR_NAMES)[number];
+type OperatorFacingErrorCode = (typeof OPERATOR_FACING_ERROR_CODES)[number];
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
 type OperatorFacingShutdownSettlement =
-  | Readonly<{ cause: 'rejected' | 'aborted'; error: Readonly<{ name: string; code?: string }> }>
+  | Readonly<{
+      cause: 'rejected' | 'aborted';
+      error: Readonly<{ name?: OperatorFacingErrorName; code?: OperatorFacingErrorCode }>;
+    }>
   | Readonly<{ cause: 'timed-out'; budgetMs: number }>
   | Readonly<{ cause: 'budget-exhausted' | 'unconfirmed' }>;
 
@@ -69,6 +227,7 @@ type OperatorFacingShutdownObligation =
 type OperatorFacingShutdownSkippedEntry = Readonly<{
   entryNumber: number;
   obligation: OperatorFacingShutdownObligation | null;
+  owner: ShutdownRemainderRecord['entries'][number]['remainder']['owner'] | null;
 }>;
 
 type OperatorFacingShutdownRemainderRecord = Readonly<{
@@ -202,6 +361,8 @@ function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase
 }
 
 const operatorFacingShutdownLabels = new Set<string>(OPERATOR_FACING_SHUTDOWN_LABELS);
+const operatorFacingErrorNames = new Set<string>(OPERATOR_FACING_ERROR_NAMES);
+const operatorFacingErrorCodes = new Set<string>(OPERATOR_FACING_ERROR_CODES);
 
 function positiveSafeInteger(value: string): number | null {
   const parsed = Number(value);
@@ -229,18 +390,12 @@ function operatorFacingShutdownObligation(label: string): OperatorFacingShutdown
   return null;
 }
 
-function operatorFacingErrorName(name: string): string {
-  return name.length <= OPERATOR_FACING_ERROR_IDENTIFIER_MAX_LENGTH && OPERATOR_FACING_ERROR_NAME_PATTERN.test(name)
-    ? name
-    : 'Error';
+function operatorFacingErrorName(name: string): OperatorFacingErrorName | undefined {
+  return operatorFacingErrorNames.has(name) ? (name as OperatorFacingErrorName) : undefined;
 }
 
-function operatorFacingErrorCode(code: string | undefined): string | undefined {
-  return code !== undefined &&
-    code.length <= OPERATOR_FACING_ERROR_IDENTIFIER_MAX_LENGTH &&
-    OPERATOR_FACING_ERROR_CODE_PATTERN.test(code)
-    ? code
-    : undefined;
+function operatorFacingErrorCode(code: string | undefined): OperatorFacingErrorCode | undefined {
+  return code !== undefined && operatorFacingErrorCodes.has(code) ? (code as OperatorFacingErrorCode) : undefined;
 }
 
 function operatorFacingShutdownSettlement(
@@ -255,10 +410,11 @@ function operatorFacingShutdownSettlement(
           ? nestedCause
           : settlement.error;
       const code = operatorFacingErrorCode(error.code);
+      const name = error.kind === 'error' ? operatorFacingErrorName(error.name) : 'UnknownThrown';
       return {
         cause: settlement.cause,
         error: {
-          name: error.kind === 'error' ? operatorFacingErrorName(error.name) : 'UnknownThrown',
+          ...(name === undefined ? {} : { name }),
           ...(code === undefined ? {} : { code }),
         },
       };
@@ -392,10 +548,16 @@ function readRecentShutdownRemainder(
   }
   const scopedSkippedRecords =
     scope.kind === 'directory'
-      ? scan.skippedRecords
+      ? scan.skippedRecords.filter(({ mtimeMs }) => mtimeMs <= now && now - mtimeMs <= RECENT_COORDINATOR_RECORD_MS)
       : scope.instanceId === undefined
         ? []
-        : scan.skippedRecords.filter((name) => name === `${scope.instanceId}.json`);
+        : scan.skippedRecords.filter(
+            ({ name, mtimeMs }) =>
+              name === `${scope.instanceId}.json` &&
+              mtimeMs >= scope.startedAt &&
+              mtimeMs <= now &&
+              now - mtimeMs <= RECENT_COORDINATOR_RECORD_MS,
+          );
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -431,6 +593,7 @@ function readRecentShutdownRemainder(
       .map((entry) => ({
         entryNumber: entry.entryNumber,
         obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+        owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
       })),
     skippedRecordCount: scopedSkippedRecords.length,
   };
@@ -473,6 +636,7 @@ function noDaemonStatus(
     coordinator?.pid,
   );
   if (diagnostic !== null) return diagnostic;
+  if (fallback.status === 'unreachable' && fallback.cause === 'foreign_peer') return fallback;
   const remainder = readRecentShutdownRemainder(
     storage,
     runDir,

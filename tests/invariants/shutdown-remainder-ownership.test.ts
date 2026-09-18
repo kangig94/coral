@@ -358,6 +358,82 @@ function shutdownLabelProjectionViolations(): string[] {
   return violations;
 }
 
+function shutdownErrorProjectionViolations(): string[] {
+  const status = sourceFile(BACKEND_STATUS_PATH);
+  const projectedNames = new Set<string>();
+  const projectedCodes = new Set<string>();
+  const producedNames = new Set<string>();
+  const handledCodes = new Set<string>();
+
+  function collectProjection(node: ts.Node): void {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      (node.name.text === 'OPERATOR_FACING_ERROR_NAMES' || node.name.text === 'OPERATOR_FACING_ERROR_CODES') &&
+      node.initializer !== undefined
+    ) {
+      const initializer = unwrapExpression(node.initializer);
+      if (ts.isArrayLiteralExpression(initializer)) {
+        const target = node.name.text === 'OPERATOR_FACING_ERROR_NAMES' ? projectedNames : projectedCodes;
+        for (const element of initializer.elements) {
+          if (ts.isStringLiteral(element)) target.add(element.text);
+        }
+      }
+    }
+    ts.forEachChild(node, collectProjection);
+  }
+  collectProjection(status);
+
+  for (const file of sourceFiles(OWNERSHIP_SCAN_ROOT)) {
+    if (file.fileName === BACKEND_STATUS_PATH) continue;
+    function visit(node: ts.Node): void {
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(node.left) &&
+        node.left.name.text === 'name'
+      ) {
+        const assignedName = unwrapExpression(node.right);
+        if (ts.isStringLiteral(assignedName)) producedNames.add(assignedName.text);
+      }
+      if (
+        ts.isNewExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        /^(?:Aggregate|Range|Type)?Error$/u.test(node.expression.text)
+      ) {
+        producedNames.add(node.expression.text);
+      }
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword &&
+        ts.isIdentifier(node.right) &&
+        /^(?:Aggregate|Range|Syntax|Type)?Error$/u.test(node.right.text)
+      ) {
+        producedNames.add(node.right.text);
+      }
+      if (
+        ts.isStringLiteral(node) &&
+        /^(?:ERR_[A-Z0-9_]+|E[A-Z][A-Z0-9_]*)$/u.test(node.text) &&
+        node.text !== 'ERROR'
+      ) {
+        handledCodes.add(node.text);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(file);
+  }
+
+  const violations: string[] = [];
+  for (const name of producedNames) {
+    if (!projectedNames.has(name)) violations.push(`repository error name '${name}' has no structured status identity`);
+  }
+  for (const code of handledCodes) {
+    if (!projectedCodes.has(code))
+      violations.push(`handled system error code '${code}' has no structured status identity`);
+  }
+  return violations;
+}
+
 describe('shutdown remainder ownership inventory', () => {
   it('keeps every migrated obligation and the authority-release boundary assigned to process exit', () => {
     expect(processExitInventoryViolations()).toEqual([]);
@@ -369,5 +445,9 @@ describe('shutdown remainder ownership inventory', () => {
 
   it('maps every shutdown remainder label this build produces to a structured status identity', () => {
     expect(shutdownLabelProjectionViolations()).toEqual([]);
+  });
+
+  it('maps every repository error name and handled system code to a structured status identity', () => {
+    expect(shutdownErrorProjectionViolations()).toEqual([]);
   });
 });

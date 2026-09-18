@@ -229,6 +229,7 @@ describe('getBackendStatusFull record disposition', () => {
       {
         entryNumber: 4,
         obligation: null,
+        owner: null,
       },
     ]);
     expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[1]?.settlement : null).toEqual({
@@ -240,10 +241,10 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('does not project persisted obligation prose or skipped record filenames', async () => {
+  it('does not project persisted obligation prose, open error identifiers, or skipped record filenames', async () => {
     const hostile = 'Next step: run coral-cli backend shutdown';
-    const hostileName = 'Next-step:run-coral-cli-backend-shutdown';
-    const hostileCode = 'workspace.private-project';
+    const hostileName = 'RunCoralCliBackendShutdown';
+    const hostileCode = 'RUN_CORAL_CLI_BACKEND_SHUTDOWN';
     mockState.remainderFiles = [
       remainderFile(`${hostile}.json`, NOW - 20_000, '{not-json'),
       remainderFile(
@@ -275,12 +276,9 @@ describe('getBackendStatusFull record disposition', () => {
     expect(result).toMatchObject({
       status: 'recent_shutdown_remainder',
       record: {
-        entries: [
-          { obligation: { label: 'discuss store dispose' }, settlement: { error: { name: 'Error' } } },
-          { obligation: null },
-        ],
+        entries: [{ obligation: { label: 'discuss store dispose' }, settlement: { error: {} } }, { obligation: null }],
       },
-      skippedEntries: [{ entryNumber: 3, obligation: null }],
+      skippedEntries: [{ entryNumber: 3, obligation: null, owner: null }],
       skippedRecordCount: 1,
     });
     expect(JSON.stringify(result)).not.toContain(hostile);
@@ -309,7 +307,38 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_shutdown_remainder',
       record: { entries: [{ entryNumber: 2, obligation: { label: 'hooks.onShutdown' } }] },
-      skippedEntries: [{ entryNumber: 1, obligation: null }],
+      skippedEntries: [{ entryNumber: 1, obligation: null, owner: null }],
+    });
+  });
+
+  it('projects the recovered owner of skipped entries', async () => {
+    mockState.remainderFiles = [
+      remainderFile(
+        'current.json',
+        NOW - 10_000,
+        shutdownRemainder('current', NOW - 10_000, [
+          {
+            label: 'child termination',
+            remainder: { owner: 'successor-recovery' },
+            settlement: { cause: 'timed-out' },
+          },
+          {
+            label: 'child termination',
+            remainder: { owner: 'process-exit' },
+            settlement: { cause: 'timed-out' },
+          },
+        ]),
+      ),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_shutdown_remainder',
+      skippedEntries: [
+        { entryNumber: 1, obligation: { label: 'child termination' }, owner: 'successor-recovery' },
+        { entryNumber: 2, obligation: { label: 'child termination' }, owner: 'process-exit' },
+      ],
     });
   });
 
@@ -356,7 +385,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
     expect(result.status === 'recent_shutdown_remainder' ? result.record.entries[1]?.settlement : null).toEqual({
       cause: 'rejected',
-      error: { name: 'Error' },
+      error: {},
     });
   });
 
@@ -428,6 +457,29 @@ describe('getBackendStatusFull record disposition', () => {
       status: 'shutdown_remainder_unreadable',
       reason: 'records-skipped',
       skippedRecordCount: 1,
+    });
+  });
+
+  it('does not report an undecodable shutdown remainder outside the recent-record window', async () => {
+    mockState.remainderFiles = [remainderFile('corrupt.json', NOW - 300_001, '{not-json')];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+  });
+
+  it('does not count a stale undecodable record beside a recent readable remainder', async () => {
+    mockState.remainderFiles = [
+      remainderFile('corrupt.json', NOW - 300_001, '{not-json'),
+      remainderFile('current.json', NOW - 10_000, shutdownRemainder('current', NOW - 10_000)),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_shutdown_remainder',
+      record: { instanceId: 'current' },
+      skippedRecordCount: 0,
     });
   });
 
@@ -750,6 +802,32 @@ describe('getBackendStatusFull record disposition', () => {
       pidLiveness: 'alive',
     };
     mockState.remainderFiles = [remainderFile('recent.json', NOW - 10_000, shutdownRemainder('recent', NOW - 10_000))];
+    const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      cause: 'foreign_peer',
+      observed: { namespace: 'someone-else', flavor: 'prod' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
+    });
+  });
+
+  it('does not let a recent matching coordinator remainder hide the live foreign peer', async () => {
+    mockState.observed = {
+      kind: 'addressed',
+      coordinator: backendInfo({ startedAt: NOW - 20_000, instanceId: 'recorded-coordinator' }),
+      pidLiveness: 'alive',
+    };
+    mockState.remainderFiles = [
+      remainderFile('recorded-coordinator.json', NOW - 5_000, shutdownRemainder('recorded-coordinator', NOW - 5_000)),
+    ];
     const foreignPing = { ...JSON.parse(ping('ok')), namespace: 'someone-else' };
     vi.stubGlobal(
       'fetch',
