@@ -11,8 +11,13 @@ WARN Provider proxy lifecycle containment-retry woke 1ms after its requested tim
 ```
 
 out of 82,688 lines — 88% of the file. The first is stamped `2026-09-17T05:20:11Z` and the last
-`2026-09-18T10:00:16Z`: **one retry per second for over 28 hours**, in a single coordinator instance,
-ending only because the process died.
+`2026-09-18T10:00:16Z`: **one retry per second for over 28 hours**, ending only because the process died.
+
+It also survives restart. After a full teardown — coordinator shut down gracefully, guardian, reaper and
+proxy killed, socket and discovery record gone — a cold boot logged `Running on 127.0.0.1:<port>` and the
+first `containment-retry` line **one second later**. The loop is therefore rebuilt from durable
+provider-proxy set state on every boot, not held in memory by one unlucky instance, which is why 28 hours
+of it spanned more than one coordinator.
 
 ## Why it does not stop
 
