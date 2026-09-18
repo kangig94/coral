@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { thrownErrnoCode } from '../infra/error-format.js';
 import type { StoragePort, TimePort } from '../infra/port-types.js';
 import {
   scanShutdownRemainderRecords,
@@ -82,17 +83,24 @@ export function readShutdownRemainderStatus(runtime: ShutdownRemainderReadRuntim
 export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRuntime): void {
   const directory = shutdownRemainderPath(runtime.runDir);
   try {
-    const records = runtime.storage
-      .readdirSync(directory)
-      .filter((name) => name.endsWith('.json'))
-      .flatMap((name) => {
+    const records: { name: string; mtimeMs: number }[] = [];
+    for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
+      try {
+        records.push({ name, mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs });
+      } catch (error: unknown) {
+        if (thrownErrnoCode(error) === 'ENOENT') continue;
+        // No production reader depends on this file's survival to discharge an obligation: status.ts's scan is
+        // diagnostic display, and readShutdownRemainderStatus has no production caller at all. A record this
+        // build cannot stat also cannot be ranked by the mtime sort below, so it is unlinked outright instead of
+        // sitting outside that ranking, and outside this cap, forever.
         try {
-          return [{ name, mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs }];
+          runtime.storage.unlinkSync(join(directory, name));
         } catch {
-          return [];
+          /* Retention cleanup must not block startup. */
         }
-      })
-      .sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+      }
+    }
+    records.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
     for (const { name } of records.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));

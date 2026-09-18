@@ -555,6 +555,17 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 
+  it('unlinks a record it cannot stat instead of exempting it from retention forever', () => {
+    const storage = storageWith([fileAt('readable', 1), fileAt('unstattable', 2)], {
+      refuseStatFor: 'unstattable.json',
+      statErrorCode: 'EIO',
+    });
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toEqual(['readable.json']);
+  });
+
   it('does not turn a best-effort startup prune refusal into an error', () => {
     const storage = storageWith(
       Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)),

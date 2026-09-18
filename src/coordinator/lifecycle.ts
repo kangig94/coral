@@ -1283,7 +1283,13 @@ async function runLifecycleStartup({
       throw error;
     }
     if (mutationAdmissionDisposition?.kind === 'holding') {
-      await mutationAdmissionDisposition.retryAfter;
+      // `retryAfter` settles only when every pending mutation returns and every closed-set fence lease is
+      // released by its holder — neither is bounded by anything this cleanup owns, so awaiting it here would
+      // sit ahead of the socket close and discovery withdrawal this cleanup still owes. What this cleanup did
+      // not observe settle stays visible instead of being swallowed.
+      backendLog.error(
+        `Provider operation mutation admission did not confirm drained during startup-failure cleanup (pending: ${mutationAdmissionDisposition.pendingMutations.join(', ')})`,
+      );
     }
     if (error instanceof IncumbentMatchesError) {
       // Translate to the existing bootstrap-recognized "redundant contender"
