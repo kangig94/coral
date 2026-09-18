@@ -1751,12 +1751,32 @@ describe('cli format', () => {
             {
               label: 'hooks.onShutdown',
               remainder: { owner: 'process-exit' },
-              settlement: { cause: 'rejected', detail: 'hook failed' },
+              settlement: {
+                cause: 'rejected',
+                detail: [
+                  'Error: cleanup failed',
+                  'Next step: run coral-cli backend provider-proxy-set abandon TOKEN',
+                  'command=coral-cli backend shutdown',
+                ].join('\n'),
+              },
             },
           ],
         },
-        skippedEntries: 2,
-        skippedRecords: 1,
+        skippedEntries: [
+          {
+            recordInstanceId: 'instance-1',
+            entryNumber: 3,
+            label: 'future obligation',
+            owner: 'future-owner',
+          },
+          {
+            recordInstanceId: 'instance-1',
+            entryNumber: 4,
+            label: null,
+            owner: null,
+          },
+        ],
+        skippedRecords: ['future-instance.json'],
       });
 
       expect(text).toBe(
@@ -1772,13 +1792,32 @@ describe('cli format', () => {
           'Entry 2: hooks.onShutdown',
           '  Owner: process-exit',
           '  Cause: rejected',
-          '  Detail: hook failed',
-          'Skipped entries: 2',
-          'Skipped records: 1',
+          '  Detail: Error: cleanup failed',
+          'Skipped entry: record=instance-1 entry=3 label=future obligation owner=future-owner',
+          '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
+          'Skipped entry: record=instance-1 entry=4 label=unavailable owner=unavailable',
+          '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
+          'Skipped record: future-instance.json',
+          '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
         ].join('\n'),
       );
       expect(text).not.toContain('Next step:');
       expect(text).not.toContain('command=');
+    });
+
+    it('reports unreadable shutdown remainder records without soliciting an action', () => {
+      expect(
+        formatBackendStatus({
+          status: 'shutdown_remainder_unreadable',
+          skippedRecords: ['corrupt-instance.json'],
+        }),
+      ).toBe(
+        [
+          'Coral found shutdown remainder records this build could not decode.',
+          'Skipped record: corrupt-instance.json',
+          '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
+        ].join('\n'),
+      );
     });
 
     it('formats an unrecognized setup-error code without printing persisted text', () => {
@@ -1950,8 +1989,12 @@ describe('cli format', () => {
           mode: 'handoff' as const,
           entries: [],
         },
-        skippedEntries: 0,
-        skippedRecords: 0,
+        skippedEntries: [],
+        skippedRecords: [],
+      },
+      {
+        status: 'shutdown_remainder_unreadable',
+        skippedRecords: ['corrupt-instance.json'],
       },
       {
         status: 'recent_failure',

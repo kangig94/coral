@@ -194,10 +194,6 @@ describe('provider-host RPC authorization', () => {
       'provider_host_stale',
       'Rerun `coral-cli backend provider-host list` and act only on a currently listed reference.',
     ],
-    [
-      'provider_host_owner_torn_down',
-      'Run `coral-cli backend status`. If the coordinator is draining, its successor re-establishes control; retry the original command once the successor serves. If the drain is held on the control release, it ends by itself when its budget is exhausted; retry once `coral-cli backend status` no longer reports that coordinator as shutting down. If it is not draining, `coral-cli backend status` reports the released set under its own token; resolve it with `coral-cli backend provider-proxy-set contain <set-token>` or `coral-cli backend provider-proxy-set abandon <set-token>`, or retry the original command once succession completes.',
-    ],
   ] as const)('returns actionable remediation for %s', async (code, remediation) => {
     const inspect = vi.fn(async () => {
       throw Object.assign(new Error(code), { code });
@@ -209,6 +205,37 @@ describe('provider-host RPC authorization', () => {
     ).resolves.toMatchObject({
       kind: 'unary',
       body: { code, remediation },
+    });
+  });
+
+  it('reports a released provider-host owner without soliciting a destructive set decision', async () => {
+    const inspect = vi.fn(async () => {
+      throw Object.assign(new Error('provider_host_owner_torn_down'), { code: 'provider_host_owner_torn_down' });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect, evict: vi.fn() } } as unknown as HttpHandlerPorts;
+
+    const result = await executeCatalogRequest(
+      providerHostInspectRpcSpec,
+      { workDir: '.', projectRoot: process.cwd() },
+      ports,
+      operator,
+    );
+
+    expect(result).toMatchObject({
+      kind: 'unary',
+      body: {
+        code: 'provider_host_owner_torn_down',
+        remediation:
+          'Run `coral-cli backend status`. If the coordinator is draining, its successor re-establishes control; retry the original command once the successor serves. If the drain is held on the control release, it ends by itself when its budget is exhausted; retry once `coral-cli backend status` no longer reports that coordinator as shutting down. If it is not draining, `coral-cli backend status` reports the released set under its own token. Coral keeps the set held while it waits for confirmed absence or succession; an unconfirmed result has no automatic deadline. Retry the original command once succession completes.',
+      },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('provider-proxy-set contain') },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('provider-proxy-set abandon') },
     });
   });
 

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { z } from 'zod';
 
+import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
 import { persistedProcessIncarnationSchema } from './persisted-scalar-contracts.js';
 import type { StoragePort } from './port-types.js';
@@ -39,10 +40,17 @@ export type ShutdownRemainderRecord = Readonly<{
   entries: readonly ShutdownRemainderEntry[];
 }>;
 
+export type ShutdownRemainderSkippedEntry = Readonly<{
+  recordInstanceId: string;
+  entryNumber: number;
+  label: string | null;
+  owner: string | null;
+}>;
+
 export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly ShutdownRemainderRecord[];
-  skippedEntries: number;
-  skippedRecords: number;
+  skippedEntries: readonly ShutdownRemainderSkippedEntry[];
+  skippedRecords: readonly string[];
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
@@ -102,20 +110,30 @@ const shutdownRemainderRecordEnvelopeSchema = z
   })
   .passthrough();
 
-export function decodeShutdownRemainderRecord(
-  value: unknown,
-):
-  | Readonly<{ kind: 'readable'; record: ShutdownRemainderRecord; skippedEntries: number }>
+export function decodeShutdownRemainderRecord(value: unknown):
+  | Readonly<{
+      kind: 'readable';
+      record: ShutdownRemainderRecord;
+      skippedEntries: readonly ShutdownRemainderSkippedEntry[];
+    }>
   | Readonly<{ kind: 'unreadable'; detail: string }> {
   const parsedRecord = shutdownRemainderRecordEnvelopeSchema.safeParse(value);
   if (!parsedRecord.success) return { kind: 'unreadable', detail: parsedRecord.error.message };
 
   const entries: ShutdownRemainderEntry[] = [];
-  let skippedEntries = 0;
-  for (const rawEntry of parsedRecord.data.entries) {
+  const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
+  for (const [index, rawEntry] of parsedRecord.data.entries.entries()) {
     const parsedEntry = shutdownRemainderEntrySchema.safeParse(rawEntry);
     if (parsedEntry.success) entries.push(parsedEntry.data);
-    else skippedEntries += 1;
+    else {
+      const rawRemainder = isRecord(rawEntry) && isRecord(rawEntry.remainder) ? rawEntry.remainder : null;
+      skippedEntries.push({
+        recordInstanceId: parsedRecord.data.instanceId,
+        entryNumber: index + 1,
+        label: isRecord(rawEntry) && typeof rawEntry.label === 'string' ? rawEntry.label : null,
+        owner: rawRemainder !== null && typeof rawRemainder.owner === 'string' ? rawRemainder.owner : null,
+      });
+    }
   }
 
   return {
@@ -136,8 +154,8 @@ export function scanShutdownRemainderRecords(
   directory: string,
 ): ShutdownRemainderRecordScan {
   const records: ShutdownRemainderRecord[] = [];
-  let skippedEntries = 0;
-  let skippedRecords = 0;
+  const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
+  const skippedRecords: string[] = [];
   const recordFiles = storage
     .readdirSync(directory)
     .filter((name) => name.endsWith('.json'))
@@ -154,13 +172,13 @@ export function scanShutdownRemainderRecords(
     try {
       const decoded = decodeShutdownRemainderRecord(JSON.parse(storage.readFileSync(join(directory, name), 'utf-8')));
       if (decoded.kind === 'unreadable') {
-        skippedRecords += 1;
+        skippedRecords.push(name);
         continue;
       }
       records.push(decoded.record);
-      skippedEntries += decoded.skippedEntries;
+      skippedEntries.push(...decoded.skippedEntries);
     } catch {
-      skippedRecords += 1;
+      skippedRecords.push(name);
     }
   }
 

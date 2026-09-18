@@ -707,6 +707,8 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       return formatRecentFailureStatus(result);
     case 'recent_shutdown_remainder':
       return formatRecentShutdownRemainderStatus(result);
+    case 'shutdown_remainder_unreadable':
+      return formatUnreadableShutdownRemainderStatus(result);
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
@@ -1235,19 +1237,53 @@ function formatRecentShutdownRemainderStatus(
   const lines = [
     'Coral recorded a recent shutdown with unfinished obligations.',
     `Recorded at: ${result.record.recordedAt}`,
-    `Reason: ${result.record.reason}`,
+    `Reason: ${formatPersistedRemainderValue(result.record.reason)}`,
     `Mode: ${result.record.mode}`,
   ];
   for (const [index, entry] of result.record.entries.entries()) {
     lines.push(
-      `Entry ${index + 1}: ${entry.label}`,
+      `Entry ${index + 1}: ${formatPersistedRemainderValue(entry.label)}`,
       `  Owner: ${entry.remainder.owner}`,
       `  Cause: ${entry.settlement.cause}`,
-      `  Detail: ${entry.settlement.detail}`,
+      `  Detail: ${formatPersistedRemainderValue(entry.settlement.detail)}`,
     );
   }
-  lines.push(`Skipped entries: ${result.skippedEntries}`, `Skipped records: ${result.skippedRecords}`);
+  lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
+  lines.push(...formatSkippedShutdownRemainderRecords(result.skippedRecords));
   return lines.join('\n');
+}
+
+function formatUnreadableShutdownRemainderStatus(
+  result: Extract<BackendStatusFull, { status: 'shutdown_remainder_unreadable' }>,
+): string {
+  return [
+    'Coral found shutdown remainder records this build could not decode.',
+    ...formatSkippedShutdownRemainderRecords(result.skippedRecords),
+  ].join('\n');
+}
+
+function formatSkippedShutdownRemainderEntries(
+  entries: Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>['skippedEntries'],
+): string[] {
+  return entries.flatMap((entry) => [
+    `Skipped entry: record=${formatPersistedRemainderValue(entry.recordInstanceId)} entry=${entry.entryNumber} label=${entry.label === null ? 'unavailable' : formatPersistedRemainderValue(entry.label)} owner=${entry.owner === null ? 'unavailable' : formatPersistedRemainderValue(entry.owner)}`,
+    '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
+  ]);
+}
+
+function formatSkippedShutdownRemainderRecords(records: readonly string[]): string[] {
+  return records.flatMap((record) => [
+    `Skipped record: ${formatPersistedRemainderValue(record)}`,
+    '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
+  ]);
+}
+
+function formatPersistedRemainderValue(value: string): string {
+  const firstLine = value.split(/\r\n|[\r\n]/u, 1)[0] ?? '';
+  if (/next step:|(?:action|clear|command|discard)=|\bcoral-cli\b/iu.test(firstLine)) {
+    return '[persisted text omitted]';
+  }
+  return JSON.stringify(firstLine).slice(1, -1);
 }
 
 export function formatShutdown(result: ShutdownResult): string {

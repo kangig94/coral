@@ -174,8 +174,15 @@ describe('shutdown remainder status', () => {
         version: 1,
         records: [{ ...recordAt('future-instance'), reason: 'provider-proxy-lifecycle-fatal' }],
       },
-      skippedEntries: 1,
-      skippedRecords: 0,
+      skippedEntries: [
+        {
+          recordInstanceId: 'future-instance',
+          entryNumber: 2,
+          label: 'future successor',
+          owner: 'successor-recovery',
+        },
+      ],
+      skippedRecords: [],
     });
   });
 
@@ -192,7 +199,24 @@ describe('shutdown remainder status', () => {
     ]);
 
     const read = readShutdownRemainderStatus({ storage, runDir: RUN_DIR });
-    expect(read).toMatchObject({ kind: 'available', skippedEntries: 2, skippedRecords: 0 });
+    expect(read).toMatchObject({
+      kind: 'available',
+      skippedEntries: [
+        {
+          recordInstanceId: 'malformed-instance',
+          entryNumber: 2,
+          label: 'missing settlement',
+          owner: 'process-exit',
+        },
+        {
+          recordInstanceId: 'malformed-instance',
+          entryNumber: 3,
+          label: null,
+          owner: null,
+        },
+      ],
+      skippedRecords: [],
+    });
     if (read.kind !== 'available') throw new Error('expected readable remainder status');
     expect(read.status.records[0]?.entries).toHaveLength(1);
   });
@@ -209,8 +233,8 @@ describe('shutdown remainder status', () => {
       kind: 'available',
       path: REMAINDER_DIRECTORY,
       status: { version: 1, records: [recordAt('known-instance')] },
-      skippedEntries: 0,
-      skippedRecords: 2,
+      skippedEntries: [],
+      skippedRecords: ['corrupt-instance.json', 'foreign-instance.json'],
     });
   });
 
@@ -220,19 +244,76 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
       status: { records: [recordAt('known-instance')] },
-      skippedEntries: 0,
-      skippedRecords: 0,
+      skippedEntries: [],
+      skippedRecords: [],
     });
   });
 
   it('decodes a record with additive fields', () => {
-    const storage = storageWith([fileAt('older-instance', 1, { ...recordAt('older-instance'), exitCode: 1 })]);
+    const additiveEntry = {
+      label: 'future-compatible loss',
+      entryAddition: true,
+      remainder: {
+        owner: 'successor-recovery',
+        remainderAddition: true,
+        evidence: {
+          kind: 'startup-adoption',
+          evidenceAddition: true,
+          processes: [
+            {
+              kind: 'durable-cli-runtime',
+              jobId: 'job-1',
+              pid: 4_242,
+              leaderIncarnation: testIncarnation('future-compatible-child'),
+              processAddition: true,
+            },
+          ],
+        },
+      },
+      settlement: {
+        cause: 'timed-out',
+        detail: 'child remained alive',
+        settlementAddition: true,
+      },
+    };
+    const storage = storageWith([
+      fileAt('older-instance', 1, {
+        ...recordAt('older-instance', [additiveEntry]),
+        envelopeAddition: true,
+      }),
+    ]);
 
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
-      status: { records: [recordAt('older-instance')] },
-      skippedEntries: 0,
-      skippedRecords: 0,
+      status: {
+        records: [
+          {
+            ...recordAt('older-instance'),
+            entries: [
+              {
+                label: 'future-compatible loss',
+                remainder: {
+                  owner: 'successor-recovery',
+                  evidence: {
+                    kind: 'startup-adoption',
+                    processes: [
+                      {
+                        kind: 'durable-cli-runtime',
+                        jobId: 'job-1',
+                        pid: 4_242,
+                        leaderIncarnation: testIncarnation('future-compatible-child'),
+                      },
+                    ],
+                  },
+                },
+                settlement: { cause: 'timed-out', detail: 'child remained alive' },
+              },
+            ],
+          },
+        ],
+      },
+      skippedEntries: [],
+      skippedRecords: [],
     });
   });
 
@@ -348,7 +429,7 @@ describe('shutdown remainder status', () => {
 
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
-      skippedEntries: 0,
+      skippedEntries: [],
       status: {
         records: [
           {

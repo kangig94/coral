@@ -119,12 +119,17 @@ export type BackendStatusFull =
   | {
       status: 'recent_shutdown_remainder';
       record: ShutdownRemainderRecord;
-      skippedEntries: number;
-      skippedRecords: number;
+      skippedEntries: ShutdownRemainderRecordScan['skippedEntries'];
+      skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
+    }
+  | {
+      status: 'shutdown_remainder_unreadable';
+      skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type RecentShutdownRemainderStatus = Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>;
+type ShutdownRemainderUnreadableStatus = Extract<BackendStatusFull, { status: 'shutdown_remainder_unreadable' }>;
 
 function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
@@ -195,7 +200,8 @@ function readRecentShutdownRemainder(
   storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
   runDir: string,
   now: number,
-): RecentShutdownRemainderStatus | null {
+  earliestRecordedAt = Number.NEGATIVE_INFINITY,
+): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   if (!storage.existsSync(directory)) return null;
   let scan: ShutdownRemainderRecordScan;
@@ -204,11 +210,25 @@ function readRecentShutdownRemainder(
   } catch {
     return null;
   }
-  const record = scan.records.at(-1);
-  if (record === undefined) return null;
-  const recordedAt = parseIsoTimestamp(record.recordedAt);
-  if (!Number.isFinite(recordedAt) || recordedAt > now || now - recordedAt > RECENT_COORDINATOR_RECORD_MS) {
-    return null;
+  const record = scan.records
+    .flatMap((candidate) => {
+      const recordedAt = parseIsoTimestamp(candidate.recordedAt);
+      return Number.isFinite(recordedAt) &&
+        recordedAt >= earliestRecordedAt &&
+        recordedAt <= now &&
+        now - recordedAt <= RECENT_COORDINATOR_RECORD_MS
+        ? [{ candidate, recordedAt }]
+        : [];
+    })
+    .sort(
+      (left, right) =>
+        left.recordedAt - right.recordedAt || left.candidate.instanceId.localeCompare(right.candidate.instanceId),
+    )
+    .at(-1)?.candidate;
+  if (record === undefined) {
+    return scan.records.length === 0 && scan.skippedRecords.length > 0
+      ? { status: 'shutdown_remainder_unreadable', skippedRecords: scan.skippedRecords }
+      : null;
   }
   return {
     status: 'recent_shutdown_remainder',
@@ -247,11 +267,18 @@ function noDaemonStatus(
   earliestRecordedAt?: number,
   expectedPid?: number,
 ): BackendStatusFull {
-  return (
-    readRecentFailureDiagnostic(storage, diagnosticFile, now, provenSelfIdentity, earliestRecordedAt, expectedPid) ??
-    readRecentShutdownRemainder(storage, runDir, now) ??
-    fallback
+  const diagnostic = readRecentFailureDiagnostic(
+    storage,
+    diagnosticFile,
+    now,
+    provenSelfIdentity,
+    earliestRecordedAt,
+    expectedPid,
   );
+  if (diagnostic !== null) return diagnostic;
+  const remainder = readRecentShutdownRemainder(storage, runDir, now, earliestRecordedAt);
+  if (remainder?.status === 'recent_shutdown_remainder') return remainder;
+  return fallback.status === 'no_record_no_socket' && remainder !== null ? remainder : fallback;
 }
 
 /**

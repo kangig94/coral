@@ -252,6 +252,7 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   unauthorized: 0,
   recent_failure: 0,
   recent_shutdown_remainder: 0,
+  shutdown_remainder_unreadable: 0,
   undecodable_record: 75,
   unreachable: 75,
   no_record_socket_present: 75,

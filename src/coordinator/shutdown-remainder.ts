@@ -6,6 +6,7 @@ import {
   SHUTDOWN_REMAINDER_RECORD_VERSION,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderRecord,
+  type ShutdownRemainderRecordScan,
 } from '../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../infra/time.js';
 import type { ShutdownMode, ShutdownReason } from './shutdown.js';
@@ -39,8 +40,8 @@ export type ShutdownRemainderStatusRead =
       kind: 'available';
       path: string;
       status: ShutdownRemainderStatus;
-      skippedEntries: number;
-      skippedRecords: number;
+      skippedEntries: ShutdownRemainderRecordScan['skippedEntries'];
+      skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
     }>
   | Readonly<{ kind: 'absent'; path: string }>
   | Readonly<{ kind: 'unreadable'; path: string; detail: string }>;
