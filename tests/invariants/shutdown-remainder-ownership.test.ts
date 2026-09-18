@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from 'node:fs';
+import { constants as osConstants } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -369,7 +370,8 @@ function shutdownErrorProjectionViolations(): string[] {
     if (
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
-      (node.name.text === 'OPERATOR_FACING_ERROR_NAMES' || node.name.text === 'OPERATOR_FACING_ERROR_CODES') &&
+      (node.name.text === 'OPERATOR_FACING_ERROR_NAMES' ||
+        node.name.text === 'OPERATOR_FACING_APPLICATION_ERROR_CODES') &&
       node.initializer !== undefined
     ) {
       const initializer = unwrapExpression(node.initializer);
@@ -428,8 +430,13 @@ function shutdownErrorProjectionViolations(): string[] {
     if (!projectedNames.has(name)) violations.push(`repository error name '${name}' has no structured status identity`);
   }
   for (const code of handledCodes) {
-    if (!projectedCodes.has(code))
-      violations.push(`handled system error code '${code}' has no structured status identity`);
+    if (code.startsWith('ERR_')) {
+      if (!projectedCodes.has(code)) {
+        violations.push(`handled application error code '${code}' has no structured status identity`);
+      }
+    } else if (!(code in osConstants.errno)) {
+      violations.push(`handled system error code '${code}' is absent from node:os.constants.errno`);
+    }
   }
   return violations;
 }

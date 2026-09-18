@@ -17,7 +17,7 @@ const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
   /** The startup diagnostic on disk, or `null` for none. */
   diagnostic: null as string | null,
-  remainderFiles: [] as Array<{ name: string; value: string; mtimeMs: number; refuseStat?: boolean }>,
+  remainderFiles: [] as Array<{ name: string; value: string; mtimeMs: number; statErrorCode?: string }>,
   remainderScanThrows: false,
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
@@ -68,8 +68,11 @@ vi.mock('#src/runtime/real.js', () => ({
       },
       statSync: (path: string) => {
         const file = mockState.remainderFiles.find(({ name }) => path.endsWith(`/${name}`));
-        if (file === undefined || file.refuseStat === true) {
+        if (file === undefined) {
           throw Object.assign(new Error('no remainder metadata'), { code: 'ENOENT' });
+        }
+        if (file.statErrorCode !== undefined) {
+          throw Object.assign(new Error('remainder metadata unavailable'), { code: file.statErrorCode });
         }
         return { mtimeMs: file.mtimeMs };
       },
@@ -132,6 +135,26 @@ describe('getBackendStatusFull record disposition', () => {
   });
 
   it('reports no_record_no_socket when neither discovery evidence nor a socket exists', async () => {
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+  });
+
+  it.each(['EIO', 'EACCES'])('reports an undecodable record whose age cannot be measured after %s', async (code) => {
+    mockState.remainderFiles = [remainderFile('corrupt.json', NOW - 10_000, '{not-json', code)];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'shutdown_remainder_unreadable',
+      reason: 'records-skipped',
+      skippedRecordCount: 1,
+    });
+  });
+
+  it('does not report a directory entry confirmed gone during the metadata race', async () => {
+    mockState.remainderFiles = [remainderFile('vanished.json', NOW - 10_000, '{not-json', 'ENOENT')];
+
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
@@ -260,6 +283,24 @@ describe('getBackendStatusFull record disposition', () => {
               error: { kind: 'error', name: hostileName, code: hostileCode, message: hostile },
             },
           },
+          {
+            label: 'child termination',
+            remainder: {
+              owner: 'successor-recovery',
+              evidence: {
+                kind: 'startup-adoption',
+                processes: [
+                  {
+                    kind: 'durable-cli-runtime',
+                    jobId: 'job-1',
+                    pid: 4_242,
+                    leaderIncarnation: hostile,
+                  },
+                ],
+              },
+            },
+            settlement: { cause: 'timed-out', budgetMs: 5_000 },
+          },
           shutdownRemainderEntry(hostile, 'process-exit', 'timed-out'),
           {
             label: hostile,
@@ -276,14 +317,63 @@ describe('getBackendStatusFull record disposition', () => {
     expect(result).toMatchObject({
       status: 'recent_shutdown_remainder',
       record: {
-        entries: [{ obligation: { label: 'discuss store dispose' }, settlement: { error: {} } }, { obligation: null }],
+        entries: [
+          { obligation: { label: 'discuss store dispose' }, settlement: { error: {} } },
+          {
+            obligation: { label: 'child termination' },
+            remainder: {
+              evidence: {
+                processes: [
+                  {
+                    leaderIncarnation: {
+                      present: true,
+                      sha256: '8193456f2fe5a02197b41ab74e10a087dba6c7b4b3bf23f692511f5011af2956',
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          { obligation: null },
+        ],
       },
-      skippedEntries: [{ entryNumber: 3, obligation: null, owner: null }],
+      skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
       skippedRecordCount: 1,
     });
     expect(JSON.stringify(result)).not.toContain(hostile);
     expect(JSON.stringify(result)).not.toContain(hostileName);
     expect(JSON.stringify(result)).not.toContain(hostileCode);
+  });
+
+  it('projects ordinary runtime errnos from the platform registry', async () => {
+    const codes = ['EMFILE', 'ENFILE', 'EIO', 'ENOMEM', 'EDQUOT', 'ELOOP', 'ENAMETOOLONG'] as const;
+    mockState.remainderFiles = [
+      remainderFile(
+        'current.json',
+        NOW - 10_000,
+        shutdownRemainder(
+          'current',
+          NOW - 10_000,
+          codes.map((code) => ({
+            label: 'hooks.onShutdown',
+            remainder: { owner: 'process-exit' },
+            settlement: { cause: 'rejected', error: { kind: 'error', name: 'Error', code, message: 'failed' } },
+          })),
+        ),
+      ),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result.status === 'recent_shutdown_remainder' ? result.record.entries : []).toEqual(
+      codes.map((code, index) => ({
+        entryNumber: index + 1,
+        obligation: { label: 'hooks.onShutdown' },
+        remainder: { owner: 'process-exit' },
+        settlement: { cause: 'rejected', error: { name: 'Error', code } },
+      })),
+    );
   });
 
   it('preserves entry numbers across entries this build skips', async () => {
@@ -418,7 +508,7 @@ describe('getBackendStatusFull record disposition', () => {
 
   it('selects a fresh record by recordedAt when its file metadata is unavailable', async () => {
     mockState.remainderFiles = [
-      remainderFile('fresh.json', NOW - 20_000, shutdownRemainder('fresh', NOW - 10_000), true),
+      remainderFile('fresh.json', NOW - 20_000, shutdownRemainder('fresh', NOW - 10_000), 'EIO'),
       remainderFile('stale.json', NOW - 10_000, shutdownRemainder('stale', NOW - 300_001)),
     ];
 
@@ -926,8 +1016,8 @@ function startupDiagnostic(
   });
 }
 
-function remainderFile(name: string, mtimeMs: number, value: string, refuseStat = false) {
-  return { name, mtimeMs, value, refuseStat };
+function remainderFile(name: string, mtimeMs: number, value: string, statErrorCode?: string) {
+  return { name, mtimeMs, value, statErrorCode };
 }
 
 function shutdownRemainderEntry(
@@ -1031,7 +1121,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   it('does not attach another coordinator skipped record to a readable scoped remainder', async () => {
     mockState.remainderFiles = [
       remainderFile(`${INSTANCE_ID}.json`, NOW - 20_000, shutdownRemainder(INSTANCE_ID, NOW - 20_000)),
-      remainderFile('other-coordinator.json', NOW - 10_000, '{not-json'),
+      remainderFile('other-coordinator.json', NOW - 10_000, '{not-json', 'EIO'),
     ];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');

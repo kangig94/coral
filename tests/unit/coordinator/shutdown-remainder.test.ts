@@ -33,7 +33,12 @@ type InitialFile = Readonly<{ name: string; value: string; mtimeMs: number }>;
 
 function storageWith(
   initialFiles: readonly InitialFile[] = [],
-  options: Readonly<{ publish?: boolean; refusePrune?: boolean; refuseStatFor?: string }> = {},
+  options: Readonly<{
+    publish?: boolean;
+    refusePrune?: boolean;
+    refuseStatFor?: string;
+    statErrorCode?: string;
+  }> = {},
 ): RemainderStorage {
   const files = new Map(
     initialFiles.map(({ name, value, mtimeMs }) => [join(REMAINDER_DIRECTORY, name), { value, mtimeMs }]),
@@ -53,7 +58,9 @@ function storageWith(
       return file.value;
     }) as StoragePort['readFileSync'],
     statSync: vi.fn((path: string) => {
-      if (basename(path) === options.refuseStatFor) throw new Error('stat refused');
+      if (basename(path) === options.refuseStatFor) {
+        throw Object.assign(new Error('stat refused'), { code: options.statErrorCode ?? 'EIO' });
+      }
       const file = files.get(path);
       if (file === undefined) throw new Error('missing file');
       return {
@@ -359,7 +366,7 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
       status: { records: [] },
-      skippedRecords: [{ name: 'bounded-instance.json', mtimeMs: 1 }],
+      skippedRecords: [{ name: 'bounded-instance.json', age: { kind: 'known', mtimeMs: 1 } }],
     });
   });
 
@@ -368,7 +375,7 @@ describe('shutdown remainder status', () => {
 
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
-      skippedRecords: [{ name: 'invalid-record-name', mtimeMs: 1 }],
+      skippedRecords: [{ name: 'invalid-record-name', age: { kind: 'known', mtimeMs: 1 } }],
     });
   });
 
@@ -386,8 +393,8 @@ describe('shutdown remainder status', () => {
       status: { version: 1, records: [decodedRecordAt('known-instance')] },
       skippedEntries: [],
       skippedRecords: [
-        { name: 'corrupt-instance.json', mtimeMs: 2 },
-        { name: 'foreign-instance.json', mtimeMs: 3 },
+        { name: 'corrupt-instance.json', age: { kind: 'known', mtimeMs: 2 } },
+        { name: 'foreign-instance.json', age: { kind: 'known', mtimeMs: 3 } },
       ],
     });
   });
@@ -401,6 +408,33 @@ describe('shutdown remainder status', () => {
       skippedEntries: [],
       skippedRecords: [],
     });
+  });
+
+  it('names unknown age when a corrupt record metadata read fails', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refuseStatFor: 'corrupt.json',
+      statErrorCode: 'EIO',
+    });
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      status: { records: [] },
+      skippedRecords: [{ name: 'corrupt.json', age: { kind: 'unknown' } }],
+    });
+  });
+
+  it('omits a record confirmed absent during the directory-to-stat race', () => {
+    const storage = storageWith([{ name: 'vanished.json', value: '{not-json', mtimeMs: 1 }], {
+      refuseStatFor: 'vanished.json',
+      statErrorCode: 'ENOENT',
+    });
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      status: { records: [] },
+      skippedRecords: [],
+    });
+    expect(storage.readFileSync).not.toHaveBeenCalled();
   });
 
   it('decodes a record with additive fields', () => {

@@ -1307,7 +1307,7 @@ function formatShutdownRemainderEvidenceLines(
     ...remainder.evidence.processes.flatMap((process) => [
       `    Job: ${process.jobId}`,
       `    PID: ${process.pid}`,
-      `    Leader incarnation: ${process.leaderIncarnation}`,
+      `    Leader incarnation: present (SHA-256: ${process.leaderIncarnation.sha256})`,
     ]),
   ];
 }

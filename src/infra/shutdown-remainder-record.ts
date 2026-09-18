@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+  thrownErrnoCode,
   type SerializedThrown,
 } from './error-format.js';
 import { isRecord } from './json.js';
@@ -65,7 +66,7 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
 
 export type ShutdownRemainderSkippedRecord = Readonly<{
   name: string;
-  mtimeMs: number;
+  age: Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
 }>;
 
 export type ShutdownRemainderRecordScan = Readonly<{
@@ -219,41 +220,57 @@ export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
   directory: string,
 ): ShutdownRemainderRecordScan {
+  type RecordFile = Readonly<{
+    name: string;
+    reportedName: string;
+    age: ShutdownRemainderSkippedRecord['age'];
+  }>;
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
   const recordFiles = storage
     .readdirSync(directory)
     .filter((name) => name.endsWith('.json'))
-    .map((name) => {
+    .flatMap((name): RecordFile[] => {
       const reportedName = persistedFileNameSchema.safeParse(name);
       try {
-        return {
-          name,
-          reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
-          mtimeMs: storage.statSync(join(directory, name)).mtimeMs,
-        };
-      } catch {
-        return {
-          name,
-          reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
-          mtimeMs: Number.NEGATIVE_INFINITY,
-        };
+        return [
+          {
+            name,
+            reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
+            age: { kind: 'known', mtimeMs: storage.statSync(join(directory, name)).mtimeMs },
+          },
+        ];
+      } catch (error: unknown) {
+        if (thrownErrnoCode(error) === 'ENOENT') return [];
+        return [
+          {
+            name,
+            reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
+            age: { kind: 'unknown' },
+          },
+        ];
       }
     })
-    .sort((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name));
+    .sort((left, right) => {
+      if (left.age.kind === 'known' && right.age.kind === 'known') {
+        return left.age.mtimeMs - right.age.mtimeMs || left.name.localeCompare(right.name);
+      }
+      if (left.age.kind !== right.age.kind) return left.age.kind === 'known' ? -1 : 1;
+      return left.name.localeCompare(right.name);
+    });
 
-  for (const { name, reportedName, mtimeMs } of recordFiles) {
+  for (const { name, reportedName, age } of recordFiles) {
     try {
       const decoded = decodeShutdownRemainderRecord(JSON.parse(storage.readFileSync(join(directory, name), 'utf-8')));
       if (decoded.kind === 'unreadable') {
-        skippedRecords.push({ name: reportedName, mtimeMs });
+        skippedRecords.push({ name: reportedName, age });
         continue;
       }
       records.push(decoded.record);
       skippedEntries.push(...decoded.skippedEntries);
     } catch {
-      skippedRecords.push({ name: reportedName, mtimeMs });
+      skippedRecords.push({ name: reportedName, age });
     }
   }
 

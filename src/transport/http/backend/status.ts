@@ -1,5 +1,8 @@
+import { constants as osConstants } from 'node:os';
+
 import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
+import { sha256Hex } from '../../../infra/hash.js';
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
@@ -159,29 +162,15 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'WorkflowExecutionError',
   'WorkflowInputError',
 ] as const;
-const OPERATOR_FACING_ERROR_CODES = [
-  'EACCES',
-  'EADDRINUSE',
-  'ECONNABORTED',
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'EEXIST',
-  'ENOBUFS',
-  'ENOENT',
-  'ENOSPC',
-  'ENOTDIR',
-  'ENOTEMPTY',
-  'EPIPE',
-  'EPERM',
-  'EROFS',
+const OPERATOR_FACING_APPLICATION_ERROR_CODES = [
   'ERR_BUFFER_TOO_LARGE',
   'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
   'ERR_SQLITE_ERROR',
-  'ESRCH',
-  'ETIMEDOUT',
 ] as const;
 type OperatorFacingErrorName = (typeof OPERATOR_FACING_ERROR_NAMES)[number];
-type OperatorFacingErrorCode = (typeof OPERATOR_FACING_ERROR_CODES)[number];
+type OperatorFacingApplicationErrorCode = (typeof OPERATOR_FACING_APPLICATION_ERROR_CODES)[number];
+type OperatorFacingSystemErrorCode = keyof typeof osConstants.errno;
+type OperatorFacingErrorCode = OperatorFacingApplicationErrorCode | OperatorFacingSystemErrorCode;
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
@@ -230,6 +219,24 @@ type OperatorFacingShutdownSkippedEntry = Readonly<{
   owner: ShutdownRemainderRecord['entries'][number]['remainder']['owner'] | null;
 }>;
 
+type OperatorFacingShutdownRemainder =
+  | Readonly<{ owner: 'process-exit' }>
+  | Readonly<{
+      owner: 'successor-recovery';
+      evidence:
+        | Readonly<{
+            kind: 'startup-adoption';
+            processes: readonly Readonly<{
+              kind: 'durable-cli-runtime';
+              jobId: string;
+              pid: number;
+              leaderIncarnation: Readonly<{ present: true; sha256: string }>;
+            }>[];
+          }>
+        | Readonly<{ kind: 'startup-store-recovery' }>
+        | Readonly<{ kind: 'startup-liveness-recovery' }>;
+    }>;
+
 type OperatorFacingShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
@@ -238,7 +245,7 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   entries: readonly Readonly<{
     entryNumber: number;
     obligation: OperatorFacingShutdownObligation | null;
-    remainder: ShutdownRemainderRecord['entries'][number]['remainder'];
+    remainder: OperatorFacingShutdownRemainder;
     settlement: OperatorFacingShutdownSettlement;
   }>[];
 }>;
@@ -362,7 +369,9 @@ function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase
 
 const operatorFacingShutdownLabels = new Set<string>(OPERATOR_FACING_SHUTDOWN_LABELS);
 const operatorFacingErrorNames = new Set<string>(OPERATOR_FACING_ERROR_NAMES);
-const operatorFacingErrorCodes = new Set<string>(OPERATOR_FACING_ERROR_CODES);
+const operatorFacingApplicationErrorCodes = new Set<string>(OPERATOR_FACING_APPLICATION_ERROR_CODES);
+// Constraint: system-call codes come from `node:os.constants.errno`; source literals cannot inventory runtime failures.
+const operatorFacingSystemErrorCodes = new Set<string>(Object.keys(osConstants.errno));
 
 function positiveSafeInteger(value: string): number | null {
   const parsed = Number(value);
@@ -395,7 +404,9 @@ function operatorFacingErrorName(name: string): OperatorFacingErrorName | undefi
 }
 
 function operatorFacingErrorCode(code: string | undefined): OperatorFacingErrorCode | undefined {
-  return code !== undefined && operatorFacingErrorCodes.has(code) ? (code as OperatorFacingErrorCode) : undefined;
+  if (code === undefined) return undefined;
+  if (operatorFacingApplicationErrorCodes.has(code)) return code as OperatorFacingApplicationErrorCode;
+  return operatorFacingSystemErrorCodes.has(code) ? (code as OperatorFacingSystemErrorCode) : undefined;
 }
 
 function operatorFacingShutdownSettlement(
@@ -429,7 +440,7 @@ function operatorFacingShutdownSettlement(
 
 function operatorFacingShutdownRemainderOwner(
   remainder: ShutdownRemainderRecord['entries'][number]['remainder'],
-): ShutdownRemainderRecord['entries'][number]['remainder'] {
+): OperatorFacingShutdownRemainder {
   if (remainder.owner === 'process-exit') return { owner: 'process-exit' };
   switch (remainder.evidence.kind) {
     case 'startup-adoption':
@@ -441,7 +452,7 @@ function operatorFacingShutdownRemainderOwner(
             kind: 'durable-cli-runtime',
             jobId: process.jobId,
             pid: process.pid,
-            leaderIncarnation: process.leaderIncarnation,
+            leaderIncarnation: { present: true, sha256: sha256Hex(process.leaderIncarnation) },
           })),
         },
       };
@@ -546,18 +557,21 @@ function readRecentShutdownRemainder(
       ? { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' }
       : null;
   }
-  const scopedSkippedRecords =
-    scope.kind === 'directory'
-      ? scan.skippedRecords.filter(({ mtimeMs }) => mtimeMs <= now && now - mtimeMs <= RECENT_COORDINATOR_RECORD_MS)
-      : scope.instanceId === undefined
-        ? []
-        : scan.skippedRecords.filter(
-            ({ name, mtimeMs }) =>
-              name === `${scope.instanceId}.json` &&
-              mtimeMs >= scope.startedAt &&
-              mtimeMs <= now &&
-              now - mtimeMs <= RECENT_COORDINATOR_RECORD_MS,
-          );
+  const skippedRecordHasRelevantAge = ({
+    name,
+    age,
+  }: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean => {
+    if (scope.kind === 'coordinator' && (scope.instanceId === undefined || name !== `${scope.instanceId}.json`)) {
+      return false;
+    }
+    if (age.kind === 'unknown') return true;
+    return (
+      (scope.kind === 'directory' || age.mtimeMs >= scope.startedAt) &&
+      age.mtimeMs <= now &&
+      now - age.mtimeMs <= RECENT_COORDINATOR_RECORD_MS
+    );
+  };
+  const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordHasRelevantAge);
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -641,7 +655,9 @@ function noDaemonStatus(
     storage,
     runDir,
     now,
-    coordinator === undefined ? { kind: 'directory' } : { kind: 'coordinator', ...coordinator },
+    coordinator === undefined
+      ? { kind: 'directory' }
+      : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt },
   );
   if (remainder?.status === 'recent_shutdown_remainder') return remainder;
   return (fallback.status === 'no_record_no_socket' || fallback.status === 'recorded_process_absent') &&

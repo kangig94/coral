@@ -12,7 +12,6 @@ import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
-import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
@@ -1753,7 +1752,10 @@ describe('cli format', () => {
                       kind: 'durable-cli-runtime',
                       jobId: 'job-1',
                       pid: 4_242,
-                      leaderIncarnation: testIncarnation('job-1'),
+                      leaderIncarnation: {
+                        present: true,
+                        sha256: '0efcf1d27dbf2d6f0ef87b428012d4a744ce590843020f3f4ca1d0725a397c07',
+                      },
                     },
                   ],
                 },
@@ -1800,7 +1802,7 @@ describe('cli format', () => {
           '  Evidence: startup-adoption',
           '    Job: job-1',
           '    PID: 4242',
-          '    Leader incarnation: linux:00000000-0000-4000-8000-000000000000:job-1',
+          '    Leader incarnation: present (SHA-256: 0efcf1d27dbf2d6f0ef87b428012d4a744ce590843020f3f4ca1d0725a397c07)',
           'Entry 3: hooks.onShutdown',
           '  Owner: process-exit',
           '  Cause: rejected',
