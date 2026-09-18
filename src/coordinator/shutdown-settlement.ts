@@ -1,5 +1,6 @@
 import { formatError } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
+import type { ShutdownRemainderSubject } from '../infra/shutdown-remainder-record.js';
 import {
   SettlementLedger,
   type Settlement,
@@ -30,6 +31,7 @@ export type ShutdownRetainedAuthority = Readonly<{
 
 export type ShutdownUndischarged = Readonly<{
   label: string;
+  subject?: ShutdownRemainderSubject;
   remainder: UndischargedRemainder;
   settlement: ShutdownDeclinedSettlement;
 }>;
@@ -62,7 +64,11 @@ export type ShutdownRetainedAuthorityContribution = Readonly<{
   cleanupObligations?: readonly string[];
 }>;
 
-export type ShutdownObligation = SettlementObligation<UndischargedRemainder, ShutdownRetainedAuthorityContribution>;
+export type ShutdownObligation = SettlementObligation<
+  UndischargedRemainder,
+  ShutdownRetainedAuthorityContribution,
+  ShutdownRemainderSubject
+>;
 
 export type ShutdownAuthorityReleaseBoundary = SettlementAuthorityReleaseBoundary<
   ShutdownRetainedAuthorityContribution,
@@ -77,7 +83,8 @@ export type ShutdownSettlementLedger = SettlementLedger<
   ShutdownHoldReason,
   ShutdownHoldExit,
   AcceptedProcessExitRemainder,
-  ShutdownUndischarged
+  ShutdownUndischarged,
+  ShutdownRemainderSubject
 >;
 
 export type ShutdownSettlementLedgerOptions = Readonly<{
@@ -108,10 +115,12 @@ function declinedFailure(
   label: string,
   remainder: UndischargedRemainder,
   settlement: Extract<Settlement, { kind: 'declined' }>,
+  subject?: ShutdownRemainderSubject,
 ): ShutdownUndischarged {
   const { kind: _kind, ...evidence } = settlement;
   return {
     label,
+    ...(subject === undefined ? {} : { subject }),
     remainder,
     settlement: evidence,
   };
@@ -146,7 +155,8 @@ export function createShutdownSettlementLedger(options: ShutdownSettlementLedger
     ShutdownHoldReason,
     ShutdownHoldExit,
     AcceptedProcessExitRemainder,
-    ShutdownUndischarged
+    ShutdownUndischarged,
+    ShutdownRemainderSubject
   >({
     budgetMs: options.budgetMs,
     time: options.time,

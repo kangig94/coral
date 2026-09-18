@@ -25,7 +25,7 @@ type ShutdownRemainderPruneRuntime = Readonly<{
 }>;
 
 type ShutdownRemainderWriteRuntime = Readonly<{
-  storage: Pick<StoragePort, 'writeAtomicDurableSync'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>;
   time: Pick<TimePort, 'now'>;
   runDir: string;
 }>;
@@ -118,7 +118,10 @@ export function recordShutdownRemainder(
     mode: input.mode,
     entries: input.undischarged,
   };
-  return runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record, null, 2)}\n`, {
+  runtime.storage.mkdirSync(directory, { recursive: true });
+  // Constraint: do not use `writeAtomicDurableSync`; `docs/design-rationale.md` §12.5 excludes its unbounded
+  // journal commit waits from the coordinator exit path.
+  return runtime.storage.writeAtomicSync(path, `${JSON.stringify(record, null, 2)}\n`, {
     encoding: 'utf-8',
     mode: 0o600,
   });

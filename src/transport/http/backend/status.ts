@@ -31,13 +31,48 @@ type OperatorFacingShutdownSettlement =
   | Readonly<{ cause: 'timed-out'; budgetMs: number }>
   | Readonly<{ cause: 'budget-exhausted' | 'unconfirmed' }>;
 
+const OPERATOR_FACING_SHUTDOWN_LABELS = [
+  'app-server handoff quiesce',
+  'backend discovery withdrawal',
+  'child termination',
+  'components disposeAll',
+  'crashed job terminalization',
+  'discuss store dispose',
+  'hooks.onShutdown',
+  'inflight drain',
+  'kb child shutdown',
+  'lifecycle reactor dispose',
+  'ownership checker teardown',
+  'pending launch settlement',
+  'process incarnation probe shutdown',
+  'process-exit-remainder-acceptance',
+  'provider control and IPC authority release',
+  'provider host drain for handoff',
+  'provider host shutdown',
+  'provider operation mutation drain',
+  'recovery coordinator teardown',
+  'server close',
+  'server connection close',
+  'store services availability check',
+] as const;
+type OperatorFacingShutdownLabel = (typeof OPERATOR_FACING_SHUTDOWN_LABELS)[number];
+type OperatorFacingShutdownObligation =
+  | Readonly<{ label: OperatorFacingShutdownLabel }>
+  | Readonly<{ label: 'stream response close'; ordinal: number }>
+  | Readonly<{ label: 'provider proxy lifecycle fatal incident'; occurrence: number }>;
+
+type OperatorFacingShutdownSkippedEntry = Readonly<{
+  entryNumber: number;
+  obligation: OperatorFacingShutdownObligation | null;
+}>;
+
 type OperatorFacingShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
   reason: ShutdownRemainderRecord['reason'];
   mode: ShutdownRemainderRecord['mode'];
   entries: readonly Readonly<{
-    label: string;
+    obligation: OperatorFacingShutdownObligation | null;
     remainder: ShutdownRemainderRecord['entries'][number]['remainder'];
     settlement: OperatorFacingShutdownSettlement;
   }>[];
@@ -136,12 +171,17 @@ export type BackendStatusFull =
   | {
       status: 'recent_shutdown_remainder';
       record: OperatorFacingShutdownRemainderRecord;
-      skippedEntries: ShutdownRemainderRecordScan['skippedEntries'];
-      skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
+      skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
+      skippedRecordCount: number;
     }
   | {
       status: 'shutdown_remainder_unreadable';
-      skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
+      reason: 'scan-failed';
+    }
+  | {
+      status: 'shutdown_remainder_unreadable';
+      reason: 'records-skipped';
+      skippedRecordCount: number;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -155,19 +195,49 @@ function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
 }
 
+const operatorFacingShutdownLabels = new Set<string>(OPERATOR_FACING_SHUTDOWN_LABELS);
+
+function positiveSafeInteger(value: string): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function operatorFacingShutdownObligation(label: string): OperatorFacingShutdownObligation | null {
+  if (operatorFacingShutdownLabels.has(label)) return { label: label as OperatorFacingShutdownLabel };
+
+  const stream = /^stream response close ([1-9][0-9]*)$/u.exec(label);
+  if (stream !== null) {
+    const ordinal = positiveSafeInteger(stream[1] ?? '');
+    if (ordinal !== null) return { label: 'stream response close', ordinal };
+  }
+
+  if (label === 'provider proxy lifecycle fatal incident') {
+    return { label, occurrence: 1 };
+  }
+  const incident = /^provider proxy lifecycle fatal incident ([2-9][0-9]*)$/u.exec(label);
+  if (incident !== null) {
+    const occurrence = positiveSafeInteger(incident[1] ?? '');
+    if (occurrence !== null) return { label: 'provider proxy lifecycle fatal incident', occurrence };
+  }
+
+  return null;
+}
+
 function operatorFacingShutdownSettlement(
   settlement: ShutdownRemainderRecord['entries'][number]['settlement'],
 ): OperatorFacingShutdownSettlement {
   switch (settlement.cause) {
     case 'rejected':
     case 'aborted': {
-      const causeCode = settlement.error.kind === 'error' ? settlement.error.cause?.code : undefined;
-      const code = causeCode ?? settlement.error.code;
+      const error =
+        settlement.error.kind === 'error' && settlement.error.cause?.code !== undefined
+          ? settlement.error.cause
+          : settlement.error;
       return {
         cause: settlement.cause,
         error: {
-          name: settlement.error.kind === 'error' ? settlement.error.name : 'UnknownThrown',
-          ...(code === undefined ? {} : { code }),
+          name: error.kind === 'error' ? error.name : 'UnknownThrown',
+          ...(error.code === undefined ? {} : { code: error.code }),
         },
       };
     }
@@ -179,6 +249,31 @@ function operatorFacingShutdownSettlement(
   }
 }
 
+function operatorFacingShutdownRemainderOwner(
+  remainder: ShutdownRemainderRecord['entries'][number]['remainder'],
+): ShutdownRemainderRecord['entries'][number]['remainder'] {
+  if (remainder.owner === 'process-exit') return { owner: 'process-exit' };
+  switch (remainder.evidence.kind) {
+    case 'startup-adoption':
+      return {
+        owner: 'successor-recovery',
+        evidence: {
+          kind: 'startup-adoption',
+          processes: remainder.evidence.processes.map((process) => ({
+            kind: 'durable-cli-runtime',
+            jobId: process.jobId,
+            pid: process.pid,
+            leaderIncarnation: process.leaderIncarnation,
+          })),
+        },
+      };
+    case 'startup-store-recovery':
+      return { owner: 'successor-recovery', evidence: { kind: 'startup-store-recovery' } };
+    case 'startup-liveness-recovery':
+      return { owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } };
+  }
+}
+
 function operatorFacingShutdownRemainder(record: ShutdownRemainderRecord): OperatorFacingShutdownRemainderRecord {
   return {
     instanceId: record.instanceId,
@@ -186,8 +281,8 @@ function operatorFacingShutdownRemainder(record: ShutdownRemainderRecord): Opera
     reason: record.reason,
     mode: record.mode,
     entries: record.entries.map((entry) => ({
-      label: entry.label,
-      remainder: entry.remainder,
+      obligation: operatorFacingShutdownObligation(entry.label),
+      remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
       settlement: operatorFacingShutdownSettlement(entry.settlement),
     })),
   };
@@ -266,8 +361,16 @@ function readRecentShutdownRemainder(
   try {
     scan = scanShutdownRemainderRecords(storage, directory);
   } catch {
-    return scope.kind === 'directory' ? { status: 'shutdown_remainder_unreadable', skippedRecords: [] } : null;
+    return scope.kind === 'directory' || scope.instanceId !== undefined
+      ? { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' }
+      : null;
   }
+  const scopedSkippedRecords =
+    scope.kind === 'directory'
+      ? scan.skippedRecords
+      : scope.instanceId === undefined
+        ? []
+        : scan.skippedRecords.filter((name) => name === `${scope.instanceId}.json`);
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -287,15 +390,24 @@ function readRecentShutdownRemainder(
     )
     .at(-1)?.candidate;
   if (record === undefined) {
-    return scope.kind === 'directory' && scan.skippedRecords.length > 0
-      ? { status: 'shutdown_remainder_unreadable', skippedRecords: scan.skippedRecords }
+    return scopedSkippedRecords.length > 0
+      ? {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedRecordCount: scopedSkippedRecords.length,
+        }
       : null;
   }
   return {
     status: 'recent_shutdown_remainder',
     record: operatorFacingShutdownRemainder(record),
-    skippedEntries: scan.skippedEntries.filter((entry) => entry.recordInstanceId === record.instanceId),
-    skippedRecords: scan.skippedRecords,
+    skippedEntries: scan.skippedEntries
+      .filter((entry) => entry.recordInstanceId === record.instanceId)
+      .map((entry) => ({
+        entryNumber: entry.entryNumber,
+        obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+      })),
+    skippedRecordCount: scopedSkippedRecords.length,
   };
 }
 
@@ -343,7 +455,10 @@ function noDaemonStatus(
     coordinator === undefined ? { kind: 'directory' } : { kind: 'coordinator', ...coordinator },
   );
   if (remainder?.status === 'recent_shutdown_remainder') return remainder;
-  return fallback.status === 'no_record_no_socket' && remainder !== null ? remainder : fallback;
+  return (fallback.status === 'no_record_no_socket' || fallback.status === 'recorded_process_absent') &&
+    remainder !== null
+    ? remainder
+    : fallback;
 }
 
 /**

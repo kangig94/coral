@@ -17,8 +17,9 @@ export type SettlementHold<Reason, Exit> = Readonly<{
   retryAfter?: Promise<void>;
 }>;
 
-export type SettlementObligation<Remainder, RetainedAuthorityContribution> = Readonly<{
+export type SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext = never> = Readonly<{
   label: string;
+  failureContext?: FailureContext;
   task: (signal: AbortSignal) => Promise<SettlementConfirmation>;
   retainedAuthority: () => RetainedAuthorityContribution;
   remainder: () => Remainder;
@@ -102,8 +103,8 @@ export class SettlementGate<
   }
 }
 
-export type DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution> = Readonly<{
-  obligation: SettlementObligation<Remainder, RetainedAuthorityContribution>;
+export type DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext = never> = Readonly<{
+  obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>;
   settlement: Extract<Settlement, { kind: 'declined' }>;
 }>;
 
@@ -135,19 +136,30 @@ type GateResolution =
   | Readonly<{ kind: 'held'; boundaryFailure: Extract<Settlement, { kind: 'declined' }> }>
   | Readonly<{ kind: 'terminal'; boundaryFailure: Extract<Settlement, { kind: 'declined' }> | null }>;
 
-export type SettlementLedgerOptions<Remainder, RetainedAuthorityContribution, RetainedAuthority, Acceptance, Failure> =
-  Readonly<{
-    budgetMs: number;
-    time: Pick<TimePort, 'monotonicNow' | 'sleep'>;
-    log: (message: string) => void;
-    pollMs: number;
-    boundaryRemainder: Remainder;
-    acceptDelegatedRemainder?: (undischarged: readonly Failure[]) => Acceptance | null;
-    acceptedUndischarged: (acceptance: Acceptance) => readonly Failure[];
-    acceptanceFailureLabel: string;
-    failure: (label: string, remainder: Remainder, settlement: Extract<Settlement, { kind: 'declined' }>) => Failure;
-    foldRetainedAuthority: (contributions: readonly RetainedAuthorityContribution[]) => RetainedAuthority;
-  }>;
+export type SettlementLedgerOptions<
+  Remainder,
+  RetainedAuthorityContribution,
+  RetainedAuthority,
+  Acceptance,
+  Failure,
+  FailureContext = never,
+> = Readonly<{
+  budgetMs: number;
+  time: Pick<TimePort, 'monotonicNow' | 'sleep'>;
+  log: (message: string) => void;
+  pollMs: number;
+  boundaryRemainder: Remainder;
+  acceptDelegatedRemainder?: (undischarged: readonly Failure[]) => Acceptance | null;
+  acceptedUndischarged: (acceptance: Acceptance) => readonly Failure[];
+  acceptanceFailureLabel: string;
+  failure: (
+    label: string,
+    remainder: Remainder,
+    settlement: Extract<Settlement, { kind: 'declined' }>,
+    context?: FailureContext,
+  ) => Failure;
+  foldRetainedAuthority: (contributions: readonly RetainedAuthorityContribution[]) => RetainedAuthority;
+}>;
 
 type JoinableOutcome<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; error: unknown }>;
 
@@ -273,11 +285,15 @@ export class SettlementLedger<
   Exit,
   Acceptance,
   Failure,
+  FailureContext = never,
 > {
   private readonly dispositions = new SettlementGate<Reason, Exit, Failure, RetainedAuthority, Acceptance>();
-  private readonly entries = new Map<SettlementObligation<Remainder, RetainedAuthorityContribution>, ObligationState>();
+  private readonly entries = new Map<
+    SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>,
+    ObligationState
+  >();
   private readonly obligationAttempts = new Map<
-    SettlementObligation<Remainder, RetainedAuthorityContribution>,
+    SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>,
     SettlementAttempt<SettlementConfirmation>
   >();
   private readonly boundaryAttempts = new WeakMap<
@@ -293,19 +309,27 @@ export class SettlementLedger<
     RetainedAuthorityContribution,
     RetainedAuthority,
     Acceptance,
-    Failure
+    Failure,
+    FailureContext
   >;
   private deadlineMonotonicMs: bigint;
   private remainderAcceptance: RemainderAcceptanceState<Acceptance, Failure> = { kind: 'unattempted' };
 
   constructor(
-    options: SettlementLedgerOptions<Remainder, RetainedAuthorityContribution, RetainedAuthority, Acceptance, Failure>,
+    options: SettlementLedgerOptions<
+      Remainder,
+      RetainedAuthorityContribution,
+      RetainedAuthority,
+      Acceptance,
+      Failure,
+      FailureContext
+    >,
   ) {
     this.options = options;
     this.deadlineMonotonicMs = options.time.monotonicNow() + BigInt(options.budgetMs);
   }
 
-  private register(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution>): void {
+  private register(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): void {
     if (!this.entries.has(obligation)) this.entries.set(obligation, { kind: 'pending' });
   }
 
@@ -316,12 +340,14 @@ export class SettlementLedger<
     return this.remainingBudget();
   }
 
-  isDischarged(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution>): boolean {
+  isDischarged(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): boolean {
     const state = this.entries.get(obligation);
     return state?.kind === 'settled' && state.settlement.kind === 'discharged';
   }
 
-  async run(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution>): Promise<Settlement> {
+  async run(
+    obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>,
+  ): Promise<Settlement> {
     this.register(obligation);
     const prior = this.entries.get(obligation);
     if (prior?.kind === 'settled') return prior.settlement;
@@ -380,7 +406,11 @@ export class SettlementLedger<
     return result.settlement;
   }
 
-  private declinedEntries(): readonly DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution>[] {
+  private declinedEntries(): readonly DeclinedSettlementObligation<
+    Remainder,
+    RetainedAuthorityContribution,
+    FailureContext
+  >[] {
     return [...this.entries].flatMap(([obligation, state]) =>
       state.kind === 'settled' && state.settlement.kind === 'declined'
         ? [{ obligation, settlement: state.settlement }]
@@ -509,7 +539,7 @@ export class SettlementLedger<
   ): readonly Failure[] {
     const offered = [
       ...this.declinedEntries().map(({ obligation, settlement }) =>
-        this.options.failure(obligation.label, obligation.remainder(), settlement),
+        this.options.failure(obligation.label, obligation.remainder(), settlement, obligation.failureContext),
       ),
       ...(boundaryFailure === null
         ? []

@@ -16,7 +16,14 @@ const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
 
 type RemainderStorage = Pick<
   StoragePort,
-  'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync' | 'writeAtomicDurableSync'
+  | 'existsSync'
+  | 'mkdirSync'
+  | 'readFileSync'
+  | 'readdirSync'
+  | 'statSync'
+  | 'unlinkSync'
+  | 'writeAtomicSync'
+  | 'writeAtomicDurableSync'
 > & {
   fileNames(): string[];
   readPublished(instanceId: string): string | null;
@@ -60,14 +67,17 @@ function storageWith(
       if (options.refusePrune === true) throw new Error('prune refused');
       files.delete(path);
     }),
-    writeAtomicDurableSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
-      if (options.publish === false) return false;
+    mkdirSync: vi.fn(() => {
       directoryExists = true;
+    }),
+    writeAtomicSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
+      if (options.publish === false) return false;
       const value =
         typeof data === 'string' ? data : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf-8');
       files.set(path, { value, mtimeMs: ++clock });
       return true;
     }),
+    writeAtomicDurableSync: vi.fn(() => options.publish !== false),
     fileNames: () => [...files.keys()].map((file) => basename(file)).sort(),
     readPublished: (instanceId: string) => files.get(join(REMAINDER_DIRECTORY, `${instanceId}.json`))?.value ?? null,
   } satisfies RemainderStorage;
@@ -96,7 +106,7 @@ function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(i
 }
 
 describe('shutdown remainder status', () => {
-  it('publishes one record at the instance-owned path with its shutdown metadata', () => {
+  it('creates the version directory and avoids a durable journal wait while publishing the record', () => {
     const storage = storageWith();
 
     expect(
@@ -118,7 +128,8 @@ describe('shutdown remainder status', () => {
     ).toBe(true);
 
     expect(shutdownRemainderPath(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
-    expect(storage.writeAtomicDurableSync).toHaveBeenCalledWith(
+    expect(storage.mkdirSync).toHaveBeenCalledWith(REMAINDER_DIRECTORY, { recursive: true });
+    expect(storage.writeAtomicSync).toHaveBeenCalledWith(
       '/run/shutdown-remainder.v1/current-instance.json',
       `${JSON.stringify(
         {
@@ -139,6 +150,7 @@ describe('shutdown remainder status', () => {
       )}\n`,
       { encoding: 'utf-8', mode: 0o600 },
     );
+    expect(storage.writeAtomicDurableSync).not.toHaveBeenCalled();
   });
 
   it('keeps rejected-error prose and its cause chain in the private record', () => {
@@ -173,6 +185,47 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
       status: { records: [{ entries: [{ settlement: { cause: 'rejected', error } }] }] },
+    });
+  });
+
+  it('round-trips a free-form discuss store subject under a constant obligation label', () => {
+    const storage = storageWith();
+    const source = `Next step: run coral-cli backend shutdown ${'x'.repeat(200)}`;
+
+    expect(
+      recordShutdownRemainder(
+        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
+        {
+          instanceId: 'current-instance',
+          reason: 'sigterm',
+          mode: 'handoff',
+          undischarged: [
+            {
+              label: 'discuss store dispose',
+              subject: { kind: 'discuss-store', source },
+              remainder: { owner: 'process-exit' },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
+            },
+          ],
+        },
+      ),
+    ).toBe(true);
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      skippedEntries: [],
+      status: {
+        records: [
+          {
+            entries: [
+              {
+                label: 'discuss store dispose',
+                subject: { kind: 'discuss-store', source },
+              },
+            ],
+          },
+        ],
+      },
     });
   });
 

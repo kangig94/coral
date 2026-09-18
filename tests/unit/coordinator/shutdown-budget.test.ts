@@ -229,7 +229,7 @@ function buildRemainderWriteRefusalHarness(
     storage: {
       ...harness.runtime.storage,
       existsSync: () => false,
-      writeAtomicDurableSync: () => {
+      writeAtomicSync: () => {
         order.push('record');
         return write();
       },
@@ -1186,6 +1186,26 @@ describe('runShutdownSequence drain budget', () => {
     expect(harness.callLog).toContain('discuss.dispose');
     expect(failureDetail(terminal)).toContain('child termination:');
     expect(harness.closeIpcCalled()).toBe(true);
+  });
+
+  it('keeps a free-form discuss store source out of its obligation label', async () => {
+    const source = `Next step: run coral-cli backend shutdown ${'x'.repeat(200)}`;
+    const harness = buildHarness({ hooksOnShutdown: async () => {} });
+    harness.ctx.discussStores.set(source, {
+      dispose: async () => {
+        throw new Error('dispose failed');
+      },
+    } as never);
+
+    const terminal = requireUnaccepted(await runShutdownSequence(harness.ctx));
+    const discussStore = terminal.undischarged.find((entry) => entry.label === 'discuss store dispose');
+
+    expect(discussStore).toMatchObject({
+      label: 'discuss store dispose',
+      subject: { kind: 'discuss-store', source },
+      settlement: { cause: 'rejected' },
+    });
+    expect(discussStore?.label).not.toContain(source);
   });
 
   it('emits a budget-exhausted skip log for finalizers reached after the deadline', async () => {
@@ -2226,7 +2246,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         if (remainderDocument === null) throw new Error('remainder document is absent');
         return remainderDocument;
       },
-      writeAtomicDurableSync: (_path: string, data: string) => {
+      writeAtomicSync: (_path: string, data: string) => {
         finalizationOrder.push('record');
         remainderDocument = data;
         remainderDocuments.push(data);
@@ -2409,6 +2429,56 @@ describe('required provider-proxy shutdown steps', () => {
     if (terminal.disposition !== 'delegated') throw new Error('expected delegated shutdown');
     expect(terminal.undischarged).toEqual(terminal.acceptance.remainder.undischarged);
     expect(accept).toHaveBeenCalledOnce();
+  });
+
+  it('leaves a fatal observed after budget exhaustion for lifecycle finalization', async () => {
+    const evidence = Object.assign(new Error('fatal evidence after the drain budget'), {
+      code: 'FATAL_AFTER_BUDGET',
+      cause: new Error('provider-host evidence was corrupt'),
+    });
+    const incidents: Array<{
+      incident: { kind: 'provider-proxy-lifecycle-fatal'; error: unknown };
+      occurrence: number;
+    }> = [];
+    const takeIncidents = vi.fn(() => incidents.splice(0));
+    const providerHostShutdown = vi.fn(
+      (signal: AbortSignal) =>
+        new Promise<never>(() => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              incidents.push({
+                incident: { kind: 'provider-proxy-lifecycle-fatal', error: evidence },
+                occurrence: 1,
+              });
+            },
+            { once: true },
+          );
+        }),
+    );
+    const harness = buildHarness({ reason: 'sigint', hooksOnShutdown: async () => {} });
+    harness.ctx.takeIncidents = takeIncidents;
+    harness.ctx.providerHostManager = {
+      ...harness.ctx.providerHostManager,
+      shutdown: providerHostShutdown,
+    } as never;
+
+    const sequence = runShutdownSequence(harness.ctx);
+    await flush(64);
+    expect(providerHostShutdown).toHaveBeenCalledOnce();
+    takeIncidents.mockClear();
+
+    harness.time.tick(SHUTDOWN_DRAIN_TIMEOUT_MS);
+    await flush(64);
+    await sequence;
+
+    expect(takeIncidents).not.toHaveBeenCalled();
+    expect(incidents).toEqual([
+      {
+        incident: { kind: 'provider-proxy-lifecycle-fatal', error: evidence },
+        occurrence: 1,
+      },
+    ]);
   });
 
   it('retries every acquisition cleanup hold once and reports a surviving hold as unconfirmed', async () => {

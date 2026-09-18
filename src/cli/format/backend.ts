@@ -1242,15 +1242,32 @@ function formatRecentShutdownRemainderStatus(
   ];
   for (const [index, entry] of result.record.entries.entries()) {
     lines.push(
-      `Entry ${index + 1}: ${entry.label}`,
+      `Entry ${index + 1}: ${formatShutdownObligation(entry.obligation)}`,
       `  Owner: ${entry.remainder.owner}`,
       ...formatShutdownSettlementLines(entry.settlement),
       ...formatShutdownRemainderEvidenceLines(entry.remainder),
     );
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
-  lines.push(...formatSkippedShutdownRemainderRecords(result.skippedRecords));
+  lines.push(...formatSkippedShutdownRemainderRecords(result.skippedRecordCount));
   return lines.join('\n');
+}
+
+function formatShutdownObligation(
+  obligation: Extract<
+    BackendStatusFull,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['obligation'],
+): string {
+  if (obligation === null) return 'unrecognized obligation';
+  switch (obligation.label) {
+    case 'stream response close':
+      return `${obligation.label} ${obligation.ordinal}`;
+    case 'provider proxy lifecycle fatal incident':
+      return `${obligation.label}${obligation.occurrence === 1 ? '' : ` ${obligation.occurrence}`}`;
+    default:
+      return obligation.label;
+  }
 }
 
 function formatShutdownSettlementLines(
@@ -1293,9 +1310,12 @@ function formatShutdownRemainderEvidenceLines(
 function formatUnreadableShutdownRemainderStatus(
   result: Extract<BackendStatusFull, { status: 'shutdown_remainder_unreadable' }>,
 ): string {
+  if (result.reason === 'scan-failed') {
+    return 'Coral could not inspect shutdown remainder records.';
+  }
   return [
     'Coral found shutdown remainder records this build could not decode.',
-    ...formatSkippedShutdownRemainderRecords(result.skippedRecords),
+    ...formatSkippedShutdownRemainderRecords(result.skippedRecordCount),
   ].join('\n');
 }
 
@@ -1303,16 +1323,18 @@ function formatSkippedShutdownRemainderEntries(
   entries: Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>['skippedEntries'],
 ): string[] {
   return entries.flatMap((entry) => [
-    `Skipped entry: record=${entry.recordInstanceId} entry=${entry.entryNumber} label=${entry.label ?? 'unavailable'} owner=${entry.owner ?? 'unavailable'}`,
+    `Skipped entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
     '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
   ]);
 }
 
-function formatSkippedShutdownRemainderRecords(records: readonly string[]): string[] {
-  return records.flatMap((record) => [
-    `Skipped record: ${record}`,
-    '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
-  ]);
+function formatSkippedShutdownRemainderRecords(count: number): string[] {
+  return count === 0
+    ? []
+    : [
+        `Skipped shutdown remainder records: ${count}`,
+        '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
+      ];
 }
 
 export function formatShutdown(result: ShutdownResult): string {

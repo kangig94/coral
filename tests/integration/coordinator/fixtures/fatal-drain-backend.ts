@@ -10,7 +10,10 @@ const exitGate = createBootstrapProbeExitGate();
 const actionPath = join(process.env.HOME ?? process.cwd(), 'fatal-drain-actions.log');
 const recordAction = (action: string): void => appendFileSync(actionPath, `${action}\n`, 'utf-8');
 let triggerFatal: ((error: unknown) => void) | undefined;
-let fatalDuringHardDrain: Error | null = null;
+let fatalDuringHardDrain: Readonly<{
+  error: Error;
+  timing: 'before-budget-exhaustion' | 'after-budget-exhaustion';
+}> | null = null;
 
 function injectFatal(error: unknown): void {
   const fatal = triggerFatal;
@@ -43,9 +46,21 @@ const coordinator = createCoordinatorServer({
         acquisitionCleanupHolds: [],
         closingHosts: [],
       } as const;
-      const error = fatalDuringHardDrain;
-      if (error === null) return receipt;
+      const fatal = fatalDuringHardDrain;
+      if (fatal === null) return receipt;
       fatalDuringHardDrain = null;
+      if (fatal.timing === 'after-budget-exhaustion') {
+        return await new Promise<typeof receipt>(() => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              recordAction('provider-host-hard-shutdown-budget-expired');
+              injectFatal(fatal.error);
+            },
+            { once: true },
+          );
+        });
+      }
       return await new Promise<typeof receipt>((resolve, reject) => {
         signal.addEventListener(
           'abort',
@@ -55,7 +70,7 @@ const coordinator = createCoordinatorServer({
           },
           { once: true },
         );
-        injectFatal(error);
+        injectFatal(fatal.error);
         if (!signal.aborted) {
           recordAction('provider-host-hard-shutdown-continued-without-abort');
           resolve(receipt);
@@ -98,10 +113,25 @@ trigger.once('data', (chunk: string | Buffer) => {
     const error = new Error('deterministic corrupt provider-proxy lifecycle evidence');
     const triggerKind = typeof chunk === 'string' ? Buffer.from(chunk)[0] : chunk[0];
     if (triggerKind !== 2) {
+      if (triggerKind === 3) {
+        const cause = Object.assign(new Error('provider-host evidence was corrupt'), {
+          code: 'CORRUPT_PROVIDER_HOST_EVIDENCE',
+        });
+        fatalDuringHardDrain = {
+          error: Object.assign(new Error('fatal evidence arrived after the drain budget'), {
+            name: 'AfterBudgetFatalError',
+            code: 'FATAL_AFTER_BUDGET',
+            cause,
+          }),
+          timing: 'after-budget-exhaustion',
+        };
+        void coordinator.shutdown('sigint').catch(() => undefined);
+        return;
+      }
       injectFatal(error);
       return;
     }
-    fatalDuringHardDrain = error;
+    fatalDuringHardDrain = { error, timing: 'before-budget-exhaustion' };
     void coordinator.shutdown('sigint').catch(() => undefined);
   });
   trigger.destroy();

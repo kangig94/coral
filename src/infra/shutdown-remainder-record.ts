@@ -32,8 +32,11 @@ type ShutdownRemainderSettlement =
   | Readonly<{ cause: 'budget-exhausted' }>
   | Readonly<{ cause: 'unconfirmed'; detail: string }>;
 
+export type ShutdownRemainderSubject = Readonly<{ kind: 'discuss-store'; source: string }>;
+
 type ShutdownRemainderEntry = Readonly<{
   label: string;
+  subject?: ShutdownRemainderSubject;
   remainder:
     | Readonly<{ owner: 'process-exit' }>
     | Readonly<{ owner: 'successor-recovery'; evidence: ShutdownRemainderSuccessorRecoveryEvidence }>;
@@ -112,6 +115,9 @@ const settlementSchema: z.ZodType<ShutdownRemainderSettlement> = z.discriminated
   z.object({ cause: z.literal('budget-exhausted') }).passthrough(),
   z.object({ cause: z.literal('unconfirmed'), detail: z.string() }).passthrough(),
 ]);
+const shutdownRemainderSubjectSchema: z.ZodType<ShutdownRemainderSubject> = z
+  .object({ kind: z.literal('discuss-store'), source: z.string() })
+  .passthrough();
 const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecoveryEvidence> = z.discriminatedUnion(
   'kind',
   [
@@ -137,6 +143,7 @@ const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecov
 const shutdownRemainderEntrySchema: z.ZodType<ShutdownRemainderEntry> = z
   .object({
     label: persistedFactSchema,
+    subject: shutdownRemainderSubjectSchema.optional(),
     remainder: z.discriminatedUnion('owner', [
       z.object({ owner: z.literal('process-exit') }).passthrough(),
       z

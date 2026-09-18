@@ -313,4 +313,70 @@ describe('coordinator fatal drain integration', () => {
       ]),
     });
   });
+
+  it('preserves fatal evidence observed when an in-flight provider-host drain exhausts the budget', async () => {
+    if (!buildArtifactsAvailable()) {
+      throw new Error('Expected clients/build artifacts to exist before running integration tests');
+    }
+
+    const home = mkdtempSync(join(tmpdir(), 'coral-fatal-after-budget-home-'));
+    tempRoots.push(home);
+    const fixture = createPluginFixture(tempRoots, { flavor: 'prod' });
+    const fatalBackendPath = await buildFatalDrainBackend(fixture);
+    const fatalCoordinator = spawnCoordinator({
+      fixture,
+      home,
+      tempRoots,
+      backendPath: fatalBackendPath,
+      triggerPipe: true,
+      env: {
+        CORAL_KB_ENABLE: '0',
+        CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000',
+      },
+    });
+    coordinators.push(fatalCoordinator);
+
+    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const files = coordinatorFilesForHome(home, 'prod');
+    if (fatalCoordinator.triggerPipe === null) throw new Error('Expected a parent-owned fatal trigger pipe');
+    fatalCoordinator.triggerPipe.end(Buffer.from([3]));
+
+    const exit = await waitForProcessExit(fatalCoordinator, 20_000);
+    expect(exit).toMatchObject({ signal: null });
+    expect(exit.code).not.toBeNull();
+    expect(exit.code).not.toBe(0);
+    expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
+    expect(await waitForCoordinatorSocketRelease(files.socketPath, 5_000)).toBe('unlinked');
+
+    const actions = readFileSync(join(home, FATAL_DRAIN_ACTIONS_FILE), 'utf-8').trim().split('\n');
+    expect(actions).toContain('provider-host-hard-shutdown-started');
+    expect(actions).toContain('provider-host-hard-shutdown-budget-expired');
+
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const remainder = readShutdownRemainderStatus({ storage: runtime.storage, runDir: files.runDir });
+    expect(remainder.kind).toBe('available');
+    if (remainder.kind !== 'available') throw new Error(`Expected a shutdown remainder, got ${remainder.kind}`);
+    expect(remainder.status.records.find(({ instanceId }) => instanceId === initial.instanceId)).toMatchObject({
+      reason: 'provider-proxy-lifecycle-fatal',
+      mode: 'handoff',
+      entries: expect.arrayContaining([
+        expect.objectContaining({
+          label: 'provider proxy lifecycle fatal incident',
+          settlement: {
+            cause: 'rejected',
+            error: expect.objectContaining({
+              name: 'AfterBudgetFatalError',
+              code: 'FATAL_AFTER_BUDGET',
+              message: 'fatal evidence arrived after the drain budget',
+              stack: expect.stringContaining('fatal evidence arrived after the drain budget'),
+              cause: expect.objectContaining({
+                code: 'CORRUPT_PROVIDER_HOST_EVIDENCE',
+                message: 'provider-host evidence was corrupt',
+              }),
+            }),
+          },
+        }),
+      ]),
+    });
+  });
 });

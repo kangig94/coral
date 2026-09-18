@@ -806,9 +806,10 @@ function buildClosingShutdownObligations({
   ];
   const buildStoreAndFinalizerObligations = (): readonly ShutdownObligation[] => {
     const obligations: ShutdownObligation[] = [...discussStores].map(([source, store]): ShutdownObligation => {
-      const label = `discuss store '${source}' dispose`;
+      const label = 'discuss store dispose';
       return {
         label,
+        failureContext: { kind: 'discuss-store', source },
         task: () => confirmedTask(() => store.dispose()),
         retainedAuthority: () => cleanupContribution(label),
         remainder: () => ({ owner: 'process-exit' }),
@@ -1035,6 +1036,9 @@ export async function runShutdownSequence({
   });
   let initialIncident = incident;
   const recordPendingIncidents = (): void => {
+    // Do not consume incidents after exhaustion: `SettlementLedger.run` would replace their observed evidence
+    // with `budget-exhausted`; `finalizeStoppedLifecycle` owns the remaining lifecycle queue.
+    if (ledger.remainingBudgetMs() <= 0) return;
     const occurrences =
       takeIncidents?.() ??
       (initialIncident === undefined

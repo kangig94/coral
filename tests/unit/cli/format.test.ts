@@ -1732,7 +1732,7 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
-    it('reports only structured facts from a recent shutdown remainder', () => {
+    it('formats a structured recent shutdown remainder projection', () => {
       const text = formatBackendStatus({
         status: 'recent_shutdown_remainder',
         record: {
@@ -1742,7 +1742,7 @@ describe('cli format', () => {
           mode: 'handoff',
           entries: [
             {
-              label: 'child termination',
+              obligation: { label: 'child termination' },
               remainder: {
                 owner: 'successor-recovery',
                 evidence: {
@@ -1760,7 +1760,7 @@ describe('cli format', () => {
               settlement: { cause: 'timed-out', budgetMs: 5_000 },
             },
             {
-              label: 'hooks.onShutdown',
+              obligation: { label: 'hooks.onShutdown' },
               remainder: { owner: 'process-exit' },
               settlement: {
                 cause: 'rejected',
@@ -1771,19 +1771,15 @@ describe('cli format', () => {
         },
         skippedEntries: [
           {
-            recordInstanceId: 'instance-1',
             entryNumber: 3,
-            label: 'future obligation',
-            owner: 'future-owner',
+            obligation: { label: 'stream response close', ordinal: 3 },
           },
           {
-            recordInstanceId: 'instance-1',
             entryNumber: 4,
-            label: null,
-            owner: null,
+            obligation: null,
           },
         ],
-        skippedRecords: ['future-instance.json'],
+        skippedRecordCount: 1,
       });
 
       expect(text).toBe(
@@ -1804,11 +1800,11 @@ describe('cli format', () => {
           '  Cause: rejected',
           '  Error: Error',
           '  Code: ENOENT',
-          'Skipped entry: record=instance-1 entry=3 label=future obligation owner=future-owner',
+          'Skipped entry 3: stream response close 3',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
-          'Skipped entry: record=instance-1 entry=4 label=unavailable owner=unavailable',
+          'Skipped entry 4: unrecognized obligation',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
-          'Skipped record: future-instance.json',
+          'Skipped shutdown remainder records: 1',
           '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
         ].join('\n'),
       );
@@ -1818,15 +1814,25 @@ describe('cli format', () => {
       expect(
         formatBackendStatus({
           status: 'shutdown_remainder_unreadable',
-          skippedRecords: ['corrupt-instance.json'],
+          reason: 'records-skipped',
+          skippedRecordCount: 1,
         }),
       ).toBe(
         [
           'Coral found shutdown remainder records this build could not decode.',
-          'Skipped record: corrupt-instance.json',
+          'Skipped shutdown remainder records: 1',
           '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
         ].join('\n'),
       );
+    });
+
+    it('reports a shutdown remainder scan failure without soliciting an action', () => {
+      expect(
+        formatBackendStatus({
+          status: 'shutdown_remainder_unreadable',
+          reason: 'scan-failed',
+        }),
+      ).toBe('Coral could not inspect shutdown remainder records.');
     });
 
     it('formats an unrecognized setup-error code without printing persisted text', () => {
@@ -1999,11 +2005,12 @@ describe('cli format', () => {
           entries: [],
         },
         skippedEntries: [],
-        skippedRecords: [],
+        skippedRecordCount: 0,
       },
       {
         status: 'shutdown_remainder_unreadable',
-        skippedRecords: ['corrupt-instance.json'],
+        reason: 'records-skipped',
+        skippedRecordCount: 1,
       },
       {
         status: 'recent_failure',
