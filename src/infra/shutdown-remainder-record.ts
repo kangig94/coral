@@ -1,6 +1,11 @@
 import { join } from 'node:path';
 import { z } from 'zod';
 
+import {
+  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
+  SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+  type SerializedThrown,
+} from './error-format.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
 import { persistedProcessIncarnationSchema } from './persisted-scalar-contracts.js';
@@ -21,21 +26,24 @@ type ShutdownRemainderSuccessorRecoveryEvidence =
   | Readonly<{ kind: 'startup-store-recovery' }>
   | Readonly<{ kind: 'startup-liveness-recovery' }>;
 
+type ShutdownRemainderSettlement =
+  | Readonly<{ cause: 'rejected' | 'aborted'; error: SerializedThrown }>
+  | Readonly<{ cause: 'timed-out'; budgetMs: number }>
+  | Readonly<{ cause: 'budget-exhausted' }>
+  | Readonly<{ cause: 'unconfirmed'; detail: string }>;
+
 type ShutdownRemainderEntry = Readonly<{
   label: string;
   remainder:
     | Readonly<{ owner: 'process-exit' }>
     | Readonly<{ owner: 'successor-recovery'; evidence: ShutdownRemainderSuccessorRecoveryEvidence }>;
-  settlement: Readonly<{
-    cause: 'rejected' | 'timed-out' | 'budget-exhausted' | 'unconfirmed' | 'aborted';
-    detail: string;
-  }>;
+  settlement: ShutdownRemainderSettlement;
 }>;
 
 export type ShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
-  reason: string;
+  reason: 'replaced' | 'sigterm' | 'sigint' | 'provider-proxy-lifecycle-fatal' | 'idle' | 'test-teardown';
   mode: 'handoff' | 'hard';
   entries: readonly ShutdownRemainderEntry[];
 }>;
@@ -57,7 +65,53 @@ export function shutdownRemainderRecordDirectory(runDir: string): string {
   return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}`);
 }
 
-const settlementCauseSchema = z.enum(['rejected', 'timed-out', 'budget-exhausted', 'unconfirmed', 'aborted']);
+const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
+const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
+const persistedFileNameSchema = z.string().min(1).max(255).regex(PERSISTED_SINGLE_LINE_PATTERN);
+const persistedIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH)
+  .regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
+
+function readPersistedFact(value: unknown): string | null {
+  const parsed = persistedFactSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function readPersistedIdentifier(value: unknown): string | null {
+  const parsed = persistedIdentifierSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+const serializedThrownSchema: z.ZodType<SerializedThrown> = z.lazy(() =>
+  z.discriminatedUnion('kind', [
+    z
+      .object({
+        kind: z.literal('error'),
+        name: persistedIdentifierSchema,
+        code: persistedIdentifierSchema.optional(),
+        message: z.string(),
+        stack: z.string().optional(),
+        cause: serializedThrownSchema.optional(),
+      })
+      .passthrough(),
+    z
+      .object({
+        kind: z.literal('unknown'),
+        code: persistedIdentifierSchema.optional(),
+        message: z.string(),
+      })
+      .passthrough(),
+  ]),
+);
+const settlementSchema: z.ZodType<ShutdownRemainderSettlement> = z.discriminatedUnion('cause', [
+  z.object({ cause: z.literal('rejected'), error: serializedThrownSchema }).passthrough(),
+  z.object({ cause: z.literal('aborted'), error: serializedThrownSchema }).passthrough(),
+  z.object({ cause: z.literal('timed-out'), budgetMs: z.number().int().positive() }).passthrough(),
+  z.object({ cause: z.literal('budget-exhausted') }).passthrough(),
+  z.object({ cause: z.literal('unconfirmed'), detail: z.string() }).passthrough(),
+]);
 const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecoveryEvidence> = z.discriminatedUnion(
   'kind',
   [
@@ -68,7 +122,7 @@ const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecov
           z
             .object({
               kind: z.literal('durable-cli-runtime'),
-              jobId: z.string(),
+              jobId: persistedIdentifierSchema,
               pid: z.number().int().positive(),
               leaderIncarnation: persistedProcessIncarnationSchema,
             })
@@ -82,7 +136,7 @@ const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecov
 );
 const shutdownRemainderEntrySchema: z.ZodType<ShutdownRemainderEntry> = z
   .object({
-    label: z.string(),
+    label: persistedFactSchema,
     remainder: z.discriminatedUnion('owner', [
       z.object({ owner: z.literal('process-exit') }).passthrough(),
       z
@@ -92,19 +146,14 @@ const shutdownRemainderEntrySchema: z.ZodType<ShutdownRemainderEntry> = z
         })
         .passthrough(),
     ]),
-    settlement: z
-      .object({
-        cause: settlementCauseSchema,
-        detail: z.string(),
-      })
-      .passthrough(),
+    settlement: settlementSchema,
   })
   .passthrough();
 const shutdownRemainderRecordEnvelopeSchema = z
   .object({
-    instanceId: z.string().min(1),
+    instanceId: persistedIdentifierSchema,
     recordedAt: z.string().datetime(),
-    reason: z.string().min(1),
+    reason: z.enum(['replaced', 'sigterm', 'sigint', 'provider-proxy-lifecycle-fatal', 'idle', 'test-teardown']),
     mode: z.enum(['handoff', 'hard']),
     entries: z.array(z.unknown()).readonly(),
   })
@@ -130,8 +179,8 @@ export function decodeShutdownRemainderRecord(value: unknown):
       skippedEntries.push({
         recordInstanceId: parsedRecord.data.instanceId,
         entryNumber: index + 1,
-        label: isRecord(rawEntry) && typeof rawEntry.label === 'string' ? rawEntry.label : null,
-        owner: rawRemainder !== null && typeof rawRemainder.owner === 'string' ? rawRemainder.owner : null,
+        label: isRecord(rawEntry) ? readPersistedFact(rawEntry.label) : null,
+        owner: rawRemainder === null ? null : readPersistedIdentifier(rawRemainder.owner),
       });
     }
   }
@@ -160,25 +209,34 @@ export function scanShutdownRemainderRecords(
     .readdirSync(directory)
     .filter((name) => name.endsWith('.json'))
     .map((name) => {
+      const reportedName = persistedFileNameSchema.safeParse(name);
       try {
-        return { name, mtimeMs: storage.statSync(join(directory, name)).mtimeMs };
+        return {
+          name,
+          reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
+          mtimeMs: storage.statSync(join(directory, name)).mtimeMs,
+        };
       } catch {
-        return { name, mtimeMs: Number.NEGATIVE_INFINITY };
+        return {
+          name,
+          reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
+          mtimeMs: Number.NEGATIVE_INFINITY,
+        };
       }
     })
     .sort((left, right) => left.mtimeMs - right.mtimeMs || left.name.localeCompare(right.name));
 
-  for (const { name } of recordFiles) {
+  for (const { name, reportedName } of recordFiles) {
     try {
       const decoded = decodeShutdownRemainderRecord(JSON.parse(storage.readFileSync(join(directory, name), 'utf-8')));
       if (decoded.kind === 'unreadable') {
-        skippedRecords.push(name);
+        skippedRecords.push(reportedName);
         continue;
       }
       records.push(decoded.record);
       skippedEntries.push(...decoded.skippedEntries);
     } catch {
-      skippedRecords.push(name);
+      skippedRecords.push(reportedName);
     }
   }
 

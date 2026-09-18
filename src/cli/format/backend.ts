@@ -1237,20 +1237,57 @@ function formatRecentShutdownRemainderStatus(
   const lines = [
     'Coral recorded a recent shutdown with unfinished obligations.',
     `Recorded at: ${result.record.recordedAt}`,
-    `Reason: ${formatPersistedRemainderValue(result.record.reason)}`,
+    `Reason: ${result.record.reason}`,
     `Mode: ${result.record.mode}`,
   ];
   for (const [index, entry] of result.record.entries.entries()) {
     lines.push(
-      `Entry ${index + 1}: ${formatPersistedRemainderValue(entry.label)}`,
+      `Entry ${index + 1}: ${entry.label}`,
       `  Owner: ${entry.remainder.owner}`,
-      `  Cause: ${entry.settlement.cause}`,
-      `  Detail: ${formatPersistedRemainderValue(entry.settlement.detail)}`,
+      ...formatShutdownSettlementLines(entry.settlement),
+      ...formatShutdownRemainderEvidenceLines(entry.remainder),
     );
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
   lines.push(...formatSkippedShutdownRemainderRecords(result.skippedRecords));
   return lines.join('\n');
+}
+
+function formatShutdownSettlementLines(
+  settlement: Extract<
+    BackendStatusFull,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['settlement'],
+): string[] {
+  const lines = [`  Cause: ${settlement.cause}`];
+  switch (settlement.cause) {
+    case 'rejected':
+    case 'aborted':
+      return [
+        ...lines,
+        `  Error: ${settlement.error.name}`,
+        ...(settlement.error.code === undefined ? [] : [`  Code: ${settlement.error.code}`]),
+      ];
+    case 'timed-out':
+      return [...lines, `  Budget: ${settlement.budgetMs}ms`];
+    case 'budget-exhausted':
+    case 'unconfirmed':
+      return lines;
+  }
+}
+
+function formatShutdownRemainderEvidenceLines(
+  remainder: Extract<
+    BackendStatusFull,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['remainder'],
+): string[] {
+  if (remainder.owner === 'process-exit') return [];
+  if (remainder.evidence.kind !== 'startup-adoption') return [`  Evidence: ${remainder.evidence.kind}`];
+  return [
+    '  Evidence: startup-adoption',
+    ...remainder.evidence.processes.flatMap((process) => [`    Job: ${process.jobId}`, `    PID: ${process.pid}`]),
+  ];
 }
 
 function formatUnreadableShutdownRemainderStatus(
@@ -1266,24 +1303,16 @@ function formatSkippedShutdownRemainderEntries(
   entries: Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>['skippedEntries'],
 ): string[] {
   return entries.flatMap((entry) => [
-    `Skipped entry: record=${formatPersistedRemainderValue(entry.recordInstanceId)} entry=${entry.entryNumber} label=${entry.label === null ? 'unavailable' : formatPersistedRemainderValue(entry.label)} owner=${entry.owner === null ? 'unavailable' : formatPersistedRemainderValue(entry.owner)}`,
+    `Skipped entry: record=${entry.recordInstanceId} entry=${entry.entryNumber} label=${entry.label ?? 'unavailable'} owner=${entry.owner ?? 'unavailable'}`,
     '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
   ]);
 }
 
 function formatSkippedShutdownRemainderRecords(records: readonly string[]): string[] {
   return records.flatMap((record) => [
-    `Skipped record: ${formatPersistedRemainderValue(record)}`,
+    `Skipped record: ${record}`,
     '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
   ]);
-}
-
-function formatPersistedRemainderValue(value: string): string {
-  const firstLine = value.split(/\r\n|[\r\n]/u, 1)[0] ?? '';
-  if (/next step:|(?:action|clear|command|discard)=|\bcoral-cli\b/iu.test(firstLine)) {
-    return '[persisted text omitted]';
-  }
-  return JSON.stringify(firstLine).slice(1, -1);
 }
 
 export function formatShutdown(result: ShutdownResult): string {

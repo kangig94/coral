@@ -225,7 +225,9 @@ describe('coordinator fatal drain integration', () => {
           remainder: { owner: 'process-exit' },
           settlement: {
             cause: 'rejected',
-            detail: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
+            error: expect.objectContaining({
+              message: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
+            }),
           },
         },
       ],
@@ -296,14 +298,16 @@ describe('coordinator fatal drain integration', () => {
           label: 'provider host shutdown',
           settlement: {
             cause: 'aborted',
-            detail: expect.stringContaining('AbortError'),
+            error: expect.objectContaining({ name: 'AbortError' }),
           },
         }),
         expect.objectContaining({
           label: 'provider proxy lifecycle fatal incident',
           settlement: {
             cause: 'rejected',
-            detail: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
+            error: expect.objectContaining({
+              message: expect.stringContaining('deterministic corrupt provider-proxy lifecycle evidence'),
+            }),
           },
         }),
       ]),

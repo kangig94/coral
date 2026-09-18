@@ -78,7 +78,7 @@ function storageWith(
 const KNOWN_LOSS = {
   label: 'known loss',
   remainder: { owner: 'process-exit' },
-  settlement: { cause: 'timed-out', detail: 'known detail' },
+  settlement: { cause: 'timed-out', budgetMs: 5_000 },
 } as const;
 
 function recordAt(instanceId: string, entries: readonly unknown[] = [KNOWN_LOSS]) {
@@ -110,7 +110,7 @@ describe('shutdown remainder status', () => {
             {
               label: 'pending durable launch settlement',
               remainder: { owner: 'process-exit' },
-              settlement: { cause: 'timed-out', detail: 'launch settlement did not finish' },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
             },
           ],
         },
@@ -130,7 +130,7 @@ describe('shutdown remainder status', () => {
             {
               label: 'pending durable launch settlement',
               remainder: { owner: 'process-exit' },
-              settlement: { cause: 'timed-out', detail: 'launch settlement did not finish' },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
             },
           ],
         },
@@ -139,6 +139,41 @@ describe('shutdown remainder status', () => {
       )}\n`,
       { encoding: 'utf-8', mode: 0o600 },
     );
+  });
+
+  it('keeps rejected-error prose and its cause chain in the private record', () => {
+    const storage = storageWith();
+    const error = {
+      kind: 'error',
+      name: 'Error',
+      code: 'OUTER',
+      message: 'Please delete ~/.coral and restart.',
+      stack: 'Error: Please delete ~/.coral and restart.\n    at shutdown',
+      cause: { kind: 'error', name: 'Error', code: 'ENOENT', message: 'executable missing' },
+    } as const;
+
+    expect(
+      recordShutdownRemainder(
+        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
+        {
+          instanceId: 'current-instance',
+          reason: 'sigterm',
+          mode: 'handoff',
+          undischarged: [
+            {
+              label: 'hooks.onShutdown',
+              remainder: { owner: 'process-exit' },
+              settlement: { cause: 'rejected', error },
+            },
+          ],
+        },
+      ),
+    ).toBe(true);
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      status: { records: [{ entries: [{ settlement: { cause: 'rejected', error } }] }] },
+    });
   });
 
   it('reports an absent directory', () => {
@@ -191,7 +226,11 @@ describe('shutdown remainder status', () => {
       fileAt('malformed-instance', 1, {
         ...recordAt('malformed-instance'),
         entries: [
-          { ...KNOWN_LOSS, settlement: { cause: 'rejected', detail: 'known detail' } },
+          {
+            ...KNOWN_LOSS,
+            settlement: { cause: 'rejected', error: { kind: 'error', name: 'Error', message: 'known detail' } },
+          },
+          { ...KNOWN_LOSS, label: 'legacy timeout', settlement: { cause: 'timed-out', detail: 'known detail' } },
           { label: 'missing settlement', remainder: { owner: 'process-exit' } },
           'not-an-entry',
         ],
@@ -205,12 +244,18 @@ describe('shutdown remainder status', () => {
         {
           recordInstanceId: 'malformed-instance',
           entryNumber: 2,
-          label: 'missing settlement',
+          label: 'legacy timeout',
           owner: 'process-exit',
         },
         {
           recordInstanceId: 'malformed-instance',
           entryNumber: 3,
+          label: 'missing settlement',
+          owner: 'process-exit',
+        },
+        {
+          recordInstanceId: 'malformed-instance',
+          entryNumber: 4,
           label: null,
           owner: null,
         },
@@ -219,6 +264,50 @@ describe('shutdown remainder status', () => {
     });
     if (read.kind !== 'available') throw new Error('expected readable remainder status');
     expect(read.status.records[0]?.entries).toHaveLength(1);
+  });
+
+  it('rejects multiline entry labels without carrying them into skipped-entry output', () => {
+    const storage = storageWith([
+      fileAt('bounded-instance', 1, {
+        ...recordAt('bounded-instance'),
+        entries: [{ ...KNOWN_LOSS, label: 'forged\nline' }],
+      }),
+    ]);
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      status: { records: [{ instanceId: 'bounded-instance', entries: [] }] },
+      skippedEntries: [
+        {
+          recordInstanceId: 'bounded-instance',
+          entryNumber: 1,
+          label: null,
+          owner: 'process-exit',
+        },
+      ],
+    });
+  });
+
+  it.each([
+    ['instance id', { ...recordAt('bounded-instance'), instanceId: 'forged\ninstance' }],
+    ['reason', { ...recordAt('bounded-instance'), reason: 'forged\nreason' }],
+  ])('rejects a record with an invalid single-line %s', (_field, record) => {
+    const storage = storageWith([fileAt('bounded-instance', 1, record)]);
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      status: { records: [] },
+      skippedRecords: ['bounded-instance.json'],
+    });
+  });
+
+  it('reports an unsafe skipped filename through a fixed single-line fact', () => {
+    const storage = storageWith([{ name: 'forged\nrecord.json', value: '{not-json', mtimeMs: 1 }]);
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      skippedRecords: ['invalid-record-name'],
+    });
   });
 
   it('skips corrupt and undecodable files beside readable records', () => {
@@ -272,7 +361,7 @@ describe('shutdown remainder status', () => {
       },
       settlement: {
         cause: 'timed-out',
-        detail: 'child remained alive',
+        budgetMs: 5_000,
         settlementAddition: true,
       },
     };
@@ -306,7 +395,7 @@ describe('shutdown remainder status', () => {
                     ],
                   },
                 },
-                settlement: { cause: 'timed-out', detail: 'child remained alive' },
+                settlement: { cause: 'timed-out', budgetMs: 5_000 },
               },
             ],
           },
@@ -420,7 +509,7 @@ describe('shutdown remainder status', () => {
             {
               label: 'child termination',
               remainder,
-              settlement: { cause: 'timed-out', detail: '1 cleanup handle(s) remain owned by launch-coordinator' },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
             },
           ],
         },

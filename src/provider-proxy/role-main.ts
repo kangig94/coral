@@ -578,8 +578,8 @@ function unattributableRetryDelayMs(attempts: number): number {
 }
 
 /**
- * Only confirmed absence may mark the deadline model exited. Published roles release their authority after
- * bounded retries so the durable set owner can recover; provisional roles keep retrying until acquisition settles.
+ * Only confirmed absence may mark the deadline model exited. Roles release their authority after bounded retries
+ * so acquisition cleanup or the durable set owner can recover.
  * Close-and-exit must remain deferred so an in-flight control response can reach its caller before the role closes.
  */
 export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
@@ -606,7 +606,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
           ? ({ kind: outcome.kind, reason: 'process-containment-reap-failed' } as const)
           : ({ kind: outcome.kind } as const);
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
-      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS && options.grantWasInstalled()) {
+      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
         exitStarted = true;
         enforcementHoldStatus = null;
         backendLog.error(

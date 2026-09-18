@@ -482,7 +482,7 @@ function providerHostAdministrationCopy(
       const exactReferenceExit =
         workDir === null
           ? ''
-          : 'Run `coral-cli backend provider-host list`; if the host you want is listed, use its exact reference with `inspect`/`evict` — an exact reference on an owner that answered is served now. ';
+          : 'Run `coral-cli backend provider-host list`; an exact reference on an owner that answered is served now, and `coral-cli backend provider-host inspect` with that exact reference reports it. ';
       return {
         message: `This coordinator has released administration control of ${owners} and can no longer ask ${ownerPronoun}, so it cannot say whether ${subject} exists on ${ownerPronoun}.`,
         remediation: `${exactReferenceExit}Run \`coral-cli backend status\`. If the coordinator is draining, its successor re-establishes control; retry the original command once the successor serves. If the drain is held on the control release, it ends by itself when its budget is exhausted; retry once \`coral-cli backend status\` no longer reports that coordinator as shutting down. If it is not draining, \`coral-cli backend status\` reports the released set under its own token. Coral keeps the set held while it waits for confirmed absence or succession; an unconfirmed result has no automatic deadline. Retry the original command once succession completes.`,

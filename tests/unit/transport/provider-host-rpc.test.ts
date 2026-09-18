@@ -447,12 +447,17 @@ describe('provider-host RPC authorization', () => {
         code: 'provider_host_owner_torn_down',
         message: `This coordinator has released administration control of provider-proxy:set-a and can no longer ask it, so it cannot say whether any host for work directory ${process.cwd()} exists on it.`,
         remediation: expect.stringContaining(
-          'Run `coral-cli backend provider-host list`; if the host you want is listed, use its exact reference with `inspect`/`evict` — an exact reference on an owner that answered is served now. Run `coral-cli backend status`.',
+          'Run `coral-cli backend provider-host list`; an exact reference on an owner that answered is served now, and `coral-cli backend provider-host inspect` with that exact reference reports it. Run `coral-cli backend status`.',
         ),
         detail: { ownerIds: ['provider-proxy:set-a'], hostRefs: [], workDir: process.cwd() },
       },
     });
-    expect(JSON.stringify(answered)).not.toContain('<ref>');
+    if (answered.kind !== 'unary') throw new Error('expected a unary provider-host refusal');
+    const rendered = JSON.stringify(answered);
+    expect(rendered).not.toContain('<ref>');
+    expect(rendered).not.toContain('provider-host evict');
+    expect(rendered).not.toContain('provider-proxy-set contain');
+    expect(rendered).not.toContain('provider-proxy-set abandon');
   });
 
   it('carries the owners a draining coordinator can no longer observe through the v2 inventory response', async () => {

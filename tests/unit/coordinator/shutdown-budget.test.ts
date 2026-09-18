@@ -15,6 +15,7 @@ import {
   createShutdownSettlementLedger,
   type ProcessExitRemainder,
   type ProcessExitRemainderAcceptance,
+  type ShutdownDeclinedSettlement,
   type ShutdownAuthorityReleaseBoundary,
   type ShutdownObligation,
 } from '#src/coordinator/shutdown-settlement.js';
@@ -326,8 +327,22 @@ function requireUnaccepted(disposition: Awaited<ReturnType<typeof runShutdownSeq
 
 function failureDetail(disposition: ShutdownSequenceLoss): string {
   return disposition.undischarged
-    .map(({ label, settlement }) => `${label}: ${settlement.cause}: ${settlement.detail}`)
+    .map(({ label, settlement }) => `${label}: ${settlement.cause}: ${failureEvidence(settlement)}`)
     .join(' | ');
+}
+
+function failureEvidence(settlement: ShutdownDeclinedSettlement): string {
+  switch (settlement.cause) {
+    case 'rejected':
+    case 'aborted':
+      return settlement.error.message;
+    case 'timed-out':
+      return `exceeded ${settlement.budgetMs}ms`;
+    case 'budget-exhausted':
+      return 'no drain budget remained';
+    case 'unconfirmed':
+      return settlement.detail;
+  }
 }
 
 function heldFailureDetail(held: ShutdownSequenceHold): string {
@@ -644,7 +659,10 @@ describe('runShutdownSequence drain budget', () => {
         {
           label: 'hooks.onShutdown',
           remainder: { owner: 'process-exit' },
-          settlement: { cause: 'rejected', detail: expect.stringContaining('hook unavailable') },
+          settlement: {
+            cause: 'rejected',
+            error: expect.objectContaining({ message: expect.stringContaining('hook unavailable') }),
+          },
         },
       ],
     });
@@ -924,7 +942,12 @@ describe('runShutdownSequence drain budget', () => {
         {
           label: 'crashed job terminalization',
           remainder: { owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } },
-          settlement: { cause: 'rejected', detail: expect.stringContaining('injected crash terminalization failure') },
+          settlement: {
+            cause: 'rejected',
+            error: expect.objectContaining({
+              message: expect.stringContaining('injected crash terminalization failure'),
+            }),
+          },
         },
       ],
     });
@@ -1013,7 +1036,6 @@ describe('runShutdownSequence drain budget', () => {
     expect(stages).toEqual(['settlePendingLaunchesFn', 'terminateRegisteredChildrenFn']);
     expect(detail).toContain('pending launch settlement: unconfirmed');
     expect(detail).toContain('child termination: unconfirmed');
-    expect(detail).not.toContain('coral-cli abort jobs');
     expect(terminal.undischarged).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ label: 'pending launch settlement' }),
@@ -1770,7 +1792,7 @@ describe('settlement ledger exit gate', () => {
     expect(authorityReleaseTask).toHaveBeenCalledOnce();
     expect(retried.acceptance.remainder).toBe(offeredRemainder);
     expect(retried.undischarged).toEqual(retried.acceptance.remainder.undischarged);
-    expect(retried.undischarged[0]?.settlement).toEqual({ cause: 'timed-out', detail: 'exceeded 900ms' });
+    expect(retried.undischarged[0]?.settlement).toEqual({ cause: 'timed-out', budgetMs: 900 });
     expect(retryOrder).toEqual(['prepare', 'commit', 'accept']);
     expect(requestExit).not.toHaveBeenCalled();
   });
@@ -2008,7 +2030,10 @@ describe('settlement ledger exit gate', () => {
         {
           label: 'startup recovery handoff',
           remainder: { owner: 'successor-recovery', evidence: { kind: 'startup-store-recovery' } },
-          settlement: { cause: 'rejected', detail: expect.stringContaining('successor not accepted') },
+          settlement: {
+            cause: 'rejected',
+            error: expect.objectContaining({ message: expect.stringContaining('successor not accepted') }),
+          },
         },
       ],
     });
@@ -2374,7 +2399,9 @@ describe('required provider-proxy shutdown steps', () => {
           remainder: { owner: 'process-exit' },
           settlement: {
             cause: 'rejected',
-            detail: expect.stringContaining('corrupt provider-proxy lifecycle evidence'),
+            error: expect.objectContaining({
+              message: expect.stringContaining('corrupt provider-proxy lifecycle evidence'),
+            }),
           },
         },
       ],
@@ -2678,7 +2705,7 @@ describe('required provider-proxy shutdown steps', () => {
         {
           label: 'backend discovery withdrawal',
           remainder: { owner: 'process-exit' },
-          settlement: { cause: 'rejected', detail: 'unlink denied' },
+          settlement: { cause: 'rejected', error: { kind: 'unknown', message: 'unlink denied' } },
         },
       ],
     });

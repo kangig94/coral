@@ -1,7 +1,7 @@
 import type { Server, ServerResponse } from 'node:http';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
-import { formatError } from '../infra/error-format.js';
+import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import { BOUNDARY_TRANSFER_ATTEMPT_LIMIT } from '../obligation/settlement.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
@@ -1456,12 +1456,14 @@ export function createLifecycle(
         }
         if (refusal !== null) bestEffortLifecycleLog(log, `shutdown remainder write refused (${refusal})\n`);
       };
-      const withdraw = (): string | null => {
+      const withdraw = (): Readonly<{ detail: string; error: SerializedThrown }> | null => {
         try {
           const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
-          return withdrawal !== undefined && withdrawal.kind === 'refused' ? withdrawal.detail : null;
+          return withdrawal !== undefined && withdrawal.kind === 'refused'
+            ? { detail: withdrawal.detail, error: serializeThrown(withdrawal.detail) }
+            : null;
         } catch (error: unknown) {
-          return formatError(error);
+          return { detail: formatError(error), error: serializeThrown(error) };
         }
       };
 
@@ -1469,11 +1471,11 @@ export function createLifecycle(
         if (losses.length > 0) publish();
         const refusal = withdraw();
         if (refusal !== null) {
-          bestEffortLifecycleLog(log, `backend discovery withdrawal refused (${refusal})\n`);
+          bestEffortLifecycleLog(log, `backend discovery withdrawal refused (${refusal.detail})\n`);
           losses.push({
             label: 'backend discovery withdrawal',
             remainder: { owner: 'process-exit' },
-            settlement: { cause: 'rejected', detail: refusal },
+            settlement: { cause: 'rejected', error: refusal.error },
           });
           publish();
         }

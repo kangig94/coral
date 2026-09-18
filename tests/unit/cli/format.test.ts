@@ -12,6 +12,7 @@ import type { JobDetailResponse } from '#src/jobs/records.js';
 import type { AbortResult } from '#src/jobs/contracts/abort-registry.js';
 import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
@@ -1731,7 +1732,7 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
-    it('reports a recent shutdown remainder without soliciting an action', () => {
+    it('reports only structured facts from a recent shutdown remainder', () => {
       const text = formatBackendStatus({
         status: 'recent_shutdown_remainder',
         record: {
@@ -1744,20 +1745,26 @@ describe('cli format', () => {
               label: 'child termination',
               remainder: {
                 owner: 'successor-recovery',
-                evidence: { kind: 'startup-liveness-recovery' },
+                evidence: {
+                  kind: 'startup-adoption',
+                  processes: [
+                    {
+                      kind: 'durable-cli-runtime',
+                      jobId: 'job-1',
+                      pid: 4_242,
+                      leaderIncarnation: testIncarnation('job-1'),
+                    },
+                  ],
+                },
               },
-              settlement: { cause: 'timed-out', detail: 'child remained alive' },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
             },
             {
               label: 'hooks.onShutdown',
               remainder: { owner: 'process-exit' },
               settlement: {
                 cause: 'rejected',
-                detail: [
-                  'Error: cleanup failed',
-                  'Next step: run coral-cli backend provider-proxy-set abandon TOKEN',
-                  'command=coral-cli backend shutdown',
-                ].join('\n'),
+                error: { name: 'Error', code: 'ENOENT' },
               },
             },
           ],
@@ -1788,11 +1795,15 @@ describe('cli format', () => {
           'Entry 1: child termination',
           '  Owner: successor-recovery',
           '  Cause: timed-out',
-          '  Detail: child remained alive',
+          '  Budget: 5000ms',
+          '  Evidence: startup-adoption',
+          '    Job: job-1',
+          '    PID: 4242',
           'Entry 2: hooks.onShutdown',
           '  Owner: process-exit',
           '  Cause: rejected',
-          '  Detail: Error: cleanup failed',
+          '  Error: Error',
+          '  Code: ENOENT',
           'Skipped entry: record=instance-1 entry=3 label=future obligation owner=future-owner',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
           'Skipped entry: record=instance-1 entry=4 label=unavailable owner=unavailable',
@@ -1801,8 +1812,6 @@ describe('cli format', () => {
           '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
         ].join('\n'),
       );
-      expect(text).not.toContain('Next step:');
-      expect(text).not.toContain('command=');
     });
 
     it('reports unreadable shutdown remainder records without soliciting an action', () => {

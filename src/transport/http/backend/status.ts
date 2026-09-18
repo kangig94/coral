@@ -26,6 +26,23 @@ const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
 
+type OperatorFacingShutdownSettlement =
+  | Readonly<{ cause: 'rejected' | 'aborted'; error: Readonly<{ name: string; code?: string }> }>
+  | Readonly<{ cause: 'timed-out'; budgetMs: number }>
+  | Readonly<{ cause: 'budget-exhausted' | 'unconfirmed' }>;
+
+type OperatorFacingShutdownRemainderRecord = Readonly<{
+  instanceId: string;
+  recordedAt: string;
+  reason: ShutdownRemainderRecord['reason'];
+  mode: ShutdownRemainderRecord['mode'];
+  entries: readonly Readonly<{
+    label: string;
+    remainder: ShutdownRemainderRecord['entries'][number]['remainder'];
+    settlement: OperatorFacingShutdownSettlement;
+  }>[];
+}>;
+
 type BackendStatus =
   | {
       status: 'ok';
@@ -118,7 +135,7 @@ export type BackendStatusFull =
     }
   | {
       status: 'recent_shutdown_remainder';
-      record: ShutdownRemainderRecord;
+      record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: ShutdownRemainderRecordScan['skippedEntries'];
       skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
     }
@@ -130,9 +147,50 @@ export type BackendStatusFull =
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type RecentShutdownRemainderStatus = Extract<BackendStatusFull, { status: 'recent_shutdown_remainder' }>;
 type ShutdownRemainderUnreadableStatus = Extract<BackendStatusFull, { status: 'shutdown_remainder_unreadable' }>;
+type ShutdownRemainderEvidenceScope =
+  | Readonly<{ kind: 'directory' }>
+  | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
 
 function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
+}
+
+function operatorFacingShutdownSettlement(
+  settlement: ShutdownRemainderRecord['entries'][number]['settlement'],
+): OperatorFacingShutdownSettlement {
+  switch (settlement.cause) {
+    case 'rejected':
+    case 'aborted': {
+      const causeCode = settlement.error.kind === 'error' ? settlement.error.cause?.code : undefined;
+      const code = causeCode ?? settlement.error.code;
+      return {
+        cause: settlement.cause,
+        error: {
+          name: settlement.error.kind === 'error' ? settlement.error.name : 'UnknownThrown',
+          ...(code === undefined ? {} : { code }),
+        },
+      };
+    }
+    case 'timed-out':
+      return { cause: settlement.cause, budgetMs: settlement.budgetMs };
+    case 'budget-exhausted':
+    case 'unconfirmed':
+      return { cause: settlement.cause };
+  }
+}
+
+function operatorFacingShutdownRemainder(record: ShutdownRemainderRecord): OperatorFacingShutdownRemainderRecord {
+  return {
+    instanceId: record.instanceId,
+    recordedAt: record.recordedAt,
+    reason: record.reason,
+    mode: record.mode,
+    entries: record.entries.map((entry) => ({
+      label: entry.label,
+      remainder: entry.remainder,
+      settlement: operatorFacingShutdownSettlement(entry.settlement),
+    })),
+  };
 }
 
 function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAuthorIdentity | null {
@@ -200,7 +258,7 @@ function readRecentShutdownRemainder(
   storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
   runDir: string,
   now: number,
-  earliestRecordedAt = Number.NEGATIVE_INFINITY,
+  scope: ShutdownRemainderEvidenceScope,
 ): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   if (!storage.existsSync(directory)) return null;
@@ -208,13 +266,16 @@ function readRecentShutdownRemainder(
   try {
     scan = scanShutdownRemainderRecords(storage, directory);
   } catch {
-    return null;
+    return scope.kind === 'directory' ? { status: 'shutdown_remainder_unreadable', skippedRecords: [] } : null;
   }
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
       return Number.isFinite(recordedAt) &&
-        recordedAt >= earliestRecordedAt &&
+        (scope.kind === 'directory' ||
+          (scope.instanceId !== undefined &&
+            candidate.instanceId === scope.instanceId &&
+            recordedAt >= scope.startedAt)) &&
         recordedAt <= now &&
         now - recordedAt <= RECENT_COORDINATOR_RECORD_MS
         ? [{ candidate, recordedAt }]
@@ -226,14 +287,14 @@ function readRecentShutdownRemainder(
     )
     .at(-1)?.candidate;
   if (record === undefined) {
-    return scan.records.length === 0 && scan.skippedRecords.length > 0
+    return scope.kind === 'directory' && scan.skippedRecords.length > 0
       ? { status: 'shutdown_remainder_unreadable', skippedRecords: scan.skippedRecords }
       : null;
   }
   return {
     status: 'recent_shutdown_remainder',
-    record,
-    skippedEntries: scan.skippedEntries,
+    record: operatorFacingShutdownRemainder(record),
+    skippedEntries: scan.skippedEntries.filter((entry) => entry.recordInstanceId === record.instanceId),
     skippedRecords: scan.skippedRecords,
   };
 }
@@ -264,19 +325,23 @@ function noDaemonStatus(
     BackendStatusFull,
     { status: 'no_record_no_socket' | 'recorded_process_absent' } | { cause: 'foreign_peer' }
   >,
-  earliestRecordedAt?: number,
-  expectedPid?: number,
+  coordinator?: Readonly<{ instanceId?: string; startedAt: number; pid: number }>,
 ): BackendStatusFull {
   const diagnostic = readRecentFailureDiagnostic(
     storage,
     diagnosticFile,
     now,
     provenSelfIdentity,
-    earliestRecordedAt,
-    expectedPid,
+    coordinator?.startedAt,
+    coordinator?.pid,
   );
   if (diagnostic !== null) return diagnostic;
-  const remainder = readRecentShutdownRemainder(storage, runDir, now, earliestRecordedAt);
+  const remainder = readRecentShutdownRemainder(
+    storage,
+    runDir,
+    now,
+    coordinator === undefined ? { kind: 'directory' } : { kind: 'coordinator', ...coordinator },
+  );
   if (remainder?.status === 'recent_shutdown_remainder') return remainder;
   return fallback.status === 'no_record_no_socket' && remainder !== null ? remainder : fallback;
 }
@@ -389,7 +454,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
       );
     case 'process-absent':
-      // Diagnostic precedence must be scoped by both startedAt and pid; either alone can match another run.
+      // Startup diagnostics require both `startedAt` and `pid`; shutdown remainders require the recorded
+      // `instanceId`. Missing identity must never widen either lookup to directory-wide evidence.
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
@@ -397,8 +463,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.time.now(),
         provenSelfIdentity,
         { status: 'recorded_process_absent', pid: observed.pid },
-        observed.startedAt,
-        observed.pid,
+        observed,
       );
     case 'addressed':
       break;
@@ -420,8 +485,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         pid: info.pid,
         recordPath: runtime.paths.coral.coordinator.infoFile,
       },
-      info.startedAt,
-      info.pid,
+      info,
     );
   // Both probes only ever call this after `fetch` resolved a response, so `cause` is unconditionally
   // `'responded'` here; the `catch` below is the one place a request never completed, and builds its own

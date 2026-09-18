@@ -1,6 +1,6 @@
 import type { Server, ServerResponse } from 'node:http';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
-import { formatError } from '../infra/error-format.js';
+import { formatError, serializeThrown } from '../infra/error-format.js';
 import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
@@ -73,7 +73,7 @@ export function shutdownIncidentUndischarged({
   return {
     label: `provider proxy lifecycle fatal incident${occurrence === 1 ? '' : ` ${occurrence}`}`,
     remainder: { owner: 'process-exit' },
-    settlement: { cause: 'rejected', detail: formatError(incident.error) },
+    settlement: { cause: 'rejected', error: serializeThrown(incident.error) },
   };
 }
 

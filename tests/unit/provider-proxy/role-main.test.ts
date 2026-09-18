@@ -1443,7 +1443,7 @@ describe('buildEnforcementOutcomeHandlers', () => {
     );
   });
 
-  it('keeps retrying at a fixed cadence until an ungranted role confirms absence', async () => {
+  it('closes and exits with enforcement failure when provisional-role retries are exhausted', async () => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const retryUnattributable = vi.fn(() =>
       Promise.resolve({ kind: 'recorded-group-unattributable' as const, reason: 'still held' }),
@@ -1461,12 +1461,11 @@ describe('buildEnforcementOutcomeHandlers', () => {
       retryUnattributable,
       schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
     });
-    const retryDelays: number[] = [];
-
-    for (let attempts = 1; attempts <= 7; attempts += 1) {
+    for (let attempts = 1; attempts < 5; attempts += 1) {
       handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
       const deferredOutcome = scheduled.shift();
       if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+      expect(deferredOutcome.delayMs).toBe(0);
       deferredOutcome.callback();
       expect(handlers.enforcementHoldStatus()).toMatchObject({
         attempts,
@@ -1474,26 +1473,27 @@ describe('buildEnforcementOutcomeHandlers', () => {
       });
       const scheduledRetry = scheduled.shift();
       if (scheduledRetry === undefined) throw new Error('expected a scheduled unattributable retry');
-      retryDelays.push(scheduledRetry.delayMs);
+      expect(scheduledRetry.delayMs).toBeGreaterThan(0);
       scheduledRetry.callback();
     }
 
-    expect(retryDelays.slice(-2)).toEqual([30_000, 30_000]);
-    expect(retryUnattributable).toHaveBeenCalledTimes(7);
-    expect(handlers.enforcementHoldStatus()).toMatchObject({
-      attempts: 7,
-      retry: { state: 'in-progress' },
-    });
-    expect(close).not.toHaveBeenCalled();
-    expect(exitProcess).not.toHaveBeenCalled();
+    handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+    const deferredOutcome = scheduled.shift();
+    if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+    expect(deferredOutcome.delayMs).toBe(0);
+    deferredOutcome.callback();
 
-    handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'observed-absent' });
-    scheduled.shift()?.callback();
+    expect(retryUnattributable).toHaveBeenCalledTimes(4);
+    expect(handlers.enforcementHoldStatus()).toBeNull();
+    expect(scheduled).toHaveLength(0);
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(handlers.enforcementHoldStatus()).toBeNull();
     expect(close).toHaveBeenCalledOnce();
-    expect(exitProcess).toHaveBeenCalledWith(0);
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it('keeps an unattributable hold without operator abandonment', () => {

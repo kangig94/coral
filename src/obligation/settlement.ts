@@ -1,15 +1,13 @@
-import { formatError } from '../infra/error-format.js';
+import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
 import { isAbortError } from '../runtime/abort.js';
 
 export type Settlement =
   | Readonly<{ kind: 'discharged' }>
-  | Readonly<{
-      kind: 'declined';
-      cause: 'rejected' | 'timed-out' | 'budget-exhausted' | 'unconfirmed' | 'aborted';
-      detail: string;
-      error?: unknown;
-    }>;
+  | Readonly<{ kind: 'declined'; cause: 'rejected' | 'aborted'; error: SerializedThrown }>
+  | Readonly<{ kind: 'declined'; cause: 'timed-out'; budgetMs: number }>
+  | Readonly<{ kind: 'declined'; cause: 'budget-exhausted' }>
+  | Readonly<{ kind: 'declined'; cause: 'unconfirmed'; detail: string }>;
 
 export type SettlementConfirmation = Readonly<{ confirmed: true }> | Readonly<{ confirmed: false; detail: string }>;
 
@@ -224,7 +222,6 @@ async function settleAttempt<T>(
     const settlement = {
       kind: 'declined',
       cause: 'budget-exhausted',
-      detail: 'no drain budget remained',
     } as const;
     log(`${label}: skipped (drain budget exhausted)\n`);
     return { kind: 'completed', settlement };
@@ -242,7 +239,7 @@ async function settleAttempt<T>(
       const settlement = {
         kind: 'declined',
         cause: 'timed-out',
-        detail: `exceeded ${budget}ms`,
+        budgetMs: budget,
       } as const;
       log(`${label}: exceeded drain budget after ${budget}ms\n`);
       return { kind: 'in-flight', settlement };
@@ -258,8 +255,7 @@ async function settleAttempt<T>(
     const settlement = {
       kind: 'declined',
       cause: isAbortError(error) ? 'aborted' : 'rejected',
-      detail: formatError(error),
-      error,
+      error: serializeThrown(error),
     } as const;
     log(`${label} settlement failed: ${formatError(error)}\n`);
     return { kind: 'completed', settlement };
@@ -333,7 +329,6 @@ export class SettlementLedger<
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
-        detail: 'no drain budget remained',
       } as const;
       this.options.log(`${obligation.label}: skipped (drain budget exhausted)\n`);
       this.entries.set(obligation, { kind: 'settled', settlement });
@@ -363,8 +358,7 @@ export class SettlementLedger<
             settlement: {
               kind: 'declined',
               cause: isAbortError(error) ? 'aborted' : 'rejected',
-              detail: formatError(error),
-              error,
+              error: serializeThrown(error),
             },
           });
         },
@@ -413,7 +407,6 @@ export class SettlementLedger<
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
-        detail: 'no drain budget remained',
       } as const;
       this.options.log(`${boundary.label}: skipped (drain budget exhausted)\n`);
       return { kind: 'declined', settlement };
@@ -454,7 +447,6 @@ export class SettlementLedger<
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
-        detail: 'no drain budget remained',
       } as const;
       this.options.log(`${boundary.label}: skipped (drain budget exhausted)\n`);
       return settlement;

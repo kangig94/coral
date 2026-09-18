@@ -31,8 +31,12 @@ export type ShutdownRetainedAuthority = Readonly<{
 export type ShutdownUndischarged = Readonly<{
   label: string;
   remainder: UndischargedRemainder;
-  settlement: Readonly<Pick<Extract<Settlement, { kind: 'declined' }>, 'cause' | 'detail'>>;
+  settlement: ShutdownDeclinedSettlement;
 }>;
+
+type WithoutKind<Value> = Value extends { kind: unknown } ? Omit<Value, 'kind'> : never;
+
+export type ShutdownDeclinedSettlement = WithoutKind<Extract<Settlement, { kind: 'declined' }>>;
 
 export type ProcessExitRemainder = Readonly<{
   undischarged: readonly ShutdownUndischarged[];
@@ -105,10 +109,11 @@ function declinedFailure(
   remainder: UndischargedRemainder,
   settlement: Extract<Settlement, { kind: 'declined' }>,
 ): ShutdownUndischarged {
+  const { kind: _kind, ...evidence } = settlement;
   return {
     label,
     remainder,
-    settlement: { cause: settlement.cause, detail: settlement.detail },
+    settlement: evidence,
   };
 }
 
