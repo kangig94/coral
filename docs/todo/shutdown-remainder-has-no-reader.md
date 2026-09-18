@@ -11,12 +11,19 @@ one entry per undischarged obligation,
 keyed by the ledger's `label`, carrying a `remainder` and a `settlement` shaped by its `cause` (the thrown
 error for `rejected`/`aborted`, `budgetMs` for `timed-out`, a free-text `detail` for `unconfirmed`, nothing
 further for `budget-exhausted`), under a record that carries `instanceId`, `recordedAt`, `reason`, and
-`mode`. `readShutdownRemainderStatus` in the same module decodes it tolerantly — per record and per entry,
-skips counted. The no-daemon arm of `backend status` reads the newest record for the `no_record_no_socket`,
-`no_record_socket_present`, and `recorded_process_absent` observations, scopes it to the same recent-record
-window as the startup diagnostic, and reports it without a next step. `foreign_peer` never reaches this
-reader: `noDaemonStatus` (`src/transport/http/backend/status.ts`) returns before consulting it whenever the
-fallback status is `unreachable`, which is what a decoded peer identity mismatch always is.
+`mode`. `scanShutdownRemainderRecords` (`src/infra/shutdown-remainder-record.ts`) decodes it tolerantly —
+per record and per entry, skips counted. `readShutdownRemainderStatus` (`src/coordinator/shutdown-remainder.ts`)
+wraps that scan into an absent/unreadable/available classification, but has no production caller: the
+no-daemon arm of `backend status` reaches the same decode through a second path instead —
+`readRecentShutdownRemainder` (`src/transport/http/backend/status.ts`) calls `scanShutdownRemainderRecords`
+directly and layers its own recency and instance scoping on top, which `readShutdownRemainderStatus` does
+not offer. `readShutdownRemainderStatus` is exercised only by tests today (unit and integration), reading
+back what a coordinator under test just wrote. The no-daemon arm of `backend status` reads the newest
+record for the `no_record_no_socket`, `no_record_socket_present`, and `recorded_process_absent`
+observations, scopes it to the same recent-record window as the startup diagnostic, and reports it without
+a next step. `foreign_peer` never reaches this reader: `noDaemonStatus` (`src/transport/http/backend/status.ts`)
+returns before consulting it whenever the fallback status is `unreachable`, which is what a decoded peer
+identity mismatch always is.
 
 ## What is wrong
 

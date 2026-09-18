@@ -1327,7 +1327,10 @@ async function runLifecycleStartup({
         // best effort
       }
     }
-    void removeBackendInfoIfOwnerFn(instanceId);
+    const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
+    if (withdrawal !== undefined && withdrawal.kind === 'refused') {
+      backendLog.error(`backend discovery withdrawal refused during startup-failure cleanup (${withdrawal.detail})`);
+    }
 
     if (error instanceof HandoffEscalationError) {
       backendLog.error('Handoff escalation failed', error);

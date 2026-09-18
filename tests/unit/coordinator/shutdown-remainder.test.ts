@@ -555,7 +555,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 
-  it('unlinks a record it cannot stat instead of exempting it from retention forever', () => {
+  it('does not delete a record it cannot stat while the retention cap is not exceeded', () => {
     const storage = storageWith([fileAt('readable', 1), fileAt('unstattable', 2)], {
       refuseStatFor: 'unstattable.json',
       statErrorCode: 'EIO',
@@ -563,7 +563,20 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toEqual(['readable.json']);
+    expect(storage.fileNames()).toEqual(['readable.json', 'unstattable.json']);
+  });
+
+  it('ranks a record it cannot stat as newest, so the retention cap prunes older known records first', () => {
+    const storage = storageWith(
+      [...Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 33)],
+      { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
+    );
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).toContain('unstattable.json');
+    expect(storage.fileNames()).not.toContain('instance-0.json');
   });
 
   it('does not turn a best-effort startup prune refusal into an error', () => {

@@ -1230,6 +1230,27 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     });
   });
 
+  // The sequel this branch exists for: a drain left obligations undischarged, and the very next boot at this
+  // address also failed. A reader of `recent_failure` must still learn what the previous instance left behind.
+  it('reports both a scoped startup diagnostic and the shutdown remainder it followed', async () => {
+    mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID);
+    mockState.remainderFiles = [
+      remainderFile(`${INSTANCE_ID}.json`, NOW - 20_000, shutdownRemainder(INSTANCE_ID, NOW - 20_000)),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'recent_failure',
+      phase: 'startup_failed',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: INSTANCE_ID },
+        skippedRecordCount: 0,
+      },
+    });
+  });
+
   it('reports a recent shutdown remainder when no scoped startup diagnostic exists', async () => {
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID + 1);
     mockState.remainderFiles = [

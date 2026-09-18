@@ -281,8 +281,8 @@ type BackendStatus =
 
 /**
  * Evidence about a departed instance's undischarged shutdown obligations, carried alongside — never instead
- * of — the fallback status that observed the coordinator's current absence or ambiguity. `status` is this
- * report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
+ * of — whichever status observed the coordinator's current absence, ambiguity, or a recent startup failure.
+ * `status` is this report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
  */
 export type ShutdownRemainderReport =
   | Readonly<{
@@ -359,6 +359,7 @@ export type BackendStatusFull =
        * never cross it. see `readOperatorFacingCoralSetupError` in src/runtime/errors.ts
        */
       setupError?: OperatorFacingCoralSetupError;
+      shutdownRemainder?: ShutdownRemainderReport;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -675,10 +676,13 @@ function noDaemonStatus(
     coordinator?.startedAt,
     coordinator?.pid,
   );
-  if (diagnostic !== null) return diagnostic;
   // `fallback`'s type carries only the `cause: 'foreign_peer'` member of `unreachable`, so this single
-  // discriminant fully identifies it without a second `.cause` check.
-  if (fallback.status === 'unreachable') return fallback;
+  // discriminant fully identifies it without a second `.cause` check. A foreign peer proves something else is
+  // listening at the recorded address, so no remainder scoped to this build's own departed instance applies to
+  // it either way — a startup diagnostic still supersedes it, since that is proof about this build's own
+  // instance rather than about who now answers.
+  if (fallback.status === 'unreachable') return diagnostic ?? fallback;
+  const base = diagnostic ?? fallback;
   const shutdownRemainder = readRecentShutdownRemainder(
     storage,
     runDir,
@@ -687,9 +691,10 @@ function noDaemonStatus(
       ? { kind: 'directory' }
       : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt },
   );
-  // The remainder is additional evidence about a departed instance's obligations, never a replacement for what
-  // the fallback itself says about the coordinator's current absence or ambiguity — a reader needs both.
-  return shutdownRemainder === null ? fallback : { ...fallback, shutdownRemainder };
+  // The remainder is additional evidence about a departed instance's obligations, never a replacement for
+  // whichever status above already proved that instance's current absence or ambiguity — a reader needs both,
+  // whether that status is the fallback or a startup diagnostic that superseded it.
+  return shutdownRemainder === null ? base : { ...base, shutdownRemainder };
 }
 
 /**

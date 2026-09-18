@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { backendLog } from '#src/infra/backend-log.js';
 import { createLifecycle } from '#src/coordinator/lifecycle.js';
 import type { KbDaemonDisposalSettlement } from '#src/coordinator/live/kb-daemon-supervisor.js';
+import type { BackendInfoRemovalResult } from '#src/infra/backend-discovery.js';
 
 type RaceOutcome<T> =
   | Readonly<{ kind: 'resolved'; value: T }>
@@ -29,7 +30,7 @@ function buildStartupFailureHarness(dispose: () => Promise<KbDaemonDisposalSettl
   let lifecycle: 'starting' | 'stopped' = 'starting';
   const closeServerFn = vi.fn(async () => {});
   const closeIpcServerFn = vi.fn(async () => {});
-  const removeBackendInfoIfOwnerFn = vi.fn(() => {});
+  const removeBackendInfoIfOwnerFn = vi.fn((): void | BackendInfoRemovalResult => {});
   const kbDaemonSupervisor = { dispose: vi.fn(dispose) };
 
   const deps = {
@@ -156,6 +157,33 @@ describe('coordinator lifecycle startup-failure cleanup', () => {
         expect.stringContaining('KB daemon disposal during startup-failure cleanup failed'),
       );
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('daemon control channel closed'));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('logs a refused discovery withdrawal instead of discarding it', async () => {
+    const errorSpy = vi.spyOn(backendLog, 'error').mockImplementation(() => {});
+    try {
+      const harness = buildStartupFailureHarness(async () => HOLDING_DISPOSAL);
+      harness.removeBackendInfoIfOwnerFn.mockReturnValue({
+        kind: 'refused',
+        detail: 'unlink failed: EACCES',
+        error: { kind: 'error', name: 'Error', message: 'unlink failed: EACCES' },
+      });
+
+      const outcome = await raceAgainstTimeout(harness.controller.start(), 500);
+
+      expect(outcome.kind).toBe('rejected');
+      if (outcome.kind !== 'rejected') throw new Error('startup-failure cleanup hung on the KB daemon disposal');
+
+      expect(harness.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('startup-failure-kb-disposal');
+      // A refused withdrawal must not vanish silently: the process exits leaving a discovery record naming a
+      // dead instance, and this is the only place that says so.
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('backend discovery withdrawal refused during startup-failure cleanup'),
+      );
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('unlink failed: EACCES'));
     } finally {
       errorSpy.mockRestore();
     }

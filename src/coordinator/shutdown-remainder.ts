@@ -83,24 +83,28 @@ export function readShutdownRemainderStatus(runtime: ShutdownRemainderReadRuntim
 export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRuntime): void {
   const directory = shutdownRemainderPath(runtime.runDir);
   try {
-    const records: { name: string; mtimeMs: number }[] = [];
+    const records: { name: string; age: { kind: 'known'; mtimeMs: number } | { kind: 'unknown' } }[] = [];
     for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
       try {
-        records.push({ name, mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs });
+        records.push({
+          name,
+          age: { kind: 'known', mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs },
+        });
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
-        // No production reader depends on this file's survival to discharge an obligation: status.ts's scan is
-        // diagnostic display, and readShutdownRemainderStatus has no production caller at all. A record this
-        // build cannot stat also cannot be ranked by the mtime sort below, so it is unlinked outright instead of
-        // sitting outside that ranking, and outside this cap, forever.
-        try {
-          runtime.storage.unlinkSync(join(directory, name));
-        } catch {
-          /* Retention cleanup must not block startup. */
-        }
+        // Constraint: a record this build cannot stat is not proven old, and unknown age must not authorize
+        // deletion (design-philosophy.md principle 11). It ranks as the newest record so the retention cap
+        // still reclaims it once genuinely newer records accumulate.
+        records.push({ name, age: { kind: 'unknown' } });
       }
     }
-    records.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+    records.sort((left, right) => {
+      if (left.age.kind === 'known' && right.age.kind === 'known') {
+        return right.age.mtimeMs - left.age.mtimeMs || right.name.localeCompare(left.name);
+      }
+      if (left.age.kind !== right.age.kind) return left.age.kind === 'unknown' ? -1 : 1;
+      return right.name.localeCompare(left.name);
+    });
     for (const { name } of records.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));

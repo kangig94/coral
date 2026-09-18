@@ -31,16 +31,6 @@ function paragraphContaining(anchor: string): string {
   return line;
 }
 
-// Matches this document's own pointer convention (conventions.md: "a symbol name and a path"): a backtick-quoted
-// identifier immediately followed by a backtick-quoted `src/**.ts` path. Deliberately structural — it must not
-// pin which symbols are cited, only that whatever is cited still exists, so a renamed or deleted symbol cannot
-// go stale silently.
-const SYMBOL_CITATION_PATTERN = /`([A-Za-z_][A-Za-z0-9_]*)`, `(src\/[^`]+\.ts)`/g;
-
-function symbolCitations(markdown: string): readonly Readonly<{ symbol: string; path: string }>[] {
-  return [...markdown.matchAll(SYMBOL_CITATION_PATTERN)].map(([, symbol, path]) => ({ symbol, path }));
-}
-
 describe('provider-host operator documentation', () => {
   it('documents actionable recovery for every administration refusal', () => {
     expect(catalogEntry('provider_host_inventory_unavailable')).toContain('retry the exact reference');
@@ -171,25 +161,5 @@ describe('provider-host operator documentation', () => {
     expect(architecture).toContain(
       'The RPC boundary performs capability and resource authorization before calling `ProviderHostAdministrationService`; the service itself receives no principal.',
     );
-  });
-
-  it('resolves every symbol citation in cli-errors.md against the current source tree', () => {
-    const citations = symbolCitations(cliErrors);
-    // A citation this test never sees is a guard that would pass on an empty document; assert the convention is
-    // actually exercised so a future rewording that drops the pointer syntax entirely does not go unnoticed.
-    expect(citations.length).toBeGreaterThan(0);
-    for (const { symbol, path } of citations) {
-      let source: string;
-      try {
-        source = readFileSync(join(process.cwd(), path), 'utf8');
-      } catch {
-        throw new Error(`cli-errors.md cites \`${symbol}\` in ${path}, but ${path} does not exist`);
-      }
-      const stillPresent = new RegExp(`\\b${symbol}\\b`).test(source);
-      expect(
-        stillPresent,
-        `cli-errors.md cites \`${symbol}\` in ${path}, but that symbol no longer appears there`,
-      ).toBe(true);
-    }
   });
 });

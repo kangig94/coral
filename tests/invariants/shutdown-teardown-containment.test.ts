@@ -327,12 +327,15 @@ function shutdownDispositionConstructorViolations(sourceFile: ts.SourceFile): st
         !isSettlementGateConstruction(node) &&
         (isSettlementModule ||
           hasShutdownDispositionContext(node) ||
-          hasShutdownHeldPayload(node) ||
           // Constraint: 'delegated', 'unaccepted', and 'settled' carry no `hasProperties`-based payload
           // precondition; the disposition value plus the shared exemption check below is the whole gate for
           // these three. Only 'held' additionally requires `hasShutdownHeldPayload`, because unlike the other
           // three its payload shape is load-bearing for telling a settlement-gate construction apart from an
-          // unrelated same-named disposition elsewhere.
+          // unrelated same-named disposition elsewhere. `hasShutdownHeldPayload` must stay gated on
+          // `disposition === 'held'`: `hasProperties` reads an unresolved spread as satisfying every required
+          // property, so evaluated for every disposition it would flag an unrelated disposition's spread
+          // before the exemption checks below ever run.
+          (disposition === 'held' && hasShutdownHeldPayload(node)) ||
           (disposition === 'delegated' && !hasExplicitUnrelatedDispositionContext(node)) ||
           (disposition === 'unaccepted' && !hasExplicitUnrelatedDispositionContext(node)) ||
           (disposition === 'settled' && !hasExplicitUnrelatedDispositionContext(node)))
@@ -821,6 +824,30 @@ describe('shutdown teardown containment invariant', () => {
       }`,
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([]);
+  });
+
+  it('does not flag a settled disposition annotated as an unrelated disposition union, even with an unresolved spread', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor(): HandoffDisposition {
+        return { disposition: 'settled', ...rest };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([]);
+  });
+
+  it('still flags a held disposition with an unresolved spread even under an unrelated disposition annotation', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor(): HandoffDisposition {
+        return { disposition: 'held', ...rest };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'held' outside SettlementGate`,
+    ]);
   });
 
   it('contains every cleanup call in the child-termination loop', () => {

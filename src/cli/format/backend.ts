@@ -690,8 +690,9 @@ export function formatBackendStatus(
 }
 
 // A shutdown remainder is additional evidence about a departed instance's undischarged obligations, carried
-// alongside — never instead of — whichever fallback status observed the coordinator's current absence or
-// ambiguity: the reader must end up with both what the coordinator's current state is and what happens next.
+// alongside — never instead of — whichever status observed the coordinator's current absence, ambiguity, or a
+// recent startup failure: the reader must end up with both what the coordinator's current state is and what
+// happens next.
 function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
   return shutdownRemainder === undefined ? base : [base, formatShutdownRemainderReport(shutdownRemainder)].join('\n');
 }
@@ -717,7 +718,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'no_record_socket_present':
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
-      return formatRecentFailureStatus(result);
+      return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':

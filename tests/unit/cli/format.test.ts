@@ -1731,6 +1731,27 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
+    // The sequel this branch exists for: the prior instance left obligations undischarged, and the very next
+    // startup at this address also failed — a reader of `recent_failure` must still learn both facts.
+    it('formats a shutdown remainder as a section on top of a recent coordinator failure', () => {
+      const text = formatBackendStatus({
+        status: 'recent_failure',
+        phase: 'startup_failed',
+        retryable: false,
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      });
+
+      expect(text).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
+          'Coral could not inspect shutdown remainder records.',
+        ].join('\n'),
+      );
+    });
+
     it('formats a structured recent shutdown remainder as a section on top of the fallback status', () => {
       const text = formatBackendStatus({
         status: 'no_record_no_socket',
@@ -2046,6 +2067,12 @@ describe('cli format', () => {
           reason: 'records-skipped' as const,
           skippedRecordCount: 1,
         },
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable' as const, reason: 'scan-failed' as const },
       },
       {
         status: 'recent_failure',
