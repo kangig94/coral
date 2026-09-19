@@ -2,6 +2,7 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createShutdownRemainderPruner,
   pruneShutdownRemainderRecords,
   recordShutdownRemainder,
   shutdownRemainderPath,
@@ -9,6 +10,7 @@ import {
 import {
   observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
 } from '#src/infra/shutdown-remainder-record.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { childTerminationRemainder } from '#src/coordinator/shutdown.js';
@@ -46,6 +48,7 @@ function storageWith(
     refuseReadFor?: string | readonly string[];
     readErrorCode?: string;
     pruneBeforeAtomicRename?: boolean;
+    refuseAtomicRename?: boolean;
     refuseFinalRename?: boolean;
   }> = {},
 ): RemainderStorage {
@@ -97,6 +100,9 @@ function storageWith(
       directoryExists = true;
     }),
     renameSync: vi.fn((oldPath: string, newPath: string) => {
+      if (options.refuseAtomicRename === true && newPath.includes('.json.stage.')) {
+        throw Object.assign(new Error('atomic rename refused'), { code: 'EACCES' });
+      }
       if (options.refuseFinalRename === true && newPath.endsWith('.json')) {
         throw Object.assign(new Error('rename refused'), { code: 'EIO' });
       }
@@ -672,6 +678,171 @@ describe('shutdown remainder status', () => {
     });
   });
 
+  it.each([
+    ['envelope', () => ({ envelopeAddition: true }), () => KNOWN_LOSS],
+    ['entry', () => ({}), () => ({ ...KNOWN_LOSS, entryAddition: true })],
+    [
+      'subject',
+      () => ({}),
+      () => ({ ...KNOWN_LOSS, subject: { kind: 'discuss-store', source: 'source', subjectAddition: true } }),
+    ],
+    [
+      'process-exit remainder',
+      () => ({}),
+      () => ({ ...KNOWN_LOSS, remainder: { owner: 'process-exit', remainderAddition: true } }),
+    ],
+    [
+      'successor-recovery remainder',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        remainder: {
+          owner: 'successor-recovery',
+          remainderAddition: true,
+          evidence: { kind: 'startup-store-recovery' },
+        },
+      }),
+    ],
+    [
+      'startup-adoption evidence',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        remainder: {
+          owner: 'successor-recovery',
+          evidence: { kind: 'startup-adoption', evidenceAddition: true, processes: [] },
+        },
+      }),
+    ],
+    [
+      'startup-adoption process',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        remainder: {
+          owner: 'successor-recovery',
+          evidence: {
+            kind: 'startup-adoption',
+            processes: [
+              {
+                kind: 'durable-cli-runtime',
+                jobId: 'job-1',
+                pid: 4_242,
+                leaderIncarnation: testIncarnation('canary-process'),
+                processAddition: true,
+              },
+            ],
+          },
+        },
+      }),
+    ],
+    [
+      'startup-store-recovery evidence',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        remainder: {
+          owner: 'successor-recovery',
+          evidence: { kind: 'startup-store-recovery', evidenceAddition: true },
+        },
+      }),
+    ],
+    [
+      'startup-liveness-recovery evidence',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        remainder: {
+          owner: 'successor-recovery',
+          evidence: { kind: 'startup-liveness-recovery', evidenceAddition: true },
+        },
+      }),
+    ],
+    [
+      'rejected settlement',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        settlement: {
+          cause: 'rejected',
+          settlementAddition: true,
+          error: { kind: 'error', name: 'Error', message: 'failed' },
+        },
+      }),
+    ],
+    [
+      'aborted settlement',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        settlement: {
+          cause: 'aborted',
+          settlementAddition: true,
+          error: { kind: 'error', name: 'Error', message: 'aborted' },
+        },
+      }),
+    ],
+    [
+      'timed-out settlement',
+      () => ({}),
+      () => ({ ...KNOWN_LOSS, settlement: { cause: 'timed-out', budgetMs: 5_000, settlementAddition: true } }),
+    ],
+    [
+      'budget-exhausted settlement',
+      () => ({}),
+      () => ({ ...KNOWN_LOSS, settlement: { cause: 'budget-exhausted', settlementAddition: true } }),
+    ],
+    [
+      'unconfirmed settlement',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        settlement: { cause: 'unconfirmed', detail: 'still pending', settlementAddition: true },
+      }),
+    ],
+    [
+      'serialized error',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        settlement: {
+          cause: 'rejected',
+          error: {
+            kind: 'error',
+            name: 'Error',
+            message: 'outer',
+            errorAddition: true,
+            cause: { kind: 'error', name: 'TypeError', message: 'inner', recursiveAddition: true },
+          },
+        },
+      }),
+    ],
+    [
+      'serialized unknown',
+      () => ({}),
+      () => ({
+        ...KNOWN_LOSS,
+        settlement: {
+          cause: 'rejected',
+          error: { kind: 'unknown', message: 'unknown failure', unknownAddition: true },
+        },
+      }),
+    ],
+  ] as const)('accepts additive keys at the %s persisted object boundary', (_boundary, envelopeAddition, entry) => {
+    const storage = storageWith([
+      fileAt('branch-complete-canary', 1, {
+        ...recordAt('branch-complete-canary', [entry()]),
+        ...envelopeAddition(),
+      }),
+    ]);
+
+    const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
+
+    expect(scan.records).toHaveLength(1);
+    expect(scan.records[0]?.entries).toHaveLength(1);
+    expect(scan.skippedEntries).toEqual([]);
+  });
+
   it('overwrites the same instance without reading a corrupt prior record', () => {
     const storage = storageWith([{ name: 'current-instance.json', value: '{not-json', mtimeMs: 1 }]);
 
@@ -894,6 +1065,63 @@ describe('shutdown remainder status', () => {
     });
   });
 
+  it('never promotes a complete atomic-write temporary file after publication and cleanup both fail', () => {
+    const storage = storageWith([], { refuseAtomicRename: true, refusePrune: true });
+
+    expect(() =>
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'declined',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
+    ).toThrow('atomic rename refused');
+    expect(storage.fileNames()).toEqual(['declined.json.stage.4242.unknown.tmp']);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'absent' });
+
+    expect(storage.fileNames()).not.toContain('declined.json');
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, () => 'absent').records).toEqual([]);
+  });
+
+  it.each([['held.json.stage.4242.bad'], ['held.json.stage.4242.bad.json']])(
+    'reports malformed stage-shaped entry %s without treating it as a published record',
+    (name) => {
+      const storage = storageWith([{ name, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
+
+      expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+        records: [],
+        skippedRecords: [{ name, reason: 'malformed-staging' }],
+      });
+    },
+  );
+
+  it('bounds stage scan I/O without starving a published record', () => {
+    const malformedStages = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
+      name: `held-${index}.json.stage.bad`,
+      value: '{}',
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith([...malformedStages, fileAt('published', 1_000)]);
+
+    const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
+
+    expect(scan.records).toEqual([decodedRecordAt('published')]);
+    expect(scan.unscannedStageCount).toBe(1);
+    expect(storage.statSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT + 1);
+  });
+
+  it('requires a final record filename to match its decoded instance identity exactly', () => {
+    const storage = storageWith([
+      { name: 'wrong.json', value: JSON.stringify(recordAt('actual-instance')), mtimeMs: 1 },
+    ]);
+
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [],
+      skippedRecords: [{ name: 'wrong.json', reason: 'record-identity-mismatch' }],
+    });
+  });
+
   it('returns an ownership hold when a stage writer is unobservable', () => {
     const stageName = 'held.json.stage.4242.unknown';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
@@ -908,7 +1136,41 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual([stageName]);
   });
 
-  it('bounds proven-orphan partial stages independently and reports every retained stage', () => {
+  it('re-observes a retained stage while the successor stays healthy', () => {
+    const stageName = 'held.json.stage.4242.unknown';
+    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
+    let writer: 'alive' | 'absent' = 'alive';
+    let scheduled: (() => void) | null = null;
+    const clearTimeout = vi.fn(() => {
+      scheduled = null;
+    });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => writer,
+      time: {
+        setTimeout: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearTimeout,
+      },
+    });
+
+    pruner.start();
+    expect(scheduled).not.toBeNull();
+
+    writer = 'absent';
+    const reobserve = scheduled as (() => void) | null;
+    if (reobserve === null) throw new Error('re-observation was not scheduled');
+    scheduled = null;
+    reobserve();
+
+    expect(storage.fileNames()).toEqual(['held.json']);
+    expect(scheduled).toBeNull();
+  });
+
+  it('reclaims every partial stage whose writer is proven absent', () => {
     const stages = Array.from({ length: 40 }, (_, index) => ({
       name: `orphan-${index}.json.stage.${5_000 + index}.unknown.tmp`,
       value: '{partial',
@@ -919,12 +1181,40 @@ describe('shutdown remainder status', () => {
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'absent' });
     const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, () => 'absent');
 
-    expect(storage.fileNames()).toHaveLength(32);
-    expect(storage.fileNames()).not.toContain(stages[0]?.name);
-    expect(storage.fileNames()).toContain(stages[39]?.name);
+    expect(storage.fileNames()).toEqual([]);
     expect(scan.records).toEqual([]);
-    expect(scan.skippedRecords).toHaveLength(32);
-    expect(scan.skippedRecords.every(({ reason }) => reason === 'orphaned-staging')).toBe(true);
+    expect(scan.skippedRecords).toEqual([]);
+  });
+
+  it('bounds legacy stages that can never acquire a writer observation', () => {
+    const stages = Array.from({ length: 33 }, (_, index) => ({
+      name: `instance-${index}.json.tmp`,
+      value: JSON.stringify(recordAt(`instance-${index}`)),
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(stages);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).not.toContain('instance-0.json.tmp');
+    expect(storage.fileNames()).toContain('instance-32.json.tmp');
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY).records).toEqual([]);
+  });
+
+  it('bounds malformed stage-shaped entries without inspecting their content', () => {
+    const stages = Array.from({ length: 33 }, (_, index) => ({
+      name: `malformed-${index}.json.stage.bad`,
+      value: JSON.stringify(recordAt(`malformed-${index}`)),
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(stages);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).not.toContain('malformed-0.json.stage.bad');
+    expect(storage.readFileSync).not.toHaveBeenCalled();
   });
 
   it('removes both writer-owned stage forms when final publication fails', () => {

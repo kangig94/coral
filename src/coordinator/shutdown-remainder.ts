@@ -6,10 +6,10 @@ import {
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
   thrownErrnoCode,
 } from '../infra/error-format.js';
-import type { StoragePort, TimePort } from '../infra/port-types.js';
+import type { StoragePort, TimePort, TimerHandle } from '../infra/port-types.js';
 import {
+  classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
-  listShutdownRemainderStages,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderStageObserver,
@@ -48,7 +48,7 @@ export function shutdownRemainderPath(runDir: string): string {
 
 type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
 
-type ShutdownRemainderPruneDisposition =
+export type ShutdownRemainderPruneDisposition =
   | Readonly<{ kind: 'stage-ownership-classified' }>
   | Readonly<{ kind: 'stage-ownership-held'; stageNames: readonly string[] }>
   | Readonly<{ kind: 'prune-refused' }>;
@@ -72,27 +72,48 @@ export function pruneShutdownRemainderRecords(
   runtime: ShutdownRemainderPruneRuntime,
 ): ShutdownRemainderPruneDisposition {
   const directory = shutdownRemainderPath(runtime.runDir);
-  const unobservableStageNames: string[] = [];
+  const reobservableStageNames = new Set<string>();
+  let pruneRefused = false;
   try {
-    const orphanedStages: { name: string; age: RecordAge }[] = [];
+    const retainedStages: { name: string; age: RecordAge }[] = [];
     const observeStageWriter: ShutdownRemainderStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
-    for (const stage of listShutdownRemainderStages(runtime.storage.readdirSync(directory))) {
-      if (stage.writer === null) {
-        unobservableStageNames.push(stage.name);
-        continue;
-      }
-      const writerObservation = observeStageWriter(stage.writer);
-      if (writerObservation === 'unknown') {
-        unobservableStageNames.push(stage.name);
-        continue;
-      }
-      if (writerObservation === 'alive') continue;
-      const path = join(directory, stage.name);
+    for (const name of runtime.storage.readdirSync(directory)) {
+      const entry = classifyShutdownRemainderDirectoryEntry(name);
+      if (entry.kind === 'other' || entry.kind === 'record') continue;
       let age: RecordAge = { kind: 'unknown' };
+      const path = join(directory, name);
       try {
         age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
+      }
+      if (entry.kind === 'malformed-stage') {
+        retainedStages.push({ name, age });
+        continue;
+      }
+      const stage = entry.stage;
+      if (stage.writer === null) {
+        retainedStages.push({ name, age });
+        continue;
+      }
+      const writerObservation = observeStageWriter(stage.writer);
+      if (writerObservation === 'alive') {
+        reobservableStageNames.add(name);
+        continue;
+      }
+      if (writerObservation === 'unknown') {
+        reobservableStageNames.add(name);
+        retainedStages.push({ name, age });
+        continue;
+      }
+      if (stage.partial) {
+        try {
+          runtime.storage.unlinkSync(path);
+        } catch {
+          pruneRefused = true;
+          retainedStages.push({ name, age });
+        }
+        continue;
       }
       const classification = classifyShutdownRemainderFile(runtime.storage, path);
       if (classification.kind === 'vanished') continue;
@@ -101,18 +122,19 @@ export function pruneShutdownRemainderRecords(
           runtime.storage.renameSync(path, join(directory, `${stage.instanceId}.json`));
           continue;
         } catch {
-          /* Retention cleanup must not block startup. */
+          pruneRefused = true;
         }
       }
-      orphanedStages.push({ name: stage.name, age });
+      retainedStages.push({ name, age });
     }
-    orphanedStages.sort(byRetentionOrder);
-    for (const { name } of orphanedStages.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+    retainedStages.sort(byRetentionOrder);
+    for (const { name } of retainedStages.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
-        backendLog.warn(`shutdown remainder stage ${name} discarded: writer absent beyond the retention bound`);
+        reobservableStageNames.delete(name);
+        backendLog.warn(`shutdown remainder stage ${name} discarded beyond the retention bound`);
       } catch {
-        /* Retention cleanup must not block startup. */
+        pruneRefused = true;
       }
     }
 
@@ -120,9 +142,7 @@ export function pruneShutdownRemainderRecords(
     const unreadable: { name: string; age: RecordAge }[] = [];
     const unsupported: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
-      if (!name.endsWith('.json')) {
-        continue;
-      }
+      if (classifyShutdownRemainderDirectoryEntry(name).kind !== 'record') continue;
       const path = join(directory, name);
       let age: RecordAge = { kind: 'unknown' };
       try {
@@ -141,7 +161,7 @@ export function pruneShutdownRemainderRecords(
           runtime.storage.unlinkSync(path);
           backendLog.warn(`shutdown remainder record ${name} discarded: content is not valid JSON`);
         } catch {
-          /* Retention cleanup must not block startup. */
+          pruneRefused = true;
         }
         continue;
       }
@@ -161,6 +181,15 @@ export function pruneShutdownRemainderRecords(
         unreadable.push({ name, age });
         continue;
       }
+      if (name !== `${classification.record.instanceId}.json`) {
+        try {
+          runtime.storage.unlinkSync(path);
+          backendLog.warn(`shutdown remainder record ${name} discarded: filename does not match instance identity`);
+        } catch {
+          pruneRefused = true;
+        }
+        continue;
+      }
       // Constraint: a decodable record whose age this build could not establish (`statSync` and
       // `readFileSync` are independent syscalls, so one can fail transiently while the other succeeds) is
       // still evidence, not an unknown to discard (design-philosophy.md principle 11) — it joins `known`
@@ -173,7 +202,7 @@ export function pruneShutdownRemainderRecords(
       try {
         runtime.storage.unlinkSync(join(directory, name));
       } catch {
-        /* Retention cleanup must not block startup. */
+        pruneRefused = true;
       }
     }
     unreadable.sort(byRetentionOrder);
@@ -189,7 +218,7 @@ export function pruneShutdownRemainderRecords(
           `shutdown remainder record ${name} discarded: persistently unreadable beyond the retention bound`,
         );
       } catch {
-        /* Retention cleanup must not block startup. */
+        pruneRefused = true;
       }
     }
     unsupported.sort(byRetentionOrder);
@@ -204,15 +233,51 @@ export function pruneShutdownRemainderRecords(
           `shutdown remainder record ${name} discarded: unsupported by this build's schema, beyond the retention bound`,
         );
       } catch {
-        /* Retention cleanup must not block startup. */
+        pruneRefused = true;
       }
     }
-    return unobservableStageNames.length === 0
+    if (pruneRefused) return { kind: 'prune-refused' };
+    const stageNames = [...reobservableStageNames].sort((left, right) => left.localeCompare(right));
+    return stageNames.length === 0
       ? { kind: 'stage-ownership-classified' }
-      : { kind: 'stage-ownership-held', stageNames: unobservableStageNames };
-  } catch {
+      : { kind: 'stage-ownership-held', stageNames };
+  } catch (error: unknown) {
+    if (thrownErrnoCode(error) === 'ENOENT') return { kind: 'stage-ownership-classified' };
     return { kind: 'prune-refused' };
   }
+}
+
+const SHUTDOWN_REMAINDER_REOBSERVATION_MS = 1_000;
+
+/** Keeps at most one unref'ed re-observation pending; `stop` makes scheduling terminal. */
+export function createShutdownRemainderPruner(
+  runtime: ShutdownRemainderPruneRuntime & Readonly<{ time: Pick<TimePort, 'clearTimeout' | 'setTimeout'> }>,
+): Readonly<{ start(): void; stop(): void }> {
+  let timer: TimerHandle | null = null;
+  let stopped = false;
+
+  const pruneNow = (): void => {
+    if (stopped) return;
+    if (timer !== null) runtime.time.clearTimeout(timer);
+    timer = null;
+    const disposition = pruneShutdownRemainderRecords(runtime);
+    if (!stopped && disposition.kind !== 'stage-ownership-classified') {
+      timer = runtime.time.setTimeout(() => {
+        timer = null;
+        pruneNow();
+      }, SHUTDOWN_REMAINDER_REOBSERVATION_MS);
+      timer.unref?.();
+    }
+  };
+
+  return {
+    start: pruneNow,
+    stop: () => {
+      stopped = true;
+      if (timer !== null) runtime.time.clearTimeout(timer);
+      timer = null;
+    },
+  };
 }
 
 export function recordShutdownRemainder(

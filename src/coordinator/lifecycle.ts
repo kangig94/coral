@@ -114,7 +114,7 @@ import {
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
-import { pruneShutdownRemainderRecords, recordShutdownRemainder } from './shutdown-remainder.js';
+import { createShutdownRemainderPruner, recordShutdownRemainder } from './shutdown-remainder.js';
 import { observeShutdownRemainderStageWriter } from '../infra/shutdown-remainder-record.js';
 import type {
   ShutdownObligationAbandonRequest,
@@ -898,6 +898,7 @@ type LifecycleStartupContext = {
   state: LifecycleControlState;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
+  remainderPruner: ReturnType<typeof createShutdownRemainderPruner>;
   shutdown: (reason: ShutdownReason) => Promise<LifecycleShutdownDisposition>;
 };
 
@@ -916,6 +917,7 @@ async function runLifecycleStartup({
   state,
   createInvocationContext,
   ownershipChecker,
+  remainderPruner,
   shutdown,
 }: LifecycleStartupContext): Promise<CoordinatorServerInfo> {
   const {
@@ -1182,19 +1184,7 @@ async function runLifecycleStartup({
     // this preamble the prune is not O(1) — readdir, then per file a stat, a read, a parse and a decode,
     // then unlinks — so `yieldPastKernelReadyResponse` hands the event loop back first.
     await yieldPastKernelReadyResponse();
-    const remainderPrune = pruneShutdownRemainderRecords({
-      storage: runtime.storage,
-      runDir: runtime.paths.coral.coordinator.runDir,
-      observeStageWriter: (writer) =>
-        observeShutdownRemainderStageWriter(writer, {
-          platform: runtime.env.platform(),
-          observeLiveness: runtime.process.observeLiveness,
-          readProcessIncarnation: runtime.process.readProcessIncarnation,
-        }),
-    });
-    // Constraint: statusWithRecentCoordinatorEvidence owns durable visibility for retained or unreadable
-    // shutdown-remainder stages; best-effort retention never gates lifecycle startup.
-    void remainderPrune;
+    remainderPruner.start();
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
@@ -1297,6 +1287,7 @@ async function runLifecycleStartup({
 
     return serverInfo;
   } catch (error: unknown) {
+    remainderPruner.stop();
     const mutationAdmissionDisposition = state.providerOperationMutationAdmission?.close();
     if (
       (error as { name?: string } | null)?.name === 'AbortError' &&
@@ -1423,6 +1414,17 @@ export function createLifecycle(
     pluginRoot,
     instanceId,
   });
+  const remainderPruner = createShutdownRemainderPruner({
+    storage: runtime.storage,
+    time: runtime.time,
+    runDir: runtime.paths.coral.coordinator.runDir,
+    observeStageWriter: (writer) =>
+      observeShutdownRemainderStageWriter(writer, {
+        platform: runtime.env.platform(),
+        observeLiveness: runtime.process.observeLiveness,
+        readProcessIncarnation: runtime.process.readProcessIncarnation,
+      }),
+  });
   function createInvocationContext(rawProjectRoot: string): InvocationContext {
     const projectRoot = canonicalizeWorkDir(rawProjectRoot, process.cwd());
     const principal: Principal = {
@@ -1435,6 +1437,7 @@ export function createLifecycle(
   }
 
   async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
+    remainderPruner.stop();
     state.shutdownReason ??= reason;
     if (reason === 'provider-proxy-lifecycle-fatal' || incident !== undefined) {
       state.shutdownReason = 'provider-proxy-lifecycle-fatal';
@@ -1695,6 +1698,7 @@ export function createLifecycle(
         state,
         createInvocationContext,
         ownershipChecker,
+        remainderPruner,
         shutdown,
       });
     } catch (error: unknown) {

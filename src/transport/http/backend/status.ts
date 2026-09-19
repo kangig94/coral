@@ -225,6 +225,7 @@ type OperatorFacingShutdownStages = Readonly<{
   writerAliveCount: number;
   writerUnobservableCount: number;
   orphanedCount: number;
+  malformedCount?: number;
 }>;
 
 type OperatorFacingShutdownRemainder =
@@ -304,6 +305,9 @@ export type ShutdownRemainderReport =
       skippedUnreadableRecordNames: readonly string[];
       skippedCorruptRecordCount: number;
       skippedUnsupportedRecordCount: number;
+      skippedIdentityMismatchRecordCount?: number;
+      unscannedStageCount?: number;
+      unscannedRecordCount?: number;
       staging?: OperatorFacingShutdownStages;
     }>
   | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
@@ -313,11 +317,14 @@ export type ShutdownRemainderReport =
       skippedUnreadableRecordNames: readonly string[];
       skippedCorruptRecordCount: number;
       skippedUnsupportedRecordCount: number;
+      skippedIdentityMismatchRecordCount?: number;
+      unscannedStageCount?: number;
+      unscannedRecordCount?: number;
       staging?: OperatorFacingShutdownStages;
     }>;
 
 export type BackendStatusFull =
-  | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
+  | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'shutting_down' }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
@@ -326,7 +333,12 @@ export type BackendStatusFull =
    * An unreadable discovery record must not imply whether a coordinator is running: a truncated write or a
    * record shaped by a build this one rejects can both exist while a coordinator is serving.
    */
-  | { status: 'undecodable_record'; reason: 'corrupt-json' | 'shape-rejected'; path: string }
+  | {
+      status: 'undecodable_record';
+      reason: 'corrupt-json' | 'shape-rejected';
+      path: string;
+      shutdownRemainder?: ShutdownRemainderReport;
+    }
   /**
    * The recorded address did not yield this coordinator's state — a non-2xx that is not a drain, a request that
    * never completed, a 200 whose body this build cannot decode (shape rejection), or a coordinator that
@@ -633,13 +645,23 @@ function readRecentShutdownRemainder(
     .map(({ name }) => name);
   const skippedCorruptRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'corrupt').length;
   const skippedUnsupportedRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'unsupported').length;
+  const skippedIdentityMismatchRecordCount = scopedSkippedRecords.filter(
+    ({ reason }) => reason === 'record-identity-mismatch',
+  ).length;
+  const malformedCount = scopedSkippedRecords.filter(({ reason }) => reason === 'malformed-staging').length;
   const staging: OperatorFacingShutdownStages = {
     writerAliveCount: scopedSkippedRecords.filter(({ reason }) => reason === 'staging-writer-alive').length,
     writerUnobservableCount: scopedSkippedRecords.filter(({ reason }) => reason === 'staging-writer-unobservable')
       .length,
     orphanedCount: scopedSkippedRecords.filter(({ reason }) => reason === 'orphaned-staging').length,
+    ...(malformedCount === 0 ? {} : { malformedCount }),
   };
-  const hasStaging = staging.writerAliveCount + staging.writerUnobservableCount + staging.orphanedCount > 0;
+  const hasStaging =
+    staging.writerAliveCount + staging.writerUnobservableCount + staging.orphanedCount + malformedCount > 0;
+  const scanBounds = {
+    ...(scan.unscannedStageCount === undefined ? {} : { unscannedStageCount: scan.unscannedStageCount }),
+    ...(scan.unscannedRecordCount === undefined ? {} : { unscannedRecordCount: scan.unscannedRecordCount }),
+  };
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -659,13 +681,17 @@ function readRecentShutdownRemainder(
     )
     .at(-1)?.candidate;
   if (record === undefined) {
-    return scopedSkippedRecords.length > 0
+    return scopedSkippedRecords.length > 0 ||
+      scan.unscannedStageCount !== undefined ||
+      scan.unscannedRecordCount !== undefined
       ? {
           status: 'shutdown_remainder_unreadable',
           reason: 'records-skipped',
           skippedUnreadableRecordNames,
           skippedCorruptRecordCount,
           skippedUnsupportedRecordCount,
+          ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
+          ...scanBounds,
           ...(hasStaging ? { staging } : {}),
         }
       : null;
@@ -683,6 +709,8 @@ function readRecentShutdownRemainder(
     skippedUnreadableRecordNames,
     skippedCorruptRecordCount,
     skippedUnsupportedRecordCount,
+    ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
+    ...scanBounds,
     ...(hasStaging ? { staging } : {}),
   };
 }
@@ -733,13 +761,23 @@ function statusWithRecentCoordinatorEvidence(
   // address, and it carries the same optional `shutdownRemainder` field as every other fallback member, so it
   // always runs through the remainder lookup below rather than returning early.
   if (diagnostic !== null) {
-    const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope, observeStageWriter);
-    return shutdownRemainder === null ? diagnostic : { ...diagnostic, shutdownRemainder };
+    return statusWithShutdownRemainder(storage, runDir, now, observeStageWriter, diagnostic, remainderScope);
   }
-  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope, observeStageWriter);
+  return statusWithShutdownRemainder(storage, runDir, now, observeStageWriter, fallback, remainderScope);
+}
+
+function statusWithShutdownRemainder<Status extends Exclude<BackendStatusFull, { status: 'shutting_down' }>>(
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
+  runDir: string,
+  now: number,
+  observeStageWriter: ShutdownRemainderStageObserver,
+  fallback: Status,
+  scope: ShutdownRemainderEvidenceScope,
+): Status {
+  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope, observeStageWriter);
   // The remainder is additional evidence about a departed instance's obligations, never a replacement for
   // whichever status above already proved that instance's current absence or ambiguity — a reader needs both.
-  return shutdownRemainder === null ? fallback : { ...fallback, shutdownRemainder };
+  return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
 }
 
 /**
@@ -836,7 +874,14 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
 
   switch (observed.kind) {
     case 'unreadable-record':
-      return { status: 'undecodable_record', reason: observed.reason, path: observed.path };
+      return statusWithShutdownRemainder(
+        runtime.storage,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        observeStageWriter,
+        { status: 'undecodable_record', reason: observed.reason, path: observed.path },
+        { kind: 'directory' },
+      );
     case 'no-record':
       return statusWithRecentCoordinatorEvidence(
         runtime.storage,
@@ -848,11 +893,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
-      // No recorded instanceId exists to scope a remainder to; a directory-wide, recency-only lookup is the
-      // same fallback `statusWithRecentCoordinatorEvidence` already uses for `no-record`, and for the same reason: a departed
-      // instance's undischarged obligations remain relevant evidence whether or not something now holds the
-      // socket — a fresh boot recovering that very remainder is exactly the case `successor-recovery` evidence
-      // describes.
+      // Without a recorded instance id, narrowing would fabricate identity, so the lookup is directory-scoped.
       return statusWithRecentCoordinatorEvidence(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
@@ -924,7 +965,17 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       result = { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
     }
   }
-  if (result.status === 'ok' || result.status === 'shutting_down') return result;
+  if (result.status === 'shutting_down') return result;
+  if (result.status === 'ok') {
+    return statusWithShutdownRemainder(
+      runtime.storage,
+      runtime.paths.coral.coordinator.runDir,
+      runtime.time.now(),
+      observeStageWriter,
+      result,
+      { kind: 'directory' },
+    );
+  }
   return statusWithRecentCoordinatorEvidence(
     runtime.storage,
     runtime.paths.coral.coordinator.startupDiagnosticFile,

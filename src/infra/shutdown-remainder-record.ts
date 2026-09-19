@@ -14,6 +14,7 @@ import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } f
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
+export const SHUTDOWN_REMAINDER_SCAN_LIMIT = 128;
 
 type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
   ? Value
@@ -63,6 +64,7 @@ export type ShutdownRemainderSkippedRecord =
    * schema; it never crosses to an operator-facing surface (see `src/transport/http/backend/status.ts`).
    */
   | Readonly<{ name: string; reason: 'unsupported'; detail: string }>
+  | Readonly<{ name: string; reason: 'malformed-staging' | 'record-identity-mismatch' }>
   | Readonly<{
       name: string;
       instanceId: string;
@@ -84,6 +86,8 @@ export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
+  unscannedStageCount?: number;
+  unscannedRecordCount?: number;
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
@@ -98,12 +102,20 @@ const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THRO
 const SHUTDOWN_REMAINDER_STAGE_PATTERN =
   /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unknown)(?<partial>\.tmp)?$/u;
 const LEGACY_SHUTDOWN_REMAINDER_STAGE_PATTERN = /^(?<instanceId>.+)\.json\.tmp$/u;
+const SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN = /\.json\.(?:stage|tmp)(?:\.|$)/u;
 
 export type ShutdownRemainderStage = Readonly<{
   name: string;
   instanceId: string;
   writer: ShutdownRemainderStageWriter | null;
+  partial: boolean;
 }>;
+
+export type ShutdownRemainderDirectoryEntry =
+  | Readonly<{ kind: 'stage'; stage: ShutdownRemainderStage }>
+  | Readonly<{ kind: 'malformed-stage'; name: string }>
+  | Readonly<{ kind: 'record'; name: string }>
+  | Readonly<{ kind: 'other' }>;
 
 export function shutdownRemainderStageName(
   instanceId: string,
@@ -136,6 +148,7 @@ function parseShutdownRemainderStage(name: string): ShutdownRemainderStage | nul
         pid,
         ...(incarnation === 'unknown' ? {} : { incarnationDigest: incarnation }),
       },
+      partial: matched.groups?.partial !== undefined,
     };
   }
 
@@ -143,7 +156,7 @@ function parseShutdownRemainderStage(name: string): ShutdownRemainderStage | nul
   const instanceId = legacy?.groups?.instanceId;
   return instanceId === undefined || !serializedThrownIdentifierSchema.safeParse(instanceId).success
     ? null
-    : { name, instanceId, writer: null };
+    : { name, instanceId, writer: null, partial: true };
 }
 
 export function observeShutdownRemainderStageWriter(
@@ -173,11 +186,12 @@ function stageObservation(
   return stage.writer === null ? 'unknown' : observeStageWriter(stage.writer);
 }
 
-export function listShutdownRemainderStages(names: readonly string[]): readonly ShutdownRemainderStage[] {
-  return names.flatMap((name) => {
-    const stage = parseShutdownRemainderStage(name);
-    return stage === null ? [] : [stage];
-  });
+/** Stage-shaped names must be classified before any `.json` entry can be selected as final evidence. */
+export function classifyShutdownRemainderDirectoryEntry(name: string): ShutdownRemainderDirectoryEntry {
+  const stage = parseShutdownRemainderStage(name);
+  if (stage !== null) return { kind: 'stage', stage };
+  if (SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN.test(name)) return { kind: 'malformed-stage', name };
+  return name.endsWith('.json') ? { kind: 'record', name } : { kind: 'other' };
 }
 
 function readPersistedFact(value: unknown): string | null {
@@ -329,16 +343,49 @@ export function scanShutdownRemainderRecords(
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
+  type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
   const names = storage.readdirSync(directory);
-  for (const stage of listShutdownRemainderStages(names)) {
+  const stageFiles: StageFile[] = [];
+  const recordFiles: RecordFile[] = [];
+  let unscannedStageCount = 0;
+  let unscannedRecordCount = 0;
+  for (const name of names) {
+    const entry = classifyShutdownRemainderDirectoryEntry(name);
+    if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
+      if (stageFiles.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) stageFiles.push(entry);
+      else unscannedStageCount += 1;
+      continue;
+    }
+    if (entry.kind !== 'record') continue;
+    if (recordFiles.length >= SHUTDOWN_REMAINDER_SCAN_LIMIT) {
+      unscannedRecordCount += 1;
+      continue;
+    }
+    const reportedName = persistedFileNameSchema.safeParse(name);
+    recordFiles.push({
+      name,
+      reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
+    });
+  }
+
+  for (const entry of stageFiles) {
+    const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
     try {
-      storage.statSync(join(directory, stage.name));
+      storage.statSync(join(directory, name));
     } catch (error: unknown) {
       if (thrownErrnoCode(error) === 'ENOENT') continue;
     }
+    if (entry.kind === 'malformed-stage') {
+      skippedRecords.push({
+        name: persistedFileNameSchema.safeParse(name).success ? name : 'invalid-record-name',
+        reason: 'malformed-staging',
+      });
+      continue;
+    }
+    const stage = entry.stage;
     const observation = stageObservation(stage, observeStageWriter);
     skippedRecords.push({
       name: persistedFileNameSchema.safeParse(stage.name).success ? stage.name : 'invalid-record-name',
@@ -352,18 +399,12 @@ export function scanShutdownRemainderRecords(
     });
   }
 
-  const recordFiles = names
-    .filter((name) => name.endsWith('.json'))
-    .flatMap((name): RecordFile[] => {
-      const reportedName = persistedFileNameSchema.safeParse(name);
-      const recordFile: RecordFile = {
-        name,
-        reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
-      };
+  const existingRecordFiles = recordFiles
+    .flatMap((recordFile): RecordFile[] => {
       try {
         // A stat failure other than ENOENT carries no evidence about the file's content, so it still gets a
         // read attempt below (see `classifyShutdownRemainderFile`) rather than being treated as decisive.
-        storage.statSync(join(directory, name));
+        storage.statSync(join(directory, recordFile.name));
         return [recordFile];
       } catch (error: unknown) {
         return thrownErrnoCode(error) === 'ENOENT' ? [] : [recordFile];
@@ -371,7 +412,7 @@ export function scanShutdownRemainderRecords(
     })
     .sort((left, right) => left.name.localeCompare(right.name));
 
-  for (const { name, reportedName } of recordFiles) {
+  for (const { name, reportedName } of existingRecordFiles) {
     const classification = classifyShutdownRemainderFile(storage, join(directory, name));
     switch (classification.kind) {
       // Same race as the `statSync` step above, one step later: the file lost the race between `readdirSync`
@@ -388,11 +429,21 @@ export function scanShutdownRemainderRecords(
         skippedRecords.push({ name: reportedName, reason: 'unsupported', detail: classification.detail });
         continue;
       case 'readable':
+        if (name !== `${classification.record.instanceId}.json`) {
+          skippedRecords.push({ name: reportedName, reason: 'record-identity-mismatch' });
+          continue;
+        }
         records.push(classification.record);
         skippedEntries.push(...classification.skippedEntries);
         continue;
     }
   }
 
-  return { records, skippedEntries, skippedRecords };
+  return {
+    records,
+    skippedEntries,
+    skippedRecords,
+    ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
+    ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),
+  };
 }

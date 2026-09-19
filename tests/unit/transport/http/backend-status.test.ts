@@ -1293,9 +1293,12 @@ describe('getBackendStatusFull record disposition', () => {
   });
 
   it.each([['corrupt-json'], ['shape-rejected']] as const)(
-    'reports the %s record as its own status, not as an absent coordinator',
+    'reports the %s record as its own status while retaining directory-scoped remainder evidence',
     async (reason) => {
       mockState.observed = { kind: 'unreadable-record', reason, path: '/run/coral/coordinator.json' };
+      mockState.remainderFiles = [
+        remainderFile('recent.json', NOW - 10_000, shutdownRemainder('recent', NOW - 10_000)),
+      ];
       // The record-derived view is still populated here, so a consumer reading only that would fall through to
       // the liveness check and manufacture an absence.
 
@@ -1305,6 +1308,14 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'undecodable_record',
         reason,
         path: '/run/coral/coordinator.json',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: expect.objectContaining({ instanceId: 'recent' }),
+          skippedEntries: [],
+          skippedUnreadableRecordNames: [],
+          skippedCorruptRecordCount: 0,
+          skippedUnsupportedRecordCount: 0,
+        },
       });
     },
   );
@@ -1449,8 +1460,8 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   it('reports a recent shutdown remainder when no scoped startup diagnostic exists', async () => {
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID + 1);
     mockState.remainderFiles = [
-      remainderFile('matching.json', NOW - 20_000, shutdownRemainder(INSTANCE_ID, NOW - 20_000)),
-      remainderFile('other.json', NOW - 10_000, shutdownRemainder('other-coordinator', NOW - 10_000)),
+      remainderFile(`${INSTANCE_ID}.json`, NOW - 20_000, shutdownRemainder(INSTANCE_ID, NOW - 20_000)),
+      remainderFile('other-coordinator.json', NOW - 10_000, shutdownRemainder('other-coordinator', NOW - 10_000)),
     ];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -1671,9 +1682,13 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
   });
 
-  it('reports a healthy detailed answer as ok, carrying the payload the operator reads', async () => {
+  it('reports a healthy detailed answer as ok while retaining a predecessor stage hold', async () => {
     mockState.remainderFiles = [
-      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+      remainderFile(
+        'predecessor.json.stage.4242.unknown',
+        NOW - 10_000,
+        shutdownRemainder('predecessor', NOW - 10_000),
+      ),
     ];
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('ok'), { status: 200 }));
 
@@ -1681,9 +1696,13 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result.status).toBe('ok');
-    expect(result).not.toHaveProperty('shutdownRemainder');
     expect(result, 'the version an operator sees comes from the daemon, not the record').toMatchObject({
       health: { status: 'ok', version: '0.0.0', instanceId: 'test-instance', uptimeMs: 1_000 },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        staging: { writerAliveCount: 0, writerUnobservableCount: 1, orphanedCount: 0 },
+      },
     });
   });
 
