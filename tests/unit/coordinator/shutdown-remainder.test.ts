@@ -2,6 +2,7 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createShutdownRemainderPruner,
   pruneShutdownRemainderRecords,
   recordShutdownRemainder,
   shutdownRemainderPath,
@@ -46,8 +47,10 @@ function storageWith(
     refuseStatFor?: string;
     statErrorCode?: string;
     refuseReadFor?: string | readonly string[];
+    refuseReadWhen?: (name: string, attempt: number) => boolean;
     readErrorCode?: string;
     pruneBeforeAtomicRename?: boolean;
+    publishStageBeforeFinalRename?: boolean;
     refuseAtomicRename?: boolean;
     refuseFinalRename?: boolean;
   }> = {},
@@ -65,6 +68,8 @@ function storageWith(
         : options.refuseReadFor,
   );
   const pruneAttempts = new Map<string, number>();
+  const readAttempts = new Map<string, number>();
+  let stagePublishedBeforeFinalRename = false;
 
   const storage = {
     existsSync: (path: string) => (path === REMAINDER_DIRECTORY ? directoryExists : files.has(path)),
@@ -73,7 +78,10 @@ function storageWith(
       return [...files.keys()].filter((file) => dirname(file) === path).map((file) => basename(file));
     }) as unknown as StoragePort['readdirSync'],
     readFileSync: vi.fn((path: string) => {
-      if (refusedReadNames.has(basename(path))) {
+      const name = basename(path);
+      const attempt = (readAttempts.get(name) ?? 0) + 1;
+      readAttempts.set(name, attempt);
+      if (refusedReadNames.has(name) || options.refuseReadWhen?.(name, attempt) === true) {
         throw Object.assign(new Error('read refused'), { code: options.readErrorCode ?? 'EIO' });
       }
       const file = files.get(path);
@@ -108,6 +116,16 @@ function storageWith(
     renameSync: vi.fn((oldPath: string, newPath: string) => {
       if (options.refuseAtomicRename === true && newPath.includes('.json.stage.')) {
         throw Object.assign(new Error('atomic rename refused'), { code: 'EACCES' });
+      }
+      if (
+        options.publishStageBeforeFinalRename === true &&
+        !stagePublishedBeforeFinalRename &&
+        oldPath.includes('.json.stage.') &&
+        !oldPath.endsWith('.tmp') &&
+        newPath.endsWith('.json')
+      ) {
+        stagePublishedBeforeFinalRename = true;
+        pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'alive' });
       }
       if (options.refuseFinalRename === true && newPath.endsWith('.json')) {
         throw Object.assign(new Error('rename refused'), { code: 'EIO' });
@@ -1074,7 +1092,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('defers a complete stage while its writer is proven alive', () => {
+  it('promotes a validated complete stage while its writer is proven alive', () => {
     const stageName = 'live.json.stage.4242.unobserved';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('live')), mtimeMs: 1 }]);
 
@@ -1085,10 +1103,25 @@ describe('shutdown remainder status', () => {
     });
 
     expect(disposition).toEqual({
-      stageOwnership: { kind: 'held', stageNames: [stageName] },
+      stageOwnership: { kind: 'classified' },
       cleanup: { kind: 'complete' },
     });
-    expect(storage.fileNames()).toEqual([stageName]);
+    expect(storage.fileNames()).toEqual(['live.json']);
+  });
+
+  it('accepts publication when the pruner wins the final rename race', () => {
+    const storage = storageWith([], { publishStageBeforeFinalRename: true });
+
+    expect(
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
+    ).toBe(true);
+    expect(storage.fileNames()).toEqual(['current-instance.json']);
+    expect(JSON.parse(storage.readPublished('current-instance') ?? '')).toEqual(recordAt('current-instance'));
   });
 
   it('never promotes a complete atomic-write temporary file after publication and cleanup both fail', () => {
@@ -1232,6 +1265,54 @@ describe('shutdown remainder status', () => {
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain(heldStage.name);
+  });
+
+  it('publishes after a writer changes from alive to absent while the coordinator keeps running', () => {
+    const stageName = 'held.json.stage.4242.unobserved';
+    const storage = storageWith([], {
+      refuseReadWhen: (name, attempt) => name === stageName && attempt === 1,
+    });
+    storage.mkdirSync(REMAINDER_DIRECTORY, { recursive: true });
+    const observations: Array<'alive' | 'absent'> = ['alive', 'absent'];
+    let scheduled: (() => void) | null = null;
+    const timer = { unref: vi.fn() };
+    const clearInterval = vi.fn(() => {
+      scheduled = null;
+    });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => observations.shift() ?? 'absent',
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return timer;
+        },
+        clearInterval,
+      },
+    });
+
+    expect(pruner.start()).toEqual({
+      stageOwnership: { kind: 'classified' },
+      cleanup: { kind: 'complete' },
+    });
+    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, stageName), JSON.stringify(recordAt('held')));
+
+    const observeAlive = scheduled as (() => void) | null;
+    if (observeAlive === null) throw new Error('periodic re-observation was not scheduled');
+    observeAlive();
+
+    expect(storage.fileNames()).toEqual([stageName]);
+    expect(timer.unref).toHaveBeenCalledOnce();
+
+    const observeAbsent = scheduled as (() => void) | null;
+    if (observeAbsent === null) throw new Error('periodic re-observation was not scheduled');
+    observeAbsent();
+
+    expect(storage.fileNames()).toEqual(['held.json']);
+    expect(JSON.parse(storage.readPublished('held') ?? '')).toEqual(recordAt('held'));
+    pruner.stop();
+    expect(clearInterval).toHaveBeenCalledOnce();
   });
 
   it('reclaims every partial stage whose writer is proven absent', () => {

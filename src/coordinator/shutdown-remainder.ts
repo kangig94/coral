@@ -6,7 +6,7 @@ import {
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
   thrownErrnoCode,
 } from '../infra/error-format.js';
-import type { StoragePort, TimePort } from '../infra/port-types.js';
+import type { StoragePort, TimePort, TimerHandle } from '../infra/port-types.js';
 import {
   classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
@@ -35,7 +35,7 @@ type ShutdownRemainderPruneRuntime = Readonly<{
 }>;
 
 type ShutdownRemainderWriteRuntime = Readonly<{
-  storage: Pick<StoragePort, 'mkdirSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;
+  storage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;
   time: Pick<TimePort, 'now'>;
   runDir: string;
   writer: Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>;
@@ -114,12 +114,8 @@ export function pruneShutdownRemainderRecords(
       }
       const stage = entry.stage;
       const writerObservation = observeStageWriter(stage.writer, name);
-      if (writerObservation === 'alive') {
-        reobservableStageNames.add(name);
-        continue;
-      }
       if (stage.partial) {
-        if (writerObservation === 'unknown') {
+        if (writerObservation !== 'absent') {
           reobservableStageNames.add(name);
           continue;
         }
@@ -143,7 +139,7 @@ export function pruneShutdownRemainderRecords(
           refusedCleanupSubjectNames.add(name);
         }
       }
-      if (writerObservation === 'unknown') {
+      if (writerObservation !== 'absent') {
         reobservableStageNames.add(name);
         continue;
       }
@@ -277,6 +273,32 @@ export function pruneShutdownRemainderRecords(
   }
 }
 
+const SHUTDOWN_REMAINDER_REOBSERVATION_MS = 60_000;
+
+/** Remainder maintenance must not keep the coordinator process alive. */
+export function createShutdownRemainderPruner(
+  runtime: ShutdownRemainderPruneRuntime & Readonly<{ time: Pick<TimePort, 'clearInterval' | 'setInterval'> }>,
+): Readonly<{ start(): ShutdownRemainderPruneDisposition | null; stop(): void }> {
+  let timer: TimerHandle | null = null;
+  let stopped = false;
+  const prune = (): ShutdownRemainderPruneDisposition => pruneShutdownRemainderRecords(runtime);
+
+  return {
+    start: () => {
+      if (stopped) return null;
+      const disposition = prune();
+      timer = runtime.time.setInterval(prune, SHUTDOWN_REMAINDER_REOBSERVATION_MS);
+      timer.unref?.();
+      return disposition;
+    },
+    stop: () => {
+      stopped = true;
+      if (timer !== null) runtime.time.clearInterval(timer);
+      timer = null;
+    },
+  };
+}
+
 export function recordShutdownRemainder(
   runtime: ShutdownRemainderWriteRuntime,
   input: ShutdownRemainderRecordInput,
@@ -330,7 +352,12 @@ export function recordShutdownRemainder(
       removeStage();
       return false;
     }
-    runtime.storage.renameSync(stagePath, path);
+    try {
+      runtime.storage.renameSync(stagePath, path);
+    } catch (error: unknown) {
+      if (thrownErrnoCode(error) === 'ENOENT' && runtime.storage.existsSync(path)) return true;
+      throw error;
+    }
     return true;
   } catch (error: unknown) {
     removeStage();

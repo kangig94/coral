@@ -1425,7 +1425,7 @@ function formatSkippedShutdownRemainderRecords(
   if (result.skippedCorruptRecordCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, corrupt: ${result.skippedCorruptRecordCount}`,
-      '  Disposition: content is not valid JSON; coordinator startup and periodic background cleanup attempt deletion, and a refused deletion remains reported for a later attempt.',
+      '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
     );
   }
   if (result.skippedUnsupportedRecordCount > 0) {
@@ -1437,19 +1437,19 @@ function formatSkippedShutdownRemainderRecords(
   if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
     lines.push(
       `Skipped shutdown remainder records, identity mismatch: ${result.skippedIdentityMismatchRecordCount}`,
-      '  Disposition: decoded content named a different instance than the filename; coordinator cleanup attempts deletion, and a refused deletion remains reported for a later background or startup attempt.',
+      '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
     );
   }
   if ((result.unscannedStageCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder publication stages not inspected: ${result.unscannedStageCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-stage bound; retained for a later status read, background scan, or coordinator startup.`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-stage bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
     );
   }
   if ((result.unscannedRecordCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder records not inspected: ${result.unscannedRecordCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-record bound; retained for a later status read, background scan, or coordinator startup.`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-record bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
     );
   }
   if (result.staging !== undefined) {
@@ -1470,13 +1470,13 @@ function formatSkippedShutdownRemainderRecords(
     if (result.staging.orphanedCount > 0) {
       lines.push(
         `Shutdown remainder publication stages with proven-absent writers: ${result.staging.orphanedCount}`,
-        '  Disposition: coordinator cleanup promotes a decodable stage; refused cleanup remains durable reported status for a later background or startup attempt. Other orphaned stages use their own 32-entry bound (newest first).',
+        '  Disposition: coordinator cleanup promotes a decodable stage; a running coordinator retries refused cleanup in its periodic remainder scan, otherwise the next coordinator startup retries it. Other orphaned stages use their own 32-entry bound (newest first).',
       );
     }
     if ((result.staging.malformedCount ?? 0) > 0) {
       lines.push(
         `Malformed shutdown remainder publication stages: ${result.staging.malformedCount}`,
-        '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup eligible for later background attempts.',
+        '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first). Each periodic or startup remainder scan reapplies that bound and retries refused cleanup.',
       );
     }
   }
@@ -1486,11 +1486,11 @@ function formatSkippedShutdownRemainderRecords(
 function formatShutdownRemainderRecheckLine(context: ShutdownRemainderRecheckContext): string {
   switch (context) {
     case 'coordinator-running':
-      return '  Recheck: this coordinator performs bounded rechecks between background discovery intervals.';
+      return '  Recheck: this coordinator rescans shutdown remainder files periodically; no action is required while the evidence remains reported.';
     case 'startup-required':
-      return '  Recheck: coordinator startup is what begins bounded rechecks; any mutating Coral command or a Claude Code session start attempts it.';
+      return '  Recheck: no coordinator is running. The next coordinator startup scans once and then rescans periodically while it runs; the evidence remains reported meanwhile.';
     case 'coordinator-unconfirmed':
-      return '  Recheck: a running coordinator performs bounded rechecks; otherwise, successful coordinator startup begins them.';
+      return '  Recheck: a running coordinator rescans periodically; otherwise the next coordinator startup scans once. The evidence remains reported meanwhile.';
     default:
       return assertNever(context);
   }

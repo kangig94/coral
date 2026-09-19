@@ -231,7 +231,7 @@ describe('getBackendStatusFull record disposition', () => {
       '  Disposition: writer state is unknown; unknown establishes neither a live publication nor an absent writer.',
     );
     expect(output).toContain(
-      '  Recheck: coordinator startup is what begins bounded rechecks; any mutating Coral command or a Claude Code session start attempts it.',
+      '  Recheck: no coordinator is running. The next coordinator startup scans once and then rescans periodically while it runs; the evidence remains reported meanwhile.',
     );
     expect(output).not.toContain('publications in progress');
     expect(output).not.toContain('background discovery intervals');
