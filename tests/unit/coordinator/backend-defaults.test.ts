@@ -127,7 +127,7 @@ describe('resolveCoordinatorDefaults eager defaults', () => {
       flavor: harness.info.flavor,
     });
 
-    harness.defaults.removeBackendInfoIfOwnerFn(harness.info.instanceId);
+    expect(harness.defaults.removeBackendInfoIfOwnerFn(harness.info.instanceId)).toEqual({ kind: 'removed' });
     expect(readBackendInfo(discoveryRuntime)).toBeNull();
   });
 
@@ -140,18 +140,27 @@ describe('resolveCoordinatorDefaults eager defaults', () => {
     };
 
     harness.defaults.writeBackendInfoFn(harness.info);
-    harness.defaults.removeBackendInfoIfOwnerFn('some-other-instance');
+    expect(harness.defaults.removeBackendInfoIfOwnerFn('some-other-instance')).toEqual({ kind: 'unchanged' });
     expect(readBackendInfo(discoveryRuntime)).not.toBeNull();
   });
 
-  it('forwards the shutdown signal to the world-bound launch coordinator', async () => {
+  it('forwards each staged shutdown signal to the world-bound launch coordinator', async () => {
     const harness = createHarness();
-    let receivedSignal: AbortSignal | undefined;
-    const terminateAll = vi.fn(
-      (signal?: AbortSignal): Promise<{ readonly kind: 'all-observed-absent' }> =>
+    const receivedSignals: AbortSignal[] = [];
+    const settlePendingLaunches = vi.fn(
+      (signal?: AbortSignal): Promise<{ readonly kind: 'all-pending-launches-settled' }> =>
         new Promise((resolve) => {
-          receivedSignal = signal;
-          const finish = (): void => resolve({ kind: 'all-observed-absent' });
+          if (signal !== undefined) receivedSignals.push(signal);
+          const finish = (): void => resolve({ kind: 'all-pending-launches-settled' });
+          if (signal?.aborted === true) finish();
+          else signal?.addEventListener('abort', finish, { once: true });
+        }),
+    );
+    const terminateRegisteredChildren = vi.fn(
+      (signal?: AbortSignal): Promise<{ readonly kind: 'all-children-observed-absent' }> =>
+        new Promise((resolve) => {
+          if (signal !== undefined) receivedSignals.push(signal);
+          const finish = (): void => resolve({ kind: 'all-children-observed-absent' });
           if (signal?.aborted === true) finish();
           else signal?.addEventListener('abort', finish, { once: true });
         }),
@@ -159,15 +168,17 @@ describe('resolveCoordinatorDefaults eager defaults', () => {
     const defaults = harness.defaultsPlan.finalizeWithWorld({
       bindHost: '127.0.0.1',
       getProgressStore: () => null,
-      launchCoordinator: { terminateAll },
+      launchCoordinator: { settlePendingLaunches, terminateRegisteredChildren },
       log: () => {},
     });
     const controller = new AbortController();
 
-    const termination = defaults.terminateAllFn(controller.signal);
-    expect(receivedSignal).toBe(controller.signal);
+    const pendingSettlement = defaults.settlePendingLaunchesFn(controller.signal);
+    const childTermination = defaults.terminateRegisteredChildrenFn(controller.signal);
+    expect(receivedSignals).toEqual([controller.signal, controller.signal]);
 
     controller.abort();
-    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(pendingSettlement).resolves.toEqual({ kind: 'all-pending-launches-settled' });
+    await expect(childTermination).resolves.toEqual({ kind: 'all-children-observed-absent' });
   });
 });

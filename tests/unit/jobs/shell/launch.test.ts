@@ -245,7 +245,7 @@ function _getActiveJobIds(pool?: 'default' | 'discuss' | 'curate'): string[] {
 }
 
 function terminateAll(): void {
-  launchCoordinator.terminateAll();
+  void launchCoordinator.settlePendingLaunches();
 }
 
 function _queueDepth(pool?: 'default' | 'discuss' | 'curate'): number {

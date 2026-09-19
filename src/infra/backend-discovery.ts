@@ -6,6 +6,7 @@ import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
 import { MAX_PROCESS_INCARNATION_LENGTH, observeProcessLiveness, type ProcessIncarnation } from './node-process.js';
 import { backendLog } from './backend-log.js';
+import { formatError, serializeThrown, type SerializedThrown } from './error-format.js';
 import { isNoEntryError } from './fs-errors.js';
 import type { Runtime } from '../runtime/ports.js';
 
@@ -241,36 +242,47 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
   };
 }
 
+export type BackendInfoRemovalResult =
+  | Readonly<{ kind: 'removed' }>
+  | Readonly<{ kind: 'unchanged' }>
+  | Readonly<{ kind: 'refused'; detail: string; error: SerializedThrown }>;
+
 /**
  * Delete the discovery record, but only when this caller is provably the one that wrote it.
  *
- * Every early return here is a refusal to delete, not a completed removal, and the distinction matters because
- * the file is how a contender finds an incumbent: removing one this process does not own retires somebody
- * else's coordinator from discovery while it is still serving. So the bar is attribution — a record that
- * cannot be read, or that names another `instanceId` (or, for a record predating that field, another token),
- * is left exactly where it is. `void` is honest here only because no caller can act on the difference: this
- * runs on the owner's own shutdown path, and a record it cannot claim is one it must not touch either way.
+ * The file is how a contender finds an incumbent, so a record that cannot be attributed to this owner must
+ * remain in place. Operational failures are returned because shutdown must still release its other authority.
  */
-export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): void {
-  const record = readDiscoveryRecord(runtime);
-  if (!record) {
-    return;
+export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): BackendInfoRemovalResult {
+  let read: DiscoveryRead;
+  try {
+    read = readDiscoveryRecordDisposition(runtime);
+  } catch (error: unknown) {
+    return { kind: 'refused', detail: `read failed: ${formatError(error)}`, error: serializeThrown(error) };
   }
+  if (read.kind === 'missing') return { kind: 'unchanged' };
+  if (read.kind === 'undecodable') {
+    const detail = `record undecodable (${read.reason})`;
+    return { kind: 'refused', detail, error: { kind: 'unknown', message: detail } };
+  }
+
+  const { record } = read;
 
   if (record.instanceId !== undefined) {
     if (record.instanceId !== owner) {
-      return;
+      return { kind: 'unchanged' };
     }
   } else if (record.token !== owner) {
-    return; // predates `instanceId`, and its token names another writer
+    return { kind: 'unchanged' }; // predates `instanceId`, and its token names another writer
   }
 
   try {
     runtime.storage.unlinkSync(discoveryFilePath(runtime));
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
-      return;
+      return { kind: 'unchanged' };
     }
-    throw error;
+    return { kind: 'refused', detail: `unlink failed: ${formatError(error)}`, error: serializeThrown(error) };
   }
+  return { kind: 'removed' };
 }

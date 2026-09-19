@@ -10,6 +10,7 @@ import {
   type BackendInfo,
 } from '../../../src/infra/backend-discovery.js';
 import { ProviderRegistry } from '../../../src/providers/registry.js';
+import { isLifecycleShutdownTerminal } from '../../../src/coordinator/lifecycle.js';
 import { none } from '../../../src/providers/capability.js';
 import type {
   ProviderRecoveryContract,
@@ -873,7 +874,7 @@ export function createSimulationBackend(
     start: () => core.lifecycleController.start(),
     shutdown: async (reason) => {
       const disposition = await core.lifecycleController.shutdown(reason);
-      if (disposition.disposition === 'finalized') cleanupRuntimeRoot();
+      if (isLifecycleShutdownTerminal(disposition)) cleanupRuntimeRoot();
       return disposition;
     },
     waitForShutdown: () => core.lifecycleController.waitForShutdown(),

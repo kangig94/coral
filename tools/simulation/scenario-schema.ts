@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { providerTerminalOutcomeSchema } from '../../src/providers/contract.js';
+import { SHUTDOWN_REASONS, type ShutdownReason } from '../../src/infra/persisted-scalar-contracts.js';
 
 const scenarioErrorSchema = z.union([
   z.string(),
@@ -195,9 +196,15 @@ export const cycleStepSchema = z.object({
   preserveWorld: z.boolean().optional(),
 });
 
+const simulationShutdownReasonSchema = z
+  .enum([...SHUTDOWN_REASONS, 'cycle', 'simulation-shutdown'])
+  .transform(
+    (reason): ShutdownReason => (reason === 'cycle' || reason === 'simulation-shutdown' ? 'test-teardown' : reason),
+  );
+
 const shutdownStepSchema = z.object({
   type: z.literal('shutdown'),
-  reason: z.string().optional(),
+  reason: simulationShutdownReasonSchema.optional(),
 });
 
 const resultExpectationSchema = z.object({

@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createConnection } from 'node:net';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
@@ -60,6 +61,7 @@ export type SpawnedCoordinator = {
   child: ReturnType<typeof spawn>;
   fixture: PluginFixture;
   home: string;
+  triggerPipe: NodeJS.WritableStream | null;
   output(): string;
 };
 
@@ -226,11 +228,13 @@ export function spawnCoordinator(options: {
   home: string;
   tempRoots: string[];
   env?: Record<string, string>;
+  backendPath?: string;
+  triggerPipe?: boolean;
 }): SpawnedCoordinator {
   const scratchCwd = mkdtempSync(join(tmpdir(), 'coral-coordinator-cwd-'));
   options.tempRoots.push(scratchCwd);
 
-  const child = spawn('node', [join(options.fixture.root, 'bridge', 'coral-backend.cjs')], {
+  const child = spawn('node', [options.backendPath ?? join(options.fixture.root, 'bridge', 'coral-backend.cjs')], {
     cwd: scratchCwd,
     env: {
       ...process.env,
@@ -238,17 +242,22 @@ export function spawnCoordinator(options: {
       TMPDIR: options.home,
       ...options.env,
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: options.triggerPipe ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
   });
 
   let stdout = '';
   let stderr = '';
-  child.stdout.setEncoding('utf-8');
-  child.stderr.setEncoding('utf-8');
-  child.stdout.on('data', (chunk: string) => {
+  const childStdout = child.stdout;
+  const childStderr = child.stderr;
+  if (childStdout === null || childStderr === null) {
+    throw new Error('Coordinator stdout and stderr pipes were not created.');
+  }
+  childStdout.setEncoding('utf-8');
+  childStderr.setEncoding('utf-8');
+  childStdout.on('data', (chunk: string) => {
     stdout += chunk;
   });
-  child.stderr.on('data', (chunk: string) => {
+  childStderr.on('data', (chunk: string) => {
     stderr += chunk;
   });
 
@@ -256,8 +265,55 @@ export function spawnCoordinator(options: {
     child,
     fixture: options.fixture,
     home: options.home,
+    triggerPipe: options.triggerPipe ? (child.stdio[3] as NodeJS.WritableStream) : null,
     output: () => `${stdout}${stderr}`,
   };
+}
+
+/**
+ * ECONNREFUSED and ENOENT are different exits, and a probe must not collapse them: Node unlinks a unix
+ * socket's path when `server.close()` completes (measured on Node v26.8.2, darwin; see closeIpcServer in
+ * src/transport/ipc/server.ts), while a process that died with its listener still open leaves a path that
+ * refuses connections and that only the next binder clears.
+ */
+export type CoordinatorSocketProbe = 'accepting' | 'released' | 'unlinked';
+
+export async function probeCoordinatorSocket(socketPath: string): Promise<CoordinatorSocketProbe> {
+  return await new Promise((resolve, reject) => {
+    const socket = createConnection(socketPath);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve('accepting');
+    });
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      if (error.code === 'ECONNREFUSED') {
+        resolve('released');
+        return;
+      }
+      if (error.code === 'ENOENT') {
+        resolve('unlinked');
+        return;
+      }
+      reject(error);
+    });
+  });
+}
+
+export async function waitForCoordinatorSocketRelease(
+  socketPath: string,
+  timeoutMs = 10_000,
+): Promise<Exclude<CoordinatorSocketProbe, 'accepting'>> {
+  const deadline = Date.now() + timeoutMs;
+  let observed = await probeCoordinatorSocket(socketPath);
+  while (observed === 'accepting' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    observed = await probeCoordinatorSocket(socketPath);
+  }
+  if (observed === 'accepting') {
+    throw new Error(`Timed out waiting for coordinator socket release: ${socketPath}`);
+  }
+  return observed;
 }
 
 export async function waitForProcessExit(

@@ -223,6 +223,8 @@ type PreserveReportState = {
   recoveryTimer: TimerHandle | null;
 };
 
+type ControlReattachmentSourceId = 'redemption' | 'absence';
+
 type ControlReattachmentWindow = {
   returnKind: 'available' | 'draining';
   lastObservedAtMonotonicMs: bigint;
@@ -236,6 +238,8 @@ type ControlReattachmentWindow = {
   boundMs: number;
   attemptToken: number;
   attemptAbort: AbortController | null;
+  cancelAttempt: ((reason: unknown) => void) | null;
+  retiredSources: Set<ControlReattachmentSourceId>;
   deadlineTimer: TimerHandle | null;
 };
 
@@ -4179,6 +4183,8 @@ export class ProviderProxySetLifecycle {
       boundMs: slot.controlReattachmentBoundMs,
       attemptToken: slot.attemptToken,
       attemptAbort: null,
+      cancelAttempt: null,
+      retiredSources: new Set(),
       deadlineTimer: null,
     };
     slot.kind = 'reattaching';
@@ -4210,6 +4216,22 @@ export class ProviderProxySetLifecycle {
     window.deadlineTimer.unref?.();
   }
 
+  #beginControlReattachmentSourceAttempt(window: ControlReattachmentWindow): Readonly<{
+    redemptionAbort: AbortController;
+    absenceAbort: AbortController;
+  }> {
+    window.cancelAttempt?.(new Error('provider_proxy_control_reattachment_attempt_superseded'));
+    const redemptionAbort = new AbortController();
+    const absenceAbort = new AbortController();
+    window.attemptAbort = null;
+    window.cancelAttempt = (reason) => {
+      redemptionAbort.abort(reason);
+      absenceAbort.abort(reason);
+      window.attemptAbort?.abort(reason);
+    };
+    return { redemptionAbort, absenceAbort };
+  }
+
   #runControlReattachmentAttempt(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
     if (
       this.#slots.get(slot.key) !== slot ||
@@ -4226,27 +4248,20 @@ export class ProviderProxySetLifecycle {
     window.attemptToken = slot.attemptToken;
     window.attempts += 1;
     const token = window.attemptToken;
-    const abort = new AbortController();
-    window.attemptAbort = abort;
+    const { redemptionAbort, absenceAbort } = this.#beginControlReattachmentSourceAttempt(window);
     void this.#recordDecision(slot, this.#controlReattachmentHoldDecision(slot, window));
     const authority = slot.authority;
     const turn = this.#deps.recoveryDispatcher.begin(
       'control-reattachment',
-      { setIdentity: slot.identity },
+      { setIdentity: slot.identity, retiredSources: window.retiredSources },
       {
         evidence: (value, sourceId) => {
           if (!this.#isCurrentControlReattachment(slot, window, token)) {
             this.#releaseLateReattachmentEvidence(value, sourceId);
             return;
           }
-          window.attemptAbort = null;
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetFencedContainmentProof;
-            const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
-            if (evidence.kind !== 'reap-required') {
-              releaseProviderProxySetContainmentProofFence(proof);
-              return;
-            }
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
             void this.#trackDestructiveAttempt(
@@ -4258,6 +4273,7 @@ export class ProviderProxySetLifecycle {
                   if (outcome.kind === 'containment-absent') releaseProviderProxySetContainmentProofFence(proof);
                   return;
                 }
+                window.cancelAttempt = null;
                 window.attemptAbort = null;
                 if (outcome.kind !== 'containment-absent') {
                   this.#scheduleControlReattachmentRetry(slot, window);
@@ -4269,6 +4285,7 @@ export class ProviderProxySetLifecycle {
               },
               (error: unknown) => {
                 if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+                window.cancelAttempt = null;
                 window.attemptAbort = null;
                 this.#deps.onError?.(
                   `Provider proxy control reattachment containment reap failed: ${singleLineErrorSummary(error)}`,
@@ -4285,6 +4302,8 @@ export class ProviderProxySetLifecycle {
               this.#commitReattachmentTeardownLatched(slot, window, decisive);
               return;
             }
+            window.cancelAttempt = null;
+            window.attemptAbort = null;
             this.#releasePartialRedemption(outcome.refusal);
             this.#awaitControlReattachmentAbsence(slot, window, 'control_reattachment_refused', outcome.refusal);
             return;
@@ -4293,27 +4312,30 @@ export class ProviderProxySetLifecycle {
         },
         retry: () => {
           if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          window.cancelAttempt = null;
           window.attemptAbort = null;
           this.#scheduleControlReattachmentRetry(slot, window);
         },
-        fatal: () => {
-          if (this.#isCurrentControlReattachment(slot, window, token)) window.attemptAbort = null;
-        },
+        fatal: () => undefined,
         disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
-    turn.start({
-      sourceId: 'redemption',
-      producerId: 'role-control',
-      input: { signal: abort.signal, run: (signal) => authority.redeemControl(signal) },
-      abort: (reason) => abort.abort(reason),
-    });
-    turn.start({
-      sourceId: 'absence',
-      producerId: 'containment-proof',
-      input: { identity: slot.identity, signal: abort.signal },
-      abort: (reason) => abort.abort(reason),
-    });
+    if (!window.retiredSources.has('redemption')) {
+      turn.start({
+        sourceId: 'redemption',
+        producerId: 'role-control',
+        input: { signal: redemptionAbort.signal, run: (signal) => authority.redeemControl(signal) },
+        abort: (reason) => redemptionAbort.abort(reason),
+      });
+    }
+    if (!window.retiredSources.has('absence')) {
+      turn.start({
+        sourceId: 'absence',
+        producerId: 'containment-proof',
+        input: { identity: slot.identity, signal: absenceAbort.signal },
+        abort: (reason) => absenceAbort.abort(reason),
+      });
+    }
   }
 
   #isCurrentControlReattachment(slot: EstablishedSlot, window: ControlReattachmentWindow, token: number): boolean {
@@ -4378,6 +4400,7 @@ export class ProviderProxySetLifecycle {
       promoted = await oldAuthority.promoteControl(redemption, promotionAbort.signal);
     } catch (error: unknown) {
       if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+      window.cancelAttempt = null;
       window.attemptAbort = null;
       this.#deps.onError?.(`Provider proxy control promotion failed: ${singleLineErrorSummary(error)}`);
       this.#scheduleControlReattachmentRetry(slot, window);
@@ -4414,7 +4437,8 @@ export class ProviderProxySetLifecycle {
   }
 
   #clearControlReattachment(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
-    window.attemptAbort?.abort(new Error('provider_proxy_control_reattachment_finished'));
+    window.cancelAttempt?.(new Error('provider_proxy_control_reattachment_finished'));
+    window.cancelAttempt = null;
     window.attemptAbort = null;
     if (window.deadlineTimer !== null) this.#deps.time.clearTimeout(window.deadlineTimer);
     window.deadlineTimer = null;
@@ -4532,7 +4556,8 @@ export class ProviderProxySetLifecycle {
       | ProviderProxySetHeartbeatLocalFailureRefusalDecision,
   ): void {
     if (this.#slots.get(slot.key) !== slot || slot.controlReattachmentWindow !== window) return;
-    window.attemptAbort?.abort(new Error('provider_proxy_control_reattachment_hold_entered'));
+    window.cancelAttempt?.(new Error('provider_proxy_control_reattachment_hold_entered'));
+    window.cancelAttempt = null;
     window.attemptAbort = null;
     if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
     slot.retryTimer = null;
@@ -4557,31 +4582,25 @@ export class ProviderProxySetLifecycle {
     ) {
       return;
     }
+    // A both-retired window may not schedule a retry: the fatal that retired the second source is its exit.
+    if (window.retiredSources.has('redemption') && window.retiredSources.has('absence')) return;
     slot.attemptToken += 1;
     window.attemptToken = slot.attemptToken;
     window.attempts += 1;
     const token = window.attemptToken;
-    const abort = new AbortController();
-    window.attemptAbort = abort;
+    const { redemptionAbort, absenceAbort } = this.#beginControlReattachmentSourceAttempt(window);
     const authority = slot.authority;
     const turn = this.#deps.recoveryDispatcher.begin(
       'control-reattachment-hold',
-      { setIdentity: slot.identity },
+      { setIdentity: slot.identity, retiredSources: window.retiredSources },
       {
         evidence: (value, sourceId) => {
           if (!this.#isCurrentControlReattachment(slot, window, token)) {
             this.#releaseLateReattachmentEvidence(value, sourceId);
             return;
           }
-          window.attemptAbort = null;
           if (sourceId === 'absence') {
             const proof = value as ProviderProxySetFencedContainmentProof;
-            const evidence = providerProxySetContainmentEvidenceFor(proof, slot.identity);
-            if (evidence.kind !== 'reap-required') {
-              releaseProviderProxySetContainmentProofFence(proof);
-              this.#scheduleReattachmentHoldRetry(slot, window);
-              return;
-            }
             const reapAbort = new AbortController();
             window.attemptAbort = reapAbort;
             void this.#trackDestructiveAttempt(
@@ -4593,6 +4612,7 @@ export class ProviderProxySetLifecycle {
                   if (outcome.kind === 'containment-absent') releaseProviderProxySetContainmentProofFence(proof);
                   return;
                 }
+                window.cancelAttempt = null;
                 window.attemptAbort = null;
                 if (outcome.kind !== 'containment-absent') {
                   this.#scheduleReattachmentHoldRetry(slot, window);
@@ -4604,6 +4624,7 @@ export class ProviderProxySetLifecycle {
               },
               (error: unknown) => {
                 if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+                window.cancelAttempt = null;
                 window.attemptAbort = null;
                 this.#deps.onError?.(
                   `Provider proxy reattachment hold containment reap failed: ${singleLineErrorSummary(error)}`,
@@ -4620,6 +4641,8 @@ export class ProviderProxySetLifecycle {
               this.#commitReattachmentTeardownLatched(slot, window, decisive);
               return;
             }
+            window.cancelAttempt = null;
+            window.attemptAbort = null;
             this.#releasePartialRedemption(outcome.refusal);
             this.#scheduleReattachmentHoldRetry(slot, window);
             return;
@@ -4628,30 +4651,35 @@ export class ProviderProxySetLifecycle {
         },
         retry: () => {
           if (!this.#isCurrentControlReattachment(slot, window, token)) return;
+          window.cancelAttempt = null;
           window.attemptAbort = null;
           this.#scheduleReattachmentHoldRetry(slot, window);
         },
-        fatal: () => {
-          if (this.#isCurrentControlReattachment(slot, window, token)) window.attemptAbort = null;
-        },
+        fatal: () => undefined,
         disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
-    turn.start({
-      sourceId: 'redemption',
-      producerId: 'role-control',
-      input: { signal: abort.signal, run: (signal) => authority.redeemControl(signal) },
-      abort: (reason) => abort.abort(reason),
-    });
-    turn.start({
-      sourceId: 'absence',
-      producerId: 'containment-proof',
-      input: { identity: slot.identity, signal: abort.signal },
-      abort: (reason) => abort.abort(reason),
-    });
+    if (!window.retiredSources.has('redemption')) {
+      turn.start({
+        sourceId: 'redemption',
+        producerId: 'role-control',
+        input: { signal: redemptionAbort.signal, run: (signal) => authority.redeemControl(signal) },
+        abort: (reason) => redemptionAbort.abort(reason),
+      });
+    }
+    if (!window.retiredSources.has('absence')) {
+      turn.start({
+        sourceId: 'absence',
+        producerId: 'containment-proof',
+        input: { identity: slot.identity, signal: absenceAbort.signal },
+        abort: (reason) => absenceAbort.abort(reason),
+      });
+    }
   }
 
   #scheduleReattachmentHoldRetry(slot: EstablishedSlot, window: ControlReattachmentWindow): void {
+    if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+    slot.retryTimer = null;
     if (
       this.#slots.get(slot.key) !== slot ||
       slot.kind !== 'reattachment-hold' ||
@@ -5294,6 +5322,8 @@ export class ProviderProxySetLifecycle {
       boundMs: 0,
       attemptToken: slot.attemptToken,
       attemptAbort: null,
+      cancelAttempt: null,
+      retiredSources: new Set(),
       deadlineTimer: null,
     };
     slot.controlReattachmentWindow = window;

@@ -1731,6 +1731,187 @@ describe('cli format', () => {
       ).toContain('Retryable: yes');
     });
 
+    // The sequel this branch exists for: the prior instance left obligations undischarged, and the very next
+    // startup at this address also failed — a reader of `recent_failure` must still learn both facts.
+    it('formats a shutdown remainder as a section on top of a recent coordinator failure', () => {
+      const text = formatBackendStatus({
+        status: 'recent_failure',
+        phase: 'startup_failed',
+        retryable: false,
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      });
+
+      expect(text).toBe(
+        [
+          'Coral recorded a recent coordinator failure.',
+          'Phase: startup_failed',
+          'Retryable: no',
+          'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
+          'Coral could not inspect shutdown remainder records.',
+        ].join('\n'),
+      );
+    });
+
+    it('formats a structured recent shutdown remainder as a section on top of the fallback status', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: {
+            instanceId: 'instance-1',
+            recordedAt: '2026-09-18T01:02:03.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [
+              {
+                entryNumber: 2,
+                obligation: { label: 'child termination' },
+                remainder: {
+                  owner: 'successor-recovery',
+                  evidence: {
+                    kind: 'startup-adoption',
+                    processes: [
+                      {
+                        kind: 'durable-cli-runtime',
+                        jobId: 'job-1',
+                        pid: 4_242,
+                        leaderIncarnation: { present: true },
+                      },
+                    ],
+                  },
+                },
+                settlement: { cause: 'timed-out', budgetMs: 5_000 },
+              },
+              {
+                entryNumber: 3,
+                obligation: { label: 'hooks.onShutdown' },
+                remainder: { owner: 'process-exit' },
+                settlement: {
+                  cause: 'rejected',
+                  error: { name: 'Error', code: 'ENOENT' },
+                },
+              },
+              {
+                entryNumber: 5,
+                obligation: { label: 'discuss store dispose' },
+                subject: { kind: 'discuss-store', sourceDigest: 'a'.repeat(64) },
+                remainder: { owner: 'process-exit' },
+                settlement: { cause: 'unconfirmed' },
+              },
+            ],
+          },
+          skippedEntries: [
+            {
+              entryNumber: 1,
+              obligation: null,
+              owner: 'successor-recovery',
+            },
+            {
+              entryNumber: 4,
+              obligation: { label: 'stream response close', ordinal: 3 },
+              owner: 'process-exit',
+            },
+          ],
+          skippedUnreadableRecordNames: ['locked-instance.json'],
+          skippedUndecodableRecordCount: 2,
+        },
+      });
+
+      expect(text).toBe(
+        [
+          'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+          'Coral recorded a recent shutdown with unfinished obligations.',
+          'Instance: instance-1',
+          'Recorded at: 2026-09-18T01:02:03.000Z',
+          'Reason: sigterm',
+          'Mode: handoff',
+          'Entry 2: child termination',
+          '  Owner: successor-recovery',
+          '  Cause: timed-out',
+          '  Budget: 5000ms',
+          '  Evidence: startup-adoption',
+          '    Job: job-1',
+          '    PID: 4242',
+          '    Leader incarnation: present',
+          'Entry 3: hooks.onShutdown',
+          '  Owner: process-exit',
+          '  Cause: rejected',
+          '  Error: Error',
+          '  Code: ENOENT',
+          'Entry 5: discuss store dispose',
+          `  Subject: discuss-store sha256:${'a'.repeat(64)}`,
+          '  Owner: process-exit',
+          '  Cause: unconfirmed',
+          'Skipped entry 1: unrecognized obligation',
+          '  Owner: successor-recovery',
+          '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
+          'Skipped entry 4: stream response close 3',
+          '  Owner: process-exit',
+          '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
+          'Skipped shutdown remainder records, unreadable: 1',
+          '  Record: locked-instance.json',
+          '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
+          'Skipped shutdown remainder records, undecodable: 2',
+          '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
+        ].join('\n'),
+      );
+    });
+
+    it('reports unreadable shutdown remainder records, named, as a section on top of the fallback status', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'records-skipped',
+            skippedUnreadableRecordNames: ['locked-instance.json'],
+            skippedUndecodableRecordCount: 0,
+          },
+        }),
+      ).toBe(
+        [
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+          'Coral found shutdown remainder records it could not use.',
+          'Skipped shutdown remainder records, unreadable: 1',
+          '  Record: locked-instance.json',
+          '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
+        ].join('\n'),
+      );
+    });
+
+    it('reports undecodable shutdown remainder records as a section on top of the fallback status', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'records-skipped',
+            skippedUnreadableRecordNames: [],
+            skippedUndecodableRecordCount: 1,
+          },
+        }),
+      ).toBe(
+        [
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+          'Coral found shutdown remainder records it could not use.',
+          'Skipped shutdown remainder records, undecodable: 1',
+          '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
+        ].join('\n'),
+      );
+    });
+
+    it('reports a shutdown remainder scan failure as a section on top of the fallback status', () => {
+      expect(
+        formatBackendStatus({
+          status: 'no_record_socket_present',
+          socketPath: '/run/coral/coordinator.sock',
+          shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+        }),
+      ).toMatch(/\nCoral could not inspect shutdown remainder records\.$/u);
+    });
+
     it('formats an unrecognized setup-error code without printing persisted text', () => {
       expect(
         formatBackendStatus({
@@ -1891,6 +2072,38 @@ describe('cli format', () => {
       { status: 'unreachable', detail: 'ETIMEDOUT', cause: 'no_response' as const },
       { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
       { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
+      {
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: {
+            instanceId: 'instance-1',
+            recordedAt: '2026-09-18T01:02:03.000Z',
+            reason: 'sigterm',
+            mode: 'handoff' as const,
+            entries: [],
+          },
+          skippedEntries: [],
+          skippedUnreadableRecordNames: [],
+          skippedUndecodableRecordCount: 0,
+        },
+      },
+      {
+        status: 'recorded_process_absent',
+        pid: 4242,
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable' as const,
+          reason: 'records-skipped' as const,
+          skippedUnreadableRecordNames: ['locked-instance.json'],
+          skippedUndecodableRecordCount: 0,
+        },
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable' as const, reason: 'scan-failed' as const },
+      },
       {
         status: 'recent_failure',
         phase: 'startup_failed' as const,

@@ -1730,7 +1730,7 @@ describe('workflow recovery branch rules', () => {
       );
     } finally {
       await recoveryCoordinator.teardown();
-      await backend.backend.shutdown('test cleanup');
+      await backend.backend.shutdown('test-teardown');
     }
   });
 
@@ -2352,7 +2352,7 @@ describe('workflow recovery branch rules', () => {
         replacementJobId,
       ]);
     } finally {
-      await settleWithVirtualTime(backend.backend.shutdown('test cleanup'), backend.advance);
+      await settleWithVirtualTime(backend.backend.shutdown('test-teardown'), backend.advance);
     }
   });
 
@@ -2499,7 +2499,7 @@ describe('workflow recovery branch rules', () => {
         `Workflow recovery child ${childJobId} session claim ${sessionId} disposition: already absent.\n`,
       );
     } finally {
-      await backend.backend.shutdown('test cleanup');
+      await backend.backend.shutdown('test-teardown');
     }
   });
 
@@ -2687,7 +2687,7 @@ describe('workflow recovery branch rules', () => {
         'a replacement that finished before it could be checkpointed still belongs in the cleanup envelope',
       ).toHaveBeenCalledWith([replacementJobId]);
     } finally {
-      await settleWithVirtualTime(backend.backend.shutdown('test cleanup'), backend.advance);
+      await settleWithVirtualTime(backend.backend.shutdown('test-teardown'), backend.advance);
     }
   });
 
@@ -2838,7 +2838,7 @@ describe('workflow recovery branch rules', () => {
         createProjectionSessionLookup(backend.progressStore.getDb()).readProviderSession(sessionId)?.activeJobId,
       ).toBe(successorJobId);
     } finally {
-      await backend.backend.shutdown('test cleanup');
+      await backend.backend.shutdown('test-teardown');
     }
   });
 });

@@ -29,6 +29,30 @@ import { providerOperationMutationAdmission } from '#src/store/provider-operatio
 
 type Settlement = Readonly<{ kind: 'value'; value: unknown }> | Readonly<{ kind: 'throw'; error: unknown }>;
 type ProducerSettlement = Settlement | Readonly<{ kind: 'reject'; error: Error }>;
+type ControlledSettlement = Readonly<{ kind: 'value'; value: unknown }> | Readonly<{ kind: 'reject'; error: Error }>;
+
+function controlledProducer(): Readonly<{
+  produce: () => Promise<unknown>;
+  settle: (settlement: ControlledSettlement) => void;
+}> {
+  let resolve!: (value: unknown) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<unknown>((accept, refuse) => {
+    resolve = accept;
+    reject = refuse;
+  });
+  return {
+    produce: () => promise,
+    settle: (settlement) => {
+      if (settlement.kind === 'value') resolve(settlement.value);
+      else reject(settlement.error);
+    },
+  };
+}
+
+async function flushRecoveryTurn(): Promise<void> {
+  for (let index = 0; index < 4; index += 1) await Promise.resolve();
+}
 
 const unavailable = new ProviderProxyRoleControlUnavailableError({
   kind: 'role-control-unavailable',
@@ -310,6 +334,305 @@ describe('provider proxy recovery producer classification', () => {
     expect(disposeLateEvidence).toHaveBeenCalledOnce();
     expect(disposeLateEvidence).toHaveBeenCalledWith(absence.proof, 'absence');
   });
+
+  it.each([
+    { pair: 'non-reap absence / malformed redemption value', order: ['redemption', 'absence'] as const },
+    { pair: 'non-reap absence / malformed redemption value', order: ['absence', 'redemption'] as const },
+    { pair: 'unavailable absence / malformed redemption outcome', order: ['redemption', 'absence'] as const },
+    { pair: 'unavailable absence / malformed redemption outcome', order: ['absence', 'redemption'] as const },
+    { pair: 'fatal absence / unavailable redemption', order: ['redemption', 'absence'] as const },
+    { pair: 'fatal absence / unavailable redemption', order: ['absence', 'redemption'] as const },
+    { pair: 'fatal absence / unavailable redemption outcome', order: ['redemption', 'absence'] as const },
+    { pair: 'fatal absence / unavailable redemption outcome', order: ['absence', 'redemption'] as const },
+  ])('reduces $pair when $order.0 settles first', async ({ pair, order }) => {
+    const containment = await testContainmentProof(false);
+    const redemption = controlledProducer();
+    const absence = controlledProducer();
+    const fatal = vi.fn();
+    const retry = vi.fn();
+    const disposeLateEvidence = vi.fn();
+    const events: string[] = [];
+    const retiredSources = new Set<string>();
+    const redemptionAbort = new AbortController();
+    const absenceAbort = new AbortController();
+    redemptionAbort.signal.addEventListener('abort', () => events.push('abort:redemption'));
+    absenceAbort.signal.addEventListener('abort', () => events.push('abort:absence'));
+    const dispatcher = createTestProviderProxyRecoveryDispatcher(
+      {
+        'role-control': redemption.produce,
+        'containment-proof': absence.produce as ProviderProxyRecoveryProducerPorts['containment-proof'],
+      },
+      vi.fn(),
+    );
+    const turn = dispatcher.begin(
+      'control-reattachment-hold',
+      { setIdentity: containment.identity, retiredSources },
+      {
+        evidence: vi.fn(),
+        retry: (value) => {
+          events.push('retry');
+          retry(value);
+        },
+        fatal: (error) => {
+          events.push(`fatal:${error.producerId}`);
+          fatal(error);
+        },
+        disposeLateEvidence: (value, sourceId) => {
+          events.push(`dispose:${sourceId}`);
+          disposeLateEvidence(value, sourceId);
+        },
+      },
+    );
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'role-control',
+      input: { signal: redemptionAbort.signal, run: redemption.produce },
+      abort: (reason) => redemptionAbort.abort(reason),
+    });
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: { identity: containment.identity, signal: absenceAbort.signal },
+      abort: (reason) => absenceAbort.abort(reason),
+    });
+
+    const settlements: Record<(typeof order)[number], ControlledSettlement> =
+      pair === 'non-reap absence / malformed redemption value'
+        ? {
+            redemption: { kind: 'value', value: null },
+            absence: { kind: 'value', value: containment.proof },
+          }
+        : pair === 'unavailable absence / malformed redemption outcome'
+          ? {
+              redemption: { kind: 'value', value: { kind: 'not-a-redemption-outcome' } },
+              absence: { kind: 'reject', error: unavailable },
+            }
+          : pair === 'fatal absence / unavailable redemption'
+            ? {
+                redemption: { kind: 'reject', error: unavailable },
+                absence: { kind: 'value', value: { kind: 'not-a-containment-proof' } },
+              }
+            : {
+                // The producer fulfills rather than rejects here: the incident lives on the resolved
+                // outcome's own `kind`, not on a thrown/rejected error the classifier sees directly.
+                redemption: { kind: 'value', value: { kind: 'unavailable', incident: unavailable.incident } },
+                absence: { kind: 'value', value: { kind: 'not-a-containment-proof' } },
+              };
+    const fatalSource =
+      pair === 'fatal absence / unavailable redemption' || pair === 'fatal absence / unavailable redemption outcome'
+        ? 'absence'
+        : 'redemption';
+
+    const first = order[0];
+    (first === 'redemption' ? redemption : absence).settle(settlements[first]);
+    await flushRecoveryTurn();
+
+    expect({
+      fatalCalls: fatal.mock.calls.length,
+      retryCalls: retry.mock.calls.length,
+      retiredSources: [...retiredSources],
+      redemptionAborted: redemptionAbort.signal.aborted,
+      absenceAborted: absenceAbort.signal.aborted,
+    }).toEqual(
+      first === fatalSource
+        ? {
+            fatalCalls: 1,
+            retryCalls: 0,
+            retiredSources: [fatalSource],
+            redemptionAborted: fatalSource === 'redemption',
+            absenceAborted: fatalSource === 'absence',
+          }
+        : {
+            fatalCalls: 0,
+            retryCalls: 0,
+            retiredSources: [],
+            redemptionAborted: false,
+            absenceAborted: false,
+          },
+    );
+
+    const second = order[1];
+    (second === 'redemption' ? redemption : absence).settle(settlements[second]);
+    await flushRecoveryTurn();
+
+    expect({
+      fatalCalls: fatal.mock.calls.length,
+      retryCalls: retry.mock.calls.length,
+      retiredSources: [...retiredSources],
+      redemptionAborted: redemptionAbort.signal.aborted,
+      absenceAborted: absenceAbort.signal.aborted,
+    }).toEqual({
+      fatalCalls: 1,
+      retryCalls: 1,
+      retiredSources: [fatalSource],
+      redemptionAborted: true,
+      absenceAborted: true,
+    });
+    if (pair === 'non-reap absence / malformed redemption value') {
+      expect(events.indexOf('fatal:role-control')).toBeLessThan(events.indexOf('dispose:absence'));
+      expect(disposeLateEvidence).toHaveBeenCalledWith(containment.proof, 'absence');
+    }
+
+    // The retry that ends every pair must carry the surviving source's own cause: the fatal error the
+    // other source produced, or that source's own typed incident — never a synthetic stand-in for a
+    // value the reducer failed to unwrap.
+    const [retryPayload] = retry.mock.calls.at(-1) ?? [];
+    expect(retryPayload).toEqual(
+      pair === 'non-reap absence / malformed redemption value'
+        ? { producerId: 'role-control', incident: fatal.mock.calls[0]?.[0] }
+        : {
+            producerId:
+              pair === 'unavailable absence / malformed redemption outcome' ? 'containment-proof' : 'role-control',
+            incident: unavailable.incident,
+          },
+    );
+  });
+
+  it.each<['control-reattachment-hold' | 'control-reattachment', 'redemption' | 'absence', 'redemption' | 'absence']>([
+    ['control-reattachment-hold', 'redemption', 'absence'],
+    ['control-reattachment-hold', 'absence', 'redemption'],
+    ['control-reattachment', 'redemption', 'absence'],
+    ['control-reattachment', 'absence', 'redemption'],
+  ])('ends the %s turn without a retry once both sources are retired, %s first', async (seam, ...order) => {
+    const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+    const redemption = controlledProducer();
+    const absence = controlledProducer();
+    const fatal = vi.fn();
+    const retry = vi.fn();
+    const retiredSources = new Set<string>();
+    const redemptionAbort = new AbortController();
+    const absenceAbort = new AbortController();
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({
+      'role-control': redemption.produce,
+      'containment-proof': absence.produce as ProviderProxyRecoveryProducerPorts['containment-proof'],
+    });
+    const turn = dispatcher.begin(seam, { setIdentity: identity, retiredSources }, { evidence: vi.fn(), retry, fatal });
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'role-control',
+      input: { signal: redemptionAbort.signal, run: redemption.produce },
+      abort: (reason) => redemptionAbort.abort(reason),
+    });
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: { identity, signal: absenceAbort.signal },
+      abort: (reason) => absenceAbort.abort(reason),
+    });
+
+    const settlements: Record<(typeof order)[number], ControlledSettlement> = {
+      redemption: { kind: 'value', value: null },
+      absence: { kind: 'value', value: { kind: 'not-a-containment-proof' } },
+    };
+    for (const source of order) {
+      (source === 'redemption' ? redemption : absence).settle(settlements[source]);
+      await flushRecoveryTurn();
+    }
+
+    expect({
+      fatalCalls: fatal.mock.calls.length,
+      retryCalls: retry.mock.calls.length,
+      retiredSources: [...retiredSources].sort(),
+      redemptionAborted: redemptionAbort.signal.aborted,
+      absenceAborted: absenceAbort.signal.aborted,
+    }).toEqual({
+      fatalCalls: 2,
+      retryCalls: 0,
+      retiredSources: ['absence', 'redemption'],
+      redemptionAborted: true,
+      absenceAborted: true,
+    });
+  });
+
+  it('disposes evidence that arrives after its source retires without retiring the surviving source', async () => {
+    const firstRedemption = controlledProducer();
+    const lateRedemption = controlledProducer();
+    const redemptionSettlements = [firstRedemption, lateRedemption];
+    const absence = controlledProducer();
+    const disposeLateEvidence = vi.fn();
+    const fatal = vi.fn();
+    const retry = vi.fn();
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({
+      'role-control': () => redemptionSettlements.shift()?.produce() ?? Promise.reject(new Error('missing settlement')),
+      'containment-proof': absence.produce as ProviderProxyRecoveryProducerPorts['containment-proof'],
+    });
+    const turn = dispatcher.begin(
+      'control-reattachment-hold',
+      { retiredSources: new Set() },
+      { evidence: vi.fn(), retry, fatal, disposeLateEvidence },
+    );
+    const source = {
+      sourceId: 'redemption',
+      producerId: 'role-control' as const,
+      input: { signal: new AbortController().signal, run: firstRedemption.produce },
+    };
+    turn.start(source);
+    turn.start(source);
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: {
+        identity: providerProxySetIdentityFromRecord(providerOperationRecord('executing')),
+        signal: new AbortController().signal,
+      },
+    });
+
+    firstRedemption.settle({ kind: 'value', value: null });
+    await flushRecoveryTurn();
+    const lateOutcome = { kind: 'unavailable', incident: unavailable.incident };
+    lateRedemption.settle({ kind: 'value', value: lateOutcome });
+    await flushRecoveryTurn();
+
+    expect(fatal).toHaveBeenCalledOnce();
+    expect(retry).not.toHaveBeenCalled();
+    expect(disposeLateEvidence).toHaveBeenCalledTimes(2);
+    expect(disposeLateEvidence).toHaveBeenCalledWith(null, 'redemption');
+    expect(disposeLateEvidence).toHaveBeenCalledWith(lateOutcome, 'redemption');
+  });
+
+  it.each(['redemption', 'absence'] as const)(
+    'carries retired %s into a later attempt and starts only its survivor',
+    async (retiredSource) => {
+      const containment = await testContainmentProof(false);
+      const roleControl = vi.fn(() => {
+        throw unavailable;
+      });
+      const containmentProof = vi.fn(() => {
+        throw unavailable;
+      });
+      const retry = vi.fn();
+      const dispatcher = createTestProviderProxyRecoveryDispatcher({
+        'role-control': roleControl,
+        'containment-proof': containmentProof,
+      });
+      const turn = dispatcher.begin(
+        'control-reattachment-hold',
+        { setIdentity: containment.identity, retiredSources: new Set([retiredSource]) },
+        { evidence: vi.fn(), retry, fatal: vi.fn() },
+      );
+      turn.start({
+        sourceId: 'redemption',
+        producerId: 'role-control',
+        input: { signal: new AbortController().signal, run: async () => ({ kind: 'unavailable' }) },
+      });
+      turn.start({
+        sourceId: 'absence',
+        producerId: 'containment-proof',
+        input: { identity: containment.identity, signal: new AbortController().signal },
+      });
+      await flushRecoveryTurn();
+
+      expect({
+        roleControlCalls: roleControl.mock.calls.length,
+        containmentProofCalls: containmentProof.mock.calls.length,
+      }).toEqual(
+        retiredSource === 'redemption'
+          ? { roleControlCalls: 0, containmentProofCalls: 1 }
+          : { roleControlCalls: 1, containmentProofCalls: 0 },
+      );
+      expect(retry).toHaveBeenCalledOnce();
+    },
+  );
 
   it('classifies every closed producer with positive and opposite facts', async () => {
     const record = providerOperationRecord('executing');

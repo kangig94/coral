@@ -34,7 +34,7 @@ describe('simulation runtime', () => {
       if (!world) {
         continue;
       }
-      await world.backend.shutdown('test-cleanup');
+      await world.backend.shutdown('test-teardown');
       await world.backend.waitForShutdown();
     }
   });
@@ -1126,7 +1126,7 @@ describe('simulation runtime', () => {
     expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
     expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
 
-    await worldA.backend.shutdown('done');
+    await worldA.backend.shutdown('test-teardown');
     await worldA.backend.waitForShutdown();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);

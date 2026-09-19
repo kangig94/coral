@@ -94,7 +94,7 @@ afterEach(async () => {
     if (!world) {
       continue;
     }
-    await world.backend.shutdown('test-cleanup');
+    await world.backend.shutdown('test-teardown');
     await world.backend.waitForShutdown();
   }
   if (originalTz === undefined) {

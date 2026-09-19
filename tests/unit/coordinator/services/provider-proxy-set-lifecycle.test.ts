@@ -40,7 +40,10 @@ import {
   providerProxyControlSessionOwner,
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
-import { ProviderProxyRoleControlRemoteError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import {
+  ProviderProxyRoleControlRemoteError,
+  ProviderProxyRoleControlUnavailableError,
+} from '#src/coordinator/live/provider-proxy/role-control.js';
 import type { ContainmentCommitOutcome } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { ProviderProxyGuardianRedemptionAuthority } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
@@ -82,6 +85,7 @@ import {
   type ProviderProxySetRecordedContainmentReaper,
 } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type {
+  ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
   ProviderContainmentDisappearanceConsumer,
 } from '#src/coordinator/services/provider-containment-disappearance.js';
@@ -3650,6 +3654,271 @@ describe('ProviderProxySetLifecycle', () => {
         ],
       }),
     );
+  });
+
+  it.each(['redemption', 'absence'] as const)(
+    'arms one hold retry after both live sources settle with %s first',
+    async (firstSource) => {
+      const record = providerOperationRecord('executing');
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([record]);
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const clock = new ManualClock();
+      const redemption = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['redeemControl']>>>();
+      const absence = deferred<ProviderProxySetContainmentEvidence>();
+      const redeemControl = vi.fn(() => redemption.promise);
+      const proveContainmentAbsent = vi.fn(() => absence.promise);
+      const authority = fakeAuthority({ record, faults, redeemControl });
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+      latchAuthorityFault(authority, {
+        kind: 'heartbeat-failed',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: 'cannot encode heartbeat',
+      });
+      clock.elapse(60_000);
+      clock.runDue();
+
+      const unavailable = new ProviderProxyRoleControlUnavailableError({
+        kind: 'role-control-unavailable',
+        role: 'guardian',
+        stage: 'open',
+        method: 'guardian.handoff-redeem.v1',
+        origin: 'timeout',
+        controlCode: 'control_call_failed',
+      });
+      const unavailableRedemption = {
+        kind: 'unavailable' as const,
+        incident: unavailable.incident,
+        error: unavailable,
+      };
+      if (firstSource === 'redemption') redemption.resolve(unavailableRedemption);
+      else absence.resolve(enforcersUnobservable);
+      await drainMicrotasks();
+
+      expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+
+      if (firstSource === 'redemption') absence.resolve(enforcersUnobservable);
+      else redemption.resolve(unavailableRedemption);
+      await drainMicrotasks();
+
+      expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+    },
+  );
+
+  it('keeps the absence fence held through a redemption fatal and still reaps the absence proof', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const mutationAdmission = new ProviderOperationMutationAdmission();
+    const redemption = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['redeemControl']>>>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
+    const absenceFences: ProviderOperationMutationSetFence[] = [];
+    const heldAtReap: boolean[] = [];
+    const onFatal = vi.fn();
+    const disappearanceConsumer = vi.fn(async (notice: ContainmentDisappearanceNotice) => ({
+      kind: 'accepted' as const,
+      acceptance: {
+        kind: 'accepted' as const,
+        operation: notice.operation,
+        disposition: 'terminalization-committed' as const,
+      },
+    }));
+    const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
+      {
+        'containment-proof': async ({ identity }) => {
+          const mutationFence = mutationAdmission.closeSet(identity);
+          absenceFences.push(mutationFence);
+          return sealedContainmentProof(
+            identity,
+            authorizeProviderProxySetContainmentProof(identity, {
+              mutationFence,
+              closeAdmission: async () => undefined,
+            }),
+            await absence.promise,
+          );
+        },
+        'disappearance-consumer': ({ notice }) => disappearanceConsumer(notice),
+      },
+      onFatal,
+    );
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => {
+      heldAtReap.push(...absenceFences.map((fence) => fence.isHeld()));
+      return { kind: 'containment-absent', disappearanceReceipt: 'fixture-containment-absence' };
+    });
+    const authority = fakeAuthority({ record, faults, redeemControl: vi.fn(() => redemption.promise) });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: disappearanceConsumer },
+      recoveryDispatcher,
+      reapRecordedContainment,
+      onFatal,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, {
+      kind: 'heartbeat-failed',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      terminalReason: 'local-failure',
+      error: 'cannot encode heartbeat',
+    });
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    redemption.resolve(null as never);
+    await drainMicrotasks();
+
+    expect({
+      fatals: onFatal.mock.calls.length,
+      absenceFencesHeld: absenceFences.map((fence) => fence.isHeld()),
+      reaps: reapRecordedContainment.mock.calls.length,
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+    }).toEqual({ fatals: 1, absenceFencesHeld: [true], reaps: 0, activeTimers: 0 });
+
+    absence.resolve(containmentEvidence('fixture-containment-absence'));
+    await drainMicrotasks();
+
+    expect({
+      heldAtReap,
+      reaps: reapRecordedContainment.mock.calls.length,
+      disappearances: disappearanceConsumer.mock.calls.length,
+      fatals: onFatal.mock.calls.length,
+    }).toEqual({ heldAtReap: [true], reaps: 1, disappearances: 1, fatals: 1 });
+  });
+
+  it('clears a pending hold retry before re-arming it', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const retryRequests: Array<() => void> = [];
+    const recoveryDispatcher: ProviderProxyRecoveryDispatcher = {
+      begin: (_seam, _context, sinks) => {
+        retryRequests.push(() =>
+          sinks.retry({ producerId: 'role-control', incident: { kind: 'role-control-unavailable' } }),
+        );
+        return { start: () => undefined, cancel: () => undefined };
+      },
+    };
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      recoveryDispatcher,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, {
+      kind: 'heartbeat-failed',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      terminalReason: 'local-failure',
+      error: 'cannot encode heartbeat',
+    });
+    clock.elapse(60_000);
+    clock.runDue();
+
+    const [retry] = retryRequests;
+    if (retry === undefined) throw new Error('hold attempt did not expose its retry sink');
+    retry();
+    const [firstRetryTimer] = clock.timers.filter((timer) => timer.active);
+    if (firstRetryTimer === undefined) throw new Error('hold retry was not armed');
+
+    retry();
+
+    expect(firstRetryTimer.active).toBe(false);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+  });
+
+  it('begins no hold turn once both reattachment sources are retired', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const onFatal = vi.fn();
+    const redeemControl = vi.fn(async () => null as never);
+    const proveContainment = vi.fn(async () => ({ kind: 'not-a-containment-proof' }) as never);
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({ 'containment-proof': proveContainment }, onFatal);
+    const begin = vi.fn<ProviderProxyRecoveryDispatcher['begin']>((...args) => dispatcher.begin(...args));
+    const authority = fakeAuthority({ record, faults, redeemControl, adoptionWindowMs: 2_000 });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      recoveryDispatcher: { begin },
+      onFatal,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'guardian',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+    });
+    await drainMicrotasks();
+
+    expect(onFatal).toHaveBeenCalledTimes(2);
+    expect(begin.mock.calls.map(([seam]) => seam)).toEqual(['control-reattachment']);
+
+    for (let ticks = 0; ticks < 4 && lifecycle.snapshot().states[0] !== 'reattachment-hold'; ticks += 1) {
+      clock.elapse(1_000);
+      clock.runDue();
+      await drainMicrotasks();
+    }
+    expect(lifecycle.snapshot().states).toEqual(['reattachment-hold']);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect({
+      states: lifecycle.snapshot().states,
+      seams: begin.mock.calls.map(([seam]) => seam),
+      redemptions: redeemControl.mock.calls.length,
+      containmentProofs: proveContainment.mock.calls.length,
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+      fatals: onFatal.mock.calls.length,
+    }).toEqual({
+      states: ['reattachment-hold'],
+      seams: ['control-reattachment'],
+      redemptions: 1,
+      containmentProofs: 1,
+      activeTimers: 0,
+      fatals: 2,
+    });
   });
 
   it.each([60_000, 600_000])(

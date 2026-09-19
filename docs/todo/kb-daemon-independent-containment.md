@@ -66,7 +66,7 @@ teardown, which is why they were left out rather than folded in.
 - ~~**Coordinator shutdown can skip asking the daemon to stop at all.**~~ **Closed, verified 2026-09-12.** KB
   disposal is no longer a skippable `runBudgetedStep`: it is a `ShutdownSettlementLedger` obligation
   (`shutdown.ts`, label `kb child shutdown`) whose unconfirmed outcome returns a `hold` carrying the daemon's
-  own named exit, and `durable-operator-abandonment` when it has none. That is the disposition this member
+  own named exit, and `shutdown-budget-exhaustion` when it has none. That is the disposition this member
   said `runRequiredBudgetedStep` could not supply, so the objection recorded here was right about that path
   and is not an argument against the one taken.
 - **Recovery teardown is itself unbounded**, and it is what exhausts that budget:

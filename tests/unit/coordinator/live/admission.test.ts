@@ -10,6 +10,7 @@ import {
   MAX_SETTLED_UNBOUND_BINDINGS,
   SETTLED_UNBOUND_ABSENCE_CHECK_MS,
   SETTLED_UNBOUND_UNKNOWN_OBSERVATION_LIMIT,
+  type PendingLaunchSettlementDisposition,
 } from '#src/coordinator/live/admission.js';
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
@@ -553,7 +554,7 @@ describe('launch admission', () => {
 
     expect(coordinator.queueDepth()).toBe(20);
     expect(coordinator.requestLaunch('job-22', 'codex', providerOwner('session-22'), 'default')).toBe('queue_full');
-    await coordinator.terminateAll();
+    await coordinator.settlePendingLaunches();
   });
 
   it('admits queued jobs in strict FIFO order when a launch is released', async () => {
@@ -1437,10 +1438,10 @@ describe('launch admission', () => {
         : { kind: 'observed-absent' as const, pid: TEST_PROVIDER_PID };
     });
 
-    const termination = coordinator.terminateAll();
+    const termination = coordinator.terminateRegisteredChildren();
     await new Promise((resolve) => setTimeout(resolve, 75));
 
-    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(termination).resolves.toEqual({ kind: 'all-children-observed-absent' });
     expect(cleanupHandles.has(cleanupKey)).toBe(false);
   });
 
@@ -1454,16 +1455,14 @@ describe('launch admission', () => {
       stage: 'after-sigkill',
     }));
     const controller = new AbortController();
-    const termination = coordinator.terminateAll(controller.signal);
+    const termination = coordinator.terminateRegisteredChildren(controller.signal);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     controller.abort();
 
     await expect(termination).resolves.toEqual({
-      kind: 'unresolved-at-deadline',
+      kind: 'children-unresolved-at-deadline',
       processes: [{ kind: 'target-alive', pid: TEST_PROVIDER_PID, stage: 'after-sigkill' }],
-      pendingLaunches: 0,
-      retainedLaunches: [],
       cleanupHandles: 1,
       retainedProcesses: [],
       cleanupFailures: 0,
@@ -1483,14 +1482,14 @@ describe('launch admission', () => {
     cleanupHandles.set(Symbol('deferred-child'), cleanup);
     const controller = new AbortController();
 
-    const initial = coordinator.terminateAll(controller.signal);
+    const initial = coordinator.terminateRegisteredChildren(controller.signal);
     controller.abort();
-    await expect(initial).resolves.toMatchObject({ kind: 'unresolved-at-deadline' });
+    await expect(initial).resolves.toMatchObject({ kind: 'children-unresolved-at-deadline' });
 
-    const retry = coordinator.terminateAll();
+    const retry = coordinator.terminateRegisteredChildren();
     expect(cleanup).toHaveBeenCalledOnce();
     settleCleanup({ kind: 'observed-absent', pid: TEST_PROVIDER_PID });
-    await expect(retry).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(retry).resolves.toEqual({ kind: 'all-children-observed-absent' });
     expect(cleanup).toHaveBeenCalledOnce();
   });
 
@@ -1510,17 +1509,17 @@ describe('launch admission', () => {
     cleanupHandles.set(Symbol('deferred-child'), cleanup);
     const controller = new AbortController();
 
-    const initial = coordinator.terminateAll(controller.signal);
+    const initial = coordinator.terminateRegisteredChildren(controller.signal);
     controller.abort();
-    await expect(initial).resolves.toMatchObject({ kind: 'unresolved-at-deadline' });
+    await expect(initial).resolves.toMatchObject({ kind: 'children-unresolved-at-deadline' });
     expect(cleanup).toHaveBeenCalledOnce();
 
     settleCleanup({ kind: 'target-unobservable', pid: TEST_PROVIDER_PID, stage: 'after-sigkill' });
     await firstSettlement;
-    const retry = coordinator.terminateAll();
+    const retry = coordinator.terminateRegisteredChildren();
 
     expect(cleanup).toHaveBeenCalledTimes(2);
-    await expect(retry).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(retry).resolves.toEqual({ kind: 'all-children-observed-absent' });
   });
 
   it('returns unresolved ownership when its abort signal bounds an unobservable child', async () => {
@@ -1533,13 +1532,13 @@ describe('launch admission', () => {
       stage: 'after-sigkill',
     }));
     const controller = new AbortController();
-    const termination = coordinator.terminateAll(controller.signal);
+    const termination = coordinator.terminateRegisteredChildren(controller.signal);
 
     await new Promise((resolve) => setTimeout(resolve, 10));
     controller.abort();
 
     await expect(termination).resolves.toEqual({
-      kind: 'unresolved-at-deadline',
+      kind: 'children-unresolved-at-deadline',
       processes: [
         {
           kind: 'target-unobservable',
@@ -1547,8 +1546,6 @@ describe('launch admission', () => {
           stage: 'after-sigkill',
         },
       ],
-      pendingLaunches: 0,
-      retainedLaunches: [],
       cleanupHandles: 1,
       retainedProcesses: [],
       cleanupFailures: 0,
@@ -1577,20 +1574,70 @@ describe('launch admission', () => {
       jobDir: '/tmp/pending-wrapper',
     });
     const controller = new AbortController();
-    const termination = localCoordinator.terminateAll(controller.signal);
+    const termination = localCoordinator.settlePendingLaunches(controller.signal);
 
     controller.abort();
 
     await expect(termination).resolves.toEqual({
-      kind: 'unresolved-at-deadline',
-      processes: [],
+      kind: 'pending-launches-unresolved-at-deadline',
       pendingLaunches: 1,
-      retainedLaunches: [{ kind: 'awaiting-wrapper-identity', provider: 'codex', jobDir: '/tmp/pending-wrapper' }],
-      cleanupHandles: 0,
-      retainedProcesses: [],
-      cleanupFailures: 0,
+      retainedLaunches: [
+        { kind: 'awaiting-wrapper-identity', owner: 'process-exit', provider: 'codex', jobDir: '/tmp/pending-wrapper' },
+      ],
       owner: 'launch-coordinator',
     });
+  });
+
+  it('closes the pending launch snapshot at the synchronous registration boundary', async () => {
+    const base = createRealRuntime('prod');
+    const controller = new AbortController();
+    // eslint-disable-next-line prefer-const -- circular: the launch stub closes over localCoordinator, but localCoordinator is constructed from a runtime that carries that stub
+    let localCoordinator!: LaunchCoordinator;
+    let settlement!: Promise<PendingLaunchSettlementDisposition>;
+    const launch = vi.fn(() => {
+      settlement = localCoordinator.settlePendingLaunches(controller.signal);
+      return new Promise<never>(() => undefined);
+    });
+    const runtime: Runtime = {
+      ...base,
+      process: {
+        ...base.process,
+        durable: { ...base.process.durable, launch },
+      },
+    };
+    localCoordinator = new LaunchCoordinator({ runtime });
+
+    void localCoordinator.spawnDurableJob({
+      provider: 'codex',
+      command: 'codex',
+      args: ['exec'],
+      jobDir: '/tmp/registered-before-shutdown',
+    });
+    await expect(
+      localCoordinator.spawnDurableJob({
+        provider: 'codex',
+        command: 'codex',
+        args: ['exec'],
+        jobDir: '/tmp/rejected-after-shutdown',
+      }),
+    ).rejects.toThrow('Launch rejected because shutdown has begun');
+
+    controller.abort();
+
+    await expect(settlement).resolves.toEqual({
+      kind: 'pending-launches-unresolved-at-deadline',
+      pendingLaunches: 1,
+      retainedLaunches: [
+        {
+          kind: 'awaiting-wrapper-identity',
+          owner: 'process-exit',
+          provider: 'codex',
+          jobDir: '/tmp/registered-before-shutdown',
+        },
+      ],
+      owner: 'launch-coordinator',
+    });
+    expect(launch).toHaveBeenCalledOnce();
   });
 
   it('retains a held durable launch until its join settles before propagating failure', async () => {
@@ -1632,7 +1679,7 @@ describe('launch admission', () => {
     await launchObserved;
 
     let terminationSettled = false;
-    const termination = localCoordinator.terminateAll().then((result) => {
+    const termination = localCoordinator.settlePendingLaunches().then((result) => {
       terminationSettled = true;
       return result;
     });
@@ -1644,7 +1691,7 @@ describe('launch admission', () => {
 
     await expect(spawn).rejects.toThrow('synthetic held launch');
     expect(retry).toHaveBeenCalledOnce();
-    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(termination).resolves.toEqual({ kind: 'all-pending-launches-settled' });
   });
 
   it('keeps a caller-owned launch slot while an aborted wrapper remains unsettled', async () => {
@@ -1913,7 +1960,9 @@ describe('launch admission', () => {
       }),
     ).rejects.toThrow('synthetic readiness rejection');
 
-    await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(localCoordinator.terminateRegisteredChildren()).resolves.toEqual({
+      kind: 'all-children-observed-absent',
+    });
     expect(kill).toHaveBeenCalledWith(-TEST_PROVIDER_PID, 'SIGTERM');
   });
 
@@ -2005,7 +2054,9 @@ describe('launch admission', () => {
     expect(
       observations.mock.calls.some(([identity, status]) => 'kind' in identity && status?.kind === 'operator-abandoned'),
     ).toBe(true);
-    await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(localCoordinator.terminateRegisteredChildren()).resolves.toEqual({
+      kind: 'all-children-observed-absent',
+    });
   });
 
   it('does not mint absence from an abruptly dead wrapper while its recorded child remains alive', async () => {
@@ -2055,21 +2106,24 @@ describe('launch admission', () => {
       onDurableProcessIdentity,
     });
     const controller = new AbortController();
-    const termination = localCoordinator.terminateAll(controller.signal);
+    const termination = localCoordinator.terminateRegisteredChildren(controller.signal);
 
     controller.abort();
 
     await expect(termination).resolves.toEqual({
-      kind: 'unresolved-at-deadline',
+      kind: 'children-unresolved-at-deadline',
       processes: [],
-      pendingLaunches: 0,
-      retainedLaunches: [],
       cleanupHandles: 1,
       retainedProcesses: [
         {
           kind: 'recorded-wrapper-group',
           provider: 'codex',
           jobDir: '/tmp/unpublished-launch',
+          publication: {
+            kind: 'observed-unpublished',
+            owner: 'process-exit',
+            publicationLoss: 'runtime publication is unproven because the job id is unavailable',
+          },
           containment: {
             pid: TEST_PROVIDER_PID,
             incarnation,
@@ -2264,7 +2318,9 @@ describe('launch admission', () => {
       ),
     ).toBe(true);
     expect(runtime.process.kill).not.toHaveBeenCalled();
-    await expect(localCoordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(localCoordinator.terminateRegisteredChildren()).resolves.toEqual({
+      kind: 'all-children-observed-absent',
+    });
   });
 
   it('retains cleanup ownership and settlement when absence publication fails', async () => {
@@ -2396,7 +2452,7 @@ describe('launch admission', () => {
   });
 
   it('refuses new admission after shutdown begins', async () => {
-    await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(coordinator.settlePendingLaunches()).resolves.toEqual({ kind: 'all-pending-launches-settled' });
 
     expect(() => coordinator.requestLaunch('late-job', 'codex', providerOwner('late-session'), 'default')).toThrow(
       'Launch rejected because shutdown has begun',
@@ -2417,7 +2473,9 @@ describe('launch admission', () => {
     const cleanupKey = Symbol('absent-child');
     cleanupHandles.set(cleanupKey, async () => ({ kind: 'observed-absent', pid: TEST_PROVIDER_PID }));
 
-    await expect(coordinator.terminateAll()).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(coordinator.terminateRegisteredChildren()).resolves.toEqual({
+      kind: 'all-children-observed-absent',
+    });
     expect(cleanupHandles.has(cleanupKey)).toBe(false);
   });
 });

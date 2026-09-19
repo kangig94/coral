@@ -238,7 +238,12 @@ describe('provider transport concurrency hardening', () => {
     );
     await flushMicrotasks();
 
-    const termination = observePromise(launchCoordinator.terminateAll());
+    const termination = observePromise(
+      launchCoordinator.settlePendingLaunches().then(async (pendingDisposition) => {
+        expect(pendingDisposition).toEqual({ kind: 'all-pending-launches-settled' });
+        return launchCoordinator.terminateRegisteredChildren();
+      }),
+    );
     expect(termination.settled).toBe(false);
 
     runtime.time.tick(5);
@@ -252,7 +257,7 @@ describe('provider transport concurrency hardening', () => {
 
     expect(runtime.spawner.killCalls).not.toContainEqual({ pid: 30_001, signal: 'SIGTERM' });
     expect(termination.settled).toBe(true);
-    expect(termination.value).toEqual({ kind: 'all-observed-absent' });
+    expect(termination.value).toEqual({ kind: 'all-children-observed-absent' });
     expect(observed).toMatchObject({
       settled: true,
       value: { stdout: '', stderr: '', code: 0, aborted: false },
@@ -276,7 +281,10 @@ describe('provider transport concurrency hardening', () => {
     const kill = runtime.process.kill.bind(runtime.process);
     vi.spyOn(runtime.process, 'kill').mockReturnValueOnce(false).mockImplementation(kill);
 
-    const termination = launchCoordinator.terminateAll();
+    await expect(launchCoordinator.settlePendingLaunches()).resolves.toEqual({
+      kind: 'all-pending-launches-settled',
+    });
+    const termination = launchCoordinator.terminateRegisteredChildren();
     const observedTermination = observePromise(termination);
     await flushMicrotasks();
     for (let attempt = 0; attempt < 50 && !observedTermination.settled; attempt += 1) {
@@ -284,7 +292,7 @@ describe('provider transport concurrency hardening', () => {
       await flushMicrotasks(200);
     }
 
-    await expect(termination).resolves.toEqual({ kind: 'all-observed-absent' });
+    await expect(termination).resolves.toEqual({ kind: 'all-children-observed-absent' });
     expect(runtime.spawner.killCalls).toEqual([{ pid: 20_000, signal: 'SIGTERM' }]);
 
     const cleanupHandles = (

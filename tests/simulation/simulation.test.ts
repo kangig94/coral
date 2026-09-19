@@ -121,7 +121,7 @@ const HARD_SHUTDOWN_SCENARIO: SimulationDocument = {
     { type: 'launch', provider: 'codex', prompt: 'simulate hard shutdown marks running job as error' },
     { type: 'wait', until: { runtimeRecorded: true }, stepMs: 5, maxSteps: 5 },
     { type: 'wait', until: { progressContains: 'provider-progress-pre-hard' }, stepMs: 5, maxSteps: 5 },
-    { type: 'shutdown', reason: 'crash' },
+    { type: 'shutdown', reason: 'test-teardown' },
     { type: 'expect', phase: 'error', runtimeRecorded: true, noRealIO: true },
   ],
 };
@@ -352,7 +352,7 @@ describe('deterministic simulation lifecycle replay', () => {
       },
     });
 
-    await world.shutdown('abort-verified');
+    await world.shutdown('test-teardown');
     await world.waitForShutdown();
 
     expect(world.getBackendLifecycle()).toBe('stopped');

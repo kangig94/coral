@@ -14,7 +14,7 @@ const SETTLEMENT_IMPORTS = new Map([
   ['createShutdownSettlementLedger', './shutdown-settlement.js'],
   ['createJoinableSettlementTask', '../obligation/settlement.js'],
 ]);
-const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'transferPending']);
+const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'unaccepted']);
 
 type NamedFunction = ts.FunctionDeclaration | ts.MethodDeclaration;
 
@@ -94,10 +94,10 @@ function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: str
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
-type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'transfer-pending';
+type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'unaccepted';
 
 function isShutdownDispositionName(value: string): value is ShutdownDispositionName {
-  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'transfer-pending';
+  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'unaccepted';
 }
 
 function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string[] {
@@ -183,23 +183,121 @@ function hasExplicitUnrelatedDispositionContext(node: ts.ObjectLiteralExpression
   return false;
 }
 
+function functionLikeBody(node: ts.Node): ts.Block | ts.Expression | undefined {
+  if (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  ) {
+    return node.body;
+  }
+  return undefined;
+}
+
+function nearestScopeBody(node: ts.Node): ts.Node {
+  for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+    const body = functionLikeBody(current);
+    if (body !== undefined) return body;
+  }
+  return node.getSourceFile();
+}
+
+function findLocalConstInitializer(name: string, scopeBody: ts.Node): ts.Expression | null {
+  let match: ts.Expression | null = null;
+  let matchCount = 0;
+
+  function visit(node: ts.Node): void {
+    if (node !== scopeBody && ts.isFunctionLike(node)) return;
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === name &&
+      node.initializer !== undefined &&
+      ts.isVariableDeclarationList(node.parent) &&
+      (node.parent.flags & ts.NodeFlags.Const) !== 0
+    ) {
+      match = node.initializer;
+      matchCount += 1;
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(scopeBody);
+  return matchCount === 1 ? match : null;
+}
+
+// Constraint: a spread source that cannot be inlined to a concrete literal (a call, a parameter, an imported
+// value, an ambiguous or reassignable binding) resolves to `null`, never to an empty set — an empty set reads
+// as "contributes nothing", which is exactly the false reading that let a spread hide a payload from a
+// required-property check.
+function resolvedSpreadPropertyNames(expression: ts.Expression, scopeBody: ts.Node, depth = 0): Set<string> | null {
+  if (depth > 8) return null;
+  const sourceFile = expression.getSourceFile();
+  const current = unwrapExpression(expression);
+
+  if (ts.isObjectLiteralExpression(current)) {
+    const names = new Set<string>();
+    for (const property of current.properties) {
+      if (
+        ts.isPropertyAssignment(property) ||
+        ts.isMethodDeclaration(property) ||
+        ts.isMethodSignature(property) ||
+        ts.isShorthandPropertyAssignment(property)
+      ) {
+        names.add(property.name.getText(sourceFile));
+        continue;
+      }
+      if (ts.isSpreadAssignment(property)) {
+        const nested = resolvedSpreadPropertyNames(property.expression, scopeBody, depth + 1);
+        if (nested === null) return null;
+        for (const name of nested) names.add(name);
+      }
+    }
+    return names;
+  }
+
+  if (ts.isConditionalExpression(current)) {
+    const whenTrue = resolvedSpreadPropertyNames(current.whenTrue, scopeBody, depth + 1);
+    if (whenTrue === null) return null;
+    const whenFalse = resolvedSpreadPropertyNames(current.whenFalse, scopeBody, depth + 1);
+    return whenFalse === null ? null : new Set([...whenTrue, ...whenFalse]);
+  }
+
+  if (ts.isIdentifier(current)) {
+    const initializer = findLocalConstInitializer(current.text, scopeBody);
+    return initializer === null ? null : resolvedSpreadPropertyNames(initializer, scopeBody, depth + 1);
+  }
+
+  return null;
+}
+
 function hasProperties(node: ts.ObjectLiteralExpression, required: readonly string[]): boolean {
-  const properties = new Set(
-    node.properties.flatMap((property) =>
-      ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property) || ts.isMethodSignature(property)
-        ? [property.name.getText(node.getSourceFile())]
-        : [],
-    ),
-  );
+  const sourceFile = node.getSourceFile();
+  const scopeBody = nearestScopeBody(node);
+  const properties = new Set<string>();
+
+  for (const property of node.properties) {
+    if (ts.isPropertyAssignment(property) || ts.isMethodDeclaration(property) || ts.isMethodSignature(property)) {
+      properties.add(property.name.getText(sourceFile));
+      continue;
+    }
+    if (ts.isSpreadAssignment(property)) {
+      const resolved = resolvedSpreadPropertyNames(property.expression, scopeBody);
+      // Constraint: an unresolved spread can carry any name under any value, so it must be read as satisfying
+      // every required property rather than none of them.
+      if (resolved === null) return true;
+      for (const name of resolved) properties.add(name);
+    }
+  }
   return required.every((property) => properties.has(property));
 }
 
 function hasShutdownHeldPayload(node: ts.ObjectLiteralExpression): boolean {
-  return hasProperties(node, ['reason', 'exit', 'retryAfter', 'deferredFailures', 'retainedAuthority', 'retry']);
-}
-
-function hasShutdownDelegatedPayload(node: ts.ObjectLiteralExpression): boolean {
-  return hasProperties(node, ['owner', 'deferredFailures', 'acceptance']);
+  return hasProperties(node, ['reason', 'exit', 'retryAfter', 'undischarged', 'retainedAuthority', 'retry']);
 }
 
 function isSettlementGateConstruction(node: ts.ObjectLiteralExpression): boolean {
@@ -229,8 +327,17 @@ function shutdownDispositionConstructorViolations(sourceFile: ts.SourceFile): st
         !isSettlementGateConstruction(node) &&
         (isSettlementModule ||
           hasShutdownDispositionContext(node) ||
-          hasShutdownHeldPayload(node) ||
-          (hasShutdownDelegatedPayload(node) && !hasExplicitUnrelatedDispositionContext(node)) ||
+          // Constraint: 'delegated', 'unaccepted', and 'settled' carry no `hasProperties`-based payload
+          // precondition; the disposition value plus the shared exemption check below is the whole gate for
+          // these three. Only 'held' additionally requires `hasShutdownHeldPayload`, because unlike the other
+          // three its payload shape is load-bearing for telling a settlement-gate construction apart from an
+          // unrelated same-named disposition elsewhere. `hasShutdownHeldPayload` must stay gated on
+          // `disposition === 'held'`: `hasProperties` reads an unresolved spread as satisfying every required
+          // property, so evaluated for every disposition it would flag an unrelated disposition's spread
+          // before the exemption checks below ever run.
+          (disposition === 'held' && hasShutdownHeldPayload(node)) ||
+          (disposition === 'delegated' && !hasExplicitUnrelatedDispositionContext(node)) ||
+          (disposition === 'unaccepted' && !hasExplicitUnrelatedDispositionContext(node)) ||
           (disposition === 'settled' && !hasExplicitUnrelatedDispositionContext(node)))
       ) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -406,7 +513,7 @@ function settlementConstructorDefinitionViolations(sourceFile: ts.SourceFile, ex
   );
 }
 
-function cleanupHandleLoop(terminateAll: NamedFunction): ts.ForOfStatement | null {
+function cleanupHandleLoop(childTermination: NamedFunction): ts.ForOfStatement | null {
   let match: ts.ForOfStatement | null = null;
 
   function visit(node: ts.Node): void {
@@ -421,7 +528,7 @@ function cleanupHandleLoop(terminateAll: NamedFunction): ts.ForOfStatement | nul
     ts.forEachChild(node, visit);
   }
 
-  if (terminateAll.body) visit(terminateAll.body);
+  if (childTermination.body) visit(childTermination.body);
   return match;
 }
 
@@ -442,16 +549,16 @@ function isInsideCaughtTry(node: ts.Node, loop: ts.ForOfStatement): boolean {
   return false;
 }
 
-function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
-  const terminateAll = findFunction(sourceFile, 'terminateAll');
-  const loop = cleanupHandleLoop(terminateAll);
+function childTerminationViolations(sourceFile: ts.SourceFile, functionName: string): string[] {
+  const childTermination = findFunction(sourceFile, functionName);
+  const loop = cleanupHandleLoop(childTermination);
   if (loop === null) {
-    return [formatViolation(terminateAll, terminateAll, 'missing cleanupHandles.values() termination loop')];
+    return [formatViolation(childTermination, childTermination, 'missing cleanupHandles.values() termination loop')];
   }
 
   const cleanupName = loopBindingName(loop);
   if (cleanupName === null) {
-    return [formatViolation(terminateAll, loop, 'cleanup handle loop must use an exact identifier binding')];
+    return [formatViolation(childTermination, loop, 'cleanup handle loop must use an exact identifier binding')];
   }
 
   const cleanupCalls: ts.CallExpression[] = [];
@@ -468,12 +575,14 @@ function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
   visit(loop.statement);
 
   if (cleanupCalls.length === 0) {
-    return [formatViolation(terminateAll, loop, `cleanup handle ${cleanupName} is never called`)];
+    return [formatViolation(childTermination, loop, `cleanup handle ${cleanupName} is never called`)];
   }
 
   return cleanupCalls
     .filter((call) => !isInsideCaughtTry(call, loop))
-    .map((call) => formatViolation(terminateAll, call, `${cleanupName}() bypasses per-handle try/catch containment`));
+    .map((call) =>
+      formatViolation(childTermination, call, `${cleanupName}() bypasses per-handle try/catch containment`),
+    );
 }
 
 describe('shutdown teardown containment invariant', () => {
@@ -632,7 +741,7 @@ describe('shutdown teardown containment invariant', () => {
     const mutation = parseSource(
       competingPath,
       `function competingConstructor() {
-        return { disposition: 'delegated', owner: 'process-exit', deferredFailures: [], acceptance: {} } as const;
+        return { disposition: 'delegated', undischarged: [], acceptance: {} } as const;
       }`,
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
@@ -640,12 +749,113 @@ describe('shutdown teardown containment invariant', () => {
     ]);
   });
 
+  it('rejects an unannotated inferred unaccepted disposition outside the gate', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'unaccepted', undischarged: [] } as const;
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'unaccepted' outside SettlementGate`,
+    ]);
+  });
+
+  it('rejects an unaccepted disposition whose payload is spread rather than spelled out', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'unaccepted', ...payload };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'unaccepted' outside SettlementGate`,
+    ]);
+  });
+
+  it('rejects a held disposition whose payload is spread rather than spelled out', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'held', ...payload };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'held' outside SettlementGate`,
+    ]);
+  });
+
+  it('rejects a delegated disposition whose payload is spread rather than spelled out', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'delegated', ...payload };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'delegated' outside SettlementGate`,
+    ]);
+  });
+
+  it('rejects a settled disposition whose payload is spread rather than spelled out', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor() {
+        return { disposition: 'settled', ...payload };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'settled' outside SettlementGate`,
+    ]);
+  });
+
+  it('does not flag a held-valued spread whose resolvable contents miss the settlement payload shape', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor(role?: string) {
+        const shared = { ...(role === undefined ? {} : { role }), incidentReason: 'x' };
+        return { ...shared, disposition: 'held', waitingFor: 'store-repair' };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([]);
+  });
+
+  it('does not flag a settled disposition annotated as an unrelated disposition union, even with an unresolved spread', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor(): HandoffDisposition {
+        return { disposition: 'settled', ...rest };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([]);
+  });
+
+  it('still flags a held disposition with an unresolved spread even under an unrelated disposition annotation', () => {
+    const competingPath = 'src/coordinator/competing-shutdown.ts';
+    const mutation = parseSource(
+      competingPath,
+      `function competingConstructor(): HandoffDisposition {
+        return { disposition: 'held', ...rest };
+      }`,
+    );
+    expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
+      `${competingPath}:2 constructs shutdown disposition 'held' outside SettlementGate`,
+    ]);
+  });
+
   it('contains every cleanup call in the child-termination loop', () => {
-    expect(childTerminationViolations(readSource(ADMISSION_PATH))).toEqual([]);
+    expect(childTerminationViolations(readSource(ADMISSION_PATH), 'terminateRegisteredChildren')).toEqual([]);
   });
 
   it('rejects a bare child-cleanup mutation', () => {
-    expect(childTerminationViolations(readFixture('terminate-all-bare-cleanup'))).toEqual([
+    expect(childTerminationViolations(readFixture('terminate-all-bare-cleanup'), 'terminateAll')).toEqual([
       `${FIXTURE_ROOT}/terminate-all-bare-cleanup.ts:4 terminateAll: ` +
         'cleanup() bypasses per-handle try/catch containment',
     ]);

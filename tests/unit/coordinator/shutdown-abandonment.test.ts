@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import {
   readShutdownAbandonmentStatus,
@@ -6,6 +7,35 @@ import {
 } from '#src/coordinator/shutdown-abandonment.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { shutdownObligationSubjects } from '#src/obligation/shutdown-abandonment.js';
+
+const legacyShutdownObligationSubjects = [
+  'recovery-coordinator-teardown',
+  'kb-child-shutdown',
+  'provider-operation-mutation-drain',
+  'provider-host-shutdown',
+  'child-termination',
+  'app-server-handoff-quiesce',
+  'provider-host-drain-for-handoff',
+  'process-incarnation-probe-shutdown',
+  'lifecycle-reactor-dispose',
+  'provider-control-and-ipc-authority-release',
+] as const;
+const legacyShutdownObligationAbandonmentReceiptSchema = z
+  .object({
+    subject: z.enum(legacyShutdownObligationSubjects),
+    instanceId: z.string().min(1),
+    recordedAt: z.string().datetime(),
+    disposition: z.literal('abandoned-unconfirmed'),
+    detail: z.string().min(1),
+    statusPath: z.string().min(1),
+  })
+  .strict();
+const legacyShutdownAbandonmentStatusSchema = z
+  .object({
+    version: z.literal(1),
+    entries: z.array(legacyShutdownObligationAbandonmentReceiptSchema).readonly(),
+  })
+  .strict();
 
 function storageWith(
   initial: string | null,
@@ -30,8 +60,24 @@ function storageWith(
 }
 
 describe('shutdown abandonment status', () => {
-  it('reads durable receipts for every canonical shutdown-obligation subject', () => {
-    const entries = shutdownObligationSubjects.map((subject) => ({
+  it('keeps every record written to the abandonment family readable by the legacy v1 parser', () => {
+    const storage = storageWith(null);
+
+    for (const subject of shutdownObligationSubjects) {
+      expect(
+        recordShutdownObligationAbandonment(
+          { storage, time: { now: () => 1_788_739_200_000 }, runDir: '/run' },
+          { subject, instanceId: `${subject}-instance`, detail: 'completion unconfirmed' },
+        ).kind,
+      ).toBe('recorded');
+      expect(() =>
+        legacyShutdownAbandonmentStatusSchema.parse(JSON.parse(storage.readPublished() ?? '')),
+      ).not.toThrow();
+    }
+  });
+
+  it('reads durable receipts for every subject a released build may have recorded', () => {
+    const entries = legacyShutdownObligationSubjects.map((subject) => ({
       subject,
       instanceId: `${subject}-instance`,
       recordedAt: '2026-09-07T00:00:00.000Z',

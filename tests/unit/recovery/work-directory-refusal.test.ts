@@ -35,7 +35,7 @@ function expectPersistedRecoveryRefusal(
       workDir,
       baseDir,
     });
-    expect(error.message).toContain(workDir);
+    expect(error.message).not.toContain(workDir);
     expect(error.message).toMatch(/ENOENT|no such file or directory/);
   }
 }

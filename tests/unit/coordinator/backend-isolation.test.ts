@@ -27,7 +27,7 @@ describe('backend isolation', () => {
     expect(coordA.getActiveJobIds()).toEqual(['job-a1']);
     expect(coordB.getActiveJobIds()).toEqual(['job-b1']);
 
-    coordA.terminateAll();
+    void coordA.settlePendingLaunches();
     if (admitA === 'queue_full' || admitA.type !== 'immediate') throw new Error('expected coordinator A permit');
     coordA.releaseLaunch(admitA.permit);
     expect(coordA.getActiveJobIds()).toEqual([]);
@@ -122,7 +122,7 @@ describe('backend isolation', () => {
     regA.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
     regB.contexts.set('proj', { projectRoot: 'proj', sessions: new Map() } as any);
 
-    coordA.terminateAll();
+    void coordA.settlePendingLaunches();
     if (admissionA === 'queue_full' || admissionA.type !== 'immediate')
       throw new Error('expected coordinator A permit');
     coordA.releaseLaunch(admissionA.permit);

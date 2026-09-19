@@ -11,16 +11,22 @@ name: CI
 # catastrophically backtracking regex in an invariant scan did before it was
 # caught locally. The budgets below are several times the observed runtime.
 
+# GitHub refuses to merge a draft PR, so a gate run there costs runner time to
+# gate a merge that cannot happen. `ready_for_review` is listed explicitly
+# because naming `types` replaces the default set — without it, marking a draft
+# ready would fire no event and the branch would sit with no result until its
+# next push.
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
 
 jobs:
   build-and-test:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:

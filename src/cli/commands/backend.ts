@@ -1501,8 +1501,9 @@ export function formatShutdownObligationAbandonResult(result: ShutdownObligation
 function parseShutdownObligationSubject(value: string): ShutdownObligationSubject {
   const parsed = shutdownObligationSubjectSchema.safeParse(value);
   if (parsed.success) return parsed.data;
-  // The refusal is the only place the operator learns the set, so it names every member: no other command
-  // reports which subject a held shutdown offered.
+  // No other command lists ShutdownObligationSubject's members, so an invalid value learns the closed
+  // set only here. See abandonShutdownObligation in src/coordinator/lifecycle.ts for why a valid value
+  // is refused too on this coordinator.
   throw new InvalidArgumentError(
     `Unknown shutdown obligation subject: ${value}. One of: ${shutdownObligationSubjects.join(', ')}.`,
   );
@@ -1704,10 +1705,12 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     });
   shutdownRecoveryCommand
     .command('abandon')
-    .description('Durably abandon one exact obligation offered by the current held shutdown')
+    .description(
+      'Abandon one exact obligation a held shutdown offered on an older coordinator; this coordinator offers none, so the attempt is refused',
+    )
     .argument(
       '<subject>',
-      `One of: ${shutdownObligationSubjects.join(', ')}. A subject the held shutdown did not offer is refused.`,
+      'Exact subject a held shutdown offered on an older coordinator; this coordinator offers none, so any value is refused',
       parseShutdownObligationSubject,
     )
     .action(async (subject: ShutdownObligationSubject) => {

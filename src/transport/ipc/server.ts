@@ -110,7 +110,7 @@ export type IpcListener = {
    * can replace a still-`starting` incumbent (where idle-timer driven drain
    * has not yet been installed). Setting/clearing is composition's job.
    */
-  onShutdownRequest: ((reason: string) => void) | null;
+  onShutdownRequest: ((reason: 'replaced') => void) | null;
   onShutdownObligationAbandonment?: (
     request: ShutdownObligationAbandonRequest,
   ) => ShutdownObligationAbandonResult | Promise<ShutdownObligationAbandonResult>;
@@ -703,7 +703,7 @@ async function dispatchFrame(
   socket: Socket,
   dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
   rpcPorts: HttpHandlerPorts,
-  onShutdownRequest: ((reason: string) => void) | null,
+  onShutdownRequest: ((reason: 'replaced') => void) | null,
   onShutdownObligationAbandonment:
     | ((
         request: ShutdownObligationAbandonRequest,

@@ -312,7 +312,7 @@ describe('scenario runner', () => {
   it('shuts down the backend and reports the reason', async () => {
     const run = await runScenario({
       world: {},
-      steps: [{ type: 'boot' }, { type: 'shutdown', reason: 'test-shutdown' }],
+      steps: [{ type: 'boot' }, { type: 'shutdown' }],
     });
     worlds.push(run.world);
 
@@ -320,8 +320,17 @@ describe('scenario runner', () => {
     expect(run.result.steps[1]).toMatchObject({
       ok: true,
       type: 'shutdown',
-      actual: { reason: 'test-shutdown' },
+      actual: { reason: 'test-teardown' },
     });
+  });
+
+  it('normalizes arbitrary scenario shutdown reasons at the schema ingress', () => {
+    const parsed = simulationDocumentSchema.parse({
+      world: {},
+      steps: [{ type: 'shutdown', reason: 'simulation-shutdown' }],
+    });
+
+    expect(parsed.steps[0]).toEqual({ type: 'shutdown', reason: 'test-teardown' });
   });
 
   it('cycles the simulation world to the next generation', async () => {

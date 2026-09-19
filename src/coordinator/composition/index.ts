@@ -872,6 +872,13 @@ export function createCoordinatorCore(
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   let readIpcOpenSockets = () => 0;
   let lifecycleController: LifecycleController | null = null;
+  const onProviderProxyLifecycleFatal = (error: unknown): void => {
+    world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
+    void lifecycleController
+      ?.shutdown('provider-proxy-lifecycle-fatal', { kind: 'provider-proxy-lifecycle-fatal', error })
+      .catch(() => undefined);
+  };
+  options.captureProviderProxyLifecycleFatal?.(onProviderProxyLifecycleFatal);
   const services = createExecutionServices({
     world,
     runtime,
@@ -879,10 +886,7 @@ export function createCoordinatorCore(
     backendNamespace: world.namespace,
     settlementRefusalRecorder,
     createExecutionService: defaults.createExecutionService,
-    onProviderProxyLifecycleFatal: (error) => {
-      world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
-      void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
-    },
+    onProviderProxyLifecycleFatal,
   });
   adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
   releaseUnreadableProviderOperationStartupOwnership = services.releaseUnreadableProviderOperationStartupOwnership;
@@ -1757,7 +1761,8 @@ export function createCoordinatorCore(
     removeBackendInfoIfOwnerFn: defaults.removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn: defaults.cleanupStaleJobsFn,
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
-    terminateAllFn: defaults.terminateAllFn,
+    settlePendingLaunchesFn: defaults.settlePendingLaunchesFn,
+    terminateRegisteredChildrenFn: defaults.terminateRegisteredChildrenFn,
     providerHostManager: world.providerHostManager,
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
@@ -1783,6 +1788,7 @@ export function createCoordinatorCore(
     listenFn: defaults.listenFn,
     ipcServer,
     closeIpcServerFn: closeIpcServer,
+    handoffDrainBudgetMs: options.handoffDrainBudgetMs,
     listenIpcFn:
       options.listenIpcFn ??
       ((listener, additionalCompatibilitySocketPaths = [], publishedCompatibilitySocketAddresses = []) =>

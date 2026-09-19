@@ -1,15 +1,13 @@
-import { formatError } from '../infra/error-format.js';
+import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
 import { isAbortError } from '../runtime/abort.js';
 
 export type Settlement =
   | Readonly<{ kind: 'discharged' }>
-  | Readonly<{
-      kind: 'declined';
-      cause: 'rejected' | 'timed-out' | 'budget-exhausted' | 'unconfirmed' | 'aborted';
-      detail: string;
-      error?: unknown;
-    }>;
+  | Readonly<{ kind: 'declined'; cause: 'rejected' | 'aborted'; error: SerializedThrown }>
+  | Readonly<{ kind: 'declined'; cause: 'timed-out'; budgetMs: number }>
+  | Readonly<{ kind: 'declined'; cause: 'budget-exhausted' }>
+  | Readonly<{ kind: 'declined'; cause: 'unconfirmed'; detail: string }>;
 
 export type SettlementConfirmation = Readonly<{ confirmed: true }> | Readonly<{ confirmed: false; detail: string }>;
 
@@ -19,12 +17,12 @@ export type SettlementHold<Reason, Exit> = Readonly<{
   retryAfter?: Promise<void>;
 }>;
 
-export type SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit> = Readonly<{
+export type SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext = never> = Readonly<{
   label: string;
+  failureContext?: FailureContext;
   task: (signal: AbortSignal) => Promise<SettlementConfirmation>;
   retainedAuthority: () => RetainedAuthorityContribution;
-  remainder: Remainder;
-  hold?: (settlement: Extract<Settlement, { kind: 'declined' }>) => SettlementHold<Reason, Exit>;
+  remainder: () => Remainder;
 }>;
 
 export type SettlementAuthorityPreparation =
@@ -36,16 +34,20 @@ export type SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Re
   prepare: (signal: AbortSignal) => Promise<SettlementAuthorityPreparation>;
   commit: (token: object, signal: AbortSignal) => Promise<SettlementConfirmation>;
   retainedAuthority: () => RetainedAuthorityContribution;
-  hold?: (settlement: Extract<Settlement, { kind: 'declined' }>) => SettlementHold<Reason, Exit>;
+  hold: (settlement: Extract<Settlement, { kind: 'declined' }>) => SettlementHold<Reason, Exit>;
 }>;
 
 export type SettledSettlementDisposition = Readonly<{ disposition: 'settled' }>;
 
-export type DelegatedSettlementDisposition<Owner, Failure, Acceptance> = Readonly<{
+export type DelegatedSettlementDisposition<Failure, Acceptance> = Readonly<{
   disposition: 'delegated';
-  owner: Owner;
-  deferredFailures: readonly Failure[];
+  undischarged: readonly Failure[];
   acceptance: Acceptance;
+}>;
+
+export type UnacceptedSettlementDisposition<Failure> = Readonly<{
+  disposition: 'unaccepted';
+  undischarged: readonly Failure[];
 }>;
 
 export interface HeldSettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Disposition> {
@@ -53,69 +55,48 @@ export interface HeldSettlementDisposition<Reason, Exit, Failure, RetainedAuthor
   readonly reason: Reason;
   readonly exit: Exit;
   readonly retryAfter: Promise<void>;
-  readonly deferredFailures: readonly Failure[];
+  readonly undischarged: readonly Failure[];
   readonly retainedAuthority: RetainedAuthority;
+  /** The ledger's own boundary-transfer attempt count and forced-terminal limit, for a caller that reports it. */
+  readonly attemptsStarted: number;
+  readonly attemptLimit: number;
   readonly retry: () => Promise<Disposition>;
 }
 
-export interface TransferPendingSettlementDisposition<
-  Owner,
-  Reason,
-  Exit,
-  Failure,
-  RetainedAuthority,
-  Acceptance,
-  Disposition,
-> {
-  readonly disposition: 'transfer-pending';
-  readonly owner: Owner;
-  readonly reason: Reason;
-  readonly exit: Exit;
-  readonly retryAfter: Promise<void>;
-  readonly deferredFailures: readonly Failure[];
-  readonly acceptance: Acceptance;
-  readonly boundaryFailure: Failure;
-  readonly retainedAuthority: RetainedAuthority;
-  readonly retry: () => Promise<Disposition>;
-}
-
-export type SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance> =
+export type SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance> =
   | SettledSettlementDisposition
-  | DelegatedSettlementDisposition<Owner, Failure, Acceptance>
-  | TransferPendingSettlementDisposition<
-      Owner,
-      Reason,
-      Exit,
-      Failure,
-      RetainedAuthority,
-      Acceptance,
-      SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>
-    >
+  | DelegatedSettlementDisposition<Failure, Acceptance>
+  | UnacceptedSettlementDisposition<Failure>
   | HeldSettlementDisposition<
       Reason,
       Exit,
       Failure,
       RetainedAuthority,
-      SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>
+      SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>
     >;
 
 export class SettlementGate<
-  Owner,
   Reason,
   Exit,
   Failure,
   RetainedAuthority,
   Acceptance,
-  Disposition = SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>,
+  Disposition = SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>,
 > {
   settled(): SettledSettlementDisposition {
     return { disposition: 'settled' };
   }
 
   delegated(
-    value: Omit<DelegatedSettlementDisposition<Owner, Failure, Acceptance>, 'disposition'>,
-  ): DelegatedSettlementDisposition<Owner, Failure, Acceptance> {
+    value: Omit<DelegatedSettlementDisposition<Failure, Acceptance>, 'disposition'>,
+  ): DelegatedSettlementDisposition<Failure, Acceptance> {
     return { disposition: 'delegated', ...value };
+  }
+
+  unaccepted(
+    value: Omit<UnacceptedSettlementDisposition<Failure>, 'disposition'>,
+  ): UnacceptedSettlementDisposition<Failure> {
+    return { disposition: 'unaccepted', ...value };
   }
 
   held(
@@ -123,21 +104,10 @@ export class SettlementGate<
   ): HeldSettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Disposition> {
     return { disposition: 'held', ...value };
   }
-
-  transferPending(
-    value: Omit<
-      TransferPendingSettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance, Disposition>,
-      'disposition'
-    >,
-  ): TransferPendingSettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance, Disposition> {
-    return { disposition: 'transfer-pending', ...value };
-  }
 }
 
-export type RemainderSettlementRole = 'blocking' | 'delegable' | 'successor';
-
-export type DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit> = Readonly<{
-  obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>;
+export type DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext = never> = Readonly<{
+  obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>;
   settlement: Extract<Settlement, { kind: 'declined' }>;
 }>;
 
@@ -158,44 +128,40 @@ type BoundaryPreparationAttempt =
   | Readonly<{ kind: 'prepared'; settlement: Extract<Settlement, { kind: 'discharged' }>; token: object }>
   | Readonly<{ kind: 'declined'; settlement: Extract<Settlement, { kind: 'declined' }> }>;
 
-type GateResolution<Acceptance, Disposition> =
-  | Readonly<{ kind: 'initial' }>
-  | Readonly<{
-      kind: 'held';
-      boundaryFailure: Extract<Settlement, { kind: 'declined' }> | null;
-      retry?: () => Promise<Disposition>;
-    }>
-  | Readonly<{ kind: 'committed'; acceptance: Acceptance | null }>
-  | Readonly<{
-      kind: 'transfer-pending';
-      acceptance: Acceptance;
-      failure: Extract<Settlement, { kind: 'declined' }>;
-    }>;
+type RemainderAcceptanceState<Acceptance, Failure> =
+  | Readonly<{ kind: 'unattempted' }>
+  | Readonly<{ kind: 'accepted'; acceptance: Acceptance }>
+  | Readonly<{ kind: 'failed'; failure: Failure }>;
+
+export const BOUNDARY_TRANSFER_ATTEMPT_LIMIT = 3;
+
+type GateResolution =
+  | Readonly<{ kind: 'held'; boundaryFailure: Extract<Settlement, { kind: 'declined' }> }>
+  | Readonly<{ kind: 'terminal'; boundaryFailure: Extract<Settlement, { kind: 'declined' }> | null }>;
 
 export type SettlementLedgerOptions<
   Remainder,
   RetainedAuthorityContribution,
   RetainedAuthority,
-  Reason,
-  Exit,
-  Owner,
   Acceptance,
   Failure,
+  FailureContext = never,
 > = Readonly<{
   budgetMs: number;
   time: Pick<TimePort, 'monotonicNow' | 'sleep'>;
   log: (message: string) => void;
   pollMs: number;
-  remainderRole: (remainder: Remainder) => RemainderSettlementRole;
   boundaryRemainder: Remainder;
-  delegatedOwner: Owner;
-  acceptDelegatedRemainder?: (
-    declined: readonly DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>[],
-  ) => Acceptance | null;
-  acceptedFailures: (acceptance: Acceptance) => readonly Failure[];
-  failure: (label: string, settlement: Extract<Settlement, { kind: 'declined' }>) => Failure;
+  acceptDelegatedRemainder?: (undischarged: readonly Failure[]) => Acceptance | null;
+  acceptedUndischarged: (acceptance: Acceptance) => readonly Failure[];
+  acceptanceFailureLabel: string;
+  failure: (
+    label: string,
+    remainder: Remainder,
+    settlement: Extract<Settlement, { kind: 'declined' }>,
+    context?: FailureContext,
+  ) => Failure;
   foldRetainedAuthority: (contributions: readonly RetainedAuthorityContribution[]) => RetainedAuthority;
-  defaultHold: () => SettlementHold<Reason, Exit>;
 }>;
 
 type JoinableOutcome<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: false; error: unknown }>;
@@ -203,7 +169,6 @@ type JoinableOutcome<T> = Readonly<{ ok: true; value: T }> | Readonly<{ ok: fals
 export type JoinableSettlementTask<T> = Readonly<{
   start(): void;
   run(): Promise<T>;
-  settlement(): Promise<void> | null;
 }>;
 
 /** A retry may start a new attempt only after the preceding attempt has settled. */
@@ -241,12 +206,6 @@ export function createJoinableSettlementTask<T>(task: () => T | Promise<T>): Joi
       if (outcome.ok) return outcome.value;
       throw outcome.error;
     },
-    settlement: () =>
-      state.kind === 'in-flight'
-        ? state.outcome.then(() => undefined)
-        : state.kind === 'settled'
-          ? Promise.resolve()
-          : null,
   };
 }
 
@@ -278,7 +237,6 @@ async function settleAttempt<T>(
     const settlement = {
       kind: 'declined',
       cause: 'budget-exhausted',
-      detail: 'no drain budget remained',
     } as const;
     log(`${label}: skipped (drain budget exhausted)\n`);
     return { kind: 'completed', settlement };
@@ -296,7 +254,7 @@ async function settleAttempt<T>(
       const settlement = {
         kind: 'declined',
         cause: 'timed-out',
-        detail: `exceeded ${budget}ms`,
+        budgetMs: budget,
       } as const;
       log(`${label}: exceeded drain budget after ${budget}ms\n`);
       return { kind: 'in-flight', settlement };
@@ -312,8 +270,7 @@ async function settleAttempt<T>(
     const settlement = {
       kind: 'declined',
       cause: isAbortError(error) ? 'aborted' : 'rejected',
-      detail: formatError(error),
-      error,
+      error: serializeThrown(error),
     } as const;
     log(`${label} settlement failed: ${formatError(error)}\n`);
     return { kind: 'completed', settlement };
@@ -322,59 +279,60 @@ async function settleAttempt<T>(
   }
 }
 
-/** Authority release is forbidden while an obligation without an accepted successor remains declined. */
+/** Boundary exhaustion must terminate without rerunning registered obligations. */
 export class SettlementLedger<
   Remainder,
   RetainedAuthorityContribution,
   RetainedAuthority,
   Reason,
   Exit,
-  Owner,
   Acceptance,
   Failure,
+  FailureContext = never,
 > {
-  private readonly dispositions = new SettlementGate<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>();
+  private readonly dispositions = new SettlementGate<Reason, Exit, Failure, RetainedAuthority, Acceptance>();
   private readonly entries = new Map<
-    SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
+    SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>,
     ObligationState
   >();
   private readonly obligationAttempts = new Map<
-    SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
+    SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>,
     SettlementAttempt<SettlementConfirmation>
   >();
   private readonly boundaryAttempts = new WeakMap<
     SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
     BoundaryAttemptState
   >();
+  private readonly boundaryTransferAttemptsStarted = new WeakMap<
+    SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
+    number
+  >();
   private readonly options: SettlementLedgerOptions<
     Remainder,
     RetainedAuthorityContribution,
     RetainedAuthority,
-    Reason,
-    Exit,
-    Owner,
     Acceptance,
-    Failure
+    Failure,
+    FailureContext
   >;
   private deadlineMonotonicMs: bigint;
+  private remainderAcceptance: RemainderAcceptanceState<Acceptance, Failure> = { kind: 'unattempted' };
 
   constructor(
     options: SettlementLedgerOptions<
       Remainder,
       RetainedAuthorityContribution,
       RetainedAuthority,
-      Reason,
-      Exit,
-      Owner,
       Acceptance,
-      Failure
+      Failure,
+      FailureContext
     >,
   ) {
     this.options = options;
     this.deadlineMonotonicMs = options.time.monotonicNow() + BigInt(options.budgetMs);
   }
 
-  private register(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>): void {
+  private register(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): void {
     if (!this.entries.has(obligation)) this.entries.set(obligation, { kind: 'pending' });
   }
 
@@ -385,22 +343,21 @@ export class SettlementLedger<
     return this.remainingBudget();
   }
 
-  isDischarged(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>): boolean {
+  isDischarged(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): boolean {
     const state = this.entries.get(obligation);
     return state?.kind === 'settled' && state.settlement.kind === 'discharged';
   }
 
   async run(
-    obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
+    obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>,
   ): Promise<Settlement> {
     this.register(obligation);
     const prior = this.entries.get(obligation);
-    if (prior?.kind === 'settled' && prior.settlement.kind === 'discharged') return prior.settlement;
+    if (prior?.kind === 'settled') return prior.settlement;
     if (this.remainingBudget() <= 0) {
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
-        detail: 'no drain budget remained',
       } as const;
       this.options.log(`${obligation.label}: skipped (drain budget exhausted)\n`);
       this.entries.set(obligation, { kind: 'settled', settlement });
@@ -430,8 +387,7 @@ export class SettlementLedger<
             settlement: {
               kind: 'declined',
               cause: isAbortError(error) ? 'aborted' : 'rejected',
-              detail: formatError(error),
-              error,
+              error: serializeThrown(error),
             },
           });
         },
@@ -453,19 +409,10 @@ export class SettlementLedger<
     return result.settlement;
   }
 
-  private runWithBudget(
-    obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>,
-    budgetMs: number,
-  ): Promise<Settlement> {
-    this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
-    return this.run(obligation);
-  }
-
   private declinedEntries(): readonly DeclinedSettlementObligation<
     Remainder,
     RetainedAuthorityContribution,
-    Reason,
-    Exit
+    FailureContext
   >[] {
     return [...this.entries].flatMap(([obligation, state]) =>
       state.kind === 'settled' && state.settlement.kind === 'declined'
@@ -474,10 +421,8 @@ export class SettlementLedger<
     );
   }
 
-  private acceptDelegatedRemainder(
-    declined: readonly DeclinedSettlementObligation<Remainder, RetainedAuthorityContribution, Reason, Exit>[],
-  ): Acceptance | null {
-    return this.options.acceptDelegatedRemainder?.(declined) ?? null;
+  private acceptDelegatedRemainder(undischarged: readonly Failure[]): Acceptance | null {
+    return this.options.acceptDelegatedRemainder?.(undischarged) ?? null;
   }
 
   private async prepareBoundary(
@@ -495,7 +440,6 @@ export class SettlementLedger<
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
-        detail: 'no drain budget remained',
       } as const;
       this.options.log(`${boundary.label}: skipped (drain budget exhausted)\n`);
       return { kind: 'declined', settlement };
@@ -536,7 +480,6 @@ export class SettlementLedger<
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
-        detail: 'no drain budget remained',
       } as const;
       this.options.log(`${boundary.label}: skipped (drain budget exhausted)\n`);
       return settlement;
@@ -564,239 +507,135 @@ export class SettlementLedger<
 
   private retainedAuthority(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    delegatedRemainderAccepted: boolean,
   ): RetainedAuthority {
     const contributions = [...this.entries]
-      .filter(
-        ([obligation, state]) =>
-          (state.kind !== 'settled' || state.settlement.kind !== 'discharged') &&
-          (!delegatedRemainderAccepted || this.options.remainderRole(obligation.remainder) !== 'delegable'),
-      )
+      .filter(([, state]) => state.kind !== 'settled' || state.settlement.kind !== 'discharged')
       .map(([obligation]) => obligation.retainedAuthority());
     return this.options.foldRetainedAuthority([...contributions, boundary.retainedAuthority()]);
   }
 
-  private async retryAcceptedTransfer(
-    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    acceptance: Acceptance,
-  ): Promise<SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    const attemptBudgetMs = Math.max(1, Math.floor(this.options.budgetMs / 2));
-    const preparation = await this.prepareBoundary(boundary, attemptBudgetMs);
-    if (preparation.kind === 'declined') {
-      return this.gate(boundary, {
-        kind: 'transfer-pending',
-        acceptance,
-        failure: preparation.settlement,
-      });
+  private verifyRemainderAcceptance(undischarged: readonly Failure[]): void {
+    if (this.remainderAcceptance.kind !== 'unattempted') return;
+    if (this.options.acceptDelegatedRemainder === undefined && undischarged.length === 0) return;
+    const acceptance = this.acceptDelegatedRemainder(undischarged);
+    if (acceptance !== null) {
+      this.remainderAcceptance = { kind: 'accepted', acceptance };
+      return;
     }
-    const commit = await this.commitBoundary(boundary, preparation.token, attemptBudgetMs);
-    return commit.kind === 'discharged'
-      ? this.gate(boundary, { kind: 'committed', acceptance })
-      : this.gate(boundary, { kind: 'transfer-pending', acceptance, failure: commit });
+    this.remainderAcceptance = {
+      kind: 'failed',
+      failure: this.options.failure(this.options.acceptanceFailureLabel, this.options.boundaryRemainder, {
+        kind: 'declined',
+        cause: 'unconfirmed',
+        detail: 'process-exit remainder acceptance was not verified',
+      }),
+    };
   }
 
-  private async retryDeclined(
-    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-  ): Promise<SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    const declined = this.declinedEntries();
-    const blocking = declined.filter(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) === 'blocking',
-    );
-    const delegable = declined.filter(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) === 'delegable',
-    );
-    const successor = declined.filter(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) === 'successor',
-    );
-    const attemptCount = blocking.length + delegable.length + successor.length + 2;
-    const attemptBudgetMs = Math.max(1, Math.floor(this.options.budgetMs / attemptCount));
-
-    for (const { obligation } of blocking) await this.runWithBudget(obligation, attemptBudgetMs);
-    const preparation = await this.prepareBoundary(boundary, attemptBudgetMs);
-    for (const { obligation } of delegable) await this.runWithBudget(obligation, attemptBudgetMs);
-    for (const { obligation } of successor) await this.runWithBudget(obligation, attemptBudgetMs);
-
-    const authorityBlocked = this.declinedEntries().some(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) !== 'delegable',
-    );
-    if (authorityBlocked) return this.gate(boundary, { kind: 'held', boundaryFailure: null });
-    if (preparation.kind === 'declined') {
-      return this.gate(boundary, { kind: 'held', boundaryFailure: preparation.settlement });
-    }
-
-    const remainingDelegable = this.declinedEntries().filter(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) === 'delegable',
-    );
-    const acceptance = remainingDelegable.length === 0 ? null : this.acceptDelegatedRemainder(remainingDelegable);
-    if (remainingDelegable.length > 0 && acceptance === null) {
-      return this.gate(boundary, { kind: 'held', boundaryFailure: null });
-    }
-
-    const commit = await this.commitBoundary(boundary, preparation.token, attemptBudgetMs);
-    if (commit.kind === 'declined') {
-      return acceptance === null
-        ? this.gate(boundary, {
-            kind: 'held',
-            boundaryFailure: commit,
-            retry: () => this.retryCleanTransfer(boundary),
-          })
-        : this.gate(boundary, {
-            kind: 'transfer-pending',
-            acceptance,
-            failure: commit,
-          });
-    }
-    return this.gate(boundary, { kind: 'committed', acceptance });
+  private acceptedRemainder(): Acceptance | null {
+    return this.remainderAcceptance.kind === 'accepted' ? this.remainderAcceptance.acceptance : null;
   }
 
-  private async retryCleanTransfer(
+  private namedLosses(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-  ): Promise<SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    const attemptBudgetMs = Math.max(1, Math.floor(this.options.budgetMs / 2));
-    const preparation = await this.prepareBoundary(boundary, attemptBudgetMs);
+    boundaryFailure: Extract<Settlement, { kind: 'declined' }> | null,
+  ): readonly Failure[] {
+    const offered = [
+      ...this.declinedEntries().map(({ obligation, settlement }) =>
+        this.options.failure(obligation.label, obligation.remainder(), settlement, obligation.failureContext),
+      ),
+      ...(boundaryFailure === null
+        ? []
+        : [this.options.failure(boundary.label, this.options.boundaryRemainder, boundaryFailure)]),
+    ];
+    const accepted =
+      this.remainderAcceptance.kind === 'accepted'
+        ? this.options.acceptedUndischarged(this.remainderAcceptance.acceptance)
+        : offered;
+    return [...accepted, ...(this.remainderAcceptance.kind === 'failed' ? [this.remainderAcceptance.failure] : [])];
+  }
+
+  private async attemptBoundaryTransfer(
+    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
+    budgetMs: number | null,
+  ): Promise<SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
+    this.boundaryTransferAttemptsStarted.set(boundary, (this.boundaryTransferAttemptsStarted.get(boundary) ?? 0) + 1);
+    this.remainderAcceptance = { kind: 'unattempted' };
+
+    const preparation = await this.prepareBoundary(boundary, budgetMs);
     if (preparation.kind === 'declined') {
-      return this.gate(boundary, {
-        kind: 'held',
-        boundaryFailure: preparation.settlement,
-        retry: () => this.retryCleanTransfer(boundary),
-      });
+      return this.resolve(boundary, { kind: 'held', boundaryFailure: preparation.settlement });
     }
-    const commit = await this.commitBoundary(boundary, preparation.token, attemptBudgetMs);
+
+    const commit = await this.commitBoundary(boundary, preparation.token, budgetMs);
     return commit.kind === 'discharged'
-      ? this.gate(boundary, { kind: 'committed', acceptance: null })
-      : this.gate(boundary, {
-          kind: 'held',
-          boundaryFailure: commit,
-          retry: () => this.retryCleanTransfer(boundary),
-        });
+      ? this.resolve(boundary, { kind: 'terminal', boundaryFailure: null })
+      : this.declinedTransfer(boundary, commit);
+  }
+
+  private declinedTransfer(
+    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
+    failure: Extract<Settlement, { kind: 'declined' }>,
+  ): SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance> {
+    return this.resolve(boundary, { kind: 'held', boundaryFailure: failure });
+  }
+
+  private retryBoundaryTransfer(
+    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
+  ): Promise<SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
+    return this.attemptBoundaryTransfer(boundary, Math.max(1, Math.floor(this.options.budgetMs / 2)));
   }
 
   private createHeldDisposition(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    resolution: Extract<
-      GateResolution<Acceptance, SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>>,
-      { kind: 'held' }
-    >,
+    resolution: Extract<GateResolution, { kind: 'held' }>,
   ): HeldSettlementDisposition<
     Reason,
     Exit,
     Failure,
     RetainedAuthority,
-    SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>
+    SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>
   > {
-    const declined = this.declinedEntries();
-    const primary =
-      declined.find(({ obligation }) => this.options.remainderRole(obligation.remainder) === 'blocking') ??
-      declined.find(({ obligation }) => this.options.remainderRole(obligation.remainder) === 'successor') ??
-      declined[0];
-    const hold =
-      primary === undefined && resolution.boundaryFailure !== null
-        ? (boundary.hold?.(resolution.boundaryFailure) ?? this.options.defaultHold())
-        : (primary?.obligation.hold?.(primary.settlement) ?? this.options.defaultHold());
+    const hold = boundary.hold(resolution.boundaryFailure);
     return this.dispositions.held({
       reason: hold.reason,
       exit: hold.exit,
       retryAfter: hold.retryAfter ?? this.options.time.sleep(this.options.pollMs),
-      deferredFailures: [
-        ...declined.map(({ obligation, settlement }) => this.options.failure(obligation.label, settlement)),
-        ...(resolution.boundaryFailure === null
-          ? []
-          : [this.options.failure(boundary.label, resolution.boundaryFailure)]),
-      ],
-      retainedAuthority: this.retainedAuthority(boundary, false),
-      retry: resolution.retry ?? (() => this.retryDeclined(boundary)),
+      undischarged: this.namedLosses(boundary, resolution.boundaryFailure),
+      retainedAuthority: this.retainedAuthority(boundary),
+      attemptsStarted: this.boundaryTransferAttemptsStarted.get(boundary) ?? 0,
+      attemptLimit: BOUNDARY_TRANSFER_ATTEMPT_LIMIT,
+      retry: () => this.retryBoundaryTransfer(boundary),
     });
   }
 
-  private createTransferPendingDisposition(
+  private resolve(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    resolution: Extract<
-      GateResolution<Acceptance, SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>>,
-      { kind: 'transfer-pending' }
-    >,
-  ): TransferPendingSettlementDisposition<
-    Owner,
-    Reason,
-    Exit,
-    Failure,
-    RetainedAuthority,
-    Acceptance,
-    SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>
-  > {
-    const hold = boundary.hold?.(resolution.failure) ?? this.options.defaultHold();
-    return this.dispositions.transferPending({
-      owner: this.options.delegatedOwner,
-      reason: hold.reason,
-      exit: hold.exit,
-      retryAfter: hold.retryAfter ?? this.options.time.sleep(this.options.pollMs),
-      deferredFailures: this.options.acceptedFailures(resolution.acceptance),
-      acceptance: resolution.acceptance,
-      boundaryFailure: this.options.failure(boundary.label, resolution.failure),
-      retainedAuthority: this.retainedAuthority(boundary, true),
-      retry: () => this.retryAcceptedTransfer(boundary, resolution.acceptance),
-    });
+    resolution: GateResolution,
+  ): SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance> {
+    const boundaryAttemptsStarted = this.boundaryTransferAttemptsStarted.get(boundary) ?? 0;
+    if (boundaryAttemptsStarted >= BOUNDARY_TRANSFER_ATTEMPT_LIMIT && resolution.kind !== 'terminal') {
+      return this.resolve(boundary, { kind: 'terminal', boundaryFailure: resolution.boundaryFailure });
+    }
+    switch (resolution.kind) {
+      case 'held':
+        return this.createHeldDisposition(boundary, resolution);
+      case 'terminal': {
+        const offered = this.namedLosses(boundary, resolution.boundaryFailure);
+        if (offered.length === 0) return this.dispositions.settled();
+        this.verifyRemainderAcceptance(offered);
+        const undischarged = this.namedLosses(boundary, resolution.boundaryFailure);
+        const acceptance = this.acceptedRemainder();
+        return acceptance === null
+          ? this.dispositions.unaccepted({ undischarged })
+          : this.dispositions.delegated({ undischarged, acceptance });
+      }
+    }
   }
 
-  private async settleInitially(
+  gate(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-  ): Promise<SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    const authorityBlocked = this.declinedEntries().some(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) !== 'delegable',
-    );
-    if (authorityBlocked) return this.gate(boundary, { kind: 'held', boundaryFailure: null });
-
-    const preparation = await this.prepareBoundary(boundary, null);
-    if (preparation.kind === 'declined') {
-      return this.gate(boundary, { kind: 'held', boundaryFailure: preparation.settlement });
-    }
-
-    const delegable = this.declinedEntries().filter(
-      ({ obligation }) => this.options.remainderRole(obligation.remainder) === 'delegable',
-    );
-    const acceptance = delegable.length === 0 ? null : this.acceptDelegatedRemainder(delegable);
-    if (delegable.length > 0 && acceptance === null) {
-      return this.gate(boundary, { kind: 'held', boundaryFailure: null });
-    }
-
-    const commit = await this.commitBoundary(boundary, preparation.token, null);
-    if (commit.kind === 'declined') {
-      return acceptance === null
-        ? this.gate(boundary, {
-            kind: 'held',
-            boundaryFailure: commit,
-            retry: () => this.retryCleanTransfer(boundary),
-          })
-        : this.gate(boundary, {
-            kind: 'transfer-pending',
-            acceptance,
-            failure: commit,
-          });
-    }
-    return this.gate(boundary, { kind: 'committed', acceptance });
-  }
-
-  async gate(
-    boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    resolution: GateResolution<
-      Acceptance,
-      SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>
-    > = { kind: 'initial' },
-  ): Promise<SettlementDisposition<Owner, Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    if (resolution.kind === 'held') {
-      return this.createHeldDisposition(boundary, resolution);
-    }
-    if (resolution.kind === 'committed') {
-      return resolution.acceptance === null
-        ? this.dispositions.settled()
-        : this.dispositions.delegated({
-            owner: this.options.delegatedOwner,
-            deferredFailures: this.options.acceptedFailures(resolution.acceptance),
-            acceptance: resolution.acceptance,
-          });
-    }
-    if (resolution.kind === 'transfer-pending') {
-      return this.createTransferPendingDisposition(boundary, resolution);
-    }
-    return this.settleInitially(boundary);
+  ): Promise<SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
+    return this.attemptBoundaryTransfer(boundary, null);
   }
 }

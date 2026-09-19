@@ -17,6 +17,7 @@ import {
   type DurableProcessCleanup,
   type DurableProcessRetention,
   type PendingDurableLaunch,
+  type SpawnDurableJobOptions,
 } from '#src/coordinator/live/durable-transport.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
@@ -110,7 +111,166 @@ function spawn(runtime: Runtime, paths: ReturnType<typeof durableFixturePaths>, 
   });
 }
 
+function startWrapperPublication(
+  callbacks: Pick<SpawnDurableJobOptions, 'onRuntimeRecord' | 'onDurableProcessIdentity'>,
+) {
+  const paths = durableFixturePaths('publication');
+  const launched = launchResult(paths);
+  const cleanup = deferred<{ kind: 'containment-absent' }>();
+  const readinessError = new Error('synthetic readiness failure');
+  const cleanupHandles = new Map<symbol, DurableProcessCleanup>();
+  const cleanupRetentions = new Map<DurableProcessCleanup, DurableProcessRetention>();
+  const pendingLaunches = new Set<PendingDurableLaunch>();
+  reapRecordedContainment.mockImplementationOnce(() => cleanup.promise);
+  const base = createRealRuntime('prod');
+  const runtime: Runtime = {
+    ...base,
+    process: {
+      ...base.process,
+      durable: {
+        launch: async (options) => {
+          options.onWrapperIdentified?.({
+            runtimeRecord: launched.runtimeRecord,
+            pid: launched.pid,
+            leaderIncarnation: launched.processSubject.incarnation,
+          });
+          throw readinessError;
+        },
+        waitForExit: () => new Promise<DurableProcessExit>(() => undefined),
+      },
+    },
+  };
+  const result = spawnDurableJobTransport({
+    runtime,
+    options: {
+      provider: 'codex',
+      command: 'fixture',
+      args: [],
+      jobId: 'observer-job',
+      jobDir: paths.jobDir,
+      ...callbacks,
+    },
+    pool: {} as LaunchPool,
+    ownership: callerOwnership(runtime, {} as LaunchPool),
+    cleanupHandles,
+    cleanupRetentions,
+    pendingLaunches,
+    releaseLaunch: vi.fn(),
+  });
+
+  return {
+    cleanup,
+    cleanupHandles,
+    cleanupRetentions,
+    pendingLaunches,
+    readinessError,
+    result,
+    launched,
+  };
+}
+
 describe('durable transport observer timing and cleanup ownership', () => {
+  it('names failed runtime publication and releases the pending launch after publishing identity', async () => {
+    const publicationError = new Error('synthetic runtime publication failure');
+    const onDurableProcessIdentity = vi.fn(() => ({ kind: 'published' as const }));
+    const fixture = startWrapperPublication({
+      onRuntimeRecord: () => {
+        throw publicationError;
+      },
+      onDurableProcessIdentity,
+    });
+    const rejection = fixture.result.catch((error: unknown) => error);
+
+    await vi.waitFor(() => expect(reapRecordedContainment).toHaveBeenCalledOnce());
+
+    expect(onDurableProcessIdentity).toHaveBeenCalledOnce();
+    expect(fixture.pendingLaunches.size).toBe(0);
+    expect(fixture.cleanupHandles.size).toBe(1);
+    expect([...fixture.cleanupRetentions.values()]).toEqual([
+      expect.objectContaining({
+        publication: {
+          kind: 'observed-unpublished',
+          owner: 'process-exit',
+          publicationLoss: 'runtime publication failed: synthetic runtime publication failure',
+        },
+      }),
+    ]);
+
+    fixture.cleanup.resolve({ kind: 'containment-absent' });
+    await expect(rejection).resolves.toBe(publicationError);
+  });
+
+  it.each([
+    {
+      label: 'retained',
+      publishIdentity: () => ({ kind: 'retained' as const, reason: 'synthetic identity retention' }),
+      expectedError: 'durable process identity publication retained: synthetic identity retention',
+    },
+    {
+      label: 'throwing',
+      publishIdentity: () => {
+        throw new Error('synthetic identity publication failure');
+      },
+      expectedError: 'synthetic identity publication failure',
+    },
+  ])(
+    'keeps a $label identity publication durably published and releases the pending launch',
+    async ({ publishIdentity, expectedError }) => {
+      const fixture = startWrapperPublication({
+        onRuntimeRecord: vi.fn(),
+        onDurableProcessIdentity: publishIdentity,
+      });
+      const rejection = fixture.result.catch((error: unknown) => error);
+
+      await vi.waitFor(() => expect(reapRecordedContainment).toHaveBeenCalledOnce());
+
+      expect(fixture.pendingLaunches.size).toBe(0);
+      expect(fixture.cleanupHandles.size).toBe(1);
+      expect([...fixture.cleanupRetentions.values()]).toEqual([
+        expect.objectContaining({
+          publication: {
+            kind: 'durably-published',
+            owner: 'successor-recovery',
+            evidence: {
+              kind: 'durable-cli-runtime',
+              jobId: 'observer-job',
+              pid: fixture.launched.runtimeRecord.pid,
+              leaderIncarnation: fixture.launched.processSubject.incarnation,
+            },
+          },
+        }),
+      ]);
+
+      fixture.cleanup.resolve({ kind: 'containment-absent' });
+      const error = await rejection;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe(expectedError);
+    },
+  );
+
+  it('keeps an absent runtime callback observed and names the missing proof', async () => {
+    const fixture = startWrapperPublication({
+      onDurableProcessIdentity: () => ({ kind: 'published' }),
+    });
+    const rejection = fixture.result.catch((error: unknown) => error);
+
+    await vi.waitFor(() => expect(reapRecordedContainment).toHaveBeenCalledOnce());
+
+    expect(fixture.pendingLaunches.size).toBe(0);
+    expect([...fixture.cleanupRetentions.values()]).toEqual([
+      expect.objectContaining({
+        publication: {
+          kind: 'observed-unpublished',
+          owner: 'process-exit',
+          publicationLoss: 'runtime publication callback is unavailable',
+        },
+      }),
+    ]);
+
+    fixture.cleanup.resolve({ kind: 'containment-absent' });
+    await expect(rejection).resolves.toBe(fixture.readinessError);
+  });
+
   it.each([60_000, 600_000])('does not consume idle budget during %dms of observer lateness', async (latenessMs) => {
     const paths = durableFixturePaths(`idle-${latenessMs}`);
     const launched = launchResult(paths);

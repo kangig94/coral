@@ -167,7 +167,7 @@ describe('coordinator continuity lifecycle integration', () => {
   });
 
   afterEach(() => {
-    launchCoordinator.terminateAll();
+    void launchCoordinator.settlePendingLaunches();
     rmSync(mockState.tmpHome, { recursive: true, force: true });
     vi.restoreAllMocks();
   });

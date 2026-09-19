@@ -5,7 +5,7 @@ import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { readBundleHash } from '../infra/bundle-manifest.js';
-import { errorMessage } from '../infra/error-format.js';
+import { errorMessage, SERIALIZED_THROWN_CAUSE_MAX_DEPTH, serializeThrown } from '../infra/error-format.js';
 import { isNoEntryError } from '../infra/fs-errors.js';
 import { isRecord } from '../infra/json.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
@@ -13,8 +13,6 @@ import { createRealRuntime } from '../runtime/real.js';
 import { isRetryableCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
 
 export type BootstrapDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
-
-const MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH = 8;
 
 /**
  * Wall-clock instant this process began, in ms, so it is comparable with the `recordedAt` another process
@@ -36,27 +34,12 @@ export function serializeBootstrapError(error: unknown, causeDepth = 0): Record<
     return {
       kind: 'coral_setup_error',
       ...setupError,
-      ...(nestedCause === undefined || nestedCause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
+      ...(nestedCause === undefined || nestedCause === null || causeDepth >= SERIALIZED_THROWN_CAUSE_MAX_DEPTH
         ? {}
         : { cause: serializeBootstrapError(nestedCause, causeDepth + 1) }),
     };
   }
-  if (error instanceof Error) {
-    return {
-      kind: 'error',
-      name: error.name,
-      message: error.message,
-      ...(error.stack === undefined ? {} : { stack: error.stack }),
-      // Nested causes must remain inspectable in the structured diagnostic; they never enter default public text.
-      ...(nestedCause === undefined || nestedCause === null || causeDepth >= MAX_BOOTSTRAP_ERROR_CAUSE_DEPTH
-        ? {}
-        : { cause: serializeBootstrapError(nestedCause, causeDepth + 1) }),
-    };
-  }
-  return {
-    kind: 'unknown',
-    message: String(error),
-  };
+  return serializeThrown(error, causeDepth, serializeBootstrapError);
 }
 
 /**

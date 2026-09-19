@@ -51,7 +51,22 @@ import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
-import { shutdownObligationSubjects } from '#src/obligation/shutdown-abandonment.js';
+
+// A literal copy of ShutdownObligationSubject's (src/obligation/shutdown-abandonment.ts) members: importing
+// that array here would let a member silently dropped from the schema shrink this expectation instead of
+// failing it.
+const KNOWN_SHUTDOWN_OBLIGATION_SUBJECTS = [
+  'recovery-coordinator-teardown',
+  'kb-child-shutdown',
+  'provider-operation-mutation-drain',
+  'provider-host-shutdown',
+  'child-termination',
+  'app-server-handoff-quiesce',
+  'provider-host-drain-for-handoff',
+  'process-incarnation-probe-shutdown',
+  'lifecycle-reactor-dispose',
+  'provider-control-and-ipc-authority-release',
+] as const;
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -421,7 +436,7 @@ describe('backend shutdown recovery commands', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it('names every accepted subject when an unknown one is given', async () => {
+  it('names the closed subject set for an unrecognized value, but no longer offers any subject in --help', async () => {
     const shutdownRecovery: ShutdownRecoveryCommandOperations = {
       abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(),
       status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
@@ -434,12 +449,12 @@ describe('backend shutdown recovery commands', () => {
       program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'abandon', 'not-a-held-obligation']),
     ).rejects.toThrow('not-a-held-obligation');
 
-    for (const subject of shutdownObligationSubjects) {
+    // see parseShutdownObligationSubject in src/cli/commands/backend.ts
+    for (const subject of KNOWN_SHUTDOWN_OBLIGATION_SUBJECTS) {
       expect(stderr).toContain(subject);
     }
     expect(shutdownRecovery.abandon).not.toHaveBeenCalled();
 
-    // The lifecycle-refusal remediation sends the operator to `--help` for the set, so it has to be there.
     const helpProgram = new Command();
     helpProgram.exitOverride();
     registerBackendCommands(helpProgram, { storeReset, shutdownRecovery });
@@ -447,8 +462,13 @@ describe('backend shutdown recovery commands', () => {
       helpProgram.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'abandon', '--help']),
     ).rejects.toThrow();
 
-    for (const subject of shutdownObligationSubjects) {
-      expect(stdout).toContain(subject);
+    // see abandonShutdownObligation in src/coordinator/lifecycle.ts
+    // --help must not read as a menu of subjects to pick from: it must say every attempt is refused
+    // regardless of which subject is named, and must name none of them.
+    expect(stdout).toContain('this coordinator offers none, so the attempt is refused');
+    expect(stdout).toContain('any value is refused');
+    for (const subject of KNOWN_SHUTDOWN_OBLIGATION_SUBJECTS) {
+      expect(stdout).not.toContain(subject);
     }
   });
 

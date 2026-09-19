@@ -24,7 +24,7 @@ interface AdminControlPort {
   isLaunchFenceActive(): boolean;
   beginRequest(): void;
   endRequest(): void;
-  requestDrain(reason: string): void;
+  requestDrain(reason: 'replaced'): void;
   probeKbDaemon?(): Promise<TransportKbDaemonHealthSnapshot>;
   restartKbDaemon?(reason: string): Promise<TransportKbDaemonHealthSnapshot>;
 }

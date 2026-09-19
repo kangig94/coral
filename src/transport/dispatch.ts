@@ -477,15 +477,17 @@ function providerHostAdministrationCopy(
       const owners = ownerIds.length === 0 ? 'one or more provider-host owners' : ownerIds.join(', ');
       const ownerPronoun = ownerIds.length === 1 ? 'it' : 'them';
       // The release is this coordinator's own act and says nothing about why it released.
-      const selected = workDir === null ? 'the selected provider host' : `any host for work directory ${workDir}`;
-      const subject = hostRefs[0] ?? selected;
+      // A POSIX path may contain any byte but NUL and '/', newline included, so workDir may not
+      // be interpolated into this prose: a rendered newline reads as a line `formatErrorEnvelope`
+      // did not write, indistinguishable from Coral's own output.
+      const subject = hostRefs[0] ?? 'the selected provider host';
       const exactReferenceExit =
         workDir === null
           ? ''
-          : 'Run `coral-cli backend provider-host list`; if the host you want is listed, use its exact reference with `inspect`/`evict` — an exact reference on an owner that answered is served now. ';
+          : 'Run `coral-cli backend provider-host list`; an exact reference on an owner that answered is served now, and `coral-cli backend provider-host inspect` with that exact reference reports it. ';
       return {
         message: `This coordinator has released administration control of ${owners} and can no longer ask ${ownerPronoun}, so it cannot say whether ${subject} exists on ${ownerPronoun}.`,
-        remediation: `${exactReferenceExit}Run \`coral-cli backend status\`. If the coordinator is draining, its successor re-establishes control; retry the original command once the successor serves. If the drain is held on the control release, end it with \`coral-cli backend shutdown-recovery abandon provider-control-and-ipc-authority-release\`. If it is not draining, \`coral-cli backend status\` reports the released set under its own token; resolve it with \`coral-cli backend provider-proxy-set contain <set-token>\` or \`coral-cli backend provider-proxy-set abandon <set-token>\`, or retry the original command once succession completes.`,
+        remediation: `${exactReferenceExit}Run \`coral-cli backend status\`. If it reports this coordinator as draining, the drain ends by itself once its budget is exhausted; retry the original command once status no longer reports it as shutting down. If it does not report draining, status instead reports the released set under its own token together with that set's exact next action; take the action status reports for that token.`,
       };
     }
     case 'provider_host_not_found':

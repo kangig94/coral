@@ -18,7 +18,7 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull } from '../../transport/http/backend/status.js';
+import type { BackendStatusFull, ShutdownRemainderReport } from '../../transport/http/backend/status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -689,22 +689,36 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
+// A shutdown remainder is additional evidence about a departed instance's undischarged obligations, carried
+// alongside — never instead of — whichever status observed the coordinator's current absence, ambiguity, or a
+// recent startup failure: the reader must end up with both what the coordinator's current state is and what
+// happens next.
+function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
+  return shutdownRemainder === undefined ? base : [base, formatShutdownRemainderReport(shutdownRemainder)].join('\n');
+}
+
 function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
       return formatRunningStatus(result.health);
     case 'no_record_no_socket':
-      return 'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.';
+      return withShutdownRemainderSection(
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+        result.shutdownRemainder,
+      );
     case 'recorded_process_absent':
-      return `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`;
+      return withShutdownRemainderSection(
+        `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+        result.shutdownRemainder,
+      );
     case 'undecodable_record':
       return formatUndecodableRecordStatus(result);
     case 'unreachable':
       return formatUnreachableStatus(result);
     case 'no_record_socket_present':
-      return formatNoRecordSocketPresentStatus(result);
+      return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
-      return formatRecentFailureStatus(result);
+      return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
@@ -1225,6 +1239,150 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
     return lines.join('\n');
   }
   return [...lines, ...formatSetupErrorLines(result.setupError)].join('\n');
+}
+
+function formatShutdownRemainderReport(report: ShutdownRemainderReport): string {
+  switch (report.status) {
+    case 'recent_shutdown_remainder':
+      return formatRecentShutdownRemainderReport(report);
+    case 'shutdown_remainder_unreadable':
+      return formatUnreadableShutdownRemainderReport(report);
+    default:
+      return assertNever(report);
+  }
+}
+
+function formatRecentShutdownRemainderReport(
+  result: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>,
+): string {
+  const lines = [
+    'Coral recorded a recent shutdown with unfinished obligations.',
+    `Instance: ${result.record.instanceId}`,
+    `Recorded at: ${result.record.recordedAt}`,
+    `Reason: ${result.record.reason}`,
+    `Mode: ${result.record.mode}`,
+  ];
+  for (const entry of result.record.entries) {
+    lines.push(
+      `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+      ...formatShutdownRemainderSubjectLines(entry.subject),
+      `  Owner: ${entry.remainder.owner}`,
+      ...formatShutdownSettlementLines(entry.settlement),
+      ...formatShutdownRemainderEvidenceLines(entry.remainder),
+    );
+  }
+  lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
+  lines.push(
+    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordNames, result.skippedUndecodableRecordCount),
+  );
+  return lines.join('\n');
+}
+
+function formatShutdownObligation(
+  obligation: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['obligation'],
+): string {
+  if (obligation === null) return 'unrecognized obligation';
+  switch (obligation.label) {
+    case 'stream response close':
+      return `${obligation.label} ${obligation.ordinal}`;
+    case 'provider proxy lifecycle fatal incident':
+      return `${obligation.label}${obligation.occurrence === 1 ? '' : ` ${obligation.occurrence}`}`;
+    default:
+      return obligation.label;
+  }
+}
+
+function formatShutdownRemainderSubjectLines(
+  subject: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['subject'],
+): string[] {
+  return subject === undefined ? [] : [`  Subject: ${subject.kind} sha256:${subject.sourceDigest}`];
+}
+
+function formatShutdownSettlementLines(
+  settlement: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['settlement'],
+): string[] {
+  const lines = [`  Cause: ${settlement.cause}`];
+  switch (settlement.cause) {
+    case 'rejected':
+    case 'aborted':
+      return [
+        ...lines,
+        `  Error: ${settlement.error.name ?? 'unavailable'}`,
+        ...(settlement.error.code === undefined ? [] : [`  Code: ${settlement.error.code}`]),
+      ];
+    case 'timed-out':
+      return [...lines, `  Budget: ${settlement.budgetMs}ms`];
+    case 'budget-exhausted':
+    case 'unconfirmed':
+      return lines;
+  }
+}
+
+function formatShutdownRemainderEvidenceLines(
+  remainder: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['remainder'],
+): string[] {
+  if (remainder.owner === 'process-exit') return [];
+  if (remainder.evidence.kind !== 'startup-adoption') return [`  Evidence: ${remainder.evidence.kind}`];
+  return [
+    '  Evidence: startup-adoption',
+    ...remainder.evidence.processes.flatMap((process) => [
+      `    Job: ${process.jobId}`,
+      `    PID: ${process.pid}`,
+      '    Leader incarnation: present',
+    ]),
+  ];
+}
+
+function formatUnreadableShutdownRemainderReport(
+  result: Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>,
+): string {
+  if (result.reason === 'scan-failed') {
+    return 'Coral could not inspect shutdown remainder records.';
+  }
+  return [
+    'Coral found shutdown remainder records it could not use.',
+    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordNames, result.skippedUndecodableRecordCount),
+  ].join('\n');
+}
+
+function formatSkippedShutdownRemainderEntries(
+  entries: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>['skippedEntries'],
+): string[] {
+  return entries.flatMap((entry) => [
+    `Skipped entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+    `  Owner: ${entry.owner ?? 'unavailable'}`,
+    '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
+  ]);
+}
+
+function formatSkippedShutdownRemainderRecords(unreadableNames: readonly string[], undecodableCount: number): string[] {
+  const lines: string[] = [];
+  if (unreadableNames.length > 0) {
+    lines.push(
+      `Skipped shutdown remainder records, unreadable: ${unreadableNames.length}`,
+      ...unreadableNames.map((name) => `  Record: ${name}`),
+      '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
+    );
+  }
+  if (undecodableCount > 0) {
+    lines.push(
+      `Skipped shutdown remainder records, undecodable: ${undecodableCount}`,
+      '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
+    );
+  }
+  return lines;
 }
 
 export function formatShutdown(result: ShutdownResult): string {

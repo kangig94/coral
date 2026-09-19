@@ -1047,7 +1047,10 @@ describe('ipc ensure', () => {
         expect(exitCode).toBe(75);
         expect(envelope.code).toBe('backend_shutting_down');
         expect(envelope.remediation).toContain('coral-cli backend status');
-        expect(envelope.remediation).toContain('coral-cli backend shutdown-recovery abandon');
+        expect(envelope.remediation).toContain(
+          "The CLI's 30s bounded wait for the coordinator address to be released expired.",
+        );
+        expect(envelope.remediation).not.toContain('coral-cli backend shutdown-recovery abandon');
       },
     );
 

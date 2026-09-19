@@ -11,6 +11,7 @@ import type { JobStore } from '../../jobs/store.js';
 import type { CoordinatorWorld } from './world.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from '../../jobs/scope.js';
+import type { ShutdownReason } from '../../infra/persisted-scalar-contracts.js';
 
 type CreateBackendControlDeps = {
   world: CoordinatorWorld;
@@ -30,7 +31,7 @@ export function createCoordinatorControl({
   abortJobs: (jobIds: string[]) => AbortResult;
   scopeCheckJobs: (jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation) => ScopeCheckResult;
   isDrainRequested: () => boolean;
-  requestDrain: (reason: string) => void;
+  requestDrain: (reason: ShutdownReason) => void;
 } {
   function abortJobs(jobIds: string[]): AbortResult {
     const pending = new Set(jobIds);
@@ -154,7 +155,7 @@ export function createCoordinatorControl({
   let drainRequested = false;
 
   const isDrainRequested = () => drainRequested;
-  const requestDrain = (reason: string) => {
+  const requestDrain = (reason: ShutdownReason) => {
     drainRequested = true;
     world.idleTimer.requestDrain(reason);
   };

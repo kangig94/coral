@@ -1,5 +1,8 @@
+import { constants as osConstants } from 'node:os';
+
 import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
+import { sha256Hex } from '../../../infra/hash.js';
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
@@ -15,10 +18,242 @@ import { createRealRuntime } from '../../../runtime/real.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
+import {
+  scanShutdownRemainderRecords,
+  shutdownRemainderRecordDirectory,
+  type DecodedShutdownRemainderRecord,
+  type ShutdownRemainderRecord,
+  type ShutdownRemainderRecordScan,
+} from '../../../infra/shutdown-remainder-record.js';
 
-const RECENT_STARTUP_DIAGNOSTIC_MS = 5 * 60_000;
+const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
+const OPERATOR_FACING_ERROR_NAMES = [
+  'AbortError',
+  'ActiveStoreCoordinationWriteError',
+  'ActiveStoreSelectionDecodeError',
+  'ActiveStoreTransitionDecodeError',
+  'AgentNamespaceNotFoundError',
+  'AgentNotFoundError',
+  'AggregateError',
+  'AssertionError',
+  'BackendAlreadyRunningError',
+  'BackendToolHttpError',
+  'BackendUnreachableError',
+  'ChildPrincipalBindingError',
+  'ClaudeBrokerRpcError',
+  'ClaudeControllerCleanupHeldError',
+  'CliBusyError',
+  'ConsumerDrainTimeout',
+  'ContainmentIdentityObservationError',
+  'ContinuityCommitDeliveryError',
+  'ControlAdmissionRefusedError',
+  'ControlClientError',
+  'ControlEndpointError',
+  'ControlHeartbeatRefusedError',
+  'CoordinatorRecoveryCommitError',
+  'CoordinatorSocketReleaseTimeout',
+  'CoralAppendError',
+  'CoralSetupError',
+  'CorpusScanLimitError',
+  'CurateJsonParseError',
+  'CurateRunError',
+  'DirectoryLockOwnershipLostError',
+  'DirectoryLockTimeoutError',
+  'DiscussManagerError',
+  'DiscussStaleWriteError',
+  'DiscussWatchReadError',
+  'DuplicateLaunchReservationError',
+  'EnforcementError',
+  'Error',
+  'FrameTooLargeError',
+  'FreshnessApplyFailure',
+  'FreshnessTimeout',
+  'FrontmatterMergeUnavailableError',
+  'GuardianConstructionCleanupHeldError',
+  'HandoffCapsuleError',
+  'HandoffEscalationError',
+  'HandoffGuardError',
+  'HandoffRunError',
+  'HttpBodyReadError',
+  'IncumbentMatchesError',
+  'InterruptedRecoveryCommitError',
+  'InvalidAgentRefError',
+  'IpcDeadlineExceededError',
+  'IpcDrainRequestUnanswered',
+  'IpcLifecycleRefusal',
+  'IpcRequestTimeout',
+  'IpcRpcError',
+  'JsonRpcLineTooLargeError',
+  'KiwiAnalyzerMissingArtifactError',
+  'KiwiAnalyzerTerminalLoadError',
+  'LedgerError',
+  'ProcessContainmentError',
+  'ProviderArtifactArchiveInvariantError',
+  'ProviderArtifactDefinitiveFailure',
+  'ProviderArtifactProtocolInvariantError',
+  'ProviderBindingRuntimeError',
+  'ProviderBootstrapCapsuleError',
+  'ProviderEventBackpressureError',
+  'ProviderEventDurableStateUncommittedError',
+  'ProviderEventIdentityMismatchError',
+  'ProviderEventInvalidSeqError',
+  'ProviderHostAdministrationError',
+  'ProviderHostFault',
+  'ProviderHostOwnerTornDown',
+  'ProviderHostUnserviceableError',
+  'ProviderHostUnserviceableResponseError',
+  'ProviderHostUnsupportedPlatformError',
+  'ProviderOperationAtomicTerminalizationError',
+  'ProviderOperationJournalError',
+  'ProviderOperationReconcilerFatalError',
+  'ProviderOperationRecordCodecError',
+  'ProviderOperationTerminalizationUnavailableError',
+  'ProviderOperationTerminalMetadataError',
+  'ProviderProxyEndpointError',
+  'ProviderProxyOperationControlHeldError',
+  'ProviderProxyRecoveryDeadlineError',
+  'ProviderProxyRoleControlRemoteError',
+  'ProviderProxyRoleControlUnavailableError',
+  'ProviderProxySetInheritanceCorruptionError',
+  'ProviderProxySetLifecycleFatalError',
+  'ProviderRpcError',
+  'ProviderSelectionError',
+  'ProviderServerLineTooLargeError',
+  'ProviderServerSpawnCleanupSettledError',
+  'ProxyControlProtocolError',
+  'ProxyProviderRootCapacityError',
+  'RangeError',
+  'RecoveryCoordinatorRequiredError',
+  'RecoveryOwnershipReleaseError',
+  'RecoveryQuarantineArgumentError',
+  'RecoveryQuarantineClearError',
+  'RecoveryQuarantineContractError',
+  'RecoveryQuarantineOperationError',
+  'ReplayAdmissionError',
+  'RepresentationDriveFencedError',
+  'RoleSpawnError',
+  'SemanticOperationAdmissionClosedError',
+  'SemanticOperationCancellationTimeoutError',
+  'SemanticOperationCancellationUnconfirmedError',
+  'SemanticOperationShutdownError',
+  'SessionClaimError',
+  'SocketDirectoryError',
+  'StartupStoreHandoffError',
+  'StoreCodecError',
+  'StoreDecodeError',
+  'StoreFormatChangedDuringAdoptionError',
+  'StoreResetCliError',
+  'StoreResetIncidentReadError',
+  'StoreResetManifestDecodeError',
+  'SyntaxError',
+  'SystemError',
+  'TerminalWriteError',
+  'TransientHttpError',
+  'TypeError',
+  'UnconfirmedClaudeOneShotCancellationError',
+  'UnconfirmedClaudeTurnCancellationError',
+  'UnknownControlMethodError',
+  'UnknownThrown',
+  'UnknownWorkflowRecoveryOutcome',
+  'UsageError',
+  'UserInputError',
+  'WaitResumeError',
+  'WorkDirectoryError',
+  'WorkflowExecutionError',
+  'WorkflowInputError',
+] as const;
+const OPERATOR_FACING_APPLICATION_ERROR_CODES = [
+  'ERR_BUFFER_TOO_LARGE',
+  'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+  'ERR_SQLITE_ERROR',
+] as const;
+type OperatorFacingErrorName = (typeof OPERATOR_FACING_ERROR_NAMES)[number];
+type OperatorFacingApplicationErrorCode = (typeof OPERATOR_FACING_APPLICATION_ERROR_CODES)[number];
+type OperatorFacingSystemErrorCode = keyof typeof osConstants.errno;
+type OperatorFacingErrorCode = OperatorFacingApplicationErrorCode | OperatorFacingSystemErrorCode;
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
+
+type OperatorFacingShutdownSettlement =
+  | Readonly<{
+      cause: 'rejected' | 'aborted';
+      error: Readonly<{ name?: OperatorFacingErrorName; code?: OperatorFacingErrorCode }>;
+    }>
+  | Readonly<{ cause: 'timed-out'; budgetMs: number }>
+  | Readonly<{ cause: 'budget-exhausted' | 'unconfirmed' }>;
+
+const OPERATOR_FACING_SHUTDOWN_LABELS = [
+  'app-server handoff quiesce',
+  'backend discovery withdrawal',
+  'child termination',
+  'components disposeAll',
+  'crashed job terminalization',
+  'discuss store dispose',
+  'hooks.onShutdown',
+  'inflight drain',
+  'kb child shutdown',
+  'lifecycle reactor dispose',
+  'ownership checker teardown',
+  'pending launch settlement',
+  'process incarnation probe shutdown',
+  'process-exit-remainder-acceptance',
+  'provider control and IPC authority release',
+  'provider host drain for handoff',
+  'provider host shutdown',
+  'provider operation mutation drain',
+  'recovery coordinator teardown',
+  'server close',
+  'server connection close',
+  'store epoch sweep cancellation',
+  'store services availability check',
+] as const;
+type OperatorFacingShutdownLabel = (typeof OPERATOR_FACING_SHUTDOWN_LABELS)[number];
+type OperatorFacingShutdownObligation =
+  | Readonly<{ label: OperatorFacingShutdownLabel }>
+  | Readonly<{ label: 'stream response close'; ordinal: number }>
+  | Readonly<{ label: 'provider proxy lifecycle fatal incident'; occurrence: number }>;
+
+type OperatorFacingShutdownSkippedEntry = Readonly<{
+  entryNumber: number;
+  obligation: OperatorFacingShutdownObligation | null;
+  owner: ShutdownRemainderRecord['entries'][number]['remainder']['owner'] | null;
+}>;
+
+type OperatorFacingShutdownRemainder =
+  | Readonly<{ owner: 'process-exit' }>
+  | Readonly<{
+      owner: 'successor-recovery';
+      evidence:
+        | Readonly<{
+            kind: 'startup-adoption';
+            processes: readonly Readonly<{
+              kind: 'durable-cli-runtime';
+              jobId: string;
+              pid: number;
+              // No other Coral surface publishes a comparable digest of a live incarnation, so presence is the
+              // whole claim this projection can support.
+              leaderIncarnation: Readonly<{ present: true }>;
+            }>[];
+          }>
+        | Readonly<{ kind: 'startup-store-recovery' }>
+        | Readonly<{ kind: 'startup-liveness-recovery' }>;
+    }>;
+
+type OperatorFacingShutdownRemainderSubject = Readonly<{ kind: 'discuss-store'; sourceDigest: string }>;
+
+type OperatorFacingShutdownRemainderRecord = Readonly<{
+  instanceId: string;
+  recordedAt: string;
+  reason: ShutdownRemainderRecord['reason'];
+  mode: ShutdownRemainderRecord['mode'];
+  entries: readonly Readonly<{
+    entryNumber: number;
+    obligation: OperatorFacingShutdownObligation | null;
+    subject?: OperatorFacingShutdownRemainderSubject;
+    remainder: OperatorFacingShutdownRemainder;
+    settlement: OperatorFacingShutdownSettlement;
+  }>[];
+}>;
 
 type BackendStatus =
   | {
@@ -44,11 +279,42 @@ type BackendStatus =
       status: 'shutting_down';
     };
 
+/**
+ * Evidence about a departed instance's undischarged shutdown obligations, carried alongside — never instead
+ * of — whichever status observed the coordinator's current absence, ambiguity, or a recent startup failure.
+ * `status` is this report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
+ *
+ * Neither skipped-record finding is age-scoped (design-philosophy.md principle 11): an 'unreadable' record's
+ * mtime proves nothing about its content, and an 'undecodable' one's mtime proves nothing about when it was
+ * written, so filtering either by recency would silently drop evidence this build never proved irrelevant to
+ * report. They stay two separate fields, of two different shapes, because their dispositions differ:
+ * 'unreadable' carries its filenames — the only evidence an operator-less reader has for a record this build
+ * never reclaims by content judgment, and the retention bound in `pruneShutdownRemainderRecords`
+ * (`src/coordinator/shutdown-remainder.ts`) is that hold's only exit — while 'undecodable' stays a bare count:
+ * its disposition (discard at the next coordinator startup) is decided and carried out by this build alone, so
+ * no reader action on its identity is possible or needed.
+ */
+export type ShutdownRemainderReport =
+  | Readonly<{
+      status: 'recent_shutdown_remainder';
+      record: OperatorFacingShutdownRemainderRecord;
+      skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
+      skippedUnreadableRecordNames: readonly string[];
+      skippedUndecodableRecordCount: number;
+    }>
+  | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
+  | Readonly<{
+      status: 'shutdown_remainder_unreadable';
+      reason: 'records-skipped';
+      skippedUnreadableRecordNames: readonly string[];
+      skippedUndecodableRecordCount: number;
+    }>;
+
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
   | { status: 'shutting_down' | 'unauthorized' }
-  | { status: 'no_record_no_socket' }
-  | { status: 'recorded_process_absent'; pid: number }
+  | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
+  | { status: 'recorded_process_absent'; pid: number; shutdownRemainder?: ShutdownRemainderReport }
   /**
    * An unreadable discovery record must not imply whether a coordinator is running: a truncated write or a
    * record shaped by a build this one rejects can both exist while a coordinator is serving.
@@ -98,7 +364,7 @@ export type BackendStatusFull =
    * A surviving coordinator socket must not become an absence result: it may belong to a boot in progress or
    * be a stale leftover.
    */
-  | { status: 'no_record_socket_present'; socketPath: string }
+  | { status: 'no_record_socket_present'; socketPath: string; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
@@ -109,12 +375,151 @@ export type BackendStatusFull =
        * never cross it. see `readOperatorFacingCoralSetupError` in src/runtime/errors.ts
        */
       setupError?: OperatorFacingCoralSetupError;
+      shutdownRemainder?: ShutdownRemainderReport;
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
+type RecentShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>;
+type ShutdownRemainderUnreadableStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
+type ShutdownRemainderEvidenceScope =
+  | Readonly<{ kind: 'directory' }>
+  | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
 
 function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
   return value === 'startup_failed' || value === 'fatal_shutdown_error' || value === 'bootstrap_unhandled_rejection';
+}
+
+const operatorFacingShutdownLabels = new Set<string>(OPERATOR_FACING_SHUTDOWN_LABELS);
+const operatorFacingErrorNames = new Set<string>(OPERATOR_FACING_ERROR_NAMES);
+const operatorFacingApplicationErrorCodes = new Set<string>(OPERATOR_FACING_APPLICATION_ERROR_CODES);
+// Constraint: system-call codes come from `node:os.constants.errno`; source literals cannot inventory runtime failures.
+const operatorFacingSystemErrorCodes = new Set<string>(Object.keys(osConstants.errno));
+
+function positiveSafeInteger(value: string): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function operatorFacingShutdownObligation(label: string): OperatorFacingShutdownObligation | null {
+  if (operatorFacingShutdownLabels.has(label)) return { label: label as OperatorFacingShutdownLabel };
+
+  const stream = /^stream response close ([1-9][0-9]*)$/u.exec(label);
+  if (stream !== null) {
+    const ordinal = positiveSafeInteger(stream[1] ?? '');
+    if (ordinal !== null) return { label: 'stream response close', ordinal };
+  }
+
+  if (label === 'provider proxy lifecycle fatal incident') {
+    return { label, occurrence: 1 };
+  }
+  // The producer never appends a numeral for occurrence 1 (`shutdownIncidentUndischarged`), so a bare "1" suffix
+  // here is malformed rather than a second occurrence; `[1-9][0-9]*` (not `[2-9][0-9]*`) is required because the
+  // excluded first digit rejected every occurrence with a leading 1 — 10-19, 100-199, and so on.
+  const incident = /^provider proxy lifecycle fatal incident ([1-9][0-9]*)$/u.exec(label);
+  if (incident !== null) {
+    const occurrence = positiveSafeInteger(incident[1] ?? '');
+    if (occurrence !== null && occurrence > 1) return { label: 'provider proxy lifecycle fatal incident', occurrence };
+  }
+
+  return null;
+}
+
+function operatorFacingErrorName(name: string): OperatorFacingErrorName | undefined {
+  return operatorFacingErrorNames.has(name) ? (name as OperatorFacingErrorName) : undefined;
+}
+
+function operatorFacingErrorCode(code: string | undefined): OperatorFacingErrorCode | undefined {
+  if (code === undefined) return undefined;
+  if (operatorFacingApplicationErrorCodes.has(code)) return code as OperatorFacingApplicationErrorCode;
+  return operatorFacingSystemErrorCodes.has(code) ? (code as OperatorFacingSystemErrorCode) : undefined;
+}
+
+function operatorFacingShutdownSettlement(
+  settlement: ShutdownRemainderRecord['entries'][number]['settlement'],
+): OperatorFacingShutdownSettlement {
+  switch (settlement.cause) {
+    case 'rejected':
+    case 'aborted': {
+      const nestedCause = settlement.error.kind === 'error' ? settlement.error.cause : undefined;
+      const error =
+        nestedCause !== undefined && operatorFacingErrorCode(nestedCause.code) !== undefined
+          ? nestedCause
+          : settlement.error;
+      const code = operatorFacingErrorCode(error.code);
+      const name = error.kind === 'error' ? operatorFacingErrorName(error.name) : 'UnknownThrown';
+      return {
+        cause: settlement.cause,
+        error: {
+          ...(name === undefined ? {} : { name }),
+          ...(code === undefined ? {} : { code }),
+        },
+      };
+    }
+    case 'timed-out':
+      return { cause: settlement.cause, budgetMs: settlement.budgetMs };
+    case 'budget-exhausted':
+    case 'unconfirmed':
+      return { cause: settlement.cause };
+  }
+}
+
+function operatorFacingShutdownRemainderOwner(
+  remainder: ShutdownRemainderRecord['entries'][number]['remainder'],
+): OperatorFacingShutdownRemainder {
+  if (remainder.owner === 'process-exit') return { owner: 'process-exit' };
+  switch (remainder.evidence.kind) {
+    case 'startup-adoption':
+      return {
+        owner: 'successor-recovery',
+        evidence: {
+          kind: 'startup-adoption',
+          processes: remainder.evidence.processes.map((process) => ({
+            kind: 'durable-cli-runtime',
+            jobId: process.jobId,
+            pid: process.pid,
+            leaderIncarnation: { present: true },
+          })),
+        },
+      };
+    case 'startup-store-recovery':
+      return { owner: 'successor-recovery', evidence: { kind: 'startup-store-recovery' } };
+    case 'startup-liveness-recovery':
+      return { owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } };
+  }
+}
+
+// The raw subject carries a discuss store's project source (a git remote path or a local directory name), which
+// is exactly the prose this boundary must not print. A digest lets a reader tell two entries' subjects apart —
+// same digest, same store; different digest, different store — without ever seeing the path itself.
+function operatorFacingShutdownRemainderSubject(
+  subject: ShutdownRemainderRecord['entries'][number]['subject'],
+): OperatorFacingShutdownRemainderSubject | undefined {
+  if (subject === undefined) return undefined;
+  switch (subject.kind) {
+    case 'discuss-store':
+      return { kind: 'discuss-store', sourceDigest: sha256Hex(subject.source) };
+  }
+}
+
+function operatorFacingShutdownRemainder(
+  record: DecodedShutdownRemainderRecord,
+): OperatorFacingShutdownRemainderRecord {
+  return {
+    instanceId: record.instanceId,
+    recordedAt: record.recordedAt,
+    reason: record.reason,
+    mode: record.mode,
+    entries: record.entries.map((entry) => {
+      const subject = operatorFacingShutdownRemainderSubject(entry.subject);
+      return {
+        entryNumber: entry.entryNumber,
+        obligation: operatorFacingShutdownObligation(entry.label),
+        ...(subject === undefined ? {} : { subject }),
+        remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
+        settlement: operatorFacingShutdownSettlement(entry.settlement),
+      };
+    }),
+  };
 }
 
 function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAuthorIdentity | null {
@@ -155,7 +560,7 @@ export function statusFromStartupDiagnostic(
     !Number.isFinite(recordedAt) ||
     recordedAt < earliestRecordedAt ||
     recordedAt > now ||
-    now - recordedAt > RECENT_STARTUP_DIAGNOSTIC_MS ||
+    now - recordedAt > RECENT_COORDINATOR_RECORD_MS ||
     (expectedPid !== undefined && value.pid !== expectedPid)
   ) {
     return null;
@@ -178,6 +583,76 @@ export function statusFromStartupDiagnostic(
   };
 }
 
+function readRecentShutdownRemainder(
+  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
+  runDir: string,
+  now: number,
+  scope: ShutdownRemainderEvidenceScope,
+): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
+  const directory = shutdownRemainderRecordDirectory(runDir);
+  if (!storage.existsSync(directory)) return null;
+  let scan: ShutdownRemainderRecordScan;
+  try {
+    scan = scanShutdownRemainderRecords(storage, directory);
+  } catch {
+    return scope.kind === 'directory' || scope.instanceId !== undefined
+      ? { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' }
+      : null;
+  }
+  // Constraint: neither skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
+  // 'unreadable' proves nothing about the content at all, and 'undecodable' proves nothing about when it was
+  // written, so an age filter on either would silently drop evidence this build never proved irrelevant. Scope
+  // narrowing (to a specific coordinator instance's own file, when one is known) is the only filter left.
+  const skippedRecordIsRelevant = ({ name }: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean =>
+    scope.kind === 'directory' || (scope.instanceId !== undefined && name === `${scope.instanceId}.json`);
+  const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
+  const skippedUnreadableRecordNames = scopedSkippedRecords
+    .filter(({ reason }) => reason === 'unreadable')
+    .map(({ name }) => name);
+  const skippedUndecodableRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'undecodable').length;
+  const record = scan.records
+    .flatMap((candidate) => {
+      const recordedAt = parseIsoTimestamp(candidate.recordedAt);
+      return Number.isFinite(recordedAt) &&
+        (scope.kind === 'directory' ||
+          (scope.instanceId !== undefined &&
+            candidate.instanceId === scope.instanceId &&
+            recordedAt >= scope.startedAt)) &&
+        recordedAt <= now &&
+        now - recordedAt <= RECENT_COORDINATOR_RECORD_MS
+        ? [{ candidate, recordedAt }]
+        : [];
+    })
+    .sort(
+      (left, right) =>
+        left.recordedAt - right.recordedAt || left.candidate.instanceId.localeCompare(right.candidate.instanceId),
+    )
+    .at(-1)?.candidate;
+  if (record === undefined) {
+    return scopedSkippedRecords.length > 0
+      ? {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedUnreadableRecordNames,
+          skippedUndecodableRecordCount,
+        }
+      : null;
+  }
+  return {
+    status: 'recent_shutdown_remainder',
+    record: operatorFacingShutdownRemainder(record),
+    skippedEntries: scan.skippedEntries
+      .filter((entry) => entry.recordInstanceId === record.instanceId)
+      .map((entry) => ({
+        entryNumber: entry.entryNumber,
+        obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+        owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
+      })),
+    skippedUnreadableRecordNames,
+    skippedUndecodableRecordCount,
+  };
+}
+
 function readRecentFailureDiagnostic(
   storage: Pick<StoragePort, 'readFileSync'>,
   diagnosticFile: string,
@@ -195,21 +670,46 @@ function readRecentFailureDiagnostic(
 }
 
 function noDaemonStatus(
-  storage: Pick<StoragePort, 'readFileSync'>,
+  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
   diagnosticFile: string,
+  runDir: string,
   now: number,
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   fallback: Extract<
     BackendStatusFull,
-    { status: 'no_record_no_socket' | 'recorded_process_absent' } | { cause: 'foreign_peer' }
+    | { status: 'no_record_no_socket' | 'recorded_process_absent' | 'no_record_socket_present' }
+    | { cause: 'foreign_peer' }
   >,
-  earliestRecordedAt?: number,
-  expectedPid?: number,
+  coordinator?: Readonly<{ instanceId?: string; startedAt: number; pid: number }>,
 ): BackendStatusFull {
-  return (
-    readRecentFailureDiagnostic(storage, diagnosticFile, now, provenSelfIdentity, earliestRecordedAt, expectedPid) ??
-    fallback
+  const diagnostic = readRecentFailureDiagnostic(
+    storage,
+    diagnosticFile,
+    now,
+    provenSelfIdentity,
+    coordinator?.startedAt,
+    coordinator?.pid,
   );
+  const remainderScope: ShutdownRemainderEvidenceScope =
+    coordinator === undefined
+      ? { kind: 'directory' }
+      : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt };
+  // A startup diagnostic is proof about this build's own instance regardless of who now answers the recorded
+  // address, and it carries the same optional `shutdownRemainder` field as every other fallback member, so it
+  // always runs through the remainder lookup below rather than returning early.
+  if (diagnostic !== null) {
+    const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
+    return shutdownRemainder === null ? diagnostic : { ...diagnostic, shutdownRemainder };
+  }
+  // `fallback`'s type carries only the `cause: 'foreign_peer'` member of `unreachable`, so this single
+  // discriminant fully identifies it without a second `.cause` check. A foreign peer proves something else is
+  // listening at the recorded address, so no remainder scoped to this build's own departed instance applies to
+  // it — it is the one member of `fallback`'s type with no `shutdownRemainder` field.
+  if (fallback.status === 'unreachable') return fallback;
+  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
+  // The remainder is additional evidence about a departed instance's obligations, never a replacement for
+  // whichever status above already proved that instance's current absence or ambiguity — a reader needs both.
+  return shutdownRemainder === null ? fallback : { ...fallback, shutdownRemainder };
 }
 
 /**
@@ -305,29 +805,36 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
-      return (
-        readRecentFailureDiagnostic(
-          runtime.storage,
-          runtime.paths.coral.coordinator.startupDiagnosticFile,
-          runtime.time.now(),
-          provenSelfIdentity,
-        ) ?? { status: 'no_record_socket_present', socketPath: observed.socketPath }
-      );
-    case 'process-absent':
-      // Diagnostic precedence must be scoped by both startedAt and pid; either alone can match another run.
+      // No recorded instanceId exists to scope a remainder to; a directory-wide, recency-only lookup is the
+      // same fallback `noDaemonStatus` already uses for `no-record`, and for the same reason: a departed
+      // instance's undischarged obligations remain relevant evidence whether or not something now holds the
+      // socket — a fresh boot recovering that very remainder is exactly the case `successor-recovery` evidence
+      // describes.
       return noDaemonStatus(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'no_record_socket_present', socketPath: observed.socketPath },
+      );
+    case 'process-absent':
+      // Startup diagnostics require both `startedAt` and `pid`; shutdown remainders require the recorded
+      // `instanceId`. Missing identity must never widen either lookup to directory-wide evidence.
+      return noDaemonStatus(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
         { status: 'recorded_process_absent', pid: observed.pid },
-        observed.startedAt,
-        observed.pid,
+        observed,
       );
     case 'addressed':
       break;
@@ -339,6 +846,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     noDaemonStatus(
       runtime.storage,
       runtime.paths.coral.coordinator.startupDiagnosticFile,
+      runtime.paths.coral.coordinator.runDir,
       runtime.time.now(),
       provenSelfIdentity,
       {
@@ -348,8 +856,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         pid: info.pid,
         recordPath: runtime.paths.coral.coordinator.infoFile,
       },
-      info.startedAt,
-      info.pid,
+      info,
     );
   // Both probes only ever call this after `fetch` resolved a response, so `cause` is unconditionally
   // `'responded'` here; the `catch` below is the one place a request never completed, and builds its own
