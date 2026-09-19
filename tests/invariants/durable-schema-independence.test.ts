@@ -36,6 +36,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/discuss/shell/recovery.ts#discussionResumeContinuationSchema',
   'src/expansion/manifest/schema.ts#persistedDeclarativeEngineManifestSchema',
   'src/infra/backend-discovery.ts#coordinatorDiscoveryRecordSchema',
+  'src/infra/error-format.ts#serializedThrownSchema',
   'src/infra/plugin-registry.ts#installedPluginsFileSchema',
   'src/infra/persisted-scalar-contracts.ts#persistedNonEmptyStringSchema',
   'src/infra/persisted-scalar-contracts.ts#persistedProcessIncarnationSchema',
@@ -153,7 +154,7 @@ const DURABLE_SCHEMA_REGISTRIES = new Set<SchemaKey>([
 const DURABLE_SCHEMA_COMPONENTS = new Set<SchemaKey>([
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableAcquisitionRecoverySubjectSchema',
   'src/discuss/session-types.ts#transcriptMetadataSchema',
-  'src/infra/shutdown-remainder-record.ts#serializedThrownShape',
+  'src/infra/error-format.ts#serializedThrownShape',
   'src/jobs/event-bodies.ts#providerHostRefIdentitySchema',
   'src/provider-proxy/bootstrap-capsule.ts#commonBootstrapCapsuleShape',
   'src/provider-proxy/bootstrap-capsule.ts#durableCanonicalEndpoint',

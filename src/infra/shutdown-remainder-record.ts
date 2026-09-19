@@ -2,63 +2,25 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import {
-  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+  serializedThrownIdentifierSchema,
+  serializedThrownSchema,
   thrownErrnoCode,
-  type SerializedThrown,
 } from './error-format.js';
 import { isRecord } from './json.js';
-import type { ProcessIncarnation } from './node-process.js';
-import {
-  persistedProcessIncarnationSchema,
-  SHUTDOWN_MODES,
-  SHUTDOWN_REASONS,
-  type ShutdownMode,
-  type ShutdownReason,
-} from './persisted-scalar-contracts.js';
+import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 
-type ShutdownRemainderSuccessorRecoveryEvidence =
-  | Readonly<{
-      kind: 'startup-adoption';
-      processes: readonly Readonly<{
-        kind: 'durable-cli-runtime';
-        jobId: string;
-        pid: number;
-        leaderIncarnation: ProcessIncarnation;
-      }>[];
-    }>
-  | Readonly<{ kind: 'startup-store-recovery' }>
-  | Readonly<{ kind: 'startup-liveness-recovery' }>;
+export type ShutdownRemainderSubject = z.infer<typeof shutdownRemainderSubjectSchema>;
 
-type ShutdownRemainderSettlement =
-  | Readonly<{ cause: 'rejected' | 'aborted'; error: SerializedThrown }>
-  | Readonly<{ cause: 'timed-out'; budgetMs: number }>
-  | Readonly<{ cause: 'budget-exhausted' }>
-  | Readonly<{ cause: 'unconfirmed'; detail: string }>;
-
-export type ShutdownRemainderSubject = Readonly<{ kind: 'discuss-store'; source: string }>;
-
-type ShutdownRemainderEntry = Readonly<{
-  label: string;
-  subject?: ShutdownRemainderSubject;
-  remainder:
-    | Readonly<{ owner: 'process-exit' }>
-    | Readonly<{ owner: 'successor-recovery'; evidence: ShutdownRemainderSuccessorRecoveryEvidence }>;
-  settlement: ShutdownRemainderSettlement;
-}>;
+type ShutdownRemainderEntry = z.infer<typeof shutdownRemainderEntrySchema>;
 
 type DecodedShutdownRemainderEntry = ShutdownRemainderEntry & Readonly<{ entryNumber: number }>;
 
-export type ShutdownRemainderRecord = Readonly<{
-  instanceId: string;
-  recordedAt: string;
-  reason: ShutdownReason;
-  mode: ShutdownMode;
-  entries: readonly ShutdownRemainderEntry[];
-}>;
+export type ShutdownRemainderRecord = Omit<z.infer<typeof shutdownRemainderRecordEnvelopeSchema>, 'entries'> &
+  Readonly<{ entries: readonly ShutdownRemainderEntry[] }>;
 
 export type DecodedShutdownRemainderRecord = Omit<ShutdownRemainderRecord, 'entries'> &
   Readonly<{ entries: readonly DecodedShutdownRemainderEntry[] }>;
@@ -109,11 +71,6 @@ const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LI
 // carries the same restrictive charset as the other identifier-shaped fields on that boundary rather than the
 // single-line-only `PERSISTED_SINGLE_LINE_PATTERN`, which still admits spaces, quotes, and other prose bytes.
 const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
-const persistedIdentifierSchema = z
-  .string()
-  .min(1)
-  .max(SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH)
-  .regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
 
 function readPersistedFact(value: unknown): string | null {
   const parsed = persistedFactSchema.safeParse(value);
@@ -121,151 +78,55 @@ function readPersistedFact(value: unknown): string | null {
 }
 
 function readPersistedIdentifier(value: unknown): string | null {
-  const parsed = persistedIdentifierSchema.safeParse(value);
+  const parsed = serializedThrownIdentifierSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 
-// Constraint: `serializedThrownSchema` is recursive (`cause` refers back to itself), and only a
-// `z.ZodType<X>`-annotated binding breaks that self-reference for the type checker — an un-annotated
-// `z.lazy(() => ...)` here reports "implicitly has type 'any' because it references itself" (measured). The
-// annotation freezes `serializedThrownSchema`'s own declared type to `SerializedThrown`, so a completeness guard
-// checked against `z.infer<typeof serializedThrownSchema>` would compare `SerializedThrown` to itself and catch
-// nothing; `serializedThrownShape` is factored out so the guard below checks its real, un-annotated return type.
-const serializedThrownShape = () =>
-  z.discriminatedUnion('kind', [
-    z
-      .object({
-        kind: z.literal('error'),
-        name: persistedIdentifierSchema,
-        code: persistedIdentifierSchema.optional(),
-        message: z.string(),
-        stack: z.string().optional(),
-        cause: serializedThrownSchema.optional(),
-      })
-      .passthrough(),
-    z
-      .object({
-        kind: z.literal('unknown'),
-        code: persistedIdentifierSchema.optional(),
-        message: z.string(),
-      })
-      .passthrough(),
-  ]);
-const serializedThrownSchema: z.ZodType<SerializedThrown> = z.lazy(serializedThrownShape);
+// Constraint: default stripping accepts additive durable keys without preserving unvalidated data for later use.
 const settlementSchema = z.discriminatedUnion('cause', [
-  z.object({ cause: z.literal('rejected'), error: serializedThrownSchema }).passthrough(),
-  z.object({ cause: z.literal('aborted'), error: serializedThrownSchema }).passthrough(),
-  z.object({ cause: z.literal('timed-out'), budgetMs: z.number().int().positive() }).passthrough(),
-  z.object({ cause: z.literal('budget-exhausted') }).passthrough(),
-  z.object({ cause: z.literal('unconfirmed'), detail: z.string() }).passthrough(),
-]) satisfies z.ZodType<ShutdownRemainderSettlement>;
-const shutdownRemainderSubjectSchema = z
-  .object({ kind: z.literal('discuss-store'), source: z.string() })
-  .passthrough() satisfies z.ZodType<ShutdownRemainderSubject>;
+  z.object({ cause: z.literal('rejected'), error: serializedThrownSchema }),
+  z.object({ cause: z.literal('aborted'), error: serializedThrownSchema }),
+  z.object({ cause: z.literal('timed-out'), budgetMs: z.number().int().positive() }),
+  z.object({ cause: z.literal('budget-exhausted') }),
+  z.object({ cause: z.literal('unconfirmed'), detail: z.string() }),
+]);
+const shutdownRemainderSubjectSchema = z.object({ kind: z.literal('discuss-store'), source: z.string() });
 const successorRecoveryEvidenceSchema = z.discriminatedUnion('kind', [
-  z
-    .object({
-      kind: z.literal('startup-adoption'),
-      processes: z
-        .array(
-          z
-            .object({
-              kind: z.literal('durable-cli-runtime'),
-              jobId: persistedIdentifierSchema,
-              pid: z.number().int().positive(),
-              leaderIncarnation: persistedProcessIncarnationSchema,
-            })
-            .passthrough(),
-        )
-        .readonly(),
-    })
-    .passthrough(),
-  z.object({ kind: z.literal('startup-store-recovery') }).passthrough(),
-  z.object({ kind: z.literal('startup-liveness-recovery') }).passthrough(),
-]) satisfies z.ZodType<ShutdownRemainderSuccessorRecoveryEvidence>;
-const shutdownRemainderEntrySchema = z
-  .object({
-    label: persistedFactSchema,
-    subject: shutdownRemainderSubjectSchema.optional(),
-    remainder: z.discriminatedUnion('owner', [
-      z.object({ owner: z.literal('process-exit') }).passthrough(),
-      z
-        .object({
-          owner: z.literal('successor-recovery'),
-          evidence: successorRecoveryEvidenceSchema,
-        })
-        .passthrough(),
-    ]),
-    settlement: settlementSchema,
-  })
-  .passthrough() satisfies z.ZodType<ShutdownRemainderEntry>;
-const shutdownRemainderRecordEnvelopeSchema = z
-  .object({
-    instanceId: persistedIdentifierSchema,
-    recordedAt: z.string().datetime(),
-    reason: z.enum(SHUTDOWN_REASONS),
-    mode: z.enum(SHUTDOWN_MODES),
-    entries: z.array(z.unknown()).readonly(),
-  })
-  .passthrough();
-/**
- * Constraint: a `z.ZodType<X>` type annotation on a `const` declaration freezes that binding's own declared
- * type to `X` — `z.infer<typeof binding>` then trivially equals `X` forever after, so checking it against `X`
- * again catches nothing (measured: a discriminated union missing an arm, or a narrower hand-copied enum, both
- * still compile under that pattern). `ExactlyMatches` requires assignability in both directions, so it fails to
- * compile the moment the checked type and the schema's real inferred type disagree on a required member or a
- * member's own type — provided the schema binding is NOT itself `z.ZodType<X>`-annotated. `shutdownRemainderRecordEnvelopeSchema`
- * (`reason`/`mode`) and the five below (`satisfies z.ZodType<X>` instead of `: z.ZodType<X>`, or — for the
- * recursive `serializedThrownSchema` — the factored, un-annotated `serializedThrownShape`) all keep their real
- * inferred type reachable through `z.infer` for exactly this reason.
- *
- * Constraint: neither `Mutual<A, B>` (direct mutual assignability) nor `Mutual<Required<A>, Required<B>>`
- * catches every divergence alone — each misses exactly what the other one is for, so `ExactlyMatches` requires
- * both.
- *
- * `Mutual<A, B>` misses an **optional member present on only one side**: an object lacking an optional
- * property is structurally assignable to, and from, one that carries it (measured: adding
- * `subject?: ShutdownRemainderSubject` to `ShutdownRemainderEntry` while leaving it out of
- * `shutdownRemainderEntrySchema`, and the reverse, both still satisfy `[A] extends [B] ? [B] extends [A]`).
- * Wrapping each side in `Required<...>` catches that: a member missing on one side becomes a required member
- * that side does not have at all, which mutual assignability does reject.
- *
- * But `Required<...>` strips the optional modifier from a member **present on both sides**, so a member
- * required on one side and optional on the other becomes identical on both after wrapping, and
- * `Mutual<Required<A>, Required<B>>` alone accepts it (measured: a schema field made `.optional()` while the
- * TypeScript type keeps it required compiles clean under the `Required<...>`-wrapped comparison by itself).
- * That is exactly the edit design-philosophy.md §10 forbids by name — a field "may not be … made newly
- * required" — so a `Required<...>`-only guard would be blind to a prohibited edit while catching only the
- * sanctioned one (adding an optional member). `Mutual<A, B>`, required to hold first, still sees this
- * divergence: a member required on one side and absent from the other is not directly assignable in the
- * direction that lacks it.
- */
-type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
-type ExactlyMatches<A, B> = Mutual<A, B> extends true ? Mutual<Required<A>, Required<B>> : false;
-const _shutdownReasonStaysSynced: ExactlyMatches<
-  ShutdownReason,
-  z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['reason']
-> = true;
-const _shutdownModeStaysSynced: ExactlyMatches<
-  ShutdownMode,
-  z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['mode']
-> = true;
-type SerializedThrownRealShape =
-  ReturnType<typeof serializedThrownShape> extends z.ZodType<infer Output> ? Output : never;
-const _serializedThrownStaysSynced: ExactlyMatches<SerializedThrown, SerializedThrownRealShape> = true;
-const _settlementStaysSynced: ExactlyMatches<ShutdownRemainderSettlement, z.infer<typeof settlementSchema>> = true;
-const _shutdownRemainderSubjectStaysSynced: ExactlyMatches<
-  ShutdownRemainderSubject,
-  z.infer<typeof shutdownRemainderSubjectSchema>
-> = true;
-const _successorRecoveryEvidenceStaysSynced: ExactlyMatches<
-  ShutdownRemainderSuccessorRecoveryEvidence,
-  z.infer<typeof successorRecoveryEvidenceSchema>
-> = true;
-const _shutdownRemainderEntryStaysSynced: ExactlyMatches<
-  ShutdownRemainderEntry,
-  z.infer<typeof shutdownRemainderEntrySchema>
-> = true;
+  z.object({
+    kind: z.literal('startup-adoption'),
+    processes: z
+      .array(
+        z.object({
+          kind: z.literal('durable-cli-runtime'),
+          jobId: serializedThrownIdentifierSchema,
+          pid: z.number().int().positive(),
+          leaderIncarnation: persistedProcessIncarnationSchema,
+        }),
+      )
+      .readonly(),
+  }),
+  z.object({ kind: z.literal('startup-store-recovery') }),
+  z.object({ kind: z.literal('startup-liveness-recovery') }),
+]);
+const shutdownRemainderEntrySchema = z.object({
+  label: persistedFactSchema,
+  subject: shutdownRemainderSubjectSchema.optional(),
+  remainder: z.discriminatedUnion('owner', [
+    z.object({ owner: z.literal('process-exit') }),
+    z.object({
+      owner: z.literal('successor-recovery'),
+      evidence: successorRecoveryEvidenceSchema,
+    }),
+  ]),
+  settlement: settlementSchema,
+});
+const shutdownRemainderRecordEnvelopeSchema = z.object({
+  instanceId: serializedThrownIdentifierSchema,
+  recordedAt: z.string().datetime(),
+  reason: z.enum(SHUTDOWN_REASONS),
+  mode: z.enum(SHUTDOWN_MODES),
+  entries: z.array(z.unknown()).readonly(),
+});
 
 export function decodeShutdownRemainderRecord(value: unknown):
   | Readonly<{

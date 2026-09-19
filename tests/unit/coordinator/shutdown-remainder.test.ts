@@ -192,7 +192,7 @@ describe('shutdown remainder status', () => {
     },
   );
 
-  it('keeps rejected-error prose and its cause chain in the private record', () => {
+  it('strictly round-trips rejected-error prose and its cause chain in the private record', () => {
     const storage = storageWith();
     const error = {
       kind: 'error',
@@ -202,6 +202,13 @@ describe('shutdown remainder status', () => {
       stack: 'Error: Please delete ~/.coral and restart.\n    at shutdown',
       cause: { kind: 'error', name: 'Error', code: 'ENOENT', message: 'executable missing' },
     } as const;
+    const undischarged = [
+      {
+        label: 'hooks.onShutdown',
+        remainder: { owner: 'process-exit' },
+        settlement: { cause: 'rejected', error },
+      },
+    ] as const;
 
     expect(
       recordShutdownRemainder(
@@ -210,19 +217,23 @@ describe('shutdown remainder status', () => {
           instanceId: 'current-instance',
           reason: 'sigterm',
           mode: 'handoff',
-          undischarged: [
-            {
-              label: 'hooks.onShutdown',
-              remainder: { owner: 'process-exit' },
-              settlement: { cause: 'rejected', error },
-            },
-          ],
+          undischarged,
         },
       ),
     ).toBe(true);
 
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      records: [{ entries: [{ settlement: { cause: 'rejected', error } }] }],
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toStrictEqual({
+      records: [
+        {
+          instanceId: 'current-instance',
+          recordedAt: '2026-09-07T00:00:00.000Z',
+          reason: 'sigterm',
+          mode: 'handoff',
+          entries: undischarged.map((entry, index) => ({ ...entry, entryNumber: index + 1 })),
+        },
+      ],
+      skippedEntries: [],
+      skippedRecords: [],
     });
   });
 
@@ -493,12 +504,13 @@ describe('shutdown remainder status', () => {
       }),
     ]);
 
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toStrictEqual({
       records: [
         {
-          ...recordAt('older-instance'),
+          ...recordAt('older-instance', []),
           entries: [
             {
+              entryNumber: 1,
               label: 'future-compatible loss',
               remainder: {
                 owner: 'successor-recovery',
@@ -788,6 +800,13 @@ describe('shutdown remainder status', () => {
       cleanupFailures: 0,
       owner: 'launch-coordinator',
     });
+    const undischarged = [
+      {
+        label: 'child termination',
+        remainder,
+        settlement: { cause: 'timed-out', budgetMs: 5_000 },
+      },
+    ] as const;
 
     expect(
       recordShutdownRemainder(
@@ -796,31 +815,21 @@ describe('shutdown remainder status', () => {
           instanceId: 'current-instance',
           reason: 'test-teardown',
           mode: 'hard',
-          undischarged: [
-            {
-              label: 'child termination',
-              remainder,
-              settlement: { cause: 'timed-out', budgetMs: 5_000 },
-            },
-          ],
+          undischarged,
         },
       ),
     ).toBe(true);
 
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toStrictEqual({
       skippedEntries: [],
+      skippedRecords: [],
       records: [
         {
           instanceId: 'current-instance',
-          entries: [
-            {
-              label: 'child termination',
-              remainder: {
-                owner: 'successor-recovery',
-                evidence: { kind: 'startup-adoption', processes: [evidence] },
-              },
-            },
-          ],
+          recordedAt: '2026-09-07T00:00:00.000Z',
+          reason: 'test-teardown',
+          mode: 'hard',
+          entries: undischarged.map((entry, index) => ({ ...entry, entryNumber: index + 1 })),
         },
       ],
     });

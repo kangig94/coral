@@ -1,7 +1,15 @@
+import { z } from 'zod';
+
 import { isRecord } from './json.js';
 
 export const SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH = 128;
 export const SERIALIZED_THROWN_IDENTIFIER_PATTERN = /^[A-Za-z0-9_.:-]+$/u;
+
+export const serializedThrownIdentifierSchema = z
+  .string()
+  .min(1)
+  .max(SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH)
+  .regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
 
 export const SERIALIZED_THROWN_CAUSE_MAX_DEPTH = 8;
 
@@ -26,6 +34,38 @@ export type SerializedThrown =
       cause?: SerializedThrown;
     }>
   | Readonly<{ kind: 'unknown'; code?: string; message: string }>;
+
+const serializedThrownShape = () =>
+  z.discriminatedUnion('kind', [
+    z.object({
+      kind: z.literal('error'),
+      name: serializedThrownIdentifierSchema,
+      code: serializedThrownIdentifierSchema.optional(),
+      message: z.string(),
+      stack: z.string().optional(),
+      cause: serializedThrownSchema.optional(),
+    }),
+    z.object({
+      kind: z.literal('unknown'),
+      code: serializedThrownIdentifierSchema.optional(),
+      message: z.string(),
+    }),
+  ]);
+
+export const serializedThrownSchema: z.ZodType<SerializedThrown> = z.lazy(serializedThrownShape);
+
+type Primitive = string | number | boolean | bigint | symbol | null | undefined;
+type DeepRequired<T> = T extends Primitive
+  ? T
+  : T extends (...args: never[]) => unknown
+    ? T
+    : T extends readonly (infer Item)[]
+      ? readonly DeepRequired<Item>[]
+      : { [K in keyof T]-?: DeepRequired<T[K]> };
+
+type SerializedThrownSchemaShape = z.infer<ReturnType<typeof serializedThrownShape>>;
+const _serializedThrownTypeFitsSchema: DeepRequired<SerializedThrownSchemaShape> = {} as DeepRequired<SerializedThrown>;
+const _serializedThrownSchemaFitsType: DeepRequired<SerializedThrown> = {} as DeepRequired<SerializedThrownSchemaShape>;
 
 type SerializeCause<Cause> = (error: unknown, causeDepth: number) => Cause;
 
