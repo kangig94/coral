@@ -3,6 +3,8 @@ import { assertNever, isSystemErrorCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import {
+  sanitizeShutdownRemainderCleanupSubject,
+  SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
   type ShutdownRemainderCleanupRefusal,
 } from '../../../infra/shutdown-remainder-record.js';
@@ -54,9 +56,6 @@ type TransportRuntimeComponentStatus =
     };
 
 type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
-
-const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH = 4096;
-const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 
 type TransportKbDaemonPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
@@ -732,29 +731,60 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
   );
 }
 
-function isShutdownRemainderCleanupRefusal(value: unknown): value is ShutdownRemainderCleanupRefusal {
-  if (!isRecord(value) || !isRecord(value.cause) || !isRecord(value.retry)) return false;
+function parseShutdownRemainderCleanupRefusal(value: unknown): ShutdownRemainderCleanupRefusal | null {
+  if (!isRecord(value) || !isRecord(value.cause) || !isRecord(value.retry)) return null;
+  const rawSubject = value.subject;
+  const subject = typeof rawSubject === 'string' ? sanitizeShutdownRemainderCleanupSubject(rawSubject) : null;
   const operation = value.cause.operation;
-  const causeIsValid =
-    (value.cause.kind === 'system-error' &&
-      typeof value.cause.code === 'string' &&
-      isSystemErrorCode(value.cause.code)) ||
-    value.cause.kind === 'unclassified-error';
-  return (
-    typeof value.subject === 'string' &&
-    value.subject.length > 0 &&
-    value.subject.length <= SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH &&
-    SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_PATTERN.test(value.subject) &&
-    (operation === 'delete' || operation === 'promote' || operation === 'scan-directory') &&
-    causeIsValid &&
-    value.retry.trigger === 'remainder-maintenance' &&
-    (value.retry.action === 'rescan-subject' || value.retry.action === 'rescan-directory')
-  );
+  const action = value.retry.action;
+  if (
+    subject === null ||
+    subject !== rawSubject ||
+    rawSubject.length > SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH ||
+    (operation !== 'delete' && operation !== 'promote' && operation !== 'scan-directory') ||
+    value.retry.trigger !== 'remainder-maintenance' ||
+    (action !== 'rescan-subject' && action !== 'rescan-directory')
+  ) {
+    return null;
+  }
+  if (value.cause.kind === 'system-error') {
+    if (typeof value.cause.code !== 'string' || !isSystemErrorCode(value.cause.code)) return null;
+    return {
+      subject,
+      cause: { kind: 'system-error', operation, code: value.cause.code },
+      retry: { trigger: 'remainder-maintenance', action },
+    };
+  }
+  if (value.cause.kind !== 'unclassified-error') return null;
+  return {
+    subject,
+    cause: { kind: 'unclassified-error', operation },
+    retry: { trigger: 'remainder-maintenance', action },
+  };
+}
+
+type CleanupRefusalsParseResult = Readonly<{
+  refusals: readonly ShutdownRemainderCleanupRefusal[];
+  unreportedCount: number;
+}>;
+
+function parseShutdownRemainderCleanupRefusals(value: unknown): CleanupRefusalsParseResult | null {
+  if (!Array.isArray(value) || value.length > SHUTDOWN_REMAINDER_SCAN_LIMIT) return null;
+  const refusals: ShutdownRemainderCleanupRefusal[] = [];
+  for (const candidate of value) {
+    const refusal = parseShutdownRemainderCleanupRefusal(candidate);
+    if (refusal !== null) refusals.push(refusal);
+  }
+  return { refusals, unreportedCount: value.length - refusals.length };
 }
 
 export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
+  if (!isRecord(value)) return null;
+  const cleanupRefusals =
+    value.shutdownRemainderCleanupRefusals === undefined
+      ? null
+      : parseShutdownRemainderCleanupRefusals(value.shutdownRemainderCleanupRefusals);
   if (
-    !isRecord(value) ||
     (value.status !== 'starting' && value.status !== 'ok' && value.status !== 'draining') ||
     !isKernel(value.kernel) ||
     typeof value.version !== 'string' ||
@@ -771,10 +801,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     (value.resources !== undefined && !isResources(value.resources)) ||
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
-    (value.shutdownRemainderCleanupRefusals !== undefined &&
-      (!Array.isArray(value.shutdownRemainderCleanupRefusals) ||
-        value.shutdownRemainderCleanupRefusals.length > SHUTDOWN_REMAINDER_SCAN_LIMIT ||
-        !value.shutdownRemainderCleanupRefusals.every(isShutdownRemainderCleanupRefusal))) ||
+    (value.shutdownRemainderCleanupRefusals !== undefined && cleanupRefusals === null) ||
     (value.unreportedShutdownRemainderCleanupRefusalCount !== undefined &&
       (typeof value.unreportedShutdownRemainderCleanupRefusalCount !== 'number' ||
         !Number.isSafeInteger(value.unreportedShutdownRemainderCleanupRefusalCount) ||
@@ -793,6 +820,19 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
   return {
     health: {
       ...value,
+      ...(cleanupRefusals === null
+        ? {}
+        : {
+            shutdownRemainderCleanupRefusals: cleanupRefusals.refusals,
+            ...(cleanupRefusals.unreportedCount === 0
+              ? {}
+              : {
+                  unreportedShutdownRemainderCleanupRefusalCount: Math.min(
+                    Number.MAX_SAFE_INTEGER,
+                    (value.unreportedShutdownRemainderCleanupRefusalCount ?? 0) + cleanupRefusals.unreportedCount,
+                  ),
+                }),
+          }),
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
     } as BackendHealth,
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,

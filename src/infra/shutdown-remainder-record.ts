@@ -16,6 +16,22 @@ import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 export const SHUTDOWN_REMAINDER_SCAN_LIMIT = 128;
+export const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH = 4096;
+
+export type ShutdownRemainderCleanupSubject = string;
+
+const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_UNSAFE_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
+
+/** NUL cannot identify a POSIX path; every other operator-unsafe code point must be replaced before transport. */
+export function sanitizeShutdownRemainderCleanupSubject(subject: string): ShutdownRemainderCleanupSubject | null {
+  if (subject.length === 0 || subject.includes('\0')) return null;
+  const sanitized = subject.replace(SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_UNSAFE_PATTERN, '\uFFFD');
+  const bounded =
+    sanitized.length <= SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH
+      ? sanitized
+      : sanitized.slice(0, SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH).replace(/[\uD800-\uDBFF]$/u, '');
+  return bounded;
+}
 
 type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
   ? Value
@@ -114,7 +130,7 @@ const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LI
 const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
 
 export type ShutdownRemainderCleanupRefusal = Readonly<{
-  subject: string;
+  subject: ShutdownRemainderCleanupSubject;
   cause:
     | Readonly<{ kind: 'system-error'; operation: 'delete' | 'promote' | 'scan-directory'; code: string }>
     | Readonly<{ kind: 'unclassified-error'; operation: 'delete' | 'promote' | 'scan-directory' }>;
@@ -133,8 +149,10 @@ export function shutdownRemainderCleanupRefusal(
 ): ShutdownRemainderCleanupRefusal | null {
   const code = thrownErrnoCode(error);
   if (code === 'ENOENT') return null;
+  const cleanupSubject = sanitizeShutdownRemainderCleanupSubject(subject);
+  if (cleanupSubject === null) return null;
   return {
-    subject,
+    subject: cleanupSubject,
     cause:
       code !== undefined && isSystemErrorCode(code)
         ? { kind: 'system-error', operation, code }

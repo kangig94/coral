@@ -6,7 +6,11 @@ import type {
   AssertIncidentCoversDispositionCauses,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '#src/infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH,
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderCleanupRefusal,
+} from '#src/infra/shutdown-remainder-record.js';
 import {
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
@@ -95,7 +99,63 @@ describe('/health typed shape (AC10a)', () => {
     ).toBe(true);
   });
 
-  it('rejects unbounded or output-unsafe shutdown remainder cleanup refusals at ingress', () => {
+  it('omits one malformed cleanup refusal without rejecting unrelated health fields', () => {
+    const refusal = {
+      subject: 'corrupt.json',
+      cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
+    };
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [refusal, { ...refusal, subject: 'unsafe\n.json' }],
+        unreportedShutdownRemainderCleanupRefusalCount: 2,
+      })?.health,
+    ).toEqual({
+      ...HEALTHY_BASE,
+      shutdownRemainderCleanupRefusals: [refusal],
+      unreportedShutdownRemainderCleanupRefusalCount: 3,
+    });
+  });
+
+  it.each([
+    ['line feed', 'unsafe\n.json', 'unsafe\uFFFD.json'],
+    ['delete control', 'unsafe\x7f.json', 'unsafe\uFFFD.json'],
+  ])('round-trips a producer refusal whose filename contains a %s', (_case, subject, expectedSubject) => {
+    const refusal = shutdownRemainderCleanupRefusal(subject, 'delete', 'rescan-subject', { code: 'EACCES' });
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [refusal],
+      })?.health.shutdownRemainderCleanupRefusals,
+    ).toEqual([
+      {
+        subject: expectedSubject,
+        cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+        retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
+      },
+    ]);
+  });
+
+  it('round-trips an absolute scan-directory refusal subject unchanged', () => {
+    const refusal = shutdownRemainderCleanupRefusal(
+      '/run/coral/shutdown-remainder.v1',
+      'scan-directory',
+      'rescan-directory',
+      { code: 'EACCES' },
+    );
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [refusal],
+      })?.health.shutdownRemainderCleanupRefusals,
+    ).toEqual([refusal]);
+  });
+
+  it('rejects unbounded cleanup refusal collections or invalid unreported counts', () => {
     const refusal = {
       subject: 'corrupt.json',
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
@@ -107,36 +167,6 @@ describe('/health typed shape (AC10a)', () => {
         shutdownRemainderCleanupRefusals: Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, () => refusal),
       }),
     ).toBe(false);
-    expect(
-      isBackendHealth({
-        ...HEALTHY_BASE,
-        shutdownRemainderCleanupRefusals: [{ ...refusal, cause: { ...refusal.cause, code: 'EACCES\ninjected' } }],
-      }),
-    ).toBe(false);
-    expect(
-      isBackendHealth({
-        ...HEALTHY_BASE,
-        shutdownRemainderCleanupRefusals: [{ ...refusal, cause: { ...refusal.cause, code: 'NOT_A_SYSTEM_ERRNO' } }],
-      }),
-    ).toBe(false);
-    expect(
-      isBackendHealth({
-        ...HEALTHY_BASE,
-        shutdownRemainderCleanupRefusals: [{ ...refusal, subject: 'x'.repeat(4097) }],
-      }),
-    ).toBe(false);
-    expect(
-      isBackendHealth({
-        ...HEALTHY_BASE,
-        shutdownRemainderCleanupRefusals: [{ ...refusal, subject: 'corrupt.json\ninjected' }],
-      }),
-    ).toBe(false);
-    expect(
-      isBackendHealth({
-        ...HEALTHY_BASE,
-        shutdownRemainderCleanupRefusals: [{ ...refusal, retry: { ...refusal.retry, action: 'retry-delete' } }],
-      }),
-    ).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, unreportedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(
       isBackendHealth({
@@ -144,6 +174,32 @@ describe('/health typed shape (AC10a)', () => {
         unreportedShutdownRemainderCleanupRefusalCount: Number.MAX_SAFE_INTEGER + 1,
       }),
     ).toBe(false);
+  });
+
+  it.each([
+    { cause: { kind: 'system-error', operation: 'delete', code: 'EACCES\ninjected' } },
+    { cause: { kind: 'system-error', operation: 'delete', code: 'NOT_A_SYSTEM_ERRNO' } },
+    { subject: 'x'.repeat(SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH + 1) },
+    { subject: 'corrupt.json\ninjected' },
+    { retry: { trigger: 'remainder-maintenance', action: 'retry-delete' } },
+  ])('counts an individually malformed cleanup refusal as unreported', (override) => {
+    const refusal = {
+      subject: 'corrupt.json',
+      cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
+      ...override,
+    };
+
+    expect(
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [refusal],
+      })?.health,
+    ).toEqual({
+      ...HEALTHY_BASE,
+      shutdownRemainderCleanupRefusals: [],
+      unreportedShutdownRemainderCleanupRefusalCount: 1,
+    });
   });
 
   it('accepts only a redacted named system provider scope', () => {

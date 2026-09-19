@@ -18,6 +18,7 @@ import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.
 import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   observeShutdownRemainderStageWriter,
+  sanitizeShutdownRemainderCleanupSubject,
   scanShutdownRemainderRecords,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
   shutdownRemainderCleanupRefusal,
@@ -647,7 +648,7 @@ function readRecentShutdownRemainder(
   unreportedCleanupRefusalCount = 0,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
-  const enumeration = { names: null as ReadonlySet<string> | null };
+  const enumeration = { names: null as ReadonlySet<string> | null, entryCount: 0 };
   const currentCleanupRefusals = (): Readonly<{
     refusals: readonly ShutdownRemainderCleanupRefusal[];
     unreportedCount: number;
@@ -659,13 +660,19 @@ function readRecentShutdownRemainder(
     const refusals = cleanupRefusals.filter(({ subject }) => names.has(subject));
     return {
       refusals,
-      unreportedCount: Math.min(unreportedCleanupRefusalCount, Math.max(0, names.size - refusals.length)),
+      unreportedCount: Math.min(unreportedCleanupRefusalCount, Math.max(0, enumeration.entryCount - refusals.length)),
     };
   };
   let scan: ShutdownRemainderRecordScan;
   try {
     scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, (names) => {
-      enumeration.names = new Set(names);
+      enumeration.entryCount = names.length;
+      enumeration.names = new Set(
+        names.flatMap((name) => {
+          const subject = sanitizeShutdownRemainderCleanupSubject(name);
+          return subject === null ? [] : [subject];
+        }),
+      );
     });
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', 'rescan-directory', error);
@@ -681,7 +688,7 @@ function readRecentShutdownRemainder(
       const current = currentCleanupRefusals();
       const reportedCleanupRefusals = current.refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
       let unreportedCount = current.unreportedCount;
-      const currentSubjectIndex = reportedCleanupRefusals.findIndex(({ subject }) => subject === directory);
+      const currentSubjectIndex = reportedCleanupRefusals.findIndex(({ subject }) => subject === refusal.subject);
       if (currentSubjectIndex >= 0) {
         reportedCleanupRefusals[currentSubjectIndex] = refusal;
       } else if (reportedCleanupRefusals.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
