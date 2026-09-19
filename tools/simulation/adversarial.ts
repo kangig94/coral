@@ -27,7 +27,7 @@ import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/job
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
 import type { ProviderSession } from '../../src/sessions/entry.js';
 import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
-import type { ShutdownReason } from '../../src/coordinator/shutdown.js';
+import type { ShutdownReason } from '../../src/infra/persisted-scalar-contracts.js';
 
 const RESULT_FILE = 'result.md';
 const LIFECYCLE_SETTLEMENT_STEP_MS = 25;

@@ -1273,7 +1273,7 @@ function formatRecentShutdownRemainderReport(
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
   lines.push(
-    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordCount, result.skippedUndecodableRecordCount),
+    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordNames, result.skippedUndecodableRecordCount),
   );
   return lines.join('\n');
 }
@@ -1353,7 +1353,7 @@ function formatUnreadableShutdownRemainderReport(
   }
   return [
     'Coral found shutdown remainder records it could not use.',
-    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordCount, result.skippedUndecodableRecordCount),
+    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordNames, result.skippedUndecodableRecordCount),
   ].join('\n');
 }
 
@@ -1367,18 +1367,19 @@ function formatSkippedShutdownRemainderEntries(
   ]);
 }
 
-function formatSkippedShutdownRemainderRecords(unreadableCount: number, undecodableCount: number): string[] {
+function formatSkippedShutdownRemainderRecords(unreadableNames: readonly string[], undecodableCount: number): string[] {
   const lines: string[] = [];
-  if (unreadableCount > 0) {
+  if (unreadableNames.length > 0) {
     lines.push(
-      `Skipped shutdown remainder records, unreadable: ${unreadableCount}`,
-      '  Disposition: content was never read; kept and re-checked on every status read, not included in this report.',
+      `Skipped shutdown remainder records, unreadable: ${unreadableNames.length}`,
+      ...unreadableNames.map((name) => `  Record: ${name}`),
+      '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
     );
   }
   if (undecodableCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, undecodable: ${undecodableCount}`,
-      '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup, not included in this report.',
+      '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
     );
   }
   return lines;

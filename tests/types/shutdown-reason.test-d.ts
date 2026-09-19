@@ -1,7 +1,7 @@
 import type { CoordinatorServerController } from '../../src/coordinator/index.js';
 import type { LifecycleController } from '../../src/coordinator/lifecycle.js';
 import type { IdleTimer } from '../../src/coordinator/live/idle.js';
-import type { ShutdownReason } from '../../src/coordinator/shutdown.js';
+import type { ShutdownReason } from '../../src/infra/persisted-scalar-contracts.js';
 import type { IpcListener } from '../../src/transport/ipc/server.js';
 import type { SimulationController } from '../../tools/simulation/core/backend.js';
 

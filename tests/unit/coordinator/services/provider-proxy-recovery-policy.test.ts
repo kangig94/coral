@@ -342,6 +342,8 @@ describe('provider proxy recovery producer classification', () => {
     { pair: 'unavailable absence / malformed redemption outcome', order: ['absence', 'redemption'] as const },
     { pair: 'fatal absence / unavailable redemption', order: ['redemption', 'absence'] as const },
     { pair: 'fatal absence / unavailable redemption', order: ['absence', 'redemption'] as const },
+    { pair: 'fatal absence / unavailable redemption outcome', order: ['redemption', 'absence'] as const },
+    { pair: 'fatal absence / unavailable redemption outcome', order: ['absence', 'redemption'] as const },
   ])('reduces $pair when $order.0 settles first', async ({ pair, order }) => {
     const containment = await testContainmentProof(false);
     const redemption = controlledProducer();
@@ -405,11 +407,21 @@ describe('provider proxy recovery producer classification', () => {
               redemption: { kind: 'value', value: { kind: 'not-a-redemption-outcome' } },
               absence: { kind: 'reject', error: unavailable },
             }
-          : {
-              redemption: { kind: 'reject', error: unavailable },
-              absence: { kind: 'value', value: { kind: 'not-a-containment-proof' } },
-            };
-    const fatalSource = pair === 'fatal absence / unavailable redemption' ? 'absence' : 'redemption';
+          : pair === 'fatal absence / unavailable redemption'
+            ? {
+                redemption: { kind: 'reject', error: unavailable },
+                absence: { kind: 'value', value: { kind: 'not-a-containment-proof' } },
+              }
+            : {
+                // The producer fulfills rather than rejects here: the incident lives on the resolved
+                // outcome's own `kind`, not on a thrown/rejected error the classifier sees directly.
+                redemption: { kind: 'value', value: { kind: 'unavailable', incident: unavailable.incident } },
+                absence: { kind: 'value', value: { kind: 'not-a-containment-proof' } },
+              };
+    const fatalSource =
+      pair === 'fatal absence / unavailable redemption' || pair === 'fatal absence / unavailable redemption outcome'
+        ? 'absence'
+        : 'redemption';
 
     const first = order[0];
     (first === 'redemption' ? redemption : absence).settle(settlements[first]);
@@ -460,6 +472,20 @@ describe('provider proxy recovery producer classification', () => {
       expect(events.indexOf('fatal:role-control')).toBeLessThan(events.indexOf('dispose:absence'));
       expect(disposeLateEvidence).toHaveBeenCalledWith(containment.proof, 'absence');
     }
+
+    // The retry that ends every pair must carry the surviving source's own cause: the fatal error the
+    // other source produced, or that source's own typed incident — never a synthetic stand-in for a
+    // value the reducer failed to unwrap.
+    const [retryPayload] = retry.mock.calls.at(-1) ?? [];
+    expect(retryPayload).toEqual(
+      pair === 'non-reap absence / malformed redemption value'
+        ? { producerId: 'role-control', incident: fatal.mock.calls[0]?.[0] }
+        : {
+            producerId:
+              pair === 'unavailable absence / malformed redemption outcome' ? 'containment-proof' : 'role-control',
+            incident: unavailable.incident,
+          },
+    );
   });
 
   it.each<['control-reattachment-hold' | 'control-reattachment', 'redemption' | 'absence', 'redemption' | 'absence']>([

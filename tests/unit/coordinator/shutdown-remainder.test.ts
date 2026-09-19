@@ -38,7 +38,7 @@ function storageWith(
     refusePrune?: boolean;
     refuseStatFor?: string;
     statErrorCode?: string;
-    refuseReadFor?: string;
+    refuseReadFor?: string | readonly string[];
     readErrorCode?: string;
   }> = {},
 ): RemainderStorage {
@@ -47,6 +47,13 @@ function storageWith(
   );
   let directoryExists = initialFiles.length > 0;
   let clock = Math.max(0, ...initialFiles.map(({ mtimeMs }) => mtimeMs));
+  const refusedReadNames = new Set(
+    options.refuseReadFor === undefined
+      ? []
+      : typeof options.refuseReadFor === 'string'
+        ? [options.refuseReadFor]
+        : options.refuseReadFor,
+  );
 
   const storage = {
     existsSync: (path: string) => (path === REMAINDER_DIRECTORY ? directoryExists : files.has(path)),
@@ -55,7 +62,7 @@ function storageWith(
       return [...files.keys()].filter((file) => dirname(file) === path).map((file) => basename(file));
     }) as unknown as StoragePort['readdirSync'],
     readFileSync: vi.fn((path: string) => {
-      if (basename(path) === options.refuseReadFor) {
+      if (refusedReadNames.has(basename(path))) {
         throw Object.assign(new Error('read refused'), { code: options.readErrorCode ?? 'EIO' });
       }
       const file = files.get(path);
@@ -605,6 +612,25 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('unreadable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-32.json');
+  });
+
+  it('bounds unreadable records to the newest 32 by mtime, independent of the known-record cap', () => {
+    const unreadableFiles = Array.from({ length: 33 }, (_, index) => fileAt(`unreadable-${index}`, index + 1));
+    const storage = storageWith([fileAt('readable', 100), ...unreadableFiles], {
+      refuseReadFor: unreadableFiles.map(({ name }) => name),
+      readErrorCode: 'EIO',
+    });
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    // A genuine unknown never authorizes deletion by content (design-philosophy.md principle 11), but this
+    // hold still needs an exit (principle 11/12): the oldest unreadable file is reclaimed once the bucket
+    // exceeds its own 32-slot bound, the same bound the known-record cap uses, in an independent bucket that
+    // cannot displace — and is not displaced by — a genuinely readable record.
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('readable.json');
+    expect(storage.fileNames()).not.toContain('unreadable-0.json');
+    expect(storage.fileNames()).toContain('unreadable-32.json');
   });
 
   it('reclaims a decisively undecodable record regardless of age, even under the retention cap', () => {

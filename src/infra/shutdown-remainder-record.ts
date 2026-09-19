@@ -9,7 +9,13 @@ import {
 } from './error-format.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
-import { persistedProcessIncarnationSchema } from './persisted-scalar-contracts.js';
+import {
+  persistedProcessIncarnationSchema,
+  SHUTDOWN_MODES,
+  SHUTDOWN_REASONS,
+  type ShutdownMode,
+  type ShutdownReason,
+} from './persisted-scalar-contracts.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
@@ -49,8 +55,8 @@ type DecodedShutdownRemainderEntry = ShutdownRemainderEntry & Readonly<{ entryNu
 export type ShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
-  reason: 'replaced' | 'sigterm' | 'sigint' | 'provider-proxy-lifecycle-fatal' | 'idle' | 'test-teardown';
-  mode: 'handoff' | 'hard';
+  reason: ShutdownReason;
+  mode: ShutdownMode;
   entries: readonly ShutdownRemainderEntry[];
 }>;
 
@@ -178,11 +184,26 @@ const shutdownRemainderRecordEnvelopeSchema = z
   .object({
     instanceId: persistedIdentifierSchema,
     recordedAt: z.string().datetime(),
-    reason: z.enum(['replaced', 'sigterm', 'sigint', 'provider-proxy-lifecycle-fatal', 'idle', 'test-teardown']),
-    mode: z.enum(['handoff', 'hard']),
+    reason: z.enum(SHUTDOWN_REASONS),
+    mode: z.enum(SHUTDOWN_MODES),
     entries: z.array(z.unknown()).readonly(),
   })
   .passthrough();
+/**
+ * Constraint: a `z.ZodType<X>` annotation alone does not force this — a narrower schema output is assignable
+ * to a wider annotated `X` with no error, so a hand-edited enum can silently stay behind a widened `X`.
+ * `ExactlyMatches` requires assignability in both directions, so it fails to compile the moment `reason` or
+ * `mode`'s zod enum and its record field type name a different set of literals.
+ */
+type ExactlyMatches<A extends string, B extends string> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const _shutdownReasonStaysSynced: ExactlyMatches<
+  ShutdownReason,
+  z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['reason']
+> = true;
+const _shutdownModeStaysSynced: ExactlyMatches<
+  ShutdownMode,
+  z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['mode']
+> = true;
 
 export function decodeShutdownRemainderRecord(value: unknown):
   | Readonly<{

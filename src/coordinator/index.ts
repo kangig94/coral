@@ -17,7 +17,7 @@ import {
 import { createCoordinatorCore } from './composition/index.js';
 import { createCoordinatorProviderHostAdmission } from './live/provider-host-admission.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
-import type { ShutdownReason } from './shutdown.js';
+import type { ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import {
   isLifecycleShutdownTerminal,

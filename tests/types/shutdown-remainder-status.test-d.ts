@@ -70,14 +70,15 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.ordinal'
   | 'skippedEntries[].obligation.occurrence'
   | 'skippedEntries[].owner'
-  | 'skippedUnreadableRecordCount'
+  | 'skippedUnreadableRecordNames[]'
   | 'skippedUndecodableRecordCount';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
   | 'record.entries[].subject.sourceDigest'
-  | 'record.entries[].remainder.evidence.processes[].jobId';
+  | 'record.entries[].remainder.evidence.processes[].jobId'
+  | 'skippedUnreadableRecordNames[]';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -125,11 +126,16 @@ void skippedEntry.label;
 // @ts-expect-error skipped record identities are absent from the status projection.
 void skippedEntry.recordInstanceId;
 
-declare const skippedUnreadableRecordCount: ShutdownRemainderStatus['skippedUnreadableRecordCount'];
-void skippedUnreadableRecordCount;
+// A genuine unknown proves nothing about content (design-philosophy.md principle 11), so the filename is the
+// only evidence an operator-less reader has to act on for an 'unreadable' record — it deliberately crosses,
+// unlike a decisively 'undecodable' one, whose disposition this build alone decides and carries out.
+declare const skippedUnreadableRecordNames: ShutdownRemainderStatus['skippedUnreadableRecordNames'];
+const unreadableRecordName: string = skippedUnreadableRecordNames[0] ?? '';
+void unreadableRecordName;
 declare const skippedUndecodableRecordCount: ShutdownRemainderStatus['skippedUndecodableRecordCount'];
 void skippedUndecodableRecordCount;
-// @ts-expect-error skipped record filenames are absent from the status projection.
+// @ts-expect-error the internal age/reason skipped-record shape is absent from the status projection; only the
+// derived name list (for 'unreadable') and count (for 'undecodable') cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;
 

@@ -8,6 +8,7 @@ import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/l
 import {
   HANDOFF_DRAIN_TIMEOUT_MS,
   SHUTDOWN_DRAIN_TIMEOUT_MS,
+  SHUTDOWN_POLL_MS,
   childTerminationRemainder,
   runShutdownSequence,
 } from '#src/coordinator/shutdown.js';
@@ -2800,6 +2801,37 @@ describe('required provider-proxy shutdown steps', () => {
     harness.time.tick(1);
     await flush();
     expect(woke).toBe(true);
+  });
+
+  it('holds a ref-shaped keepalive across a poll reached after the IPC socket already closed', async () => {
+    // Provider control has nothing to release (no live sets at `prepare()`), so `commit()` reaches and
+    // resolves the IPC release before this fires — reproducing "the listener is already closed" ahead of
+    // the boundary discovering it must hold, without a hung control release to also wait out.
+    let capabilityAppearedDuringCommit = false;
+    const harness = buildHarness({
+      hooksOnShutdown: async () => {},
+      providerProxyAuthority: {
+        liveSets: () => (capabilityAppearedDuringCommit ? [fakeSet('late-arriving', [])] : []),
+      },
+    });
+    harness.ctx.closeIpcServerFn = async () => {
+      capabilityAppearedDuringCommit = true;
+    };
+    const setIntervalSpy = vi.spyOn(harness.time, 'setInterval');
+    const clearIntervalSpy = vi.spyOn(harness.time, 'clearInterval');
+
+    const held = requireHeld(await runShutdownSequence(harness.ctx));
+    expect(heldFailureDetail(held)).toMatch(/authority capabilities changed after preparation/u);
+
+    // The listener release already ran and settled inside `commit()` — a keepalive taken out only for the
+    // poll ahead must already be armed and not yet released.
+    expect(setIntervalSpy).toHaveBeenCalledTimes(1);
+    expect(clearIntervalSpy).not.toHaveBeenCalled();
+
+    harness.time.tick(SHUTDOWN_POLL_MS);
+    await flush();
+    await held.retryAfter;
+    expect(clearIntervalSpy).toHaveBeenCalledExactlyOnceWith(setIntervalSpy.mock.results[0]?.value);
   });
 
   it.each([

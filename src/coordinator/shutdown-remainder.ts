@@ -12,7 +12,7 @@ import {
   type ShutdownRemainderRecordScan,
 } from '../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../infra/time.js';
-import type { ShutdownMode, ShutdownReason } from './shutdown.js';
+import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 const MAX_SHUTDOWN_REMAINDER_RECORDS = 32;
@@ -86,6 +86,7 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
   const directory = shutdownRemainderPath(runtime.runDir);
   try {
     const known: { name: string; mtimeMs: number }[] = [];
+    const unreadable: { name: string; mtimeMs: number }[] = [];
     for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
       const path = join(directory, name);
       let mtimeMs: number | null = null;
@@ -110,19 +111,38 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
         }
         continue;
       }
-      if (classification.kind === 'unreadable' || mtimeMs === null) {
-        // Constraint: a record this build cannot prove readable, or cannot stat, is not proven old or
-        // content-invalid, and unknown must not authorize deletion (design-philosophy.md principle 11). It is
-        // excluded from the retention count entirely — ranking it as newest still counts it against the cap,
-        // which evicts a genuinely newer known record in its place once enough unprovable files accumulate.
+      if (classification.kind === 'unreadable') {
+        // Constraint: a record this build cannot prove readable is not proven old or content-invalid, and
+        // unknown must not authorize deletion by content (design-philosophy.md principle 11). It competes only
+        // against other unreadable files for the bounded slot count below — never against a known-readable
+        // record — so persistent unreadability cannot displace genuinely decodable evidence out of its cap. A
+        // file this build also could not stat carries no age evidence to rank it by, so it is left out of this
+        // bound entirely rather than guessed at.
+        if (mtimeMs !== null) unreadable.push({ name, mtimeMs });
         continue;
       }
+      if (mtimeMs === null) continue;
       known.push({ name, mtimeMs });
     }
     known.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
     for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
+      } catch {
+        /* Retention cleanup must not block startup. */
+      }
+    }
+    unreadable.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+    // Constraint: this retention bound is the unreadable hold's only exit (design-philosophy.md principle 11 —
+    // every hold names what ends it); a genuine unknown may still be reclaimed once a resource bound is
+    // exceeded, because the eviction is a retention policy over how many such files this build carries
+    // forward, not a claim about the reclaimed file's own content.
+    for (const { name } of unreadable.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+      try {
+        runtime.storage.unlinkSync(join(directory, name));
+        backendLog.warn(
+          `shutdown remainder record ${name} discarded: persistently unreadable beyond the retention bound`,
+        );
       } catch {
         /* Retention cleanup must not block startup. */
       }

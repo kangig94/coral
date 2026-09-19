@@ -41,12 +41,11 @@ import {
   type LifecycleWiringState,
   type SettlePendingLaunchesFn,
   type ShutdownIncidentOccurrence,
-  type ShutdownMode,
   type ShutdownIncident,
-  type ShutdownReason,
   type TerminateRegisteredChildrenFn,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
+import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
@@ -1149,10 +1148,6 @@ async function runLifecycleStartup({
     if (discoveryPublished === false) {
       throw new Error('Coordinator discovery publication failed.');
     }
-    pruneShutdownRemainderRecords({
-      storage: runtime.storage,
-      runDir: runtime.paths.coral.coordinator.runDir,
-    });
     runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
     if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
@@ -1172,6 +1167,12 @@ async function runLifecycleStartup({
     };
 
     // ===== Era II (recovery) =====
+    // Retention here answers to no reader before kernel-ready and none of Era II's recovery reads this
+    // directory, so it must not sit ahead of the CLI-facing KERNEL_READY_DEADLINE_MS.
+    pruneShutdownRemainderRecords({
+      storage: runtime.storage,
+      runDir: runtime.paths.coral.coordinator.runDir,
+    });
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();

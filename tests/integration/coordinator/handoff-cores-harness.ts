@@ -20,7 +20,7 @@ import type {
   LifecycleShutdownDisposition,
   RunStartupRecoveryOrchestratorFn,
 } from '#src/coordinator/lifecycle.js';
-import type { ShutdownReason } from '#src/coordinator/shutdown.js';
+import type { ShutdownReason } from '#src/infra/persisted-scalar-contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';

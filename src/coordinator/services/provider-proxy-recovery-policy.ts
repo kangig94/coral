@@ -687,6 +687,9 @@ export function createProviderProxyRecoveryDispatcher(
         }
         const redemption = reattachmentSources.get('redemption');
         if (redemption === undefined && !retiredSources.has('redemption')) return;
+        // An evidence-wrapped outcome carries its own incident under `outcome.kind`, distinct from the
+        // Observation wrapper's own kind (always 'evidence' here) tested below.
+        let redemptionUnavailable: Extract<Observation, { kind: 'unavailable' }> | undefined;
         if (redemption?.kind === 'evidence') {
           const value = redemption.value;
           if (typeof value !== 'object' || value === null || !('kind' in value)) {
@@ -714,6 +717,10 @@ export function createProviderProxyRecoveryDispatcher(
             );
             return;
           }
+          redemptionUnavailable = unavailable('role-control', outcome.incident) as Extract<
+            Observation,
+            { kind: 'unavailable' }
+          >;
         }
         const redemptionSettled = redemption !== undefined || retiredSources.has('redemption');
         const absenceSettled = absence !== undefined || retiredSources.has('absence');
@@ -723,7 +730,8 @@ export function createProviderProxyRecoveryDispatcher(
           return;
         }
         const unavailableObservation =
-          redemption?.kind === 'unavailable' ? redemption : absence?.kind === 'unavailable' ? absence : undefined;
+          redemptionUnavailable ??
+          (redemption?.kind === 'unavailable' ? redemption : absence?.kind === 'unavailable' ? absence : undefined);
         const sourceFatal = retiredSourceFatals.get('redemption') ?? retiredSourceFatals.get('absence');
         const reason = new Error('provider_proxy_control_reattachment_retry');
         retired = true;

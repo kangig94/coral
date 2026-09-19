@@ -5,6 +5,7 @@ import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
+import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import { createJoinableSettlementTask, type SettlementConfirmation } from '../obligation/settlement.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { IpcListener } from '../transport/ipc/server.js';
@@ -37,19 +38,6 @@ import {
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
 export const HANDOFF_DRAIN_TIMEOUT_MS = 30_000;
 export const SHUTDOWN_POLL_MS = 50;
-
-export type ShutdownMode = 'handoff' | 'hard';
-
-export const SHUTDOWN_REASONS = [
-  'replaced',
-  'sigterm',
-  'sigint',
-  'provider-proxy-lifecycle-fatal',
-  'idle',
-  'test-teardown',
-] as const;
-
-export type ShutdownReason = (typeof SHUTDOWN_REASONS)[number];
 
 export type ShutdownIncident = Readonly<{
   kind: 'provider-proxy-lifecycle-fatal';
@@ -856,6 +844,17 @@ type AuthorityReleaseBoundaryContext = {
   readonly time: Runtime['time'];
 };
 
+/**
+ * `time.sleep` unrefs its own timer (`src/infra/time.ts`), so a hold reached after this boundary has
+ * already closed the HTTP server and the IPC listener can leave nothing else ref'd — the process may exit
+ * before `retryAfter` ever resolves. A ref'd keepalive spanning exactly this promise is what a real
+ * `setInterval`/`clearInterval` handle is for; it is released the instant the guarded promise settles.
+ */
+function keepaliveGuardedRetryAfter(time: Runtime['time'], retryAfter: Promise<void>): Promise<void> {
+  const keepalive = time.setInterval(() => {}, 60_000);
+  return retryAfter.finally(() => time.clearInterval(keepalive));
+}
+
 function buildAuthorityReleaseBoundary({
   closeIpcServerFn,
   ipcServer,
@@ -987,11 +986,15 @@ function buildAuthorityReleaseBoundary({
         ? {
             reason: 'required-shutdown-step-unsettled',
             exit: 'authority-release-settlement',
-            retryAfter: Promise.race([Promise.all(inFlight), time.sleep(SHUTDOWN_POLL_MS)]).then(() => undefined),
+            retryAfter: keepaliveGuardedRetryAfter(
+              time,
+              Promise.race([Promise.all(inFlight), time.sleep(SHUTDOWN_POLL_MS)]).then(() => undefined),
+            ),
           }
         : {
             reason: 'required-shutdown-step-unsettled',
             exit: 'shutdown-budget-exhaustion',
+            retryAfter: keepaliveGuardedRetryAfter(time, time.sleep(SHUTDOWN_POLL_MS)),
           };
     },
   };
