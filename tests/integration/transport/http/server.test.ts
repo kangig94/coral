@@ -6126,6 +6126,7 @@ describe('execution backend server', () => {
           writeBackendInfoFn: vi.fn(),
           removeBackendInfoIfOwnerFn: () => {},
           cleanupStaleJobsFn: () => {},
+          readSelfIncarnationFn: () => null,
           markJobsAsErrorFn: vi.fn(),
           settlePendingLaunchesFn: vi.fn(() => ({ kind: 'all-pending-launches-settled' }) as const),
           terminateRegisteredChildrenFn: vi.fn(() => ({ kind: 'all-children-observed-absent' }) as const),

@@ -206,7 +206,7 @@ describe('getBackendStatusFull record disposition', () => {
   });
 
   it('reports a writer-unobservable staging publication instead of treating the directory as empty', async () => {
-    mockState.remainderFiles = [remainderFile('staged.json.stage.4242.unknown.tmp', NOW - 10_000, '{partial')];
+    mockState.remainderFiles = [remainderFile('staged.json.stage.4242.unobserved.tmp', NOW - 10_000, '{partial')];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -239,7 +239,7 @@ describe('getBackendStatusFull record disposition', () => {
 
   it('reports the single stage left unscanned by a 129-entry stage scan', async () => {
     mockState.remainderFiles = Array.from({ length: 129 }, (_, index) =>
-      remainderFile(`staged-${index}.json.stage.4242.unknown.tmp`, NOW - index, '{partial', 'ENOENT'),
+      remainderFile(`staged-${index}.json.stage.4242.unobserved.tmp`, NOW - index, '{partial', 'ENOENT'),
     );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -1723,7 +1723,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   it('reports a healthy detailed answer as ok while retaining a predecessor stage hold', async () => {
     mockState.remainderFiles = [
       remainderFile(
-        'predecessor.json.stage.4242.unknown',
+        'predecessor.json.stage.4242.unobserved',
         NOW - 10_000,
         shutdownRemainder('predecessor', NOW - 10_000),
       ),

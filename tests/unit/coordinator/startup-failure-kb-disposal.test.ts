@@ -76,6 +76,7 @@ function buildStartupFailureHarness(dispose: () => Promise<KbDaemonDisposalSettl
     closeIpcServerFn,
     kbDaemonSupervisor,
     removeBackendInfoIfOwnerFn,
+    readSelfIncarnationFn: () => null,
     getDiscussStoreForSource: () => {
       throw new Error('unexpected discuss store lookup');
     },

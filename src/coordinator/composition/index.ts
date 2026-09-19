@@ -1402,12 +1402,16 @@ export function createCoordinatorCore(
    * daemon, with no path back. So `null` is retried, and only success is kept.
    */
   let rememberedSelfIncarnation: ProcessIncarnation | null = null;
-  const readSelfIncarnation = (): ProcessIncarnation | undefined => {
-    rememberedSelfIncarnation ??= runtime.process.readProcessIncarnation(
-      world.backendPid,
-      runtime.env.platform() as NodeJS.Platform,
-    );
-    return rememberedSelfIncarnation ?? undefined;
+  const readSelfIncarnation = (): ProcessIncarnation | null => {
+    try {
+      rememberedSelfIncarnation ??= runtime.process.readProcessIncarnation(
+        world.backendPid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+    } catch {
+      return null;
+    }
+    return rememberedSelfIncarnation;
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {
@@ -1608,7 +1612,7 @@ export function createCoordinatorCore(
           namespace: identity.namespace,
           instanceId: identity.instanceId,
           pid: world.backendPid,
-          ...(incarnation !== undefined ? { incarnation } : {}),
+          ...(incarnation !== null ? { incarnation } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
           activeJobs,
@@ -1760,6 +1764,7 @@ export function createCoordinatorCore(
     writeBackendInfoFn: defaults.writeBackendInfoFn,
     removeBackendInfoIfOwnerFn: defaults.removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn: defaults.cleanupStaleJobsFn,
+    readSelfIncarnationFn: readSelfIncarnation,
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
     settlePendingLaunchesFn: defaults.settlePendingLaunchesFn,
     terminateRegisteredChildrenFn: defaults.terminateRegisteredChildrenFn,

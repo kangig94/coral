@@ -517,6 +517,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       writeBackendInfoFn,
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: () => {},
+      readSelfIncarnationFn: () => null,
       markJobsAsErrorFn: () => {},
       settlePendingLaunchesFn: () => ({ kind: 'all-pending-launches-settled' }),
       terminateRegisteredChildrenFn: () => ({ kind: 'all-children-observed-absent' }),

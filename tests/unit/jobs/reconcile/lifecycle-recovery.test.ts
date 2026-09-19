@@ -837,6 +837,7 @@ function createLifecycleHarness(
       writeBackendInfoFn: options.writeBackendInfoFn ?? (() => {}),
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
+      readSelfIncarnationFn: () => null,
       markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
       settlePendingLaunchesFn: options.settlePendingLaunchesFn ?? (() => ({ kind: 'all-pending-launches-settled' })),
       terminateRegisteredChildrenFn:

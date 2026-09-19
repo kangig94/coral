@@ -130,6 +130,7 @@ describe('coordinator lifecycle startup-failure cleanup — provider operation m
         writeBackendInfoFn,
         removeBackendInfoIfOwnerFn,
         cleanupStaleJobsFn: vi.fn(),
+        readSelfIncarnationFn: () => null,
         markJobsAsErrorFn: vi.fn(),
         settlePendingLaunchesFn: vi.fn(async () => ({ kind: 'all-pending-launches-settled' }) as const),
         terminateRegisteredChildrenFn: vi.fn(async () => ({ kind: 'all-children-observed-absent' }) as const),

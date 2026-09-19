@@ -17,8 +17,8 @@ ages it out on its own, and nothing escalates it.
 
 ## Correcting the reviewer's framing: it does not warn "for the life of the daemon"
 
-`pruneShutdownRemainderRecords` is not on a recurring timer — `trace_path` shows its only callers are
-`runLifecycleStartup` and the `start` wrapper that calls it, i.e. once per coordinator boot. The
+`pruneShutdownRemainderRecords` is not on a recurring timer: `runLifecycleStartup` calls it once per
+coordinator boot after yielding past the kernel-ready response, and logs that pass's disposition once. The
 `backendLog.warn` line in the unreadable-eviction branch fires only when a record is actually displaced past
 the cap; a record that never reaches that point produces **no warning at all**, not a repeating one. What
 does repeat is exposure through the read path: `scanShutdownRemainderRecords`, called directly by

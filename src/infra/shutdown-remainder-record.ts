@@ -100,14 +100,13 @@ const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LI
 // closed identifier charset as other identifier-shaped fields rather than the broader single-line prose schema.
 const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
 const SHUTDOWN_REMAINDER_STAGE_PATTERN =
-  /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unknown)(?<partial>\.tmp)?$/u;
-const LEGACY_SHUTDOWN_REMAINDER_STAGE_PATTERN = /^(?<instanceId>.+)\.json\.tmp$/u;
+  /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unobserved)(?<partial>\.tmp)?$/u;
 const SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN = /\.json\.(?:stage|tmp)(?:\.|$)/u;
 
 export type ShutdownRemainderStage = Readonly<{
   name: string;
   instanceId: string;
-  writer: ShutdownRemainderStageWriter | null;
+  writer: ShutdownRemainderStageWriter;
   partial: boolean;
 }>;
 
@@ -119,10 +118,10 @@ export type ShutdownRemainderDirectoryEntry =
 
 export function shutdownRemainderStageName(
   instanceId: string,
-  writer: Readonly<{ pid: number; incarnation?: ProcessIncarnation }>,
+  writer: Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>,
 ): string {
   return `${instanceId}.json.stage.${writer.pid}.${
-    writer.incarnation === undefined ? 'unknown' : sha256Hex(writer.incarnation)
+    writer.incarnation === null ? 'unobserved' : sha256Hex(writer.incarnation)
   }`;
 }
 
@@ -146,17 +145,12 @@ function parseShutdownRemainderStage(name: string): ShutdownRemainderStage | nul
       instanceId,
       writer: {
         pid,
-        ...(incarnation === 'unknown' ? {} : { incarnationDigest: incarnation }),
+        ...(incarnation === 'unobserved' ? {} : { incarnationDigest: incarnation }),
       },
       partial: matched.groups?.partial !== undefined,
     };
   }
-
-  const legacy = LEGACY_SHUTDOWN_REMAINDER_STAGE_PATTERN.exec(name);
-  const instanceId = legacy?.groups?.instanceId;
-  return instanceId === undefined || !serializedThrownIdentifierSchema.safeParse(instanceId).success
-    ? null
-    : { name, instanceId, writer: null, partial: true };
+  return null;
 }
 
 export function observeShutdownRemainderStageWriter(
@@ -183,7 +177,7 @@ function stageObservation(
   stage: ShutdownRemainderStage,
   observeStageWriter: ShutdownRemainderStageObserver,
 ): ShutdownRemainderStageObservation {
-  return stage.writer === null ? 'unknown' : observeStageWriter(stage.writer);
+  return observeStageWriter(stage.writer);
 }
 
 /** Stage-shaped names must be classified before any `.json` entry can be selected as final evidence. */

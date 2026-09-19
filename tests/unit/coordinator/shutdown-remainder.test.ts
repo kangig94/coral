@@ -2,7 +2,6 @@ import { basename, dirname, join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
-  createShutdownRemainderPruner,
   pruneShutdownRemainderRecords,
   recordShutdownRemainder,
   shutdownRemainderPath,
@@ -143,7 +142,7 @@ function writeRuntime(storage: RemainderStorage) {
     storage,
     time: { now: () => 1_788_739_200_000 },
     runDir: RUN_DIR,
-    writer: { pid: 4_242 },
+    writer: { pid: 4_242, incarnation: null },
   } as const;
 }
 
@@ -233,7 +232,7 @@ describe('shutdown remainder status', () => {
     expect(shutdownRemainderPath(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
     expect(storage.mkdirSync).toHaveBeenCalledWith(REMAINDER_DIRECTORY, { recursive: true });
     expect(storage.writeAtomicSync).toHaveBeenCalledWith(
-      '/run/shutdown-remainder.v1/current-instance.json.stage.4242.unknown',
+      '/run/shutdown-remainder.v1/current-instance.json.stage.4242.unobserved',
       `${JSON.stringify(
         {
           instanceId: 'current-instance',
@@ -1054,14 +1053,14 @@ describe('shutdown remainder status', () => {
     expect(JSON.parse(storage.readPublished('current-instance') ?? '')).toEqual(recordAt('current-instance'));
   });
 
-  it('promotes a complete stage only after its writer is proven absent', () => {
-    const stageName = 'orphan.json.stage.4242.unknown';
+  it('promotes a complete stage by content when its writer is unobservable', () => {
+    const stageName = 'orphan.json.stage.4242.unobserved';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('orphan')), mtimeMs: 1 }]);
 
     const disposition = pruneShutdownRemainderRecords({
       storage,
       runDir: RUN_DIR,
-      observeStageWriter: () => 'absent',
+      observeStageWriter: () => 'unknown',
     });
 
     expect(disposition).toEqual({
@@ -1075,6 +1074,23 @@ describe('shutdown remainder status', () => {
     });
   });
 
+  it('defers a complete stage while its writer is proven alive', () => {
+    const stageName = 'live.json.stage.4242.unobserved';
+    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('live')), mtimeMs: 1 }]);
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'alive',
+    });
+
+    expect(disposition).toEqual({
+      stageOwnership: { kind: 'held', stageNames: [stageName] },
+      cleanup: { kind: 'complete' },
+    });
+    expect(storage.fileNames()).toEqual([stageName]);
+  });
+
   it('never promotes a complete atomic-write temporary file after publication and cleanup both fail', () => {
     const storage = storageWith([], { refuseAtomicRename: true, refusePrune: true });
 
@@ -1086,7 +1102,7 @@ describe('shutdown remainder status', () => {
         undischarged: [KNOWN_LOSS],
       }),
     ).toThrow('atomic rename refused');
-    expect(storage.fileNames()).toEqual(['declined.json.stage.4242.unknown.tmp']);
+    expect(storage.fileNames()).toEqual(['declined.json.stage.4242.unobserved.tmp']);
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'absent' });
 
@@ -1132,8 +1148,8 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('returns an ownership hold when a stage writer is unobservable', () => {
-    const stageName = 'held.json.stage.4242.unknown';
+  it('returns an ownership hold when a partial-stage writer is unobservable', () => {
+    const stageName = 'held.json.stage.4242.unobserved.tmp';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
 
     const disposition = pruneShutdownRemainderRecords({
@@ -1150,7 +1166,7 @@ describe('shutdown remainder status', () => {
   });
 
   it('returns held stage ownership together with an unrelated cleanup refusal', () => {
-    const stageName = 'held.json.stage.4242.unknown';
+    const stageName = 'held.json.stage.4242.unobserved.tmp';
     const storage = storageWith(
       [
         { name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 },
@@ -1173,7 +1189,7 @@ describe('shutdown remainder status', () => {
 
   it('does not prune any of 33 writer-owned stages whose writers are unobservable', () => {
     const stages = Array.from({ length: 33 }, (_, index) => ({
-      name: `held-${index}.json.stage.${5_000 + index}.unknown`,
+      name: `held-${index}.json.stage.${5_000 + index}.unobserved.tmp`,
       value: JSON.stringify(recordAt(`held-${index}`)),
       mtimeMs: index + 1,
     }));
@@ -1192,12 +1208,12 @@ describe('shutdown remainder status', () => {
 
   it('keeps an unobservable writer-owned stage outside the 32-entry proven-orphan stage bucket', () => {
     const orphanedStages = Array.from({ length: 32 }, (_, index) => ({
-      name: `orphan-${index}.json.stage.${6_000 + index}.unknown`,
+      name: `orphan-${index}.json.stage.${6_000 + index}.unobserved`,
       value: '{}',
       mtimeMs: index + 1,
     }));
     const heldStage = {
-      name: 'held.json.stage.7000.unknown',
+      name: 'held.json.stage.7000.unobserved.tmp',
       value: JSON.stringify(recordAt('held')),
       mtimeMs: 0,
     };
@@ -1218,220 +1234,9 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain(heldStage.name);
   });
 
-  it('re-observes a retained stage while the successor stays healthy', () => {
-    const stageName = 'held.json.stage.4242.unknown';
-    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
-    let writer: 'alive' | 'absent' = 'alive';
-    let scheduled: (() => void) | null = null;
-    const clearTimeout = vi.fn(() => {
-      scheduled = null;
-    });
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      observeStageWriter: () => writer,
-      time: {
-        setTimeout: (callback) => {
-          scheduled = callback;
-          return { unref: vi.fn() };
-        },
-        clearTimeout,
-      },
-    });
-
-    pruner.start();
-    expect(scheduled).not.toBeNull();
-
-    writer = 'absent';
-    const reobserve = scheduled as (() => void) | null;
-    if (reobserve === null) throw new Error('re-observation was not scheduled');
-    scheduled = null;
-    reobserve();
-
-    expect(storage.fileNames()).toEqual(['held.json']);
-    expect(scheduled).not.toBeNull();
-    pruner.stop();
-  });
-
-  it('backs off after three follow-up observations and starts a later observation cycle', () => {
-    const stageName = 'held.json.stage.4242.unknown';
-    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
-    const scheduled: Array<() => void> = [];
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      observeStageWriter: () => 'alive',
-      time: {
-        setTimeout: (callback) => {
-          scheduled.push(callback);
-          return { unref: vi.fn() };
-        },
-        clearTimeout: vi.fn(),
-      },
-    });
-
-    pruner.start();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const reobserve = scheduled.shift();
-      if (reobserve === undefined) throw new Error('re-observation was not scheduled');
-      reobserve();
-    }
-
-    expect(storage.readdirSync).toHaveBeenCalledTimes(8);
-    expect(scheduled).toHaveLength(1);
-    expect(storage.fileNames()).toEqual([stageName]);
-
-    const discover = scheduled.shift();
-    if (discover === undefined) throw new Error('discovery was not scheduled');
-    discover();
-
-    expect(storage.readdirSync).toHaveBeenCalledTimes(10);
-    expect(scheduled).toHaveLength(1);
-    pruner.stop();
-  });
-
-  it('backs off after one refused-prune retry and leaves a later discovery scheduled', () => {
-    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
-      refusePrune: true,
-    });
-    const scheduled: Array<() => void> = [];
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: {
-        setTimeout: (callback) => {
-          scheduled.push(callback);
-          return { unref: vi.fn() };
-        },
-        clearTimeout: vi.fn(),
-      },
-    });
-
-    pruner.start();
-    const retry = scheduled.shift();
-    if (retry === undefined) throw new Error('prune retry was not scheduled');
-    retry();
-
-    expect(storage.readdirSync).toHaveBeenCalledTimes(4);
-    expect(scheduled).toHaveLength(1);
-    expect(storage.fileNames()).toEqual(['corrupt.json']);
-    pruner.stop();
-  });
-
-  it('continues a held stage re-observation budget when unrelated cleanup is refused', () => {
-    const stageName = 'held.json.stage.4242.unknown';
-    const storage = storageWith(
-      [
-        { name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 },
-        { name: 'corrupt.json', value: '{not-json', mtimeMs: 2 },
-      ],
-      { refusePrune: true },
-    );
-    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      observeStageWriter: () => 'unknown',
-      time: {
-        setTimeout: (callback, delayMs) => {
-          scheduled.push({ callback, delayMs });
-          return { unref: vi.fn() };
-        },
-        clearTimeout: vi.fn(),
-      },
-    });
-
-    pruner.start();
-    const immediateRetry = scheduled.shift();
-    if (immediateRetry === undefined) throw new Error('combined retry was not scheduled');
-    expect(immediateRetry.delayMs).toBe(1_000);
-    immediateRetry.callback();
-
-    expect(scheduled[0]?.delayMs).toBe(1_000);
-    pruner.stop();
-  });
-
-  it('gives a late cleanup target its own immediate retry budget', () => {
-    const storage = storageWith([{ name: 'a.json', value: '{not-json', mtimeMs: 1 }], {
-      refusePruneWhen: (_name, attempt) => attempt === 1,
-    });
-    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: {
-        setTimeout: (callback, delayMs) => {
-          scheduled.push({ callback, delayMs });
-          return { unref: vi.fn() };
-        },
-        clearTimeout: vi.fn(),
-      },
-    });
-
-    pruner.start();
-    const retryA = scheduled.shift();
-    if (retryA === undefined) throw new Error('first cleanup retry was not scheduled');
-    expect(retryA.delayMs).toBe(1_000);
-
-    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'b.json'), '{not-json');
-    retryA.callback();
-
-    expect(storage.fileNames()).toEqual(['b.json']);
-    expect(scheduled[0]?.delayMs).toBe(1_000);
-    pruner.stop();
-  });
-
-  it('gives a late stage its own follow-up budget after another stage exhausts a cycle', () => {
-    const stageA = 'stage-a.json.stage.8001.unknown';
-    const stageB = 'stage-b.json.stage.8002.unknown';
-    const storage = storageWith([{ name: stageA, value: JSON.stringify(recordAt('stage-a')), mtimeMs: 1 }]);
-    const observations = new Map<number, number>();
-    let scheduled: (() => void) | null = null;
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      observeStageWriter: ({ pid }) => {
-        observations.set(pid, (observations.get(pid) ?? 0) + 1);
-        return 'unknown';
-      },
-      time: {
-        setTimeout: (callback) => {
-          scheduled = callback;
-          return { unref: vi.fn() };
-        },
-        clearTimeout: () => {
-          scheduled = null;
-        },
-      },
-    });
-
-    pruner.start();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const reobserve = scheduled as (() => void) | null;
-      if (reobserve === null) throw new Error('re-observation was not scheduled');
-      scheduled = null;
-      reobserve();
-    }
-    expect(observations.get(8_001)).toBe(4);
-
-    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, stageB), JSON.stringify(recordAt('stage-b')));
-    pruner.start();
-    expect(observations.get(8_001)).toBe(5);
-    expect(observations.get(8_002)).toBe(1);
-    expect(scheduled).not.toBeNull();
-
-    const reobserveStageB = scheduled as (() => void) | null;
-    if (reobserveStageB === null) throw new Error('late-stage re-observation was not scheduled');
-    reobserveStageB();
-
-    expect(observations.get(8_001)).toBe(5);
-    expect(observations.get(8_002)).toBe(2);
-    pruner.stop();
-  });
-
   it('reclaims every partial stage whose writer is proven absent', () => {
     const stages = Array.from({ length: 40 }, (_, index) => ({
-      name: `orphan-${index}.json.stage.${5_000 + index}.unknown.tmp`,
+      name: `orphan-${index}.json.stage.${5_000 + index}.unobserved.tmp`,
       value: '{partial',
       mtimeMs: index + 1,
     }));
@@ -1443,22 +1248,6 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual([]);
     expect(scan.records).toEqual([]);
     expect(scan.skippedRecords).toEqual([]);
-  });
-
-  it('bounds legacy stages that can never acquire a writer observation', () => {
-    const stages = Array.from({ length: 33 }, (_, index) => ({
-      name: `instance-${index}.json.tmp`,
-      value: JSON.stringify(recordAt(`instance-${index}`)),
-      mtimeMs: index + 1,
-    }));
-    const storage = storageWith(stages);
-
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-
-    expect(storage.fileNames()).toHaveLength(32);
-    expect(storage.fileNames()).not.toContain('instance-0.json.tmp');
-    expect(storage.fileNames()).toContain('instance-32.json.tmp');
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY).records).toEqual([]);
   });
 
   it('bounds malformed stage-shaped entries without inspecting their content', () => {

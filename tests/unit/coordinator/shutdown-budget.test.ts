@@ -262,6 +262,7 @@ function buildRemainderWriteRefusalHarness(
   const onStopped = vi.fn((exitCode: number) => {
     order.push(`exit:${exitCode}`);
   });
+  const readSelfIncarnationFn = vi.fn(() => testIncarnation('coordinator'));
   const removeBackendInfoIfOwnerFn = vi.fn(() => {
     order.push('withdraw');
     return withdrawal;
@@ -299,6 +300,7 @@ function buildRemainderWriteRefusalHarness(
       writeBackendInfoFn: () => {},
       removeBackendInfoIfOwnerFn,
       cleanupStaleJobsFn: () => {},
+      readSelfIncarnationFn,
       markJobsAsErrorFn: harness.ctx.markJobsAsErrorFn,
       settlePendingLaunchesFn: harness.ctx.settlePendingLaunchesFn,
       terminateRegisteredChildrenFn: harness.ctx.terminateRegisteredChildrenFn,
@@ -318,7 +320,7 @@ function buildRemainderWriteRefusalHarness(
     async () => [],
   );
 
-  return { controller, logLines, onStopped, order, removeBackendInfoIfOwnerFn };
+  return { controller, logLines, onStopped, order, readSelfIncarnationFn, removeBackendInfoIfOwnerFn };
 }
 
 type ShutdownSequenceHold = Extract<Awaited<ReturnType<typeof runShutdownSequence>>, { disposition: 'held' }>;
@@ -2383,6 +2385,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         };
       },
       cleanupStaleJobsFn: () => {},
+      readSelfIncarnationFn: () => testIncarnation('coordinator'),
       markJobsAsErrorFn: harness.ctx.markJobsAsErrorFn,
       settlePendingLaunchesFn: harness.ctx.settlePendingLaunchesFn,
       terminateRegisteredChildrenFn: harness.ctx.terminateRegisteredChildrenFn,
@@ -2860,6 +2863,7 @@ describe('required provider-proxy shutdown steps', () => {
       });
 
       expect(harness.removeBackendInfoIfOwnerFn).toHaveBeenCalledOnce();
+      expect(harness.readSelfIncarnationFn).toHaveBeenCalledOnce();
       expect(harness.onStopped).toHaveBeenCalledWith(1);
       expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'exit:1']);
       expect(harness.logLines.some((line) => line.includes('shutdown remainder write refused'))).toBe(true);

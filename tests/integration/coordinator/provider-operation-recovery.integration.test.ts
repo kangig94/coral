@@ -232,6 +232,7 @@ describe('provider-operation startup recovery ownership', () => {
         writeBackendInfoFn: vi.fn(),
         removeBackendInfoIfOwnerFn: vi.fn(),
         cleanupStaleJobsFn: vi.fn(),
+        readSelfIncarnationFn: () => null,
         markJobsAsErrorFn: vi.fn(),
         settlePendingLaunchesFn: vi.fn(async () => ({ kind: 'all-pending-launches-settled' }) as const),
         terminateRegisteredChildrenFn: vi.fn(async () => ({ kind: 'all-children-observed-absent' }) as const),
