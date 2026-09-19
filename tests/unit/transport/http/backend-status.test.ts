@@ -38,27 +38,31 @@ vi.mock('#src/transport/http/backend/coordinator-observation.js', () => ({
   observeCoordinator: vi.fn(() => mockState.observed),
 }));
 
-vi.mock('#src/infra/bundle-manifest.js', () => ({
-  readBuildFlavor: vi.fn(() => 'prod'),
-  resolveStrictBundleIdentity: vi.fn(
-    (): StrictBundleIdentityResult =>
-      mockState.strictIdentityProven
-        ? {
-            ok: true,
-            manifest: {
-              version: '0.5.2',
-              buildSetId: '00000000-0000-4000-8000-000000000000',
-              flavor: 'prod',
-              storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
-              bundleHash: '0123456789abcdef',
-              cliBundleHash: '0123456789abcdef',
-              claudeAppserverBundleHash: '0123456789abcdef',
-              durableWrapperBundleHash: '0123456789abcdef',
-            },
-          }
-        : { ok: false, reason: 'embedded_identity_unavailable' },
-  ),
-}));
+vi.mock('#src/infra/bundle-manifest.js', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    readBuildFlavor: vi.fn(() => 'prod'),
+    resolveStrictBundleIdentity: vi.fn(
+      (): StrictBundleIdentityResult =>
+        mockState.strictIdentityProven
+          ? {
+              ok: true,
+              manifest: {
+                version: '0.5.2',
+                buildSetId: '00000000-0000-4000-8000-000000000000',
+                flavor: 'prod',
+                storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+                bundleHash: '0123456789abcdef',
+                cliBundleHash: '0123456789abcdef',
+                claudeAppserverBundleHash: '0123456789abcdef',
+                durableWrapperBundleHash: '0123456789abcdef',
+              },
+            }
+          : { ok: false, reason: 'embedded_identity_unavailable' },
+    ),
+  };
+});
 
 vi.mock('#src/infra/plugin-identity.js', () => ({
   pluginRootNamespace: vi.fn(() => 'self-namespace'),
@@ -206,7 +210,9 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toEqual({
       status: 'no_record_no_socket',
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
@@ -217,6 +223,18 @@ describe('getBackendStatusFull record disposition', () => {
         staging: { writerAliveCount: 0, writerUnobservableCount: 1, orphanedCount: 0 },
       },
     });
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const output = formatBackendStatus(result, { kind: 'absent' }, null);
+
+    expect(output).toContain('Shutdown remainder publication stages with unobservable writers: 1');
+    expect(output).toContain(
+      '  Disposition: writer state is unknown; unknown establishes neither a live publication nor an absent writer.',
+    );
+    expect(output).toContain(
+      '  Recheck: coordinator startup is what begins bounded rechecks; any mutating Coral command or a Claude Code session start attempts it.',
+    );
+    expect(output).not.toContain('publications in progress');
+    expect(output).not.toContain('background discovery intervals');
   });
 
   it('reports the single stage left unscanned by a 129-entry stage scan', async () => {

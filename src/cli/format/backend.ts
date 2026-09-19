@@ -690,36 +690,66 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
+type ShutdownRemainderRecheckContext = 'coordinator-running' | 'startup-required' | 'coordinator-unconfirmed';
+
 // A shutdown remainder is additional evidence about a departed instance's undischarged obligations, carried
 // alongside — never instead of — whichever status observed the coordinator's current absence, ambiguity, or a
 // recent startup failure: the reader must end up with both what the coordinator's current state is and what
 // happens next.
-function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
-  return shutdownRemainder === undefined ? base : [base, formatShutdownRemainderReport(shutdownRemainder)].join('\n');
+function withShutdownRemainderSection(
+  base: string,
+  shutdownRemainder: ShutdownRemainderReport | undefined,
+  recheckContext: ShutdownRemainderRecheckContext,
+): string {
+  return shutdownRemainder === undefined
+    ? base
+    : [base, formatShutdownRemainderReport(shutdownRemainder, recheckContext)].join('\n');
 }
 
 function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
-      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatRunningStatus(result.health),
+        result.shutdownRemainder,
+        'coordinator-running',
+      );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
         result.shutdownRemainder,
+        'startup-required',
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
         `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
         result.shutdownRemainder,
+        'coordinator-unconfirmed',
       );
     case 'undecodable_record':
-      return withShutdownRemainderSection(formatUndecodableRecordStatus(result), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatUndecodableRecordStatus(result),
+        result.shutdownRemainder,
+        'coordinator-unconfirmed',
+      );
     case 'unreachable':
-      return withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatUnreachableStatus(result),
+        result.shutdownRemainder,
+        'coordinator-unconfirmed',
+      );
     case 'no_record_socket_present':
-      return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatNoRecordSocketPresentStatus(result),
+        result.shutdownRemainder,
+        'coordinator-unconfirmed',
+      );
     case 'recent_failure':
-      return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatRecentFailureStatus(result),
+        result.shutdownRemainder,
+        'coordinator-unconfirmed',
+      );
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
@@ -729,6 +759,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
           formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
         ].join('\n'),
         result.shutdownRemainder,
+        'coordinator-unconfirmed',
       );
     default:
       return assertNever(result);
@@ -1245,12 +1276,15 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
   return [...lines, ...formatSetupErrorLines(result.setupError)].join('\n');
 }
 
-function formatShutdownRemainderReport(report: ShutdownRemainderReport): string {
+function formatShutdownRemainderReport(
+  report: ShutdownRemainderReport,
+  recheckContext: ShutdownRemainderRecheckContext,
+): string {
   switch (report.status) {
     case 'recent_shutdown_remainder':
-      return formatRecentShutdownRemainderReport(report);
+      return formatRecentShutdownRemainderReport(report, recheckContext);
     case 'shutdown_remainder_unreadable':
-      return formatUnreadableShutdownRemainderReport(report);
+      return formatUnreadableShutdownRemainderReport(report, recheckContext);
     default:
       return assertNever(report);
   }
@@ -1258,6 +1292,7 @@ function formatShutdownRemainderReport(report: ShutdownRemainderReport): string 
 
 function formatRecentShutdownRemainderReport(
   result: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>,
+  recheckContext: ShutdownRemainderRecheckContext,
 ): string {
   const lines = [
     'Coral recorded a recent shutdown with unfinished obligations.',
@@ -1276,7 +1311,7 @@ function formatRecentShutdownRemainderReport(
     );
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
-  lines.push(...formatSkippedShutdownRemainderRecords(result));
+  lines.push(...formatSkippedShutdownRemainderRecords(result, recheckContext));
   return lines.join('\n');
 }
 
@@ -1349,13 +1384,14 @@ function formatShutdownRemainderEvidenceLines(
 
 function formatUnreadableShutdownRemainderReport(
   result: Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>,
+  recheckContext: ShutdownRemainderRecheckContext,
 ): string {
   if (result.reason === 'scan-failed') {
     return 'Coral could not inspect shutdown remainder records.';
   }
   return [
     'Coral found shutdown remainder records it could not use.',
-    ...formatSkippedShutdownRemainderRecords(result),
+    ...formatSkippedShutdownRemainderRecords(result, recheckContext),
   ].join('\n');
 }
 
@@ -1373,8 +1409,12 @@ type ShutdownRemainderSkippedRecords =
   | Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>
   | Extract<ShutdownRemainderReport, { reason: 'records-skipped' }>;
 
-function formatSkippedShutdownRemainderRecords(result: ShutdownRemainderSkippedRecords): string[] {
+function formatSkippedShutdownRemainderRecords(
+  result: ShutdownRemainderSkippedRecords,
+  recheckContext: ShutdownRemainderRecheckContext,
+): string[] {
   const lines: string[] = [];
+  const recheckLine = formatShutdownRemainderRecheckLine(recheckContext);
   if (result.skippedUnreadableRecordNames.length > 0) {
     lines.push(
       `Skipped shutdown remainder records, unreadable: ${result.skippedUnreadableRecordNames.length}`,
@@ -1415,14 +1455,16 @@ function formatSkippedShutdownRemainderRecords(result: ShutdownRemainderSkippedR
   if (result.staging !== undefined) {
     if (result.staging.writerAliveCount > 0) {
       lines.push(
-        `Shutdown remainder publications in progress, writer alive: ${result.staging.writerAliveCount}`,
-        '  Disposition: retained as durable status while the writer is alive; this coordinator rechecks it in bounded bursts separated by background discovery intervals.',
+        `Shutdown remainder publication stages with live writers: ${result.staging.writerAliveCount}`,
+        '  Disposition: retained as durable status while the writer is alive.',
+        recheckLine,
       );
     }
     if (result.staging.writerUnobservableCount > 0) {
       lines.push(
-        `Shutdown remainder publications in progress, writer unobservable: ${result.staging.writerUnobservableCount}`,
-        '  Disposition: retained as durable status and rechecked in bounded bursts separated by background discovery intervals. Unknown does not authorize publication or deletion.',
+        `Shutdown remainder publication stages with unobservable writers: ${result.staging.writerUnobservableCount}`,
+        '  Disposition: writer state is unknown; unknown establishes neither a live publication nor an absent writer.',
+        recheckLine,
       );
     }
     if (result.staging.orphanedCount > 0) {
@@ -1439,6 +1481,19 @@ function formatSkippedShutdownRemainderRecords(result: ShutdownRemainderSkippedR
     }
   }
   return lines;
+}
+
+function formatShutdownRemainderRecheckLine(context: ShutdownRemainderRecheckContext): string {
+  switch (context) {
+    case 'coordinator-running':
+      return '  Recheck: this coordinator performs bounded rechecks between background discovery intervals.';
+    case 'startup-required':
+      return '  Recheck: coordinator startup is what begins bounded rechecks; any mutating Coral command or a Claude Code session start attempts it.';
+    case 'coordinator-unconfirmed':
+      return '  Recheck: a running coordinator performs bounded rechecks; otherwise, successful coordinator startup begins them.';
+    default:
+      return assertNever(context);
+  }
 }
 
 export function formatShutdown(result: ShutdownResult): string {

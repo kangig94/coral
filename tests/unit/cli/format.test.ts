@@ -2004,8 +2004,7 @@ describe('cli format', () => {
     it('reports each staging-writer disposition without asking for operator action', () => {
       expect(
         formatBackendStatus({
-          status: 'recorded_process_absent',
-          pid: 4242,
+          status: 'no_record_no_socket',
           shutdownRemainder: {
             status: 'shutdown_remainder_unreadable',
             reason: 'records-skipped',
@@ -2017,14 +2016,36 @@ describe('cli format', () => {
         }),
       ).toContain(
         [
-          'Shutdown remainder publications in progress, writer alive: 1',
-          '  Disposition: retained as durable status while the writer is alive; this coordinator rechecks it in bounded bursts separated by background discovery intervals.',
-          'Shutdown remainder publications in progress, writer unobservable: 2',
-          '  Disposition: retained as durable status and rechecked in bounded bursts separated by background discovery intervals. Unknown does not authorize publication or deletion.',
+          'Shutdown remainder publication stages with live writers: 1',
+          '  Disposition: retained as durable status while the writer is alive.',
+          '  Recheck: coordinator startup is what begins bounded rechecks; any mutating Coral command or a Claude Code session start attempts it.',
+          'Shutdown remainder publication stages with unobservable writers: 2',
+          '  Disposition: writer state is unknown; unknown establishes neither a live publication nor an absent writer.',
+          '  Recheck: coordinator startup is what begins bounded rechecks; any mutating Coral command or a Claude Code session start attempts it.',
           'Shutdown remainder publication stages with proven-absent writers: 3',
           '  Disposition: coordinator cleanup promotes a decodable stage; refused cleanup remains durable reported status for a later background or startup attempt. Other orphaned stages use their own 32-entry bound (newest first).',
         ].join('\n'),
       );
+    });
+
+    it('attributes background stage rechecks only to a running coordinator', () => {
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: { ...baseHealth, components: [], queueDepth: 0 },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedUnreadableRecordNames: [],
+          skippedCorruptRecordCount: 0,
+          skippedUnsupportedRecordCount: 0,
+          staging: { writerAliveCount: 0, writerUnobservableCount: 1, orphanedCount: 0 },
+        },
+      });
+
+      expect(text).toContain(
+        '  Recheck: this coordinator performs bounded rechecks between background discovery intervals.',
+      );
+      expect(text).not.toContain('coordinator startup is what begins bounded rechecks');
     });
 
     it.each([

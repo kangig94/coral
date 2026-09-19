@@ -54,10 +54,13 @@ export function shutdownRemainderPath(runDir: string): string {
 
 type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
 
-export type ShutdownRemainderPruneDisposition =
-  | Readonly<{ kind: 'stage-ownership-classified' }>
-  | Readonly<{ kind: 'stage-ownership-held'; stageNames: readonly string[] }>
-  | Readonly<{ kind: 'prune-refused' }>;
+export type ShutdownRemainderPruneDisposition = Readonly<{
+  stageOwnership:
+    | Readonly<{ kind: 'classified' }>
+    | Readonly<{ kind: 'held'; stageNames: readonly string[] }>
+    | Readonly<{ kind: 'unclassified'; stageNames: readonly string[] }>;
+  cleanup: Readonly<{ kind: 'complete' }> | Readonly<{ kind: 'refused'; subjectNames: readonly string[] }>;
+}>;
 
 // Newest-known-first, with every 'unknown' age ranked older than any known mtime: a file this build could not
 // stat carries no age evidence to assert a real age from, but still needs the same bounded-retention exit as
@@ -79,7 +82,19 @@ export function pruneShutdownRemainderRecords(
 ): ShutdownRemainderPruneDisposition {
   const directory = shutdownRemainderPath(runtime.runDir);
   const reobservableStageNames = new Set<string>();
-  let pruneRefused = false;
+  const refusedCleanupSubjectNames = new Set<string>();
+  const disposition = (stageOwnershipClassified: boolean): ShutdownRemainderPruneDisposition => {
+    const stageNames = [...reobservableStageNames].sort((left, right) => left.localeCompare(right));
+    const subjectNames = [...refusedCleanupSubjectNames].sort((left, right) => left.localeCompare(right));
+    return {
+      stageOwnership: stageOwnershipClassified
+        ? stageNames.length === 0
+          ? { kind: 'classified' }
+          : { kind: 'held', stageNames }
+        : { kind: 'unclassified', stageNames },
+      cleanup: subjectNames.length === 0 ? { kind: 'complete' } : { kind: 'refused', subjectNames },
+    };
+  };
   try {
     const retainedStages: { name: string; age: RecordAge }[] = [];
     const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
@@ -114,8 +129,9 @@ export function pruneShutdownRemainderRecords(
       if (stage.partial) {
         try {
           runtime.storage.unlinkSync(path);
+          refusedCleanupSubjectNames.delete(name);
         } catch {
-          pruneRefused = true;
+          refusedCleanupSubjectNames.add(name);
           retainedStages.push({ name, age });
         }
         continue;
@@ -125,9 +141,10 @@ export function pruneShutdownRemainderRecords(
       if (classification.kind === 'readable' && classification.record.instanceId === stage.instanceId) {
         try {
           runtime.storage.renameSync(path, join(directory, `${stage.instanceId}.json`));
+          refusedCleanupSubjectNames.delete(name);
           continue;
         } catch {
-          pruneRefused = true;
+          refusedCleanupSubjectNames.add(name);
         }
       }
       retainedStages.push({ name, age });
@@ -136,10 +153,11 @@ export function pruneShutdownRemainderRecords(
     for (const { name } of retainedStages.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
+        refusedCleanupSubjectNames.delete(name);
         reobservableStageNames.delete(name);
         backendLog.warn(`shutdown remainder stage ${name} discarded beyond the retention bound`);
       } catch {
-        pruneRefused = true;
+        refusedCleanupSubjectNames.add(name);
       }
     }
 
@@ -164,9 +182,10 @@ export function pruneShutdownRemainderRecords(
         // count below.
         try {
           runtime.storage.unlinkSync(path);
+          refusedCleanupSubjectNames.delete(name);
           backendLog.warn(`shutdown remainder record ${name} discarded: content is not valid JSON`);
         } catch {
-          pruneRefused = true;
+          refusedCleanupSubjectNames.add(name);
         }
         continue;
       }
@@ -189,9 +208,10 @@ export function pruneShutdownRemainderRecords(
       if (name !== `${classification.record.instanceId}.json`) {
         try {
           runtime.storage.unlinkSync(path);
+          refusedCleanupSubjectNames.delete(name);
           backendLog.warn(`shutdown remainder record ${name} discarded: filename does not match instance identity`);
         } catch {
-          pruneRefused = true;
+          refusedCleanupSubjectNames.add(name);
         }
         continue;
       }
@@ -206,8 +226,9 @@ export function pruneShutdownRemainderRecords(
     for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
+        refusedCleanupSubjectNames.delete(name);
       } catch {
-        pruneRefused = true;
+        refusedCleanupSubjectNames.add(name);
       }
     }
     unreadable.sort(byRetentionOrder);
@@ -219,11 +240,12 @@ export function pruneShutdownRemainderRecords(
     for (const { name } of unreadable.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
+        refusedCleanupSubjectNames.delete(name);
         backendLog.warn(
           `shutdown remainder record ${name} discarded: persistently unreadable beyond the retention bound`,
         );
       } catch {
-        pruneRefused = true;
+        refusedCleanupSubjectNames.add(name);
       }
     }
     unsupported.sort(byRetentionOrder);
@@ -234,21 +256,24 @@ export function pruneShutdownRemainderRecords(
     for (const { name } of unsupported.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
+        refusedCleanupSubjectNames.delete(name);
         backendLog.warn(
           `shutdown remainder record ${name} discarded: unsupported by this build's schema, beyond the retention bound`,
         );
       } catch {
-        pruneRefused = true;
+        refusedCleanupSubjectNames.add(name);
       }
     }
-    if (pruneRefused) return { kind: 'prune-refused' };
-    const stageNames = [...reobservableStageNames].sort((left, right) => left.localeCompare(right));
-    return stageNames.length === 0
-      ? { kind: 'stage-ownership-classified' }
-      : { kind: 'stage-ownership-held', stageNames };
+    return disposition(true);
   } catch (error: unknown) {
-    if (thrownErrnoCode(error) === 'ENOENT') return { kind: 'stage-ownership-classified' };
-    return { kind: 'prune-refused' };
+    if (thrownErrnoCode(error) === 'ENOENT') {
+      return {
+        stageOwnership: { kind: 'classified' },
+        cleanup: { kind: 'complete' },
+      };
+    }
+    refusedCleanupSubjectNames.add(directory);
+    return disposition(false);
   }
 }
 
@@ -258,8 +283,11 @@ const SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT = 3;
 const SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT = 1;
 
 type ShutdownRemainderPrunerFollowUp =
-  | Readonly<{ kind: 'reobserve'; stageNames: ReadonlySet<string> }>
-  | Readonly<{ kind: 'retry-prune' }>
+  | Readonly<{
+      kind: 'retry';
+      stageNames: ReadonlySet<string>;
+      cleanupSubjectNames: ReadonlySet<string>;
+    }>
   | Readonly<{ kind: 'discover' }>;
 
 /** Remainder maintenance must not keep the coordinator process alive. */
@@ -269,37 +297,47 @@ export function createShutdownRemainderPruner(
   let timer: TimerHandle | null = null;
   let stopped = false;
   const stageReobservations = new Map<string, number>();
-  let pruneRetries = 0;
+  const cleanupRetries = new Map<string, number>();
   const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
 
   const takeFollowUp = (disposition: ShutdownRemainderPruneDisposition): ShutdownRemainderPrunerFollowUp => {
-    switch (disposition.kind) {
-      case 'stage-ownership-classified':
-        stageReobservations.clear();
-        pruneRetries = 0;
-        return { kind: 'discover' };
-      case 'stage-ownership-held': {
-        pruneRetries = 0;
-        const retainedStageNames = new Set(disposition.stageNames);
-        for (const stageName of stageReobservations.keys()) {
-          if (!retainedStageNames.has(stageName)) stageReobservations.delete(stageName);
-        }
-        const stageNames = new Set(
-          disposition.stageNames.filter(
-            (stageName) => (stageReobservations.get(stageName) ?? 0) < SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT,
-          ),
-        );
-        if (stageNames.size === 0) return { kind: 'discover' };
-        return { kind: 'reobserve', stageNames };
+    const observedStageNames =
+      disposition.stageOwnership.kind === 'classified' ? [] : disposition.stageOwnership.stageNames;
+    const retainedStageNames = new Set(observedStageNames);
+    if (disposition.stageOwnership.kind !== 'unclassified') {
+      for (const stageName of stageReobservations.keys()) {
+        if (!retainedStageNames.has(stageName)) stageReobservations.delete(stageName);
       }
-      case 'prune-refused':
-        if (pruneRetries >= SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT) {
-          pruneRetries = 0;
-          return { kind: 'discover' };
-        }
-        pruneRetries += 1;
-        return { kind: 'retry-prune' };
     }
+    const stageCandidates =
+      disposition.stageOwnership.kind === 'unclassified'
+        ? new Set([...stageReobservations.keys(), ...observedStageNames])
+        : retainedStageNames;
+    const stageNames = new Set(
+      [...stageCandidates].filter(
+        (stageName) => (stageReobservations.get(stageName) ?? 0) < SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT,
+      ),
+    );
+
+    const refusedSubjectNames = new Set(disposition.cleanup.kind === 'refused' ? disposition.cleanup.subjectNames : []);
+    if (disposition.stageOwnership.kind !== 'unclassified') {
+      for (const subjectName of cleanupRetries.keys()) {
+        if (!refusedSubjectNames.has(subjectName)) cleanupRetries.delete(subjectName);
+      }
+    }
+    const cleanupCandidates =
+      disposition.stageOwnership.kind === 'unclassified'
+        ? new Set([...cleanupRetries.keys(), ...refusedSubjectNames])
+        : refusedSubjectNames;
+    const cleanupSubjectNames = new Set(
+      [...cleanupCandidates].filter(
+        (subjectName) => (cleanupRetries.get(subjectName) ?? 0) < SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT,
+      ),
+    );
+
+    return stageNames.size === 0 && cleanupSubjectNames.size === 0
+      ? { kind: 'discover' }
+      : { kind: 'retry', stageNames, cleanupSubjectNames };
   };
 
   const pruneNow = (stageNames?: ReadonlySet<string>): void => {
@@ -318,16 +356,17 @@ export function createShutdownRemainderPruner(
           timer = null;
           if (followUp.kind === 'discover') {
             stageReobservations.clear();
-            pruneRetries = 0;
+            cleanupRetries.clear();
             pruneNow();
             return;
           }
-          if (followUp.kind === 'reobserve') {
-            for (const stageName of followUp.stageNames) {
-              stageReobservations.set(stageName, (stageReobservations.get(stageName) ?? 0) + 1);
-            }
+          for (const stageName of followUp.stageNames) {
+            stageReobservations.set(stageName, (stageReobservations.get(stageName) ?? 0) + 1);
           }
-          pruneNow(followUp.kind === 'reobserve' ? followUp.stageNames : undefined);
+          for (const subjectName of followUp.cleanupSubjectNames) {
+            cleanupRetries.set(subjectName, (cleanupRetries.get(subjectName) ?? 0) + 1);
+          }
+          pruneNow(followUp.stageNames.size === 0 ? undefined : followUp.stageNames);
         },
         followUp.kind === 'discover' ? SHUTDOWN_REMAINDER_DISCOVERY_MS : SHUTDOWN_REMAINDER_REOBSERVATION_MS,
       );
@@ -337,7 +376,7 @@ export function createShutdownRemainderPruner(
 
   return {
     start: () => {
-      pruneRetries = 0;
+      cleanupRetries.clear();
       pruneNow();
     },
     stop: () => {

@@ -43,6 +43,7 @@ function storageWith(
   options: Readonly<{
     publish?: boolean;
     refusePrune?: boolean;
+    refusePruneWhen?: (name: string, attempt: number) => boolean;
     refuseStatFor?: string;
     statErrorCode?: string;
     refuseReadFor?: string | readonly string[];
@@ -64,6 +65,7 @@ function storageWith(
         ? [options.refuseReadFor]
         : options.refuseReadFor,
   );
+  const pruneAttempts = new Map<string, number>();
 
   const storage = {
     existsSync: (path: string) => (path === REMAINDER_DIRECTORY ? directoryExists : files.has(path)),
@@ -93,7 +95,12 @@ function storageWith(
       };
     }) as unknown as StoragePort['statSync'],
     unlinkSync: vi.fn((path: string) => {
-      if (options.refusePrune === true) throw new Error('prune refused');
+      const name = basename(path);
+      const attempt = (pruneAttempts.get(name) ?? 0) + 1;
+      pruneAttempts.set(name, attempt);
+      if (options.refusePrune === true || options.refusePruneWhen?.(name, attempt) === true) {
+        throw new Error('prune refused');
+      }
       files.delete(path);
     }),
     mkdirSync: vi.fn(() => {
@@ -1057,7 +1064,10 @@ describe('shutdown remainder status', () => {
       observeStageWriter: () => 'absent',
     });
 
-    expect(disposition).toEqual({ kind: 'stage-ownership-classified' });
+    expect(disposition).toEqual({
+      stageOwnership: { kind: 'classified' },
+      cleanup: { kind: 'complete' },
+    });
     expect(storage.fileNames()).toEqual(['orphan.json']);
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       records: [recordAt('orphan')],
@@ -1132,8 +1142,33 @@ describe('shutdown remainder status', () => {
       observeStageWriter: () => 'unknown',
     });
 
-    expect(disposition).toEqual({ kind: 'stage-ownership-held', stageNames: [stageName] });
+    expect(disposition).toEqual({
+      stageOwnership: { kind: 'held', stageNames: [stageName] },
+      cleanup: { kind: 'complete' },
+    });
     expect(storage.fileNames()).toEqual([stageName]);
+  });
+
+  it('returns held stage ownership together with an unrelated cleanup refusal', () => {
+    const stageName = 'held.json.stage.4242.unknown';
+    const storage = storageWith(
+      [
+        { name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 },
+        { name: 'corrupt.json', value: '{not-json', mtimeMs: 2 },
+      ],
+      { refusePrune: true },
+    );
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'unknown',
+    });
+
+    expect(disposition).toEqual({
+      stageOwnership: { kind: 'held', stageNames: [stageName] },
+      cleanup: { kind: 'refused', subjectNames: ['corrupt.json'] },
+    });
   });
 
   it('does not prune any of 33 writer-owned stages whose writers are unobservable', () => {
@@ -1150,7 +1185,7 @@ describe('shutdown remainder status', () => {
       observeStageWriter: () => 'unknown',
     });
 
-    expect(disposition).toMatchObject({ kind: 'stage-ownership-held' });
+    expect(disposition).toMatchObject({ stageOwnership: { kind: 'held' } });
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toEqual(stages.map(({ name }) => name).sort());
   });
@@ -1174,7 +1209,10 @@ describe('shutdown remainder status', () => {
       observeStageWriter: ({ pid }) => (pid === 7_000 ? 'unknown' : 'absent'),
     });
 
-    expect(disposition).toEqual({ kind: 'stage-ownership-held', stageNames: [heldStage.name] });
+    expect(disposition).toEqual({
+      stageOwnership: { kind: 'held', stageNames: [heldStage.name] },
+      cleanup: { kind: 'complete' },
+    });
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain(heldStage.name);
@@ -1277,6 +1315,69 @@ describe('shutdown remainder status', () => {
     expect(storage.readdirSync).toHaveBeenCalledTimes(4);
     expect(scheduled).toHaveLength(1);
     expect(storage.fileNames()).toEqual(['corrupt.json']);
+    pruner.stop();
+  });
+
+  it('continues a held stage re-observation budget when unrelated cleanup is refused', () => {
+    const stageName = 'held.json.stage.4242.unknown';
+    const storage = storageWith(
+      [
+        { name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 },
+        { name: 'corrupt.json', value: '{not-json', mtimeMs: 2 },
+      ],
+      { refusePrune: true },
+    );
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'unknown',
+      time: {
+        setTimeout: (callback, delayMs) => {
+          scheduled.push({ callback, delayMs });
+          return { unref: vi.fn() };
+        },
+        clearTimeout: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const immediateRetry = scheduled.shift();
+    if (immediateRetry === undefined) throw new Error('combined retry was not scheduled');
+    expect(immediateRetry.delayMs).toBe(1_000);
+    immediateRetry.callback();
+
+    expect(scheduled[0]?.delayMs).toBe(1_000);
+    pruner.stop();
+  });
+
+  it('gives a late cleanup target its own immediate retry budget', () => {
+    const storage = storageWith([{ name: 'a.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePruneWhen: (_name, attempt) => attempt === 1,
+    });
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setTimeout: (callback, delayMs) => {
+          scheduled.push({ callback, delayMs });
+          return { unref: vi.fn() };
+        },
+        clearTimeout: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const retryA = scheduled.shift();
+    if (retryA === undefined) throw new Error('first cleanup retry was not scheduled');
+    expect(retryA.delayMs).toBe(1_000);
+
+    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'b.json'), '{not-json');
+    retryA.callback();
+
+    expect(storage.fileNames()).toEqual(['b.json']);
+    expect(scheduled[0]?.delayMs).toBe(1_000);
     pruner.stop();
   });
 
