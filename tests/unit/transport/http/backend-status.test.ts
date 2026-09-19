@@ -228,11 +228,9 @@ describe('getBackendStatusFull record disposition', () => {
 
     expect(output).toContain('Shutdown remainder publication stages with unobservable writers: 1');
     expect(output).toContain(
-      '  Disposition: writer state is unknown; unknown establishes neither a live publication nor an absent writer.',
+      '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
     );
-    expect(output).toContain(
-      '  Recheck: no coordinator is running. The next coordinator startup scans once and then rescans periodically while it runs; the evidence remains reported meanwhile.',
-    );
+    expect(output).not.toContain('  Recheck:');
     expect(output).not.toContain('publications in progress');
     expect(output).not.toContain('background discovery intervals');
   });

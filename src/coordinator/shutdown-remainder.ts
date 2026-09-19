@@ -29,13 +29,13 @@ type ShutdownRemainderPruneStageObserver = (
 ) => ShutdownRemainderStageObservation;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
-  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
+  storage: Pick<StoragePort, 'linkSync' | 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
   runDir: string;
   observeStageWriter?: ShutdownRemainderPruneStageObserver;
 }>;
 
 type ShutdownRemainderWriteRuntime = Readonly<{
-  storage: Pick<StoragePort, 'existsSync' | 'mkdirSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;
   time: Pick<TimePort, 'now'>;
   runDir: string;
   writer: Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>;
@@ -59,13 +59,18 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
     | Readonly<{ kind: 'classified' }>
     | Readonly<{ kind: 'held'; stageNames: readonly string[] }>
     | Readonly<{ kind: 'unclassified'; stageNames: readonly string[] }>;
-  cleanup: Readonly<{ kind: 'complete' }> | Readonly<{ kind: 'refused'; subjectNames: readonly string[] }>;
+  cleanup:
+    | Readonly<{ kind: 'complete' }>
+    | Readonly<{ kind: 'quarantined'; subjectNames: readonly string[] }>
+    | Readonly<{
+        kind: 'refused';
+        subjectNames: readonly string[];
+        quarantinedSubjectNames?: readonly string[];
+      }>;
 }>;
 
-// Newest-known-first, with every 'unknown' age ranked older than any known mtime: a file this build could not
-// stat carries no age evidence to assert a real age from, but still needs the same bounded-retention exit as
-// every other unreadable file (design-philosophy.md principle 11/12), so it is the first to fall outside the
-// retained window once the bound is exceeded rather than being exempted from the bound entirely.
+const SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX = '.quarantined';
+
 function byRetentionOrder(
   left: Readonly<{ name: string; age: RecordAge }>,
   right: Readonly<{ name: string; age: RecordAge }>,
@@ -77,46 +82,107 @@ function byRetentionOrder(
   return right.name.localeCompare(left.name);
 }
 
+function shutdownRemainderQuarantineName(name: string): string {
+  return `${name}${SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX}`;
+}
+
+function quarantinedShutdownRemainderSubject(name: string): string | null {
+  if (!name.endsWith(SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX)) return null;
+  const subject = name.slice(0, -SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX.length);
+  return subject.length === 0 ? null : subject;
+}
+
+function retryShutdownRemainderQuarantine(runtime: ShutdownRemainderPruneRuntime): void {
+  const directory = shutdownRemainderPath(runtime.runDir);
+  let names: string[];
+  try {
+    names = runtime.storage.readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    const subject = quarantinedShutdownRemainderSubject(name);
+    if (subject === null) continue;
+    const activePath = join(directory, subject);
+    try {
+      const quarantinePath = join(directory, name);
+      runtime.storage.linkSync(quarantinePath, activePath);
+      runtime.storage.unlinkSync(quarantinePath);
+    } catch {
+      // The quarantine remains the durable owner when a startup retry cannot restore it.
+    }
+  }
+}
+
 export function pruneShutdownRemainderRecords(
   runtime: ShutdownRemainderPruneRuntime,
 ): ShutdownRemainderPruneDisposition {
   const directory = shutdownRemainderPath(runtime.runDir);
   const reobservableStageNames = new Set<string>();
   const refusedCleanupSubjectNames = new Set<string>();
+  const quarantinedSubjectNames = new Set<string>();
   const disposition = (stageOwnershipClassified: boolean): ShutdownRemainderPruneDisposition => {
     const stageNames = [...reobservableStageNames].sort((left, right) => left.localeCompare(right));
     const subjectNames = [...refusedCleanupSubjectNames].sort((left, right) => left.localeCompare(right));
+    const quarantinedNames = [...quarantinedSubjectNames].sort((left, right) => left.localeCompare(right));
+    const cleanup: ShutdownRemainderPruneDisposition['cleanup'] =
+      subjectNames.length > 0
+        ? {
+            kind: 'refused',
+            subjectNames,
+            ...(quarantinedNames.length === 0 ? {} : { quarantinedSubjectNames: quarantinedNames }),
+          }
+        : quarantinedNames.length > 0
+          ? { kind: 'quarantined', subjectNames: quarantinedNames }
+          : { kind: 'complete' };
     return {
       stageOwnership: stageOwnershipClassified
         ? stageNames.length === 0
           ? { kind: 'classified' }
           : { kind: 'held', stageNames }
         : { kind: 'unclassified', stageNames },
-      cleanup: subjectNames.length === 0 ? { kind: 'complete' } : { kind: 'refused', subjectNames },
+      cleanup,
     };
   };
+  const quarantine = (name: string): void => {
+    try {
+      runtime.storage.renameSync(join(directory, name), join(directory, shutdownRemainderQuarantineName(name)));
+      quarantinedSubjectNames.add(name);
+      refusedCleanupSubjectNames.delete(name);
+      reobservableStageNames.delete(name);
+    } catch (error: unknown) {
+      if (thrownErrnoCode(error) !== 'ENOENT') refusedCleanupSubjectNames.add(name);
+    }
+  };
   try {
-    const retainedStages: { name: string; age: RecordAge }[] = [];
     const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
     for (const name of runtime.storage.readdirSync(directory)) {
+      const quarantinedSubject = quarantinedShutdownRemainderSubject(name);
+      if (quarantinedSubject !== null) {
+        quarantinedSubjectNames.add(quarantinedSubject);
+        continue;
+      }
       const entry = classifyShutdownRemainderDirectoryEntry(name);
       if (entry.kind === 'other' || entry.kind === 'record') continue;
-      let age: RecordAge = { kind: 'unknown' };
       const path = join(directory, name);
       try {
-        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
+        runtime.storage.statSync(path);
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }
       if (entry.kind === 'malformed-stage') {
-        retainedStages.push({ name, age });
+        quarantine(name);
         continue;
       }
       const stage = entry.stage;
       const writerObservation = observeStageWriter(stage.writer, name);
       if (stage.partial) {
-        if (writerObservation !== 'absent') {
+        if (writerObservation === 'alive') {
           reobservableStageNames.add(name);
+          continue;
+        }
+        if (writerObservation === 'unknown') {
+          quarantine(name);
           continue;
         }
         try {
@@ -124,7 +190,6 @@ export function pruneShutdownRemainderRecords(
           refusedCleanupSubjectNames.delete(name);
         } catch {
           refusedCleanupSubjectNames.add(name);
-          retainedStages.push({ name, age });
         }
         continue;
       }
@@ -135,31 +200,19 @@ export function pruneShutdownRemainderRecords(
           runtime.storage.renameSync(path, join(directory, `${stage.instanceId}.json`));
           refusedCleanupSubjectNames.delete(name);
           continue;
-        } catch {
+        } catch (error: unknown) {
+          if (thrownErrnoCode(error) === 'ENOENT') continue;
           refusedCleanupSubjectNames.add(name);
         }
       }
-      if (writerObservation !== 'absent') {
+      if (writerObservation === 'alive') {
         reobservableStageNames.add(name);
         continue;
       }
-      retainedStages.push({ name, age });
-    }
-    retainedStages.sort(byRetentionOrder);
-    for (const { name } of retainedStages.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
-      try {
-        runtime.storage.unlinkSync(join(directory, name));
-        refusedCleanupSubjectNames.delete(name);
-        reobservableStageNames.delete(name);
-        backendLog.warn(`shutdown remainder stage ${name} discarded beyond the retention bound`);
-      } catch {
-        refusedCleanupSubjectNames.add(name);
-      }
+      quarantine(name);
     }
 
     const known: { name: string; age: RecordAge }[] = [];
-    const unreadable: { name: string; age: RecordAge }[] = [];
-    const unsupported: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
       if (classifyShutdownRemainderDirectoryEntry(name).kind !== 'record') continue;
       const path = join(directory, name);
@@ -186,19 +239,11 @@ export function pruneShutdownRemainderRecords(
         continue;
       }
       if (classification.kind === 'unsupported') {
-        // Constraint: a schema rejection is decisive only about this build, never about an older or newer one
-        // that may still decode the same bytes (design-philosophy.md principle 10's rollback case) — so unlike
-        // `corrupt`, it is held under the same bounded retention as `unreadable` below rather than deleted
-        // outright, competing only against other unsupported files for its own slot count.
-        unsupported.push({ name, age });
+        quarantine(name);
         continue;
       }
       if (classification.kind === 'unreadable') {
-        // Constraint: a record this build cannot prove readable is not proven old or content-invalid, and
-        // unknown must not authorize deletion by content (design-philosophy.md principle 11). It competes only
-        // against other unreadable files for the bounded slot count below — never against a known-readable
-        // record — so persistent unreadability cannot displace genuinely decodable evidence out of its cap.
-        unreadable.push({ name, age });
+        quarantine(name);
         continue;
       }
       if (name !== `${classification.record.instanceId}.json`) {
@@ -223,39 +268,6 @@ export function pruneShutdownRemainderRecords(
       try {
         runtime.storage.unlinkSync(join(directory, name));
         refusedCleanupSubjectNames.delete(name);
-      } catch {
-        refusedCleanupSubjectNames.add(name);
-      }
-    }
-    unreadable.sort(byRetentionOrder);
-    // Constraint: this retention bound is the unreadable hold's only exit (design-philosophy.md principle 11 —
-    // every hold names what ends it; principle 12 — no state may wait on an operator who is not there), for
-    // every unreadable file including one this build could not even stat: `byRetentionOrder` ranks it as the
-    // oldest, so it is reclaimed first once the bucket exceeds this same bound, without asserting anything
-    // about its actual age.
-    for (const { name } of unreadable.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
-      try {
-        runtime.storage.unlinkSync(join(directory, name));
-        refusedCleanupSubjectNames.delete(name);
-        backendLog.warn(
-          `shutdown remainder record ${name} discarded: persistently unreadable beyond the retention bound`,
-        );
-      } catch {
-        refusedCleanupSubjectNames.add(name);
-      }
-    }
-    unsupported.sort(byRetentionOrder);
-    // Constraint: this retention bound is the unsupported hold's only exit, on the same footing as
-    // `unreadable` above — a build-relative schema rejection does not authorize deletion (design-philosophy.md
-    // principle 10/11), so this bucket is reclaimed only once it exceeds its own bound, independent of `known`
-    // and `unreadable`.
-    for (const { name } of unsupported.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
-      try {
-        runtime.storage.unlinkSync(join(directory, name));
-        refusedCleanupSubjectNames.delete(name);
-        backendLog.warn(
-          `shutdown remainder record ${name} discarded: unsupported by this build's schema, beyond the retention bound`,
-        );
       } catch {
         refusedCleanupSubjectNames.add(name);
       }
@@ -286,6 +298,7 @@ export function createShutdownRemainderPruner(
   return {
     start: () => {
       if (stopped) return null;
+      retryShutdownRemainderQuarantine(runtime);
       const disposition = prune();
       timer = runtime.time.setInterval(prune, SHUTDOWN_REMAINDER_REOBSERVATION_MS);
       timer.unref?.();
@@ -330,6 +343,7 @@ export function recordShutdownRemainder(
     mode: input.mode,
     entries: input.undischarged,
   };
+  const serializedRecord = `${JSON.stringify(record, null, 2)}\n`;
   runtime.storage.mkdirSync(directory, { recursive: true });
   // Constraint: do not use `writeAtomicDurableSync`; `docs/design-rationale.md` §12.5 excludes its unbounded
   // journal commit waits from the coordinator exit path.
@@ -344,7 +358,7 @@ export function recordShutdownRemainder(
   };
   try {
     if (
-      !runtime.storage.writeAtomicSync(stagePath, `${JSON.stringify(record, null, 2)}\n`, {
+      !runtime.storage.writeAtomicSync(stagePath, serializedRecord, {
         encoding: 'utf-8',
         mode: 0o600,
       })
@@ -355,7 +369,13 @@ export function recordShutdownRemainder(
     try {
       runtime.storage.renameSync(stagePath, path);
     } catch (error: unknown) {
-      if (thrownErrnoCode(error) === 'ENOENT' && runtime.storage.existsSync(path)) return true;
+      if (thrownErrnoCode(error) === 'ENOENT') {
+        try {
+          if (runtime.storage.readFileSync(path, 'utf-8') === serializedRecord) return true;
+        } catch {
+          // The rename error remains the publication failure when the destination cannot be verified.
+        }
+      }
       throw error;
     }
     return true;

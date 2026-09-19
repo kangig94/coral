@@ -1419,7 +1419,7 @@ function formatSkippedShutdownRemainderRecords(
     lines.push(
       `Skipped shutdown remainder records, unreadable: ${result.skippedUnreadableRecordNames.length}`,
       ...result.skippedUnreadableRecordNames.map((name) => `  Record: ${name}`),
-      '  Disposition: content was never read; retried on every status read, with the oldest eligible for cleanup once too many unreadable records accumulate.',
+      '  Disposition: content was never read; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
     );
   }
   if (result.skippedCorruptRecordCount > 0) {
@@ -1431,7 +1431,7 @@ function formatSkippedShutdownRemainderRecords(
   if (result.skippedUnsupportedRecordCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, unsupported: ${result.skippedUnsupportedRecordCount}`,
-      '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained until the oldest becomes eligible for cleanup after too many unsupported records accumulate.',
+      '  Disposition: content decoded but the schema this build reads records with rejects it; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
     );
   }
   if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
@@ -1463,20 +1463,19 @@ function formatSkippedShutdownRemainderRecords(
     if (result.staging.writerUnobservableCount > 0) {
       lines.push(
         `Shutdown remainder publication stages with unobservable writers: ${result.staging.writerUnobservableCount}`,
-        '  Disposition: writer state is unknown; unknown establishes neither a live publication nor an absent writer.',
-        recheckLine,
+        '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
       );
     }
     if (result.staging.orphanedCount > 0) {
       lines.push(
         `Shutdown remainder publication stages with proven-absent writers: ${result.staging.orphanedCount}`,
-        '  Disposition: coordinator cleanup promotes a decodable stage; a running coordinator retries refused cleanup in its periodic remainder scan, otherwise the next coordinator startup retries it. Other orphaned stages use their own 32-entry bound (newest first).',
+        '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and moves other retained evidence to durable quarantine. Refused cleanup remains reported for a later maintenance pass.',
       );
     }
     if ((result.staging.malformedCount ?? 0) > 0) {
       lines.push(
         `Malformed shutdown remainder publication stages: ${result.staging.malformedCount}`,
-        '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first). Each periodic or startup remainder scan reapplies that bound and retries refused cleanup.',
+        '  Disposition: the filename could not identify a writer; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
       );
     }
   }
@@ -1488,7 +1487,7 @@ function formatShutdownRemainderRecheckLine(context: ShutdownRemainderRecheckCon
     case 'coordinator-running':
       return '  Recheck: this coordinator rescans shutdown remainder files periodically; no action is required while the evidence remains reported.';
     case 'startup-required':
-      return '  Recheck: no coordinator is running. The next coordinator startup scans once and then rescans periodically while it runs; the evidence remains reported meanwhile.';
+      return '  Recheck: no discovery record and no socket at the current expected address were found. The next coordinator startup scans once and then rechecks live-writer stages periodically while it runs.';
     case 'coordinator-unconfirmed':
       return '  Recheck: a running coordinator rescans periodically; otherwise the next coordinator startup scans once. The evidence remains reported meanwhile.';
     default:
