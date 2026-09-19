@@ -14,6 +14,7 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
+import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '#src/infra/shutdown-remainder-record.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   documentedCoralSetupError,
@@ -2120,29 +2121,68 @@ describe('cli format', () => {
           skippedUnreadableRecordNames: [],
           skippedCorruptRecordCount: 1,
           skippedUnsupportedRecordCount: 0,
-          cleanupRefusedSubjectNames: ['corrupt.json'],
+          cleanupRefusals: [
+            {
+              subject: 'corrupt.json',
+              cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
+              exit: { condition: 'cleanup-succeeded-or-subject-absent' },
+            },
+          ],
         },
       });
 
       expect(text).toContain(
         [
           'Shutdown remainder cleanup refusals: 1',
-          '  Subject: "corrupt.json"',
-          "  Disposition: cleanup was refused; retry follows the subject's reported maintenance or quarantine disposition, and the refusal remains reported until cleanup succeeds or the subject is observed absent.",
+          '  Refusal 1:',
+          '    Subject: "corrupt.json"',
+          '    Cause: delete failed with EACCES',
+          '    Retry trigger: coordinator startup and periodic remainder maintenance',
+          '    Retry action: reclassify the subject and retry only if it still qualifies',
+          '    Hold ends: cleanup succeeds or the subject is observed absent',
         ].join('\n'),
       );
     });
 
-    it.each([
-      [
-        'unrecognized directory entries',
-        { unrecognizedEntryNames: ['quarantine'] },
+    it('bounds cleanup refusal lines and reports the omitted count', () => {
+      const cleanupRefusals = Array.from({ length: 300 }, (_, index) => ({
+        subject: `corrupt-${String(index).padStart(3, '0')}.json`,
+        cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+        retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+        exit: { condition: 'cleanup-succeeded-or-subject-absent' as const },
+      }));
+
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: { status: 'shutdown_remainder_cleanup_refused', cleanupRefusals },
+      });
+
+      expect(text.match(/ {2}Refusal [0-9]+:/gu)).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+      expect(text).toContain('  Additional refusals not listed: 172');
+      expect(text).not.toContain('corrupt-128.json');
+    });
+
+    it('reports unrecognized directory entries as terminal and outside cleanup ownership', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unowned',
+          unrecognizedEntryNames: ['quarantine'],
+        },
+      });
+
+      expect(text).toContain(
         [
           'Unrecognized shutdown remainder directory entries: 1',
           '  Entry: "quarantine"',
-          '  Disposition: present and unrecognized by this build; not acted on.',
-        ],
-      ],
+          '  Disposition: present, not owned by shutdown remainder cleanup, and not scheduled for action.',
+        ].join('\n'),
+      );
+      expect(text).not.toContain('could not use');
+    });
+
+    it.each([
       [
         'unscanned stages',
         { unscannedStageCount: 3 },

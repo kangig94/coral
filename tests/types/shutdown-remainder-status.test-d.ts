@@ -74,10 +74,21 @@ type ExpectedProjectionLeafPaths =
   | 'skippedCorruptRecordCount'
   | 'skippedUnsupportedRecordCount'
   | 'skippedIdentityMismatchRecordCount'
-  | 'cleanupRefusedSubjectNames'
-  | 'cleanupRefusedSubjectNames[]'
+  | 'cleanupRefusals'
+  | 'cleanupRefusals[].subject'
+  | 'cleanupRefusals[].cause.kind'
+  | 'cleanupRefusals[].cause.operation'
+  | 'cleanupRefusals[].cause.code'
+  | 'cleanupRefusals[].retry.trigger'
+  | 'cleanupRefusals[].retry.action'
+  | 'cleanupRefusals[].exit.condition'
+  | 'unreportedCleanupRefusalCount'
+  | 'cleanupRefusalState'
+  | 'cleanupRefusalState.kind'
+  | 'cleanupRefusalState.reason'
   | 'unrecognizedEntryNames'
   | 'unrecognizedEntryNames[]'
+  | 'unreportedUnrecognizedEntryCount'
   | 'quarantined'
   | 'quarantined[].subject'
   | 'quarantined[].retry.trigger'
@@ -95,7 +106,8 @@ type ExpectedBroadStringLeafPaths =
   | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.evidence.processes[].jobId'
   | 'skippedUnreadableRecordNames[]'
-  | 'cleanupRefusedSubjectNames[]'
+  | 'cleanupRefusals[].subject'
+  | 'cleanupRefusals[].cause.code'
   | 'unrecognizedEntryNames[]'
   | 'quarantined[].subject';
 
@@ -156,8 +168,8 @@ declare const skippedCorruptRecordCount: ShutdownRemainderStatus['skippedCorrupt
 void skippedCorruptRecordCount;
 declare const skippedUnsupportedRecordCount: ShutdownRemainderStatus['skippedUnsupportedRecordCount'];
 void skippedUnsupportedRecordCount;
-declare const cleanupRefusedSubjectNames: ShutdownRemainderStatus['cleanupRefusedSubjectNames'];
-const cleanupRefusedSubjectName: string = cleanupRefusedSubjectNames?.[0] ?? '';
+declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
+const cleanupRefusedSubjectName: string = cleanupRefusals?.[0]?.subject ?? '';
 void cleanupRefusedSubjectName;
 declare const unrecognizedEntryNames: ShutdownRemainderStatus['unrecognizedEntryNames'];
 const unrecognizedEntryName: string = unrecognizedEntryNames?.[0] ?? '';

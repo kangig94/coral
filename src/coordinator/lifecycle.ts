@@ -837,7 +837,6 @@ export type LifecycleController = {
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
-  readShutdownRemainderCleanupRefusals(): readonly string[];
 };
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
@@ -1759,6 +1758,5 @@ export function createLifecycle(
       return Promise.reject(new Error('Shutdown has not been requested'));
     },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
-    readShutdownRemainderCleanupRefusals: () => remainderPruner.readCleanupRefusals(),
   };
 }

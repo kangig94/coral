@@ -15,6 +15,7 @@ import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 export const SHUTDOWN_REMAINDER_SCAN_LIMIT = 128;
+const SHUTDOWN_REMAINDER_CLEANUP_REFUSAL_VERSION = 1;
 
 type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
   ? Value
@@ -87,6 +88,7 @@ export type ShutdownRemainderRecordScan = Readonly<{
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
   unrecognizedEntryNames?: readonly string[];
+  unreportedUnrecognizedEntryCount?: number;
   quarantined?: readonly ShutdownRemainderQuarantinedEvidence[];
   unscannedStageCount?: number;
   unscannedRecordCount?: number;
@@ -110,6 +112,115 @@ const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LI
 // Constraint: a persisted filename may cross to an operator-facing status line unread, so it carries the same
 // closed identifier charset as other identifier-shaped fields rather than the broader single-line prose schema.
 const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
+
+export type ShutdownRemainderCleanupRefusal = Readonly<{
+  subject: string;
+  cause:
+    | Readonly<{ kind: 'system-error'; operation: 'delete' | 'promote' | 'scan-directory'; code: string }>
+    | Readonly<{ kind: 'unclassified-error'; operation: 'delete' | 'promote' | 'scan-directory' }>;
+  retry: Readonly<{
+    trigger: 'remainder-maintenance';
+    action: 'retry-delete' | 'rescan-subject' | 'rescan-directory';
+  }>;
+  exit: Readonly<{ condition: 'cleanup-succeeded-or-subject-absent' }>;
+}>;
+
+export type ShutdownRemainderCleanupRefusalState =
+  | Readonly<{
+      kind: 'available';
+      refusals: readonly ShutdownRemainderCleanupRefusal[];
+      unreportedRefusalCount: number;
+    }>
+  | Readonly<{ kind: 'unreadable'; reason: 'read-failed' | 'shape-rejected' }>;
+
+function readShutdownRemainderCleanupRefusal(value: unknown): ShutdownRemainderCleanupRefusal | null {
+  if (!isRecord(value) || !isRecord(value.cause) || !isRecord(value.retry) || !isRecord(value.exit)) {
+    return null;
+  }
+  const subject = value.subject;
+  if (
+    typeof subject !== 'string' ||
+    subject.length === 0 ||
+    subject.length > 4_096 ||
+    !PERSISTED_SINGLE_LINE_PATTERN.test(subject)
+  ) {
+    return null;
+  }
+  const rawOperation = value.cause.operation;
+  if (rawOperation !== 'delete' && rawOperation !== 'promote' && rawOperation !== 'scan-directory') return null;
+  const operation: ShutdownRemainderCleanupRefusal['cause']['operation'] = rawOperation;
+  const cause =
+    value.cause.kind === 'system-error' && serializedThrownIdentifierSchema.safeParse(value.cause.code).success
+      ? { kind: 'system-error' as const, operation, code: value.cause.code as string }
+      : value.cause.kind === 'unclassified-error'
+        ? { kind: 'unclassified-error' as const, operation }
+        : null;
+  if (
+    cause === null ||
+    value.retry.trigger !== 'remainder-maintenance' ||
+    (value.retry.action !== 'retry-delete' &&
+      value.retry.action !== 'rescan-subject' &&
+      value.retry.action !== 'rescan-directory') ||
+    value.exit.condition !== 'cleanup-succeeded-or-subject-absent'
+  ) {
+    return null;
+  }
+  return {
+    subject,
+    cause,
+    retry: { trigger: 'remainder-maintenance', action: value.retry.action },
+    exit: { condition: 'cleanup-succeeded-or-subject-absent' },
+  };
+}
+
+export function shutdownRemainderCleanupRefusalPath(runDir: string): string {
+  return join(runDir, `shutdown-remainder-cleanup-refusals.v${SHUTDOWN_REMAINDER_CLEANUP_REFUSAL_VERSION}.json`);
+}
+
+export function readShutdownRemainderCleanupRefusalState(
+  storage: Pick<StoragePort, 'readFileSync'>,
+  runDir: string,
+): ShutdownRemainderCleanupRefusalState {
+  let serialized: string;
+  try {
+    serialized = storage.readFileSync(shutdownRemainderCleanupRefusalPath(runDir), 'utf-8');
+  } catch (error: unknown) {
+    return thrownErrnoCode(error) === 'ENOENT'
+      ? { kind: 'available', refusals: [], unreportedRefusalCount: 0 }
+      : { kind: 'unreadable', reason: 'read-failed' };
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(serialized);
+  } catch {
+    return { kind: 'unreadable', reason: 'shape-rejected' };
+  }
+  if (
+    !isRecord(value) ||
+    value.version !== SHUTDOWN_REMAINDER_CLEANUP_REFUSAL_VERSION ||
+    !Array.isArray(value.refusals) ||
+    value.refusals.length > SHUTDOWN_REMAINDER_SCAN_LIMIT ||
+    !Number.isSafeInteger(value.unreportedRefusalCount) ||
+    (value.unreportedRefusalCount as number) < 0
+  ) {
+    return { kind: 'unreadable', reason: 'shape-rejected' };
+  }
+  const refusals = value.refusals.map(readShutdownRemainderCleanupRefusal);
+  return refusals.every((refusal): refusal is ShutdownRemainderCleanupRefusal => refusal !== null)
+    ? { kind: 'available', refusals, unreportedRefusalCount: value.unreportedRefusalCount as number }
+    : { kind: 'unreadable', reason: 'shape-rejected' };
+}
+
+export function serializeShutdownRemainderCleanupRefusalState(
+  refusals: readonly ShutdownRemainderCleanupRefusal[],
+  unreportedRefusalCount: number,
+): string {
+  return `${JSON.stringify(
+    { version: SHUTDOWN_REMAINDER_CLEANUP_REFUSAL_VERSION, refusals, unreportedRefusalCount },
+    null,
+    2,
+  )}\n`;
+}
 const SHUTDOWN_REMAINDER_STAGE_PATTERN =
   /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unobserved)(?<partial>\.tmp)?$/u;
 const SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN = /\.json\.(?:stage|tmp)(?:\.|$)/u;
@@ -358,6 +469,7 @@ export function scanShutdownRemainderRecords(
   const stageCandidates: StageFile[] = [];
   const recordCandidates: RecordFile[] = [];
   const unrecognizedEntryNames: string[] = [];
+  let unreportedUnrecognizedEntryCount = 0;
   for (const name of storage.readdirSync(directory).sort((left, right) => left.localeCompare(right))) {
     const entry = classifyShutdownRemainderDirectoryEntry(name);
     if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
@@ -365,7 +477,11 @@ export function scanShutdownRemainderRecords(
       continue;
     }
     if (entry.kind !== 'record') {
-      unrecognizedEntryNames.push(name);
+      if (unrecognizedEntryNames.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
+        unrecognizedEntryNames.push(name);
+      } else {
+        unreportedUnrecognizedEntryCount += 1;
+      }
       continue;
     }
     const reportedName = persistedFileNameSchema.safeParse(name);
@@ -474,6 +590,7 @@ export function scanShutdownRemainderRecords(
     skippedEntries,
     skippedRecords,
     ...(unrecognizedEntryNames.length === 0 ? {} : { unrecognizedEntryNames }),
+    ...(unreportedUnrecognizedEntryCount === 0 ? {} : { unreportedUnrecognizedEntryCount }),
     ...(quarantined.length === 0 ? {} : { quarantined }),
     ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
     ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),

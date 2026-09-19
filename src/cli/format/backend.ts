@@ -1,5 +1,8 @@
 import { assertNever } from '../../infra/error-format.js';
-import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '../../infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  type ShutdownRemainderCleanupRefusal,
+} from '../../infra/shutdown-remainder-record.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
@@ -690,7 +693,11 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
-type ShutdownRemainderRecheckContext = 'coordinator-running' | 'startup-required' | 'coordinator-unconfirmed';
+type ShutdownRemainderRecheckContext =
+  | 'coordinator-running'
+  | 'coordinator-draining'
+  | 'startup-required'
+  | 'coordinator-unconfirmed';
 
 // A shutdown remainder is additional evidence about a departed instance's undischarged obligations, carried
 // alongside — never instead of — whichever status observed the coordinator's current absence, ambiguity, or a
@@ -751,7 +758,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
         'coordinator-unconfirmed',
       );
     case 'shutting_down':
-      return 'Backend shutting down';
+      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder, 'coordinator-draining');
     case 'unauthorized':
       return withShutdownRemainderSection(
         [
@@ -1285,6 +1292,22 @@ function formatShutdownRemainderReport(
       return formatRecentShutdownRemainderReport(report, recheckContext);
     case 'shutdown_remainder_unreadable':
       return formatUnreadableShutdownRemainderReport(report, recheckContext);
+    case 'shutdown_remainder_cleanup_refused':
+      return [
+        'Coral recorded shutdown remainder cleanup refusals.',
+        ...formatShutdownRemainderUnowned(report),
+        ...formatShutdownRemainderCleanupRefusals(report),
+      ].join('\n');
+    case 'shutdown_remainder_cleanup_state_unreadable':
+      return [
+        `Coral could not read shutdown remainder cleanup refusal state (${report.cleanupRefusalState.reason}).`,
+        ...formatShutdownRemainderUnowned(report),
+      ].join('\n');
+    case 'shutdown_remainder_unowned':
+      return [
+        "Coral found shutdown remainder directory entries outside this subsystem's ownership.",
+        ...formatShutdownRemainderUnowned(report),
+      ].join('\n');
     default:
       return assertNever(report);
   }
@@ -1312,6 +1335,7 @@ function formatRecentShutdownRemainderReport(
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
   lines.push(...formatSkippedShutdownRemainderRecords(result, recheckContext));
+  lines.push(...formatShutdownRemainderUnowned(result));
   lines.push(...formatShutdownRemainderQuarantines(result));
   lines.push(...formatShutdownRemainderCleanupRefusals(result));
   return lines.join('\n');
@@ -1391,24 +1415,69 @@ function formatUnreadableShutdownRemainderReport(
   if (result.reason === 'scan-failed') {
     return [
       'Coral could not inspect shutdown remainder records.',
+      ...(result.cleanupRefusalState === undefined
+        ? []
+        : [`Cleanup refusal state: unreadable (${result.cleanupRefusalState.reason})`]),
       ...formatShutdownRemainderCleanupRefusals(result),
     ].join('\n');
   }
   return [
     'Coral found shutdown remainder records it could not use.',
     ...formatSkippedShutdownRemainderRecords(result, recheckContext),
+    ...formatShutdownRemainderUnowned(result),
     ...formatShutdownRemainderQuarantines(result),
     ...formatShutdownRemainderCleanupRefusals(result),
   ].join('\n');
 }
 
 function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport): string[] {
-  const subjectNames = result.cleanupRefusedSubjectNames ?? [];
-  if (subjectNames.length === 0) return [];
+  const refusals = 'cleanupRefusals' in result ? (result.cleanupRefusals ?? []) : [];
+  const reported = refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+  const unreported =
+    ('unreportedCleanupRefusalCount' in result ? (result.unreportedCleanupRefusalCount ?? 0) : 0) +
+    Math.max(0, refusals.length - reported.length);
+  if (refusals.length === 0 && unreported === 0) return [];
   return [
-    `Shutdown remainder cleanup refusals: ${subjectNames.length}`,
-    ...subjectNames.map((name) => `  Subject: ${JSON.stringify(name)}`),
-    "  Disposition: cleanup was refused; retry follows the subject's reported maintenance or quarantine disposition, and the refusal remains reported until cleanup succeeds or the subject is observed absent.",
+    `Shutdown remainder cleanup refusals: ${reported.length + unreported}`,
+    ...reported.flatMap((refusal, index) => [
+      `  Refusal ${index + 1}:`,
+      `    Subject: ${JSON.stringify(refusal.subject)}`,
+      `    Cause: ${refusal.cause.operation} ${
+        refusal.cause.kind === 'system-error' ? `failed with ${refusal.cause.code}` : 'failed without an errno code'
+      }`,
+      '    Retry trigger: coordinator startup and periodic remainder maintenance',
+      `    Retry action: ${formatShutdownRemainderCleanupRetryAction(refusal.retry.action)}`,
+      '    Hold ends: cleanup succeeds or the subject is observed absent',
+    ]),
+    ...(unreported === 0 ? [] : [`  Additional refusals not listed: ${unreported}`]),
+  ];
+}
+
+function formatShutdownRemainderCleanupRetryAction(action: ShutdownRemainderCleanupRefusal['retry']['action']): string {
+  switch (action) {
+    case 'retry-delete':
+      return 'retry the selected deletion';
+    case 'rescan-subject':
+      return 'reclassify the subject and retry only if it still qualifies';
+    case 'rescan-directory':
+      return 'rescan the directory';
+    default:
+      return assertNever(action);
+  }
+}
+
+function formatShutdownRemainderUnowned(result: ShutdownRemainderReport): string[] {
+  const names = 'unrecognizedEntryNames' in result ? (result.unrecognizedEntryNames ?? []) : [];
+  const reported = names.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+  const unreported =
+    ('unreportedUnrecognizedEntryCount' in result ? (result.unreportedUnrecognizedEntryCount ?? 0) : 0) +
+    Math.max(0, names.length - reported.length);
+  if (names.length === 0 && unreported === 0) return [];
+  return [
+    `Unrecognized shutdown remainder directory entries: ${reported.length + unreported}`,
+    ...reported.map((name) => `  Entry: ${JSON.stringify(name)}`),
+    ...(unreported === 0 ? [] : [`  Additional entries not listed: ${unreported}`]),
+    '  Disposition: present, not owned by shutdown remainder cleanup, and not scheduled for action.',
   ];
 }
 
@@ -1483,13 +1552,6 @@ function formatSkippedShutdownRemainderRecords(
       '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
     );
   }
-  if ((result.unrecognizedEntryNames?.length ?? 0) > 0) {
-    lines.push(
-      `Unrecognized shutdown remainder directory entries: ${result.unrecognizedEntryNames?.length ?? 0}`,
-      ...(result.unrecognizedEntryNames ?? []).map((name) => `  Entry: ${JSON.stringify(name)}`),
-      '  Disposition: present and unrecognized by this build; not acted on.',
-    );
-  }
   if ((result.unscannedStageCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder publication stages not inspected: ${result.unscannedStageCount}`,
@@ -1536,6 +1598,8 @@ function formatShutdownRemainderRecheckLine(context: ShutdownRemainderRecheckCon
   switch (context) {
     case 'coordinator-running':
       return '  Recheck: this coordinator rescans shutdown remainder files periodically; no action is required while the evidence remains reported.';
+    case 'coordinator-draining':
+      return '  Recheck: shutdown has stopped periodic maintenance; the next coordinator startup retries scheduled remainder work.';
     case 'startup-required':
       return '  Recheck: no discovery record and no socket at the current expected address were found. The next coordinator startup scans once and then rechecks live-writer stages periodically while it runs.';
     case 'coordinator-unconfirmed':
