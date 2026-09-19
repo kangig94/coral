@@ -25,6 +25,7 @@ import {
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderCleanupRefusal,
+  type ShutdownRemainderCleanupRefusalState,
   type ShutdownRemainderRecord,
   type ShutdownRemainderRecordScan,
   type ShutdownRemainderStageObserver,
@@ -278,6 +279,17 @@ type OperatorFacingShutdownRemainderCleanup = Readonly<{
   unreportedCleanupRefusalCount?: number;
   cleanupRefusalState?: Readonly<{ kind: 'unreadable'; reason: 'read-failed' | 'shape-rejected' }>;
 }>;
+
+function operatorFacingShutdownRemainderCleanup(
+  state: ShutdownRemainderCleanupRefusalState,
+): OperatorFacingShutdownRemainderCleanup {
+  return state.kind === 'unreadable'
+    ? { cleanupRefusalState: { kind: 'unreadable', reason: state.reason } }
+    : {
+        ...(state.refusals.length === 0 ? {} : { cleanupRefusals: state.refusals }),
+        ...(state.unreportedRefusalCount === 0 ? {} : { unreportedCleanupRefusalCount: state.unreportedRefusalCount }),
+      };
+}
 
 type OperatorFacingShutdownRemainderUnowned = Readonly<{
   unrecognizedEntryNames?: readonly string[];
@@ -652,22 +664,17 @@ function readRecentShutdownRemainder(
   observeStageWriter: ShutdownRemainderStageObserver,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
-  const refusalState = readShutdownRemainderCleanupRefusalState(storage, runDir);
-  const cleanupRefusalStatus: OperatorFacingShutdownRemainderCleanup =
-    refusalState.kind === 'unreadable'
-      ? { cleanupRefusalState: { kind: 'unreadable', reason: refusalState.reason } }
-      : {
-          ...(refusalState.refusals.length === 0 ? {} : { cleanupRefusals: refusalState.refusals }),
-          ...(refusalState.unreportedRefusalCount === 0
-            ? {}
-            : { unreportedCleanupRefusalCount: refusalState.unreportedRefusalCount }),
-        };
+  let refusalState = readShutdownRemainderCleanupRefusalState(storage, runDir);
+  let observedSubjectNames: ReadonlySet<string> | null = null;
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, (names) => {
+      observedSubjectNames = new Set(names);
+    });
   } catch (error: unknown) {
     if (thrownErrnoCode(error) === 'ENOENT') {
       scan = { records: [], skippedEntries: [], skippedRecords: [] };
+      observedSubjectNames = new Set();
     } else {
       // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
       // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
@@ -677,10 +684,18 @@ function readRecentShutdownRemainder(
       return {
         status: 'shutdown_remainder_unreadable',
         reason: 'scan-failed',
-        ...cleanupRefusalStatus,
+        ...operatorFacingShutdownRemainderCleanup(refusalState),
       };
     }
   }
+  const observedSubjects = observedSubjectNames;
+  if (refusalState.kind === 'available' && observedSubjects !== null) {
+    refusalState = {
+      ...refusalState,
+      refusals: refusalState.refusals.filter(({ subject }) => subject !== directory && observedSubjects.has(subject)),
+    };
+  }
+  const cleanupRefusalStatus = operatorFacingShutdownRemainderCleanup(refusalState);
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
   // anything about when it was written, so an age filter on any of them would silently drop evidence this

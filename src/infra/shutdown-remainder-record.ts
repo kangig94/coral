@@ -412,6 +412,7 @@ export type ShutdownRemainderFileClassification =
   | Readonly<{ kind: 'unsupported'; detail: string }>
   | Readonly<{
       kind: 'readable';
+      contentDigest: string;
       record: DecodedShutdownRemainderRecord;
       skippedEntries: readonly ShutdownRemainderSkippedEntry[];
     }>;
@@ -450,13 +451,19 @@ export function classifyShutdownRemainderFile(
   const decoded = decodeShutdownRemainderRecord(parsedJson);
   return decoded.kind === 'shape-rejected'
     ? { kind: 'unsupported', detail: decoded.detail }
-    : { kind: 'readable', record: decoded.record, skippedEntries: decoded.skippedEntries };
+    : {
+        kind: 'readable',
+        contentDigest: sha256Hex(raw),
+        record: decoded.record,
+        skippedEntries: decoded.skippedEntries,
+      };
 }
 
 export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
+  observeDirectoryEntries?: (names: readonly string[]) => void,
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
   type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
@@ -470,7 +477,9 @@ export function scanShutdownRemainderRecords(
   const recordCandidates: RecordFile[] = [];
   const unrecognizedEntryNames: string[] = [];
   let unreportedUnrecognizedEntryCount = 0;
-  for (const name of storage.readdirSync(directory).sort((left, right) => left.localeCompare(right))) {
+  const names = storage.readdirSync(directory).sort((left, right) => left.localeCompare(right));
+  observeDirectoryEntries?.(names);
+  for (const name of names) {
     const entry = classifyShutdownRemainderDirectoryEntry(name);
     if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
       stageCandidates.push(entry);

@@ -205,6 +205,26 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
+  it('clears a cleanup refusal whose individual subject is observed absent', async () => {
+    mockState.cleanupRefusalState = cleanupRefusalState('absent.json');
+    mockState.remainderFiles = [
+      remainderFile('present.json', NOW - 10_000, shutdownRemainder('present', NOW - 10_000)),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
+  });
+
+  it('clears cleanup refusals when the remainder directory is observed absent', async () => {
+    mockState.cleanupRefusalState = cleanupRefusalState('absent.json');
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+  });
+
   // 'undecodable' is decisive about the content (it was read, and it is provably not a usable record), and an
   // 'unreadable' one is a genuine unknown about content but never about the fact that a byte was refused
   // (design-philosophy.md principle 11). Neither proves anything about *when* the file was written, so an
@@ -1765,6 +1785,21 @@ function stubProbes(...responses: readonly Response[]): ReturnType<typeof vi.fn>
   const mock = vi.fn(async () => queue.shift() ?? new Response('{}', { status: 500 }));
   vi.stubGlobal('fetch', mock);
   return mock;
+}
+
+function cleanupRefusalState(subject: string): string {
+  return JSON.stringify({
+    version: 1,
+    refusals: [
+      {
+        subject,
+        cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+        retry: { trigger: 'remainder-maintenance', action: 'retry-delete' },
+        exit: { condition: 'cleanup-succeeded-or-subject-absent' },
+      },
+    ],
+    unreportedRefusalCount: 0,
+  });
 }
 
 // `backend status` is the operator's primary diagnostic, and this branch exists to stop it collapsing

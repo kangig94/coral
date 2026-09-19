@@ -65,29 +65,46 @@ export function shutdownRemainderPath(runDir: string): string {
 
 type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
 
+type ShutdownRemainderCleanupDisposition =
+  | Readonly<{ kind: 'complete' }>
+  | Readonly<{
+      kind: 'quarantined';
+      subjectNames: readonly string[];
+    }>
+  | Readonly<{
+      kind: 'refused';
+      refusals: readonly ShutdownRemainderCleanupRefusal[];
+      unreportedRefusalCount?: number;
+      quarantinedSubjectNames?: readonly string[];
+    }>;
+
+type ShutdownRemainderCleanupRefusalPersistence = Readonly<{
+  kind: 'refusal-state-persistence-refused';
+  cleanup: ShutdownRemainderCleanupDisposition;
+  cause:
+    | Readonly<{ kind: 'write-returned-false' }>
+    | Readonly<{ kind: 'system-error'; code: string }>
+    | Readonly<{ kind: 'unclassified-error' }>;
+  retry: Readonly<{ trigger: 'remainder-maintenance' }>;
+  exit: Readonly<{ condition: 'persistence-succeeded' }>;
+}>;
+
 export type ShutdownRemainderPruneDisposition = Readonly<{
   stageOwnership:
     | Readonly<{ kind: 'classified' }>
     | Readonly<{ kind: 'held'; stageNames: readonly string[] }>
     | Readonly<{ kind: 'unclassified'; stageNames: readonly string[] }>;
-  cleanup:
-    | Readonly<{ kind: 'complete' }>
-    | Readonly<{
-        kind: 'quarantined';
-        subjectNames: readonly string[];
-      }>
-    | Readonly<{
-        kind: 'refused';
-        refusals: readonly ShutdownRemainderCleanupRefusal[];
-        unreportedRefusalCount?: number;
-        quarantinedSubjectNames?: readonly string[];
-      }>;
+  cleanup: ShutdownRemainderCleanupDisposition | ShutdownRemainderCleanupRefusalPersistence;
   unowned?: Readonly<{
     kind: 'present';
     subjectNames: readonly string[];
     unreportedSubjectCount?: number;
   }>;
 }>;
+
+type ShutdownRemainderPruneBaseDisposition = Readonly<
+  Omit<ShutdownRemainderPruneDisposition, 'cleanup'> & { cleanup: ShutdownRemainderCleanupDisposition }
+>;
 
 function byRetentionOrder(
   left: Readonly<{ name: string; age: RecordAge }>,
@@ -151,14 +168,14 @@ function pruneDisposition(
     unrecognizedSubjectNames: ReadonlySet<string>;
     unreportedUnrecognizedSubjectCount: number;
   }>,
-): ShutdownRemainderPruneDisposition {
+): ShutdownRemainderPruneBaseDisposition {
   const stageNames = [...input.reobservableStageNames].sort((left, right) => left.localeCompare(right));
   const refusals = [...input.cleanupRefusals.bySubject.values()].sort((left, right) =>
     left.subject.localeCompare(right.subject),
   );
   const quarantinedNames = [...input.quarantinedSubjectNames].sort((left, right) => left.localeCompare(right));
   const unrecognizedNames = [...input.unrecognizedSubjectNames].sort((left, right) => left.localeCompare(right));
-  let cleanup: ShutdownRemainderPruneDisposition['cleanup'];
+  let cleanup: ShutdownRemainderCleanupDisposition;
   if (refusals.length > 0 || input.cleanupRefusals.unreportedCount > 0) {
     cleanup = {
       kind: 'refused',
@@ -198,14 +215,15 @@ export function pruneShutdownRemainderRecords(
   runtime: ShutdownRemainderPruneRuntime,
   heldSubjectNames: ReadonlySet<string> = new Set(),
   previousCleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
-): ShutdownRemainderPruneDisposition {
+  retryDeletionContentDigests: Map<string, string> = new Map(),
+): ShutdownRemainderPruneBaseDisposition {
   const directory = shutdownRemainderPath(runtime.runDir);
   const reobservableStageNames = new Set<string>();
   const cleanupRefusals = cleanupRefusalCollection(previousCleanupRefusals);
   const quarantinedSubjectNames = new Set<string>();
   const unrecognizedSubjectNames = new Set<string>();
   let unreportedUnrecognizedSubjectCount = 0;
-  const disposition = (stageOwnershipClassified: boolean): ShutdownRemainderPruneDisposition =>
+  const disposition = (stageOwnershipClassified: boolean): ShutdownRemainderPruneBaseDisposition =>
     pruneDisposition({
       stageOwnershipClassified,
       reobservableStageNames,
@@ -225,6 +243,9 @@ export function pruneShutdownRemainderRecords(
     const initialNameSet = new Set(initialNames);
     for (const name of cleanupRefusals.bySubject.keys()) {
       if (name !== directory && !initialNameSet.has(name)) cleanupRefusals.bySubject.delete(name);
+    }
+    for (const name of retryDeletionContentDigests.keys()) {
+      if (!initialNameSet.has(name)) retryDeletionContentDigests.delete(name);
     }
     for (const name of initialNames) {
       const entry = classifyShutdownRemainderDirectoryEntry(name);
@@ -300,7 +321,7 @@ export function pruneShutdownRemainderRecords(
       if (!cleanupRefusals.bySubject.has(name)) quarantine(name);
     }
 
-    const known: { name: string; age: RecordAge; retryDeletion: boolean }[] = [];
+    const known: { name: string; age: RecordAge; contentDigest: string; retryDeletion: boolean }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
       if (classifyShutdownRemainderDirectoryEntry(name).kind !== 'record') continue;
       const previousRefusal = cleanupRefusals.bySubject.get(name);
@@ -361,7 +382,13 @@ export function pruneShutdownRemainderRecords(
       // still evidence, not an unknown to discard (design-philosophy.md principle 11) — it joins `known`
       // rather than falling outside every retention bound, and `byRetentionOrder` ranks it as the oldest
       // entry in that bucket for exactly this reason.
-      known.push({ name, age, retryDeletion: previousRefusal?.retry.action === 'retry-delete' });
+      const retryDeletion =
+        previousRefusal?.retry.action === 'retry-delete' &&
+        retryDeletionContentDigests.get(name) === classification.contentDigest;
+      if (previousRefusal?.retry.action === 'retry-delete' && !retryDeletion) {
+        retryDeletionContentDigests.delete(name);
+      }
+      known.push({ name, age, contentDigest: classification.contentDigest, retryDeletion });
     }
     known.sort(byRetentionOrder);
     const retentionCandidates = new Map(
@@ -370,17 +397,24 @@ export function pruneShutdownRemainderRecords(
         .concat(known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS))
         .map((candidate) => [candidate.name, candidate]),
     );
-    for (const { name } of retentionCandidates.values()) {
+    for (const { name, contentDigest } of retentionCandidates.values()) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
         cleanupRefusals.bySubject.delete(name);
+        retryDeletionContentDigests.delete(name);
       } catch (error: unknown) {
         recordCleanupFailure(cleanupRefusals, name, 'delete', 'retry-delete', error);
+        if (cleanupRefusals.bySubject.get(name)?.retry.action === 'retry-delete') {
+          retryDeletionContentDigests.set(name, contentDigest);
+        } else {
+          retryDeletionContentDigests.delete(name);
+        }
       }
     }
     return disposition(true);
   } catch (error: unknown) {
     if (thrownErrnoCode(error) === 'ENOENT') {
+      retryDeletionContentDigests.clear();
       return {
         stageOwnership: { kind: 'classified' },
         cleanup: { kind: 'complete' },
@@ -408,6 +442,7 @@ export function createShutdownRemainderPruner(
   let timer: TimerHandle | null = null;
   let stopped = false;
   let heldSubjectNames = new Set<string>();
+  const retryDeletionContentDigests = new Map<string, string>();
   const stored = readShutdownRemainderCleanupRefusalState(runtime.storage, runtime.runDir);
   let cleanupRefusals = stored.kind === 'available' ? stored.refusals : [];
   const prune = (retryHeldSubjects: boolean): ShutdownRemainderPruneDisposition => {
@@ -415,6 +450,7 @@ export function createShutdownRemainderPruner(
       runtime,
       retryHeldSubjects ? new Set() : heldSubjectNames,
       cleanupRefusals,
+      retryDeletionContentDigests,
     );
     heldSubjectNames = new Set(
       result.cleanup.kind === 'quarantined'
@@ -425,15 +461,39 @@ export function createShutdownRemainderPruner(
     );
     cleanupRefusals = result.cleanup.kind === 'refused' ? result.cleanup.refusals : [];
     if (stored.kind === 'available') {
-      const persisted = runtime.storage.writeAtomicDurableSync(
-        shutdownRemainderCleanupRefusalPath(runtime.runDir),
-        serializeShutdownRemainderCleanupRefusalState(
-          cleanupRefusals,
-          result.cleanup.kind === 'refused' ? (result.cleanup.unreportedRefusalCount ?? 0) : 0,
-        ),
-        { encoding: 'utf-8', mode: 0o600 },
-      );
-      if (!persisted) backendLog.warn('shutdown remainder cleanup refusal state write was refused');
+      let cause: ShutdownRemainderCleanupRefusalPersistence['cause'] | null = null;
+      try {
+        const persisted = runtime.storage.writeAtomicDurableSync(
+          shutdownRemainderCleanupRefusalPath(runtime.runDir),
+          serializeShutdownRemainderCleanupRefusalState(
+            cleanupRefusals,
+            result.cleanup.kind === 'refused' ? (result.cleanup.unreportedRefusalCount ?? 0) : 0,
+          ),
+          { encoding: 'utf-8', mode: 0o600 },
+        );
+        if (!persisted) cause = { kind: 'write-returned-false' };
+      } catch (error: unknown) {
+        const code = thrownErrnoCode(error);
+        cause =
+          code !== undefined &&
+          code.length <= SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH &&
+          SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(code)
+            ? { kind: 'system-error', code }
+            : { kind: 'unclassified-error' };
+      }
+      if (cause !== null) {
+        backendLog.warn('shutdown remainder cleanup refusal state write was refused');
+        return {
+          ...result,
+          cleanup: {
+            kind: 'refusal-state-persistence-refused',
+            cleanup: result.cleanup,
+            cause,
+            retry: { trigger: 'remainder-maintenance' },
+            exit: { condition: 'persistence-succeeded' },
+          },
+        };
+      }
     }
     return result;
   };
