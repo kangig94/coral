@@ -2,13 +2,15 @@ import { z } from 'zod';
 import { isRecord } from '../../infra/json.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../command-schemas.js';
 import { type DiscussContext } from './types.js';
-import { DiscussManagerError } from './errors.js';
+import { DiscussManagerError, SESSION_SHUTTING_DOWN } from './errors.js';
 import * as discussOperations from './operations.js';
 import { getWatchState } from './registry.js';
 import { seedPersonas } from '../persona/seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 
-type ToolDomainResult = { ok: true; data: unknown } | { ok: false; code: string; message: string; detail?: unknown };
+type ToolDomainResult =
+  | { ok: true; data: unknown }
+  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
 
 function domainSuccess(data: unknown): ToolDomainResult {
   return { ok: true, data };
@@ -62,8 +64,29 @@ type DiscussWatchArgs = z.infer<typeof discussWatchSchema>;
 type DiscussBidArgs = z.infer<typeof discussBidSchema>;
 type DiscussSpeechArgs = z.infer<typeof discussSpeechSchema>;
 
+// Matches lifecycleRefusalExit's shape in src/cli/errors.ts: names what did not run, that the
+// wait is bounded, and the exact observable condition (not a human judgement call) that ends it.
+function sessionShuttingDownRemediation(): string {
+  return (
+    "This discuss session's live controller already stopped for a coordinator shutdown or " +
+    'handoff drain, so the request did not run. Shutdown continues as a bounded asynchronous ' +
+    'wait. Retry this command after `coral-cli backend status` no longer reports that ' +
+    'coordinator as shutting down.'
+  );
+}
+
 function discussManagerError(error: DiscussManagerError): ToolDomainResult {
-  return domainError(error.code, deriveErrorMessage(error.code, error.detail), error.detail);
+  const message = deriveErrorMessage(error.code, error.detail);
+  if (error.code === SESSION_SHUTTING_DOWN) {
+    return {
+      ok: false,
+      code: error.code,
+      message,
+      remediation: sessionShuttingDownRemediation(),
+      ...(error.detail === undefined ? {} : { detail: error.detail }),
+    };
+  }
+  return domainError(error.code, message, error.detail);
 }
 
 function unexpectedDiscussError(error: unknown): ToolDomainResult {

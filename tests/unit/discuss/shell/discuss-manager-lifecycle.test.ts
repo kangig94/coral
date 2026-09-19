@@ -8,9 +8,17 @@ import {
   hasRunningSessions,
   listAttachedSessions,
 } from '#src/discuss/shell/live-registry.js';
-import { abortDiscussSession } from '#src/discuss/shell/operations.js';
+import { abortDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
 import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
-import { appendRuntimeEvents, commitDecision, readSessionEvents } from '#src/discuss/shell/persistence.js';
+import {
+  appendRuntimeEvents,
+  commitDecision,
+  isSilentCommitRefusal,
+  readSessionEvents,
+} from '#src/discuss/shell/persistence.js';
+import * as discussPersistence from '#src/discuss/shell/persistence.js';
+import { SESSION_SHUTTING_DOWN, DiscussManagerError } from '#src/discuss/shell/errors.js';
+import { runFollowUpTurns } from '#src/discuss/shell/flow/followup.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
 import { decideEnd } from '#src/discuss/state-machine.js';
@@ -19,6 +27,7 @@ import {
   attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
+  createExecutionServiceStub,
   discussContextOptions,
   persistSession,
   type DiscussHarness,
@@ -307,7 +316,7 @@ describe('DiscussContext lifecycle boundaries', () => {
       ),
     );
 
-    expect(committed).toMatchObject({ ok: false, error: 'session_not_found' });
+    expect(committed).toMatchObject({ ok: false, error: SESSION_SHUTTING_DOWN });
     expect(harness.store.load('aborted-controller-session')?.lastAppliedSeq).toBe(snapshot.lastAppliedSeq);
     expect(readSessionEvents(harness.context, 'aborted-controller-session').map((event) => event.kind)).toEqual([
       'session.created',
@@ -366,13 +375,154 @@ describe('DiscussContext lifecycle boundaries', () => {
     // The abort-first pass must have already run by the time the marker persistence
     // (and the racing commit it wraps) executes.
     expect(signalAbortedWhenPersistRan).toBe(true);
-    expect(racingCommitResult).toMatchObject({ ok: false, error: 'session_not_found' });
+    expect(racingCommitResult).toMatchObject({ ok: false, error: SESSION_SHUTTING_DOWN });
 
     const events = readSessionEvents(context, 'racing-session');
     expect(events.at(-1)).toMatchObject({
       kind: 'session.ended',
       payload: { force: true, reason: 'abort' },
     });
+  });
+
+  it('isSilentCommitRefusal recognizes exactly the two commit-refusal codes internal flows must stop quietly on', () => {
+    expect(isSilentCommitRefusal('session_not_found')).toBe(true);
+    expect(isSilentCommitRefusal(SESSION_SHUTTING_DOWN)).toBe(true);
+    expect(isSilentCommitRefusal('invalid_phase')).toBe(false);
+    expect(isSilentCommitRefusal('already_bid')).toBe(false);
+  });
+
+  it('submitManualBid tells the caller the session is shutting down, not that it does not exist', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'shutdown-racing-bid-session',
+      recover: false,
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const session = harness.context.sessions.get('shutdown-racing-bid-session');
+    if (!session) {
+      throw new Error('Expected attached shutdown-racing-bid-session');
+    }
+    // Stands in for clearAllDiscuss's abort-first pass racing a submitManualBid call that
+    // reads the live session before the registry finishes tearing it down.
+    session.controller.abort();
+
+    let thrown: unknown;
+    try {
+      await submitManualBid(harness.context, 'shutdown-racing-bid-session', 'alpha', 80, 'racing a drain', harness.ctx);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(DiscussManagerError);
+    expect((thrown as DiscussManagerError).code).toBe(SESSION_SHUTTING_DOWN);
+    // The store must still hold the session: a reader must not conclude from this refusal
+    // that the session doesn't exist (`discuss status` on the same id still succeeds).
+    expect(harness.store.load('shutdown-racing-bid-session')).not.toBeNull();
+  });
+
+  it('runFollowUpTurns exits once a tolerated commit refusal lands, instead of spinning forever', async () => {
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session' as const,
+      status: 'running' as const,
+      jobId: 'job-1',
+      sessionId: 'agent-session-1',
+    });
+    const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'An answer.', continuity: null });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    const snapshot = await persistSession(harness, {
+      sessionId: 'follow-up-spin-session',
+      recover: false,
+      buildTail: (current) => [
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'follow_up.queue.set',
+          '2026-03-10T00:02:00.000Z',
+          { queue: [{ agent: 'alpha', question: 'What changed?' }] },
+        ),
+      ],
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const session = harness.context.sessions.get('follow-up-spin-session');
+    if (!session) {
+      throw new Error('Expected attached follow-up-spin-session');
+    }
+    // Stands in for clearAllDiscuss's abort-first pass racing a suspended runFollowUpTurns
+    // iteration that resumes after the abort but before the registry finishes clearing.
+    session.controller.abort();
+
+    // Bounds a regression: without the fix, a tolerated refusal falls through instead of
+    // returning, so runFollowUpTurns re-reads the same unwritten queue and calls
+    // collectFollowUpAnswer again on every iteration, launching another job each time. This
+    // spy fails the test the moment that happens a second time, instead of hanging the suite.
+    const originalCommitDecision = discussPersistence.commitDecision;
+    let commitCalls = 0;
+    const COMMIT_CALL_BOUND = 1;
+    vi.spyOn(discussPersistence, 'commitDecision').mockImplementation(async (...args) => {
+      commitCalls += 1;
+      if (commitCalls > COMMIT_CALL_BOUND) {
+        throw new Error(
+          `runFollowUpTurns issued a ${commitCalls}${
+            commitCalls === 2 ? 'nd' : 'th'
+          } commitDecision call after a tolerated refusal instead of returning`,
+        );
+      }
+      return originalCommitDecision(...args);
+    });
+
+    const result = await runFollowUpTurns(harness.context, 'follow-up-spin-session', harness.ctx);
+
+    expect(result).toEqual({ shouldResume: false });
+    expect(commitCalls).toBe(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(harness.store.load('follow-up-spin-session')?.runtime.followUpQueue).toEqual([
+      { agent: 'alpha', question: 'What changed?' },
+    ]);
+  });
+
+  it('once clearAllDiscuss clears its sessions map, commitDecision can no longer observe the abort at all', async () => {
+    const harness = createDiscussHarness();
+    const registry = createDiscussContextRegistry();
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+
+    const snapshot = await persistSession({ ...harness, context }, { sessionId: 'post-clear-session', recover: false });
+    attachPersistedSession({ ...harness, context }, snapshot);
+
+    await clearAllDiscuss(registry, 'hard', persistAbortEndForShutdown);
+
+    // The guard in commitDecision reads ctx.sessions.get(sessionId)?.controller — once
+    // clearAllDiscuss has cleared the map, that lookup returns nothing, so the guard cannot
+    // fire here regardless of what the abort pass did.
+    expect(context.sessions.get('post-clear-session')).toBeUndefined();
+
+    // What keeps this window inert today is not commitDecision's guard: decideEnd refuses a
+    // decision against a state.status already 'ended' on its own (the same shape as
+    // buildBidBatch, in src/discuss/shell/flow/bid.ts, returning no events once
+    // state.status is no longer 'bidding'). commitDecision's own short-circuit for an
+    // empty decide result is what turns that refusal into a successful no-op commit here.
+    const committed = await commitDecision(context, 'post-clear-session', (current) =>
+      decideEnd(
+        current.state,
+        { force: true, reason: 'natural-completion-race' },
+        makeDecisionContext(context, current.sessionId, current.state.topic),
+        current.lastAppliedSeq + 1,
+        '2026-03-10T00:06:00.000Z',
+      ),
+    );
+
+    expect(committed).toMatchObject({ ok: true, events: [] });
+    const events = readSessionEvents(context, 'post-clear-session');
+    expect(events.at(-1)).toMatchObject({ kind: 'session.ended', payload: { force: true, reason: 'abort' } });
   });
 
   it('stale-write shutdown retry skips the abort marker once the session becomes terminal', async () => {

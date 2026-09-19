@@ -124,6 +124,40 @@ describe('cli errors', () => {
       });
     });
 
+    it('gives a discuss session_shutting_down refusal relayed over IPC the same exit as the HTTP gateway gives it', () => {
+      // Regression for the gap where only the HTTP path (which carries a statusCode) reached
+      // exit 75; IpcRpcError has no statusCode, so structuredBodyError's fallback.httpStatus
+      // is undefined and errorCodeToExit must reach 75 from the code alone.
+      const result = buildErrorEnvelope(
+        new IpcRpcError({
+          code: -32603,
+          message: 'session shutting down',
+          data: {
+            code: 'session_shutting_down',
+            message: 'session shutting down',
+            remediation:
+              "This discuss session's live controller already stopped for a coordinator shutdown or " +
+              'handoff drain, so the request did not run. Shutdown continues as a bounded asynchronous ' +
+              'wait. Retry this command after `coral-cli backend status` no longer reports that ' +
+              'coordinator as shutting down.',
+          },
+        }),
+      );
+
+      expect(result).toEqual({
+        envelope: {
+          error: true,
+          code: 'session_shutting_down',
+          message: 'session shutting down',
+          remediation: expect.stringContaining('coral-cli backend status'),
+        },
+        exitCode: 75,
+      });
+      // Principle 11: the refusal names what ends the wait, not just that one is happening.
+      expect(result.envelope.remediation).toContain('coral-cli backend status');
+      expect(result.envelope.remediation).not.toContain('kill');
+    });
+
     it('maps generic Error to internal and exit 70', () => {
       expect(buildErrorEnvelope(new Error('boom'))).toEqual({
         envelope: {
@@ -506,6 +540,7 @@ describe('cli errors', () => {
         'busy',
         'kb_disabled',
         'provider_preflight_undetermined',
+        'session_shutting_down',
       ];
       const { DOCUMENTED_CORAL_SETUP_ERROR_CODES, LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } =
         await import('#src/runtime/errors.js');

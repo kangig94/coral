@@ -2,6 +2,11 @@ import type { Result } from '../session-types.js';
 
 export const ABORT_REASON = 'abort';
 
+// Must stay distinct from `session_not_found`: a caller that maps this code the same way
+// as a genuinely missing session (e.g. a 404) tells its reader the session doesn't exist
+// when the store still holds it and a shutdown/handoff drain is merely still tearing down.
+export const SESSION_SHUTTING_DOWN = 'session_shutting_down';
+
 export class DiscussManagerError extends Error {
   readonly code: string;
   readonly detail?: Record<string, unknown>;

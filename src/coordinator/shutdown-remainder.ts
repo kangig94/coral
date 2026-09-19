@@ -135,7 +135,11 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
         unreadable.push({ name, age });
         continue;
       }
-      if (age.kind === 'unknown') continue;
+      // Constraint: a decodable record whose age this build could not establish (`statSync` and
+      // `readFileSync` are independent syscalls, so one can fail transiently while the other succeeds) is
+      // still evidence, not an unknown to discard (design-philosophy.md principle 11) — it joins `known`
+      // rather than falling outside every retention bound, and `byRetentionOrder` ranks it as the oldest
+      // entry in that bucket for exactly this reason.
       known.push({ name, age });
     }
     known.sort(byRetentionOrder);

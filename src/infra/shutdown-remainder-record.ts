@@ -203,13 +203,35 @@ const shutdownRemainderRecordEnvelopeSchema = z
  * type to `X` — `z.infer<typeof binding>` then trivially equals `X` forever after, so checking it against `X`
  * again catches nothing (measured: a discriminated union missing an arm, or a narrower hand-copied enum, both
  * still compile under that pattern). `ExactlyMatches` requires assignability in both directions, so it fails to
- * compile the moment the checked type and the schema's real inferred type name a different set of members —
- * provided the schema binding is NOT itself `z.ZodType<X>`-annotated. `shutdownRemainderRecordEnvelopeSchema`
+ * compile the moment the checked type and the schema's real inferred type disagree on a required member or a
+ * member's own type — provided the schema binding is NOT itself `z.ZodType<X>`-annotated. `shutdownRemainderRecordEnvelopeSchema`
  * (`reason`/`mode`) and the five below (`satisfies z.ZodType<X>` instead of `: z.ZodType<X>`, or — for the
  * recursive `serializedThrownSchema` — the factored, un-annotated `serializedThrownShape`) all keep their real
  * inferred type reachable through `z.infer` for exactly this reason.
+ *
+ * Constraint: neither `Mutual<A, B>` (direct mutual assignability) nor `Mutual<Required<A>, Required<B>>`
+ * catches every divergence alone — each misses exactly what the other one is for, so `ExactlyMatches` requires
+ * both.
+ *
+ * `Mutual<A, B>` misses an **optional member present on only one side**: an object lacking an optional
+ * property is structurally assignable to, and from, one that carries it (measured: adding
+ * `subject?: ShutdownRemainderSubject` to `ShutdownRemainderEntry` while leaving it out of
+ * `shutdownRemainderEntrySchema`, and the reverse, both still satisfy `[A] extends [B] ? [B] extends [A]`).
+ * Wrapping each side in `Required<...>` catches that: a member missing on one side becomes a required member
+ * that side does not have at all, which mutual assignability does reject.
+ *
+ * But `Required<...>` strips the optional modifier from a member **present on both sides**, so a member
+ * required on one side and optional on the other becomes identical on both after wrapping, and
+ * `Mutual<Required<A>, Required<B>>` alone accepts it (measured: a schema field made `.optional()` while the
+ * TypeScript type keeps it required compiles clean under the `Required<...>`-wrapped comparison by itself).
+ * That is exactly the edit design-philosophy.md §10 forbids by name — a field "may not be … made newly
+ * required" — so a `Required<...>`-only guard would be blind to a prohibited edit while catching only the
+ * sanctioned one (adding an optional member). `Mutual<A, B>`, required to hold first, still sees this
+ * divergence: a member required on one side and absent from the other is not directly assignable in the
+ * direction that lacks it.
  */
-type ExactlyMatches<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type Mutual<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type ExactlyMatches<A, B> = Mutual<A, B> extends true ? Mutual<Required<A>, Required<B>> : false;
 const _shutdownReasonStaysSynced: ExactlyMatches<
   ShutdownReason,
   z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['reason']

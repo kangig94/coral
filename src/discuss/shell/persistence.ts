@@ -5,7 +5,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { DiscussStaleWriteError } from './session-store.js';
 import { type DiscussContext } from './types.js';
-import { ABORT_REASON, DiscussManagerError } from './errors.js';
+import { ABORT_REASON, DiscussManagerError, SESSION_SHUTTING_DOWN } from './errors.js';
 import { compactLiveWatchBuffer, getSubscriberCursorMap, watchBufferCursor } from './live-registry.js';
 
 function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
@@ -33,6 +33,15 @@ type CommitFailure = {
 };
 
 export type CommitResult = CommitSuccess | CommitFailure;
+
+// Internal orchestration (loop/flow) call sites must stop quietly on either code instead of
+// throwing: neither a genuinely missing session nor a live controller already stopped for a
+// shutdown/handoff drain is helped by retrying or surfacing an internal error. A caller that
+// must tell the two apart (submitManualBid, submitManualSpeech) reads `error` directly instead
+// of calling this.
+export function isSilentCommitRefusal(error: string): boolean {
+  return error === 'session_not_found' || error === SESSION_SHUTTING_DOWN;
+}
 
 export function loadAttachedOrPersistedSnapshot(
   ctx: DiscussContext,
@@ -118,12 +127,15 @@ export async function commitDecision(
       };
     }
 
-    // A shutdown-requested abort must be able to preempt a decision already computed
-    // against pre-abort state: once the live controller signal is aborted, this session
-    // accepts no further commits through this path (the abort marker itself is written
-    // via appendRuntimeEvents, which this guard does not cover).
+    // Narrows this race, does not close it. A commit whose `ctx.store.append` below is
+    // already in flight when the abort pass (clearAllDiscuss) runs still lands, and once
+    // clearAllDiscuss clears its sessions map this lookup returns nothing, so this check
+    // cannot fire at all past that point — the abort marker itself is written via
+    // appendRuntimeEvents, which this guard does not cover either. What keeps the
+    // post-clear window inert today is decide callbacks (decideBid/buildBidBatch) refusing
+    // or short-circuiting a non-live status on their own, not this guard.
     if (ctx.sessions.get(sessionId)?.controller.signal.aborted === true) {
-      return { ok: false, error: 'session_not_found', detail: { session: sessionId } };
+      return { ok: false, error: SESSION_SHUTTING_DOWN, detail: { session: sessionId } };
     }
 
     try {

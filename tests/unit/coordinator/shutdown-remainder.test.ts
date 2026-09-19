@@ -582,7 +582,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['readable.json', 'unstattable.json']);
   });
 
-  it('excludes an unstattable record from the retention count, so it cannot displace a known record at the cap', () => {
+  it('reclaims an unstattable-but-readable record as the oldest entry once the known bucket exceeds the cap', () => {
     const storage = storageWith(
       [...Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 33)],
       { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
@@ -590,12 +590,17 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain('unstattable.json');
+    // A decodable record with no age evidence is not exempt from the bound its readable content would
+    // otherwise compete under (design-philosophy.md principle 11) — it joins the known bucket ranked as the
+    // oldest entry, so it is the one reclaimed once that bucket exceeds the cap, even though its real mtime
+    // (33) is the newest of the group.
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).not.toContain('unstattable.json');
     expect(storage.fileNames()).toContain('instance-0.json');
+    expect(storage.fileNames()).toContain('instance-31.json');
   });
 
-  it('prunes only the oldest known records once they exceed the cap, leaving an unstattable record untouched', () => {
+  it('prunes the oldest known record and an unstattable record together once they exceed the cap', () => {
     const storage = storageWith(
       [...Array.from({ length: 33 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 34)],
       { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
@@ -603,9 +608,13 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain('unstattable.json');
+    // The unstattable record competes in the same bucket as every other decodable record, ranked as its
+    // oldest entry (see the previous test); with 34 entries against the 32-slot cap, it and the next-oldest
+    // known record by real mtime are both reclaimed.
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).not.toContain('unstattable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
+    expect(storage.fileNames()).toContain('instance-1.json');
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 

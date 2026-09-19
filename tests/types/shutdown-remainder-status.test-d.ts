@@ -134,8 +134,8 @@ const unreadableRecordName: string = skippedUnreadableRecordNames[0] ?? '';
 void unreadableRecordName;
 declare const skippedUndecodableRecordCount: ShutdownRemainderStatus['skippedUndecodableRecordCount'];
 void skippedUndecodableRecordCount;
-// @ts-expect-error the internal age/reason skipped-record shape is absent from the status projection; only the
-// derived name list (for 'unreadable') and count (for 'undecodable') cross.
+// @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
+// name list (for 'unreadable') and count (for 'undecodable') cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;
 
