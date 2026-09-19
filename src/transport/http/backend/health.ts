@@ -2,6 +2,7 @@ import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/no
 import { assertNever } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
+import type { ShutdownRemainderCleanupRefusal } from '../../../infra/shutdown-remainder-record.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import { launchPermitDiagnosticsSchema, type LaunchPermitDiagnostics } from '../../server-ports.js';
@@ -121,6 +122,7 @@ export interface BackendHealth {
     fdCount?: number;
   };
   components: TransportRuntimeComponentStatus[];
+  shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
@@ -723,6 +725,22 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
   );
 }
 
+function isShutdownRemainderCleanupRefusal(value: unknown): value is ShutdownRemainderCleanupRefusal {
+  if (!isRecord(value) || !isRecord(value.cause) || !isRecord(value.retry)) return false;
+  const operation = value.cause.operation;
+  const causeIsValid =
+    (value.cause.kind === 'system-error' && typeof value.cause.code === 'string') ||
+    value.cause.kind === 'unclassified-error';
+  return (
+    typeof value.subject === 'string' &&
+    value.subject.length > 0 &&
+    (operation === 'delete' || operation === 'promote' || operation === 'scan-directory') &&
+    causeIsValid &&
+    value.retry.trigger === 'remainder-maintenance' &&
+    (value.retry.action === 'rescan-subject' || value.retry.action === 'rescan-directory')
+  );
+}
+
 export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
   if (
     !isRecord(value) ||
@@ -742,6 +760,9 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     (value.resources !== undefined && !isResources(value.resources)) ||
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
+    (value.shutdownRemainderCleanupRefusals !== undefined &&
+      (!Array.isArray(value.shutdownRemainderCleanupRefusals) ||
+        !value.shutdownRemainderCleanupRefusals.every(isShutdownRemainderCleanupRefusal))) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {

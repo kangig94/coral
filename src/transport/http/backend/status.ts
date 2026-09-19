@@ -20,12 +20,10 @@ import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.
 import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   observeShutdownRemainderStageWriter,
-  readShutdownRemainderCleanupRefusalState,
   scanShutdownRemainderRecords,
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderCleanupRefusal,
-  type ShutdownRemainderCleanupRefusalState,
   type ShutdownRemainderRecord,
   type ShutdownRemainderRecordScan,
   type ShutdownRemainderStageObserver,
@@ -277,19 +275,7 @@ type OperatorFacingShutdownRemainderQuarantine = Readonly<{
 type OperatorFacingShutdownRemainderCleanup = Readonly<{
   cleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
   unreportedCleanupRefusalCount?: number;
-  cleanupRefusalState?: Readonly<{ kind: 'unreadable'; reason: 'read-failed' | 'shape-rejected' }>;
 }>;
-
-function operatorFacingShutdownRemainderCleanup(
-  state: ShutdownRemainderCleanupRefusalState,
-): OperatorFacingShutdownRemainderCleanup {
-  return state.kind === 'unreadable'
-    ? { cleanupRefusalState: { kind: 'unreadable', reason: state.reason } }
-    : {
-        ...(state.refusals.length === 0 ? {} : { cleanupRefusals: state.refusals }),
-        ...(state.unreportedRefusalCount === 0 ? {} : { unreportedCleanupRefusalCount: state.unreportedRefusalCount }),
-      };
-}
 
 type OperatorFacingShutdownRemainderUnowned = Readonly<{
   unrecognizedEntryNames?: readonly string[];
@@ -313,6 +299,7 @@ type BackendStatus =
       components: BackendHealth['components'];
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
+      shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
     }
@@ -358,15 +345,6 @@ export type ShutdownRemainderReport =
       quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
     }> &
       OperatorFacingShutdownRemainderCleanup &
-      OperatorFacingShutdownRemainderUnowned)
-  | (Readonly<{ status: 'shutdown_remainder_cleanup_refused' }> &
-      Required<Pick<OperatorFacingShutdownRemainderCleanup, 'cleanupRefusals'>> &
-      OperatorFacingShutdownRemainderCleanup &
-      OperatorFacingShutdownRemainderUnowned)
-  | (Readonly<{
-      status: 'shutdown_remainder_cleanup_state_unreadable';
-      cleanupRefusalState: Readonly<{ kind: 'unreadable'; reason: 'read-failed' | 'shape-rejected' }>;
-    }> &
       OperatorFacingShutdownRemainderUnowned)
   | (Readonly<{ status: 'shutdown_remainder_unowned'; unrecognizedEntryNames: readonly string[] }> &
       OperatorFacingShutdownRemainderUnowned);
@@ -662,19 +640,15 @@ function readRecentShutdownRemainder(
   now: number,
   scope: ShutdownRemainderEvidenceScope,
   observeStageWriter: ShutdownRemainderStageObserver,
+  cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
-  let refusalState = readShutdownRemainderCleanupRefusalState(storage, runDir);
-  let observedSubjectNames: ReadonlySet<string> | null = null;
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, (names) => {
-      observedSubjectNames = new Set(names);
-    });
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
   } catch (error: unknown) {
     if (thrownErrnoCode(error) === 'ENOENT') {
       scan = { records: [], skippedEntries: [], skippedRecords: [] };
-      observedSubjectNames = new Set();
     } else {
       // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
       // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
@@ -684,18 +658,11 @@ function readRecentShutdownRemainder(
       return {
         status: 'shutdown_remainder_unreadable',
         reason: 'scan-failed',
-        ...operatorFacingShutdownRemainderCleanup(refusalState),
+        ...(cleanupRefusals.length === 0 ? {} : { cleanupRefusals }),
       };
     }
   }
-  const observedSubjects = observedSubjectNames;
-  if (refusalState.kind === 'available' && observedSubjects !== null) {
-    refusalState = {
-      ...refusalState,
-      refusals: refusalState.refusals.filter(({ subject }) => subject !== directory && observedSubjects.has(subject)),
-    };
-  }
-  const cleanupRefusalStatus = operatorFacingShutdownRemainderCleanup(refusalState);
+  const cleanupRefusalStatus = cleanupRefusals.length === 0 ? {} : { cleanupRefusals };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
   // anything about when it was written, so an age filter on any of them would silently drop evidence this
@@ -766,25 +733,9 @@ function readRecentShutdownRemainder(
       scopedSkippedRecords.length === 0 &&
       scan.unscannedStageCount === undefined &&
       scan.unscannedRecordCount === undefined &&
-      (scan.quarantined?.length ?? 0) === 0
+      (scan.quarantined?.length ?? 0) === 0 &&
+      cleanupRefusals.length === 0
     ) {
-      if (refusalState.kind === 'unreadable') {
-        return {
-          status: 'shutdown_remainder_cleanup_state_unreadable',
-          cleanupRefusalState: { kind: 'unreadable', reason: refusalState.reason },
-          ...unrecognizedEntries,
-        };
-      }
-      if (refusalState.refusals.length > 0 || refusalState.unreportedRefusalCount > 0) {
-        return {
-          status: 'shutdown_remainder_cleanup_refused',
-          cleanupRefusals: refusalState.refusals,
-          ...(refusalState.unreportedRefusalCount === 0
-            ? {}
-            : { unreportedCleanupRefusalCount: refusalState.unreportedRefusalCount }),
-          ...unrecognizedEntries,
-        };
-      }
       if (hasUnrecognizedEntries) {
         return {
           status: 'shutdown_remainder_unowned',
@@ -888,8 +839,16 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   observeStageWriter: ShutdownRemainderStageObserver,
   fallback: Status,
   scope: ShutdownRemainderEvidenceScope,
+  cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
 ): Status {
-  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope, observeStageWriter);
+  const shutdownRemainder = readRecentShutdownRemainder(
+    storage,
+    runDir,
+    now,
+    scope,
+    observeStageWriter,
+    cleanupRefusals,
+  );
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
 }
@@ -1097,6 +1056,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       observeStageWriter,
       result,
       { kind: 'directory' },
+      result.health.shutdownRemainderCleanupRefusals,
     );
   }
   return statusWithRecentCoordinatorEvidence(

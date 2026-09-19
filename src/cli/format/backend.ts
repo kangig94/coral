@@ -1292,17 +1292,6 @@ function formatShutdownRemainderReport(
       return formatRecentShutdownRemainderReport(report, recheckContext);
     case 'shutdown_remainder_unreadable':
       return formatUnreadableShutdownRemainderReport(report, recheckContext);
-    case 'shutdown_remainder_cleanup_refused':
-      return [
-        'Coral recorded shutdown remainder cleanup refusals.',
-        ...formatShutdownRemainderUnowned(report),
-        ...formatShutdownRemainderCleanupRefusals(report),
-      ].join('\n');
-    case 'shutdown_remainder_cleanup_state_unreadable':
-      return [
-        `Coral could not read shutdown remainder cleanup refusal state (${report.cleanupRefusalState.reason}).`,
-        ...formatShutdownRemainderUnowned(report),
-      ].join('\n');
     case 'shutdown_remainder_unowned':
       return [
         "Coral found shutdown remainder directory entries outside this subsystem's ownership.",
@@ -1415,9 +1404,6 @@ function formatUnreadableShutdownRemainderReport(
   if (result.reason === 'scan-failed') {
     return [
       'Coral could not inspect shutdown remainder records.',
-      ...(result.cleanupRefusalState === undefined
-        ? []
-        : [`Cleanup refusal state: unreadable (${result.cleanupRefusalState.reason})`]),
       ...formatShutdownRemainderCleanupRefusals(result),
     ].join('\n');
   }
@@ -1447,7 +1433,6 @@ function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport)
       }`,
       '    Retry trigger: coordinator startup and periodic remainder maintenance',
       `    Retry action: ${formatShutdownRemainderCleanupRetryAction(refusal.retry.action)}`,
-      '    Hold ends: cleanup succeeds or the subject is observed absent',
     ]),
     ...(unreported === 0 ? [] : [`  Additional refusals not listed: ${unreported}`]),
   ];
@@ -1455,8 +1440,6 @@ function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport)
 
 function formatShutdownRemainderCleanupRetryAction(action: ShutdownRemainderCleanupRefusal['retry']['action']): string {
   switch (action) {
-    case 'retry-delete':
-      return 'retry the selected deletion';
     case 'rescan-subject':
       return 'reclassify the subject and retry only if it still qualifies';
     case 'rescan-directory':
@@ -1581,7 +1564,8 @@ function formatSkippedShutdownRemainderRecords(
     if (result.staging.orphanedCount > 0) {
       lines.push(
         `Shutdown remainder publication stages with proven-absent writers: ${result.staging.orphanedCount}`,
-        '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and holds other retained subjects in place as quarantined. Refused cleanup remains reported for a later maintenance pass.',
+        '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and holds other retained subjects in place as quarantined.',
+        recheckLine,
       );
     }
     if ((result.staging.malformedCount ?? 0) > 0) {

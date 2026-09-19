@@ -27,7 +27,6 @@ const mockState = vi.hoisted(() => ({
     unlinkErrorCode?: string;
   }>,
   remainderScanErrorCode: null as string | null,
-  cleanupRefusalState: null as string | null,
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
   stageLiveness: 'unknown' as 'alive' | 'absent' | 'unknown',
@@ -109,12 +108,6 @@ vi.mock('#src/runtime/real.js', () => ({
           if (mockState.diagnostic === null) throw Object.assign(new Error('no diagnostic'), { code: 'ENOENT' });
           return mockState.diagnostic;
         }
-        if (path === '/run/coral/shutdown-remainder-cleanup-refusals.v1.json') {
-          if (mockState.cleanupRefusalState === null) {
-            throw Object.assign(new Error('no cleanup refusal state'), { code: 'ENOENT' });
-          }
-          return mockState.cleanupRefusalState;
-        }
         const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
         const file = mockState.remainderFiles.find((candidate) => candidate.name === name);
         if (file === undefined) throw Object.assign(new Error('no remainder'), { code: 'ENOENT' });
@@ -135,14 +128,6 @@ vi.mock('#src/runtime/real.js', () => ({
           throw Object.assign(new Error('remainder deletion unavailable'), { code: file.unlinkErrorCode });
         }
         mockState.remainderFiles.splice(index, 1);
-      },
-      writeAtomicDurableSync: (path: string, data: string | NodeJS.ArrayBufferView) => {
-        if (path !== '/run/coral/shutdown-remainder-cleanup-refusals.v1.json') return false;
-        mockState.cleanupRefusalState =
-          typeof data === 'string'
-            ? data
-            : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf-8');
-        return true;
       },
     },
     env: { platform: () => 'linux' },
@@ -187,7 +172,6 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.diagnostic = null;
     mockState.remainderFiles = [];
     mockState.remainderScanErrorCode = null;
-    mockState.cleanupRefusalState = null;
     mockState.strictIdentityProven = true;
     mockState.stageLiveness = 'unknown';
   });
@@ -200,26 +184,6 @@ describe('getBackendStatusFull record disposition', () => {
   });
 
   it('reports no_record_no_socket when neither discovery evidence nor a socket exists', async () => {
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
-  });
-
-  it('clears a cleanup refusal whose individual subject is observed absent', async () => {
-    mockState.cleanupRefusalState = cleanupRefusalState('absent.json');
-    mockState.remainderFiles = [
-      remainderFile('present.json', NOW - 10_000, shutdownRemainder('present', NOW - 10_000)),
-    ];
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
-  });
-
-  it('clears cleanup refusals when the remainder directory is observed absent', async () => {
-    mockState.cleanupRefusalState = cleanupRefusalState('absent.json');
-
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
@@ -1559,7 +1523,6 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT, instanceId: INSTANCE_ID };
     mockState.diagnostic = null;
     mockState.remainderFiles = [];
-    mockState.cleanupRefusalState = null;
     mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
     mockState.stageLiveness = 'unknown';
@@ -1787,21 +1750,6 @@ function stubProbes(...responses: readonly Response[]): ReturnType<typeof vi.fn>
   return mock;
 }
 
-function cleanupRefusalState(subject: string): string {
-  return JSON.stringify({
-    version: 1,
-    refusals: [
-      {
-        subject,
-        cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-        retry: { trigger: 'remainder-maintenance', action: 'retry-delete' },
-        exit: { condition: 'cleanup-succeeded-or-subject-absent' },
-      },
-    ],
-    unreportedRefusalCount: 0,
-  });
-}
-
 // `backend status` is the operator's primary diagnostic, and this branch exists to stop it collapsing
 // "stopped", "draining", "not ours" and "could not reach" into one another.
 describe('getBackendStatusFull maps each answer to the word that describes it', () => {
@@ -1819,7 +1767,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     vi.unstubAllGlobals();
   });
 
-  it('preserves a running cleanup refusal through draining, exit, status, and restart', async () => {
+  it('reports a live cleanup refusal with its errno on every status while the condition persists', async () => {
     mockState.remainderFiles = [
       { name: 'corrupt.json', value: '{not-json', mtimeMs: NOW - 10_000, unlinkErrorCode: 'EACCES' },
     ];
@@ -1835,67 +1783,55 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       },
     });
 
-    expect(pruner.start()?.cleanup).toMatchObject({
+    const refusal = {
+      subject: 'corrupt.json',
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+    };
+    expect(pruner.start()?.cleanup).toEqual({
       kind: 'refused',
-      refusals: [
-        {
-          subject: 'corrupt.json',
-          cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-          retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
-          exit: { condition: 'cleanup-succeeded-or-subject-absent' },
-        },
-      ],
+      refusals: [refusal],
     });
-    stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('ok'), { status: 200 }));
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: pruner.readCleanupRefusals() }), {
+        status: 200,
+      }),
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: pruner.readCleanupRefusals() }), {
+        status: 200,
+      }),
+    );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result).toMatchObject({
-      status: 'ok',
-      shutdownRemainder: {
-        status: 'shutdown_remainder_unreadable',
-        reason: 'records-skipped',
-        skippedCorruptRecordCount: 1,
-        cleanupRefusals: [
-          {
-            subject: 'corrupt.json',
-            cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-            retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
-            exit: { condition: 'cleanup-succeeded-or-subject-absent' },
-          },
-        ],
-      },
-    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+        status: 'ok',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedCorruptRecordCount: 1,
+          cleanupRefusals: [refusal],
+        },
+      });
+    }
 
     pruner.stop();
     stubProbes(new Response(ping('draining'), { status: 200 }));
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+    const draining = await getBackendStatusFull('/plugin-root');
+    expect(draining).toMatchObject({
       status: 'shutting_down',
-      shutdownRemainder: { cleanupRefusals: [{ subject: 'corrupt.json' }] },
+      shutdownRemainder: { skippedCorruptRecordCount: 1 },
     });
+    expect(draining.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
 
-    mockState.observed = {
-      kind: 'process-absent',
-      pid: 12_345,
-      startedAt: 1,
-      instanceId: 'test-instance',
-    };
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'recorded_process_absent',
-      shutdownRemainder: { cleanupRefusals: [{ subject: 'corrupt.json' }] },
+    mockState.observed = { kind: 'no-record' };
+    const stopped = await getBackendStatusFull('/plugin-root');
+    expect(stopped).toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: { skippedCorruptRecordCount: 1 },
     });
-
-    const refused = mockState.remainderFiles[0];
-    if (refused === undefined) throw new Error('refused subject disappeared');
-    delete refused.unlinkErrorCode;
-    const restarted = createShutdownRemainderPruner({
-      storage: runtime.storage,
-      runDir: runtime.paths.coral.coordinator.runDir,
-      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
-    });
-    expect(restarted.start()?.cleanup).toEqual({ kind: 'complete' });
-    expect(mockState.remainderFiles).toEqual([]);
+    expect(stopped.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
   });
 
   it('reports a draining ping as shutting_down without asking the detailed probe', async () => {

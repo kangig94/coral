@@ -79,6 +79,21 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
+  it('accepts typed shutdown remainder cleanup refusals and rejects unsupported retry actions', () => {
+    const refusal = {
+      subject: 'corrupt.json',
+      cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
+    };
+    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupRefusals: [refusal] })).toBe(true);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [{ ...refusal, retry: { ...refusal.retry, action: 'retry-delete' } }],
+      }),
+    ).toBe(false);
+  });
+
   it('accepts only a redacted named system provider scope', () => {
     expect(
       isBackendHealth({

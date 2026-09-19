@@ -2023,7 +2023,8 @@ describe('cli format', () => {
           'Shutdown remainder publication stages with unobservable writers: 2',
           '  Disposition: writer state is unknown; an unresolved stage remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
           'Shutdown remainder publication stages with proven-absent writers: 3',
-          '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and holds other retained subjects in place as quarantined. Refused cleanup remains reported for a later maintenance pass.',
+          '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and holds other retained subjects in place as quarantined.',
+          '  Recheck: no discovery record and no socket at the current expected address were found. The next coordinator startup scans once and then rechecks live-writer stages periodically while it runs.',
         ].join('\n'),
       );
     });
@@ -2112,9 +2113,10 @@ describe('cli format', () => {
       expect(text).not.toMatch(/\bcoordinator (?:is|was) (?:absent|gone|not running)\b/u);
     });
 
-    it('names current cleanup refusals and the observations that clear them', () => {
+    it('names current live cleanup refusals and their rescan action', () => {
       const text = formatBackendStatus({
-        status: 'no_record_no_socket',
+        status: 'ok',
+        health: { ...baseHealth, components: [], queueDepth: 0 },
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
           reason: 'records-skipped',
@@ -2126,7 +2128,6 @@ describe('cli format', () => {
               subject: 'corrupt.json',
               cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
               retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
-              exit: { condition: 'cleanup-succeeded-or-subject-absent' },
             },
           ],
         },
@@ -2140,7 +2141,6 @@ describe('cli format', () => {
           '    Cause: delete failed with EACCES',
           '    Retry trigger: coordinator startup and periodic remainder maintenance',
           '    Retry action: reclassify the subject and retry only if it still qualifies',
-          '    Hold ends: cleanup succeeds or the subject is observed absent',
         ].join('\n'),
       );
     });
@@ -2150,12 +2150,19 @@ describe('cli format', () => {
         subject: `corrupt-${String(index).padStart(3, '0')}.json`,
         cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
         retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
-        exit: { condition: 'cleanup-succeeded-or-subject-absent' as const },
       }));
 
       const text = formatBackendStatus({
-        status: 'no_record_no_socket',
-        shutdownRemainder: { status: 'shutdown_remainder_cleanup_refused', cleanupRefusals },
+        status: 'ok',
+        health: { ...baseHealth, components: [], queueDepth: 0 },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedUnreadableRecordNames: [],
+          skippedCorruptRecordCount: 1,
+          skippedUnsupportedRecordCount: 0,
+          cleanupRefusals,
+        },
       });
 
       expect(text.match(/ {2}Refusal [0-9]+:/gu)).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);

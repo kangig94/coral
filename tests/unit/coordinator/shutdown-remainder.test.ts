@@ -21,7 +21,6 @@ import {
 } from '#src/coordinator/shutdown-remainder.js';
 import {
   observeShutdownRemainderStageWriter,
-  readShutdownRemainderCleanupRefusalState,
   scanShutdownRemainderRecords,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
 } from '#src/infra/shutdown-remainder-record.js';
@@ -309,7 +308,6 @@ function cleanupRefusal(subject: string, operation: 'delete' | 'promote' | 'scan
         ? { kind: 'unclassified-error' as const, operation }
         : { kind: 'system-error' as const, operation, code },
     retry: { trigger: 'remainder-maintenance' as const, action },
-    exit: { condition: 'cleanup-succeeded-or-subject-absent' as const },
   };
 }
 
@@ -1027,7 +1025,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 
-  it('retries a refused retention deletion after another record disappears', () => {
+  it('keeps a refused retention record once it re-enters the retention window', () => {
     const storage = storageWith(
       Array.from({ length: 33 }, (_, index) => fileAt(`instance-${index}`, index + 1)),
       {
@@ -1054,42 +1052,10 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(storage.fileNames()).not.toContain('instance-0.json');
-    expect(storage.unlinkSync).toHaveBeenCalledTimes(3);
-  });
-
-  it('reapplies retention instead of deleting a replacement for a refused subject', () => {
-    const storage = storageWith(
-      Array.from({ length: 33 }, (_, index) => fileAt(`instance-${index}`, index + 1)),
-      {
-        refusePruneWhen: (name, attempt) => name === 'instance-0.json' && attempt === 1,
-      },
-    );
-    let scheduled: (() => void) | null = null;
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: {
-        setInterval: (callback) => {
-          scheduled = callback;
-          return { unref: vi.fn() };
-        },
-        clearInterval: vi.fn(),
-      },
-    });
-
-    expect(pruner.start()?.cleanup.kind).toBe('refused');
-    const replacement = JSON.stringify(recordAt('instance-0', []));
-    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'instance-0.json'), replacement);
-
-    const periodic = scheduled as (() => void) | null;
-    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    periodic();
-
     expect(storage.fileNames()).toHaveLength(32);
     expect(storage.fileNames()).toContain('instance-0.json');
     expect(storage.fileNames()).not.toContain('instance-1.json');
-    expect(storage.readPublished('instance-0')).toBe(replacement);
+    expect(storage.unlinkSync).toHaveBeenCalledTimes(2);
   });
 
   it('does not delete a record it cannot stat while the retention cap is not exceeded', () => {
@@ -1688,52 +1654,6 @@ describe('shutdown remainder status', () => {
     expect(clearInterval).toHaveBeenCalledOnce();
   });
 
-  it('reports a throwing cleanup-refusal write without failing startup maintenance', () => {
-    const storage = storageWith();
-    vi.mocked(storage.writeAtomicDurableSync).mockImplementation(() => {
-      throw Object.assign(new Error('durable write refused'), { code: 'EACCES' });
-    });
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
-    });
-
-    expect(pruner.start()).toMatchObject({
-      cleanup: {
-        kind: 'refusal-state-persistence-refused',
-        cleanup: { kind: 'complete' },
-        cause: { kind: 'system-error', code: 'EACCES' },
-        retry: { trigger: 'remainder-maintenance' },
-        exit: { condition: 'persistence-succeeded' },
-      },
-    });
-  });
-
-  it('contains a throwing cleanup-refusal write during periodic maintenance', () => {
-    const storage = storageWith();
-    let scheduled: (() => void) | null = null;
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: {
-        setInterval: (callback) => {
-          scheduled = callback;
-          return { unref: vi.fn() };
-        },
-        clearInterval: vi.fn(),
-      },
-    });
-    pruner.start();
-    vi.mocked(storage.writeAtomicDurableSync).mockImplementation(() => {
-      throw Object.assign(new Error('durable write refused'), { code: 'EIO' });
-    });
-
-    const periodic = scheduled as (() => void) | null;
-    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    expect(periodic).not.toThrow();
-  });
-
   it('does not report a permanently unreadable record complete while polling it forever', () => {
     const storage = storageWith([fileAt('locked', 1)], {
       refuseReadFor: 'locked.json',
@@ -1788,21 +1708,15 @@ describe('shutdown remainder status', () => {
       kind: 'refused',
       refusals: [cleanupRefusal('corrupt.json', 'delete')],
     });
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toEqual({
-      kind: 'available',
-      refusals: [cleanupRefusal('corrupt.json', 'delete')],
-      unreportedRefusalCount: 0,
-    });
+    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
 
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toMatchObject({
-      refusals: [cleanupRefusal('corrupt.json', 'delete')],
-    });
+    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
     periodic();
 
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toMatchObject({ refusals: [] });
+    expect(pruner.readCleanupRefusals()).toEqual([]);
     expect(storage.fileNames()).toEqual([]);
   });
 
@@ -1831,10 +1745,10 @@ describe('shutdown remainder status', () => {
     periodic();
 
     expect(storage.fileNames()).toEqual(['corrupt.json']);
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toMatchObject({ refusals: [] });
+    expect(pruner.readCleanupRefusals()).toEqual([]);
   });
 
-  it('retains a named cleanup refusal across a transient directory scan failure', () => {
+  it('reports only the cleanup refusals observed by each scan', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePrune: true,
       refuseReaddirWhen: (_path, attempt) => attempt === 3,
@@ -1857,16 +1771,9 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toMatchObject({
-      refusals: [
-        cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO'),
-        cleanupRefusal('corrupt.json', 'delete'),
-      ],
-    });
+    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO')]);
     periodic();
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toMatchObject({
-      refusals: [cleanupRefusal('corrupt.json', 'delete')],
-    });
+    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
   });
 
   it('clears a named cleanup refusal after the subject decisively disappears', () => {
@@ -1896,7 +1803,7 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(readShutdownRemainderCleanupRefusalState(storage, RUN_DIR)).toMatchObject({ refusals: [] });
+    expect(pruner.readCleanupRefusals()).toEqual([]);
   });
 
   it('retries quarantined evidence once on the next pruner startup', () => {
