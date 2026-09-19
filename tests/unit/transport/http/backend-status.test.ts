@@ -72,16 +72,28 @@ vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: vi.fn(() => ({
     storage: {
       existsSync: (path: string) => path === '/run/coral/shutdown-remainder.v1' && mockState.remainderFiles.length > 0,
-      readdirSync: () => {
+      readdirSync: (path: string) => {
         if (mockState.remainderScanErrorCode !== null) {
           throw Object.assign(new Error('remainder directory unreadable'), {
             code: mockState.remainderScanErrorCode,
           });
         }
-        return mockState.remainderFiles.map(({ name }) => name);
+        const root = '/run/coral/shutdown-remainder.v1';
+        const prefix = path === root ? '' : `${path.slice(root.length + 1)}/`;
+        const entries = [
+          ...new Set(
+            mockState.remainderFiles
+              .filter(({ name }) => name.startsWith(prefix))
+              .map(({ name }) => name.slice(prefix.length).split('/')[0])
+              .filter((name): name is string => name !== undefined && name.length > 0),
+          ),
+        ];
+        if (entries.length === 0) throw Object.assign(new Error('no remainder directory'), { code: 'ENOENT' });
+        return entries;
       },
       statSync: (path: string) => {
-        const file = mockState.remainderFiles.find(({ name }) => path.endsWith(`/${name}`));
+        const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
+        const file = mockState.remainderFiles.find((candidate) => candidate.name === name);
         if (file === undefined) {
           throw Object.assign(new Error('no remainder metadata'), { code: 'ENOENT' });
         }
@@ -95,7 +107,8 @@ vi.mock('#src/runtime/real.js', () => ({
           if (mockState.diagnostic === null) throw Object.assign(new Error('no diagnostic'), { code: 'ENOENT' });
           return mockState.diagnostic;
         }
-        const file = mockState.remainderFiles.find(({ name }) => path.endsWith(`/${name}`));
+        const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
+        const file = mockState.remainderFiles.find((candidate) => candidate.name === name);
         if (file === undefined) throw Object.assign(new Error('no remainder'), { code: 'ENOENT' });
         if (file.readErrorCode !== undefined) {
           throw Object.assign(new Error('remainder content unavailable'), { code: file.readErrorCode });
@@ -228,11 +241,33 @@ describe('getBackendStatusFull record disposition', () => {
 
     expect(output).toContain('Shutdown remainder publication stages with unobservable writers: 1');
     expect(output).toContain(
-      '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
+      '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
     );
     expect(output).not.toContain('  Recheck:');
     expect(output).not.toContain('publications in progress');
     expect(output).not.toContain('background discovery intervals');
+  });
+
+  it('reports quarantined evidence by durable address, subject, and startup retry disposition', async () => {
+    mockState.remainderFiles = [
+      remainderFile('quarantine/locked.json/1/evidence', NOW - 10_000, '{unreadable evidence'),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_quarantined',
+        quarantined: [
+          {
+            address: 'quarantine/locked.json/1/evidence',
+            subject: 'locked.json',
+            retry: { trigger: 'coordinator-startup', state: 'pending' },
+          },
+        ],
+      },
+    });
   });
 
   it('reports the single stage left unscanned by a 129-entry stage scan', async () => {

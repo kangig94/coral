@@ -1285,6 +1285,8 @@ function formatShutdownRemainderReport(
       return formatRecentShutdownRemainderReport(report, recheckContext);
     case 'shutdown_remainder_unreadable':
       return formatUnreadableShutdownRemainderReport(report, recheckContext);
+    case 'shutdown_remainder_quarantined':
+      return formatQuarantinedShutdownRemainderReport(report);
     default:
       return assertNever(report);
   }
@@ -1312,6 +1314,7 @@ function formatRecentShutdownRemainderReport(
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
   lines.push(...formatSkippedShutdownRemainderRecords(result, recheckContext));
+  lines.push(...formatShutdownRemainderQuarantines(result));
   return lines.join('\n');
 }
 
@@ -1392,7 +1395,55 @@ function formatUnreadableShutdownRemainderReport(
   return [
     'Coral found shutdown remainder records it could not use.',
     ...formatSkippedShutdownRemainderRecords(result, recheckContext),
+    ...formatShutdownRemainderQuarantines(result),
   ].join('\n');
+}
+
+function formatQuarantinedShutdownRemainderReport(
+  result: Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_quarantined' }>,
+): string {
+  return [
+    'Coral preserved shutdown remainder evidence in durable quarantine.',
+    ...formatShutdownRemainderQuarantines(result),
+  ].join('\n');
+}
+
+type ShutdownRemainderWithQuarantine =
+  | Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>
+  | Extract<ShutdownRemainderReport, { reason: 'records-skipped' }>
+  | Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_quarantined' }>;
+
+function formatShutdownRemainderQuarantines(result: ShutdownRemainderWithQuarantine): string[] {
+  const quarantined = result.quarantined ?? [];
+  const lines = quarantined.flatMap((evidence, index) => [
+    `Quarantined shutdown remainder evidence ${index + 1}:`,
+    `  Address: ${JSON.stringify(evidence.address)}`,
+    `  Subject: ${JSON.stringify(evidence.subject)}`,
+    `  Retry trigger: ${formatShutdownRemainderQuarantineRetryTrigger(evidence.retry.trigger)}`,
+    `  Retry state: ${
+      evidence.retry.state === 'pending'
+        ? 'pending'
+        : 'an active artifact has the same subject; both remain preserved unless a later startup verifies byte or inode identity'
+    }`,
+  ]);
+  if ((result.unscannedQuarantineCount ?? 0) > 0) {
+    lines.push(
+      `Quarantined shutdown remainder artifacts not inspected: ${result.unscannedQuarantineCount}`,
+      `  Disposition: the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-artifact status bound was reached; every uninspected address remains preserved for the next status read and coordinator-startup retry.`,
+    );
+  }
+  return lines;
+}
+
+function formatShutdownRemainderQuarantineRetryTrigger(
+  trigger: NonNullable<ShutdownRemainderWithQuarantine['quarantined']>[number]['retry']['trigger'],
+): string {
+  switch (trigger) {
+    case 'coordinator-startup':
+      return 'next coordinator startup';
+    default:
+      return assertNever(trigger);
+  }
 }
 
 function formatSkippedShutdownRemainderEntries(
@@ -1419,7 +1470,7 @@ function formatSkippedShutdownRemainderRecords(
     lines.push(
       `Skipped shutdown remainder records, unreadable: ${result.skippedUnreadableRecordNames.length}`,
       ...result.skippedUnreadableRecordNames.map((name) => `  Record: ${name}`),
-      '  Disposition: content was never read; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
+      '  Disposition: content was never read; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
     );
   }
   if (result.skippedCorruptRecordCount > 0) {
@@ -1431,7 +1482,7 @@ function formatSkippedShutdownRemainderRecords(
   if (result.skippedUnsupportedRecordCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, unsupported: ${result.skippedUnsupportedRecordCount}`,
-      '  Disposition: content decoded but the schema this build reads records with rejects it; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
+      '  Disposition: content decoded but the schema this build reads records with rejects it; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
     );
   }
   if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
@@ -1463,7 +1514,7 @@ function formatSkippedShutdownRemainderRecords(
     if (result.staging.writerUnobservableCount > 0) {
       lines.push(
         `Shutdown remainder publication stages with unobservable writers: ${result.staging.writerUnobservableCount}`,
-        '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
+        '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
       );
     }
     if (result.staging.orphanedCount > 0) {
@@ -1475,7 +1526,7 @@ function formatSkippedShutdownRemainderRecords(
     if ((result.staging.malformedCount ?? 0) > 0) {
       lines.push(
         `Malformed shutdown remainder publication stages: ${result.staging.malformedCount}`,
-        '  Disposition: the filename could not identify a writer; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence is excluded from periodic scans and retried once at the next coordinator startup.',
+        '  Disposition: the filename could not identify a writer; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
       );
     }
   }

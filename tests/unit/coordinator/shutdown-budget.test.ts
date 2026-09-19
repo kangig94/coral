@@ -233,6 +233,7 @@ function buildRemainderWriteRefusalHarness(
     kind: 'removed',
   },
   hooksOnShutdown: () => Promise<void> = async () => {},
+  publicationRace: 'none' | 'verification-unavailable' = 'none',
 ) {
   const harness = buildHarness({ hooksOnShutdown });
   const order: string[] = [];
@@ -246,7 +247,17 @@ function buildRemainderWriteRefusalHarness(
         order.push('record');
         return write();
       },
-      renameSync: () => {},
+      renameSync: () => {
+        if (publicationRace === 'verification-unavailable') {
+          throw Object.assign(new Error('stage already published'), { code: 'ENOENT' });
+        }
+      },
+      readFileSync: () => {
+        if (publicationRace === 'verification-unavailable') {
+          throw Object.assign(new Error('canonical read unavailable'), { code: 'EACCES' });
+        }
+        throw Object.assign(new Error('unexpected remainder read'), { code: 'ENOENT' });
+      },
       unlinkSync: () => {},
     },
   } as Runtime;
@@ -2878,6 +2889,23 @@ describe('required provider-proxy shutdown steps', () => {
 
     expect(harness.order).toEqual(['stopped', 'withdraw', 'exit:0']);
     expect(harness.onStopped).toHaveBeenCalledWith(0);
+  });
+
+  it('reports unavailable publication verification without claiming the write was refused', async () => {
+    const harness = buildRemainderWriteRefusalHarness(
+      () => true,
+      { kind: 'removed' },
+      rejectingHook,
+      'verification-unavailable',
+    );
+
+    await expect(harness.controller.shutdown('replaced')).resolves.toMatchObject({
+      disposition: 'finalized-with-losses',
+    });
+
+    expect(harness.logLines.some((line) => line.includes('publication verification unavailable'))).toBe(true);
+    expect(harness.logLines.some((line) => line.includes('canonical read unavailable'))).toBe(true);
+    expect(harness.logLines.some((line) => line.includes('shutdown remainder write refused'))).toBe(false);
   });
 
   it('writes a withdrawal loss as the only entry of an otherwise clean shutdown', async () => {

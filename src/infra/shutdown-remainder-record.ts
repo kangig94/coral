@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { z } from 'zod';
 
 import {
@@ -86,12 +86,89 @@ export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
+  quarantined?: readonly ShutdownRemainderQuarantinedEvidence[];
   unscannedStageCount?: number;
   unscannedRecordCount?: number;
+  unscannedQuarantineCount?: number;
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
   return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}`);
+}
+
+export const SHUTDOWN_REMAINDER_QUARANTINE_DIRECTORY_NAME = 'quarantine';
+const SHUTDOWN_REMAINDER_QUARANTINE_EVIDENCE_NAME = 'evidence';
+const SHUTDOWN_REMAINDER_QUARANTINE_SLOT_PATTERN = /^[1-9][0-9]*$/u;
+
+export type ShutdownRemainderQuarantineRetry = Readonly<{
+  trigger: 'coordinator-startup';
+  state: 'pending' | 'active-subject-present';
+}>;
+
+export type ShutdownRemainderQuarantinedEvidence = Readonly<{
+  address: string;
+  subject: string;
+  retry: ShutdownRemainderQuarantineRetry;
+}>;
+
+/** A quarantine address may encode a subject, but no filesystem component may lengthen that subject. */
+export function shutdownRemainderQuarantineAddress(subject: string, slot: number): string {
+  if (subject.length === 0 || subject === '.' || subject === '..' || subject.includes('/') || subject.includes(sep)) {
+    throw new Error('Shutdown remainder quarantine subject is invalid.');
+  }
+  if (!Number.isSafeInteger(slot) || slot <= 0) throw new Error('Shutdown remainder quarantine slot is invalid.');
+  return `${SHUTDOWN_REMAINDER_QUARANTINE_DIRECTORY_NAME}/${encodeURIComponent(subject)}/${slot}/${SHUTDOWN_REMAINDER_QUARANTINE_EVIDENCE_NAME}`;
+}
+
+/** Only a canonical address inside the owned quarantine vocabulary may select evidence. */
+export function parseShutdownRemainderQuarantineAddress(
+  address: string,
+): Readonly<{ subject: string; slot: number }> | null {
+  const parts = address.split('/');
+  if (
+    parts.length !== 4 ||
+    parts[0] !== SHUTDOWN_REMAINDER_QUARANTINE_DIRECTORY_NAME ||
+    parts[3] !== SHUTDOWN_REMAINDER_QUARANTINE_EVIDENCE_NAME ||
+    !SHUTDOWN_REMAINDER_QUARANTINE_SLOT_PATTERN.test(parts[2] ?? '')
+  ) {
+    return null;
+  }
+  const slot = Number(parts[2]);
+  if (!Number.isSafeInteger(slot) || slot <= 0) return null;
+  try {
+    const subject = decodeURIComponent(parts[1] ?? '');
+    return subject.length === 0 ||
+      subject === '.' ||
+      subject === '..' ||
+      subject.includes('/') ||
+      subject.includes(sep) ||
+      encodeURIComponent(subject) !== parts[1]
+      ? null
+      : { subject, slot };
+  } catch {
+    return null;
+  }
+}
+
+export function shutdownRemainderQuarantineDirectory(directory: string): string {
+  return join(directory, SHUTDOWN_REMAINDER_QUARANTINE_DIRECTORY_NAME);
+}
+
+export function shutdownRemainderQuarantineSubjectDirectory(directory: string, subject: string): string {
+  return join(shutdownRemainderQuarantineDirectory(directory), subject);
+}
+
+export function shutdownRemainderQuarantineSlotDirectory(directory: string, subject: string, slot: number): string {
+  return join(shutdownRemainderQuarantineSubjectDirectory(directory, subject), String(slot));
+}
+
+export function shutdownRemainderQuarantineEvidencePath(directory: string, address: string): string {
+  const parsed = parseShutdownRemainderQuarantineAddress(address);
+  if (parsed === null) throw new Error(`Invalid shutdown remainder quarantine address: ${address}`);
+  return join(
+    shutdownRemainderQuarantineSlotDirectory(directory, parsed.subject, parsed.slot),
+    SHUTDOWN_REMAINDER_QUARANTINE_EVIDENCE_NAME,
+  );
 }
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
@@ -114,6 +191,7 @@ export type ShutdownRemainderDirectoryEntry =
   | Readonly<{ kind: 'stage'; stage: ShutdownRemainderStage }>
   | Readonly<{ kind: 'malformed-stage'; name: string }>
   | Readonly<{ kind: 'record'; name: string }>
+  | Readonly<{ kind: 'quarantine' }>
   | Readonly<{ kind: 'other' }>;
 
 export function shutdownRemainderStageName(
@@ -182,10 +260,68 @@ function stageObservation(
 
 /** Stage-shaped names must be classified before any `.json` entry can be selected as final evidence. */
 export function classifyShutdownRemainderDirectoryEntry(name: string): ShutdownRemainderDirectoryEntry {
+  if (name === SHUTDOWN_REMAINDER_QUARANTINE_DIRECTORY_NAME) return { kind: 'quarantine' };
   const stage = parseShutdownRemainderStage(name);
   if (stage !== null) return { kind: 'stage', stage };
   if (SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN.test(name)) return { kind: 'malformed-stage', name };
   return name.endsWith('.json') ? { kind: 'record', name } : { kind: 'other' };
+}
+
+export function scanShutdownRemainderQuarantine(
+  storage: Pick<StoragePort, 'readdirSync' | 'statSync'>,
+  directory: string,
+  activeSubjectNames: ReadonlySet<string>,
+): Readonly<{
+  quarantined: readonly ShutdownRemainderQuarantinedEvidence[];
+  unscannedQuarantineCount?: number;
+}> {
+  const quarantineDirectory = shutdownRemainderQuarantineDirectory(directory);
+  let subjects: string[];
+  try {
+    subjects = storage.readdirSync(quarantineDirectory);
+  } catch (error: unknown) {
+    if (thrownErrnoCode(error) === 'ENOENT') return { quarantined: [] };
+    throw error;
+  }
+
+  const found: ShutdownRemainderQuarantinedEvidence[] = [];
+  let unscannedQuarantineCount = 0;
+  for (const subject of subjects.sort((left, right) => left.localeCompare(right))) {
+    let slots: string[];
+    try {
+      slots = storage.readdirSync(shutdownRemainderQuarantineSubjectDirectory(directory, subject));
+    } catch (error: unknown) {
+      if (thrownErrnoCode(error) === 'ENOENT') continue;
+      throw error;
+    }
+    for (const slotName of slots.sort((left, right) => left.localeCompare(right))) {
+      if (!SHUTDOWN_REMAINDER_QUARANTINE_SLOT_PATTERN.test(slotName)) continue;
+      const slot = Number(slotName);
+      if (!Number.isSafeInteger(slot) || slot <= 0) continue;
+      const address = shutdownRemainderQuarantineAddress(subject, slot);
+      try {
+        storage.statSync(shutdownRemainderQuarantineEvidencePath(directory, address));
+      } catch (error: unknown) {
+        if (thrownErrnoCode(error) === 'ENOENT') continue;
+      }
+      if (found.length >= SHUTDOWN_REMAINDER_SCAN_LIMIT) {
+        unscannedQuarantineCount += 1;
+        continue;
+      }
+      found.push({
+        address,
+        subject,
+        retry: {
+          trigger: 'coordinator-startup',
+          state: activeSubjectNames.has(subject) ? 'active-subject-present' : 'pending',
+        },
+      });
+    }
+  }
+  return {
+    quarantined: found.sort((left, right) => left.address.localeCompare(right.address)),
+    ...(unscannedQuarantineCount === 0 ? {} : { unscannedQuarantineCount }),
+  };
 }
 
 function readPersistedFact(value: unknown): string | null {
@@ -365,6 +501,8 @@ export function scanShutdownRemainderRecords(
     });
   }
 
+  const quarantine = scanShutdownRemainderQuarantine(storage, directory, new Set(names));
+
   for (const entry of stageFiles) {
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
     try {
@@ -437,7 +575,11 @@ export function scanShutdownRemainderRecords(
     records,
     skippedEntries,
     skippedRecords,
+    ...(quarantine.quarantined.length === 0 ? {} : { quarantined: quarantine.quarantined }),
     ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
     ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),
+    ...(quarantine.unscannedQuarantineCount === undefined
+      ? {}
+      : { unscannedQuarantineCount: quarantine.unscannedQuarantineCount }),
   };
 }

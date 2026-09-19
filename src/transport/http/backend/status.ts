@@ -264,6 +264,15 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   }>[];
 }>;
 
+type OperatorFacingShutdownRemainderQuarantine = Readonly<{
+  address: string;
+  subject: string;
+  retry: Readonly<{
+    trigger: 'coordinator-startup';
+    state: 'pending' | 'active-subject-present';
+  }>;
+}>;
+
 type BackendStatus =
   | {
       status: 'ok';
@@ -308,7 +317,9 @@ export type ShutdownRemainderReport =
       skippedIdentityMismatchRecordCount?: number;
       unscannedStageCount?: number;
       unscannedRecordCount?: number;
+      unscannedQuarantineCount?: number;
       staging?: OperatorFacingShutdownStages;
+      quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
     }>
   | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
   | Readonly<{
@@ -320,7 +331,14 @@ export type ShutdownRemainderReport =
       skippedIdentityMismatchRecordCount?: number;
       unscannedStageCount?: number;
       unscannedRecordCount?: number;
+      unscannedQuarantineCount?: number;
       staging?: OperatorFacingShutdownStages;
+      quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
+    }>
+  | Readonly<{
+      status: 'shutdown_remainder_quarantined';
+      quarantined: readonly OperatorFacingShutdownRemainderQuarantine[];
+      unscannedQuarantineCount?: number;
     }>;
 
 export type BackendStatusFull =
@@ -407,6 +425,10 @@ type AddressedProbeStatus = Extract<
 >;
 type RecentShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>;
 type ShutdownRemainderUnreadableStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
+type ShutdownRemainderQuarantinedStatus = Extract<
+  ShutdownRemainderReport,
+  { status: 'shutdown_remainder_quarantined' }
+>;
 type ShutdownRemainderEvidenceScope =
   | Readonly<{ kind: 'directory' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
@@ -616,7 +638,7 @@ function readRecentShutdownRemainder(
   now: number,
   scope: ShutdownRemainderEvidenceScope,
   observeStageWriter: ShutdownRemainderStageObserver,
-): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
+): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | ShutdownRemainderQuarantinedStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
@@ -661,7 +683,10 @@ function readRecentShutdownRemainder(
   const scanBounds = {
     ...(scan.unscannedStageCount === undefined ? {} : { unscannedStageCount: scan.unscannedStageCount }),
     ...(scan.unscannedRecordCount === undefined ? {} : { unscannedRecordCount: scan.unscannedRecordCount }),
+    ...(scan.unscannedQuarantineCount === undefined ? {} : { unscannedQuarantineCount: scan.unscannedQuarantineCount }),
   };
+  const quarantine =
+    scan.quarantined === undefined || scan.quarantined.length === 0 ? {} : { quarantined: scan.quarantined };
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -681,6 +706,15 @@ function readRecentShutdownRemainder(
     )
     .at(-1)?.candidate;
   if (record === undefined) {
+    if (
+      scopedSkippedRecords.length === 0 &&
+      scan.unscannedStageCount === undefined &&
+      scan.unscannedRecordCount === undefined &&
+      (scan.quarantined?.length ?? 0) === 0 &&
+      scan.unscannedQuarantineCount === undefined
+    ) {
+      return null;
+    }
     return scopedSkippedRecords.length > 0 ||
       scan.unscannedStageCount !== undefined ||
       scan.unscannedRecordCount !== undefined
@@ -693,8 +727,15 @@ function readRecentShutdownRemainder(
           ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
           ...scanBounds,
           ...(hasStaging ? { staging } : {}),
+          ...quarantine,
         }
-      : null;
+      : {
+          status: 'shutdown_remainder_quarantined',
+          quarantined: scan.quarantined ?? [],
+          ...(scan.unscannedQuarantineCount === undefined
+            ? {}
+            : { unscannedQuarantineCount: scan.unscannedQuarantineCount }),
+        };
   }
   return {
     status: 'recent_shutdown_remainder',
@@ -712,6 +753,7 @@ function readRecentShutdownRemainder(
     ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
     ...scanBounds,
     ...(hasStaging ? { staging } : {}),
+    ...quarantine,
   };
 }
 

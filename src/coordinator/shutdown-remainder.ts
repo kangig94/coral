@@ -4,12 +4,20 @@ import { backendLog } from '../infra/backend-log.js';
 import {
   SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+  formatError,
   thrownErrnoCode,
 } from '../infra/error-format.js';
 import type { StoragePort, TimePort, TimerHandle } from '../infra/port-types.js';
 import {
   classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
+  parseShutdownRemainderQuarantineAddress,
+  scanShutdownRemainderQuarantine,
+  shutdownRemainderQuarantineAddress,
+  shutdownRemainderQuarantineDirectory,
+  shutdownRemainderQuarantineEvidencePath,
+  shutdownRemainderQuarantineSlotDirectory,
+  shutdownRemainderQuarantineSubjectDirectory,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderRecord,
@@ -29,7 +37,10 @@ type ShutdownRemainderPruneStageObserver = (
 ) => ShutdownRemainderStageObservation;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
-  storage: Pick<StoragePort, 'linkSync' | 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
+  storage: Pick<
+    StoragePort,
+    'linkSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'renameSync' | 'rmdirSync' | 'statSync' | 'unlinkSync'
+  >;
   runDir: string;
   observeStageWriter?: ShutdownRemainderPruneStageObserver;
 }>;
@@ -47,6 +58,11 @@ export type ShutdownRemainderRecordInput = Readonly<{
   mode: ShutdownMode;
   undischarged: readonly ShutdownUndischarged[];
 }>;
+
+export type ShutdownRemainderWriteDisposition =
+  | Readonly<{ kind: 'published' }>
+  | Readonly<{ kind: 'refused'; detail: string }>
+  | Readonly<{ kind: 'verification-unavailable'; detail: string }>;
 
 export function shutdownRemainderPath(runDir: string): string {
   return shutdownRemainderRecordDirectory(runDir);
@@ -69,8 +85,6 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
       }>;
 }>;
 
-const SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX = '.quarantined';
-
 function byRetentionOrder(
   left: Readonly<{ name: string; age: RecordAge }>,
   right: Readonly<{ name: string; age: RecordAge }>,
@@ -82,14 +96,43 @@ function byRetentionOrder(
   return right.name.localeCompare(left.name);
 }
 
-function shutdownRemainderQuarantineName(name: string): string {
-  return `${name}${SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX}`;
+function removeEmptyQuarantineDirectories(
+  runtime: ShutdownRemainderPruneRuntime,
+  directory: string,
+  address: string,
+): void {
+  const parsed = parseShutdownRemainderQuarantineAddress(address);
+  if (parsed === null) return;
+  for (const candidate of [
+    shutdownRemainderQuarantineSlotDirectory(directory, parsed.subject, parsed.slot),
+    shutdownRemainderQuarantineSubjectDirectory(directory, parsed.subject),
+    shutdownRemainderQuarantineDirectory(directory),
+  ]) {
+    try {
+      runtime.storage.rmdirSync(candidate);
+    } catch {
+      return;
+    }
+  }
 }
 
-function quarantinedShutdownRemainderSubject(name: string): string | null {
-  if (!name.endsWith(SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX)) return null;
-  const subject = name.slice(0, -SHUTDOWN_REMAINDER_QUARANTINE_SUFFIX.length);
-  return subject.length === 0 ? null : subject;
+function quarantineMatchesActive(
+  runtime: ShutdownRemainderPruneRuntime,
+  quarantinePath: string,
+  activePath: string,
+): boolean {
+  try {
+    const quarantineStat = runtime.storage.statSync(quarantinePath, { bigint: true });
+    const activeStat = runtime.storage.statSync(activePath, { bigint: true });
+    if (quarantineStat.dev === activeStat.dev && quarantineStat.ino === activeStat.ino) return true;
+  } catch {
+    // Removing the quarantine requires inode identity or equal bytes; a failed identity probe proves neither.
+  }
+  try {
+    return runtime.storage.readFileSync(quarantinePath, 'utf-8') === runtime.storage.readFileSync(activePath, 'utf-8');
+  } catch {
+    return false;
+  }
 }
 
 function retryShutdownRemainderQuarantine(runtime: ShutdownRemainderPruneRuntime): void {
@@ -100,17 +143,29 @@ function retryShutdownRemainderQuarantine(runtime: ShutdownRemainderPruneRuntime
   } catch {
     return;
   }
-  for (const name of names) {
-    const subject = quarantinedShutdownRemainderSubject(name);
-    if (subject === null) continue;
-    const activePath = join(directory, subject);
+  let quarantined;
+  try {
+    quarantined = scanShutdownRemainderQuarantine(runtime.storage, directory, new Set(names)).quarantined;
+  } catch {
+    return;
+  }
+  for (const evidence of quarantined) {
+    const activePath = join(directory, evidence.subject);
+    const quarantinePath = shutdownRemainderQuarantineEvidencePath(directory, evidence.address);
+    let redundant: boolean;
     try {
-      const quarantinePath = join(directory, name);
       runtime.storage.linkSync(quarantinePath, activePath);
+      redundant = true;
+    } catch (error: unknown) {
+      redundant = thrownErrnoCode(error) === 'EEXIST' && quarantineMatchesActive(runtime, quarantinePath, activePath);
+    }
+    if (!redundant) continue;
+    try {
       runtime.storage.unlinkSync(quarantinePath);
     } catch {
-      // The quarantine remains the durable owner when a startup retry cannot restore it.
+      continue;
     }
+    removeEmptyQuarantineDirectories(runtime, directory, evidence.address);
   }
 }
 
@@ -145,25 +200,45 @@ export function pruneShutdownRemainderRecords(
     };
   };
   const quarantine = (name: string): void => {
+    let slotDirectory: string | null = null;
     try {
-      runtime.storage.renameSync(join(directory, name), join(directory, shutdownRemainderQuarantineName(name)));
+      const subjectDirectory = shutdownRemainderQuarantineSubjectDirectory(directory, name);
+      runtime.storage.mkdirSync(subjectDirectory, { recursive: true });
+      let slot = 1;
+      while (true) {
+        slotDirectory = shutdownRemainderQuarantineSlotDirectory(directory, name, slot);
+        try {
+          runtime.storage.mkdirSync(slotDirectory);
+          break;
+        } catch (error: unknown) {
+          if (thrownErrnoCode(error) !== 'EEXIST' || slot === Number.MAX_SAFE_INTEGER) throw error;
+          slot += 1;
+        }
+      }
+      const address = shutdownRemainderQuarantineAddress(name, slot);
+      runtime.storage.renameSync(join(directory, name), shutdownRemainderQuarantineEvidencePath(directory, address));
       quarantinedSubjectNames.add(name);
       refusedCleanupSubjectNames.delete(name);
       reobservableStageNames.delete(name);
     } catch (error: unknown) {
+      if (slotDirectory !== null) {
+        try {
+          runtime.storage.rmdirSync(slotDirectory);
+        } catch {
+          // Failure to reclaim an unused slot must not replace the subject's cleanup refusal.
+        }
+      }
       if (thrownErrnoCode(error) !== 'ENOENT') refusedCleanupSubjectNames.add(name);
     }
   };
   try {
     const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
-    for (const name of runtime.storage.readdirSync(directory)) {
-      const quarantinedSubject = quarantinedShutdownRemainderSubject(name);
-      if (quarantinedSubject !== null) {
-        quarantinedSubjectNames.add(quarantinedSubject);
-        continue;
-      }
+    const initialNames = runtime.storage.readdirSync(directory);
+    const existingQuarantine = scanShutdownRemainderQuarantine(runtime.storage, directory, new Set(initialNames));
+    for (const evidence of existingQuarantine.quarantined) quarantinedSubjectNames.add(evidence.subject);
+    for (const name of initialNames) {
       const entry = classifyShutdownRemainderDirectoryEntry(name);
-      if (entry.kind === 'other' || entry.kind === 'record') continue;
+      if (entry.kind === 'other' || entry.kind === 'record' || entry.kind === 'quarantine') continue;
       const path = join(directory, name);
       try {
         runtime.storage.statSync(path);
@@ -315,7 +390,7 @@ export function createShutdownRemainderPruner(
 export function recordShutdownRemainder(
   runtime: ShutdownRemainderWriteRuntime,
   input: ShutdownRemainderRecordInput,
-): boolean {
+): ShutdownRemainderWriteDisposition {
   // Constraint: the reader (`persistedIdentifierSchema`/`persistedFileNameSchema` in
   // src/infra/shutdown-remainder-record.ts) accepts only an `instanceId` bound by
   // `SERIALIZED_THROWN_IDENTIFIER_PATTERN`, both as the filename and as the record's own `instanceId` field.
@@ -364,23 +439,24 @@ export function recordShutdownRemainder(
       })
     ) {
       removeStage();
-      return false;
+      return { kind: 'refused', detail: 'record publication returned false' };
     }
     try {
       runtime.storage.renameSync(stagePath, path);
     } catch (error: unknown) {
       if (thrownErrnoCode(error) === 'ENOENT') {
         try {
-          if (runtime.storage.readFileSync(path, 'utf-8') === serializedRecord) return true;
-        } catch {
-          // The rename error remains the publication failure when the destination cannot be verified.
+          if (runtime.storage.readFileSync(path, 'utf-8') === serializedRecord) return { kind: 'published' };
+        } catch (verificationError: unknown) {
+          removeStage();
+          return { kind: 'verification-unavailable', detail: formatError(verificationError) };
         }
       }
       throw error;
     }
-    return true;
+    return { kind: 'published' };
   } catch (error: unknown) {
     removeStage();
-    throw error;
+    return { kind: 'refused', detail: formatError(error) };
   }
 }

@@ -1477,9 +1477,8 @@ export function createLifecycle(
         ...takeShutdownIncidents().map(shutdownIncidentUndischarged),
       ];
       const publish = (): void => {
-        let refusal: string | null;
         try {
-          refusal = recordShutdownRemainder(
+          const publication = recordShutdownRemainder(
             {
               storage: runtime.storage,
               time: runtime.time,
@@ -1495,13 +1494,23 @@ export function createLifecycle(
               mode: shutdownModeFromReason(terminalReason),
               undischarged: losses,
             },
-          )
-            ? null
-            : 'record publication returned false';
+          );
+          switch (publication.kind) {
+            case 'published':
+              return;
+            case 'refused':
+              bestEffortLifecycleLog(log, `shutdown remainder write refused (${publication.detail})\n`);
+              return;
+            case 'verification-unavailable':
+              bestEffortLifecycleLog(
+                log,
+                `shutdown remainder publication verification unavailable (${publication.detail})\n`,
+              );
+              return;
+          }
         } catch (error: unknown) {
-          refusal = formatError(error);
+          bestEffortLifecycleLog(log, `shutdown remainder write refused (${formatError(error)})\n`);
         }
-        if (refusal !== null) bestEffortLifecycleLog(log, `shutdown remainder write refused (${refusal})\n`);
       };
       const withdraw = (): Readonly<{ detail: string; error: SerializedThrown }> | null => {
         try {
