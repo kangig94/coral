@@ -65,16 +65,10 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
     const unsupported: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
       if (!name.endsWith('.json')) {
-        // Constraint: every name `recordShutdownRemainder` or a sibling build ever leaves in this directory is
-        // `<instanceId>.json`; nothing else names a record a reader or a later prune could use — the orphaned
-        // `.tmp` staging file `writeAtomicSyncNode` leaves behind on a failed write included — so it is
-        // reclaimed outright rather than competing for a bounded slot below (same rule as the non-`.json`
-        // sweep in `src/store/epoch.ts`, applied to a directory with no other legitimate content).
-        try {
-          runtime.storage.unlinkSync(join(directory, name));
-        } catch {
-          /* Retention cleanup must not block startup. */
-        }
+        // Constraint: a non-record entry may be an incumbent's in-progress publication after IPC release, and
+        // this directory carries no writer-absence proof that distinguishes it from an orphan. Such residue is
+        // intentionally left unbounded; reclaiming it may destroy the only durable evidence of unfinished
+        // shutdown obligations. see `writeAtomicSyncNode` in src/runtime/real.ts
         continue;
       }
       const path = join(directory, name);

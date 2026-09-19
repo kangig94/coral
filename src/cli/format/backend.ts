@@ -714,7 +714,9 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'undecodable_record':
       return formatUndecodableRecordStatus(result);
     case 'unreachable':
-      return formatUnreachableStatus(result);
+      return result.cause === 'foreign_peer'
+        ? withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder)
+        : formatUnreachableStatus(result);
     case 'no_record_socket_present':
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':

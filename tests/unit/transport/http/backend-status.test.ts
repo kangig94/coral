@@ -25,7 +25,7 @@ const mockState = vi.hoisted(() => ({
     statErrorCode?: string;
     readErrorCode?: string;
   }>,
-  remainderScanThrows: false,
+  remainderScanErrorCode: null as string | null,
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
 }));
@@ -66,11 +66,13 @@ vi.mock('#src/infra/plugin-identity.js', () => ({
 vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: vi.fn(() => ({
     storage: {
-      existsSync: (path: string) =>
-        path === '/run/coral/shutdown-remainder.v1' &&
-        (mockState.remainderFiles.length > 0 || mockState.remainderScanThrows),
+      existsSync: (path: string) => path === '/run/coral/shutdown-remainder.v1' && mockState.remainderFiles.length > 0,
       readdirSync: () => {
-        if (mockState.remainderScanThrows) throw new Error('remainder directory unreadable');
+        if (mockState.remainderScanErrorCode !== null) {
+          throw Object.assign(new Error('remainder directory unreadable'), {
+            code: mockState.remainderScanErrorCode,
+          });
+        }
         return mockState.remainderFiles.map(({ name }) => name);
       },
       statSync: (path: string) => {
@@ -133,7 +135,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.observed = { kind: 'no-record' };
     mockState.diagnostic = null;
     mockState.remainderFiles = [];
-    mockState.remainderScanThrows = false;
+    mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
   });
 
@@ -803,8 +805,8 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('reports an unreadable shutdown remainder when the directory cannot be scanned', async () => {
-    mockState.remainderScanThrows = true;
+  it('reports EACCES when existsSync masks an inaccessible remainder directory as absent', async () => {
+    mockState.remainderScanErrorCode = 'EACCES';
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -812,6 +814,14 @@ describe('getBackendStatusFull record disposition', () => {
       status: 'no_record_no_socket',
       shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
     });
+  });
+
+  it('treats ENOENT from the remainder directory scan as no evidence', async () => {
+    mockState.remainderScanErrorCode = 'ENOENT';
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
   it('does not report a shutdown remainder outside the recent-record window', async () => {
@@ -1173,7 +1183,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('does not let a recent matching coordinator remainder hide the live foreign peer', async () => {
+  it('reports an exact-instance remainder alongside the live foreign peer', async () => {
     mockState.observed = {
       kind: 'addressed',
       coordinator: backendInfo({ startedAt: NOW - 20_000, instanceId: 'recorded-coordinator' }),
@@ -1196,6 +1206,14 @@ describe('getBackendStatusFull record disposition', () => {
       observed: { namespace: 'someone-else', flavor: 'prod' },
       pid: 12345,
       recordPath: '/run/coral/coordinator.json',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: expect.objectContaining({ instanceId: 'recorded-coordinator' }),
+        skippedEntries: [],
+        skippedUnreadableRecordNames: [],
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
+      },
     });
   });
 
@@ -1357,7 +1375,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT, instanceId: INSTANCE_ID };
     mockState.diagnostic = null;
     mockState.remainderFiles = [];
-    mockState.remainderScanThrows = false;
+    mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
   });
 
@@ -1439,7 +1457,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   });
 
   it('reports failure to scan the exact absent coordinator remainder scope', async () => {
-    mockState.remainderScanThrows = true;
+    mockState.remainderScanErrorCode = 'EACCES';
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -1505,7 +1523,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   // collapse into the first's silence (design-philosophy.md principle 11's third answer).
   it('reports a scan failure even when the coordinator scope carries no instance id to widen', async () => {
     mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT };
-    mockState.remainderScanThrows = true;
+    mockState.remainderScanErrorCode = 'EACCES';
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 

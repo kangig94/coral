@@ -363,6 +363,7 @@ export type BackendStatusFull =
       observed: { namespace: string; flavor: 'prod' | 'dev' };
       pid: number;
       recordPath: string;
+      shutdownRemainder?: ShutdownRemainderReport;
     }
   /**
    * A surviving coordinator socket must not become an absence result: it may belong to a boot in progress or
@@ -589,17 +590,17 @@ export function statusFromStartupDiagnostic(
 }
 
 function readRecentShutdownRemainder(
-  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
   runDir: string,
   now: number,
   scope: ShutdownRemainderEvidenceScope,
 ): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
-  if (!storage.existsSync(directory)) return null;
   let scan: ShutdownRemainderRecordScan;
   try {
     scan = scanShutdownRemainderRecords(storage, directory);
-  } catch {
+  } catch (error: unknown) {
+    if (thrownErrnoCode(error) === 'ENOENT') return null;
     // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
     // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
     // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
@@ -713,11 +714,6 @@ function noDaemonStatus(
     const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
     return shutdownRemainder === null ? diagnostic : { ...diagnostic, shutdownRemainder };
   }
-  // `fallback`'s type carries only the `cause: 'foreign_peer'` member of `unreachable`, so this single
-  // discriminant fully identifies it without a second `.cause` check. A foreign peer proves something else is
-  // listening at the recorded address, so no remainder scoped to this build's own departed instance applies to
-  // it — it is the one member of `fallback`'s type with no `shutdownRemainder` field.
-  if (fallback.status === 'unreachable') return fallback;
   const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
   // The remainder is additional evidence about a departed instance's obligations, never a replacement for
   // whichever status above already proved that instance's current absence or ambiguity — a reader needs both.

@@ -13,14 +13,23 @@ import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 
-export type ShutdownRemainderSubject = z.infer<typeof shutdownRemainderSubjectSchema>;
+type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
+  ? Value
+  : Value extends readonly (infer Item)[]
+    ? readonly DeepReadonly<Item>[]
+    : Value extends object
+      ? { readonly [Key in keyof Value]: DeepReadonly<Value[Key]> }
+      : Value;
 
-type ShutdownRemainderEntry = z.infer<typeof shutdownRemainderEntrySchema>;
+export type ShutdownRemainderSubject = DeepReadonly<z.infer<typeof shutdownRemainderSubjectSchema>>;
+
+type ShutdownRemainderEntry = DeepReadonly<z.infer<typeof shutdownRemainderEntrySchema>>;
 
 type DecodedShutdownRemainderEntry = ShutdownRemainderEntry & Readonly<{ entryNumber: number }>;
 
-export type ShutdownRemainderRecord = Omit<z.infer<typeof shutdownRemainderRecordEnvelopeSchema>, 'entries'> &
-  Readonly<{ entries: readonly ShutdownRemainderEntry[] }>;
+export type ShutdownRemainderRecord = DeepReadonly<
+  Omit<z.infer<typeof shutdownRemainderRecordEnvelopeSchema>, 'entries'> & { entries: ShutdownRemainderEntry[] }
+>;
 
 export type DecodedShutdownRemainderRecord = Omit<ShutdownRemainderRecord, 'entries'> &
   Readonly<{ entries: readonly DecodedShutdownRemainderEntry[] }>;

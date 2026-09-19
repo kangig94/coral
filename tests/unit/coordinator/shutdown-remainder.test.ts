@@ -40,6 +40,7 @@ function storageWith(
     statErrorCode?: string;
     refuseReadFor?: string | readonly string[];
     readErrorCode?: string;
+    pruneBeforeAtomicRename?: boolean;
   }> = {},
 ): RemainderStorage {
   const files = new Map(
@@ -93,6 +94,16 @@ function storageWith(
       if (options.publish === false) return false;
       const value =
         typeof data === 'string' ? data : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf-8');
+      if (options.pruneBeforeAtomicRename === true) {
+        const tempPath = `${path}.tmp`;
+        files.set(tempPath, { value, mtimeMs: ++clock });
+        pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+        const staged = files.get(tempPath);
+        if (staged === undefined) return false;
+        files.delete(tempPath);
+        files.set(path, staged);
+        return true;
+      }
       files.set(path, { value, mtimeMs: ++clock });
       return true;
     }),
@@ -722,24 +733,18 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('unsupported-32.json');
   });
 
-  it('reclaims an orphaned atomic-write temp file unconditionally, regardless of the retention cap', () => {
-    // `writeAtomicSyncNode` (src/runtime/real.ts) leaves `<instanceId>.json.tmp` behind on a failed write, and
-    // this directory has no other legitimate content, so the sweep reclaims any non-`.json` entry outright
-    // without ever calling `statSync` or `readFileSync` on it (same rule as the non-`.json` sweep in
-    // src/store/epoch.ts).
-    const storage = storageWith([
-      fileAt('readable', 1),
-      { name: 'orphaned-instance.json.tmp', value: 'partial write', mtimeMs: 2 },
-    ]);
+  it('does not unlink a live atomic-write staging file when prune runs before rename', () => {
+    const storage = storageWith([], { pruneBeforeAtomicRename: true });
 
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+    expect(
+      recordShutdownRemainder(
+        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
+        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
+      ),
+    ).toBe(true);
 
-    expect(storage.fileNames()).toEqual(['readable.json']);
-    expect(storage.statSync).not.toHaveBeenCalledWith(join(REMAINDER_DIRECTORY, 'orphaned-instance.json.tmp'));
-    expect(storage.readFileSync).not.toHaveBeenCalledWith(
-      join(REMAINDER_DIRECTORY, 'orphaned-instance.json.tmp'),
-      'utf-8',
-    );
+    expect(storage.fileNames()).toEqual(['current-instance.json']);
+    expect(JSON.parse(storage.readPublished('current-instance') ?? '')).toEqual(recordAt('current-instance'));
   });
 
   it('does not turn a best-effort startup prune refusal into an error', () => {

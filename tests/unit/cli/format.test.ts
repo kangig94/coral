@@ -1621,6 +1621,22 @@ describe('cli format', () => {
       );
     });
 
+    it('formats shutdown remainder evidence alongside a foreign peer', () => {
+      const status = {
+        status: 'unreachable',
+        cause: 'foreign_peer',
+        observed: { namespace: 'another-installation', flavor: 'dev' },
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      } satisfies BackendStatusFull;
+
+      const text = formatBackendStatus(status);
+
+      expect(text).toContain('namespace=another-installation flavor=dev');
+      expect(text).toContain('Coral could not inspect shutdown remainder records.');
+    });
+
     // `formatBackendStatus`'s `unreachable` case had no test anywhere. The load-bearing part is that the
     // "something is listening" claim is conditional: it is true only when an HTTP response was actually
     // received (`cause: 'responded'`), and must not be printed for a refusal or a request that never completed.

@@ -64,8 +64,15 @@ type DeepRequired<T> = T extends Primitive
       : { [K in keyof T]-?: DeepRequired<T[K]> };
 
 type SerializedThrownSchemaShape = z.infer<ReturnType<typeof serializedThrownShape>>;
+// Constraint: `DeepRequired` catches nested divergence but erases optional modifiers. Measured with
+// `tsc -p tsconfig/typecheck.json`: making `serializedThrownShape`'s `unknown.code` required while
+// `SerializedThrown` kept it optional left the deep pair and `z.ZodType<SerializedThrown>` green; the bare
+// pair failed with `code: string` against `code?: string`. Both pairs must remain so depth and optionality are
+// checked independently.
 const _serializedThrownTypeFitsSchema: DeepRequired<SerializedThrownSchemaShape> = {} as DeepRequired<SerializedThrown>;
 const _serializedThrownSchemaFitsType: DeepRequired<SerializedThrown> = {} as DeepRequired<SerializedThrownSchemaShape>;
+const _serializedThrownTypeOptionalityFitsSchema: SerializedThrownSchemaShape = {} as SerializedThrown;
+const _serializedThrownSchemaOptionalityFitsType: SerializedThrown = {} as SerializedThrownSchemaShape;
 
 type SerializeCause<Cause> = (error: unknown, causeDepth: number) => Cause;
 
