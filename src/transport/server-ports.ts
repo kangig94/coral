@@ -360,6 +360,7 @@ export type HealthSnapshot = {
   systemProviderScope?: { name: string; providers: string[] };
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
+  shutdownRemainderCleanupRefusedSubjectNames?: readonly string[];
   /**
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.

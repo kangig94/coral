@@ -1915,13 +1915,13 @@ describe('cli format', () => {
           '  Record: locked-instance.json',
           '  Disposition: content was never read; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
           'Skipped shutdown remainder records, corrupt: 2',
-          '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
+          '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
           'Skipped shutdown remainder records, identity mismatch: 1',
-          '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
+          '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
           'Shutdown remainder publication stages not inspected: 2',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared 128-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
           'Shutdown remainder records not inspected: 3',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared 128-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
           'Malformed shutdown remainder publication stages: 4',
           '  Disposition: the filename could not identify a writer; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
         ].join('\n'),
@@ -1970,7 +1970,7 @@ describe('cli format', () => {
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Coral found shutdown remainder records it could not use.',
           'Skipped shutdown remainder records, corrupt: 1',
-          '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
+          '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
         ].join('\n'),
       );
     });
@@ -2111,13 +2111,44 @@ describe('cli format', () => {
       expect(text).not.toMatch(/\bcoordinator (?:is|was) (?:absent|gone|not running)\b/u);
     });
 
+    it('names current cleanup refusals and the observations that clear them', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedUnreadableRecordNames: [],
+          skippedCorruptRecordCount: 1,
+          skippedUnsupportedRecordCount: 0,
+          cleanupRefusedSubjectNames: ['corrupt.json'],
+        },
+      });
+
+      expect(text).toContain(
+        [
+          'Shutdown remainder cleanup refusals: 1',
+          '  Subject: "corrupt.json"',
+          "  Disposition: cleanup was refused; retry follows the subject's reported maintenance or quarantine disposition, and the refusal remains reported until cleanup succeeds or the subject is observed absent.",
+        ].join('\n'),
+      );
+    });
+
     it.each([
+      [
+        'unrecognized directory entries',
+        { unrecognizedEntryNames: ['quarantine'] },
+        [
+          'Unrecognized shutdown remainder directory entries: 1',
+          '  Entry: "quarantine"',
+          '  Disposition: present and unrecognized by this build; not acted on.',
+        ],
+      ],
       [
         'unscanned stages',
         { unscannedStageCount: 3 },
         [
           'Shutdown remainder publication stages not inspected: 3',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared 128-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
         ],
       ],
       [
@@ -2125,7 +2156,7 @@ describe('cli format', () => {
         { unscannedRecordCount: 4 },
         [
           'Shutdown remainder records not inspected: 4',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared 128-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
         ],
       ],
       [
@@ -2133,7 +2164,7 @@ describe('cli format', () => {
         { skippedIdentityMismatchRecordCount: 2 },
         [
           'Skipped shutdown remainder records, identity mismatch: 2',
-          '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
+          '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
         ],
       ],
       [

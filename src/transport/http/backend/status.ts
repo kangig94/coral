@@ -288,6 +288,7 @@ type BackendStatus =
       components: BackendHealth['components'];
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
+      shutdownRemainderCleanupRefusedSubjectNames?: readonly string[];
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
     }
@@ -313,12 +314,18 @@ export type ShutdownRemainderReport =
       skippedCorruptRecordCount: number;
       skippedUnsupportedRecordCount: number;
       skippedIdentityMismatchRecordCount?: number;
+      cleanupRefusedSubjectNames?: readonly string[];
+      unrecognizedEntryNames?: readonly string[];
       unscannedStageCount?: number;
       unscannedRecordCount?: number;
       staging?: OperatorFacingShutdownStages;
       quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
     }>
-  | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
+  | Readonly<{
+      status: 'shutdown_remainder_unreadable';
+      reason: 'scan-failed';
+      cleanupRefusedSubjectNames?: readonly string[];
+    }>
   | Readonly<{
       status: 'shutdown_remainder_unreadable';
       reason: 'records-skipped';
@@ -326,6 +333,8 @@ export type ShutdownRemainderReport =
       skippedCorruptRecordCount: number;
       skippedUnsupportedRecordCount: number;
       skippedIdentityMismatchRecordCount?: number;
+      cleanupRefusedSubjectNames?: readonly string[];
+      unrecognizedEntryNames?: readonly string[];
       unscannedStageCount?: number;
       unscannedRecordCount?: number;
       staging?: OperatorFacingShutdownStages;
@@ -625,6 +634,7 @@ function readRecentShutdownRemainder(
   now: number,
   scope: ShutdownRemainderEvidenceScope,
   observeStageWriter: ShutdownRemainderStageObserver,
+  cleanupRefusedSubjectNames: readonly string[] = [],
 ): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
@@ -637,7 +647,11 @@ function readRecentShutdownRemainder(
     // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
     // field): not knowing which instance to scope to is a different unknown from not knowing whether the
     // directory could be read at all, and the second one is what this catch observed.
-    return { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' };
+    return {
+      status: 'shutdown_remainder_unreadable',
+      reason: 'scan-failed',
+      ...(cleanupRefusedSubjectNames.length === 0 ? {} : { cleanupRefusedSubjectNames }),
+    };
   }
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
@@ -671,6 +685,11 @@ function readRecentShutdownRemainder(
     ...(scan.unscannedStageCount === undefined ? {} : { unscannedStageCount: scan.unscannedStageCount }),
     ...(scan.unscannedRecordCount === undefined ? {} : { unscannedRecordCount: scan.unscannedRecordCount }),
   };
+  const cleanupRefusals = cleanupRefusedSubjectNames.length === 0 ? {} : { cleanupRefusedSubjectNames };
+  const unrecognizedEntries =
+    scan.unrecognizedEntryNames === undefined || scan.unrecognizedEntryNames.length === 0
+      ? {}
+      : { unrecognizedEntryNames: scan.unrecognizedEntryNames };
   const quarantine =
     scan.quarantined === undefined || scan.quarantined.length === 0 ? {} : { quarantined: scan.quarantined };
   const record = scan.records
@@ -696,6 +715,8 @@ function readRecentShutdownRemainder(
       scopedSkippedRecords.length === 0 &&
       scan.unscannedStageCount === undefined &&
       scan.unscannedRecordCount === undefined &&
+      scan.unrecognizedEntryNames === undefined &&
+      cleanupRefusedSubjectNames.length === 0 &&
       (scan.quarantined?.length ?? 0) === 0
     ) {
       return null;
@@ -707,6 +728,8 @@ function readRecentShutdownRemainder(
       skippedCorruptRecordCount,
       skippedUnsupportedRecordCount,
       ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
+      ...cleanupRefusals,
+      ...unrecognizedEntries,
       ...scanBounds,
       ...(hasStaging ? { staging } : {}),
       ...quarantine,
@@ -726,6 +749,8 @@ function readRecentShutdownRemainder(
     skippedCorruptRecordCount,
     skippedUnsupportedRecordCount,
     ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
+    ...cleanupRefusals,
+    ...unrecognizedEntries,
     ...scanBounds,
     ...(hasStaging ? { staging } : {}),
     ...quarantine,
@@ -790,8 +815,16 @@ function statusWithShutdownRemainder<Status extends Exclude<BackendStatusFull, {
   observeStageWriter: ShutdownRemainderStageObserver,
   fallback: Status,
   scope: ShutdownRemainderEvidenceScope,
+  cleanupRefusedSubjectNames: readonly string[] = [],
 ): Status {
-  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope, observeStageWriter);
+  const shutdownRemainder = readRecentShutdownRemainder(
+    storage,
+    runDir,
+    now,
+    scope,
+    observeStageWriter,
+    cleanupRefusedSubjectNames,
+  );
   // The remainder is additional evidence about a departed instance's obligations, never a replacement for
   // whichever status above already proved that instance's current absence or ambiguity — a reader needs both.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
@@ -991,6 +1024,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       observeStageWriter,
       result,
       { kind: 'directory' },
+      result.health.shutdownRemainderCleanupRefusedSubjectNames,
     );
   }
   return statusWithRecentCoordinatorEvidence(

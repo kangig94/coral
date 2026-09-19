@@ -121,6 +121,7 @@ export interface BackendHealth {
     fdCount?: number;
   };
   components: TransportRuntimeComponentStatus[];
+  shutdownRemainderCleanupRefusedSubjectNames?: readonly string[];
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
@@ -742,6 +743,11 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     (value.resources !== undefined && !isResources(value.resources)) ||
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
+    (value.shutdownRemainderCleanupRefusedSubjectNames !== undefined &&
+      (!Array.isArray(value.shutdownRemainderCleanupRefusedSubjectNames) ||
+        !value.shutdownRemainderCleanupRefusedSubjectNames.every(
+          (subject) => typeof subject === 'string' && subject.length > 0,
+        ))) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {

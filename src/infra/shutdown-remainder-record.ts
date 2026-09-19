@@ -86,6 +86,7 @@ export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
+  unrecognizedEntryNames?: readonly string[];
   quarantined?: readonly ShutdownRemainderQuarantinedEvidence[];
   unscannedStageCount?: number;
   unscannedRecordCount?: number;
@@ -356,13 +357,17 @@ export function scanShutdownRemainderRecords(
   const recordFiles: RecordFile[] = [];
   const stageCandidates: StageFile[] = [];
   const recordCandidates: RecordFile[] = [];
+  const unrecognizedEntryNames: string[] = [];
   for (const name of storage.readdirSync(directory).sort((left, right) => left.localeCompare(right))) {
     const entry = classifyShutdownRemainderDirectoryEntry(name);
     if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
       stageCandidates.push(entry);
       continue;
     }
-    if (entry.kind !== 'record') continue;
+    if (entry.kind !== 'record') {
+      unrecognizedEntryNames.push(name);
+      continue;
+    }
     const reportedName = persistedFileNameSchema.safeParse(name);
     recordCandidates.push({
       name,
@@ -468,6 +473,7 @@ export function scanShutdownRemainderRecords(
     records,
     skippedEntries,
     skippedRecords,
+    ...(unrecognizedEntryNames.length === 0 ? {} : { unrecognizedEntryNames }),
     ...(quarantined.length === 0 ? {} : { quarantined }),
     ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
     ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),

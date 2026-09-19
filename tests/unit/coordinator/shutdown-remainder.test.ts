@@ -624,6 +624,7 @@ describe('shutdown remainder status', () => {
         { name: 'corrupt-instance.json', reason: 'corrupt' },
         { name: 'foreign-instance.json', reason: 'unsupported', detail: expect.any(String) },
       ],
+      unrecognizedEntryNames: ['ignored.tmp'],
       quarantined: [{ subject: 'foreign-instance.json', retry: { trigger: 'coordinator-startup' } }],
     });
   });
@@ -1136,11 +1137,17 @@ describe('shutdown remainder status', () => {
     }
   });
 
-  it('does not report an inaccessible directory as quarantined evidence', () => {
+  it('reports the unreleased predecessor quarantine layout as unrecognized and incomplete', () => {
     const storage = storageWith([], { refuseStatFor: 'evidence', statErrorCode: 'EACCES' });
     storage.mkdirSync(join(REMAINDER_DIRECTORY, 'quarantine', 'held.json', '1', 'evidence'), { recursive: true });
 
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY).quarantined).toBeUndefined();
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      unrecognizedEntryNames: ['quarantine'],
+    });
+    expect(pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR }).cleanup).toEqual({
+      kind: 'unrecognized',
+      subjectNames: ['quarantine'],
+    });
   });
 
   it('applies one flat-scan I/O budget across stage and record subjects', () => {
@@ -1172,7 +1179,11 @@ describe('shutdown remainder status', () => {
 
     const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    expect(disposition.cleanup).toEqual({
+      kind: 'quarantined',
+      subjectNames: ['locked.json'],
+      unrecognizedSubjectNames: ['quarantine'],
+    });
     expect(storage.mkdirSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toContain('locked.json');
   });
@@ -1421,6 +1432,18 @@ describe('shutdown remainder status', () => {
     });
   });
 
+  it('names a refused cleanup of an identity-mismatched record', () => {
+    const storage = storageWith(
+      [{ name: 'wrong.json', value: JSON.stringify(recordAt('actual-instance')), mtimeMs: 1 }],
+      { refusePrune: true },
+    );
+
+    expect(pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR }).cleanup).toEqual({
+      kind: 'refused',
+      subjectNames: ['wrong.json'],
+    });
+  });
+
   it('quarantines a partial stage when its writer is unobservable', () => {
     const stageName = 'held.json.stage.4242.unobserved.tmp';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
@@ -1591,6 +1614,91 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['locked.json']);
   });
 
+  it('retains a named cleanup refusal until a periodic retry succeeds', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePruneWhen: (name, attempt) => name === 'corrupt.json' && attempt <= 2,
+    });
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    expect(pruner.start()?.cleanup).toEqual({ kind: 'refused', subjectNames: ['corrupt.json'] });
+    expect(pruner.readCleanupRefusals()).toEqual(['corrupt.json']);
+
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
+    expect(pruner.readCleanupRefusals()).toEqual(['corrupt.json']);
+    periodic();
+
+    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(storage.fileNames()).toEqual([]);
+  });
+
+  it('retains a named cleanup refusal across a transient directory scan failure', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePrune: true,
+      refuseReaddirWhen: (_path, attempt) => attempt === 3,
+    });
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
+
+    expect(pruner.readCleanupRefusals()).toEqual([REMAINDER_DIRECTORY, 'corrupt.json']);
+    periodic();
+    expect(pruner.readCleanupRefusals()).toEqual(['corrupt.json']);
+  });
+
+  it('clears a named cleanup refusal after the subject decisively disappears', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePruneWhen: (name, attempt) => name === 'corrupt.json' && attempt === 1,
+    });
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    expect(pruner.start()?.cleanup).toEqual({ kind: 'refused', subjectNames: ['corrupt.json'] });
+    storage.unlinkSync(join(REMAINDER_DIRECTORY, 'corrupt.json'));
+
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
+
+    expect(pruner.readCleanupRefusals()).toEqual([]);
+  });
+
   it('retries quarantined evidence once on the next pruner startup', () => {
     const storage = storageWith([fileAt('locked', 1)], {
       refuseReadWhen: (name, attempt) => name === 'locked.json' && attempt === 1,
@@ -1627,7 +1735,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('keeps a complete stage visible when promotion failed and its writer is absent', () => {
+  it('keeps a named cleanup refusal when stage promotion failed and its writer is absent', () => {
     const stageName = 'held-stage.json.stage.4242.unobserved';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held-stage')), mtimeMs: 1 }], {
       refuseFinalRename: true,
@@ -1639,7 +1747,11 @@ describe('shutdown remainder status', () => {
         runDir: RUN_DIR,
         observeStageWriter: () => 'absent',
       }).cleanup,
-    ).toEqual({ kind: 'quarantined', subjectNames: [stageName] });
+    ).toEqual({
+      kind: 'refused',
+      subjectNames: [stageName],
+      quarantinedSubjectNames: [stageName],
+    });
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, () => 'absent').quarantined).toEqual([
       { subject: stageName, retry: { trigger: 'coordinator-startup' } },
     ]);

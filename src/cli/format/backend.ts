@@ -1313,6 +1313,7 @@ function formatRecentShutdownRemainderReport(
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
   lines.push(...formatSkippedShutdownRemainderRecords(result, recheckContext));
   lines.push(...formatShutdownRemainderQuarantines(result));
+  lines.push(...formatShutdownRemainderCleanupRefusals(result));
   return lines.join('\n');
 }
 
@@ -1388,13 +1389,27 @@ function formatUnreadableShutdownRemainderReport(
   recheckContext: ShutdownRemainderRecheckContext,
 ): string {
   if (result.reason === 'scan-failed') {
-    return 'Coral could not inspect shutdown remainder records.';
+    return [
+      'Coral could not inspect shutdown remainder records.',
+      ...formatShutdownRemainderCleanupRefusals(result),
+    ].join('\n');
   }
   return [
     'Coral found shutdown remainder records it could not use.',
     ...formatSkippedShutdownRemainderRecords(result, recheckContext),
     ...formatShutdownRemainderQuarantines(result),
+    ...formatShutdownRemainderCleanupRefusals(result),
   ].join('\n');
+}
+
+function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport): string[] {
+  const subjectNames = result.cleanupRefusedSubjectNames ?? [];
+  if (subjectNames.length === 0) return [];
+  return [
+    `Shutdown remainder cleanup refusals: ${subjectNames.length}`,
+    ...subjectNames.map((name) => `  Subject: ${JSON.stringify(name)}`),
+    "  Disposition: cleanup was refused; retry follows the subject's reported maintenance or quarantine disposition, and the refusal remains reported until cleanup succeeds or the subject is observed absent.",
+  ];
 }
 
 type ShutdownRemainderWithQuarantine =
@@ -1453,7 +1468,7 @@ function formatSkippedShutdownRemainderRecords(
   if (result.skippedCorruptRecordCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, corrupt: ${result.skippedCorruptRecordCount}`,
-      '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
+      '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
     );
   }
   if (result.skippedUnsupportedRecordCount > 0) {
@@ -1465,19 +1480,26 @@ function formatSkippedShutdownRemainderRecords(
   if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
     lines.push(
       `Skipped shutdown remainder records, identity mismatch: ${result.skippedIdentityMismatchRecordCount}`,
-      '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
+      '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
+    );
+  }
+  if ((result.unrecognizedEntryNames?.length ?? 0) > 0) {
+    lines.push(
+      `Unrecognized shutdown remainder directory entries: ${result.unrecognizedEntryNames?.length ?? 0}`,
+      ...(result.unrecognizedEntryNames ?? []).map((name) => `  Entry: ${JSON.stringify(name)}`),
+      '  Disposition: present and unrecognized by this build; not acted on.',
     );
   }
   if ((result.unscannedStageCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder publication stages not inspected: ${result.unscannedStageCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-stage bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
     );
   }
   if ((result.unscannedRecordCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder records not inspected: ${result.unscannedRecordCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-record bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
     );
   }
   if (result.staging !== undefined) {

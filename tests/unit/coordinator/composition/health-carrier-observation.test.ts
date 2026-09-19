@@ -615,6 +615,19 @@ describe('health local carrier observation', () => {
     expect(readHealth().diagnostics?.launchPermits).toBeUndefined();
   });
 
+  it('projects shutdown remainder cleanup refusals from lifecycle state', () => {
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+    );
+    vi.spyOn(core.lifecycleController, 'readShutdownRemainderCleanupRefusals').mockReturnValue(['corrupt.json']);
+
+    const decoded = parseBackendHealth(readHealth());
+
+    if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    expect(decoded.health.shutdownRemainderCleanupRefusedSubjectNames).toEqual(['corrupt.json']);
+  });
+
   it('projects non-release dispositions from coordinator-owned diagnostic state', () => {
     const core = createCore(
       new LocalOperationRegistry(),

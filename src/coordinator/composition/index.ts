@@ -1461,6 +1461,8 @@ export function createCoordinatorCore(
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
+        const shutdownRemainderCleanupRefusedSubjectNames =
+          lifecycleController?.readShutdownRemainderCleanupRefusals() ?? [];
 
         let activeJobs = 0;
         let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
@@ -1623,6 +1625,9 @@ export function createCoordinatorCore(
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           components,
           kbDaemon,
+          ...(shutdownRemainderCleanupRefusedSubjectNames.length === 0
+            ? {}
+            : { shutdownRemainderCleanupRefusedSubjectNames }),
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
           ...(systemProviderScope === undefined

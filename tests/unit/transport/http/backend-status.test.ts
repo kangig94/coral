@@ -24,6 +24,7 @@ const mockState = vi.hoisted(() => ({
     mtimeMs: number;
     statErrorCode?: string;
     readErrorCode?: string;
+    unlinkErrorCode?: string;
   }>,
   remainderScanErrorCode: null as string | null,
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
@@ -114,6 +115,19 @@ vi.mock('#src/runtime/real.js', () => ({
           throw Object.assign(new Error('remainder content unavailable'), { code: file.readErrorCode });
         }
         return file.value;
+      },
+      renameSync: () => {
+        throw new Error('remainder rename was not expected');
+      },
+      unlinkSync: (path: string) => {
+        const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
+        const index = mockState.remainderFiles.findIndex((candidate) => candidate.name === name);
+        const file = mockState.remainderFiles[index];
+        if (file === undefined) throw Object.assign(new Error('no remainder'), { code: 'ENOENT' });
+        if (file.unlinkErrorCode !== undefined) {
+          throw Object.assign(new Error('remainder deletion unavailable'), { code: file.unlinkErrorCode });
+        }
+        mockState.remainderFiles.splice(index, 1);
       },
     },
     env: { platform: () => 'linux' },
@@ -1694,7 +1708,7 @@ function ping(status: 'starting' | 'ok' | 'draining'): string {
 }
 
 /** The authenticated `/health?detailed=1` body, likewise minimal-but-accepted. */
-function detailed(status: 'starting' | 'ok' | 'draining'): string {
+function detailed(status: 'starting' | 'ok' | 'draining', extra: Readonly<Record<string, unknown>> = {}): string {
   return JSON.stringify({
     status,
     kernel: { phase: 'running', readyAt: 1_699_999_000_000 },
@@ -1710,6 +1724,7 @@ function detailed(status: 'starting' | 'ok' | 'draining'): string {
     queueDepth: 0,
     textProjectionState: 'idle',
     components: [],
+    ...extra,
   });
 }
 
@@ -1736,6 +1751,47 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   // ran next. Same reasoning as the note on the first `describe`'s `afterEach`.
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('carries a real pruner deletion refusal into status with the subject name', async () => {
+    mockState.remainderFiles = [
+      { name: 'corrupt.json', value: '{not-json', mtimeMs: NOW - 10_000, unlinkErrorCode: 'EACCES' },
+    ];
+    const { createRealRuntime } = await import('#src/runtime/real.js');
+    const { createShutdownRemainderPruner } = await import('#src/coordinator/shutdown-remainder.js');
+    const runtime = createRealRuntime('prod');
+    const pruner = createShutdownRemainderPruner({
+      storage: runtime.storage,
+      runDir: runtime.paths.coral.coordinator.runDir,
+      time: {
+        setInterval: () => ({ unref: vi.fn() }),
+        clearInterval: vi.fn(),
+      },
+    });
+
+    expect(pruner.start()?.cleanup).toEqual({ kind: 'refused', subjectNames: ['corrupt.json'] });
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusedSubjectNames: pruner.readCleanupRefusals(),
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedCorruptRecordCount: 1,
+        cleanupRefusedSubjectNames: ['corrupt.json'],
+      },
+    });
   });
 
   it('reports a draining ping as shutting_down without asking the detailed probe', async () => {

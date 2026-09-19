@@ -74,6 +74,10 @@ type ExpectedProjectionLeafPaths =
   | 'skippedCorruptRecordCount'
   | 'skippedUnsupportedRecordCount'
   | 'skippedIdentityMismatchRecordCount'
+  | 'cleanupRefusedSubjectNames'
+  | 'cleanupRefusedSubjectNames[]'
+  | 'unrecognizedEntryNames'
+  | 'unrecognizedEntryNames[]'
   | 'quarantined'
   | 'quarantined[].subject'
   | 'quarantined[].retry.trigger'
@@ -91,6 +95,8 @@ type ExpectedBroadStringLeafPaths =
   | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.evidence.processes[].jobId'
   | 'skippedUnreadableRecordNames[]'
+  | 'cleanupRefusedSubjectNames[]'
+  | 'unrecognizedEntryNames[]'
   | 'quarantined[].subject';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
@@ -150,6 +156,12 @@ declare const skippedCorruptRecordCount: ShutdownRemainderStatus['skippedCorrupt
 void skippedCorruptRecordCount;
 declare const skippedUnsupportedRecordCount: ShutdownRemainderStatus['skippedUnsupportedRecordCount'];
 void skippedUnsupportedRecordCount;
+declare const cleanupRefusedSubjectNames: ShutdownRemainderStatus['cleanupRefusedSubjectNames'];
+const cleanupRefusedSubjectName: string = cleanupRefusedSubjectNames?.[0] ?? '';
+void cleanupRefusedSubjectName;
+declare const unrecognizedEntryNames: ShutdownRemainderStatus['unrecognizedEntryNames'];
+const unrecognizedEntryName: string = unrecognizedEntryNames?.[0] ?? '';
+void unrecognizedEntryName;
 // @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
 // name list (for 'unreadable') and counts (for 'corrupt'/'unsupported') cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];

@@ -79,6 +79,21 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
+  it('accepts named shutdown remainder cleanup refusals and rejects unnamed ones', () => {
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusedSubjectNames: ['corrupt.json'],
+      }),
+    ).toBe(true);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusedSubjectNames: [''],
+      }),
+    ).toBe(false);
+  });
+
   it('accepts only a redacted named system provider scope', () => {
     expect(
       isBackendHealth({
