@@ -283,16 +283,27 @@ type BackendStatus =
  * Evidence about a departed instance's undischarged shutdown obligations, carried alongside — never instead
  * of — whichever status observed the coordinator's current absence, ambiguity, or a recent startup failure.
  * `status` is this report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
+ *
+ * The two skipped-record counts are reported separately rather than summed: 'unreadable' bypasses the recency
+ * window entirely (design-philosophy.md principle 11 — the filename is retained and re-checked indefinitely,
+ * never discarded on unknown evidence), while 'undecodable' is age-scoped like everything else this report
+ * calls recent. Merging them would claim recency for evidence that may be arbitrarily old.
  */
 export type ShutdownRemainderReport =
   | Readonly<{
       status: 'recent_shutdown_remainder';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
-      skippedRecordCount: number;
+      skippedUnreadableRecordCount: number;
+      skippedUndecodableRecordCount: number;
     }>
   | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
-  | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'records-skipped'; skippedRecordCount: number }>;
+  | Readonly<{
+      status: 'shutdown_remainder_unreadable';
+      reason: 'records-skipped';
+      skippedUnreadableRecordCount: number;
+      skippedUndecodableRecordCount: number;
+    }>;
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
@@ -583,18 +594,23 @@ function readRecentShutdownRemainder(
       ? { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' }
       : null;
   }
-  const skippedRecordHasRelevantAge = ({
+  const skippedRecordIsRelevant = ({
     name,
     age,
+    reason,
   }: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean => {
     if (scope.kind === 'coordinator' && (scope.instanceId === undefined || name !== `${scope.instanceId}.json`)) {
       return false;
     }
-    // Constraint: a `skippedRecords` entry already failed to decode (unlike `scan.records`, which is where an
-    // unstattable-but-*readable* record is kept and reported regardless of age). With age also unknown, no
-    // evidence survives at all — no content, no timestamp — so this is not the `unknown ⇒ absent` inversion
-    // design-philosophy.md principle 11 forbids: nothing is finalized, and the read is retried fresh on every
-    // call rather than latched to a permanently "recent" flag with no exit.
+    // Constraint: 'unreadable' means the read was refused before any byte reached this build — a genuine
+    // unknown about the content. The filename is the only evidence an operator-less reader has of it, so it is
+    // reported regardless of age (design-philosophy.md principle 11 forbids silencing an unknown into
+    // absence); it is never reclaimed by the prune either, for the same reason.
+    if (reason === 'unreadable') return true;
+    // 'undecodable' is decisive about the content but proves nothing about when it was written. Unlike
+    // `scan.records`, where an unstattable-but-readable record is judged by its own recorded `recordedAt`
+    // rather than by mtime, there is no recorded timestamp here to fall back to, so an unknown mtime cannot be
+    // classified as recent.
     if (age.kind === 'unknown') return false;
     return (
       (scope.kind === 'directory' || age.mtimeMs >= scope.startedAt) &&
@@ -602,7 +618,9 @@ function readRecentShutdownRemainder(
       now - age.mtimeMs <= RECENT_COORDINATOR_RECORD_MS
     );
   };
-  const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordHasRelevantAge);
+  const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
+  const skippedUnreadableRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'unreadable').length;
+  const skippedUndecodableRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'undecodable').length;
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -626,7 +644,8 @@ function readRecentShutdownRemainder(
       ? {
           status: 'shutdown_remainder_unreadable',
           reason: 'records-skipped',
-          skippedRecordCount: scopedSkippedRecords.length,
+          skippedUnreadableRecordCount,
+          skippedUndecodableRecordCount,
         }
       : null;
   }
@@ -640,7 +659,8 @@ function readRecentShutdownRemainder(
         obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
         owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
       })),
-    skippedRecordCount: scopedSkippedRecords.length,
+    skippedUnreadableRecordCount,
+    skippedUndecodableRecordCount,
   };
 }
 

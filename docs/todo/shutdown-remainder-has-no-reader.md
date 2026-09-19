@@ -21,9 +21,11 @@ not offer. `readShutdownRemainderStatus` is exercised only by tests today (unit 
 back what a coordinator under test just wrote. The no-daemon arm of `backend status` reads the newest
 record for the `no_record_no_socket`, `no_record_socket_present`, and `recorded_process_absent`
 observations, scopes it to the same recent-record window as the startup diagnostic, and reports it without
-a next step. `foreign_peer` never reaches this reader: `noDaemonStatus` (`src/transport/http/backend/status.ts`)
-returns before consulting it whenever the fallback status is `unreachable`, which is what a decoded peer
-identity mismatch always is.
+a next step. `foreign_peer` itself never carries a remainder — its `unreachable` variant has no `shutdownRemainder` field
+— but a foreign-peer call into `noDaemonStatus` (`src/transport/http/backend/status.ts`) still reaches this
+reader whenever a startup diagnostic exists: the diagnostic branch runs first and consults the record
+unconditionally, superseding the foreign-peer fallback with its own `recent_failure`. Only when there is no
+diagnostic does `noDaemonStatus` return the foreign-peer fallback without consulting the record.
 
 ## What is wrong
 

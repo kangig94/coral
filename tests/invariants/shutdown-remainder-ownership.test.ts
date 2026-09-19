@@ -37,17 +37,29 @@ const DYNAMIC_SHUTDOWN_LABEL_PREFIXES = ['stream response close ', 'provider pro
 // The AST-shape collector in `shutdownLabelProjectionViolations` finds a label only where the enclosing
 // object literal carries `remainder` (or the `prepare`/`commit`/`hold` triple) as its own property; a
 // producer that spreads that property in from elsewhere falls out of collection, and the vocabulary
-// check downstream is vacuously true over an empty set. Every label here must actually be found among
-// the collected producer labels, so LIFECYCLE_PATH cannot lose coverage by falling out of the shape match.
+// check downstream is vacuously true over an empty set. This canary is collected through the `remainder`
+// half of that shape and checked against LIFECYCLE_PATH's own collected labels specifically — not the
+// set merged across all three scanned files — so losing this file's contribution cannot be masked by
+// another file happening to produce the same label.
 const LIFECYCLE_SHUTDOWN_LABEL_INVENTORY = ['backend discovery withdrawal'] as const;
-// `shutdownErrorProjectionViolations` folds four independent AST shapes into `producedNames`/`handledCodes`:
-// a constructor `this.name = 'X'` assignment, a `new XError(...)` construction, an `instanceof XError` check,
-// and an error-code string literal. If a shape stops matching, both collected sets can still be non-empty
-// from the other shapes, so a bare emptiness check would not catch the loss. Each canary below is reachable
-// through exactly one shape among the files this build scans — `RangeError`/`AggregateError` are never
-// instanceof-checked or field-assigned, `SyntaxError` is excluded from the construction shape's own regex, and
-// `StoreResetIncidentReadError` is a project name no other shape produces — so a canary missing from its
-// collected set proves that one shape stopped matching, not that the codebase happened to stop using it.
+// The other half of the same shape — a `label` alongside the `prepare`/`commit`/`hold` boundary triple,
+// with no `remainder` property — had no canary of its own: disabling it left this file's other canary
+// (collected through `remainder`) unaffected and the check green. Checked against SHUTDOWN_PATH's own
+// collected labels specifically, for the same reason as above.
+const SHUTDOWN_BOUNDARY_LABEL_INVENTORY = ['provider control and IPC authority release'] as const;
+// `shutdownErrorProjectionViolations` folds five independent AST shapes into `producedNames`/`handledCodes`:
+// a class-field `name = 'X'` declaration (`classFieldErrorNames`), a constructor `this.name = 'X'` assignment,
+// a `new XError(...)` construction, an `instanceof XError` check, and an error-code string literal. If a shape
+// stops matching, the other collected sets can still be non-empty, so a bare emptiness check would not catch
+// the loss. Each canary below is reachable through exactly one shape among the files this build scans —
+// `RangeError` is never instanceof-checked or field-assigned, `SyntaxError` is excluded from the construction
+// shape's own regex, and `StoreResetIncidentReadError` is a project name no other shape produces — so a canary
+// missing from its collected set proves that one shape stopped matching, not that the codebase happened to
+// stop using it. The class-field shape carries no canary here: no `name = '…'` class field under `src/`
+// belongs to a class that extends an `Error`-suffixed base, so `classFieldErrorNames` currently collects
+// nothing from this scan (confirmed by removing its contribution to the fold: all eight tests still pass).
+// Its AST-matching is instead proven directly by the two cases below that assert on `classFieldErrorNames`
+// in isolation.
 const SHUTDOWN_ERROR_PROJECTION_NAME_CANARIES = ['StoreResetIncidentReadError', 'RangeError', 'SyntaxError'] as const;
 const SHUTDOWN_ERROR_PROJECTION_CODE_CANARY = 'ENOENT';
 
@@ -304,11 +316,11 @@ function shutdownLabelProjectionViolations(): string[] {
   }
   collectStatusLabels(status);
 
-  function collectProducedLabels(file: ts.SourceFile): void {
+  function collectProducedLabels(file: ts.SourceFile, target: Set<string> = producerLabels): void {
     function recordProducedLabel(expression: ts.Expression, site: ts.Node): void {
       const initializer = unwrapExpression(expression);
       if (ts.isStringLiteral(initializer)) {
-        producerLabels.add(initializer.text);
+        target.add(initializer.text);
         return;
       }
       if (ts.isTemplateExpression(initializer)) {
@@ -377,20 +389,36 @@ function shutdownLabelProjectionViolations(): string[] {
         propertyName(node) === 'acceptanceFailureLabel' &&
         ts.isStringLiteral(unwrapExpression(node.initializer))
       ) {
-        producerLabels.add((unwrapExpression(node.initializer) as ts.StringLiteral).text);
+        target.add((unwrapExpression(node.initializer) as ts.StringLiteral).text);
       }
       ts.forEachChild(node, visit);
     }
     visit(file);
   }
 
-  collectProducedLabels(sourceFile(SHUTDOWN_PATH));
+  // Collected into their own sets, not the shared `producerLabels`, so the two canaries below prove that
+  // *this* file's own scan still finds the label its violation message names — a shared set would still
+  // read non-empty after either file's collection broke, as long as the other file's own scan supplied it.
+  const shutdownLabels = new Set<string>();
+  const lifecycleLabels = new Set<string>();
+  collectProducedLabels(sourceFile(SHUTDOWN_PATH), shutdownLabels);
   collectProducedLabels(sourceFile(SHUTDOWN_SETTLEMENT_PATH));
-  collectProducedLabels(sourceFile(LIFECYCLE_PATH));
+  collectProducedLabels(sourceFile(LIFECYCLE_PATH), lifecycleLabels);
+  for (const label of shutdownLabels) producerLabels.add(label);
+  for (const label of lifecycleLabels) producerLabels.add(label);
 
   for (const label of LIFECYCLE_SHUTDOWN_LABEL_INVENTORY) {
-    if (!producerLabels.has(label)) {
+    if (!lifecycleLabels.has(label)) {
       violations.push(`${LIFECYCLE_PATH} must contribute shutdown obligation label '${label}'`);
+    }
+  }
+
+  // `LIFECYCLE_SHUTDOWN_LABEL_INVENTORY`'s canary is collected through the object-literal shape's `remainder`
+  // half; this canary is collected through its `prepare`/`commit`/`hold` boundary half, the shape's other
+  // half, which otherwise has no canary of its own.
+  for (const label of SHUTDOWN_BOUNDARY_LABEL_INVENTORY) {
+    if (!shutdownLabels.has(label)) {
+      violations.push(`${SHUTDOWN_PATH} must contribute shutdown obligation label '${label}'`);
     }
   }
 

@@ -560,6 +560,24 @@ for jobs/sessions/discuss/workflow')` in `tests/invariants/projection-rebuild-pa
   `rebuildProjections`-helper change to one of the six uncovered discuss event kinds shipping a byte-level
   divergence that this invariant would not catch, despite its stated purpose.
 
+- **What is wrong**: `shutdownErrorProjectionViolations`'s five-shape fold includes a class-field `name = 'X'`
+  collector (`classFieldErrorNames`) with no fold-level canary, because it currently collects nothing to
+  canary: no `name = '…'` class field under `src/` belongs to a class that extends an `Error`-suffixed base.
+  A regression that broke only this shape (and no other) would pass the fold silently.
+- **Where**: `classFieldErrorNames` and `shutdownErrorProjectionViolations`, both in
+  `tests/invariants/shutdown-remainder-ownership.test.ts`.
+- **Evidence**: Measured, not inferred — removed the collector's contribution to the fold
+  (`for (const name of classFieldErrorNames(file)) producedNames.add(name);`) and reran the file: all eight
+  tests still passed, including `shutdownErrorProjectionViolations`'s own case. Reverted after observing it.
+  `grep -rn "readonly name = '" src/` finds exactly two matches, both classes declaring `implements`, not
+  `extends`, so `classExtendsErrorLike` rejects both.
+- **Why it was not fixed**: The collector's own AST-matching is already covered by two direct unit cases in
+  the same file that construct a matching and a non-matching class and assert on `classFieldErrorNames` in
+  isolation. Adding a production `Error` subclass with a class-field `name` for the sole purpose of feeding
+  this fold's canary would be introducing dead code to satisfy a test.
+- **Severity, as observed**: No runtime effect. The gap is coverage-shaped: only the direct unit cases would
+  catch a regression isolated to this one shape; the fold's own canary set would not.
+
 ## Sector 12 — tests/integration, e2e, helpers, types
 
 Nothing met this ledger's bar (a comment right, code wrong). Every comment naming a symbol, a file, a

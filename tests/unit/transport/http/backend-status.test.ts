@@ -18,7 +18,13 @@ const mockState = vi.hoisted(() => ({
   observed: { kind: 'no-record' } as CoordinatorObservation,
   /** The startup diagnostic on disk, or `null` for none. */
   diagnostic: null as string | null,
-  remainderFiles: [] as Array<{ name: string; value: string; mtimeMs: number; statErrorCode?: string }>,
+  remainderFiles: [] as Array<{
+    name: string;
+    value: string;
+    mtimeMs: number;
+    statErrorCode?: string;
+    readErrorCode?: string;
+  }>,
   remainderScanThrows: false,
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
@@ -84,6 +90,9 @@ vi.mock('#src/runtime/real.js', () => ({
         }
         const file = mockState.remainderFiles.find(({ name }) => path.endsWith(`/${name}`));
         if (file === undefined) throw Object.assign(new Error('no remainder'), { code: 'ENOENT' });
+        if (file.readErrorCode !== undefined) {
+          throw Object.assign(new Error('remainder content unavailable'), { code: file.readErrorCode });
+        }
         return file.value;
       },
     },
@@ -141,20 +150,57 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
-  // A record here carries no evidence at all: content already failed to decode, and now age cannot be measured
-  // either. Unlike an unstattable-but-readable record (kept in `scan.records` and reported regardless of age),
-  // there is nothing left to preserve, so this must not become a permanent, unclearable status line — the read
-  // is retried fresh on every future call instead.
-  it.each(['EIO', 'EACCES'])(
-    'does not report a record with neither readable content nor provable age (%s)',
-    async (code) => {
-      mockState.remainderFiles = [remainderFile('corrupt.json', NOW - 10_000, '{not-json', code)];
+  // 'undecodable' is decisive about the content (it was read, and it is provably not a usable record) but
+  // proves nothing about when the file was written. With age also unknown (stat refused too), there is no
+  // timestamp to fall back to, so this cannot be classified "recent" — it is excluded from the report, and the
+  // read is retried fresh on every future call rather than latched to a permanently "recent" flag with no
+  // exit. Contrast the 'unreadable' cases below: there, the content was never seen at all, and that is
+  // reported regardless of age instead of excluded.
+  it.each(['EIO', 'EACCES'])('does not report an undecodable record whose age is also unknown (%s)', async (code) => {
+    mockState.remainderFiles = [remainderFile('corrupt.json', NOW - 10_000, '{not-json', code)];
 
-      const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-      await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
-    },
-  );
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+  });
+
+  // The correlated, realistic case: the read is refused independently of the stat, so no byte of the content
+  // is ever seen. Unlike the decisively undecodable case above, this is a genuine unknown and must be reported
+  // rather than silenced (design-philosophy.md principle 11).
+  it('reports a record whose stat and read were both refused, unlike a decisively undecodable one', async () => {
+    mockState.remainderFiles = [remainderFile('unreadable.json', NOW - 10_000, '{not-json', 'EIO', 'EIO')];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordCount: 1,
+        skippedUndecodableRecordCount: 0,
+      },
+    });
+  });
+
+  // Same disposition with a known, stale mtime: an undecodable record this old is excluded (see "does not
+  // report an undecodable shutdown remainder outside the recent-record window" below), but an unreadable one
+  // is reported regardless of age because the filename is the only evidence available at all.
+  it('reports an unreadable record from outside the recent-record window, unlike an undecodable one', async () => {
+    mockState.remainderFiles = [remainderFile('ancient.json', NOW - 300_001, 'irrelevant', undefined, 'EACCES')];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordCount: 1,
+        skippedUndecodableRecordCount: 0,
+      },
+    });
+  });
 
   it('does not report a directory entry confirmed gone during the metadata race', async () => {
     mockState.remainderFiles = [remainderFile('vanished.json', NOW - 10_000, '{not-json', 'ENOENT')];
@@ -193,7 +239,8 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'predecessor-instance' },
-        skippedRecordCount: 0,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 0,
       },
     });
   });
@@ -275,7 +322,8 @@ describe('getBackendStatusFull record disposition', () => {
             },
           ],
         },
-        skippedRecordCount: 1,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 1,
       },
     });
     expect(recentShutdownRemainder(result)?.skippedEntries ?? null).toEqual([
@@ -370,7 +418,8 @@ describe('getBackendStatusFull record disposition', () => {
           ],
         },
         skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
-        skippedRecordCount: 1,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 1,
       },
     });
     expect(JSON.stringify(result)).not.toContain(hostile);
@@ -460,7 +509,8 @@ describe('getBackendStatusFull record disposition', () => {
         'skippedEntries[].obligation.ordinal',
         'skippedEntries[].obligation.occurrence',
         'skippedEntries[].owner',
-        'skippedRecordCount',
+        'skippedUnreadableRecordCount',
+        'skippedUndecodableRecordCount',
       ].sort(),
     );
     expect(JSON.stringify(result)).not.toContain('owner/repo');
@@ -673,11 +723,16 @@ describe('getBackendStatusFull record disposition', () => {
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_no_socket',
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 2 },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 2,
+      },
     });
   });
 
-  it('reports an unreadable shutdown remainder even when another readable record is stale', async () => {
+  it('reports an undecodable shutdown remainder even when another readable record is stale', async () => {
     mockState.remainderFiles = [
       remainderFile('stale.json', NOW - 300_001, shutdownRemainder('stale', NOW - 300_001)),
       remainderFile('corrupt.json', NOW - 10_000, '{not-json'),
@@ -687,7 +742,12 @@ describe('getBackendStatusFull record disposition', () => {
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_no_socket',
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 1 },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 1,
+      },
     });
   });
 
@@ -712,7 +772,8 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'current' },
-        skippedRecordCount: 0,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 0,
       },
     });
   });
@@ -1057,7 +1118,8 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'test-instance' },
-        skippedRecordCount: 0,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 0,
       },
     });
   });
@@ -1205,8 +1267,8 @@ function recentShutdownRemainder(
   return report?.status === 'recent_shutdown_remainder' ? report : null;
 }
 
-function remainderFile(name: string, mtimeMs: number, value: string, statErrorCode?: string) {
-  return { name, mtimeMs, value, statErrorCode };
+function remainderFile(name: string, mtimeMs: number, value: string, statErrorCode?: string, readErrorCode?: string) {
+  return { name, mtimeMs, value, statErrorCode, readErrorCode };
 }
 
 function shutdownRemainderEntry(
@@ -1303,7 +1365,8 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        skippedRecordCount: 0,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 0,
       },
     });
   });
@@ -1323,7 +1386,8 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        skippedRecordCount: 0,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 0,
       },
     });
   });
@@ -1339,7 +1403,12 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
       pid: PID,
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'records-skipped', skippedRecordCount: 1 },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 1,
+      },
     });
   });
 
@@ -1369,7 +1438,8 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        skippedRecordCount: 0,
+        skippedUnreadableRecordCount: 0,
+        skippedUndecodableRecordCount: 0,
       },
     });
   });

@@ -70,7 +70,8 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.ordinal'
   | 'skippedEntries[].obligation.occurrence'
   | 'skippedEntries[].owner'
-  | 'skippedRecordCount';
+  | 'skippedUnreadableRecordCount'
+  | 'skippedUndecodableRecordCount';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
@@ -124,8 +125,10 @@ void skippedEntry.label;
 // @ts-expect-error skipped record identities are absent from the status projection.
 void skippedEntry.recordInstanceId;
 
-declare const skippedRecordCount: ShutdownRemainderStatus['skippedRecordCount'];
-void skippedRecordCount;
+declare const skippedUnreadableRecordCount: ShutdownRemainderStatus['skippedUnreadableRecordCount'];
+void skippedUnreadableRecordCount;
+declare const skippedUndecodableRecordCount: ShutdownRemainderStatus['skippedUndecodableRecordCount'];
+void skippedUndecodableRecordCount;
 // @ts-expect-error skipped record filenames are absent from the status projection.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;

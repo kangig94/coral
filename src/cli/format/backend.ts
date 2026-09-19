@@ -1272,7 +1272,9 @@ function formatRecentShutdownRemainderReport(
     );
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
-  lines.push(...formatSkippedShutdownRemainderRecords(result.skippedRecordCount));
+  lines.push(
+    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordCount, result.skippedUndecodableRecordCount),
+  );
   return lines.join('\n');
 }
 
@@ -1350,8 +1352,8 @@ function formatUnreadableShutdownRemainderReport(
     return 'Coral could not inspect shutdown remainder records.';
   }
   return [
-    'Coral found shutdown remainder records this build could not decode.',
-    ...formatSkippedShutdownRemainderRecords(result.skippedRecordCount),
+    'Coral found shutdown remainder records it could not use.',
+    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordCount, result.skippedUndecodableRecordCount),
   ].join('\n');
 }
 
@@ -1365,13 +1367,21 @@ function formatSkippedShutdownRemainderEntries(
   ]);
 }
 
-function formatSkippedShutdownRemainderRecords(count: number): string[] {
-  return count === 0
-    ? []
-    : [
-        `Skipped shutdown remainder records: ${count}`,
-        '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
-      ];
+function formatSkippedShutdownRemainderRecords(unreadableCount: number, undecodableCount: number): string[] {
+  const lines: string[] = [];
+  if (unreadableCount > 0) {
+    lines.push(
+      `Skipped shutdown remainder records, unreadable: ${unreadableCount}`,
+      '  Disposition: content was never read; kept and re-checked on every status read, not included in this report.',
+    );
+  }
+  if (undecodableCount > 0) {
+    lines.push(
+      `Skipped shutdown remainder records, undecodable: ${undecodableCount}`,
+      '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup, not included in this report.',
+    );
+  }
+  return lines;
 }
 
 export function formatShutdown(result: ShutdownResult): string {

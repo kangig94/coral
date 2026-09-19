@@ -251,8 +251,12 @@ describe('coordinator fatal drain integration', () => {
       ],
     });
 
-    // Reads through the same recency- and instance-scoped production path a reader of `backend status` sees,
-    // not just the raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets.
+    // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
+    // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
+    // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
+    // directory-wide scope only; the instance-scoped branch (exact instanceId match plus a start-time floor)
+    // is reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
+    // `unreachable` — which no case here produces.
     const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
     expect(status).toMatchObject({
       status: 'no_record_no_socket',
@@ -351,8 +355,12 @@ describe('coordinator fatal drain integration', () => {
       ]),
     });
 
-    // Reads through the same recency- and instance-scoped production path a reader of `backend status` sees,
-    // not just the raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets.
+    // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
+    // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
+    // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
+    // directory-wide scope only; the instance-scoped branch (exact instanceId match plus a start-time floor)
+    // is reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
+    // `unreachable` — which no case here produces.
     const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
     expect(status).toMatchObject({
       status: 'no_record_no_socket',
@@ -443,8 +451,12 @@ describe('coordinator fatal drain integration', () => {
       ]),
     });
 
-    // Reads through the same recency- and instance-scoped production path a reader of `backend status` sees,
-    // not just the raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets.
+    // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
+    // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
+    // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
+    // directory-wide scope only; the instance-scoped branch (exact instanceId match plus a start-time floor)
+    // is reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
+    // `unreachable` — which no case here produces.
     // `AfterBudgetFatalError`/`FATAL_AFTER_BUDGET` are fixture-only, not on the operator-facing allowlist, so
     // only `cause` survives that projection — the raw-bytes assertion above is what proves the rest.
     const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));

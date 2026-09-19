@@ -67,6 +67,13 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
 export type ShutdownRemainderSkippedRecord = Readonly<{
   name: string;
   age: Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
+  /**
+   * `unreadable`: the read was refused before any byte reached this build — a genuine unknown about the
+   * content, never decisive (design-philosophy.md principle 11). `undecodable`: the bytes were read and are
+   * provably not a usable record (bad JSON or a rejected envelope shape) — as decisive as a schema rejection,
+   * because the content was seen.
+   */
+  reason: 'unreadable' | 'undecodable';
 }>;
 
 export type ShutdownRemainderRecordScan = Readonly<{
@@ -183,9 +190,9 @@ export function decodeShutdownRemainderRecord(value: unknown):
       record: DecodedShutdownRemainderRecord;
       skippedEntries: readonly ShutdownRemainderSkippedEntry[];
     }>
-  | Readonly<{ kind: 'unreadable'; detail: string }> {
+  | Readonly<{ kind: 'shape-rejected'; detail: string }> {
   const parsedRecord = shutdownRemainderRecordEnvelopeSchema.safeParse(value);
-  if (!parsedRecord.success) return { kind: 'unreadable', detail: parsedRecord.error.message };
+  if (!parsedRecord.success) return { kind: 'shape-rejected', detail: parsedRecord.error.message };
 
   const entries: DecodedShutdownRemainderEntry[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
@@ -214,6 +221,51 @@ export function decodeShutdownRemainderRecord(value: unknown):
     },
     skippedEntries,
   };
+}
+
+export type ShutdownRemainderFileClassification =
+  | Readonly<{ kind: 'vanished' }>
+  | Readonly<{ kind: 'unreadable' }>
+  | Readonly<{ kind: 'undecodable' }>
+  | Readonly<{
+      kind: 'readable';
+      record: DecodedShutdownRemainderRecord;
+      skippedEntries: readonly ShutdownRemainderSkippedEntry[];
+    }>;
+
+/**
+ * Classifies one remainder file by what its content proves, shared by the report path
+ * (`scanShutdownRemainderRecords`) and the reclaim path (`pruneShutdownRemainderRecords` in
+ * `src/coordinator/shutdown-remainder.ts`) so the two dispositions cannot drift between them.
+ *
+ * `vanished`: the file lost the readdir-to-read race (`ENOENT`) — silently absent, not corrupt. `unreadable`:
+ * the read was refused before any byte reached this build — a genuine unknown (design-philosophy.md principle
+ * 11 forbids treating this as decisive). `undecodable`: the bytes were read and are provably not a usable
+ * record. `readable`: a decoded record.
+ */
+export function classifyShutdownRemainderFile(
+  storage: Pick<StoragePort, 'readFileSync'>,
+  path: string,
+): ShutdownRemainderFileClassification {
+  let raw: string;
+  try {
+    raw = storage.readFileSync(path, 'utf-8');
+  } catch (error: unknown) {
+    if (thrownErrnoCode(error) === 'ENOENT') return { kind: 'vanished' };
+    return { kind: 'unreadable' };
+  }
+
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw);
+  } catch {
+    return { kind: 'undecodable' };
+  }
+
+  const decoded = decodeShutdownRemainderRecord(parsedJson);
+  return decoded.kind === 'shape-rejected'
+    ? { kind: 'undecodable' }
+    : { kind: 'readable', record: decoded.record, skippedEntries: decoded.skippedEntries };
 }
 
 export function scanShutdownRemainderRecords(
@@ -261,19 +313,22 @@ export function scanShutdownRemainderRecords(
     });
 
   for (const { name, reportedName, age } of recordFiles) {
-    try {
-      const decoded = decodeShutdownRemainderRecord(JSON.parse(storage.readFileSync(join(directory, name), 'utf-8')));
-      if (decoded.kind === 'unreadable') {
-        skippedRecords.push({ name: reportedName, age });
-        continue;
-      }
-      records.push(decoded.record);
-      skippedEntries.push(...decoded.skippedEntries);
-    } catch (error: unknown) {
+    const classification = classifyShutdownRemainderFile(storage, join(directory, name));
+    switch (classification.kind) {
       // Same race as the `statSync` step above, one step later: the file lost the race between `readdirSync`
       // and this read. It is silently absent, not corrupt, so it must not become a skipped record.
-      if (thrownErrnoCode(error) === 'ENOENT') continue;
-      skippedRecords.push({ name: reportedName, age });
+      case 'vanished':
+        continue;
+      case 'unreadable':
+        skippedRecords.push({ name: reportedName, age, reason: 'unreadable' });
+        continue;
+      case 'undecodable':
+        skippedRecords.push({ name: reportedName, age, reason: 'undecodable' });
+        continue;
+      case 'readable':
+        records.push(classification.record);
+        skippedEntries.push(...classification.skippedEntries);
+        continue;
     }
   }
 

@@ -398,8 +398,8 @@ describe('shutdown remainder status', () => {
       status: { version: 1, records: [decodedRecordAt('known-instance')] },
       skippedEntries: [],
       skippedRecords: [
-        { name: 'corrupt-instance.json', age: { kind: 'known', mtimeMs: 2 } },
-        { name: 'foreign-instance.json', age: { kind: 'known', mtimeMs: 3 } },
+        { name: 'corrupt-instance.json', age: { kind: 'known', mtimeMs: 2 }, reason: 'undecodable' },
+        { name: 'foreign-instance.json', age: { kind: 'known', mtimeMs: 3 }, reason: 'undecodable' },
       ],
     });
   });
@@ -591,6 +591,28 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('unstattable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-32.json');
+  });
+
+  it('prunes only the oldest known records once they exceed the cap, leaving an unreadable record untouched', () => {
+    const storage = storageWith(
+      [...Array.from({ length: 33 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unreadable', 34)],
+      { refuseReadFor: 'unreadable.json', readErrorCode: 'EIO' },
+    );
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('unreadable.json');
+    expect(storage.fileNames()).not.toContain('instance-0.json');
+    expect(storage.fileNames()).toContain('instance-32.json');
+  });
+
+  it('reclaims a decisively undecodable record regardless of age, even under the retention cap', () => {
+    const storage = storageWith([fileAt('readable', 1), { name: 'undecodable.json', value: '{not-json', mtimeMs: 2 }]);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toEqual(['readable.json']);
   });
 
   it('does not turn a best-effort startup prune refusal into an error', () => {

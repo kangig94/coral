@@ -1,8 +1,10 @@
 import { join } from 'node:path';
 
+import { backendLog } from '../infra/backend-log.js';
 import { thrownErrnoCode } from '../infra/error-format.js';
 import type { StoragePort, TimePort } from '../infra/port-types.js';
 import {
+  classifyShutdownRemainderFile,
   scanShutdownRemainderRecords,
   SHUTDOWN_REMAINDER_RECORD_VERSION,
   shutdownRemainderRecordDirectory,
@@ -21,7 +23,7 @@ type ShutdownRemainderReadRuntime = Readonly<{
 }>;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
-  storage: Pick<StoragePort, 'readdirSync' | 'statSync' | 'unlinkSync'>;
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync'>;
   runDir: string;
 }>;
 
@@ -85,16 +87,37 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
   try {
     const known: { name: string; mtimeMs: number }[] = [];
     for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
+      const path = join(directory, name);
+      let mtimeMs: number | null = null;
       try {
-        known.push({ name, mtimeMs: runtime.storage.statSync(join(directory, name)).mtimeMs });
+        mtimeMs = runtime.storage.statSync(path).mtimeMs;
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
-        // Constraint: a record this build cannot stat is not proven old, and unknown age must not authorize
-        // deletion (design-philosophy.md principle 11). It is excluded from the retention count entirely —
-        // ranking it as newest still counts it against the cap, which evicts a genuinely newer known record in
-        // its place once enough unknowns accumulate.
+        mtimeMs = null;
+      }
+
+      const classification = classifyShutdownRemainderFile(runtime.storage, path);
+      if (classification.kind === 'vanished') continue;
+      if (classification.kind === 'undecodable') {
+        // Constraint: a decisive decode failure (design-philosophy.md principle 11) authorizes reclaiming this
+        // file regardless of age — it is deleted outright rather than competing for a slot in the retention
+        // count below.
+        try {
+          runtime.storage.unlinkSync(path);
+          backendLog.warn(`shutdown remainder record ${name} discarded: content is not a decodable record`);
+        } catch {
+          /* Retention cleanup must not block startup. */
+        }
         continue;
       }
+      if (classification.kind === 'unreadable' || mtimeMs === null) {
+        // Constraint: a record this build cannot prove readable, or cannot stat, is not proven old or
+        // content-invalid, and unknown must not authorize deletion (design-philosophy.md principle 11). It is
+        // excluded from the retention count entirely — ranking it as newest still counts it against the cap,
+        // which evicts a genuinely newer known record in its place once enough unprovable files accumulate.
+        continue;
+      }
+      known.push({ name, mtimeMs });
     }
     known.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
     for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {

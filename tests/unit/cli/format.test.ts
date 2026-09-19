@@ -1812,7 +1812,8 @@ describe('cli format', () => {
               owner: 'process-exit',
             },
           ],
-          skippedRecordCount: 1,
+          skippedUnreadableRecordCount: 1,
+          skippedUndecodableRecordCount: 2,
         },
       });
 
@@ -1847,8 +1848,10 @@ describe('cli format', () => {
           'Skipped entry 4: stream response close 3',
           '  Owner: process-exit',
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
-          'Skipped shutdown remainder records: 1',
-          '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
+          'Skipped shutdown remainder records, unreadable: 1',
+          '  Disposition: content was never read; kept and re-checked on every status read, not included in this report.',
+          'Skipped shutdown remainder records, undecodable: 2',
+          '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup, not included in this report.',
         ].join('\n'),
       );
     });
@@ -1861,15 +1864,38 @@ describe('cli format', () => {
           shutdownRemainder: {
             status: 'shutdown_remainder_unreadable',
             reason: 'records-skipped',
-            skippedRecordCount: 1,
+            skippedUnreadableRecordCount: 1,
+            skippedUndecodableRecordCount: 0,
           },
         }),
       ).toBe(
         [
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
-          'Coral found shutdown remainder records this build could not decode.',
-          'Skipped shutdown remainder records: 1',
-          '  Disposition: not decoded or included in this report; shutdown remainder records do not drive recovery.',
+          'Coral found shutdown remainder records it could not use.',
+          'Skipped shutdown remainder records, unreadable: 1',
+          '  Disposition: content was never read; kept and re-checked on every status read, not included in this report.',
+        ].join('\n'),
+      );
+    });
+
+    it('reports undecodable shutdown remainder records as a section on top of the fallback status', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'records-skipped',
+            skippedUnreadableRecordCount: 0,
+            skippedUndecodableRecordCount: 1,
+          },
+        }),
+      ).toBe(
+        [
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+          'Coral found shutdown remainder records it could not use.',
+          'Skipped shutdown remainder records, undecodable: 1',
+          '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup, not included in this report.',
         ].join('\n'),
       );
     });
@@ -2056,7 +2082,8 @@ describe('cli format', () => {
             entries: [],
           },
           skippedEntries: [],
-          skippedRecordCount: 0,
+          skippedUnreadableRecordCount: 0,
+          skippedUndecodableRecordCount: 0,
         },
       },
       {
@@ -2065,7 +2092,8 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable' as const,
           reason: 'records-skipped' as const,
-          skippedRecordCount: 1,
+          skippedUnreadableRecordCount: 1,
+          skippedUndecodableRecordCount: 0,
         },
       },
       {
