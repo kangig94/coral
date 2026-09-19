@@ -362,6 +362,7 @@ export type HealthSnapshot = {
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
+  unreportedShutdownRemainderCleanupRefusalCount?: number;
   /**
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.

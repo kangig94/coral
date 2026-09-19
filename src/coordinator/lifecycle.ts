@@ -841,6 +841,7 @@ export type LifecycleController = {
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
   readShutdownRemainderCleanupRefusals(): readonly ShutdownRemainderCleanupRefusal[];
+  readUnreportedShutdownRemainderCleanupRefusalCount(): number;
 };
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
@@ -1763,5 +1764,6 @@ export function createLifecycle(
     },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
     readShutdownRemainderCleanupRefusals: () => remainderPruner.readCleanupRefusals(),
+    readUnreportedShutdownRemainderCleanupRefusalCount: () => remainderPruner.readUnreportedCleanupRefusalCount(),
   };
 }

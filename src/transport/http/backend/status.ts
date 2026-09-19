@@ -21,6 +21,8 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderCleanupRefusal,
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderCleanupRefusal,
@@ -300,6 +302,7 @@ type BackendStatus =
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
       shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
+      unreportedShutdownRemainderCleanupRefusalCount?: number;
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
     }
@@ -427,10 +430,13 @@ export type BackendStatusFull =
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type AddressedAmbiguityStatus = Extract<BackendStatusFull, { status: 'unreachable' | 'unauthorized' }>;
-type AddressedProbeStatus = Extract<
-  BackendStatusFull,
-  { status: 'ok' | 'shutting_down' | 'unreachable' | 'unauthorized' }
->;
+type AddressedProbeStatus =
+  | Extract<BackendStatusFull, { status: 'ok' | 'unreachable' | 'unauthorized' }>
+  | (Extract<BackendStatusFull, { status: 'shutting_down' }> &
+      Readonly<{
+        shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
+        unreportedShutdownRemainderCleanupRefusalCount?: number;
+      }>);
 type ShutdownRemainderEvidenceScope =
   | Readonly<{ kind: 'directory' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
@@ -641,13 +647,15 @@ function readRecentShutdownRemainder(
   scope: ShutdownRemainderEvidenceScope,
   observeStageWriter: ShutdownRemainderStageObserver,
   cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
+  unreportedCleanupRefusalCount = 0,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
     scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
   } catch (error: unknown) {
-    if (thrownErrnoCode(error) === 'ENOENT') {
+    const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', 'rescan-directory', error);
+    if (refusal === null) {
       scan = { records: [], skippedEntries: [], skippedRecords: [] };
     } else {
       // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
@@ -655,14 +663,27 @@ function readRecentShutdownRemainder(
       // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
       // field): not knowing which instance to scope to is a different unknown from not knowing whether the
       // directory could be read at all, and the second one is what this catch observed.
+      const reportedCleanupRefusals = cleanupRefusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+      const currentSubjectIndex = reportedCleanupRefusals.findIndex(({ subject }) => subject === directory);
+      if (currentSubjectIndex >= 0) {
+        reportedCleanupRefusals[currentSubjectIndex] = refusal;
+      } else if (reportedCleanupRefusals.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
+        reportedCleanupRefusals.push(refusal);
+      } else {
+        unreportedCleanupRefusalCount += 1;
+      }
       return {
         status: 'shutdown_remainder_unreadable',
         reason: 'scan-failed',
-        ...(cleanupRefusals.length === 0 ? {} : { cleanupRefusals }),
+        cleanupRefusals: reportedCleanupRefusals,
+        ...(unreportedCleanupRefusalCount === 0 ? {} : { unreportedCleanupRefusalCount }),
       };
     }
   }
-  const cleanupRefusalStatus = cleanupRefusals.length === 0 ? {} : { cleanupRefusals };
+  const cleanupRefusalStatus = {
+    ...(cleanupRefusals.length === 0 ? {} : { cleanupRefusals }),
+    ...(unreportedCleanupRefusalCount === 0 ? {} : { unreportedCleanupRefusalCount }),
+  };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
   // anything about when it was written, so an age filter on any of them would silently drop evidence this
@@ -734,7 +755,8 @@ function readRecentShutdownRemainder(
       scan.unscannedStageCount === undefined &&
       scan.unscannedRecordCount === undefined &&
       (scan.quarantined?.length ?? 0) === 0 &&
-      cleanupRefusals.length === 0
+      cleanupRefusals.length === 0 &&
+      unreportedCleanupRefusalCount === 0
     ) {
       if (hasUnrecognizedEntries) {
         return {
@@ -840,6 +862,7 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   fallback: Status,
   scope: ShutdownRemainderEvidenceScope,
   cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
+  unreportedCleanupRefusalCount = 0,
 ): Status {
   const shutdownRemainder = readRecentShutdownRemainder(
     storage,
@@ -848,6 +871,7 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
     scope,
     observeStageWriter,
     cleanupRefusals,
+    unreportedCleanupRefusalCount,
   );
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
@@ -910,7 +934,17 @@ async function probeDetailedHealth(
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (health.status === 'draining') {
-      return { status: 'shutting_down' };
+      return {
+        status: 'shutting_down',
+        ...(health.shutdownRemainderCleanupRefusals === undefined
+          ? {}
+          : { shutdownRemainderCleanupRefusals: health.shutdownRemainderCleanupRefusals }),
+        ...(health.unreportedShutdownRemainderCleanupRefusalCount === undefined
+          ? {}
+          : {
+              unreportedShutdownRemainderCleanupRefusalCount: health.unreportedShutdownRemainderCleanupRefusalCount,
+            }),
+      };
     }
     const { namespace: _namespace, status: _status, ...rest } = health;
     return {
@@ -1017,7 +1051,28 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-    result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
+    if (ping?.status === 'shutting_down') {
+      result = ping;
+      const detailed = await probeDetailedHealth(info, notOurCoordinator, unreachable).catch(() => null);
+      if (detailed?.status === 'shutting_down') {
+        result = detailed;
+      } else if (detailed?.status === 'ok') {
+        result = {
+          status: 'shutting_down',
+          ...(detailed.health.shutdownRemainderCleanupRefusals === undefined
+            ? {}
+            : { shutdownRemainderCleanupRefusals: detailed.health.shutdownRemainderCleanupRefusals }),
+          ...(detailed.health.unreportedShutdownRemainderCleanupRefusalCount === undefined
+            ? {}
+            : {
+                unreportedShutdownRemainderCleanupRefusalCount:
+                  detailed.health.unreportedShutdownRemainderCleanupRefusalCount,
+              }),
+        };
+      }
+    } else {
+      result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
+    }
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
@@ -1039,13 +1094,16 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     }
   }
   if (result.status === 'shutting_down') {
+    const { shutdownRemainderCleanupRefusals, unreportedShutdownRemainderCleanupRefusalCount, ...status } = result;
     return statusWithShutdownRemainder(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
       runtime.time.now(),
       observeStageWriter,
-      result,
+      status,
       { kind: 'directory' },
+      shutdownRemainderCleanupRefusals,
+      unreportedShutdownRemainderCleanupRefusalCount,
     );
   }
   if (result.status === 'ok') {
@@ -1057,6 +1115,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       result,
       { kind: 'directory' },
       result.health.shutdownRemainderCleanupRefusals,
+      result.health.unreportedShutdownRemainderCleanupRefusalCount,
     );
   }
   return statusWithRecentCoordinatorEvidence(

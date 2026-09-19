@@ -942,7 +942,11 @@ describe('getBackendStatusFull record disposition', () => {
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_no_socket',
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'scan-failed',
+        cleanupRefusals: [scanDirectoryCleanupRefusal()],
+      },
     });
   });
 
@@ -1613,7 +1617,27 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
       pid: PID,
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'scan-failed',
+        cleanupRefusals: [scanDirectoryCleanupRefusal()],
+      },
+    });
+  });
+
+  it('does not project an output-unsafe scan errno', async () => {
+    mockState.remainderScanErrorCode = 'EACCES\ninjected';
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      shutdownRemainder: {
+        cleanupRefusals: [
+          {
+            cause: { kind: 'unclassified-error', operation: 'scan-directory' },
+          },
+        ],
+      },
     });
   });
 
@@ -1679,7 +1703,11 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
       pid: PID,
-      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'scan-failed',
+        cleanupRefusals: [scanDirectoryCleanupRefusal()],
+      },
     });
   });
 
@@ -1740,6 +1768,14 @@ function detailed(status: 'starting' | 'ok' | 'draining', extra: Readonly<Record
     components: [],
     ...extra,
   });
+}
+
+function scanDirectoryCleanupRefusal() {
+  return {
+    subject: '/run/coral/shutdown-remainder.v1',
+    cause: { kind: 'system-error' as const, operation: 'scan-directory' as const, code: 'EACCES' },
+    retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-directory' as const },
+  };
 }
 
 /** Answers the two probes in order: the unauthenticated ping, then the detailed one. */
@@ -1817,13 +1853,27 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     }
 
     pruner.stop();
-    stubProbes(new Response(ping('draining'), { status: 200 }));
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          shutdownRemainderCleanupRefusals: pruner.readCleanupRefusals(),
+          unreportedShutdownRemainderCleanupRefusalCount: 4,
+        }),
+        { status: 200 },
+      ),
+    );
     const draining = await getBackendStatusFull('/plugin-root');
     expect(draining).toMatchObject({
       status: 'shutting_down',
-      shutdownRemainder: { skippedCorruptRecordCount: 1 },
+      shutdownRemainder: {
+        skippedCorruptRecordCount: 1,
+        cleanupRefusals: [refusal],
+        unreportedCleanupRefusalCount: 4,
+      },
     });
-    expect(draining.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
+    expect(draining).not.toHaveProperty('shutdownRemainderCleanupRefusals');
+    expect(draining).not.toHaveProperty('unreportedShutdownRemainderCleanupRefusalCount');
 
     mockState.observed = { kind: 'no-record' };
     const stopped = await getBackendStatusFull('/plugin-root');
@@ -1834,19 +1884,44 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(stopped.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
   });
 
-  it('reports a draining ping as shutting_down without asking the detailed probe', async () => {
+  it('keeps a draining ping authoritative while asking detailed health for diagnostics', async () => {
+    const refusal = {
+      subject: 'corrupt.json',
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+    };
     mockState.remainderFiles = [
       remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
     ];
-    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
+    const fetchMock = stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [refusal] }), { status: 200 }),
+    );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'shutting_down',
-      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'test-instance' } },
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: 'test-instance' },
+        cleanupRefusals: [refusal],
+      },
     });
-    expect(fetchMock, 'the ping settled it; asking again could only disagree').toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a draining ping authoritative when the detailed diagnostic request fails', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(ping('draining'), { status: 200 }))
+      .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   // 502/503/504 only: `TransientHttpError.isTransientStatus` is deliberately narrow, and 429 is *not* in it —

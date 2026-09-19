@@ -8,6 +8,7 @@ import type * as CompositionWorldMod from '#src/coordinator/composition/world.js
 import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
+import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '#src/infra/shutdown-remainder-record.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { formatBackendStatus, formatUnreadableProviderOperationDiscard } from '#src/cli/format/backend.js';
@@ -615,7 +616,7 @@ describe('health local carrier observation', () => {
     expect(readHealth().diagnostics?.launchPermits).toBeUndefined();
   });
 
-  it('projects shutdown remainder cleanup refusals from lifecycle state', () => {
+  it('bounds shutdown remainder cleanup refusals from lifecycle state and projects the overflow count', () => {
     const core = createCore(
       new LocalOperationRegistry(),
       vi.fn(async () => ({ ok: true }) as never),
@@ -625,12 +626,16 @@ describe('health local carrier observation', () => {
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
-    vi.spyOn(core.lifecycleController, 'readShutdownRemainderCleanupRefusals').mockReturnValue([refusal]);
+    vi.spyOn(core.lifecycleController, 'readShutdownRemainderCleanupRefusals').mockReturnValue(
+      Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, () => refusal),
+    );
+    vi.spyOn(core.lifecycleController, 'readUnreportedShutdownRemainderCleanupRefusalCount').mockReturnValue(7);
 
     const decoded = parseBackendHealth(readHealth());
 
     if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
-    expect(decoded.health.shutdownRemainderCleanupRefusals).toEqual([refusal]);
+    expect(decoded.health.shutdownRemainderCleanupRefusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(decoded.health.unreportedShutdownRemainderCleanupRefusalCount).toBe(8);
   });
 
   it('projects non-release dispositions from coordinator-owned diagnostic state', () => {

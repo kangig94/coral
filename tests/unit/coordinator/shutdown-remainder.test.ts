@@ -1556,6 +1556,14 @@ describe('shutdown remainder status', () => {
     if (disposition.cleanup.kind !== 'refused') throw new Error('cleanup refusal was not reported');
     expect(disposition.cleanup.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
     expect(disposition.cleanup.refusals[0]).toEqual(cleanupRefusal('corrupt-000.json', 'delete'));
+
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+    });
+    pruner.start();
+    expect(pruner.readUnreportedCleanupRefusalCount()).toBe(300 - SHUTDOWN_REMAINDER_SCAN_LIMIT);
   });
 
   it('quarantines every writer-owned stage whose writer is unobservable without a count bound', () => {

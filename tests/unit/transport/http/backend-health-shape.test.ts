@@ -6,6 +6,7 @@ import type {
   AssertIncidentCoversDispositionCauses,
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '#src/infra/shutdown-remainder-record.js';
 import {
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_CAUSES,
@@ -79,19 +80,58 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
-  it('accepts typed shutdown remainder cleanup refusals and rejects unsupported retry actions', () => {
+  it('accepts bounded shutdown remainder cleanup refusals with an overflow count', () => {
     const refusal = {
       subject: 'corrupt.json',
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
-    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupRefusals: [refusal] })).toBe(true);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [refusal],
+        unreportedShutdownRemainderCleanupRefusalCount: 3,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects unbounded or output-unsafe shutdown remainder cleanup refusals at ingress', () => {
+    const refusal = {
+      subject: 'corrupt.json',
+      cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
+    };
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, () => refusal),
+      }),
+    ).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [{ ...refusal, cause: { ...refusal.cause, code: 'EACCES\ninjected' } }],
+      }),
+    ).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [{ ...refusal, subject: 'x'.repeat(4097) }],
+      }),
+    ).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [{ ...refusal, subject: 'corrupt.json\ninjected' }],
+      }),
+    ).toBe(false);
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [{ ...refusal, retry: { ...refusal.retry, action: 'retry-delete' } }],
       }),
     ).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, unreportedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
   });
 
   it('accepts only a redacted named system provider scope', () => {

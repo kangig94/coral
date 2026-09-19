@@ -1,8 +1,15 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
-import { assertNever } from '../../../infra/error-format.js';
+import {
+  assertNever,
+  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
+  SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+} from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
-import type { ShutdownRemainderCleanupRefusal } from '../../../infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  type ShutdownRemainderCleanupRefusal,
+} from '../../../infra/shutdown-remainder-record.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import { launchPermitDiagnosticsSchema, type LaunchPermitDiagnostics } from '../../server-ports.js';
@@ -51,6 +58,9 @@ type TransportRuntimeComponentStatus =
     };
 
 type TextProjectionHealthState = 'idle' | 'fetching' | 'reindexing';
+
+const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH = 4096;
+const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 
 type TransportKbDaemonPhase = 'disabled' | 'starting' | 'online' | 'restarting' | 'stopping' | 'stopped' | 'failed';
 
@@ -123,6 +133,7 @@ export interface BackendHealth {
   };
   components: TransportRuntimeComponentStatus[];
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
+  unreportedShutdownRemainderCleanupRefusalCount?: number;
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
@@ -729,11 +740,16 @@ function isShutdownRemainderCleanupRefusal(value: unknown): value is ShutdownRem
   if (!isRecord(value) || !isRecord(value.cause) || !isRecord(value.retry)) return false;
   const operation = value.cause.operation;
   const causeIsValid =
-    (value.cause.kind === 'system-error' && typeof value.cause.code === 'string') ||
+    (value.cause.kind === 'system-error' &&
+      typeof value.cause.code === 'string' &&
+      value.cause.code.length <= SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH &&
+      SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(value.cause.code)) ||
     value.cause.kind === 'unclassified-error';
   return (
     typeof value.subject === 'string' &&
     value.subject.length > 0 &&
+    value.subject.length <= SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH &&
+    SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_PATTERN.test(value.subject) &&
     (operation === 'delete' || operation === 'promote' || operation === 'scan-directory') &&
     causeIsValid &&
     value.retry.trigger === 'remainder-maintenance' &&
@@ -762,7 +778,10 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     !value.components.every(isRuntimeComponentStatus) ||
     (value.shutdownRemainderCleanupRefusals !== undefined &&
       (!Array.isArray(value.shutdownRemainderCleanupRefusals) ||
+        value.shutdownRemainderCleanupRefusals.length > SHUTDOWN_REMAINDER_SCAN_LIMIT ||
         !value.shutdownRemainderCleanupRefusals.every(isShutdownRemainderCleanupRefusal))) ||
+    (value.unreportedShutdownRemainderCleanupRefusalCount !== undefined &&
+      !isNonNegativeInteger(value.unreportedShutdownRemainderCleanupRefusalCount)) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {

@@ -950,7 +950,17 @@ describe('cli format', () => {
       const text = formatBackendStatus({
         status: 'ok',
         health: { ...baseHealth, components: [], queueDepth: 0 },
-        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'scan-failed',
+          cleanupRefusals: [
+            {
+              subject: '/run/coral/shutdown-remainder.v1',
+              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
+            },
+          ],
+        },
       });
 
       expect(text).toBe(
@@ -966,6 +976,12 @@ describe('cli format', () => {
           'Active jobs: 1',
           'Queue depth: 0',
           'Coral could not inspect shutdown remainder records.',
+          'Shutdown remainder cleanup refusals: 1',
+          '  Refusal 1:',
+          '    Subject: "/run/coral/shutdown-remainder.v1"',
+          '    Cause: scan-directory failed with EACCES',
+          '    Retry trigger: coordinator startup and periodic remainder maintenance',
+          '    Retry action: rescan the directory',
         ].join('\n'),
       );
     });

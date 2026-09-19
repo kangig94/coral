@@ -12,6 +12,7 @@ import {
   classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderCleanupRefusal,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderCleanupRefusal,
@@ -118,21 +119,11 @@ function recordCleanupFailure(
   retryAction: ShutdownRemainderCleanupRefusal['retry']['action'],
   error: unknown,
 ): void {
-  if (thrownErrnoCode(error) === 'ENOENT') {
+  const refusal = shutdownRemainderCleanupRefusal(name, operation, retryAction, error);
+  if (refusal === null) {
     collection.bySubject.delete(name);
     return;
   }
-  const code = thrownErrnoCode(error);
-  const refusal: ShutdownRemainderCleanupRefusal = {
-    subject: name,
-    cause:
-      code !== undefined &&
-      code.length <= SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH &&
-      SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(code)
-        ? { kind: 'system-error', operation, code }
-        : { kind: 'unclassified-error', operation },
-    retry: { trigger: 'remainder-maintenance', action: retryAction },
-  };
   if (collection.bySubject.has(name) || collection.bySubject.size < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
     collection.bySubject.set(name, refusal);
   } else {
@@ -388,11 +379,13 @@ export function createShutdownRemainderPruner(
   start(): ShutdownRemainderPruneDisposition | null;
   stop(): void;
   readCleanupRefusals(): readonly ShutdownRemainderCleanupRefusal[];
+  readUnreportedCleanupRefusalCount(): number;
 }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
   let heldSubjectNames = new Set<string>();
   let cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [];
+  let unreportedCleanupRefusalCount = 0;
   const prune = (retryHeldSubjects: boolean): ShutdownRemainderPruneDisposition => {
     const result = pruneShutdownRemainderRecords(runtime, retryHeldSubjects ? new Set() : heldSubjectNames);
     heldSubjectNames = new Set(
@@ -403,6 +396,8 @@ export function createShutdownRemainderPruner(
           : [],
     );
     cleanupRefusals = result.cleanup.kind === 'refused' ? result.cleanup.refusals : [];
+    unreportedCleanupRefusalCount =
+      result.cleanup.kind === 'refused' ? (result.cleanup.unreportedRefusalCount ?? 0) : 0;
     return result;
   };
 
@@ -420,6 +415,7 @@ export function createShutdownRemainderPruner(
       timer = null;
     },
     readCleanupRefusals: () => cleanupRefusals,
+    readUnreportedCleanupRefusalCount: () => unreportedCleanupRefusalCount,
   };
 }
 

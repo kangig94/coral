@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import {
+  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
   serializedThrownIdentifierSchema,
   serializedThrownSchema,
@@ -122,6 +123,28 @@ export type ShutdownRemainderCleanupRefusal = Readonly<{
     action: 'rescan-subject' | 'rescan-directory';
   }>;
 }>;
+
+/** ENOENT is absence; every other cleanup failure retains only a bounded errno identifier. */
+export function shutdownRemainderCleanupRefusal(
+  subject: string,
+  operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
+  retryAction: ShutdownRemainderCleanupRefusal['retry']['action'],
+  error: unknown,
+): ShutdownRemainderCleanupRefusal | null {
+  const code = thrownErrnoCode(error);
+  if (code === 'ENOENT') return null;
+  return {
+    subject,
+    cause:
+      code !== undefined &&
+      code.length <= SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH &&
+      SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(code)
+        ? { kind: 'system-error', operation, code }
+        : { kind: 'unclassified-error', operation },
+    retry: { trigger: 'remainder-maintenance', action: retryAction },
+  };
+}
+
 const SHUTDOWN_REMAINDER_STAGE_PATTERN =
   /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unobserved)(?<partial>\.tmp)?$/u;
 const SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN = /\.json\.(?:stage|tmp)(?:\.|$)/u;

@@ -15,6 +15,7 @@ import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infr
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
+import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '../../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
@@ -1461,7 +1462,15 @@ export function createCoordinatorCore(
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
-        const shutdownRemainderCleanupRefusals = lifecycleController?.readShutdownRemainderCleanupRefusals() ?? [];
+        const observedShutdownRemainderCleanupRefusals =
+          lifecycleController?.readShutdownRemainderCleanupRefusals() ?? [];
+        const shutdownRemainderCleanupRefusals = observedShutdownRemainderCleanupRefusals.slice(
+          0,
+          SHUTDOWN_REMAINDER_SCAN_LIMIT,
+        );
+        const unreportedShutdownRemainderCleanupRefusalCount =
+          (lifecycleController?.readUnreportedShutdownRemainderCleanupRefusalCount() ?? 0) +
+          Math.max(0, observedShutdownRemainderCleanupRefusals.length - shutdownRemainderCleanupRefusals.length);
 
         let activeJobs = 0;
         let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
@@ -1625,6 +1634,9 @@ export function createCoordinatorCore(
           components,
           kbDaemon,
           ...(shutdownRemainderCleanupRefusals.length === 0 ? {} : { shutdownRemainderCleanupRefusals }),
+          ...(unreportedShutdownRemainderCleanupRefusalCount === 0
+            ? {}
+            : { unreportedShutdownRemainderCleanupRefusalCount }),
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
           ...(systemProviderScope === undefined
