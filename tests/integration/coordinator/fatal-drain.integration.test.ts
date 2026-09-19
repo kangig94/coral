@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { shutdownRemainderPath } from '#src/coordinator/shutdown-remainder.js';
+import { shutdownRemainderRecordDirectory } from '#src/infra/shutdown-remainder-record.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
@@ -231,7 +231,7 @@ describe('coordinator fatal drain integration', () => {
     expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
     expect(await waitForCoordinatorSocketRelease(files.socketPath, 5_000)).toBe('unlinked');
 
-    const remainderRecordPath = join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`);
+    const remainderRecordPath = join(shutdownRemainderRecordDirectory(files.runDir), `${initial.instanceId}.json`);
     expect(existsSync(remainderRecordPath)).toBe(true);
     const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
     expect(rawRemainderRecord).toMatchObject({
@@ -330,7 +330,7 @@ describe('coordinator fatal drain integration', () => {
     expect(actions).not.toContain('child-termination');
     expect(actions).not.toContain('job-terminalization');
 
-    const remainderRecordPath = join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`);
+    const remainderRecordPath = join(shutdownRemainderRecordDirectory(files.runDir), `${initial.instanceId}.json`);
     const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
     expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
@@ -426,7 +426,7 @@ describe('coordinator fatal drain integration', () => {
     expect(actions).toContain('provider-host-hard-shutdown-started');
     expect(actions).toContain('provider-host-hard-shutdown-budget-expired');
 
-    const remainderRecordPath = join(shutdownRemainderPath(files.runDir), `${initial.instanceId}.json`);
+    const remainderRecordPath = join(shutdownRemainderRecordDirectory(files.runDir), `${initial.instanceId}.json`);
     const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
     expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',

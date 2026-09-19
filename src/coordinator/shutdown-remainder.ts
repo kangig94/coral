@@ -13,6 +13,7 @@ import {
   classifyShutdownRemainderFile,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
   shutdownRemainderCleanupRefusal,
+  shutdownRemainderFilesystemSubject,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderCleanupRefusal,
@@ -56,10 +57,6 @@ export type ShutdownRemainderWriteDisposition =
   | Readonly<{ kind: 'published' }>
   | Readonly<{ kind: 'refused'; detail: string }>
   | Readonly<{ kind: 'verification-unavailable'; detail: string }>;
-
-export function shutdownRemainderPath(runDir: string): string {
-  return shutdownRemainderRecordDirectory(runDir);
-}
 
 type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
 
@@ -143,7 +140,7 @@ function pruneDisposition(
 ): ShutdownRemainderPruneDisposition {
   const stageNames = [...input.reobservableStageNames].sort((left, right) => left.localeCompare(right));
   const refusals = [...input.cleanupRefusals.bySubject.values()].sort((left, right) =>
-    left.subject.localeCompare(right.subject),
+    left.subject.label.localeCompare(right.subject.label),
   );
   const quarantinedNames = [...input.quarantinedSubjectNames].sort((left, right) => left.localeCompare(right));
   const unrecognizedNames = [...input.unrecognizedSubjectNames].sort((left, right) => left.localeCompare(right));
@@ -187,7 +184,7 @@ export function pruneShutdownRemainderRecords(
   runtime: ShutdownRemainderPruneRuntime,
   heldSubjectNames: ReadonlySet<string> = new Set(),
 ): ShutdownRemainderPruneDisposition {
-  const directory = shutdownRemainderPath(runtime.runDir);
+  const directory = shutdownRemainderRecordDirectory(runtime.runDir);
   const reobservableStageNames = new Set<string>();
   const cleanupRefusals = cleanupRefusalCollection();
   const quarantinedSubjectNames = new Set<string>();
@@ -313,7 +310,9 @@ export function pruneShutdownRemainderRecords(
         try {
           runtime.storage.unlinkSync(path);
           cleanupRefusals.bySubject.delete(name);
-          backendLog.warn(`shutdown remainder record ${name} discarded: content is not valid JSON`);
+          backendLog.warn(
+            `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: content is not valid JSON`,
+          );
         } catch (error: unknown) {
           recordCleanupFailure(cleanupRefusals, name, 'delete', 'rescan-subject', error);
         }
@@ -331,7 +330,9 @@ export function pruneShutdownRemainderRecords(
         try {
           runtime.storage.unlinkSync(path);
           cleanupRefusals.bySubject.delete(name);
-          backendLog.warn(`shutdown remainder record ${name} discarded: filename does not match instance identity`);
+          backendLog.warn(
+            `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: filename does not match instance identity`,
+          );
         } catch (error: unknown) {
           recordCleanupFailure(cleanupRefusals, name, 'delete', 'rescan-subject', error);
         }
@@ -440,7 +441,7 @@ export function recordShutdownRemainder(
   if (!Number.isSafeInteger(runtime.writer.pid) || runtime.writer.pid <= 0) {
     throw new Error('Shutdown remainder writer pid must be a positive safe integer.');
   }
-  const directory = shutdownRemainderPath(runtime.runDir);
+  const directory = shutdownRemainderRecordDirectory(runtime.runDir);
   const path = join(directory, `${input.instanceId}.json`);
   const stagePath = join(directory, shutdownRemainderStageName(input.instanceId, runtime.writer));
   const record: ShutdownRemainderRecord = {

@@ -18,10 +18,10 @@ import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.
 import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   observeShutdownRemainderStageWriter,
-  sanitizeShutdownRemainderCleanupSubject,
   scanShutdownRemainderRecords,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
   shutdownRemainderCleanupRefusal,
+  shutdownRemainderFilesystemSubject,
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderCleanupRefusal,
@@ -276,6 +276,7 @@ type OperatorFacingShutdownRemainderQuarantine = Readonly<{
 type OperatorFacingShutdownRemainderCleanup = Readonly<{
   cleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
   unreportedCleanupRefusalCount?: number;
+  malformedCleanupRefusalRowCount?: number;
 }>;
 
 type OperatorFacingShutdownRemainderUnowned = Readonly<{
@@ -302,6 +303,7 @@ type BackendStatus =
       diagnostics?: BackendHealth['diagnostics'];
       shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
       unreportedShutdownRemainderCleanupRefusalCount?: number;
+      malformedShutdownRemainderCleanupRefusalRowCount?: number;
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
     }
@@ -355,7 +357,15 @@ export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'shutting_down';
-      liveCleanupRefusals: Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
+      liveCleanupRefusals:
+        | Readonly<{
+            kind: 'available';
+            refusals: readonly ShutdownRemainderCleanupRefusal[];
+            unreportedCount: number;
+            malformedRowCount: number;
+          }>
+        | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>
+        | Readonly<{ kind: 'unavailable'; reason: 'transient-health-response'; statusCode: number }>;
       shutdownRemainder?: ShutdownRemainderReport;
     }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
@@ -646,6 +656,7 @@ function readRecentShutdownRemainder(
   observeStageWriter: ShutdownRemainderStageObserver,
   cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
   unreportedCleanupRefusalCount = 0,
+  malformedCleanupRefusalRowCount = 0,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   const enumeration = { names: null as ReadonlySet<string> | null, entryCount: 0 };
@@ -657,7 +668,7 @@ function readRecentShutdownRemainder(
     if (names === null) {
       return { refusals: cleanupRefusals, unreportedCount: unreportedCleanupRefusalCount };
     }
-    const refusals = cleanupRefusals.filter(({ subject }) => names.has(subject));
+    const refusals = cleanupRefusals.filter(({ subject }) => names.has(subject.identity));
     return {
       refusals,
       unreportedCount: Math.min(unreportedCleanupRefusalCount, Math.max(0, enumeration.entryCount - refusals.length)),
@@ -667,12 +678,7 @@ function readRecentShutdownRemainder(
   try {
     scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, (names) => {
       enumeration.entryCount = names.length;
-      enumeration.names = new Set(
-        names.flatMap((name) => {
-          const subject = sanitizeShutdownRemainderCleanupSubject(name);
-          return subject === null ? [] : [subject];
-        }),
-      );
+      enumeration.names = new Set(names.map((name) => shutdownRemainderFilesystemSubject(name).identity));
     });
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', 'rescan-directory', error);
@@ -688,7 +694,9 @@ function readRecentShutdownRemainder(
       const current = currentCleanupRefusals();
       const reportedCleanupRefusals = current.refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
       let unreportedCount = current.unreportedCount;
-      const currentSubjectIndex = reportedCleanupRefusals.findIndex(({ subject }) => subject === refusal.subject);
+      const currentSubjectIndex = reportedCleanupRefusals.findIndex(
+        ({ subject }) => subject.identity === refusal.subject.identity,
+      );
       if (currentSubjectIndex >= 0) {
         reportedCleanupRefusals[currentSubjectIndex] = refusal;
       } else if (reportedCleanupRefusals.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
@@ -701,6 +709,7 @@ function readRecentShutdownRemainder(
         reason: 'scan-failed',
         cleanupRefusals: reportedCleanupRefusals,
         ...(unreportedCount === 0 ? {} : { unreportedCleanupRefusalCount: unreportedCount }),
+        ...(malformedCleanupRefusalRowCount === 0 ? {} : { malformedCleanupRefusalRowCount }),
       };
     }
   }
@@ -708,6 +717,7 @@ function readRecentShutdownRemainder(
   const cleanupRefusalStatus = {
     ...(current.refusals.length === 0 ? {} : { cleanupRefusals: current.refusals }),
     ...(current.unreportedCount === 0 ? {} : { unreportedCleanupRefusalCount: current.unreportedCount }),
+    ...(malformedCleanupRefusalRowCount === 0 ? {} : { malformedCleanupRefusalRowCount }),
   };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
@@ -781,7 +791,8 @@ function readRecentShutdownRemainder(
       scan.unscannedRecordCount === undefined &&
       (scan.quarantined?.length ?? 0) === 0 &&
       current.refusals.length === 0 &&
-      current.unreportedCount === 0
+      current.unreportedCount === 0 &&
+      malformedCleanupRefusalRowCount === 0
     ) {
       if (hasUnrecognizedEntries) {
         return {
@@ -888,6 +899,7 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   scope: ShutdownRemainderEvidenceScope,
   cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
   unreportedCleanupRefusalCount = 0,
+  malformedCleanupRefusalRowCount = 0,
 ): Status {
   const shutdownRemainder = readRecentShutdownRemainder(
     storage,
@@ -897,15 +909,18 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
     observeStageWriter,
     cleanupRefusals,
     unreportedCleanupRefusalCount,
+    malformedCleanupRefusalRowCount,
   );
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
 }
 
-function shuttingDownStatus(): Extract<BackendStatusFull, { status: 'shutting_down' }> {
+function shuttingDownStatus(
+  liveCleanupRefusals: Extract<BackendStatusFull, { status: 'shutting_down' }>['liveCleanupRefusals'],
+): Extract<BackendStatusFull, { status: 'shutting_down' }> {
   return {
     status: 'shutting_down',
-    liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+    liveCleanupRefusals,
   };
 }
 
@@ -935,10 +950,16 @@ async function probeUnauthenticatedPing(
     if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: body.namespace, flavor: body.flavor });
     }
-    return body.status === 'draining' ? shuttingDownStatus() : null;
+    return body.status === 'draining'
+      ? shuttingDownStatus({ kind: 'unavailable', reason: 'coordinator-draining' })
+      : null;
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return shuttingDownStatus();
+    return shuttingDownStatus({
+      kind: 'unavailable',
+      reason: 'transient-health-response',
+      statusCode: response.status,
+    });
   }
   return unreachable(`health responded ${response.status}`);
 }
@@ -961,21 +982,43 @@ async function probeDetailedHealth(
     if (parsed === null) {
       return unreachable('detailed health responded 200 with a body this build could not decode');
     }
-    const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
+    const {
+      health,
+      malformedShutdownRemainderCleanupRefusalRowCount,
+      skippedProviderProxySetRows,
+      skippedProviderProxySetTokens,
+    } = parsed;
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (health.status === 'draining') {
-      return shuttingDownStatus();
+      return shuttingDownStatus({
+        kind: 'available',
+        refusals: health.shutdownRemainderCleanupRefusals ?? [],
+        unreportedCount: health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        malformedRowCount: malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
+      });
     }
     const { namespace: _namespace, status: _status, ...rest } = health;
     return {
       status: 'ok',
-      health: { ...rest, status: 'ok' as const, skippedProviderProxySetRows, skippedProviderProxySetTokens },
+      health: {
+        ...rest,
+        status: 'ok' as const,
+        ...((malformedShutdownRemainderCleanupRefusalRowCount ?? 0) === 0
+          ? {}
+          : { malformedShutdownRemainderCleanupRefusalRowCount }),
+        skippedProviderProxySetRows,
+        skippedProviderProxySetTokens,
+      },
     };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return shuttingDownStatus();
+    return shuttingDownStatus({
+      kind: 'unavailable',
+      reason: 'transient-health-response',
+      statusCode: response.status,
+    });
   }
   if (response.status === 401) return { status: 'unauthorized' };
   return unreachable(`detailed health responded ${response.status}`);
@@ -1095,6 +1138,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     }
   }
   if (result.status === 'shutting_down') {
+    const liveCleanupRefusals = result.liveCleanupRefusals;
     return statusWithShutdownRemainder(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
@@ -1102,6 +1146,9 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       observeStageWriter,
       result,
       { kind: 'directory' },
+      liveCleanupRefusals.kind === 'available' ? liveCleanupRefusals.refusals : [],
+      liveCleanupRefusals.kind === 'available' ? liveCleanupRefusals.unreportedCount : 0,
+      liveCleanupRefusals.kind === 'available' ? liveCleanupRefusals.malformedRowCount : 0,
     );
   }
   if (result.status === 'ok') {
@@ -1114,6 +1161,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       { kind: 'directory' },
       result.health.shutdownRemainderCleanupRefusals,
       result.health.unreportedShutdownRemainderCleanupRefusalCount,
+      result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
     );
   }
   return statusWithRecentCoordinatorEvidence(

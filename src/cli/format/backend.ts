@@ -759,7 +759,14 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       );
     case 'shutting_down':
       return withShutdownRemainderSection(
-        'Backend shutting down\nLive cleanup refusal detail is unavailable while the coordinator drains; shutdown remainder evidence below comes only from disk.',
+        [
+          'Backend shutting down',
+          result.liveCleanupRefusals.kind === 'available'
+            ? 'Live cleanup refusal detail was decoded from the draining coordinator.'
+            : result.liveCleanupRefusals.reason === 'coordinator-draining'
+              ? 'Live cleanup refusal detail is unavailable because only the draining ping was obtained; shutdown remainder evidence below comes only from disk.'
+              : `Live cleanup refusal detail is unavailable because the health endpoint responded ${result.liveCleanupRefusals.statusCode}; shutdown remainder evidence below comes only from disk.`,
+        ].join('\n'),
         result.shutdownRemainder,
         'coordinator-draining',
       );
@@ -1422,16 +1429,19 @@ function formatUnreadableShutdownRemainderReport(
 
 function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport): string[] {
   const refusals = 'cleanupRefusals' in result ? (result.cleanupRefusals ?? []) : [];
+  const malformed = 'malformedCleanupRefusalRowCount' in result ? (result.malformedCleanupRefusalRowCount ?? 0) : 0;
   const reported = refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
   const unreported =
     ('unreportedCleanupRefusalCount' in result ? (result.unreportedCleanupRefusalCount ?? 0) : 0) +
     Math.max(0, refusals.length - reported.length);
-  if (refusals.length === 0 && unreported === 0) return [];
+  if (refusals.length === 0 && unreported === 0 && malformed === 0) return [];
   return [
-    `Shutdown remainder cleanup refusals: ${reported.length + unreported}`,
+    ...(refusals.length === 0 && unreported === 0
+      ? []
+      : [`Shutdown remainder cleanup refusals: ${reported.length + unreported}`]),
     ...reported.flatMap((refusal, index) => [
       `  Refusal ${index + 1}:`,
-      `    Subject: ${JSON.stringify(refusal.subject)}`,
+      `    Subject: ${JSON.stringify(refusal.subject.label)}`,
       `    Cause: ${refusal.cause.operation} ${
         refusal.cause.kind === 'system-error' ? `failed with ${refusal.cause.code}` : 'failed without an errno code'
       }`,
@@ -1439,6 +1449,7 @@ function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport)
       `    Retry action: ${formatShutdownRemainderCleanupRetryAction(refusal.retry.action)}`,
     ]),
     ...(unreported === 0 ? [] : [`  Additional refusals not listed: ${unreported}`]),
+    ...(malformed === 0 ? [] : [`Malformed shutdown remainder cleanup refusal rows: ${malformed}`]),
   ];
 }
 

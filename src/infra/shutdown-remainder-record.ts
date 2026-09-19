@@ -16,21 +16,43 @@ import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 export const SHUTDOWN_REMAINDER_SCAN_LIMIT = 128;
-export const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH = 4096;
+export const SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH = 4096;
 
-export type ShutdownRemainderCleanupSubject = string;
+export type ShutdownRemainderFilesystemSubject = Readonly<{
+  identity: string;
+  label: string;
+}>;
 
-const SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_UNSAFE_PATTERN = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
+export type ShutdownRemainderCleanupSubject = ShutdownRemainderFilesystemSubject;
 
-/** NUL cannot identify a POSIX path; every other operator-unsafe code point must be replaced before transport. */
-export function sanitizeShutdownRemainderCleanupSubject(subject: string): ShutdownRemainderCleanupSubject | null {
-  if (subject.length === 0 || subject.includes('\0')) return null;
-  const sanitized = subject.replace(SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_UNSAFE_PATTERN, '\uFFFD');
-  const bounded =
-    sanitized.length <= SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH
-      ? sanitized
-      : sanitized.slice(0, SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH).replace(/[\uD800-\uDBFF]$/u, '');
-  return bounded;
+const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
+const SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/u;
+
+/** Filesystem subject equality must use the raw-name digest, never the bounded terminal label. */
+export function shutdownRemainderFilesystemSubject(subject: string): ShutdownRemainderFilesystemSubject {
+  const identity = sha256Hex(subject);
+  const escaped = subject.replace(
+    SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN,
+    (character) => `\\u{${(character.codePointAt(0) as number).toString(16).toUpperCase()}}`,
+  );
+  if (escaped.length <= SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH) return { identity, label: escaped };
+  const suffix = `...[sha256:${identity}]`;
+  const prefix = escaped
+    .slice(0, SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH - suffix.length)
+    .replace(/[\uD800-\uDBFF]$/u, '');
+  return { identity, label: `${prefix}${suffix}` };
+}
+
+/** A transported filesystem label must not contain terminal-active code points. */
+export function isShutdownRemainderFilesystemSubject(value: unknown): value is ShutdownRemainderFilesystemSubject {
+  return (
+    isRecord(value) &&
+    typeof value.identity === 'string' &&
+    SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN.test(value.identity) &&
+    typeof value.label === 'string' &&
+    value.label.length <= SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH &&
+    !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value.label)
+  );
 }
 
 type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
@@ -149,10 +171,8 @@ export function shutdownRemainderCleanupRefusal(
 ): ShutdownRemainderCleanupRefusal | null {
   const code = thrownErrnoCode(error);
   if (code === 'ENOENT') return null;
-  const cleanupSubject = sanitizeShutdownRemainderCleanupSubject(subject);
-  if (cleanupSubject === null) return null;
   return {
-    subject: cleanupSubject,
+    subject: shutdownRemainderFilesystemSubject(subject),
     cause:
       code !== undefined && isSystemErrorCode(code)
         ? { kind: 'system-error', operation, code }
@@ -427,7 +447,7 @@ export function scanShutdownRemainderRecords(
     }
     if (entry.kind !== 'record') {
       if (unrecognizedEntryNames.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
-        unrecognizedEntryNames.push(name);
+        unrecognizedEntryNames.push(shutdownRemainderFilesystemSubject(name).label);
       } else {
         unreportedUnrecognizedEntryCount += 1;
       }
@@ -463,7 +483,10 @@ export function scanShutdownRemainderRecords(
   const unscannedRecordCount = recordCandidates.length - recordFiles.length;
 
   const quarantine = (subject: string): void => {
-    quarantined.push({ subject, retry: { trigger: 'coordinator-startup' } });
+    quarantined.push({
+      subject: shutdownRemainderFilesystemSubject(subject).label,
+      retry: { trigger: 'coordinator-startup' },
+    });
   };
 
   for (const entry of stageFiles) {

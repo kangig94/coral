@@ -75,13 +75,15 @@ type ExpectedProjectionLeafPaths =
   | 'skippedUnsupportedRecordCount'
   | 'skippedIdentityMismatchRecordCount'
   | 'cleanupRefusals'
-  | 'cleanupRefusals[].subject'
+  | 'cleanupRefusals[].subject.identity'
+  | 'cleanupRefusals[].subject.label'
   | 'cleanupRefusals[].cause.kind'
   | 'cleanupRefusals[].cause.operation'
   | 'cleanupRefusals[].cause.code'
   | 'cleanupRefusals[].retry.trigger'
   | 'cleanupRefusals[].retry.action'
   | 'unreportedCleanupRefusalCount'
+  | 'malformedCleanupRefusalRowCount'
   | 'unrecognizedEntryNames'
   | 'unrecognizedEntryNames[]'
   | 'unreportedUnrecognizedEntryCount'
@@ -102,7 +104,8 @@ type ExpectedBroadStringLeafPaths =
   | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.evidence.processes[].jobId'
   | 'skippedUnreadableRecordNames[]'
-  | 'cleanupRefusals[].subject'
+  | 'cleanupRefusals[].subject.identity'
+  | 'cleanupRefusals[].subject.label'
   | 'cleanupRefusals[].cause.code'
   | 'unrecognizedEntryNames[]'
   | 'quarantined[].subject';
@@ -165,7 +168,7 @@ void skippedCorruptRecordCount;
 declare const skippedUnsupportedRecordCount: ShutdownRemainderStatus['skippedUnsupportedRecordCount'];
 void skippedUnsupportedRecordCount;
 declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
-const cleanupRefusedSubjectName: string = cleanupRefusals?.[0]?.subject ?? '';
+const cleanupRefusedSubjectName: string = cleanupRefusals?.[0]?.subject.label ?? '';
 void cleanupRefusedSubjectName;
 declare const unrecognizedEntryNames: ShutdownRemainderStatus['unrecognizedEntryNames'];
 const unrecognizedEntryName: string = unrecognizedEntryNames?.[0] ?? '';

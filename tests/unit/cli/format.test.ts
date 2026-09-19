@@ -14,7 +14,10 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
-import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '#src/infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderFilesystemSubject,
+} from '#src/infra/shutdown-remainder-record.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   documentedCoralSetupError,
@@ -955,7 +958,7 @@ describe('cli format', () => {
           reason: 'scan-failed',
           cleanupRefusals: [
             {
-              subject: '/run/coral/shutdown-remainder.v1',
+              subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
               retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
@@ -2141,7 +2144,7 @@ describe('cli format', () => {
           skippedUnsupportedRecordCount: 0,
           cleanupRefusals: [
             {
-              subject: 'corrupt.json',
+              subject: shutdownRemainderFilesystemSubject('corrupt.json'),
               cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
               retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
             },
@@ -2163,7 +2166,7 @@ describe('cli format', () => {
 
     it('bounds cleanup refusal lines and reports the omitted count', () => {
       const cleanupRefusals = Array.from({ length: 300 }, (_, index) => ({
-        subject: `corrupt-${String(index).padStart(3, '0')}.json`,
+        subject: shutdownRemainderFilesystemSubject(`corrupt-${String(index).padStart(3, '0')}.json`),
         cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
         retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
       }));
@@ -2184,6 +2187,25 @@ describe('cli format', () => {
       expect(text.match(/ {2}Refusal [0-9]+:/gu)).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
       expect(text).toContain('  Additional refusals not listed: 172');
       expect(text).not.toContain('corrupt-128.json');
+    });
+
+    it('reports malformed cleanup rows separately from refusal counts', () => {
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: { ...baseHealth, components: [], queueDepth: 0 },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedUnreadableRecordNames: [],
+          skippedCorruptRecordCount: 0,
+          skippedUnsupportedRecordCount: 0,
+          malformedCleanupRefusalRowCount: 3,
+        },
+      });
+
+      expect(text).toContain('Malformed shutdown remainder cleanup refusal rows: 3');
+      expect(text).not.toContain('Shutdown remainder cleanup refusals:');
+      expect(text).not.toContain('Additional refusals not listed:');
     });
 
     it('reports unrecognized directory entries as terminal and outside cleanup ownership', () => {
@@ -2396,7 +2418,18 @@ describe('cli format', () => {
           liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
         }),
       ).toBe(
-        'Backend shutting down\nLive cleanup refusal detail is unavailable while the coordinator drains; shutdown remainder evidence below comes only from disk.',
+        'Backend shutting down\nLive cleanup refusal detail is unavailable because only the draining ping was obtained; shutdown remainder evidence below comes only from disk.',
+      );
+    });
+
+    it('attributes unavailable draining detail to the transient response that was observed', () => {
+      expect(
+        formatBackendStatus({
+          status: 'shutting_down',
+          liveCleanupRefusals: { kind: 'unavailable', reason: 'transient-health-response', statusCode: 503 },
+        }),
+      ).toBe(
+        'Backend shutting down\nLive cleanup refusal detail is unavailable because the health endpoint responded 503; shutdown remainder evidence below comes only from disk.',
       );
     });
 

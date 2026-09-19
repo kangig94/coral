@@ -8,6 +8,7 @@ import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import { shutdownRemainderFilesystemSubject } from '#src/infra/shutdown-remainder-record.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -1772,7 +1773,7 @@ function detailed(status: 'starting' | 'ok' | 'draining', extra: Readonly<Record
 
 function scanDirectoryCleanupRefusal() {
   return {
-    subject: '/run/coral/shutdown-remainder.v1',
+    subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
     cause: { kind: 'system-error' as const, operation: 'scan-directory' as const, code: 'EACCES' },
     retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-directory' as const },
   };
@@ -1821,7 +1822,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     });
 
     const refusal = {
-      subject: 'corrupt.json',
+      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
@@ -1908,7 +1909,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
   it('drops a live cleanup refusal when the same response proves its subject absent', async () => {
     const staleRefusal = {
-      subject: 'gone.json',
+      subject: shutdownRemainderFilesystemSubject('gone.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
@@ -1930,9 +1931,54 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(result.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
   });
 
+  it('reconciles cleanup refusals by raw-name identity instead of a colliding display label', async () => {
+    const refusal = {
+      subject: shutdownRemainderFilesystemSubject('same\n.tmp'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+    };
+    mockState.remainderFiles = [
+      remainderFile('present.json', NOW - 10_000, shutdownRemainder('present', NOW - 10_000)),
+      remainderFile('same\uFFFD.tmp', NOW - 10_000, ''),
+    ];
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [refusal] }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'present' } },
+    });
+    expect(result.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
+  });
+
+  it('reports malformed cleanup rows without counting them as unlisted refusals', async () => {
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [{}, 7, { subject: 'not-a-refusal' }] }), {
+        status: 200,
+      }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      shutdownRemainder: {
+        malformedCleanupRefusalRowCount: 3,
+      },
+    });
+    expect(result.shutdownRemainder).not.toHaveProperty('unreportedCleanupRefusalCount');
+  });
+
   it('preserves a live cleanup refusal when the directory enumeration is unavailable', async () => {
     const refusal = {
-      subject: 'unobserved.json',
+      subject: shutdownRemainderFilesystemSubject('unobserved.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
@@ -1964,7 +2010,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'shutting_down',
-      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'transient-health-response', statusCode: status },
     });
   });
 
@@ -2043,14 +2089,38 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     });
   });
 
-  it('reports a detailed answer that says draining as shutting_down', async () => {
-    stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('draining'), { status: 200 }));
+  it('preserves cleanup refusal detail decoded from a draining detailed answer', async () => {
+    const refusal = {
+      subject: shutdownRemainderFilesystemSubject('held.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+    };
+    mockState.remainderFiles = [remainderFile('held.json', NOW - 10_000, shutdownRemainder('held', NOW - 10_000))];
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          shutdownRemainderCleanupRefusals: [refusal, { subject: 'not-a-refusal' }],
+          unreportedShutdownRemainderCleanupRefusalCount: 2,
+        }),
+        { status: 200 },
+      ),
+    );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'shutting_down',
-      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      liveCleanupRefusals: {
+        kind: 'available',
+        refusals: [refusal],
+        unreportedCount: 2,
+        malformedRowCount: 1,
+      },
+      shutdownRemainder: {
+        cleanupRefusals: [refusal],
+        malformedCleanupRefusalRowCount: 1,
+      },
     });
   });
 
@@ -2061,7 +2131,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'shutting_down',
-      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'transient-health-response', statusCode: status },
     });
   });
 

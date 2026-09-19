@@ -7,9 +7,10 @@ import type {
 } from '#src/coordinator/services/provider-proxy-authority-fault.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import {
-  SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH,
+  SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
   shutdownRemainderCleanupRefusal,
+  shutdownRemainderFilesystemSubject,
 } from '#src/infra/shutdown-remainder-record.js';
 import {
   PROVIDER_PROXY_SET_OPERATOR_DISPOSITIONS,
@@ -86,7 +87,7 @@ describe('/health typed shape (AC10a)', () => {
 
   it('accepts bounded shutdown remainder cleanup refusals with an overflow count', () => {
     const refusal = {
-      subject: 'corrupt.json',
+      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
@@ -101,7 +102,7 @@ describe('/health typed shape (AC10a)', () => {
 
   it('omits one malformed cleanup refusal without rejecting unrelated health fields', () => {
     const refusal = {
-      subject: 'corrupt.json',
+      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
@@ -109,20 +110,39 @@ describe('/health typed shape (AC10a)', () => {
     expect(
       parseBackendHealth({
         ...HEALTHY_BASE,
-        shutdownRemainderCleanupRefusals: [refusal, { ...refusal, subject: 'unsafe\n.json' }],
+        shutdownRemainderCleanupRefusals: [refusal, { ...refusal, subject: 'not-a-subject' }],
         unreportedShutdownRemainderCleanupRefusalCount: 2,
-      })?.health,
+      }),
     ).toEqual({
-      ...HEALTHY_BASE,
-      shutdownRemainderCleanupRefusals: [refusal],
-      unreportedShutdownRemainderCleanupRefusalCount: 3,
+      health: {
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [refusal],
+        unreportedShutdownRemainderCleanupRefusalCount: 2,
+      },
+      malformedShutdownRemainderCleanupRefusalRowCount: 1,
+      skippedProviderProxySetRows: 0,
+      skippedProviderProxySetTokens: [],
     });
   });
 
+  it.each([{}, 7, { subject: 'not-a-refusal' }])(
+    'attributes a malformed cleanup row without claiming an unlisted refusal (%j)',
+    (candidate) => {
+      const parsed = parseBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [candidate],
+      });
+
+      expect(parsed?.health.shutdownRemainderCleanupRefusals).toEqual([]);
+      expect(parsed?.health.unreportedShutdownRemainderCleanupRefusalCount).toBeUndefined();
+      expect(parsed?.malformedShutdownRemainderCleanupRefusalRowCount).toBe(1);
+    },
+  );
+
   it.each([
-    ['line feed', 'unsafe\n.json', 'unsafe\uFFFD.json'],
-    ['delete control', 'unsafe\x7f.json', 'unsafe\uFFFD.json'],
-  ])('round-trips a producer refusal whose filename contains a %s', (_case, subject, expectedSubject) => {
+    ['line feed', 'unsafe\n.json', 'unsafe\\u{A}.json'],
+    ['delete control', 'unsafe\x7f.json', 'unsafe\\u{7F}.json'],
+  ])('round-trips a producer refusal whose filename contains a %s', (_case, subject, expectedLabel) => {
     const refusal = shutdownRemainderCleanupRefusal(subject, 'delete', 'rescan-subject', { code: 'EACCES' });
 
     expect(
@@ -132,7 +152,7 @@ describe('/health typed shape (AC10a)', () => {
       })?.health.shutdownRemainderCleanupRefusals,
     ).toEqual([
       {
-        subject: expectedSubject,
+        subject: { identity: expect.stringMatching(/^[a-f0-9]{64}$/u), label: expectedLabel },
         cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
         retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
       },
@@ -157,7 +177,7 @@ describe('/health typed shape (AC10a)', () => {
 
   it('rejects unbounded cleanup refusal collections or invalid unreported counts', () => {
     const refusal = {
-      subject: 'corrupt.json',
+      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
@@ -179,12 +199,17 @@ describe('/health typed shape (AC10a)', () => {
   it.each([
     { cause: { kind: 'system-error', operation: 'delete', code: 'EACCES\ninjected' } },
     { cause: { kind: 'system-error', operation: 'delete', code: 'NOT_A_SYSTEM_ERRNO' } },
-    { subject: 'x'.repeat(SHUTDOWN_REMAINDER_CLEANUP_SUBJECT_MAX_LENGTH + 1) },
-    { subject: 'corrupt.json\ninjected' },
+    {
+      subject: {
+        identity: 'a'.repeat(64),
+        label: 'x'.repeat(SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH + 1),
+      },
+    },
+    { subject: { identity: 'a'.repeat(64), label: 'corrupt.json\ninjected' } },
     { retry: { trigger: 'remainder-maintenance', action: 'retry-delete' } },
-  ])('counts an individually malformed cleanup refusal as unreported', (override) => {
+  ])('counts an individually malformed cleanup refusal separately from unreported refusals', (override) => {
     const refusal = {
-      subject: 'corrupt.json',
+      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
       ...override,
@@ -194,11 +219,12 @@ describe('/health typed shape (AC10a)', () => {
       parseBackendHealth({
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [refusal],
-      })?.health,
+      }),
     ).toEqual({
-      ...HEALTHY_BASE,
-      shutdownRemainderCleanupRefusals: [],
-      unreportedShutdownRemainderCleanupRefusalCount: 1,
+      health: { ...HEALTHY_BASE, shutdownRemainderCleanupRefusals: [] },
+      malformedShutdownRemainderCleanupRefusalRowCount: 1,
+      skippedProviderProxySetRows: 0,
+      skippedProviderProxySetTokens: [],
     });
   });
 

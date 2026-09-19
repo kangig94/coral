@@ -8,7 +8,10 @@ import type * as CompositionWorldMod from '#src/coordinator/composition/world.js
 import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
-import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '#src/infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderFilesystemSubject,
+} from '#src/infra/shutdown-remainder-record.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { formatBackendStatus, formatUnreadableProviderOperationDiscard } from '#src/cli/format/backend.js';
@@ -622,7 +625,7 @@ describe('health local carrier observation', () => {
       vi.fn(async () => ({ ok: true }) as never),
     );
     const refusal = {
-      subject: 'corrupt.json',
+      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
       retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };

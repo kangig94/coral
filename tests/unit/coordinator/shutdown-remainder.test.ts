@@ -17,12 +17,13 @@ import {
   createShutdownRemainderPruner,
   pruneShutdownRemainderRecords,
   recordShutdownRemainder,
-  shutdownRemainderPath,
 } from '#src/coordinator/shutdown-remainder.js';
 import {
   observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderFilesystemSubject,
+  shutdownRemainderRecordDirectory,
 } from '#src/infra/shutdown-remainder-record.js';
 import { sha256Hex } from '#src/infra/hash.js';
 import { childTerminationRemainder } from '#src/coordinator/shutdown.js';
@@ -302,7 +303,7 @@ function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(i
 function cleanupRefusal(subject: string, operation: 'delete' | 'promote' | 'scan-directory', code?: string) {
   const action = operation === 'scan-directory' ? 'rescan-directory' : 'rescan-subject';
   return {
-    subject,
+    subject: shutdownRemainderFilesystemSubject(subject),
     cause:
       code === undefined
         ? { kind: 'unclassified-error' as const, operation }
@@ -380,7 +381,7 @@ describe('shutdown remainder status', () => {
       }),
     ).toEqual({ kind: 'published' });
 
-    expect(shutdownRemainderPath(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
+    expect(shutdownRemainderRecordDirectory(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
     expect(storage.mkdirSync).toHaveBeenCalledWith(REMAINDER_DIRECTORY, { recursive: true });
     expect(storage.writeAtomicSync).toHaveBeenCalledWith(
       '/run/shutdown-remainder.v1/current-instance.json.stage.4242.unobserved',
@@ -404,6 +405,22 @@ describe('shutdown remainder status', () => {
       { encoding: 'utf-8', mode: 0o600 },
     );
     expect(storage.writeAtomicDurableSync).not.toHaveBeenCalled();
+  });
+
+  it('keeps raw-name identity distinct when terminal labels require escaping or truncation', () => {
+    const escaped = shutdownRemainderFilesystemSubject('same\n.json');
+    const replacement = shutdownRemainderFilesystemSubject('same\uFFFD.json');
+    const longA = shutdownRemainderFilesystemSubject(`${'x'.repeat(4096)}a`);
+    const longB = shutdownRemainderFilesystemSubject(`${'x'.repeat(4096)}b`);
+
+    expect(escaped).toEqual({ identity: sha256Hex('same\n.json'), label: 'same\\u{A}.json' });
+    expect(replacement).toEqual({ identity: sha256Hex('same\uFFFD.json'), label: 'same\uFFFD.json' });
+    expect(escaped.identity).not.toBe(replacement.identity);
+    expect(escaped.label).not.toBe(replacement.label);
+    expect(longA.identity).not.toBe(longB.identity);
+    expect(longA.label).not.toBe(longB.label);
+    expect(longA.label).toHaveLength(4096);
+    expect(longB.label).toHaveLength(4096);
   });
 
   it.each(['', 'forged\ninstance', 'has spaces', 'A'.repeat(129)])(
@@ -628,6 +645,22 @@ describe('shutdown remainder status', () => {
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       skippedRecords: [{ name: 'invalid-record-name', reason: 'corrupt' }],
+    });
+  });
+
+  it('escapes terminal controls in unrecognized and quarantined filesystem subjects', () => {
+    const storage = storageWith(
+      [
+        { name: 'bidi\u202E.tmp', value: '', mtimeMs: 1 },
+        { name: 'line\u2028.tmp', value: '', mtimeMs: 2 },
+        { name: 'control\u009B.json', value: '{}', mtimeMs: 3 },
+      ],
+      { refuseReadFor: 'control\u009B.json', readErrorCode: 'EACCES' },
+    );
+
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      unrecognizedEntryNames: ['bidi\\u{202E}.tmp', 'line\\u{2028}.tmp'],
+      quarantined: [{ subject: 'control\\u{9B}.json', retry: { trigger: 'coordinator-startup' } }],
     });
   });
 
@@ -1166,7 +1199,7 @@ describe('shutdown remainder status', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-remainder-path-'));
     try {
       const runDir = pathWithLength(root, 3_812);
-      const directory = shutdownRemainderPath(runDir);
+      const directory = shutdownRemainderRecordDirectory(runDir);
       const suffix = '.json.stage.bad';
       const name = `${'a'.repeat(255 - Buffer.byteLength(suffix))}${suffix}`;
       const subjectPath = join(directory, name);
