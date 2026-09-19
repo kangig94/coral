@@ -19,11 +19,13 @@ import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
+  observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderRecord,
   type ShutdownRemainderRecordScan,
+  type ShutdownRemainderStageObserver,
 } from '../../../infra/shutdown-remainder-record.js';
 
 const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
@@ -219,6 +221,12 @@ type OperatorFacingShutdownSkippedEntry = Readonly<{
   owner: ShutdownRemainderRecord['entries'][number]['remainder']['owner'] | null;
 }>;
 
+type OperatorFacingShutdownStages = Readonly<{
+  writerAliveCount: number;
+  writerUnobservableCount: number;
+  orphanedCount: number;
+}>;
+
 type OperatorFacingShutdownRemainder =
   | Readonly<{ owner: 'process-exit' }>
   | Readonly<{
@@ -284,17 +292,9 @@ type BackendStatus =
  * of — whichever status observed the coordinator's current absence, ambiguity, or a recent startup failure.
  * `status` is this report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
  *
- * Neither skipped-record finding is age-scoped (design-philosophy.md principle 11): an 'unreadable' record's
- * mtime proves nothing about its content, and neither a 'corrupt' nor an 'unsupported' one's mtime proves
- * anything about when it was written, so filtering any of them by recency would silently drop evidence this
- * build never proved irrelevant to report. They stay three separate fields because their dispositions differ:
- * 'unreadable' carries its filenames — the only evidence an operator-less reader has for a record this build
- * never reclaims by content judgment, and the retention bound in `pruneShutdownRemainderRecords`
- * (`src/coordinator/shutdown-remainder.ts`) is that hold's only exit. 'corrupt' and 'unsupported' each stay a
- * bare count: a 'corrupt' record's disposition (delete outright at the next coordinator startup) is decided
- * and carried out by this build alone, and an 'unsupported' one is decisive only about this build
- * (design-philosophy.md principle 10) and held under its own bounded retention rather than reported by name —
- * neither needs reader action on its identity.
+ * Skipped observations are never filtered by age: an mtime proves neither content nor writer disposition, so
+ * recency cannot silently turn unknown or incompatible evidence into absence (design-philosophy.md principle
+ * 11). See `pruneShutdownRemainderRecords` in `src/coordinator/shutdown-remainder.ts`.
  */
 export type ShutdownRemainderReport =
   | Readonly<{
@@ -304,6 +304,7 @@ export type ShutdownRemainderReport =
       skippedUnreadableRecordNames: readonly string[];
       skippedCorruptRecordCount: number;
       skippedUnsupportedRecordCount: number;
+      staging?: OperatorFacingShutdownStages;
     }>
   | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
   | Readonly<{
@@ -312,11 +313,13 @@ export type ShutdownRemainderReport =
       skippedUnreadableRecordNames: readonly string[];
       skippedCorruptRecordCount: number;
       skippedUnsupportedRecordCount: number;
+      staging?: OperatorFacingShutdownStages;
     }>;
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }> }
-  | { status: 'shutting_down' | 'unauthorized' }
+  | { status: 'shutting_down' }
+  | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'recorded_process_absent'; pid: number; shutdownRemainder?: ShutdownRemainderReport }
   /**
@@ -347,7 +350,7 @@ export type BackendStatusFull =
    * port, so it carries the same `pid`/`recordPath` as `'refused'` — the evidence a reader needs to settle a
    * record whose address something else now holds.
    */
-  | { status: 'unreachable'; detail: string; cause: 'responded' }
+  | { status: 'unreachable'; detail: string; cause: 'responded'; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'unreachable';
       detail: string;
@@ -355,8 +358,9 @@ export type BackendStatusFull =
       pidLiveness: 'alive' | 'unknown';
       pid: number;
       recordPath: string;
+      shutdownRemainder?: ShutdownRemainderReport;
     }
-  | { status: 'unreachable'; detail: string; cause: 'no_response' }
+  | { status: 'unreachable'; detail: string; cause: 'no_response'; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'unreachable';
       cause: 'foreign_peer';
@@ -384,6 +388,11 @@ export type BackendStatusFull =
     };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
+type AddressedAmbiguityStatus = Extract<BackendStatusFull, { status: 'unreachable' | 'unauthorized' }>;
+type AddressedProbeStatus = Extract<
+  BackendStatusFull,
+  { status: 'ok' | 'shutting_down' | 'unreachable' | 'unauthorized' }
+>;
 type RecentShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>;
 type ShutdownRemainderUnreadableStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
 type ShutdownRemainderEvidenceScope =
@@ -594,11 +603,12 @@ function readRecentShutdownRemainder(
   runDir: string,
   now: number,
   scope: ShutdownRemainderEvidenceScope,
+  observeStageWriter: ShutdownRemainderStageObserver,
 ): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory);
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
   } catch (error: unknown) {
     if (thrownErrnoCode(error) === 'ENOENT') return null;
     // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
@@ -613,14 +623,23 @@ function readRecentShutdownRemainder(
   // anything about when it was written, so an age filter on any of them would silently drop evidence this
   // build never proved irrelevant. Scope narrowing (to a specific coordinator instance's own file, when one is
   // known) is the only filter left.
-  const skippedRecordIsRelevant = ({ name }: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean =>
-    scope.kind === 'directory' || (scope.instanceId !== undefined && name === `${scope.instanceId}.json`);
+  const skippedRecordIsRelevant = (record: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean =>
+    scope.kind === 'directory' ||
+    (scope.instanceId !== undefined &&
+      ('instanceId' in record ? record.instanceId === scope.instanceId : record.name === `${scope.instanceId}.json`));
   const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
   const skippedUnreadableRecordNames = scopedSkippedRecords
     .filter(({ reason }) => reason === 'unreadable')
     .map(({ name }) => name);
   const skippedCorruptRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'corrupt').length;
   const skippedUnsupportedRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'unsupported').length;
+  const staging: OperatorFacingShutdownStages = {
+    writerAliveCount: scopedSkippedRecords.filter(({ reason }) => reason === 'staging-writer-alive').length,
+    writerUnobservableCount: scopedSkippedRecords.filter(({ reason }) => reason === 'staging-writer-unobservable')
+      .length,
+    orphanedCount: scopedSkippedRecords.filter(({ reason }) => reason === 'orphaned-staging').length,
+  };
+  const hasStaging = staging.writerAliveCount + staging.writerUnobservableCount + staging.orphanedCount > 0;
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -647,6 +666,7 @@ function readRecentShutdownRemainder(
           skippedUnreadableRecordNames,
           skippedCorruptRecordCount,
           skippedUnsupportedRecordCount,
+          ...(hasStaging ? { staging } : {}),
         }
       : null;
   }
@@ -663,6 +683,7 @@ function readRecentShutdownRemainder(
     skippedUnreadableRecordNames,
     skippedCorruptRecordCount,
     skippedUnsupportedRecordCount,
+    ...(hasStaging ? { staging } : {}),
   };
 }
 
@@ -682,16 +703,17 @@ function readRecentFailureDiagnostic(
   }
 }
 
-function noDaemonStatus(
+function statusWithRecentCoordinatorEvidence(
   storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
   diagnosticFile: string,
   runDir: string,
   now: number,
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
+  observeStageWriter: ShutdownRemainderStageObserver,
   fallback: Extract<
     BackendStatusFull,
     | { status: 'no_record_no_socket' | 'recorded_process_absent' | 'no_record_socket_present' }
-    | { cause: 'foreign_peer' }
+    | AddressedAmbiguityStatus
   >,
   coordinator?: Readonly<{ instanceId?: string; startedAt: number; pid: number }>,
 ): BackendStatusFull {
@@ -711,10 +733,10 @@ function noDaemonStatus(
   // address, and it carries the same optional `shutdownRemainder` field as every other fallback member, so it
   // always runs through the remainder lookup below rather than returning early.
   if (diagnostic !== null) {
-    const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
+    const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope, observeStageWriter);
     return shutdownRemainder === null ? diagnostic : { ...diagnostic, shutdownRemainder };
   }
-  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope);
+  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, remainderScope, observeStageWriter);
   // The remainder is additional evidence about a departed instance's obligations, never a replacement for
   // whichever status above already proved that instance's current absence or ambiguity — a reader needs both.
   return shutdownRemainder === null ? fallback : { ...fallback, shutdownRemainder };
@@ -729,9 +751,9 @@ function noDaemonStatus(
  */
 async function probeUnauthenticatedPing(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string }>,
-  notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => BackendStatusFull,
-  unreachable: (detail: string) => BackendStatusFull,
-): Promise<BackendStatusFull | null> {
+  notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => AddressedAmbiguityStatus,
+  unreachable: (detail: string) => AddressedAmbiguityStatus,
+): Promise<AddressedProbeStatus | null> {
   const response = await fetch(`http://${info.host}:${info.port}/health`, {
     method: 'GET',
     signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
@@ -757,9 +779,9 @@ async function probeUnauthenticatedPing(
 /** The authenticated `/health?detailed=1` probe. Always terminal: it is the last thing asked. */
 async function probeDetailedHealth(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string; bootToken: string }>,
-  notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => BackendStatusFull,
-  unreachable: (detail: string) => BackendStatusFull,
-): Promise<BackendStatusFull> {
+  notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => AddressedAmbiguityStatus,
+  unreachable: (detail: string) => AddressedAmbiguityStatus,
+): Promise<AddressedProbeStatus> {
   const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
     method: 'GET',
     headers: { 'X-Coral-Boot-Token': info.bootToken },
@@ -794,6 +816,12 @@ async function probeDetailedHealth(
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
+  const observeStageWriter: ShutdownRemainderStageObserver = (writer) =>
+    observeShutdownRemainderStageWriter(writer, {
+      platform: runtime.env.platform(),
+      observeLiveness: runtime.process.observeLiveness,
+      readProcessIncarnation: runtime.process.readProcessIncarnation,
+    });
   const observed = observeCoordinator({
     storage: runtime.storage,
     env: runtime.env,
@@ -810,37 +838,40 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     case 'unreadable-record':
       return { status: 'undecodable_record', reason: observed.reason, path: observed.path };
     case 'no-record':
-      return noDaemonStatus(
+      return statusWithRecentCoordinatorEvidence(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
+        observeStageWriter,
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
       // No recorded instanceId exists to scope a remainder to; a directory-wide, recency-only lookup is the
-      // same fallback `noDaemonStatus` already uses for `no-record`, and for the same reason: a departed
+      // same fallback `statusWithRecentCoordinatorEvidence` already uses for `no-record`, and for the same reason: a departed
       // instance's undischarged obligations remain relevant evidence whether or not something now holds the
       // socket — a fresh boot recovering that very remainder is exactly the case `successor-recovery` evidence
       // describes.
-      return noDaemonStatus(
+      return statusWithRecentCoordinatorEvidence(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
+        observeStageWriter,
         { status: 'no_record_socket_present', socketPath: observed.socketPath },
       );
     case 'process-absent':
       // Startup diagnostics require both `startedAt` and `pid`; shutdown remainders require the recorded
       // `instanceId`. Missing identity must never widen either lookup to directory-wide evidence.
-      return noDaemonStatus(
+      return statusWithRecentCoordinatorEvidence(
         runtime.storage,
         runtime.paths.coral.coordinator.startupDiagnosticFile,
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
+        observeStageWriter,
         { status: 'recorded_process_absent', pid: observed.pid },
         observed,
       );
@@ -850,31 +881,29 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   const info = observed.coordinator;
 
   // A decoded peer mismatch must retain the peer identity, regardless of the recorded pid's liveness.
-  const notOurCoordinator = (observedIdentity: { namespace: string; flavor: 'prod' | 'dev' }): BackendStatusFull =>
-    noDaemonStatus(
-      runtime.storage,
-      runtime.paths.coral.coordinator.startupDiagnosticFile,
-      runtime.paths.coral.coordinator.runDir,
-      runtime.time.now(),
-      provenSelfIdentity,
-      {
-        status: 'unreachable',
-        cause: 'foreign_peer',
-        observed: observedIdentity,
-        pid: info.pid,
-        recordPath: runtime.paths.coral.coordinator.infoFile,
-      },
-      info,
-    );
+  const notOurCoordinator = (observedIdentity: {
+    namespace: string;
+    flavor: 'prod' | 'dev';
+  }): AddressedAmbiguityStatus => ({
+    status: 'unreachable',
+    cause: 'foreign_peer',
+    observed: observedIdentity,
+    pid: info.pid,
+    recordPath: runtime.paths.coral.coordinator.infoFile,
+  });
   // Both probes only ever call this after `fetch` resolved a response, so `cause` is unconditionally
   // `'responded'` here; the `catch` below is the one place a request never completed, and builds its own
   // `'refused'`/`'no_response'` cause instead.
-  const unreachable = (detail: string): BackendStatusFull => ({ status: 'unreachable', detail, cause: 'responded' });
+  const unreachable = (detail: string): AddressedAmbiguityStatus => ({
+    status: 'unreachable',
+    detail,
+    cause: 'responded',
+  });
 
+  let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-    if (ping !== null) return ping;
-    return await probeDetailedHealth(info, notOurCoordinator, unreachable);
+    result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
@@ -883,7 +912,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     // claim.
     const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
-      return {
+      result = {
         status: 'unreachable',
         detail: code,
         cause: 'refused',
@@ -891,7 +920,19 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         pid: info.pid,
         recordPath: runtime.paths.coral.coordinator.infoFile,
       };
+    } else {
+      result = { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
     }
-    return { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
   }
+  if (result.status === 'ok' || result.status === 'shutting_down') return result;
+  return statusWithRecentCoordinatorEvidence(
+    runtime.storage,
+    runtime.paths.coral.coordinator.startupDiagnosticFile,
+    runtime.paths.coral.coordinator.runDir,
+    runtime.time.now(),
+    provenSelfIdentity,
+    observeStageWriter,
+    result,
+    info,
+  );
 }

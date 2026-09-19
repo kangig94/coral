@@ -6,7 +6,11 @@ import {
   recordShutdownRemainder,
   shutdownRemainderPath,
 } from '#src/coordinator/shutdown-remainder.js';
-import { scanShutdownRemainderRecords } from '#src/infra/shutdown-remainder-record.js';
+import {
+  observeShutdownRemainderStageWriter,
+  scanShutdownRemainderRecords,
+} from '#src/infra/shutdown-remainder-record.js';
+import { sha256Hex } from '#src/infra/hash.js';
 import { childTerminationRemainder } from '#src/coordinator/shutdown.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -20,6 +24,7 @@ type RemainderStorage = Pick<
   | 'mkdirSync'
   | 'readFileSync'
   | 'readdirSync'
+  | 'renameSync'
   | 'statSync'
   | 'unlinkSync'
   | 'writeAtomicSync'
@@ -41,6 +46,7 @@ function storageWith(
     refuseReadFor?: string | readonly string[];
     readErrorCode?: string;
     pruneBeforeAtomicRename?: boolean;
+    refuseFinalRename?: boolean;
   }> = {},
 ): RemainderStorage {
   const files = new Map(
@@ -90,21 +96,25 @@ function storageWith(
     mkdirSync: vi.fn(() => {
       directoryExists = true;
     }),
+    renameSync: vi.fn((oldPath: string, newPath: string) => {
+      if (options.refuseFinalRename === true && newPath.endsWith('.json')) {
+        throw Object.assign(new Error('rename refused'), { code: 'EIO' });
+      }
+      const file = files.get(oldPath);
+      if (file === undefined) throw Object.assign(new Error('missing file'), { code: 'ENOENT' });
+      files.delete(oldPath);
+      files.set(newPath, file);
+    }),
     writeAtomicSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
       if (options.publish === false) return false;
       const value =
         typeof data === 'string' ? data : Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString('utf-8');
+      const tempPath = `${path}.tmp`;
+      files.set(tempPath, { value, mtimeMs: ++clock });
       if (options.pruneBeforeAtomicRename === true) {
-        const tempPath = `${path}.tmp`;
-        files.set(tempPath, { value, mtimeMs: ++clock });
-        pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-        const staged = files.get(tempPath);
-        if (staged === undefined) return false;
-        files.delete(tempPath);
-        files.set(path, staged);
-        return true;
+        pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'alive' });
       }
-      files.set(path, { value, mtimeMs: ++clock });
+      storage.renameSync(tempPath, path);
       return true;
     }),
     writeAtomicDurableSync: vi.fn(() => options.publish !== false),
@@ -113,6 +123,15 @@ function storageWith(
   } satisfies RemainderStorage;
 
   return storage;
+}
+
+function writeRuntime(storage: RemainderStorage) {
+  return {
+    storage,
+    time: { now: () => 1_788_739_200_000 },
+    runDir: RUN_DIR,
+    writer: { pid: 4_242 },
+  } as const;
 }
 
 const KNOWN_LOSS = {
@@ -140,31 +159,68 @@ function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(i
 }
 
 describe('shutdown remainder status', () => {
+  it('distinguishes an exact live writer from an absent or unobservable stage writer', () => {
+    const incarnation = testIncarnation('stage-writer');
+    const writer = { pid: 4_242, incarnationDigest: sha256Hex(incarnation) };
+
+    expect(
+      observeShutdownRemainderStageWriter(writer, {
+        platform: 'linux',
+        observeLiveness: () => 'unknown',
+        readProcessIncarnation: () => incarnation,
+      }),
+    ).toBe('alive');
+    expect(
+      observeShutdownRemainderStageWriter(writer, {
+        platform: 'linux',
+        observeLiveness: () => 'alive',
+        readProcessIncarnation: () => testIncarnation('recycled-pid'),
+      }),
+    ).toBe('absent');
+    expect(
+      observeShutdownRemainderStageWriter(
+        { pid: 4_242 },
+        {
+          platform: 'linux',
+          observeLiveness: () => 'alive',
+          readProcessIncarnation: () => null,
+        },
+      ),
+    ).toBe('unknown');
+    expect(
+      observeShutdownRemainderStageWriter(
+        { pid: 4_242 },
+        {
+          platform: 'linux',
+          observeLiveness: () => 'absent',
+          readProcessIncarnation: () => null,
+        },
+      ),
+    ).toBe('absent');
+  });
+
   it('creates the version directory and avoids a durable journal wait while publishing the record', () => {
     const storage = storageWith();
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        {
-          instanceId: 'current-instance',
-          reason: 'provider-proxy-lifecycle-fatal',
-          mode: 'handoff',
-          undischarged: [
-            {
-              label: 'pending durable launch settlement',
-              remainder: { owner: 'process-exit' },
-              settlement: { cause: 'timed-out', budgetMs: 5_000 },
-            },
-          ],
-        },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'provider-proxy-lifecycle-fatal',
+        mode: 'handoff',
+        undischarged: [
+          {
+            label: 'pending durable launch settlement',
+            remainder: { owner: 'process-exit' },
+            settlement: { cause: 'timed-out', budgetMs: 5_000 },
+          },
+        ],
+      }),
     ).toBe(true);
 
     expect(shutdownRemainderPath(RUN_DIR)).toBe(REMAINDER_DIRECTORY);
     expect(storage.mkdirSync).toHaveBeenCalledWith(REMAINDER_DIRECTORY, { recursive: true });
     expect(storage.writeAtomicSync).toHaveBeenCalledWith(
-      '/run/shutdown-remainder.v1/current-instance.json',
+      '/run/shutdown-remainder.v1/current-instance.json.stage.4242.unknown',
       `${JSON.stringify(
         {
           instanceId: 'current-instance',
@@ -193,10 +249,12 @@ describe('shutdown remainder status', () => {
       const storage = storageWith();
 
       expect(() =>
-        recordShutdownRemainder(
-          { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-          { instanceId, reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
-        ),
+        recordShutdownRemainder(writeRuntime(storage), {
+          instanceId,
+          reason: 'sigterm',
+          mode: 'handoff',
+          undischarged: [KNOWN_LOSS],
+        }),
       ).toThrow(/instanceId/u);
       expect(storage.writeAtomicSync).not.toHaveBeenCalled();
       expect(storage.fileNames()).toEqual([]);
@@ -222,15 +280,12 @@ describe('shutdown remainder status', () => {
     ] as const;
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        {
-          instanceId: 'current-instance',
-          reason: 'sigterm',
-          mode: 'handoff',
-          undischarged,
-        },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged,
+      }),
     ).toBe(true);
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toStrictEqual({
@@ -253,22 +308,19 @@ describe('shutdown remainder status', () => {
     const source = `Next step: run coral-cli backend shutdown ${'x'.repeat(200)}`;
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        {
-          instanceId: 'current-instance',
-          reason: 'sigterm',
-          mode: 'handoff',
-          undischarged: [
-            {
-              label: 'discuss store dispose',
-              subject: { kind: 'discuss-store', source },
-              remainder: { owner: 'process-exit' },
-              settlement: { cause: 'timed-out', budgetMs: 5_000 },
-            },
-          ],
-        },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [
+          {
+            label: 'discuss store dispose',
+            subject: { kind: 'discuss-store', source },
+            remainder: { owner: 'process-exit' },
+            settlement: { cause: 'timed-out', budgetMs: 5_000 },
+          },
+        ],
+      }),
     ).toBe(true);
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
@@ -547,14 +599,89 @@ describe('shutdown remainder status', () => {
     });
   });
 
+  it('accepts additive envelope, entry, and recursive error-cause keys while validating known fields', () => {
+    const storage = storageWith([
+      fileAt('additive-canary', 1, {
+        ...recordAt('additive-canary'),
+        envelopeAddition: true,
+        entries: [
+          {
+            ...KNOWN_LOSS,
+            entryAddition: true,
+            settlement: {
+              cause: 'rejected',
+              error: {
+                kind: 'error',
+                name: 'Error',
+                message: 'outer',
+                cause: {
+                  kind: 'error',
+                  name: 'TypeError',
+                  message: 'inner',
+                  causeAddition: true,
+                },
+              },
+            },
+          },
+          {
+            ...KNOWN_LOSS,
+            label: 'invalid recursive known field',
+            settlement: {
+              cause: 'rejected',
+              error: {
+                kind: 'error',
+                name: 'Error',
+                message: 'outer',
+                cause: { kind: 'error', name: 'TypeError', message: 42, causeAddition: true },
+              },
+            },
+          },
+        ],
+      }),
+    ]);
+
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [
+        {
+          instanceId: 'additive-canary',
+          entries: [
+            {
+              entryNumber: 1,
+              label: 'known loss',
+              settlement: {
+                cause: 'rejected',
+                error: {
+                  kind: 'error',
+                  name: 'Error',
+                  message: 'outer',
+                  cause: { kind: 'error', name: 'TypeError', message: 'inner' },
+                },
+              },
+            },
+          ],
+        },
+      ],
+      skippedEntries: [
+        {
+          recordInstanceId: 'additive-canary',
+          entryNumber: 2,
+          label: 'invalid recursive known field',
+          owner: 'process-exit',
+        },
+      ],
+    });
+  });
+
   it('overwrites the same instance without reading a corrupt prior record', () => {
     const storage = storageWith([{ name: 'current-instance.json', value: '{not-json', mtimeMs: 1 }]);
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
     ).toBe(true);
 
     expect(storage.readFileSync).not.toHaveBeenCalled();
@@ -566,10 +693,12 @@ describe('shutdown remainder status', () => {
     const storage = storageWith(Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)));
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        { instanceId: 'instance-32', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'instance-32',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
     ).toBe(true);
 
     expect(storage.fileNames()).toHaveLength(33);
@@ -738,13 +867,78 @@ describe('shutdown remainder status', () => {
 
     expect(
       recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
+        { ...writeRuntime(storage), writer: { pid: 4_242, incarnation: testIncarnation('live-writer') } },
         { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
       ),
     ).toBe(true);
 
     expect(storage.fileNames()).toEqual(['current-instance.json']);
     expect(JSON.parse(storage.readPublished('current-instance') ?? '')).toEqual(recordAt('current-instance'));
+  });
+
+  it('promotes a complete stage only after its writer is proven absent', () => {
+    const stageName = 'orphan.json.stage.4242.unknown';
+    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('orphan')), mtimeMs: 1 }]);
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'absent',
+    });
+
+    expect(disposition).toEqual({ kind: 'stage-ownership-classified' });
+    expect(storage.fileNames()).toEqual(['orphan.json']);
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [recordAt('orphan')],
+      skippedRecords: [],
+    });
+  });
+
+  it('returns an ownership hold when a stage writer is unobservable', () => {
+    const stageName = 'held.json.stage.4242.unknown';
+    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'unknown',
+    });
+
+    expect(disposition).toEqual({ kind: 'stage-ownership-held', stageNames: [stageName] });
+    expect(storage.fileNames()).toEqual([stageName]);
+  });
+
+  it('bounds proven-orphan partial stages independently and reports every retained stage', () => {
+    const stages = Array.from({ length: 40 }, (_, index) => ({
+      name: `orphan-${index}.json.stage.${5_000 + index}.unknown.tmp`,
+      value: '{partial',
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(stages);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'absent' });
+    const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, () => 'absent');
+
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(storage.fileNames()).not.toContain(stages[0]?.name);
+    expect(storage.fileNames()).toContain(stages[39]?.name);
+    expect(scan.records).toEqual([]);
+    expect(scan.skippedRecords).toHaveLength(32);
+    expect(scan.skippedRecords.every(({ reason }) => reason === 'orphaned-staging')).toBe(true);
+  });
+
+  it('removes both writer-owned stage forms when final publication fails', () => {
+    const storage = storageWith([], { refuseFinalRename: true });
+
+    expect(() =>
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
+    ).toThrow('rename refused');
+    expect(storage.fileNames()).toEqual([]);
   });
 
   it('does not turn a best-effort startup prune refusal into an error', () => {
@@ -754,10 +948,12 @@ describe('shutdown remainder status', () => {
     );
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        { instanceId: 'instance-32', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'instance-32',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
     ).toBe(true);
     expect(() => pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR })).not.toThrow();
     expect(storage.fileNames()).toHaveLength(33);
@@ -767,10 +963,12 @@ describe('shutdown remainder status', () => {
     const storage = storageWith([fileAt('existing-instance', 1)], { publish: false });
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'sigterm',
+        mode: 'handoff',
+        undischarged: [KNOWN_LOSS],
+      }),
     ).toBe(false);
     expect(storage.fileNames()).toEqual(['existing-instance.json']);
   });
@@ -814,15 +1012,12 @@ describe('shutdown remainder status', () => {
     ] as const;
 
     expect(
-      recordShutdownRemainder(
-        { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
-        {
-          instanceId: 'current-instance',
-          reason: 'test-teardown',
-          mode: 'hard',
-          undischarged,
-        },
-      ),
+      recordShutdownRemainder(writeRuntime(storage), {
+        instanceId: 'current-instance',
+        reason: 'test-teardown',
+        mode: 'hard',
+        undischarged,
+      }),
     ).toBe(true);
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toStrictEqual({

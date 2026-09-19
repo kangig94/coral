@@ -28,6 +28,7 @@ const mockState = vi.hoisted(() => ({
   remainderScanErrorCode: null as string | null,
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
+  stageLiveness: 'unknown' as 'alive' | 'absent' | 'unknown',
 }));
 
 // Mocked at the seam this function depends on. `status` and `shutdown` ask the same three questions about the
@@ -98,7 +99,11 @@ vi.mock('#src/runtime/real.js', () => ({
         return file.value;
       },
     },
-    env: {},
+    env: { platform: () => 'linux' },
+    process: {
+      observeLiveness: () => mockState.stageLiveness,
+      readProcessIncarnation: () => null,
+    },
     time: { now: () => 1_700_000_000_000 },
     paths: {
       coral: {
@@ -137,6 +142,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.remainderFiles = [];
     mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
+    mockState.stageLiveness = 'unknown';
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -191,6 +197,24 @@ describe('getBackendStatusFull record disposition', () => {
         skippedUnreadableRecordNames: ['unreadable.json'],
         skippedCorruptRecordCount: 0,
         skippedUnsupportedRecordCount: 0,
+      },
+    });
+  });
+
+  it('reports a writer-unobservable staging publication instead of treating the directory as empty', async () => {
+    mockState.remainderFiles = [remainderFile('staged.json.stage.4242.unknown.tmp', NOW - 10_000, '{partial')];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordNames: [],
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
+        staging: { writerAliveCount: 0, writerUnobservableCount: 1, orphanedCount: 0 },
       },
     });
   });
@@ -1034,6 +1058,9 @@ describe('getBackendStatusFull record disposition', () => {
   // not absence at all.
   it('reports a coordinator that answers badly as unreachable, not as stopped', async () => {
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+    ];
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('{}', { status: 500 })),
@@ -1041,7 +1068,11 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'unreachable',
+      cause: 'responded',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'test-instance' } },
+    });
   });
 
   // The payload here must actually pass `isBackendPing` — it needs `version`, `bundleHash`, `instanceId` and
@@ -1377,6 +1408,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.remainderFiles = [];
     mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
+    mockState.stageLiveness = 'unknown';
   });
 
   it('reports a diagnostic recorded during this run', async () => {
@@ -1618,6 +1650,9 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   });
 
   it('reports a draining ping as shutting_down without asking the detailed probe', async () => {
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+    ];
     const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -1637,12 +1672,16 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   });
 
   it('reports a healthy detailed answer as ok, carrying the payload the operator reads', async () => {
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+    ];
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('ok'), { status: 200 }));
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result.status).toBe('ok');
+    expect(result).not.toHaveProperty('shutdownRemainder');
     expect(result, 'the version an operator sees comes from the daemon, not the record').toMatchObject({
       health: { status: 'ok', version: '0.0.0', instanceId: 'test-instance', uptimeMs: 1_000 },
     });
@@ -1724,11 +1763,17 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   });
 
   it('reports a rejected boot token as unauthorized, which is neither stopped nor unreachable', async () => {
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+    ];
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 401 }));
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'unauthorized',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'test-instance' } },
+    });
   });
 
   it('reports the decoded foreign namespace from the detailed probe', async () => {
@@ -1809,6 +1854,9 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   // produces for a plain failure: no response was received at all, so `formatBackendStatus` must not claim
   // anything is listening.
   it('reports unreachable with cause no_response when the probe request never completes', async () => {
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+    ];
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -1818,10 +1866,11 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
       detail: 'getaddrinfo ENOTFOUND coordinator.example',
       cause: 'no_response',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'test-instance' } },
     });
   });
 
@@ -1856,6 +1905,9 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   // `.cause`, this branch reported the generic message here while `backend shutdown` already reported the real
   // errno for the identical failure — one fact, two different words in two commands asking the same question.
   it('reports the errno from .cause rather than the generic fetch-failed message', async () => {
+    mockState.remainderFiles = [
+      remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
+    ];
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
@@ -1867,13 +1919,14 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
       detail: 'ECONNREFUSED',
       cause: 'refused',
       pidLiveness: 'alive',
       pid: 12345,
       recordPath: '/run/coral/coordinator.json',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'test-instance' } },
     });
   });
 

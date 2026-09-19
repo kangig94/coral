@@ -246,6 +246,8 @@ function buildRemainderWriteRefusalHarness(
         order.push('record');
         return write();
       },
+      renameSync: () => {},
+      unlinkSync: () => {},
     },
   } as Runtime;
   let lifecycle: 'running' | 'draining' | 'stopped' = 'running';

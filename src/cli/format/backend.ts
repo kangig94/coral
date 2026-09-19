@@ -714,9 +714,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'undecodable_record':
       return formatUndecodableRecordStatus(result);
     case 'unreachable':
-      return result.cause === 'foreign_peer'
-        ? withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder)
-        : formatUnreachableStatus(result);
+      return withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder);
     case 'no_record_socket_present':
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
@@ -724,10 +722,13 @@ function formatDaemonStatus(result: BackendStatusFull): string {
     case 'shutting_down':
       return 'Backend shutting down';
     case 'unauthorized':
-      return [
-        'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
-        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
-      ].join('\n');
+      return withShutdownRemainderSection(
+        [
+          'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
+          formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+        ].join('\n'),
+        result.shutdownRemainder,
+      );
     default:
       return assertNever(result);
   }
@@ -1279,6 +1280,7 @@ function formatRecentShutdownRemainderReport(
       result.skippedUnreadableRecordNames,
       result.skippedCorruptRecordCount,
       result.skippedUnsupportedRecordCount,
+      result.staging,
     ),
   );
   return lines.join('\n');
@@ -1363,6 +1365,7 @@ function formatUnreadableShutdownRemainderReport(
       result.skippedUnreadableRecordNames,
       result.skippedCorruptRecordCount,
       result.skippedUnsupportedRecordCount,
+      result.staging,
     ),
   ].join('\n');
 }
@@ -1381,6 +1384,7 @@ function formatSkippedShutdownRemainderRecords(
   unreadableNames: readonly string[],
   corruptCount: number,
   unsupportedCount: number,
+  staging?: Readonly<{ writerAliveCount: number; writerUnobservableCount: number; orphanedCount: number }>,
 ): string[] {
   const lines: string[] = [];
   if (unreadableNames.length > 0) {
@@ -1401,6 +1405,26 @@ function formatSkippedShutdownRemainderRecords(
       `Skipped shutdown remainder records, unsupported: ${unsupportedCount}`,
       '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained and reclaimed only once too many unsupported records accumulate (oldest first).',
     );
+  }
+  if (staging !== undefined) {
+    if (staging.writerAliveCount > 0) {
+      lines.push(
+        `Shutdown remainder publications in progress, writer alive: ${staging.writerAliveCount}`,
+        '  Disposition: retained until the identified writer finishes or is proven absent.',
+      );
+    }
+    if (staging.writerUnobservableCount > 0) {
+      lines.push(
+        `Shutdown remainder publications in progress, writer unobservable: ${staging.writerUnobservableCount}`,
+        '  Disposition: retained and retried on every status read and coordinator startup; unknown does not authorize publication or deletion.',
+      );
+    }
+    if (staging.orphanedCount > 0) {
+      lines.push(
+        `Shutdown remainder publication stages with proven-absent writers: ${staging.orphanedCount}`,
+        '  Disposition: a decodable stage is promoted at coordinator startup; other orphaned stages are retained under their own 32-entry bound (newest first).',
+      );
+    }
   }
   return lines;
 }

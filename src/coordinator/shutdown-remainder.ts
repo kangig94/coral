@@ -9,24 +9,30 @@ import {
 import type { StoragePort, TimePort } from '../infra/port-types.js';
 import {
   classifyShutdownRemainderFile,
+  listShutdownRemainderStages,
+  shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
+  type ShutdownRemainderStageObserver,
   type ShutdownRemainderRecord,
 } from '../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../infra/time.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 const MAX_SHUTDOWN_REMAINDER_RECORDS = 32;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
-  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync'>;
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
   runDir: string;
+  observeStageWriter?: ShutdownRemainderStageObserver;
 }>;
 
 type ShutdownRemainderWriteRuntime = Readonly<{
-  storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'>;
+  storage: Pick<StoragePort, 'mkdirSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;
   time: Pick<TimePort, 'now'>;
   runDir: string;
+  writer: Readonly<{ pid: number; incarnation?: ProcessIncarnation }>;
 }>;
 
 export type ShutdownRemainderRecordInput = Readonly<{
@@ -41,6 +47,11 @@ export function shutdownRemainderPath(runDir: string): string {
 }
 
 type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
+
+type ShutdownRemainderPruneDisposition =
+  | Readonly<{ kind: 'stage-ownership-classified' }>
+  | Readonly<{ kind: 'stage-ownership-held'; stageNames: readonly string[] }>
+  | Readonly<{ kind: 'prune-refused' }>;
 
 // Newest-known-first, with every 'unknown' age ranked older than any known mtime: a file this build could not
 // stat carries no age evidence to assert a real age from, but still needs the same bounded-retention exit as
@@ -57,18 +68,59 @@ function byRetentionOrder(
   return right.name.localeCompare(left.name);
 }
 
-export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRuntime): void {
+export function pruneShutdownRemainderRecords(
+  runtime: ShutdownRemainderPruneRuntime,
+): ShutdownRemainderPruneDisposition {
   const directory = shutdownRemainderPath(runtime.runDir);
+  const unobservableStageNames: string[] = [];
   try {
+    const orphanedStages: { name: string; age: RecordAge }[] = [];
+    const observeStageWriter: ShutdownRemainderStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
+    for (const stage of listShutdownRemainderStages(runtime.storage.readdirSync(directory))) {
+      if (stage.writer === null) {
+        unobservableStageNames.push(stage.name);
+        continue;
+      }
+      const writerObservation = observeStageWriter(stage.writer);
+      if (writerObservation === 'unknown') {
+        unobservableStageNames.push(stage.name);
+        continue;
+      }
+      if (writerObservation === 'alive') continue;
+      const path = join(directory, stage.name);
+      let age: RecordAge = { kind: 'unknown' };
+      try {
+        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
+      } catch (error: unknown) {
+        if (thrownErrnoCode(error) === 'ENOENT') continue;
+      }
+      const classification = classifyShutdownRemainderFile(runtime.storage, path);
+      if (classification.kind === 'vanished') continue;
+      if (classification.kind === 'readable' && classification.record.instanceId === stage.instanceId) {
+        try {
+          runtime.storage.renameSync(path, join(directory, `${stage.instanceId}.json`));
+          continue;
+        } catch {
+          /* Retention cleanup must not block startup. */
+        }
+      }
+      orphanedStages.push({ name: stage.name, age });
+    }
+    orphanedStages.sort(byRetentionOrder);
+    for (const { name } of orphanedStages.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+      try {
+        runtime.storage.unlinkSync(join(directory, name));
+        backendLog.warn(`shutdown remainder stage ${name} discarded: writer absent beyond the retention bound`);
+      } catch {
+        /* Retention cleanup must not block startup. */
+      }
+    }
+
     const known: { name: string; age: RecordAge }[] = [];
     const unreadable: { name: string; age: RecordAge }[] = [];
     const unsupported: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
       if (!name.endsWith('.json')) {
-        // Constraint: a non-record entry may be an incumbent's in-progress publication after IPC release, and
-        // this directory carries no writer-absence proof that distinguishes it from an orphan. Such residue is
-        // intentionally left unbounded; reclaiming it may destroy the only durable evidence of unfinished
-        // shutdown obligations. see `writeAtomicSyncNode` in src/runtime/real.ts
         continue;
       }
       const path = join(directory, name);
@@ -155,8 +207,11 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
         /* Retention cleanup must not block startup. */
       }
     }
+    return unobservableStageNames.length === 0
+      ? { kind: 'stage-ownership-classified' }
+      : { kind: 'stage-ownership-held', stageNames: unobservableStageNames };
   } catch {
-    /* Retention cleanup must not block startup. */
+    return { kind: 'prune-refused' };
   }
 }
 
@@ -178,8 +233,12 @@ export function recordShutdownRemainder(
       `Shutdown remainder instanceId is not a valid identifier: it must match ${SERIALIZED_THROWN_IDENTIFIER_PATTERN} within ${SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH} characters.`,
     );
   }
+  if (!Number.isSafeInteger(runtime.writer.pid) || runtime.writer.pid <= 0) {
+    throw new Error('Shutdown remainder writer pid must be a positive safe integer.');
+  }
   const directory = shutdownRemainderPath(runtime.runDir);
   const path = join(directory, `${input.instanceId}.json`);
+  const stagePath = join(directory, shutdownRemainderStageName(input.instanceId, runtime.writer));
   const record: ShutdownRemainderRecord = {
     instanceId: input.instanceId,
     recordedAt: nowIsoString(runtime.time),
@@ -190,8 +249,29 @@ export function recordShutdownRemainder(
   runtime.storage.mkdirSync(directory, { recursive: true });
   // Constraint: do not use `writeAtomicDurableSync`; `docs/design-rationale.md` §12.5 excludes its unbounded
   // journal commit waits from the coordinator exit path.
-  return runtime.storage.writeAtomicSync(path, `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: 'utf-8',
-    mode: 0o600,
-  });
+  const removeStage = (): void => {
+    for (const candidate of [stagePath, `${stagePath}.tmp`]) {
+      try {
+        runtime.storage.unlinkSync(candidate);
+      } catch {
+        /* Publication cleanup must preserve the originating failure. */
+      }
+    }
+  };
+  try {
+    if (
+      !runtime.storage.writeAtomicSync(stagePath, `${JSON.stringify(record, null, 2)}\n`, {
+        encoding: 'utf-8',
+        mode: 0o600,
+      })
+    ) {
+      removeStage();
+      return false;
+    }
+    runtime.storage.renameSync(stagePath, path);
+    return true;
+  } catch (error: unknown) {
+    removeStage();
+    throw error;
+  }
 }

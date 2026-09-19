@@ -7,7 +7,9 @@ import {
   serializedThrownSchema,
   thrownErrnoCode,
 } from './error-format.js';
+import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
+import type { ProcessIncarnation, ProcessLiveness } from './node-process.js';
 import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
 import type { StoragePort } from './port-types.js';
 
@@ -60,7 +62,23 @@ export type ShutdownRemainderSkippedRecord =
    * `decodeShutdownRemainderRecord`'s own `shape-rejected` message, carried for a future reader with a wider
    * schema; it never crosses to an operator-facing surface (see `src/transport/http/backend/status.ts`).
    */
-  | Readonly<{ name: string; reason: 'unsupported'; detail: string }>;
+  | Readonly<{ name: string; reason: 'unsupported'; detail: string }>
+  | Readonly<{
+      name: string;
+      instanceId: string;
+      reason: 'staging-writer-alive' | 'staging-writer-unobservable' | 'orphaned-staging';
+    }>;
+
+export type ShutdownRemainderStageWriter = Readonly<{
+  pid: number;
+  incarnationDigest?: string;
+}>;
+
+export type ShutdownRemainderStageObservation = ProcessLiveness;
+
+export type ShutdownRemainderStageObserver = (
+  writer: ShutdownRemainderStageWriter,
+) => ShutdownRemainderStageObservation;
 
 export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
@@ -74,12 +92,93 @@ export function shutdownRemainderRecordDirectory(runDir: string): string {
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
-// Constraint: every legitimate file this build writes under `shutdownRemainderRecordDirectory` is
-// `${instanceId}.json` with `instanceId` already bound by `SERIALIZED_THROWN_IDENTIFIER_PATTERN`, so that same
-// charset admits every real name. It crosses to an operator-facing status line unread (`Record: <name>`), so it
-// carries the same restrictive charset as the other identifier-shaped fields on that boundary rather than the
-// single-line-only `PERSISTED_SINGLE_LINE_PATTERN`, which still admits spaces, quotes, and other prose bytes.
+// Constraint: a persisted filename may cross to an operator-facing status line unread, so it carries the same
+// closed identifier charset as other identifier-shaped fields rather than the broader single-line prose schema.
 const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
+const SHUTDOWN_REMAINDER_STAGE_PATTERN =
+  /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unknown)(?<partial>\.tmp)?$/u;
+const LEGACY_SHUTDOWN_REMAINDER_STAGE_PATTERN = /^(?<instanceId>.+)\.json\.tmp$/u;
+
+export type ShutdownRemainderStage = Readonly<{
+  name: string;
+  instanceId: string;
+  writer: ShutdownRemainderStageWriter | null;
+}>;
+
+export function shutdownRemainderStageName(
+  instanceId: string,
+  writer: Readonly<{ pid: number; incarnation?: ProcessIncarnation }>,
+): string {
+  return `${instanceId}.json.stage.${writer.pid}.${
+    writer.incarnation === undefined ? 'unknown' : sha256Hex(writer.incarnation)
+  }`;
+}
+
+function parseShutdownRemainderStage(name: string): ShutdownRemainderStage | null {
+  const matched = SHUTDOWN_REMAINDER_STAGE_PATTERN.exec(name);
+  if (matched !== null) {
+    const instanceId = matched.groups?.instanceId;
+    const pid = Number(matched.groups?.pid);
+    const incarnation = matched.groups?.incarnation;
+    if (
+      instanceId === undefined ||
+      !serializedThrownIdentifierSchema.safeParse(instanceId).success ||
+      !Number.isSafeInteger(pid) ||
+      pid <= 0 ||
+      incarnation === undefined
+    ) {
+      return null;
+    }
+    return {
+      name,
+      instanceId,
+      writer: {
+        pid,
+        ...(incarnation === 'unknown' ? {} : { incarnationDigest: incarnation }),
+      },
+    };
+  }
+
+  const legacy = LEGACY_SHUTDOWN_REMAINDER_STAGE_PATTERN.exec(name);
+  const instanceId = legacy?.groups?.instanceId;
+  return instanceId === undefined || !serializedThrownIdentifierSchema.safeParse(instanceId).success
+    ? null
+    : { name, instanceId, writer: null };
+}
+
+export function observeShutdownRemainderStageWriter(
+  writer: ShutdownRemainderStageWriter,
+  runtime: Readonly<{
+    platform: string;
+    observeLiveness(pid: number): ProcessLiveness;
+    readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
+  }>,
+): ShutdownRemainderStageObservation {
+  try {
+    if (writer.incarnationDigest === undefined) {
+      return runtime.observeLiveness(writer.pid) === 'absent' ? 'absent' : 'unknown';
+    }
+    const incarnation = runtime.readProcessIncarnation(writer.pid, runtime.platform as NodeJS.Platform);
+    if (incarnation !== null) return sha256Hex(incarnation) === writer.incarnationDigest ? 'alive' : 'absent';
+    return runtime.observeLiveness(writer.pid) === 'absent' ? 'absent' : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function stageObservation(
+  stage: ShutdownRemainderStage,
+  observeStageWriter: ShutdownRemainderStageObserver,
+): ShutdownRemainderStageObservation {
+  return stage.writer === null ? 'unknown' : observeStageWriter(stage.writer);
+}
+
+export function listShutdownRemainderStages(names: readonly string[]): readonly ShutdownRemainderStage[] {
+  return names.flatMap((name) => {
+    const stage = parseShutdownRemainderStage(name);
+    return stage === null ? [] : [stage];
+  });
+}
 
 function readPersistedFact(value: unknown): string | null {
   const parsed = persistedFactSchema.safeParse(value);
@@ -227,13 +326,33 @@ export function classifyShutdownRemainderFile(
 export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
   directory: string,
+  observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
-  const recordFiles = storage
-    .readdirSync(directory)
+  const names = storage.readdirSync(directory);
+  for (const stage of listShutdownRemainderStages(names)) {
+    try {
+      storage.statSync(join(directory, stage.name));
+    } catch (error: unknown) {
+      if (thrownErrnoCode(error) === 'ENOENT') continue;
+    }
+    const observation = stageObservation(stage, observeStageWriter);
+    skippedRecords.push({
+      name: persistedFileNameSchema.safeParse(stage.name).success ? stage.name : 'invalid-record-name',
+      instanceId: stage.instanceId,
+      reason:
+        observation === 'alive'
+          ? 'staging-writer-alive'
+          : observation === 'absent'
+            ? 'orphaned-staging'
+            : 'staging-writer-unobservable',
+    });
+  }
+
+  const recordFiles = names
     .filter((name) => name.endsWith('.json'))
     .flatMap((name): RecordFile[] => {
       const reportedName = persistedFileNameSchema.safeParse(name);

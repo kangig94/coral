@@ -1947,6 +1947,32 @@ describe('cli format', () => {
       );
     });
 
+    it('reports each staging-writer disposition without asking for operator action', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'records-skipped',
+            skippedUnreadableRecordNames: [],
+            skippedCorruptRecordCount: 0,
+            skippedUnsupportedRecordCount: 0,
+            staging: { writerAliveCount: 1, writerUnobservableCount: 2, orphanedCount: 3 },
+          },
+        }),
+      ).toContain(
+        [
+          'Shutdown remainder publications in progress, writer alive: 1',
+          '  Disposition: retained until the identified writer finishes or is proven absent.',
+          'Shutdown remainder publications in progress, writer unobservable: 2',
+          '  Disposition: retained and retried on every status read and coordinator startup; unknown does not authorize publication or deletion.',
+          'Shutdown remainder publication stages with proven-absent writers: 3',
+          '  Disposition: a decodable stage is promoted at coordinator startup; other orphaned stages are retained under their own 32-entry bound (newest first).',
+        ].join('\n'),
+      );
+    });
+
     it('reports a shutdown remainder scan failure as a section on top of the fallback status', () => {
       expect(
         formatBackendStatus({

@@ -115,6 +115,7 @@ import {
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import { pruneShutdownRemainderRecords, recordShutdownRemainder } from './shutdown-remainder.js';
+import { observeShutdownRemainderStageWriter } from '../infra/shutdown-remainder-record.js';
 import type {
   ShutdownObligationAbandonRequest,
   ShutdownObligationAbandonResult,
@@ -1181,10 +1182,19 @@ async function runLifecycleStartup({
     // this preamble the prune is not O(1) — readdir, then per file a stat, a read, a parse and a decode,
     // then unlinks — so `yieldPastKernelReadyResponse` hands the event loop back first.
     await yieldPastKernelReadyResponse();
-    pruneShutdownRemainderRecords({
+    const remainderPrune = pruneShutdownRemainderRecords({
       storage: runtime.storage,
       runDir: runtime.paths.coral.coordinator.runDir,
+      observeStageWriter: (writer) =>
+        observeShutdownRemainderStageWriter(writer, {
+          platform: runtime.env.platform(),
+          observeLiveness: runtime.process.observeLiveness,
+          readProcessIncarnation: runtime.process.readProcessIncarnation,
+        }),
     });
+    // Constraint: statusWithRecentCoordinatorEvidence owns durable visibility for retained or unreadable
+    // shutdown-remainder stages; best-effort retention never gates lifecycle startup.
+    void remainderPrune;
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
@@ -1361,6 +1371,7 @@ export function createLifecycle(
   const {
     identity,
     runtime,
+    backendPid,
     runtimeState,
     idleTimer,
     storeServicesRef,
@@ -1459,8 +1470,24 @@ export function createLifecycle(
       const publish = (): void => {
         let refusal: string | null;
         try {
+          let writerIncarnation;
+          try {
+            writerIncarnation =
+              runtime.process.readProcessIncarnation(backendPid, runtime.env.platform() as NodeJS.Platform) ??
+              undefined;
+          } catch {
+            writerIncarnation = undefined;
+          }
           refusal = recordShutdownRemainder(
-            { storage: runtime.storage, time: runtime.time, runDir: runtime.paths.coral.coordinator.runDir },
+            {
+              storage: runtime.storage,
+              time: runtime.time,
+              runDir: runtime.paths.coral.coordinator.runDir,
+              writer: {
+                pid: backendPid,
+                incarnation: writerIncarnation,
+              },
+            },
             {
               instanceId,
               reason: terminalReason,

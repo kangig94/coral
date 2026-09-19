@@ -72,7 +72,11 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].owner'
   | 'skippedUnreadableRecordNames[]'
   | 'skippedCorruptRecordCount'
-  | 'skippedUnsupportedRecordCount';
+  | 'skippedUnsupportedRecordCount'
+  | 'staging'
+  | 'staging.writerAliveCount'
+  | 'staging.writerUnobservableCount'
+  | 'staging.orphanedCount';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
