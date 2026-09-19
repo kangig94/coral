@@ -7,7 +7,7 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
 import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
-import type { ToolDomainResult } from '../tool-result.js';
+import type { DiscussToolResult } from '../../discuss/result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import type { HostRef } from '../../providers/host-inventory-schema.js';
@@ -123,18 +123,18 @@ export interface KbRequestPort {
 }
 
 interface DiscussRequestPort {
-  seed(args: unknown): ToolDomainResult;
-  start(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
+  seed(args: unknown): DiscussToolResult;
+  start(args: Record<string, unknown>, ctx: InvocationContext): Promise<DiscussToolResult>;
   listSessions(): DiscussSummaryDto[];
   loadDetail(
     projectRoot: string,
     sessionId: string,
     view: DiscussView,
   ): DiscussDetailResponse | 'audit_requires_ended_session' | null;
-  watch(args: Record<string, unknown>, ctx: InvocationContext): ToolDomainResult;
-  bid(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
-  speech(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
-  abort(args: Record<string, unknown>, ctx: InvocationContext): Promise<ToolDomainResult>;
+  watch(args: Record<string, unknown>, ctx: InvocationContext): DiscussToolResult;
+  bid(args: Record<string, unknown>, ctx: InvocationContext): Promise<DiscussToolResult>;
+  speech(args: Record<string, unknown>, ctx: InvocationContext): Promise<DiscussToolResult>;
+  abort(args: Record<string, unknown>, ctx: InvocationContext): Promise<DiscussToolResult>;
 }
 
 export interface RpcPorts {

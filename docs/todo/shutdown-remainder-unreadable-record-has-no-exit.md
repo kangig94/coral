@@ -34,6 +34,16 @@ named exit is being outranked by 31 other unreadable records, which for an other
 never happen — so a single stuck record can occupy a retention slot indefinitely with no signal beyond a name
 in a list a client has to already be polling to see, and no command lets an operator clear it directly.
 
+That crossing is not unconditional. `skippedRecordIsRelevant` (`readRecentShutdownRemainder` in
+`src/transport/http/backend/status.ts`) widens to every skipped record only for a `directory`-scoped read —
+`no_record_no_socket` and `no_record_socket_present` always use that scope, so a persistently unreadable file
+always crosses there regardless of which instance wrote it. `recorded_process_absent` uses a `coordinator`-scoped
+read instead, which narrows to the one file named `${instanceId}.json` when the discovery record carried an
+`instanceId`, and — because `scope.instanceId !== undefined` gates the same filter — narrows to *nothing* when
+it did not: a `recorded_process_absent` observation from a legacy discovery record with no `instanceId` field
+never surfaces an unreadable record at all, however long it has been stuck. The visibility this section credits
+holds only for the directory-scoped statuses; it is absent, not merely narrowed, for that last shape.
+
 ## What would settle it
 
 - Whether a single persistently-unreadable record should carry its own expiry (an age ceiling or a bounded

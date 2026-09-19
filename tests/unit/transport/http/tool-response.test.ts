@@ -254,7 +254,6 @@ describe('domainResultToHttp', () => {
     ['scope_mismatch', 403],
     ['backend_recovering', 503],
     ['kb_unavailable', 503],
-    ['session_shutting_down', 503],
     ['start_failed', 500],
     ['kb_error', 500],
     ['discuss_error', 500],

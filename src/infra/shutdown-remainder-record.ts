@@ -70,16 +70,26 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
   owner: string | null;
 }>;
 
-export type ShutdownRemainderSkippedRecord = Readonly<{
-  name: string;
+export type ShutdownRemainderSkippedRecord =
   /**
-   * `unreadable`: the read was refused before any byte reached this build — a genuine unknown about the
-   * content, never decisive (design-philosophy.md principle 11). `undecodable`: the bytes were read and are
-   * provably not a usable record (bad JSON or a rejected envelope shape) — as decisive as a schema rejection,
-   * because the content was seen.
+   * The read was refused before any byte reached this build — a genuine unknown about the content, never
+   * decisive (design-philosophy.md principle 11).
    */
-  reason: 'unreadable' | 'undecodable';
-}>;
+  | Readonly<{ name: string; reason: 'unreadable' }>
+  /**
+   * The bytes were read and are not JSON at all — decisive for every build, because nothing can ever parse
+   * them (design-philosophy.md principle 10/11).
+   */
+  | Readonly<{ name: string; reason: 'corrupt' }>
+  /**
+   * The bytes parsed as JSON but this build's envelope schema refused the shape — decisive only about this
+   * build: a build with a different `SHUTDOWN_REASONS`/`SHUTDOWN_MODES` vocabulary (older or newer) may still
+   * decode it, so the fact proven here does not authorize deleting it the way `corrupt` does
+   * (design-philosophy.md principle 10's rollback case, principle 11's third answer). `detail` is
+   * `decodeShutdownRemainderRecord`'s own `shape-rejected` message, carried for a future reader with a wider
+   * schema; it never crosses to an operator-facing surface (see `src/transport/http/backend/status.ts`).
+   */
+  | Readonly<{ name: string; reason: 'unsupported'; detail: string }>;
 
 export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
@@ -299,7 +309,8 @@ export function decodeShutdownRemainderRecord(value: unknown):
 export type ShutdownRemainderFileClassification =
   | Readonly<{ kind: 'vanished' }>
   | Readonly<{ kind: 'unreadable' }>
-  | Readonly<{ kind: 'undecodable' }>
+  | Readonly<{ kind: 'corrupt' }>
+  | Readonly<{ kind: 'unsupported'; detail: string }>
   | Readonly<{
       kind: 'readable';
       record: DecodedShutdownRemainderRecord;
@@ -313,8 +324,10 @@ export type ShutdownRemainderFileClassification =
  *
  * `vanished`: the file lost the readdir-to-read race (`ENOENT`) — silently absent, not corrupt. `unreadable`:
  * the read was refused before any byte reached this build — a genuine unknown (design-philosophy.md principle
- * 11 forbids treating this as decisive). `undecodable`: the bytes were read and are provably not a usable
- * record. `readable`: a decoded record.
+ * 11 forbids treating this as decisive). `corrupt`: the bytes were read and are not JSON at all — decisive for
+ * every build, nothing can ever parse them. `unsupported`: the bytes parsed but this build's envelope schema
+ * refused the shape — decisive only about this build, never about an older or newer one (design-philosophy.md
+ * principle 10). `readable`: a decoded record.
  */
 export function classifyShutdownRemainderFile(
   storage: Pick<StoragePort, 'readFileSync'>,
@@ -332,12 +345,12 @@ export function classifyShutdownRemainderFile(
   try {
     parsedJson = JSON.parse(raw);
   } catch {
-    return { kind: 'undecodable' };
+    return { kind: 'corrupt' };
   }
 
   const decoded = decodeShutdownRemainderRecord(parsedJson);
   return decoded.kind === 'shape-rejected'
-    ? { kind: 'undecodable' }
+    ? { kind: 'unsupported', detail: decoded.detail }
     : { kind: 'readable', record: decoded.record, skippedEntries: decoded.skippedEntries };
 }
 
@@ -379,8 +392,11 @@ export function scanShutdownRemainderRecords(
       case 'unreadable':
         skippedRecords.push({ name: reportedName, reason: 'unreadable' });
         continue;
-      case 'undecodable':
-        skippedRecords.push({ name: reportedName, reason: 'undecodable' });
+      case 'corrupt':
+        skippedRecords.push({ name: reportedName, reason: 'corrupt' });
+        continue;
+      case 'unsupported':
+        skippedRecords.push({ name: reportedName, reason: 'unsupported', detail: classification.detail });
         continue;
       case 'readable':
         records.push(classification.record);

@@ -1273,7 +1273,11 @@ function formatRecentShutdownRemainderReport(
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
   lines.push(
-    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordNames, result.skippedUndecodableRecordCount),
+    ...formatSkippedShutdownRemainderRecords(
+      result.skippedUnreadableRecordNames,
+      result.skippedCorruptRecordCount,
+      result.skippedUnsupportedRecordCount,
+    ),
   );
   return lines.join('\n');
 }
@@ -1353,7 +1357,11 @@ function formatUnreadableShutdownRemainderReport(
   }
   return [
     'Coral found shutdown remainder records it could not use.',
-    ...formatSkippedShutdownRemainderRecords(result.skippedUnreadableRecordNames, result.skippedUndecodableRecordCount),
+    ...formatSkippedShutdownRemainderRecords(
+      result.skippedUnreadableRecordNames,
+      result.skippedCorruptRecordCount,
+      result.skippedUnsupportedRecordCount,
+    ),
   ].join('\n');
 }
 
@@ -1367,7 +1375,11 @@ function formatSkippedShutdownRemainderEntries(
   ]);
 }
 
-function formatSkippedShutdownRemainderRecords(unreadableNames: readonly string[], undecodableCount: number): string[] {
+function formatSkippedShutdownRemainderRecords(
+  unreadableNames: readonly string[],
+  corruptCount: number,
+  unsupportedCount: number,
+): string[] {
   const lines: string[] = [];
   if (unreadableNames.length > 0) {
     lines.push(
@@ -1376,10 +1388,16 @@ function formatSkippedShutdownRemainderRecords(unreadableNames: readonly string[
       '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
     );
   }
-  if (undecodableCount > 0) {
+  if (corruptCount > 0) {
     lines.push(
-      `Skipped shutdown remainder records, undecodable: ${undecodableCount}`,
-      '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
+      `Skipped shutdown remainder records, corrupt: ${corruptCount}`,
+      '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
+    );
+  }
+  if (unsupportedCount > 0) {
+    lines.push(
+      `Skipped shutdown remainder records, unsupported: ${unsupportedCount}`,
+      '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained and reclaimed only once too many unsupported records accumulate (oldest first).',
     );
   }
   return lines;

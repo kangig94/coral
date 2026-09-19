@@ -2,9 +2,12 @@ import type { Result } from '../session-types.js';
 
 export const ABORT_REASON = 'abort';
 
-// Must stay distinct from `session_not_found`: a caller that maps this code the same way
-// as a genuinely missing session (e.g. a 404) tells its reader the session doesn't exist
-// when the store still holds it and a shutdown/handoff drain is merely still tearing down.
+// commitDecision's controller.signal.aborted guard produces this, never `session_not_found`,
+// exactly when the session's durable record still exists but its live controller was aborted
+// (clearAllDiscuss's abort-first pass runs before removing anything from ctx.sessions).
+// isSilentCommitRefusal folds both into the same internal no-op today; a caller that inspects
+// `error` directly instead must not treat this value as evidence the store no longer holds
+// the session.
 export const SESSION_SHUTTING_DOWN = 'session_shutting_down';
 
 export class DiscussManagerError extends Error {

@@ -167,7 +167,8 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
+        skippedUnsupportedRecordCount: 0,
       },
     });
   });
@@ -186,7 +187,8 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: ['unreadable.json'],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
       },
     });
   });
@@ -203,7 +205,8 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: ['ancient.json'],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
       },
     });
   });
@@ -246,7 +249,7 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'predecessor-instance' },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
       },
     });
   });
@@ -319,7 +322,7 @@ describe('getBackendStatusFull record disposition', () => {
             {
               obligation: { label: 'hooks.onShutdown' },
               remainder: { owner: 'process-exit' },
-              settlement: { cause: 'rejected', error: { name: 'SystemError', code: 'ECONNRESET' } },
+              settlement: { cause: 'rejected', error: { name: 'TypeError', code: 'ECONNRESET' } },
             },
             {
               obligation: { label: 'provider host shutdown' },
@@ -329,7 +332,7 @@ describe('getBackendStatusFull record disposition', () => {
           ],
         },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
       },
     });
     expect(recentShutdownRemainder(result)?.skippedEntries ?? null).toEqual([
@@ -341,7 +344,7 @@ describe('getBackendStatusFull record disposition', () => {
     ]);
     expect(recentShutdownRemainder(result)?.record.entries[1]?.settlement ?? null).toEqual({
       cause: 'rejected',
-      error: { name: 'SystemError', code: 'ECONNRESET' },
+      error: { name: 'TypeError', code: 'ECONNRESET' },
     });
     expect(recentShutdownRemainder(result)?.record.entries[2]?.settlement ?? null).toEqual({
       cause: 'unconfirmed',
@@ -425,7 +428,7 @@ describe('getBackendStatusFull record disposition', () => {
         },
         skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
       },
     });
     expect(JSON.stringify(result)).not.toContain(hostile);
@@ -517,7 +520,8 @@ describe('getBackendStatusFull record disposition', () => {
         'skippedEntries[].obligation.occurrence',
         'skippedEntries[].owner',
         'skippedUnreadableRecordNames[]',
-        'skippedUndecodableRecordCount',
+        'skippedCorruptRecordCount',
+        'skippedUnsupportedRecordCount',
       ].sort(),
     );
     expect(JSON.stringify(result)).not.toContain('owner/repo');
@@ -720,7 +724,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('reports files when every shutdown remainder record is undecodable', async () => {
+  it('reports files when every shutdown remainder record is corrupt or unsupported', async () => {
     mockState.remainderFiles = [
       remainderFile('corrupt.json', NOW - 10_000, '{not-json'),
       remainderFile('future.json', NOW - 5_000, JSON.stringify({ version: 2 })),
@@ -734,7 +738,8 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 2,
+        skippedCorruptRecordCount: 1,
+        skippedUnsupportedRecordCount: 1,
       },
     });
   });
@@ -753,7 +758,8 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
+        skippedUnsupportedRecordCount: 0,
       },
     });
   });
@@ -772,7 +778,8 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
+        skippedUnsupportedRecordCount: 0,
       },
     });
   });
@@ -791,7 +798,7 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'current' },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
       },
     });
   });
@@ -1137,7 +1144,7 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'test-instance' },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
       },
     });
   });
@@ -1384,7 +1391,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
       },
     });
   });
@@ -1405,7 +1412,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
       },
     });
   });
@@ -1425,7 +1432,8 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 1,
+        skippedCorruptRecordCount: 1,
+        skippedUnsupportedRecordCount: 0,
       },
     });
   });
@@ -1457,7 +1465,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
         skippedUnreadableRecordNames: [],
-        skippedUndecodableRecordCount: 0,
+        skippedCorruptRecordCount: 0,
       },
     });
   });
@@ -1489,6 +1497,22 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
       pid: PID,
+    });
+  });
+
+  // Not knowing which instance to scope to (a legacy discovery record predates `instanceId`) is a different
+  // unknown from not knowing whether the remainder directory could be read at all — the second one must never
+  // collapse into the first's silence (design-philosophy.md principle 11's third answer).
+  it('reports a scan failure even when the coordinator scope carries no instance id to widen', async () => {
+    mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT };
+    mockState.remainderScanThrows = true;
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'recorded_process_absent',
+      pid: PID,
+      shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
     });
   });
 

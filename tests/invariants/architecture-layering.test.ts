@@ -80,6 +80,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/sessions/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',
+  'src/discuss/result.ts',
   'src/workflow/input.ts',
   'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
@@ -335,6 +336,16 @@ describe('architecture layering invariants', () => {
   it('kb domain does not import transport-owned result wrappers', () => {
     const violations = collectViolations(
       (source, target) => source.startsWith('src/kb/') && target === 'src/transport/tool-result.ts',
+    );
+
+    expect(violations).toEqual([]);
+  });
+
+  it('discuss domain does not import transport-owned result wrappers', () => {
+    // Transport already imports src/discuss/result.ts for DiscussRequestPort (TRANSPORT_ALLOWED);
+    // the reverse edge would make discuss<->transport a cycle in the runtime domain graph.
+    const violations = collectViolations(
+      (source, target) => source.startsWith('src/discuss/') && target === 'src/transport/tool-result.ts',
     );
 
     expect(violations).toEqual([]);

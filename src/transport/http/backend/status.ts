@@ -285,14 +285,16 @@ type BackendStatus =
  * `status` is this report's own discriminant, distinct from the `BackendStatusFull['status']` it rides on.
  *
  * Neither skipped-record finding is age-scoped (design-philosophy.md principle 11): an 'unreadable' record's
- * mtime proves nothing about its content, and an 'undecodable' one's mtime proves nothing about when it was
- * written, so filtering either by recency would silently drop evidence this build never proved irrelevant to
- * report. They stay two separate fields, of two different shapes, because their dispositions differ:
+ * mtime proves nothing about its content, and neither a 'corrupt' nor an 'unsupported' one's mtime proves
+ * anything about when it was written, so filtering any of them by recency would silently drop evidence this
+ * build never proved irrelevant to report. They stay three separate fields because their dispositions differ:
  * 'unreadable' carries its filenames — the only evidence an operator-less reader has for a record this build
  * never reclaims by content judgment, and the retention bound in `pruneShutdownRemainderRecords`
- * (`src/coordinator/shutdown-remainder.ts`) is that hold's only exit — while 'undecodable' stays a bare count:
- * its disposition (discard at the next coordinator startup) is decided and carried out by this build alone, so
- * no reader action on its identity is possible or needed.
+ * (`src/coordinator/shutdown-remainder.ts`) is that hold's only exit. 'corrupt' and 'unsupported' each stay a
+ * bare count: a 'corrupt' record's disposition (delete outright at the next coordinator startup) is decided
+ * and carried out by this build alone, and an 'unsupported' one is decisive only about this build
+ * (design-philosophy.md principle 10) and held under its own bounded retention rather than reported by name —
+ * neither needs reader action on its identity.
  */
 export type ShutdownRemainderReport =
   | Readonly<{
@@ -300,14 +302,16 @@ export type ShutdownRemainderReport =
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
       skippedUnreadableRecordNames: readonly string[];
-      skippedUndecodableRecordCount: number;
+      skippedCorruptRecordCount: number;
+      skippedUnsupportedRecordCount: number;
     }>
   | Readonly<{ status: 'shutdown_remainder_unreadable'; reason: 'scan-failed' }>
   | Readonly<{
       status: 'shutdown_remainder_unreadable';
       reason: 'records-skipped';
       skippedUnreadableRecordNames: readonly string[];
-      skippedUndecodableRecordCount: number;
+      skippedCorruptRecordCount: number;
+      skippedUnsupportedRecordCount: number;
     }>;
 
 export type BackendStatusFull =
@@ -440,13 +444,14 @@ function operatorFacingShutdownSettlement(
   switch (settlement.cause) {
     case 'rejected':
     case 'aborted': {
+      // Constraint: `name` names the outer, thrown error — the fact identifying what failed — and must never
+      // be replaced by a nested cause's name; only `code`, which a wrapper error often omits even when its
+      // cause carries an actionable errno, falls back to the nested cause when the outer carries none of its
+      // own.
       const nestedCause = settlement.error.kind === 'error' ? settlement.error.cause : undefined;
-      const error =
-        nestedCause !== undefined && operatorFacingErrorCode(nestedCause.code) !== undefined
-          ? nestedCause
-          : settlement.error;
-      const code = operatorFacingErrorCode(error.code);
-      const name = error.kind === 'error' ? operatorFacingErrorName(error.name) : 'UnknownThrown';
+      const outerCode = operatorFacingErrorCode(settlement.error.code);
+      const code = outerCode ?? (nestedCause === undefined ? undefined : operatorFacingErrorCode(nestedCause.code));
+      const name = settlement.error.kind === 'error' ? operatorFacingErrorName(settlement.error.name) : 'UnknownThrown';
       return {
         cause: settlement.cause,
         error: {
@@ -595,21 +600,26 @@ function readRecentShutdownRemainder(
   try {
     scan = scanShutdownRemainderRecords(storage, directory);
   } catch {
-    return scope.kind === 'directory' || scope.instanceId !== undefined
-      ? { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' }
-      : null;
+    // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
+    // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
+    // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
+    // field): not knowing which instance to scope to is a different unknown from not knowing whether the
+    // directory could be read at all, and the second one is what this catch observed.
+    return { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' };
   }
-  // Constraint: neither skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
-  // 'unreadable' proves nothing about the content at all, and 'undecodable' proves nothing about when it was
-  // written, so an age filter on either would silently drop evidence this build never proved irrelevant. Scope
-  // narrowing (to a specific coordinator instance's own file, when one is known) is the only filter left.
+  // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
+  // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
+  // anything about when it was written, so an age filter on any of them would silently drop evidence this
+  // build never proved irrelevant. Scope narrowing (to a specific coordinator instance's own file, when one is
+  // known) is the only filter left.
   const skippedRecordIsRelevant = ({ name }: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean =>
     scope.kind === 'directory' || (scope.instanceId !== undefined && name === `${scope.instanceId}.json`);
   const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
   const skippedUnreadableRecordNames = scopedSkippedRecords
     .filter(({ reason }) => reason === 'unreadable')
     .map(({ name }) => name);
-  const skippedUndecodableRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'undecodable').length;
+  const skippedCorruptRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'corrupt').length;
+  const skippedUnsupportedRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'unsupported').length;
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -634,7 +644,8 @@ function readRecentShutdownRemainder(
           status: 'shutdown_remainder_unreadable',
           reason: 'records-skipped',
           skippedUnreadableRecordNames,
-          skippedUndecodableRecordCount,
+          skippedCorruptRecordCount,
+          skippedUnsupportedRecordCount,
         }
       : null;
   }
@@ -649,7 +660,8 @@ function readRecentShutdownRemainder(
         owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
       })),
     skippedUnreadableRecordNames,
-    skippedUndecodableRecordCount,
+    skippedCorruptRecordCount,
+    skippedUnsupportedRecordCount,
   };
 }
 

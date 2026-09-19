@@ -59,7 +59,10 @@ export async function startDiscussSession(
   invocationCtx: InvocationContext,
 ): Promise<LiveDiscussSession> {
   if (!hasProviderScope(invocationCtx)) {
-    throw new DiscussManagerError('provider_scope_missing');
+    throw new DiscussManagerError('provider_scope_missing', {
+      message:
+        'This discussion has no provider scope. Start it again from a launch-capable client with the profiles used by its agents.',
+    });
   }
   const decodedScope = ctx.providerRegistry.decodeCompleteScope(
     invocationCtx.providerScope,

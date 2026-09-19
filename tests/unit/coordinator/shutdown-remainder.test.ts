@@ -3,10 +3,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   pruneShutdownRemainderRecords,
-  readShutdownRemainderStatus,
   recordShutdownRemainder,
   shutdownRemainderPath,
 } from '#src/coordinator/shutdown-remainder.js';
+import { scanShutdownRemainderRecords } from '#src/infra/shutdown-remainder-record.js';
 import { childTerminationRemainder } from '#src/coordinator/shutdown.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -176,6 +176,22 @@ describe('shutdown remainder status', () => {
     expect(storage.writeAtomicDurableSync).not.toHaveBeenCalled();
   });
 
+  it.each(['', 'forged\ninstance', 'has spaces', 'A'.repeat(129)])(
+    'refuses to write a record for an instanceId outside the closed identifier charset (%j)',
+    (instanceId) => {
+      const storage = storageWith();
+
+      expect(() =>
+        recordShutdownRemainder(
+          { storage, time: { now: () => 1_788_739_200_000 }, runDir: RUN_DIR },
+          { instanceId, reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
+        ),
+      ).toThrow(/instanceId/u);
+      expect(storage.writeAtomicSync).not.toHaveBeenCalled();
+      expect(storage.fileNames()).toEqual([]);
+    },
+  );
+
   it('keeps rejected-error prose and its cause chain in the private record', () => {
     const storage = storageWith();
     const error = {
@@ -205,9 +221,8 @@ describe('shutdown remainder status', () => {
       ),
     ).toBe(true);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [{ entries: [{ settlement: { cause: 'rejected', error } }] }] },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [{ entries: [{ settlement: { cause: 'rejected', error } }] }],
     });
   });
 
@@ -234,28 +249,18 @@ describe('shutdown remainder status', () => {
       ),
     ).toBe(true);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       skippedEntries: [],
-      status: {
-        records: [
-          {
-            entries: [
-              {
-                label: 'discuss store dispose',
-                subject: { kind: 'discuss-store', source },
-              },
-            ],
-          },
-        ],
-      },
-    });
-  });
-
-  it('reports an absent directory', () => {
-    expect(readShutdownRemainderStatus({ storage: storageWith(), runDir: RUN_DIR })).toEqual({
-      kind: 'absent',
-      path: REMAINDER_DIRECTORY,
+      records: [
+        {
+          entries: [
+            {
+              label: 'discuss store dispose',
+              subject: { kind: 'discuss-store', source },
+            },
+          ],
+        },
+      ],
     });
   });
 
@@ -278,18 +283,13 @@ describe('shutdown remainder status', () => {
       }),
     ]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toEqual({
-      kind: 'available',
-      path: REMAINDER_DIRECTORY,
-      status: {
-        version: 1,
-        records: [
-          {
-            ...recordAt('future-instance', [{ ...KNOWN_LOSS, entryNumber: 2 }]),
-            reason: 'provider-proxy-lifecycle-fatal',
-          },
-        ],
-      },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toEqual({
+      records: [
+        {
+          ...recordAt('future-instance', [{ ...KNOWN_LOSS, entryNumber: 2 }]),
+          reason: 'provider-proxy-lifecycle-fatal',
+        },
+      ],
       skippedEntries: [
         {
           recordInstanceId: 'future-instance',
@@ -318,9 +318,8 @@ describe('shutdown remainder status', () => {
       }),
     ]);
 
-    const read = readShutdownRemainderStatus({ storage, runDir: RUN_DIR });
+    const read = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
     expect(read).toMatchObject({
-      kind: 'available',
       skippedEntries: [
         {
           recordInstanceId: 'malformed-instance',
@@ -343,8 +342,7 @@ describe('shutdown remainder status', () => {
       ],
       skippedRecords: [],
     });
-    if (read.kind !== 'available') throw new Error('expected readable remainder status');
-    expect(read.status.records[0]?.entries).toHaveLength(1);
+    expect(read.records[0]?.entries).toHaveLength(1);
   });
 
   it('rejects multiline entry labels without carrying them into skipped-entry output', () => {
@@ -355,9 +353,8 @@ describe('shutdown remainder status', () => {
       }),
     ]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [{ instanceId: 'bounded-instance', entries: [] }] },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [{ instanceId: 'bounded-instance', entries: [] }],
       skippedEntries: [
         {
           recordInstanceId: 'bounded-instance',
@@ -375,32 +372,29 @@ describe('shutdown remainder status', () => {
   ])('rejects a record with an invalid single-line %s', (_field, record) => {
     const storage = storageWith([fileAt('bounded-instance', 1, record)]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [] },
-      skippedRecords: [{ name: 'bounded-instance.json', reason: 'undecodable' }],
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [],
+      skippedRecords: [{ name: 'bounded-instance.json', reason: 'unsupported' }],
     });
   });
 
   it('reports an unsafe skipped filename through a fixed single-line fact', () => {
     const storage = storageWith([{ name: 'forged\nrecord.json', value: '{not-json', mtimeMs: 1 }]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      skippedRecords: [{ name: 'invalid-record-name', reason: 'undecodable' }],
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      skippedRecords: [{ name: 'invalid-record-name', reason: 'corrupt' }],
     });
   });
 
   it('normalizes a skipped record filename outside the closed identifier charset', () => {
     const storage = storageWith([{ name: 'forged command=rm -rf ~ (danger).json', value: '{not-json', mtimeMs: 1 }]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      skippedRecords: [{ name: 'invalid-record-name', reason: 'undecodable' }],
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      skippedRecords: [{ name: 'invalid-record-name', reason: 'corrupt' }],
     });
   });
 
-  it('skips corrupt and undecodable files beside readable records', () => {
+  it('skips corrupt and unsupported files beside readable records', () => {
     const storage = storageWith([
       fileAt('known-instance', 1),
       { name: 'corrupt-instance.json', value: '{not-json', mtimeMs: 2 },
@@ -408,14 +402,12 @@ describe('shutdown remainder status', () => {
       { name: 'ignored.tmp', value: 'not a record', mtimeMs: 4 },
     ]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toEqual({
-      kind: 'available',
-      path: REMAINDER_DIRECTORY,
-      status: { version: 1, records: [decodedRecordAt('known-instance')] },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toEqual({
+      records: [decodedRecordAt('known-instance')],
       skippedEntries: [],
       skippedRecords: [
-        { name: 'corrupt-instance.json', reason: 'undecodable' },
-        { name: 'foreign-instance.json', reason: 'undecodable' },
+        { name: 'corrupt-instance.json', reason: 'corrupt' },
+        { name: 'foreign-instance.json', reason: 'unsupported', detail: expect.any(String) },
       ],
     });
   });
@@ -423,9 +415,8 @@ describe('shutdown remainder status', () => {
   it('keeps per-record read tolerance when file metadata is unavailable', () => {
     const storage = storageWith([fileAt('known-instance', 1)], { refuseStatFor: 'known-instance.json' });
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [recordAt('known-instance')] },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [recordAt('known-instance')],
       skippedEntries: [],
       skippedRecords: [],
     });
@@ -437,10 +428,9 @@ describe('shutdown remainder status', () => {
       statErrorCode: 'EIO',
     });
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [] },
-      skippedRecords: [{ name: 'corrupt.json', reason: 'undecodable' }],
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [],
+      skippedRecords: [{ name: 'corrupt.json', reason: 'corrupt' }],
     });
   });
 
@@ -450,9 +440,8 @@ describe('shutdown remainder status', () => {
       statErrorCode: 'ENOENT',
     });
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [] },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [],
       skippedRecords: [],
     });
     expect(storage.readFileSync).not.toHaveBeenCalled();
@@ -464,9 +453,8 @@ describe('shutdown remainder status', () => {
       readErrorCode: 'ENOENT',
     });
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: { records: [] },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [],
       skippedRecords: [],
     });
   });
@@ -505,35 +493,32 @@ describe('shutdown remainder status', () => {
       }),
     ]);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
-      status: {
-        records: [
-          {
-            ...recordAt('older-instance'),
-            entries: [
-              {
-                label: 'future-compatible loss',
-                remainder: {
-                  owner: 'successor-recovery',
-                  evidence: {
-                    kind: 'startup-adoption',
-                    processes: [
-                      {
-                        kind: 'durable-cli-runtime',
-                        jobId: 'job-1',
-                        pid: 4_242,
-                        leaderIncarnation: testIncarnation('future-compatible-child'),
-                      },
-                    ],
-                  },
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [
+        {
+          ...recordAt('older-instance'),
+          entries: [
+            {
+              label: 'future-compatible loss',
+              remainder: {
+                owner: 'successor-recovery',
+                evidence: {
+                  kind: 'startup-adoption',
+                  processes: [
+                    {
+                      kind: 'durable-cli-runtime',
+                      jobId: 'job-1',
+                      pid: 4_242,
+                      leaderIncarnation: testIncarnation('future-compatible-child'),
+                    },
+                  ],
                 },
-                settlement: { cause: 'timed-out', budgetMs: 5_000 },
               },
-            ],
-          },
-        ],
-      },
+              settlement: { cause: 'timed-out', budgetMs: 5_000 },
+            },
+          ],
+        },
+      ],
       skippedEntries: [],
       skippedRecords: [],
     });
@@ -675,12 +660,74 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('unreadable-31.json');
   });
 
-  it('reclaims a decisively undecodable record regardless of age, even under the retention cap', () => {
-    const storage = storageWith([fileAt('readable', 1), { name: 'undecodable.json', value: '{not-json', mtimeMs: 2 }]);
+  it('reclaims a decisively corrupt record regardless of age, even under the retention cap', () => {
+    const storage = storageWith([fileAt('readable', 1), { name: 'corrupt.json', value: '{not-json', mtimeMs: 2 }]);
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(storage.fileNames()).toEqual(['readable.json']);
+  });
+
+  it('holds an unsupported record under bounded retention instead of deleting it outright', () => {
+    // The rollback case design-philosophy.md principle 10 asks every durable shape to fail softly against: a
+    // schema this build's own `z.enum` rejects (an unrecognized `reason`/`mode` a newer build wrote) proves
+    // nothing about whether some other build could still decode the same bytes, so the prune must not treat it
+    // the way it treats a genuinely corrupt file.
+    const storage = storageWith([
+      fileAt('readable', 1),
+      {
+        name: 'future-instance.json',
+        value: JSON.stringify({
+          ...recordAt('future-instance'),
+          reason: 'a-seventh-shutdown-reason-this-build-does-not-know',
+        }),
+        mtimeMs: 2,
+      },
+    ]);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames().sort()).toEqual(['future-instance.json', 'readable.json']);
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
+      records: [recordAt('readable')],
+      skippedRecords: [{ name: 'future-instance.json', reason: 'unsupported' }],
+    });
+  });
+
+  it('reclaims an unsupported record once its own bucket exceeds the retention bound, independent of known and unreadable', () => {
+    const unsupportedFiles = Array.from({ length: 33 }, (_, index) => ({
+      name: `unsupported-${index}.json`,
+      value: JSON.stringify({ ...recordAt(`unsupported-${index}`), reason: 'a-future-shutdown-reason' }),
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith([fileAt('readable', 100), ...unsupportedFiles]);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('readable.json');
+    expect(storage.fileNames()).not.toContain('unsupported-0.json');
+    expect(storage.fileNames()).toContain('unsupported-32.json');
+  });
+
+  it('reclaims an orphaned atomic-write temp file unconditionally, regardless of the retention cap', () => {
+    // `writeAtomicSyncNode` (src/runtime/real.ts) leaves `<instanceId>.json.tmp` behind on a failed write, and
+    // this directory has no other legitimate content, so the sweep reclaims any non-`.json` entry outright
+    // without ever calling `statSync` or `readFileSync` on it (same rule as the non-`.json` sweep in
+    // src/store/epoch.ts).
+    const storage = storageWith([
+      fileAt('readable', 1),
+      { name: 'orphaned-instance.json.tmp', value: 'partial write', mtimeMs: 2 },
+    ]);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(storage.fileNames()).toEqual(['readable.json']);
+    expect(storage.statSync).not.toHaveBeenCalledWith(join(REMAINDER_DIRECTORY, 'orphaned-instance.json.tmp'));
+    expect(storage.readFileSync).not.toHaveBeenCalledWith(
+      join(REMAINDER_DIRECTORY, 'orphaned-instance.json.tmp'),
+      'utf-8',
+    );
   });
 
   it('does not turn a best-effort startup prune refusal into an error', () => {
@@ -760,25 +807,22 @@ describe('shutdown remainder status', () => {
       ),
     ).toBe(true);
 
-    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
-      kind: 'available',
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       skippedEntries: [],
-      status: {
-        records: [
-          {
-            instanceId: 'current-instance',
-            entries: [
-              {
-                label: 'child termination',
-                remainder: {
-                  owner: 'successor-recovery',
-                  evidence: { kind: 'startup-adoption', processes: [evidence] },
-                },
+      records: [
+        {
+          instanceId: 'current-instance',
+          entries: [
+            {
+              label: 'child termination',
+              remainder: {
+                owner: 'successor-recovery',
+                evidence: { kind: 'startup-adoption', processes: [evidence] },
               },
-            ],
-          },
-        ],
-      },
+            },
+          ],
+        },
+      ],
     });
   });
 });

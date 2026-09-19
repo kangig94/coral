@@ -1,26 +1,22 @@
 import { join } from 'node:path';
 
 import { backendLog } from '../infra/backend-log.js';
-import { thrownErrnoCode } from '../infra/error-format.js';
+import {
+  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
+  SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+  thrownErrnoCode,
+} from '../infra/error-format.js';
 import type { StoragePort, TimePort } from '../infra/port-types.js';
 import {
   classifyShutdownRemainderFile,
-  scanShutdownRemainderRecords,
-  SHUTDOWN_REMAINDER_RECORD_VERSION,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderRecord,
-  type ShutdownRemainderRecordScan,
 } from '../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../infra/time.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 const MAX_SHUTDOWN_REMAINDER_RECORDS = 32;
-
-type ShutdownRemainderReadRuntime = Readonly<{
-  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>;
-  runDir: string;
-}>;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync' | 'unlinkSync'>;
@@ -33,22 +29,6 @@ type ShutdownRemainderWriteRuntime = Readonly<{
   runDir: string;
 }>;
 
-export type ShutdownRemainderStatus = Readonly<{
-  version: typeof SHUTDOWN_REMAINDER_RECORD_VERSION;
-  records: readonly ShutdownRemainderRecord[];
-}>;
-
-export type ShutdownRemainderStatusRead =
-  | Readonly<{
-      kind: 'available';
-      path: string;
-      status: ShutdownRemainderStatus;
-      skippedEntries: ShutdownRemainderRecordScan['skippedEntries'];
-      skippedRecords: ShutdownRemainderRecordScan['skippedRecords'];
-    }>
-  | Readonly<{ kind: 'absent'; path: string }>
-  | Readonly<{ kind: 'unreadable'; path: string; detail: string }>;
-
 export type ShutdownRemainderRecordInput = Readonly<{
   instanceId: string;
   reason: ShutdownReason;
@@ -58,28 +38,6 @@ export type ShutdownRemainderRecordInput = Readonly<{
 
 export function shutdownRemainderPath(runDir: string): string {
   return shutdownRemainderRecordDirectory(runDir);
-}
-
-export function readShutdownRemainderStatus(runtime: ShutdownRemainderReadRuntime): ShutdownRemainderStatusRead {
-  const path = shutdownRemainderPath(runtime.runDir);
-  if (!runtime.storage.existsSync(path)) return { kind: 'absent', path };
-  try {
-    const scan = scanShutdownRemainderRecords(runtime.storage, path);
-
-    return {
-      kind: 'available',
-      path,
-      status: { version: SHUTDOWN_REMAINDER_RECORD_VERSION, records: scan.records },
-      skippedEntries: scan.skippedEntries,
-      skippedRecords: scan.skippedRecords,
-    };
-  } catch (error: unknown) {
-    return {
-      kind: 'unreadable',
-      path,
-      detail: error instanceof Error ? error.message : String(error),
-    };
-  }
 }
 
 type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
@@ -104,7 +62,21 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
   try {
     const known: { name: string; age: RecordAge }[] = [];
     const unreadable: { name: string; age: RecordAge }[] = [];
-    for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
+    const unsupported: { name: string; age: RecordAge }[] = [];
+    for (const name of runtime.storage.readdirSync(directory)) {
+      if (!name.endsWith('.json')) {
+        // Constraint: every name `recordShutdownRemainder` or a sibling build ever leaves in this directory is
+        // `<instanceId>.json`; nothing else names a record a reader or a later prune could use — the orphaned
+        // `.tmp` staging file `writeAtomicSyncNode` leaves behind on a failed write included — so it is
+        // reclaimed outright rather than competing for a bounded slot below (same rule as the non-`.json`
+        // sweep in `src/store/epoch.ts`, applied to a directory with no other legitimate content).
+        try {
+          runtime.storage.unlinkSync(join(directory, name));
+        } catch {
+          /* Retention cleanup must not block startup. */
+        }
+        continue;
+      }
       const path = join(directory, name);
       let age: RecordAge = { kind: 'unknown' };
       try {
@@ -115,16 +87,24 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
 
       const classification = classifyShutdownRemainderFile(runtime.storage, path);
       if (classification.kind === 'vanished') continue;
-      if (classification.kind === 'undecodable') {
+      if (classification.kind === 'corrupt') {
         // Constraint: a decisive decode failure (design-philosophy.md principle 11) authorizes reclaiming this
         // file regardless of age — it is deleted outright rather than competing for a slot in the retention
         // count below.
         try {
           runtime.storage.unlinkSync(path);
-          backendLog.warn(`shutdown remainder record ${name} discarded: content is not a decodable record`);
+          backendLog.warn(`shutdown remainder record ${name} discarded: content is not valid JSON`);
         } catch {
           /* Retention cleanup must not block startup. */
         }
+        continue;
+      }
+      if (classification.kind === 'unsupported') {
+        // Constraint: a schema rejection is decisive only about this build, never about an older or newer one
+        // that may still decode the same bytes (design-philosophy.md principle 10's rollback case) — so unlike
+        // `corrupt`, it is held under the same bounded retention as `unreadable` below rather than deleted
+        // outright, competing only against other unsupported files for its own slot count.
+        unsupported.push({ name, age });
         continue;
       }
       if (classification.kind === 'unreadable') {
@@ -166,6 +146,21 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
         /* Retention cleanup must not block startup. */
       }
     }
+    unsupported.sort(byRetentionOrder);
+    // Constraint: this retention bound is the unsupported hold's only exit, on the same footing as
+    // `unreadable` above — a build-relative schema rejection does not authorize deletion (design-philosophy.md
+    // principle 10/11), so this bucket is reclaimed only once it exceeds its own bound, independent of `known`
+    // and `unreadable`.
+    for (const { name } of unsupported.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+      try {
+        runtime.storage.unlinkSync(join(directory, name));
+        backendLog.warn(
+          `shutdown remainder record ${name} discarded: unsupported by this build's schema, beyond the retention bound`,
+        );
+      } catch {
+        /* Retention cleanup must not block startup. */
+      }
+    }
   } catch {
     /* Retention cleanup must not block startup. */
   }
@@ -175,6 +170,20 @@ export function recordShutdownRemainder(
   runtime: ShutdownRemainderWriteRuntime,
   input: ShutdownRemainderRecordInput,
 ): boolean {
+  // Constraint: the reader (`persistedIdentifierSchema`/`persistedFileNameSchema` in
+  // src/infra/shutdown-remainder-record.ts) accepts only an `instanceId` bound by
+  // `SERIALIZED_THROWN_IDENTIFIER_PATTERN`, both as the filename and as the record's own `instanceId` field.
+  // Refusing an out-of-charset value here, before the write, keeps that acceptance true instead of writing a
+  // file every reader — this build's own included — can only ever classify `unsupported`.
+  if (
+    input.instanceId.length === 0 ||
+    input.instanceId.length > SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH ||
+    !SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(input.instanceId)
+  ) {
+    throw new Error(
+      `Shutdown remainder instanceId is not a valid identifier: it must match ${SERIALIZED_THROWN_IDENTIFIER_PATTERN} within ${SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH} characters.`,
+    );
+  }
   const directory = shutdownRemainderPath(runtime.runDir);
   const path = join(directory, `${input.instanceId}.json`);
   const record: ShutdownRemainderRecord = {

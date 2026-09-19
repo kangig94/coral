@@ -403,8 +403,9 @@ describe('DiscussContext lifecycle boundaries', () => {
     if (!session) {
       throw new Error('Expected attached shutdown-racing-bid-session');
     }
-    // Stands in for clearAllDiscuss's abort-first pass racing a submitManualBid call that
-    // reads the live session before the registry finishes tearing it down.
+    // Exercises commitDecision's controller-aborted guard through submitManualBid, which
+    // reads `error` directly instead of going through isSilentCommitRefusal (unlike the
+    // internal flows), so it must surface SESSION_SHUTTING_DOWN rather than session_not_found.
     session.controller.abort();
 
     let thrown: unknown;
@@ -416,8 +417,7 @@ describe('DiscussContext lifecycle boundaries', () => {
 
     expect(thrown).toBeInstanceOf(DiscussManagerError);
     expect((thrown as DiscussManagerError).code).toBe(SESSION_SHUTTING_DOWN);
-    // The store must still hold the session: a reader must not conclude from this refusal
-    // that the session doesn't exist (`discuss status` on the same id still succeeds).
+    // The guard fires without removing anything from the store.
     expect(harness.store.load('shutdown-racing-bid-session')).not.toBeNull();
   });
 

@@ -1813,7 +1813,8 @@ describe('cli format', () => {
             },
           ],
           skippedUnreadableRecordNames: ['locked-instance.json'],
-          skippedUndecodableRecordCount: 2,
+          skippedCorruptRecordCount: 2,
+          skippedUnsupportedRecordCount: 0,
         },
       });
 
@@ -1851,8 +1852,8 @@ describe('cli format', () => {
           'Skipped shutdown remainder records, unreadable: 1',
           '  Record: locked-instance.json',
           '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
-          'Skipped shutdown remainder records, undecodable: 2',
-          '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
+          'Skipped shutdown remainder records, corrupt: 2',
+          '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
         ].join('\n'),
       );
     });
@@ -1866,7 +1867,8 @@ describe('cli format', () => {
             status: 'shutdown_remainder_unreadable',
             reason: 'records-skipped',
             skippedUnreadableRecordNames: ['locked-instance.json'],
-            skippedUndecodableRecordCount: 0,
+            skippedCorruptRecordCount: 0,
+            skippedUnsupportedRecordCount: 0,
           },
         }),
       ).toBe(
@@ -1880,7 +1882,7 @@ describe('cli format', () => {
       );
     });
 
-    it('reports undecodable shutdown remainder records as a section on top of the fallback status', () => {
+    it('reports corrupt shutdown remainder records as a section on top of the fallback status', () => {
       expect(
         formatBackendStatus({
           status: 'recorded_process_absent',
@@ -1889,15 +1891,42 @@ describe('cli format', () => {
             status: 'shutdown_remainder_unreadable',
             reason: 'records-skipped',
             skippedUnreadableRecordNames: [],
-            skippedUndecodableRecordCount: 1,
+            skippedCorruptRecordCount: 1,
+            skippedUnsupportedRecordCount: 0,
           },
         }),
       ).toBe(
         [
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Coral found shutdown remainder records it could not use.',
-          'Skipped shutdown remainder records, undecodable: 1',
-          '  Disposition: content is not a decodable record; discarded automatically at the next coordinator startup.',
+          'Skipped shutdown remainder records, corrupt: 1',
+          '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
+        ].join('\n'),
+      );
+    });
+
+    // The rollback case (design-philosophy.md principle 10): a record a newer build wrote and this build's
+    // schema rejects must survive rather than be deleted, so it gets its own reported reason and disposition
+    // distinct from a genuinely corrupt file.
+    it('reports unsupported shutdown remainder records as a section on top of the fallback status', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'records-skipped',
+            skippedUnreadableRecordNames: [],
+            skippedCorruptRecordCount: 0,
+            skippedUnsupportedRecordCount: 1,
+          },
+        }),
+      ).toBe(
+        [
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+          'Coral found shutdown remainder records it could not use.',
+          'Skipped shutdown remainder records, unsupported: 1',
+          '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained and reclaimed only once too many unsupported records accumulate (oldest first).',
         ].join('\n'),
       );
     });
@@ -2085,7 +2114,8 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           skippedUnreadableRecordNames: [],
-          skippedUndecodableRecordCount: 0,
+          skippedCorruptRecordCount: 0,
+          skippedUnsupportedRecordCount: 0,
         },
       },
       {
@@ -2095,7 +2125,8 @@ describe('cli format', () => {
           status: 'shutdown_remainder_unreadable' as const,
           reason: 'records-skipped' as const,
           skippedUnreadableRecordNames: ['locked-instance.json'],
-          skippedUndecodableRecordCount: 0,
+          skippedCorruptRecordCount: 0,
+          skippedUnsupportedRecordCount: 0,
         },
       },
       {

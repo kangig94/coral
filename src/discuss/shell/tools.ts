@@ -1,47 +1,15 @@
 import { z } from 'zod';
-import { isRecord } from '../../infra/json.js';
 import { discussBidSchema, discussSeedSchema, discussSpeechSchema, discussStartSchema } from '../command-schemas.js';
+import { deriveDiscussErrorMessage, discussToolError, discussToolSuccess, type DiscussToolResult } from '../result.js';
 import { type DiscussContext } from './types.js';
-import { DiscussManagerError, SESSION_SHUTTING_DOWN } from './errors.js';
+import { DiscussManagerError } from './errors.js';
 import * as discussOperations from './operations.js';
 import { getWatchState } from './registry.js';
 import { seedPersonas } from '../persona/seed.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 
-type ToolDomainResult =
-  | { ok: true; data: unknown }
-  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
-
-function domainSuccess(data: unknown): ToolDomainResult {
-  return { ok: true, data };
-}
-
-function domainError(code: string, message: string, detail?: unknown): ToolDomainResult {
-  return detail === undefined ? { ok: false, code, message } : { ok: false, code, message, detail };
-}
-
-function toolValidationError(error: { message: string }): ToolDomainResult {
-  return domainError('invalid_request', error.message);
-}
-
-function deriveErrorMessage(code: string, detail?: unknown): string {
-  if (typeof detail === 'string' && detail.length > 0) {
-    return detail;
-  }
-
-  if (detail instanceof Error && detail.message.length > 0) {
-    return detail.message;
-  }
-
-  if (isRecord(detail) && typeof detail.message === 'string' && detail.message.length > 0) {
-    return detail.message;
-  }
-
-  if (code === 'provider_scope_missing') {
-    return 'This discussion has no provider scope. Start it again from a launch-capable client with the profiles used by its agents.';
-  }
-
-  return code.replaceAll('_', ' ');
+function toolValidationError(error: { message: string }): DiscussToolResult {
+  return discussToolError('invalid_request', error.message);
 }
 
 const discussSessionSchema = z.object({
@@ -64,60 +32,39 @@ type DiscussWatchArgs = z.infer<typeof discussWatchSchema>;
 type DiscussBidArgs = z.infer<typeof discussBidSchema>;
 type DiscussSpeechArgs = z.infer<typeof discussSpeechSchema>;
 
-// Matches lifecycleRefusalExit's shape in src/cli/errors.ts: names what did not run, that the
-// wait is bounded, and the exact observable condition (not a human judgement call) that ends it.
-function sessionShuttingDownRemediation(): string {
-  return (
-    "This discuss session's live controller already stopped for a coordinator shutdown or " +
-    'handoff drain, so the request did not run. Shutdown continues as a bounded asynchronous ' +
-    'wait. Retry this command after `coral-cli backend status` no longer reports that ' +
-    'coordinator as shutting down.'
-  );
+function discussManagerError(error: DiscussManagerError): DiscussToolResult {
+  return discussToolError(error.code, deriveDiscussErrorMessage(error.code, error.detail), error.detail);
 }
 
-function discussManagerError(error: DiscussManagerError): ToolDomainResult {
-  const message = deriveErrorMessage(error.code, error.detail);
-  if (error.code === SESSION_SHUTTING_DOWN) {
-    return {
-      ok: false,
-      code: error.code,
-      message,
-      remediation: sessionShuttingDownRemediation(),
-      ...(error.detail === undefined ? {} : { detail: error.detail }),
-    };
-  }
-  return domainError(error.code, message, error.detail);
+function unexpectedDiscussError(error: unknown): DiscussToolResult {
+  return discussToolError('discuss_error', error instanceof Error ? error.message : 'unexpected error');
 }
 
-function unexpectedDiscussError(error: unknown): ToolDomainResult {
-  return domainError('discuss_error', error instanceof Error ? error.message : 'unexpected error');
-}
-
-function handleDiscussOperationError(error: unknown): ToolDomainResult {
+function handleDiscussOperationError(error: unknown): DiscussToolResult {
   if (error instanceof DiscussManagerError) {
     return discussManagerError(error);
   }
   return unexpectedDiscussError(error);
 }
 
-function executeDiscussSeed(args: DiscussSeedArgs): ToolDomainResult {
+function executeDiscussSeed(args: DiscussSeedArgs): DiscussToolResult {
   const seeded = seedPersonas(args);
   if (!seeded.ok) {
-    return domainError(seeded.error, deriveErrorMessage(seeded.error, seeded.detail), seeded.detail);
+    return discussToolError(seeded.error, deriveDiscussErrorMessage(seeded.error, seeded.detail), seeded.detail);
   }
-  return domainSuccess(seeded.value);
+  return discussToolSuccess(seeded.value);
 }
 
 async function executeDiscussStart(
   args: DiscussStartArgs,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   try {
     const ctx = helpers.getDiscussContext(context);
     const sessionId = ctx.runtime.ids.uuid();
     await discussOperations.startDiscussSession(ctx, sessionId, args.topic, args.agents, args.config ?? {}, context);
-    return domainSuccess({ session: sessionId });
+    return discussToolSuccess({ session: sessionId });
   } catch (error: unknown) {
     return handleDiscussOperationError(error);
   }
@@ -127,10 +74,10 @@ async function executeDiscussAbort(
   args: DiscussSessionArgs,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   try {
     await discussOperations.abortDiscussSession(helpers.getDiscussContext(context), args.session);
-    return domainSuccess({ ok: true, session: args.session });
+    return discussToolSuccess({ ok: true, session: args.session });
   } catch (error: unknown) {
     return handleDiscussOperationError(error);
   }
@@ -140,9 +87,9 @@ function executeDiscussWatch(
   args: DiscussWatchArgs,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): ToolDomainResult {
+): DiscussToolResult {
   try {
-    return domainSuccess(getWatchState(helpers.getDiscussContext(context), args.session, args.cursor));
+    return discussToolSuccess(getWatchState(helpers.getDiscussContext(context), args.session, args.cursor));
   } catch (error: unknown) {
     return handleDiscussOperationError(error);
   }
@@ -152,9 +99,9 @@ async function executeDiscussBid(
   args: DiscussBidArgs,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   try {
-    return domainSuccess(
+    return discussToolSuccess(
       await discussOperations.submitManualBid(
         helpers.getDiscussContext(context),
         args.session,
@@ -173,9 +120,9 @@ async function executeDiscussSpeech(
   args: DiscussSpeechArgs,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   try {
-    return domainSuccess(
+    return discussToolSuccess(
       await discussOperations.submitManualSpeech(
         helpers.getDiscussContext(context),
         args.session,
@@ -189,7 +136,7 @@ async function executeDiscussSpeech(
   }
 }
 
-export function handleDiscussSeed(args: unknown): ToolDomainResult {
+export function handleDiscussSeed(args: unknown): DiscussToolResult {
   const parsed = discussSeedSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
@@ -202,7 +149,7 @@ export function handleDiscussWatch(
   args: unknown,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): ToolDomainResult {
+): DiscussToolResult {
   const parsed = discussWatchSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
@@ -215,7 +162,7 @@ export async function handleDiscussStart(
   args: unknown,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   const parsed = discussStartSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
@@ -228,7 +175,7 @@ export async function handleDiscussAbort(
   args: unknown,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   const parsed = discussSessionSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
@@ -241,7 +188,7 @@ export async function handleDiscussBid(
   args: unknown,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   const parsed = discussBidSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);
@@ -254,7 +201,7 @@ export async function handleDiscussSpeech(
   args: unknown,
   context: InvocationContext,
   helpers: DiscussToolHelpers,
-): Promise<ToolDomainResult> {
+): Promise<DiscussToolResult> {
   const parsed = discussSpeechSchema.safeParse(args);
   if (!parsed.success) {
     return toolValidationError(parsed.error);

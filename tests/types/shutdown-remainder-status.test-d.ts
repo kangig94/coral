@@ -71,7 +71,8 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.occurrence'
   | 'skippedEntries[].owner'
   | 'skippedUnreadableRecordNames[]'
-  | 'skippedUndecodableRecordCount';
+  | 'skippedCorruptRecordCount'
+  | 'skippedUnsupportedRecordCount';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
@@ -128,14 +129,17 @@ void skippedEntry.recordInstanceId;
 
 // A genuine unknown proves nothing about content (design-philosophy.md principle 11), so the filename is the
 // only evidence an operator-less reader has to act on for an 'unreadable' record — it deliberately crosses,
-// unlike a decisively 'undecodable' one, whose disposition this build alone decides and carries out.
+// unlike a decisively 'corrupt' or build-relative 'unsupported' one, whose disposition this build alone
+// decides (delete outright, or hold under its own bounded retention) and carries out without reader action.
 declare const skippedUnreadableRecordNames: ShutdownRemainderStatus['skippedUnreadableRecordNames'];
 const unreadableRecordName: string = skippedUnreadableRecordNames[0] ?? '';
 void unreadableRecordName;
-declare const skippedUndecodableRecordCount: ShutdownRemainderStatus['skippedUndecodableRecordCount'];
-void skippedUndecodableRecordCount;
+declare const skippedCorruptRecordCount: ShutdownRemainderStatus['skippedCorruptRecordCount'];
+void skippedCorruptRecordCount;
+declare const skippedUnsupportedRecordCount: ShutdownRemainderStatus['skippedUnsupportedRecordCount'];
+void skippedUnsupportedRecordCount;
 // @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
-// name list (for 'unreadable') and count (for 'undecodable') cross.
+// name list (for 'unreadable') and counts (for 'corrupt'/'unsupported') cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;
 

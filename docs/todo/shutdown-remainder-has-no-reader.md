@@ -12,13 +12,15 @@ keyed by the ledger's `label`, carrying a `remainder` and a `settlement` shaped 
 error for `rejected`/`aborted`, `budgetMs` for `timed-out`, a free-text `detail` for `unconfirmed`, nothing
 further for `budget-exhausted`), under a record that carries `instanceId`, `recordedAt`, `reason`, and
 `mode`. `scanShutdownRemainderRecords` (`src/infra/shutdown-remainder-record.ts`) decodes it tolerantly —
-per record and per entry, skips counted. `readShutdownRemainderStatus` (`src/coordinator/shutdown-remainder.ts`)
-wraps that scan into an absent/unreadable/available classification, but has no production caller: the
-no-daemon arm of `backend status` reaches the same decode through a second path instead —
-`readRecentShutdownRemainder` (`src/transport/http/backend/status.ts`) calls `scanShutdownRemainderRecords`
-directly and layers its own recency and instance scoping on top, which `readShutdownRemainderStatus` does
-not offer. `readShutdownRemainderStatus` is exercised only by tests today (unit and integration), reading
-back what a coordinator under test just wrote. The no-daemon arm of `backend status` reads the newest
+per record and per entry, skips counted. The no-daemon arm of `backend status`,
+`readRecentShutdownRemainder` (`src/transport/http/backend/status.ts`), calls `scanShutdownRemainderRecords`
+directly and layers its own recency and instance scoping on top. A second wrapper,
+`readShutdownRemainderStatus`, once duplicated that scan behind an absent/unreadable/available
+classification `readRecentShutdownRemainder` never called and no other production code called either
+(confirmed by `trace_path`, not by grep — its only caller was its own unit test); it has been deleted along
+with its `ShutdownRemainderStatus`/`ShutdownRemainderStatusRead` types, and
+`tests/unit/coordinator/shutdown-remainder.test.ts` now exercises `scanShutdownRemainderRecords` directly.
+The no-daemon arm of `backend status` reads the newest
 record for the `no_record_no_socket`, `no_record_socket_present`, and `recorded_process_absent`
 observations, scopes it to the same recent-record window as the startup diagnostic, and reports it without
 a next step. `foreign_peer` itself never carries a remainder — its `unreachable` variant has no `shutdownRemainder` field
@@ -61,16 +63,25 @@ can leave nothing ref'd, and the process may exit before the fallback sleep ever
 `retryAfter`. Closing it means either wrapping the ledger's fallback sleep in the same keepalive or making
 `retryAfter` required, so a future boundary cannot omit it silently.
 
-## Widening the reason or mode vocabulary makes a rolled-back build delete evidence it should quarantine
+## Widening the reason or mode vocabulary no longer makes a rolled-back build delete evidence — closed
 
 `SHUTDOWN_REASONS` and `SHUTDOWN_MODES` (`src/infra/persisted-scalar-contracts.ts`) validate the `reason`
 and `mode` fields of `shutdown-remainder.v1/<instanceId>.json` through `z.enum` derived from those same
 arrays (`src/infra/shutdown-remainder-record.ts`). A build that adds a reason or mode writes a record an
-older, rolled-back build's narrower enum cannot parse; that rejection is exactly `classifyShutdownRemainderFile`'s
-`undecodable` disposition, which is decisive by design (design-philosophy.md §11) and which
-`pruneShutdownRemainderRecords` (`src/coordinator/shutdown-remainder.ts`) deletes outright regardless of
-age — the rollback failure design-philosophy.md §10 asks every durable shape to fail softly against,
-closed there only for the same-build duplicate-vocabulary case. The directory already partitions by
-generation through `SHUTDOWN_REMAINDER_RECORD_VERSION`, so closing this does not need a new mechanism —
-only deriving that version from `SHUTDOWN_REASONS`/`SHUTDOWN_MODES` themselves rather than leaving it a
-constant a future change to either array has to remember to bump.
+older, rolled-back build's narrower enum cannot parse. `classifyShutdownRemainderFile` now names that
+fact `unsupported`, distinct from `corrupt` (bytes that are not JSON at all, decisive for every build):
+an envelope shape rejection is decisive only about the build observing it, never about an older or newer
+one that may still decode the same bytes (design-philosophy.md §10's rollback case). `unsupported` holds
+under its own bounded retention in `pruneShutdownRemainderRecords` (`src/coordinator/shutdown-remainder.ts`)
+— the same 32-slot policy `unreadable` already had, competing only against other `unsupported` files —
+rather than being deleted outright the way `corrupt` still is.
+
+This entry previously recommended deriving `SHUTDOWN_REMAINDER_RECORD_VERSION` from
+`SHUTDOWN_REASONS`/`SHUTDOWN_MODES` so a vocabulary change would land in a fresh generation directory. That
+recommendation was wrong and was not applied: `shutdownRemainderRecordDirectory` (built from
+`SHUTDOWN_REMAINDER_RECORD_VERSION`) is the only path any reader or `pruneShutdownRemainderRecords` ever
+touches, so bumping the version on every vocabulary change would orphan `shutdown-remainder.v1` — up to 32
+records nothing would ever read or prune again — while the new generation directory starts empty. A
+generation bump is the right tool for a shape that cannot stay additive (design-philosophy.md §10); a
+closed-enum field that gains a member is exactly the additive case §10's settled paragraph describes, and
+the disposition split above is what makes it fail softly without a new address.
