@@ -2390,7 +2390,14 @@ describe('cli format', () => {
     );
 
     it('formats a shutting-down backend status', () => {
-      expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
+      expect(
+        formatBackendStatus({
+          status: 'shutting_down',
+          liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+        }),
+      ).toBe(
+        'Backend shutting down\nLive cleanup refusal detail is unavailable while the coordinator drains; shutdown remainder evidence below comes only from disk.',
+      );
     });
 
     it('formats an unauthorized backend status with a recovery hint', () => {
@@ -2489,7 +2496,10 @@ describe('cli format', () => {
           authorship: 'other-build' as const,
         },
       },
-      { status: 'shutting_down' },
+      {
+        status: 'shutting_down',
+        liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      },
       { status: 'unauthorized' },
     ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {
       const text = formatBackendStatus(status);

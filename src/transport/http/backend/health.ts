@@ -1,9 +1,5 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
-import {
-  assertNever,
-  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
-  SERIALIZED_THROWN_IDENTIFIER_PATTERN,
-} from '../../../infra/error-format.js';
+import { assertNever, isSystemErrorCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import {
@@ -742,8 +738,7 @@ function isShutdownRemainderCleanupRefusal(value: unknown): value is ShutdownRem
   const causeIsValid =
     (value.cause.kind === 'system-error' &&
       typeof value.cause.code === 'string' &&
-      value.cause.code.length <= SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH &&
-      SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(value.cause.code)) ||
+      isSystemErrorCode(value.cause.code)) ||
     value.cause.kind === 'unclassified-error';
   return (
     typeof value.subject === 'string' &&
@@ -781,7 +776,9 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
         value.shutdownRemainderCleanupRefusals.length > SHUTDOWN_REMAINDER_SCAN_LIMIT ||
         !value.shutdownRemainderCleanupRefusals.every(isShutdownRemainderCleanupRefusal))) ||
     (value.unreportedShutdownRemainderCleanupRefusalCount !== undefined &&
-      !isNonNegativeInteger(value.unreportedShutdownRemainderCleanupRefusalCount)) ||
+      (typeof value.unreportedShutdownRemainderCleanupRefusalCount !== 'number' ||
+        !Number.isSafeInteger(value.unreportedShutdownRemainderCleanupRefusalCount) ||
+        value.unreportedShutdownRemainderCleanupRefusalCount < 0)) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {

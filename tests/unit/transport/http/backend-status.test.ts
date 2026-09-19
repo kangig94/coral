@@ -1793,6 +1793,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'alive' };
     mockState.diagnostic = null;
     mockState.remainderFiles = [];
+    mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
   });
 
@@ -1853,27 +1854,17 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     }
 
     pruner.stop();
-    stubProbes(
-      new Response(ping('draining'), { status: 200 }),
-      new Response(
-        detailed('draining', {
-          shutdownRemainderCleanupRefusals: pruner.readCleanupRefusals(),
-          unreportedShutdownRemainderCleanupRefusalCount: 4,
-        }),
-        { status: 200 },
-      ),
-    );
+    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
     const draining = await getBackendStatusFull('/plugin-root');
     expect(draining).toMatchObject({
       status: 'shutting_down',
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
       shutdownRemainder: {
         skippedCorruptRecordCount: 1,
-        cleanupRefusals: [refusal],
-        unreportedCleanupRefusalCount: 4,
       },
     });
-    expect(draining).not.toHaveProperty('shutdownRemainderCleanupRefusals');
-    expect(draining).not.toHaveProperty('unreportedShutdownRemainderCleanupRefusalCount');
+    expect(draining.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
+    expect(fetchMock).toHaveBeenCalledOnce();
 
     mockState.observed = { kind: 'no-record' };
     const stopped = await getBackendStatusFull('/plugin-root');
@@ -1884,44 +1875,84 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(stopped.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
   });
 
-  it('keeps a draining ping authoritative while asking detailed health for diagnostics', async () => {
-    const refusal = {
-      subject: 'corrupt.json',
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
-    };
+  it('reports disk evidence and marks live cleanup refusal detail unavailable without a second request', async () => {
     mockState.remainderFiles = [
       remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
     ];
-    const fetchMock = stubProbes(
-      new Response(ping('draining'), { status: 200 }),
-      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [refusal] }), { status: 200 }),
-    );
+    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'shutting_down',
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'test-instance' },
-        cleanupRefusals: [refusal],
       },
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it('keeps a draining ping authoritative when the detailed diagnostic request fails', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(ping('draining'), { status: 200 }))
-      .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNRESET' } }));
-    vi.stubGlobal('fetch', fetchMock);
+  it('does not attempt a detailed diagnostic request after a draining ping', async () => {
+    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'shutting_down',
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('drops a live cleanup refusal when the same response proves its subject absent', async () => {
+    const staleRefusal = {
+      subject: 'gone.json',
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+    };
+    mockState.remainderFiles = [
+      remainderFile('present.json', NOW - 10_000, shutdownRemainder('present', NOW - 10_000)),
+    ];
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [staleRefusal] }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      shutdownRemainder: { status: 'recent_shutdown_remainder', record: { instanceId: 'present' } },
+    });
+    expect(result.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
+  });
+
+  it('preserves a live cleanup refusal when the directory enumeration is unavailable', async () => {
+    const refusal = {
+      subject: 'unobserved.json',
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+    };
+    mockState.remainderScanErrorCode = 'EACCES';
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [refusal] }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'scan-failed',
+        cleanupRefusals: expect.arrayContaining([refusal]),
+      },
+    });
   });
 
   // 502/503/504 only: `TransientHttpError.isTransientStatus` is deliberately narrow, and 429 is *not* in it —
@@ -1931,7 +1962,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'shutting_down',
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+    });
   });
 
   it('reports a healthy detailed answer as ok while retaining a predecessor stage hold', async () => {
@@ -2014,7 +2048,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'shutting_down',
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+    });
   });
 
   it.each([[503], [502], [504]])('reports a %s detailed answer as shutting_down', async (status) => {
@@ -2022,7 +2059,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'shutting_down' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'shutting_down',
+      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+    });
   });
 
   it('reports a 429 as unreachable, because the transient set is 502/503/504 and nothing else', async () => {

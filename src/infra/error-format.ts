@@ -1,9 +1,19 @@
+import { constants as osConstants } from 'node:os';
+
 import { z } from 'zod';
 
 import { isRecord } from './json.js';
 
 export const SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH = 128;
 export const SERIALIZED_THROWN_IDENTIFIER_PATTERN = /^[A-Za-z0-9_.:-]+$/u;
+
+export type SystemErrorCode = keyof typeof osConstants.errno;
+
+const systemErrorCodes = new Set<string>(Object.keys(osConstants.errno));
+
+export function isSystemErrorCode(code: string): code is SystemErrorCode {
+  return systemErrorCodes.has(code);
+}
 
 export const serializedThrownIdentifierSchema = z
   .string()

@@ -1,10 +1,8 @@
-import { constants as osConstants } from 'node:os';
-
 import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
 import { sha256Hex } from '../../../infra/hash.js';
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
-import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
+import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import type { StoragePort } from '../../../infra/port-types.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
@@ -174,7 +172,7 @@ const OPERATOR_FACING_APPLICATION_ERROR_CODES = [
 ] as const;
 type OperatorFacingErrorName = (typeof OPERATOR_FACING_ERROR_NAMES)[number];
 type OperatorFacingApplicationErrorCode = (typeof OPERATOR_FACING_APPLICATION_ERROR_CODES)[number];
-type OperatorFacingSystemErrorCode = keyof typeof osConstants.errno;
+type OperatorFacingSystemErrorCode = SystemErrorCode;
 type OperatorFacingErrorCode = OperatorFacingApplicationErrorCode | OperatorFacingSystemErrorCode;
 
 type PublicDiagnosticPhase = 'startup_failed' | 'fatal_shutdown_error' | 'bootstrap_unhandled_rejection';
@@ -354,7 +352,11 @@ export type ShutdownRemainderReport =
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
-  | { status: 'shutting_down'; shutdownRemainder?: ShutdownRemainderReport }
+  | {
+      status: 'shutting_down';
+      liveCleanupRefusals: Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
+      shutdownRemainder?: ShutdownRemainderReport;
+    }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'recorded_process_absent'; pid: number; shutdownRemainder?: ShutdownRemainderReport }
@@ -430,13 +432,10 @@ export type BackendStatusFull =
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type AddressedAmbiguityStatus = Extract<BackendStatusFull, { status: 'unreachable' | 'unauthorized' }>;
-type AddressedProbeStatus =
-  | Extract<BackendStatusFull, { status: 'ok' | 'unreachable' | 'unauthorized' }>
-  | (Extract<BackendStatusFull, { status: 'shutting_down' }> &
-      Readonly<{
-        shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-        unreportedShutdownRemainderCleanupRefusalCount?: number;
-      }>);
+type AddressedProbeStatus = Extract<
+  BackendStatusFull,
+  { status: 'ok' | 'unreachable' | 'unauthorized' | 'shutting_down' }
+>;
 type ShutdownRemainderEvidenceScope =
   | Readonly<{ kind: 'directory' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
@@ -448,8 +447,6 @@ function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase
 const operatorFacingShutdownLabels = new Set<string>(OPERATOR_FACING_SHUTDOWN_LABELS);
 const operatorFacingErrorNames = new Set<string>(OPERATOR_FACING_ERROR_NAMES);
 const operatorFacingApplicationErrorCodes = new Set<string>(OPERATOR_FACING_APPLICATION_ERROR_CODES);
-// Constraint: system-call codes come from `node:os.constants.errno`; source literals cannot inventory runtime failures.
-const operatorFacingSystemErrorCodes = new Set<string>(Object.keys(osConstants.errno));
 
 function positiveSafeInteger(value: string): number | null {
   const parsed = Number(value);
@@ -487,7 +484,7 @@ function operatorFacingErrorName(name: string): OperatorFacingErrorName | undefi
 function operatorFacingErrorCode(code: string | undefined): OperatorFacingErrorCode | undefined {
   if (code === undefined) return undefined;
   if (operatorFacingApplicationErrorCodes.has(code)) return code as OperatorFacingApplicationErrorCode;
-  return operatorFacingSystemErrorCodes.has(code) ? (code as OperatorFacingSystemErrorCode) : undefined;
+  return isSystemErrorCode(code) ? code : undefined;
 }
 
 function operatorFacingShutdownSettlement(
@@ -650,12 +647,30 @@ function readRecentShutdownRemainder(
   unreportedCleanupRefusalCount = 0,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
+  const enumeration = { names: null as ReadonlySet<string> | null };
+  const currentCleanupRefusals = (): Readonly<{
+    refusals: readonly ShutdownRemainderCleanupRefusal[];
+    unreportedCount: number;
+  }> => {
+    const names = enumeration.names;
+    if (names === null) {
+      return { refusals: cleanupRefusals, unreportedCount: unreportedCleanupRefusalCount };
+    }
+    const refusals = cleanupRefusals.filter(({ subject }) => names.has(subject));
+    return {
+      refusals,
+      unreportedCount: Math.min(unreportedCleanupRefusalCount, Math.max(0, names.size - refusals.length)),
+    };
+  };
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, (names) => {
+      enumeration.names = new Set(names);
+    });
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', 'rescan-directory', error);
     if (refusal === null) {
+      enumeration.names = new Set();
       scan = { records: [], skippedEntries: [], skippedRecords: [] };
     } else {
       // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
@@ -663,26 +678,29 @@ function readRecentShutdownRemainder(
       // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
       // field): not knowing which instance to scope to is a different unknown from not knowing whether the
       // directory could be read at all, and the second one is what this catch observed.
-      const reportedCleanupRefusals = cleanupRefusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+      const current = currentCleanupRefusals();
+      const reportedCleanupRefusals = current.refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+      let unreportedCount = current.unreportedCount;
       const currentSubjectIndex = reportedCleanupRefusals.findIndex(({ subject }) => subject === directory);
       if (currentSubjectIndex >= 0) {
         reportedCleanupRefusals[currentSubjectIndex] = refusal;
       } else if (reportedCleanupRefusals.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
         reportedCleanupRefusals.push(refusal);
       } else {
-        unreportedCleanupRefusalCount += 1;
+        unreportedCount = Math.min(Number.MAX_SAFE_INTEGER, unreportedCount + 1);
       }
       return {
         status: 'shutdown_remainder_unreadable',
         reason: 'scan-failed',
         cleanupRefusals: reportedCleanupRefusals,
-        ...(unreportedCleanupRefusalCount === 0 ? {} : { unreportedCleanupRefusalCount }),
+        ...(unreportedCount === 0 ? {} : { unreportedCleanupRefusalCount: unreportedCount }),
       };
     }
   }
+  const current = currentCleanupRefusals();
   const cleanupRefusalStatus = {
-    ...(cleanupRefusals.length === 0 ? {} : { cleanupRefusals }),
-    ...(unreportedCleanupRefusalCount === 0 ? {} : { unreportedCleanupRefusalCount }),
+    ...(current.refusals.length === 0 ? {} : { cleanupRefusals: current.refusals }),
+    ...(current.unreportedCount === 0 ? {} : { unreportedCleanupRefusalCount: current.unreportedCount }),
   };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
@@ -755,8 +773,8 @@ function readRecentShutdownRemainder(
       scan.unscannedStageCount === undefined &&
       scan.unscannedRecordCount === undefined &&
       (scan.quarantined?.length ?? 0) === 0 &&
-      cleanupRefusals.length === 0 &&
-      unreportedCleanupRefusalCount === 0
+      current.refusals.length === 0 &&
+      current.unreportedCount === 0
     ) {
       if (hasUnrecognizedEntries) {
         return {
@@ -877,6 +895,13 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
 }
 
+function shuttingDownStatus(): Extract<BackendStatusFull, { status: 'shutting_down' }> {
+  return {
+    status: 'shutting_down',
+    liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+  };
+}
+
 /**
  * The unauthenticated `/health` ping. Returns a terminal status, or `null` to mean "this said nothing that
  * ends the question — go on to the detailed probe".
@@ -903,10 +928,10 @@ async function probeUnauthenticatedPing(
     if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: body.namespace, flavor: body.flavor });
     }
-    return body.status === 'draining' ? { status: 'shutting_down' } : null;
+    return body.status === 'draining' ? shuttingDownStatus() : null;
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return { status: 'shutting_down' };
+    return shuttingDownStatus();
   }
   return unreachable(`health responded ${response.status}`);
 }
@@ -934,17 +959,7 @@ async function probeDetailedHealth(
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (health.status === 'draining') {
-      return {
-        status: 'shutting_down',
-        ...(health.shutdownRemainderCleanupRefusals === undefined
-          ? {}
-          : { shutdownRemainderCleanupRefusals: health.shutdownRemainderCleanupRefusals }),
-        ...(health.unreportedShutdownRemainderCleanupRefusalCount === undefined
-          ? {}
-          : {
-              unreportedShutdownRemainderCleanupRefusalCount: health.unreportedShutdownRemainderCleanupRefusalCount,
-            }),
-      };
+      return shuttingDownStatus();
     }
     const { namespace: _namespace, status: _status, ...rest } = health;
     return {
@@ -953,7 +968,7 @@ async function probeDetailedHealth(
     };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return { status: 'shutting_down' };
+    return shuttingDownStatus();
   }
   if (response.status === 401) return { status: 'unauthorized' };
   return unreachable(`detailed health responded ${response.status}`);
@@ -1051,28 +1066,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-    if (ping?.status === 'shutting_down') {
-      result = ping;
-      const detailed = await probeDetailedHealth(info, notOurCoordinator, unreachable).catch(() => null);
-      if (detailed?.status === 'shutting_down') {
-        result = detailed;
-      } else if (detailed?.status === 'ok') {
-        result = {
-          status: 'shutting_down',
-          ...(detailed.health.shutdownRemainderCleanupRefusals === undefined
-            ? {}
-            : { shutdownRemainderCleanupRefusals: detailed.health.shutdownRemainderCleanupRefusals }),
-          ...(detailed.health.unreportedShutdownRemainderCleanupRefusalCount === undefined
-            ? {}
-            : {
-                unreportedShutdownRemainderCleanupRefusalCount:
-                  detailed.health.unreportedShutdownRemainderCleanupRefusalCount,
-              }),
-        };
-      }
-    } else {
-      result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
-    }
+    result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
@@ -1094,16 +1088,13 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     }
   }
   if (result.status === 'shutting_down') {
-    const { shutdownRemainderCleanupRefusals, unreportedShutdownRemainderCleanupRefusalCount, ...status } = result;
     return statusWithShutdownRemainder(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
       runtime.time.now(),
       observeStageWriter,
-      status,
+      result,
       { kind: 'directory' },
-      shutdownRemainderCleanupRefusals,
-      unreportedShutdownRemainderCleanupRefusalCount,
     );
   }
   if (result.status === 'ok') {

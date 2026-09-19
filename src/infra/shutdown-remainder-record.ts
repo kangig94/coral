@@ -2,8 +2,8 @@ import { join } from 'node:path';
 import { z } from 'zod';
 
 import {
-  SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
+  isSystemErrorCode,
   serializedThrownIdentifierSchema,
   serializedThrownSchema,
   thrownErrnoCode,
@@ -136,9 +136,7 @@ export function shutdownRemainderCleanupRefusal(
   return {
     subject,
     cause:
-      code !== undefined &&
-      code.length <= SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH &&
-      SERIALIZED_THROWN_IDENTIFIER_PATTERN.test(code)
+      code !== undefined && isSystemErrorCode(code)
         ? { kind: 'system-error', operation, code }
         : { kind: 'unclassified-error', operation },
     retry: { trigger: 'remainder-maintenance', action: retryAction },

@@ -116,6 +116,12 @@ describe('/health typed shape (AC10a)', () => {
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,
+        shutdownRemainderCleanupRefusals: [{ ...refusal, cause: { ...refusal.cause, code: 'NOT_A_SYSTEM_ERRNO' } }],
+      }),
+    ).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [{ ...refusal, subject: 'x'.repeat(4097) }],
       }),
     ).toBe(false);
@@ -132,6 +138,12 @@ describe('/health typed shape (AC10a)', () => {
       }),
     ).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, unreportedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        unreportedShutdownRemainderCleanupRefusalCount: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).toBe(false);
   });
 
   it('accepts only a redacted named system provider scope', () => {

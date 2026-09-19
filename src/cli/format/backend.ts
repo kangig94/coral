@@ -758,7 +758,11 @@ function formatDaemonStatus(result: BackendStatusFull): string {
         'coordinator-unconfirmed',
       );
     case 'shutting_down':
-      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder, 'coordinator-draining');
+      return withShutdownRemainderSection(
+        'Backend shutting down\nLive cleanup refusal detail is unavailable while the coordinator drains; shutdown remainder evidence below comes only from disk.',
+        result.shutdownRemainder,
+        'coordinator-draining',
+      );
     case 'unauthorized':
       return withShutdownRemainderSection(
         [
