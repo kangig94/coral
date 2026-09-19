@@ -75,13 +75,10 @@ type ExpectedProjectionLeafPaths =
   | 'skippedUnsupportedRecordCount'
   | 'skippedIdentityMismatchRecordCount'
   | 'quarantined'
-  | 'quarantined[].address'
   | 'quarantined[].subject'
   | 'quarantined[].retry.trigger'
-  | 'quarantined[].retry.state'
   | 'unscannedStageCount'
   | 'unscannedRecordCount'
-  | 'unscannedQuarantineCount'
   | 'staging'
   | 'staging.writerAliveCount'
   | 'staging.writerUnobservableCount'
@@ -94,7 +91,6 @@ type ExpectedBroadStringLeafPaths =
   | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.evidence.processes[].jobId'
   | 'skippedUnreadableRecordNames[]'
-  | 'quarantined[].address'
   | 'quarantined[].subject';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;

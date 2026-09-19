@@ -265,11 +265,9 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
 }>;
 
 type OperatorFacingShutdownRemainderQuarantine = Readonly<{
-  address: string;
   subject: string;
   retry: Readonly<{
     trigger: 'coordinator-startup';
-    state: 'pending' | 'active-subject-present';
   }>;
 }>;
 
@@ -317,7 +315,6 @@ export type ShutdownRemainderReport =
       skippedIdentityMismatchRecordCount?: number;
       unscannedStageCount?: number;
       unscannedRecordCount?: number;
-      unscannedQuarantineCount?: number;
       staging?: OperatorFacingShutdownStages;
       quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
     }>
@@ -331,14 +328,8 @@ export type ShutdownRemainderReport =
       skippedIdentityMismatchRecordCount?: number;
       unscannedStageCount?: number;
       unscannedRecordCount?: number;
-      unscannedQuarantineCount?: number;
       staging?: OperatorFacingShutdownStages;
       quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
-    }>
-  | Readonly<{
-      status: 'shutdown_remainder_quarantined';
-      quarantined: readonly OperatorFacingShutdownRemainderQuarantine[];
-      unscannedQuarantineCount?: number;
     }>;
 
 export type BackendStatusFull =
@@ -425,10 +416,6 @@ type AddressedProbeStatus = Extract<
 >;
 type RecentShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>;
 type ShutdownRemainderUnreadableStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
-type ShutdownRemainderQuarantinedStatus = Extract<
-  ShutdownRemainderReport,
-  { status: 'shutdown_remainder_quarantined' }
->;
 type ShutdownRemainderEvidenceScope =
   | Readonly<{ kind: 'directory' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
@@ -638,7 +625,7 @@ function readRecentShutdownRemainder(
   now: number,
   scope: ShutdownRemainderEvidenceScope,
   observeStageWriter: ShutdownRemainderStageObserver,
-): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | ShutdownRemainderQuarantinedStatus | null {
+): RecentShutdownRemainderStatus | ShutdownRemainderUnreadableStatus | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
@@ -683,7 +670,6 @@ function readRecentShutdownRemainder(
   const scanBounds = {
     ...(scan.unscannedStageCount === undefined ? {} : { unscannedStageCount: scan.unscannedStageCount }),
     ...(scan.unscannedRecordCount === undefined ? {} : { unscannedRecordCount: scan.unscannedRecordCount }),
-    ...(scan.unscannedQuarantineCount === undefined ? {} : { unscannedQuarantineCount: scan.unscannedQuarantineCount }),
   };
   const quarantine =
     scan.quarantined === undefined || scan.quarantined.length === 0 ? {} : { quarantined: scan.quarantined };
@@ -710,32 +696,21 @@ function readRecentShutdownRemainder(
       scopedSkippedRecords.length === 0 &&
       scan.unscannedStageCount === undefined &&
       scan.unscannedRecordCount === undefined &&
-      (scan.quarantined?.length ?? 0) === 0 &&
-      scan.unscannedQuarantineCount === undefined
+      (scan.quarantined?.length ?? 0) === 0
     ) {
       return null;
     }
-    return scopedSkippedRecords.length > 0 ||
-      scan.unscannedStageCount !== undefined ||
-      scan.unscannedRecordCount !== undefined
-      ? {
-          status: 'shutdown_remainder_unreadable',
-          reason: 'records-skipped',
-          skippedUnreadableRecordNames,
-          skippedCorruptRecordCount,
-          skippedUnsupportedRecordCount,
-          ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
-          ...scanBounds,
-          ...(hasStaging ? { staging } : {}),
-          ...quarantine,
-        }
-      : {
-          status: 'shutdown_remainder_quarantined',
-          quarantined: scan.quarantined ?? [],
-          ...(scan.unscannedQuarantineCount === undefined
-            ? {}
-            : { unscannedQuarantineCount: scan.unscannedQuarantineCount }),
-        };
+    return {
+      status: 'shutdown_remainder_unreadable',
+      reason: 'records-skipped',
+      skippedUnreadableRecordNames,
+      skippedCorruptRecordCount,
+      skippedUnsupportedRecordCount,
+      ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
+      ...scanBounds,
+      ...(hasStaging ? { staging } : {}),
+      ...quarantine,
+    };
   }
   return {
     status: 'recent_shutdown_remainder',

@@ -1913,7 +1913,7 @@ describe('cli format', () => {
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
           'Skipped shutdown remainder records, unreadable: 1',
           '  Record: locked-instance.json',
-          '  Disposition: content was never read; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+          '  Disposition: content was never read; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
           'Skipped shutdown remainder records, corrupt: 2',
           '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it. A refused deletion remains reported until a later scan succeeds.',
           'Skipped shutdown remainder records, identity mismatch: 1',
@@ -1923,7 +1923,7 @@ describe('cli format', () => {
           'Shutdown remainder records not inspected: 3',
           '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.',
           'Malformed shutdown remainder publication stages: 4',
-          '  Disposition: the filename could not identify a writer; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+          '  Disposition: the filename could not identify a writer; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
         ].join('\n'),
       );
     });
@@ -1947,7 +1947,7 @@ describe('cli format', () => {
           'Coral found shutdown remainder records it could not use.',
           'Skipped shutdown remainder records, unreadable: 1',
           '  Record: locked-instance.json',
-          '  Disposition: content was never read; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+          '  Disposition: content was never read; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
         ].join('\n'),
       );
     });
@@ -1996,7 +1996,7 @@ describe('cli format', () => {
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Coral found shutdown remainder records it could not use.',
           'Skipped shutdown remainder records, unsupported: 1',
-          '  Disposition: content decoded but the schema this build reads records with rejects it; coordinator maintenance attempts to move it to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+          '  Disposition: content decoded but the schema this build reads records with rejects it; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
         ].join('\n'),
       );
     });
@@ -2020,9 +2020,9 @@ describe('cli format', () => {
           '  Disposition: retained as durable status while the writer is alive.',
           '  Recheck: no discovery record and no socket at the current expected address were found. The next coordinator startup scans once and then rechecks live-writer stages periodically while it runs.',
           'Shutdown remainder publication stages with unobservable writers: 2',
-          '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+          '  Disposition: writer state is unknown; an unresolved stage remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
           'Shutdown remainder publication stages with proven-absent writers: 3',
-          '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and moves other retained evidence to durable quarantine. Refused cleanup remains reported for a later maintenance pass.',
+          '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and holds other retained subjects in place as quarantined. Refused cleanup remains reported for a later maintenance pass.',
         ].join('\n'),
       );
     });
@@ -2048,7 +2048,8 @@ describe('cli format', () => {
       );
 
       const namesStartupOnlyRetry = (line: string): boolean =>
-        line.includes('durable quarantine') &&
+        line.includes('original path as quarantined') &&
+        line.includes('excluded from periodic maintenance') &&
         line.includes('retried only at the next coordinator startup') &&
         !/\b(?:background|continuous(?:ly)?|eligible|age|count|bound)\b/u.test(line);
       expect(uncertainEvidenceDispositionLines).toHaveLength(4);
@@ -2060,16 +2061,19 @@ describe('cli format', () => {
       ).toBe(false);
     });
 
-    it('renders quarantined evidence from its startup-only retry trigger', () => {
+    it('renders an in-place quarantined subject and its startup-only retry trigger', () => {
       const text = formatBackendStatus({
         status: 'no_record_no_socket',
         shutdownRemainder: {
-          status: 'shutdown_remainder_quarantined',
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          skippedUnreadableRecordNames: ['locked.json'],
+          skippedCorruptRecordCount: 0,
+          skippedUnsupportedRecordCount: 0,
           quarantined: [
             {
-              address: 'quarantine/locked.json/1/evidence',
               subject: 'locked.json',
-              retry: { trigger: 'coordinator-startup', state: 'pending' },
+              retry: { trigger: 'coordinator-startup' },
             },
           ],
         },
@@ -2077,15 +2081,14 @@ describe('cli format', () => {
 
       expect(text).toContain(
         [
-          'Coral preserved shutdown remainder evidence in durable quarantine.',
-          'Quarantined shutdown remainder evidence 1:',
-          '  Address: "quarantine/locked.json/1/evidence"',
+          'Quarantined shutdown remainder subject 1:',
           '  Subject: "locked.json"',
+          '  Disposition: retained at its original path; periodic maintenance will neither move nor retry it.',
           '  Retry trigger: next coordinator startup',
-          '  Retry state: pending',
+          '  Hold ends: the startup retry resolves the subject; if it remains unreadable or unsupported, the startup renews this hold.',
         ].join('\n'),
       );
-      expect(text).not.toMatch(/\b(?:background|continuous(?:ly)?|periodic)\b/u);
+      expect(text).not.toMatch(/\b(?:background|continuous(?:ly)?)\b/u);
     });
 
     it('attributes background stage rechecks only to a running coordinator', () => {
@@ -2138,7 +2141,7 @@ describe('cli format', () => {
         { staging: { writerAliveCount: 0, writerUnobservableCount: 0, orphanedCount: 0, malformedCount: 5 } },
         [
           'Malformed shutdown remainder publication stages: 5',
-          '  Disposition: the filename could not identify a writer; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+          '  Disposition: the filename could not identify a writer; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
         ],
       ],
     ] as const)('reports %s when it is the only shutdown remainder evidence', (_label, evidence, expected) => {

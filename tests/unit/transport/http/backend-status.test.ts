@@ -214,6 +214,7 @@ describe('getBackendStatusFull record disposition', () => {
         skippedUnreadableRecordNames: ['unreadable.json'],
         skippedCorruptRecordCount: 0,
         skippedUnsupportedRecordCount: 0,
+        quarantined: [{ subject: 'unreadable.json', retry: { trigger: 'coordinator-startup' } }],
       },
     });
   });
@@ -234,6 +235,7 @@ describe('getBackendStatusFull record disposition', () => {
         skippedCorruptRecordCount: 0,
         skippedUnsupportedRecordCount: 0,
         staging: { writerAliveCount: 0, writerUnobservableCount: 1, orphanedCount: 0 },
+        quarantined: [{ subject: 'staged.json.stage.4242.unobserved.tmp', retry: { trigger: 'coordinator-startup' } }],
       },
     });
     const { formatBackendStatus } = await import('#src/cli/format/backend.js');
@@ -241,29 +243,30 @@ describe('getBackendStatusFull record disposition', () => {
 
     expect(output).toContain('Shutdown remainder publication stages with unobservable writers: 1');
     expect(output).toContain(
-      '  Disposition: writer state is unknown; coordinator maintenance attempts to move the stage to durable quarantine without deleting it. Quarantined evidence remains visible and is retried only at the next coordinator startup.',
+      '  Disposition: writer state is unknown; an unresolved stage remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
     );
     expect(output).not.toContain('  Recheck:');
     expect(output).not.toContain('publications in progress');
     expect(output).not.toContain('background discovery intervals');
   });
 
-  it('reports quarantined evidence by durable address, subject, and startup retry disposition', async () => {
-    mockState.remainderFiles = [
-      remainderFile('quarantine/locked.json/1/evidence', NOW - 10_000, '{unreadable evidence'),
-    ];
+  it('reports a quarantined subject by its original identity and startup retry disposition', async () => {
+    mockState.remainderFiles = [remainderFile('locked.json', NOW - 10_000, '{}', undefined, 'EACCES')];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_no_socket',
       shutdownRemainder: {
-        status: 'shutdown_remainder_quarantined',
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordNames: ['locked.json'],
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
         quarantined: [
           {
-            address: 'quarantine/locked.json/1/evidence',
             subject: 'locked.json',
-            retry: { trigger: 'coordinator-startup', state: 'pending' },
+            retry: { trigger: 'coordinator-startup' },
           },
         ],
       },
@@ -304,12 +307,13 @@ describe('getBackendStatusFull record disposition', () => {
         skippedUnreadableRecordNames: ['ancient.json'],
         skippedCorruptRecordCount: 0,
         skippedUnsupportedRecordCount: 0,
+        quarantined: [{ subject: 'ancient.json', retry: { trigger: 'coordinator-startup' } }],
       },
     });
   });
 
-  it('does not report a directory entry confirmed gone during the metadata race', async () => {
-    mockState.remainderFiles = [remainderFile('vanished.json', NOW - 10_000, '{not-json', 'ENOENT')];
+  it('does not report a directory entry confirmed gone during the read race', async () => {
+    mockState.remainderFiles = [remainderFile('vanished.json', NOW - 10_000, '{not-json', undefined, 'ENOENT')];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -619,6 +623,8 @@ describe('getBackendStatusFull record disposition', () => {
         'skippedUnreadableRecordNames[]',
         'skippedCorruptRecordCount',
         'skippedUnsupportedRecordCount',
+        'quarantined[].subject',
+        'quarantined[].retry.trigger',
       ].sort(),
     );
     expect(JSON.stringify(result)).not.toContain('owner/repo');
@@ -837,6 +843,7 @@ describe('getBackendStatusFull record disposition', () => {
         skippedUnreadableRecordNames: [],
         skippedCorruptRecordCount: 1,
         skippedUnsupportedRecordCount: 1,
+        quarantined: [{ subject: 'future.json', retry: { trigger: 'coordinator-startup' } }],
       },
     });
   });

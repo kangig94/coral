@@ -11,13 +11,6 @@ import type { StoragePort, TimePort, TimerHandle } from '../infra/port-types.js'
 import {
   classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
-  parseShutdownRemainderQuarantineAddress,
-  scanShutdownRemainderQuarantine,
-  shutdownRemainderQuarantineAddress,
-  shutdownRemainderQuarantineDirectory,
-  shutdownRemainderQuarantineEvidencePath,
-  shutdownRemainderQuarantineSlotDirectory,
-  shutdownRemainderQuarantineSubjectDirectory,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderRecord,
@@ -37,10 +30,7 @@ type ShutdownRemainderPruneStageObserver = (
 ) => ShutdownRemainderStageObservation;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
-  storage: Pick<
-    StoragePort,
-    'linkSync' | 'mkdirSync' | 'readFileSync' | 'readdirSync' | 'renameSync' | 'rmdirSync' | 'statSync' | 'unlinkSync'
-  >;
+  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
   runDir: string;
   observeStageWriter?: ShutdownRemainderPruneStageObserver;
 }>;
@@ -96,81 +86,9 @@ function byRetentionOrder(
   return right.name.localeCompare(left.name);
 }
 
-function removeEmptyQuarantineDirectories(
-  runtime: ShutdownRemainderPruneRuntime,
-  directory: string,
-  address: string,
-): void {
-  const parsed = parseShutdownRemainderQuarantineAddress(address);
-  if (parsed === null) return;
-  for (const candidate of [
-    shutdownRemainderQuarantineSlotDirectory(directory, parsed.subject, parsed.slot),
-    shutdownRemainderQuarantineSubjectDirectory(directory, parsed.subject),
-    shutdownRemainderQuarantineDirectory(directory),
-  ]) {
-    try {
-      runtime.storage.rmdirSync(candidate);
-    } catch {
-      return;
-    }
-  }
-}
-
-function quarantineMatchesActive(
-  runtime: ShutdownRemainderPruneRuntime,
-  quarantinePath: string,
-  activePath: string,
-): boolean {
-  try {
-    const quarantineStat = runtime.storage.statSync(quarantinePath, { bigint: true });
-    const activeStat = runtime.storage.statSync(activePath, { bigint: true });
-    if (quarantineStat.dev === activeStat.dev && quarantineStat.ino === activeStat.ino) return true;
-  } catch {
-    // Removing the quarantine requires inode identity or equal bytes; a failed identity probe proves neither.
-  }
-  try {
-    return runtime.storage.readFileSync(quarantinePath, 'utf-8') === runtime.storage.readFileSync(activePath, 'utf-8');
-  } catch {
-    return false;
-  }
-}
-
-function retryShutdownRemainderQuarantine(runtime: ShutdownRemainderPruneRuntime): void {
-  const directory = shutdownRemainderPath(runtime.runDir);
-  let names: string[];
-  try {
-    names = runtime.storage.readdirSync(directory);
-  } catch {
-    return;
-  }
-  let quarantined;
-  try {
-    quarantined = scanShutdownRemainderQuarantine(runtime.storage, directory, new Set(names)).quarantined;
-  } catch {
-    return;
-  }
-  for (const evidence of quarantined) {
-    const activePath = join(directory, evidence.subject);
-    const quarantinePath = shutdownRemainderQuarantineEvidencePath(directory, evidence.address);
-    let redundant: boolean;
-    try {
-      runtime.storage.linkSync(quarantinePath, activePath);
-      redundant = true;
-    } catch (error: unknown) {
-      redundant = thrownErrnoCode(error) === 'EEXIST' && quarantineMatchesActive(runtime, quarantinePath, activePath);
-    }
-    if (!redundant) continue;
-    try {
-      runtime.storage.unlinkSync(quarantinePath);
-    } catch {
-      continue;
-    }
-    removeEmptyQuarantineDirectories(runtime, directory, evidence.address);
-  }
-}
-
 export function pruneShutdownRemainderRecords(
   runtime: ShutdownRemainderPruneRuntime,
+  heldSubjectNames: ReadonlySet<string> = new Set(),
 ): ShutdownRemainderPruneDisposition {
   const directory = shutdownRemainderPath(runtime.runDir);
   const reobservableStageNames = new Set<string>();
@@ -200,45 +118,20 @@ export function pruneShutdownRemainderRecords(
     };
   };
   const quarantine = (name: string): void => {
-    let slotDirectory: string | null = null;
-    try {
-      const subjectDirectory = shutdownRemainderQuarantineSubjectDirectory(directory, name);
-      runtime.storage.mkdirSync(subjectDirectory, { recursive: true });
-      let slot = 1;
-      while (true) {
-        slotDirectory = shutdownRemainderQuarantineSlotDirectory(directory, name, slot);
-        try {
-          runtime.storage.mkdirSync(slotDirectory);
-          break;
-        } catch (error: unknown) {
-          if (thrownErrnoCode(error) !== 'EEXIST' || slot === Number.MAX_SAFE_INTEGER) throw error;
-          slot += 1;
-        }
-      }
-      const address = shutdownRemainderQuarantineAddress(name, slot);
-      runtime.storage.renameSync(join(directory, name), shutdownRemainderQuarantineEvidencePath(directory, address));
-      quarantinedSubjectNames.add(name);
-      refusedCleanupSubjectNames.delete(name);
-      reobservableStageNames.delete(name);
-    } catch (error: unknown) {
-      if (slotDirectory !== null) {
-        try {
-          runtime.storage.rmdirSync(slotDirectory);
-        } catch {
-          // Failure to reclaim an unused slot must not replace the subject's cleanup refusal.
-        }
-      }
-      if (thrownErrnoCode(error) !== 'ENOENT') refusedCleanupSubjectNames.add(name);
-    }
+    quarantinedSubjectNames.add(name);
+    refusedCleanupSubjectNames.delete(name);
+    reobservableStageNames.delete(name);
   };
   try {
     const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
     const initialNames = runtime.storage.readdirSync(directory);
-    const existingQuarantine = scanShutdownRemainderQuarantine(runtime.storage, directory, new Set(initialNames));
-    for (const evidence of existingQuarantine.quarantined) quarantinedSubjectNames.add(evidence.subject);
     for (const name of initialNames) {
       const entry = classifyShutdownRemainderDirectoryEntry(name);
-      if (entry.kind === 'other' || entry.kind === 'record' || entry.kind === 'quarantine') continue;
+      if (entry.kind === 'other' || entry.kind === 'record') continue;
+      if (heldSubjectNames.has(name)) {
+        quarantine(name);
+        continue;
+      }
       const path = join(directory, name);
       try {
         runtime.storage.statSync(path);
@@ -290,6 +183,10 @@ export function pruneShutdownRemainderRecords(
     const known: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
       if (classifyShutdownRemainderDirectoryEntry(name).kind !== 'record') continue;
+      if (heldSubjectNames.has(name)) {
+        quarantine(name);
+        continue;
+      }
       const path = join(directory, name);
       let age: RecordAge = { kind: 'unknown' };
       try {
@@ -355,6 +252,7 @@ export function pruneShutdownRemainderRecords(
         cleanup: { kind: 'complete' },
       };
     }
+    for (const name of heldSubjectNames) quarantine(name);
     refusedCleanupSubjectNames.add(directory);
     return disposition(false);
   }
@@ -368,14 +266,24 @@ export function createShutdownRemainderPruner(
 ): Readonly<{ start(): ShutdownRemainderPruneDisposition | null; stop(): void }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
-  const prune = (): ShutdownRemainderPruneDisposition => pruneShutdownRemainderRecords(runtime);
+  let heldSubjectNames = new Set<string>();
+  const prune = (retryHeldSubjects: boolean): ShutdownRemainderPruneDisposition => {
+    const result = pruneShutdownRemainderRecords(runtime, retryHeldSubjects ? new Set() : heldSubjectNames);
+    heldSubjectNames = new Set(
+      result.cleanup.kind === 'quarantined'
+        ? result.cleanup.subjectNames
+        : result.cleanup.kind === 'refused'
+          ? result.cleanup.quarantinedSubjectNames
+          : [],
+    );
+    return result;
+  };
 
   return {
     start: () => {
       if (stopped) return null;
-      retryShutdownRemainderQuarantine(runtime);
-      const disposition = prune();
-      timer = runtime.time.setInterval(prune, SHUTDOWN_REMAINDER_REOBSERVATION_MS);
+      const disposition = prune(true);
+      timer = runtime.time.setInterval(() => prune(false), SHUTDOWN_REMAINDER_REOBSERVATION_MS);
       timer.unref?.();
       return disposition;
     },

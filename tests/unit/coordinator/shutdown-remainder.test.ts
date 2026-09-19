@@ -1,4 +1,16 @@
 import { basename, dirname, join, relative } from 'node:path';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -22,13 +34,10 @@ const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
 
 type RemainderStorage = Pick<
   StoragePort,
-  | 'existsSync'
-  | 'linkSync'
   | 'mkdirSync'
   | 'readFileSync'
   | 'readdirSync'
   | 'renameSync'
-  | 'rmdirSync'
   | 'statSync'
   | 'unlinkSync'
   | 'writeAtomicSync'
@@ -52,13 +61,13 @@ function storageWith(
     refuseReadFor?: string | readonly string[];
     refuseReadWhen?: (name: string, attempt: number) => boolean;
     readErrorCode?: string;
+    refuseReaddirWhen?: (path: string, attempt: number) => boolean;
     pruneBeforeAtomicRename?: boolean;
     publishStageBeforeFinalRename?: boolean;
     replaceStageBeforeFinalRenameWith?: string;
     publishDuringPruneRename?: boolean;
     refuseAtomicRename?: boolean;
     refuseFinalRename?: boolean;
-    refuseUnlinkWhen?: (path: string, attempt: number) => boolean;
     maxComponentBytes?: number;
   }> = {},
 ): RemainderStorage {
@@ -80,18 +89,16 @@ function storageWith(
   );
   const pruneAttempts = new Map<string, number>();
   const readAttempts = new Map<string, number>();
+  let readdirAttempts = 0;
   let stagePublishedBeforeFinalRename = false;
   let stagePublishedDuringPruneRename = false;
 
   const storage = {
-    existsSync: (path: string) => directories.has(path) || files.has(path),
-    linkSync: vi.fn((oldPath: string, newPath: string) => {
-      const file = files.get(oldPath);
-      if (file === undefined) throw Object.assign(new Error('missing file'), { code: 'ENOENT' });
-      if (files.has(newPath)) throw Object.assign(new Error('destination exists'), { code: 'EEXIST' });
-      files.set(newPath, file);
-    }),
     readdirSync: vi.fn((path: string) => {
+      readdirAttempts += 1;
+      if (options.refuseReaddirWhen?.(path, readdirAttempts) === true) {
+        throw Object.assign(new Error('directory read refused'), { code: 'EIO' });
+      }
       if (!directories.has(path)) throw Object.assign(new Error('missing directory'), { code: 'ENOENT' });
       return [
         ...new Set(
@@ -154,11 +161,7 @@ function storageWith(
       const name = basename(path);
       const attempt = (pruneAttempts.get(name) ?? 0) + 1;
       pruneAttempts.set(name, attempt);
-      if (
-        options.refusePrune === true ||
-        options.refusePruneWhen?.(name, attempt) === true ||
-        options.refuseUnlinkWhen?.(path, attempt) === true
-      ) {
+      if (options.refusePrune === true || options.refusePruneWhen?.(name, attempt) === true) {
         throw new Error('prune refused');
       }
       if (!files.delete(path)) throw Object.assign(new Error('missing file'), { code: 'ENOENT' });
@@ -232,12 +235,6 @@ function storageWith(
       files.delete(oldPath);
       files.set(newPath, file);
     }),
-    rmdirSync: vi.fn((path: string) => {
-      if ([...directories, ...files.keys()].some((entry) => entry !== path && dirname(entry) === path)) {
-        throw Object.assign(new Error('directory not empty'), { code: 'ENOTEMPTY' });
-      }
-      if (!directories.delete(path)) throw Object.assign(new Error('missing directory'), { code: 'ENOENT' });
-    }),
     writeAtomicSync: vi.fn((path: string, data: string | NodeJS.ArrayBufferView) => {
       if (options.publish === false) return false;
       const value =
@@ -290,6 +287,16 @@ function decodedRecordAt(instanceId: string) {
 
 function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(instanceId)): InitialFile {
   return { name: `${instanceId}.json`, value: JSON.stringify(value), mtimeMs };
+}
+
+function pathWithLength(root: string, length: number): string {
+  let path = root;
+  while (path.length < length) {
+    const componentLength = Math.min(200, length - path.length - 1);
+    if (componentLength <= 0) throw new Error(`Cannot extend ${root} to ${length} bytes`);
+    path = join(path, 'r'.repeat(componentLength));
+  }
+  return path;
 }
 
 describe('shutdown remainder status', () => {
@@ -617,6 +624,7 @@ describe('shutdown remainder status', () => {
         { name: 'corrupt-instance.json', reason: 'corrupt' },
         { name: 'foreign-instance.json', reason: 'unsupported', detail: expect.any(String) },
       ],
+      quarantined: [{ subject: 'foreign-instance.json', retry: { trigger: 'coordinator-startup' } }],
     });
   });
 
@@ -642,20 +650,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('omits a record confirmed absent during the directory-to-stat race', () => {
-    const storage = storageWith([{ name: 'vanished.json', value: '{not-json', mtimeMs: 1 }], {
-      refuseStatFor: 'vanished.json',
-      statErrorCode: 'ENOENT',
-    });
-
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      records: [],
-      skippedRecords: [],
-    });
-    expect(storage.readFileSync).not.toHaveBeenCalled();
-  });
-
-  it('omits a record confirmed absent during the stat-to-read race, the same as the directory-to-stat race', () => {
+  it('omits a record confirmed absent during the directory-to-read race', () => {
     const storage = storageWith([{ name: 'vanished-after-stat.json', value: '{not-json', mtimeMs: 1 }], {
       refuseReadFor: 'vanished-after-stat.json',
       readErrorCode: 'ENOENT',
@@ -1063,7 +1058,7 @@ describe('shutdown remainder status', () => {
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain('quarantine/unreadable.json/1/evidence');
+    expect(storage.fileNames()).toContain('unreadable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-32.json');
   });
@@ -1079,11 +1074,11 @@ describe('shutdown remainder status', () => {
 
     expect(storage.fileNames()).toHaveLength(34);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).toContain('quarantine/unreadable-0.json/1/evidence');
-    expect(storage.fileNames()).toContain('quarantine/unreadable-32.json/1/evidence');
+    expect(storage.fileNames()).toContain('unreadable-0.json');
+    expect(storage.fileNames()).toContain('unreadable-32.json');
   });
 
-  it('preserves both quarantines when the same subject is unreadable twice', () => {
+  it('holds repeated quarantine dispositions at the canonical subject path', () => {
     const first = JSON.stringify(recordAt('same', [KNOWN_LOSS]));
     const second = JSON.stringify(recordAt('same', []));
     const storage = storageWith([{ name: 'same.json', value: first, mtimeMs: 1 }], {
@@ -1094,9 +1089,8 @@ describe('shutdown remainder status', () => {
     storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'same.json'), second);
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toEqual(['quarantine/same.json/1/evidence', 'quarantine/same.json/2/evidence']);
-    expect(storage.readFile('quarantine/same.json/1/evidence')).toBe(first);
-    expect(storage.readFile('quarantine/same.json/2/evidence')).toBe(second);
+    expect(storage.fileNames()).toEqual(['same.json']);
+    expect(storage.readFile('same.json')).toBe(second);
   });
 
   it('quarantines a 255-byte malformed stage without lengthening its basename', () => {
@@ -1109,7 +1103,78 @@ describe('shutdown remainder status', () => {
 
     expect(first.cleanup).toEqual({ kind: 'quarantined', subjectNames: [name] });
     expect(second.cleanup).toEqual({ kind: 'quarantined', subjectNames: [name] });
-    expect(storage.fileNames()).toEqual([`quarantine/${name}/1/evidence`]);
+    expect(storage.fileNames()).toEqual([name]);
+  });
+
+  it('holds a maximum-path subject in place without constructing a longer destination', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-remainder-path-'));
+    try {
+      const runDir = pathWithLength(root, 3_812);
+      const directory = shutdownRemainderPath(runDir);
+      const suffix = '.json.stage.bad';
+      const name = `${'a'.repeat(255 - Buffer.byteLength(suffix))}${suffix}`;
+      const subjectPath = join(directory, name);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(subjectPath, '{partial');
+
+      const disposition = pruneShutdownRemainderRecords({
+        runDir,
+        storage: {
+          readFileSync,
+          readdirSync,
+          renameSync,
+          statSync,
+          unlinkSync,
+        },
+      });
+
+      expect(subjectPath).toHaveLength(4_090);
+      expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: [name] });
+      expect(readFileSync(subjectPath, 'utf-8')).toBe('{partial');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not report an inaccessible directory as quarantined evidence', () => {
+    const storage = storageWith([], { refuseStatFor: 'evidence', statErrorCode: 'EACCES' });
+    storage.mkdirSync(join(REMAINDER_DIRECTORY, 'quarantine', 'held.json', '1', 'evidence'), { recursive: true });
+
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY).quarantined).toBeUndefined();
+  });
+
+  it('applies one flat-scan I/O budget across stage and record subjects', () => {
+    const files = Array.from({ length: 500 }, (_, index) => {
+      const ordinal = String(index).padStart(3, '0');
+      return [
+        fileAt(`entry-${ordinal}`, index + 1),
+        { name: `entry-${ordinal}.json.stage.bad`, value: '{}', mtimeMs: index + 1 },
+      ];
+    }).flat();
+    const storage = storageWith(files);
+
+    const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
+
+    expect((scan.unscannedStageCount ?? 0) + (scan.unscannedRecordCount ?? 0)).toBe(
+      1_000 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
+    );
+    expect(vi.mocked(storage.statSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
+      SHUTDOWN_REMAINDER_SCAN_LIMIT,
+    );
+  });
+
+  it('does not probe past empty quarantine slots or leave the subject behind them', () => {
+    const storage = storageWith([fileAt('locked', 1)], { refuseReadFor: 'locked.json' });
+    for (let slot = 1; slot <= 1_000; slot += 1) {
+      storage.mkdirSync(join(REMAINDER_DIRECTORY, 'quarantine', 'locked.json', String(slot)), { recursive: true });
+    }
+    vi.mocked(storage.mkdirSync).mockClear();
+
+    const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    expect(storage.mkdirSync).not.toHaveBeenCalled();
+    expect(storage.fileNames()).toContain('locked.json');
   });
 
   it('quarantines an unreadable record without stat evidence instead of treating unknown age as old', () => {
@@ -1128,9 +1193,9 @@ describe('shutdown remainder status', () => {
 
     expect(storage.fileNames()).toHaveLength(34);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).toContain('quarantine/unreadable-unstattable.json/1/evidence');
-    expect(storage.fileNames()).toContain('quarantine/unreadable-0.json/1/evidence');
-    expect(storage.fileNames()).toContain('quarantine/unreadable-31.json/1/evidence');
+    expect(storage.fileNames()).toContain('unreadable-unstattable.json');
+    expect(storage.fileNames()).toContain('unreadable-0.json');
+    expect(storage.fileNames()).toContain('unreadable-31.json');
   });
 
   it('reclaims a decisively corrupt record regardless of age, even under the retention cap', () => {
@@ -1161,10 +1226,11 @@ describe('shutdown remainder status', () => {
     const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['future-instance.json'] });
-    expect(storage.fileNames().sort()).toEqual(['quarantine/future-instance.json/1/evidence', 'readable.json']);
+    expect(storage.fileNames().sort()).toEqual(['future-instance.json', 'readable.json']);
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       records: [recordAt('readable')],
-      skippedRecords: [],
+      skippedRecords: [{ name: 'future-instance.json', reason: 'unsupported', detail: expect.any(String) }],
+      quarantined: [{ subject: 'future-instance.json', retry: { trigger: 'coordinator-startup' } }],
     });
   });
 
@@ -1180,8 +1246,8 @@ describe('shutdown remainder status', () => {
 
     expect(storage.fileNames()).toHaveLength(34);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).toContain('quarantine/unsupported-0.json/1/evidence');
-    expect(storage.fileNames()).toContain('quarantine/unsupported-32.json/1/evidence');
+    expect(storage.fileNames()).toContain('unsupported-0.json');
+    expect(storage.fileNames()).toContain('unsupported-32.json');
   });
 
   it('does not unlink a live atomic-write staging file when prune runs before rename', () => {
@@ -1266,7 +1332,7 @@ describe('shutdown remainder status', () => {
         undischarged: [KNOWN_LOSS],
       }),
     ).toMatchObject({ kind: 'verification-unavailable' });
-    expect(storage.fileNames()).toEqual(['quarantine/current-instance.json/1/evidence']);
+    expect(storage.fileNames()).toEqual(['current-instance.json']);
   });
 
   it('does not accept unrelated canonical bytes when its stage disappears before final rename', () => {
@@ -1338,8 +1404,10 @@ describe('shutdown remainder status', () => {
     const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
 
     expect(scan.records).toEqual([decodedRecordAt('published')]);
-    expect(scan.unscannedStageCount).toBe(1);
-    expect(storage.statSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT + 1);
+    expect(scan.unscannedStageCount).toBe(2);
+    expect(vi.mocked(storage.statSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
+      SHUTDOWN_REMAINDER_SCAN_LIMIT,
+    );
   });
 
   it('requires a final record filename to match its decoded instance identity exactly', () => {
@@ -1367,7 +1435,7 @@ describe('shutdown remainder status', () => {
       stageOwnership: { kind: 'classified' },
       cleanup: { kind: 'quarantined', subjectNames: [stageName] },
     });
-    expect(storage.fileNames()).toEqual([`quarantine/${stageName}/1/evidence`]);
+    expect(storage.fileNames()).toEqual([stageName]);
   });
 
   it('returns quarantined stage evidence together with an unrelated cleanup refusal', () => {
@@ -1415,7 +1483,7 @@ describe('shutdown remainder status', () => {
       cleanup: { kind: 'quarantined' },
     });
     expect(storage.unlinkSync).not.toHaveBeenCalled();
-    expect(storage.fileNames()).toEqual(stages.map(({ name }) => `quarantine/${name}/1/evidence`).sort());
+    expect(storage.fileNames()).toEqual(stages.map(({ name }) => name).sort());
   });
 
   it('quarantines unobservable and proven-orphan stages whose content cannot be published', () => {
@@ -1441,7 +1509,7 @@ describe('shutdown remainder status', () => {
     expect(disposition.cleanup).toMatchObject({ kind: 'quarantined' });
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain(`quarantine/${heldStage.name}/1/evidence`);
+    expect(storage.fileNames()).toContain(heldStage.name);
   });
 
   it('publishes after a writer changes from alive to absent while the coordinator keeps running', () => {
@@ -1496,6 +1564,7 @@ describe('shutdown remainder status', () => {
     const storage = storageWith([fileAt('locked', 1)], {
       refuseReadFor: 'locked.json',
       readErrorCode: 'EACCES',
+      refuseReaddirWhen: (_path, attempt) => attempt === 3,
     });
     let scheduled: (() => void) | null = null;
     const pruner = createShutdownRemainderPruner({
@@ -1519,7 +1588,7 @@ describe('shutdown remainder status', () => {
 
     expect(disposition?.cleanup.kind).not.toBe('complete');
     expect(storage.readFileSync).toHaveBeenCalledOnce();
-    expect(storage.fileNames()).toEqual(['quarantine/locked.json/1/evidence']);
+    expect(storage.fileNames()).toEqual(['locked.json']);
   });
 
   it('retries quarantined evidence once on the next pruner startup', () => {
@@ -1543,33 +1612,7 @@ describe('shutdown remainder status', () => {
     second.stop();
   });
 
-  it('finishes a prior restore whose link succeeded but quarantine unlink failed', () => {
-    const storage = storageWith([fileAt('linked', 1)], {
-      refuseReadWhen: (name, attempt) => name === 'linked.json' && attempt === 1,
-      refuseUnlinkWhen: (path, attempt) => path.includes('quarantine') && attempt === 1,
-    });
-    const time = {
-      setInterval: vi.fn(() => ({ unref: vi.fn() })),
-      clearInterval: vi.fn(),
-    };
-
-    const quarantine = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
-    quarantine.start();
-    quarantine.stop();
-
-    const firstRestore = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
-    firstRestore.start();
-    firstRestore.stop();
-    expect(storage.fileNames()).toHaveLength(2);
-
-    const secondRestore = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
-    secondRestore.start();
-    secondRestore.stop();
-
-    expect(storage.fileNames()).toEqual(['linked.json']);
-  });
-
-  it('keeps quarantined evidence visible with its address, subject, and startup retry disposition', () => {
+  it('keeps quarantined subjects visible with their identity and startup retry disposition', () => {
     const storage = storageWith([fileAt('locked', 1)], { refuseReadFor: 'locked.json' });
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
@@ -1577,45 +1620,67 @@ describe('shutdown remainder status', () => {
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       quarantined: [
         {
-          address: 'quarantine/locked.json/1/evidence',
           subject: 'locked.json',
-          retry: { trigger: 'coordinator-startup', state: 'pending' },
+          retry: { trigger: 'coordinator-startup' },
         },
       ],
     });
   });
 
-  it('does not overwrite active evidence while retrying an older quarantine', () => {
+  it('keeps a complete stage visible when promotion failed and its writer is absent', () => {
+    const stageName = 'held-stage.json.stage.4242.unobserved';
+    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held-stage')), mtimeMs: 1 }], {
+      refuseFinalRename: true,
+    });
+
+    expect(
+      pruneShutdownRemainderRecords({
+        storage,
+        runDir: RUN_DIR,
+        observeStageWriter: () => 'absent',
+      }).cleanup,
+    ).toEqual({ kind: 'quarantined', subjectNames: [stageName] });
+    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, () => 'absent').quarantined).toEqual([
+      { subject: stageName, retry: { trigger: 'coordinator-startup' } },
+    ]);
+  });
+
+  it('does not retry a replaced held subject until the next startup', () => {
     const active = JSON.stringify(recordAt('locked', []));
     const quarantined = JSON.stringify(recordAt('locked'));
     const storage = storageWith([{ name: 'locked.json', value: quarantined, mtimeMs: 1 }], {
       refuseReadWhen: (name, attempt) => name === 'locked.json' && attempt === 1,
     });
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'locked.json'), active);
+    let scheduled: (() => void) | null = null;
     const pruner = createShutdownRemainderPruner({
       storage,
       runDir: RUN_DIR,
       time: {
-        setInterval: () => ({ unref: vi.fn() }),
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
         clearInterval: vi.fn(),
       },
     });
 
     expect(pruner.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'locked.json'), active);
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
     expect(storage.readPublished('locked')).toBe(active);
-    expect(storage.readFile('quarantine/locked.json/1/evidence')).toBe(quarantined);
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      records: [recordAt('locked', [])],
-      quarantined: [
-        {
-          address: 'quarantine/locked.json/1/evidence',
-          subject: 'locked.json',
-          retry: { trigger: 'coordinator-startup', state: 'active-subject-present' },
-        },
-      ],
-    });
+    expect(storage.readFileSync).toHaveBeenCalledOnce();
     pruner.stop();
+
+    const retry = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+    });
+    expect(retry.start()?.cleanup).toEqual({ kind: 'complete' });
+    expect(storage.readFileSync).toHaveBeenCalledTimes(2);
+    retry.stop();
   });
 
   it('reclaims every partial stage whose writer is proven absent', () => {
@@ -1645,7 +1710,7 @@ describe('shutdown remainder status', () => {
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain('quarantine/malformed-0.json.stage.bad/1/evidence');
+    expect(storage.fileNames()).toContain('malformed-0.json.stage.bad');
     expect(storage.readFileSync).not.toHaveBeenCalled();
   });
 
