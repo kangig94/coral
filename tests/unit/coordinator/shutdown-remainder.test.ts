@@ -1136,6 +1136,50 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual([stageName]);
   });
 
+  it('does not prune any of 33 writer-owned stages whose writers are unobservable', () => {
+    const stages = Array.from({ length: 33 }, (_, index) => ({
+      name: `held-${index}.json.stage.${5_000 + index}.unknown`,
+      value: JSON.stringify(recordAt(`held-${index}`)),
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(stages);
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'unknown',
+    });
+
+    expect(disposition).toMatchObject({ kind: 'stage-ownership-held' });
+    expect(storage.unlinkSync).not.toHaveBeenCalled();
+    expect(storage.fileNames()).toEqual(stages.map(({ name }) => name).sort());
+  });
+
+  it('keeps an unobservable writer-owned stage outside the 32-entry proven-orphan stage bucket', () => {
+    const orphanedStages = Array.from({ length: 32 }, (_, index) => ({
+      name: `orphan-${index}.json.stage.${6_000 + index}.unknown`,
+      value: '{}',
+      mtimeMs: index + 1,
+    }));
+    const heldStage = {
+      name: 'held.json.stage.7000.unknown',
+      value: JSON.stringify(recordAt('held')),
+      mtimeMs: 0,
+    };
+    const storage = storageWith([heldStage, ...orphanedStages]);
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: ({ pid }) => (pid === 7_000 ? 'unknown' : 'absent'),
+    });
+
+    expect(disposition).toEqual({ kind: 'stage-ownership-held', stageNames: [heldStage.name] });
+    expect(storage.unlinkSync).not.toHaveBeenCalled();
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain(heldStage.name);
+  });
+
   it('re-observes a retained stage while the successor stays healthy', () => {
     const stageName = 'held.json.stage.4242.unknown';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
@@ -1167,10 +1211,11 @@ describe('shutdown remainder status', () => {
     reobserve();
 
     expect(storage.fileNames()).toEqual(['held.json']);
-    expect(scheduled).toBeNull();
+    expect(scheduled).not.toBeNull();
+    pruner.stop();
   });
 
-  it('stops re-observing a persistently live stage after three follow-up observations', () => {
+  it('backs off after three follow-up observations and starts a later observation cycle', () => {
     const stageName = 'held.json.stage.4242.unknown';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
     const scheduled: Array<() => void> = [];
@@ -1195,11 +1240,19 @@ describe('shutdown remainder status', () => {
     }
 
     expect(storage.readdirSync).toHaveBeenCalledTimes(8);
-    expect(scheduled).toEqual([]);
+    expect(scheduled).toHaveLength(1);
     expect(storage.fileNames()).toEqual([stageName]);
+
+    const discover = scheduled.shift();
+    if (discover === undefined) throw new Error('discovery was not scheduled');
+    discover();
+
+    expect(storage.readdirSync).toHaveBeenCalledTimes(10);
+    expect(scheduled).toHaveLength(1);
+    pruner.stop();
   });
 
-  it('stops retrying a refused prune after one follow-up attempt', () => {
+  it('backs off after one refused-prune retry and leaves a later discovery scheduled', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePrune: true,
     });
@@ -1222,8 +1275,57 @@ describe('shutdown remainder status', () => {
     retry();
 
     expect(storage.readdirSync).toHaveBeenCalledTimes(4);
-    expect(scheduled).toEqual([]);
+    expect(scheduled).toHaveLength(1);
     expect(storage.fileNames()).toEqual(['corrupt.json']);
+    pruner.stop();
+  });
+
+  it('gives a late stage its own follow-up budget after another stage exhausts a cycle', () => {
+    const stageA = 'stage-a.json.stage.8001.unknown';
+    const stageB = 'stage-b.json.stage.8002.unknown';
+    const storage = storageWith([{ name: stageA, value: JSON.stringify(recordAt('stage-a')), mtimeMs: 1 }]);
+    const observations = new Map<number, number>();
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: ({ pid }) => {
+        observations.set(pid, (observations.get(pid) ?? 0) + 1);
+        return 'unknown';
+      },
+      time: {
+        setTimeout: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearTimeout: () => {
+          scheduled = null;
+        },
+      },
+    });
+
+    pruner.start();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const reobserve = scheduled as (() => void) | null;
+      if (reobserve === null) throw new Error('re-observation was not scheduled');
+      scheduled = null;
+      reobserve();
+    }
+    expect(observations.get(8_001)).toBe(4);
+
+    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, stageB), JSON.stringify(recordAt('stage-b')));
+    pruner.start();
+    expect(observations.get(8_001)).toBe(5);
+    expect(observations.get(8_002)).toBe(1);
+    expect(scheduled).not.toBeNull();
+
+    const reobserveStageB = scheduled as (() => void) | null;
+    if (reobserveStageB === null) throw new Error('late-stage re-observation was not scheduled');
+    reobserveStageB();
+
+    expect(observations.get(8_001)).toBe(5);
+    expect(observations.get(8_002)).toBe(2);
+    pruner.stop();
   });
 
   it('reclaims every partial stage whose writer is proven absent', () => {

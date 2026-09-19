@@ -12,8 +12,9 @@ import {
   classifyShutdownRemainderFile,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
-  type ShutdownRemainderStageObserver,
   type ShutdownRemainderRecord,
+  type ShutdownRemainderStageObservation,
+  type ShutdownRemainderStageWriter,
 } from '../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../infra/time.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
@@ -22,10 +23,15 @@ import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 const MAX_SHUTDOWN_REMAINDER_RECORDS = 32;
 
+type ShutdownRemainderPruneStageObserver = (
+  writer: ShutdownRemainderStageWriter,
+  stageName: string,
+) => ShutdownRemainderStageObservation;
+
 type ShutdownRemainderPruneRuntime = Readonly<{
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
   runDir: string;
-  observeStageWriter?: ShutdownRemainderStageObserver;
+  observeStageWriter?: ShutdownRemainderPruneStageObserver;
 }>;
 
 type ShutdownRemainderWriteRuntime = Readonly<{
@@ -76,7 +82,7 @@ export function pruneShutdownRemainderRecords(
   let pruneRefused = false;
   try {
     const retainedStages: { name: string; age: RecordAge }[] = [];
-    const observeStageWriter: ShutdownRemainderStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
+    const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
     for (const name of runtime.storage.readdirSync(directory)) {
       const entry = classifyShutdownRemainderDirectoryEntry(name);
       if (entry.kind === 'other' || entry.kind === 'record') continue;
@@ -96,14 +102,13 @@ export function pruneShutdownRemainderRecords(
         retainedStages.push({ name, age });
         continue;
       }
-      const writerObservation = observeStageWriter(stage.writer);
+      const writerObservation = observeStageWriter(stage.writer, name);
       if (writerObservation === 'alive') {
         reobservableStageNames.add(name);
         continue;
       }
       if (writerObservation === 'unknown') {
         reobservableStageNames.add(name);
-        retainedStages.push({ name, age });
         continue;
       }
       if (stage.partial) {
@@ -248,49 +253,93 @@ export function pruneShutdownRemainderRecords(
 }
 
 const SHUTDOWN_REMAINDER_REOBSERVATION_MS = 1_000;
+const SHUTDOWN_REMAINDER_DISCOVERY_MS = 60_000;
 const SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT = 3;
 const SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT = 1;
 
-/** Keeps at most one unref'ed re-observation pending; `stop` makes scheduling terminal. */
+type ShutdownRemainderPrunerFollowUp =
+  | Readonly<{ kind: 'reobserve'; stageNames: ReadonlySet<string> }>
+  | Readonly<{ kind: 'retry-prune' }>
+  | Readonly<{ kind: 'discover' }>;
+
+/** Remainder maintenance must not keep the coordinator process alive. */
 export function createShutdownRemainderPruner(
   runtime: ShutdownRemainderPruneRuntime & Readonly<{ time: Pick<TimePort, 'clearTimeout' | 'setTimeout'> }>,
 ): Readonly<{ start(): void; stop(): void }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
-  let stageReobservations = 0;
+  const stageReobservations = new Map<string, number>();
   let pruneRetries = 0;
+  const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
 
-  const takeFollowUp = (disposition: ShutdownRemainderPruneDisposition): boolean => {
+  const takeFollowUp = (disposition: ShutdownRemainderPruneDisposition): ShutdownRemainderPrunerFollowUp => {
     switch (disposition.kind) {
       case 'stage-ownership-classified':
-        return false;
-      case 'stage-ownership-held':
-        if (stageReobservations >= SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT) return false;
-        stageReobservations += 1;
-        return true;
+        stageReobservations.clear();
+        pruneRetries = 0;
+        return { kind: 'discover' };
+      case 'stage-ownership-held': {
+        pruneRetries = 0;
+        const retainedStageNames = new Set(disposition.stageNames);
+        for (const stageName of stageReobservations.keys()) {
+          if (!retainedStageNames.has(stageName)) stageReobservations.delete(stageName);
+        }
+        const stageNames = new Set(
+          disposition.stageNames.filter(
+            (stageName) => (stageReobservations.get(stageName) ?? 0) < SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT,
+          ),
+        );
+        if (stageNames.size === 0) return { kind: 'discover' };
+        return { kind: 'reobserve', stageNames };
+      }
       case 'prune-refused':
-        if (pruneRetries >= SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT) return false;
+        if (pruneRetries >= SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT) {
+          pruneRetries = 0;
+          return { kind: 'discover' };
+        }
         pruneRetries += 1;
-        return true;
+        return { kind: 'retry-prune' };
     }
   };
 
-  const pruneNow = (): void => {
+  const pruneNow = (stageNames?: ReadonlySet<string>): void => {
     if (stopped) return;
     if (timer !== null) runtime.time.clearTimeout(timer);
     timer = null;
-    const disposition = pruneShutdownRemainderRecords(runtime);
-    if (!stopped && takeFollowUp(disposition)) {
-      timer = runtime.time.setTimeout(() => {
-        timer = null;
-        pruneNow();
-      }, SHUTDOWN_REMAINDER_REOBSERVATION_MS);
+    const disposition = pruneShutdownRemainderRecords({
+      ...runtime,
+      observeStageWriter: (writer, stageName) =>
+        stageNames === undefined || stageNames.has(stageName) ? observeStageWriter(writer, stageName) : 'unknown',
+    });
+    if (!stopped) {
+      const followUp = takeFollowUp(disposition);
+      timer = runtime.time.setTimeout(
+        () => {
+          timer = null;
+          if (followUp.kind === 'discover') {
+            stageReobservations.clear();
+            pruneRetries = 0;
+            pruneNow();
+            return;
+          }
+          if (followUp.kind === 'reobserve') {
+            for (const stageName of followUp.stageNames) {
+              stageReobservations.set(stageName, (stageReobservations.get(stageName) ?? 0) + 1);
+            }
+          }
+          pruneNow(followUp.kind === 'reobserve' ? followUp.stageNames : undefined);
+        },
+        followUp.kind === 'discover' ? SHUTDOWN_REMAINDER_DISCOVERY_MS : SHUTDOWN_REMAINDER_REOBSERVATION_MS,
+      );
       timer.unref?.();
     }
   };
 
   return {
-    start: pruneNow,
+    start: () => {
+      pruneRetries = 0;
+      pruneNow();
+    },
     stop: () => {
       stopped = true;
       if (timer !== null) runtime.time.clearTimeout(timer);

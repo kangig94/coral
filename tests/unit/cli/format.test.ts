@@ -1913,17 +1913,17 @@ describe('cli format', () => {
           '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
           'Skipped shutdown remainder records, unreadable: 1',
           '  Record: locked-instance.json',
-          '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
+          '  Disposition: content was never read; retried on every status read, with the oldest eligible for cleanup once too many unreadable records accumulate.',
           'Skipped shutdown remainder records, corrupt: 2',
-          '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
+          '  Disposition: content is not valid JSON; coordinator startup and periodic background cleanup attempt deletion, and a refused deletion remains reported for a later attempt.',
           'Skipped shutdown remainder records, identity mismatch: 1',
-          '  Disposition: decoded content named a different instance than the filename; discarded during bounded coordinator-startup cleanup, or retained and reported for the next startup if cleanup is refused.',
+          '  Disposition: decoded content named a different instance than the filename; coordinator cleanup attempts deletion, and a refused deletion remains reported for a later background or startup attempt.',
           'Shutdown remainder publication stages not inspected: 2',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for a later status read or coordinator startup.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for a later status read, background scan, or coordinator startup.',
           'Shutdown remainder records not inspected: 3',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for a later status read or coordinator startup.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for a later status read, background scan, or coordinator startup.',
           'Malformed shutdown remainder publication stages: 4',
-          '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup retried only for the bounded startup window.',
+          '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup eligible for later background attempts.',
         ].join('\n'),
       );
     });
@@ -1947,7 +1947,7 @@ describe('cli format', () => {
           'Coral found shutdown remainder records it could not use.',
           'Skipped shutdown remainder records, unreadable: 1',
           '  Record: locked-instance.json',
-          '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
+          '  Disposition: content was never read; retried on every status read, with the oldest eligible for cleanup once too many unreadable records accumulate.',
         ].join('\n'),
       );
     });
@@ -1970,7 +1970,7 @@ describe('cli format', () => {
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Coral found shutdown remainder records it could not use.',
           'Skipped shutdown remainder records, corrupt: 1',
-          '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
+          '  Disposition: content is not valid JSON; coordinator startup and periodic background cleanup attempt deletion, and a refused deletion remains reported for a later attempt.',
         ].join('\n'),
       );
     });
@@ -1996,7 +1996,7 @@ describe('cli format', () => {
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Coral found shutdown remainder records it could not use.',
           'Skipped shutdown remainder records, unsupported: 1',
-          '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained and reclaimed only once too many unsupported records accumulate (oldest first).',
+          '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained until the oldest becomes eligible for cleanup after too many unsupported records accumulate.',
         ].join('\n'),
       );
     });
@@ -2018,11 +2018,11 @@ describe('cli format', () => {
       ).toContain(
         [
           'Shutdown remainder publications in progress, writer alive: 1',
-          '  Disposition: retained as durable status while the writer is alive; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup.',
+          '  Disposition: retained as durable status while the writer is alive; this coordinator rechecks it in bounded bursts separated by background discovery intervals.',
           'Shutdown remainder publications in progress, writer unobservable: 2',
-          '  Disposition: retained as durable status; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup. Unknown does not authorize publication or deletion.',
+          '  Disposition: retained as durable status and rechecked in bounded bursts separated by background discovery intervals. Unknown does not authorize publication or deletion.',
           'Shutdown remainder publication stages with proven-absent writers: 3',
-          '  Disposition: a decodable stage is promoted during bounded coordinator-startup cleanup; if cleanup is refused, it remains durable reported status for the next startup. Other orphaned stages are retained under their own 32-entry bound (newest first).',
+          '  Disposition: coordinator cleanup promotes a decodable stage; refused cleanup remains durable reported status for a later background or startup attempt. Other orphaned stages use their own 32-entry bound (newest first).',
         ].join('\n'),
       );
     });
@@ -2033,7 +2033,7 @@ describe('cli format', () => {
         { unscannedStageCount: 3 },
         [
           'Shutdown remainder publication stages not inspected: 3',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for a later status read or coordinator startup.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for a later status read, background scan, or coordinator startup.',
         ],
       ],
       [
@@ -2041,7 +2041,7 @@ describe('cli format', () => {
         { unscannedRecordCount: 4 },
         [
           'Shutdown remainder records not inspected: 4',
-          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for a later status read or coordinator startup.',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for a later status read, background scan, or coordinator startup.',
         ],
       ],
       [
@@ -2049,7 +2049,7 @@ describe('cli format', () => {
         { skippedIdentityMismatchRecordCount: 2 },
         [
           'Skipped shutdown remainder records, identity mismatch: 2',
-          '  Disposition: decoded content named a different instance than the filename; discarded during bounded coordinator-startup cleanup, or retained and reported for the next startup if cleanup is refused.',
+          '  Disposition: decoded content named a different instance than the filename; coordinator cleanup attempts deletion, and a refused deletion remains reported for a later background or startup attempt.',
         ],
       ],
       [
@@ -2057,7 +2057,7 @@ describe('cli format', () => {
         { staging: { writerAliveCount: 0, writerUnobservableCount: 0, orphanedCount: 0, malformedCount: 5 } },
         [
           'Malformed shutdown remainder publication stages: 5',
-          '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup retried only for the bounded startup window.',
+          '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup eligible for later background attempts.',
         ],
       ],
     ] as const)('reports %s when it is the only shutdown remainder evidence', (_label, evidence, expected) => {

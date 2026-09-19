@@ -1379,62 +1379,62 @@ function formatSkippedShutdownRemainderRecords(result: ShutdownRemainderSkippedR
     lines.push(
       `Skipped shutdown remainder records, unreadable: ${result.skippedUnreadableRecordNames.length}`,
       ...result.skippedUnreadableRecordNames.map((name) => `  Record: ${name}`),
-      '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
+      '  Disposition: content was never read; retried on every status read, with the oldest eligible for cleanup once too many unreadable records accumulate.',
     );
   }
   if (result.skippedCorruptRecordCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, corrupt: ${result.skippedCorruptRecordCount}`,
-      '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
+      '  Disposition: content is not valid JSON; coordinator startup and periodic background cleanup attempt deletion, and a refused deletion remains reported for a later attempt.',
     );
   }
   if (result.skippedUnsupportedRecordCount > 0) {
     lines.push(
       `Skipped shutdown remainder records, unsupported: ${result.skippedUnsupportedRecordCount}`,
-      '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained and reclaimed only once too many unsupported records accumulate (oldest first).',
+      '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained until the oldest becomes eligible for cleanup after too many unsupported records accumulate.',
     );
   }
   if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
     lines.push(
       `Skipped shutdown remainder records, identity mismatch: ${result.skippedIdentityMismatchRecordCount}`,
-      '  Disposition: decoded content named a different instance than the filename; discarded during bounded coordinator-startup cleanup, or retained and reported for the next startup if cleanup is refused.',
+      '  Disposition: decoded content named a different instance than the filename; coordinator cleanup attempts deletion, and a refused deletion remains reported for a later background or startup attempt.',
     );
   }
   if ((result.unscannedStageCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder publication stages not inspected: ${result.unscannedStageCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-stage bound; retained for a later status read or coordinator startup.`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-stage bound; retained for a later status read, background scan, or coordinator startup.`,
     );
   }
   if ((result.unscannedRecordCount ?? 0) > 0) {
     lines.push(
       `Shutdown remainder records not inspected: ${result.unscannedRecordCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-record bound; retained for a later status read or coordinator startup.`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-record bound; retained for a later status read, background scan, or coordinator startup.`,
     );
   }
   if (result.staging !== undefined) {
     if (result.staging.writerAliveCount > 0) {
       lines.push(
         `Shutdown remainder publications in progress, writer alive: ${result.staging.writerAliveCount}`,
-        '  Disposition: retained as durable status while the writer is alive; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup.',
+        '  Disposition: retained as durable status while the writer is alive; this coordinator rechecks it in bounded bursts separated by background discovery intervals.',
       );
     }
     if (result.staging.writerUnobservableCount > 0) {
       lines.push(
         `Shutdown remainder publications in progress, writer unobservable: ${result.staging.writerUnobservableCount}`,
-        '  Disposition: retained as durable status; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup. Unknown does not authorize publication or deletion.',
+        '  Disposition: retained as durable status and rechecked in bounded bursts separated by background discovery intervals. Unknown does not authorize publication or deletion.',
       );
     }
     if (result.staging.orphanedCount > 0) {
       lines.push(
         `Shutdown remainder publication stages with proven-absent writers: ${result.staging.orphanedCount}`,
-        '  Disposition: a decodable stage is promoted during bounded coordinator-startup cleanup; if cleanup is refused, it remains durable reported status for the next startup. Other orphaned stages are retained under their own 32-entry bound (newest first).',
+        '  Disposition: coordinator cleanup promotes a decodable stage; refused cleanup remains durable reported status for a later background or startup attempt. Other orphaned stages use their own 32-entry bound (newest first).',
       );
     }
     if ((result.staging.malformedCount ?? 0) > 0) {
       lines.push(
         `Malformed shutdown remainder publication stages: ${result.staging.malformedCount}`,
-        '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup retried only for the bounded startup window.',
+        '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup eligible for later background attempts.',
       );
     }
   }
