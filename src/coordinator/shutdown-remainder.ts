@@ -82,19 +82,35 @@ export function readShutdownRemainderStatus(runtime: ShutdownRemainderReadRuntim
   }
 }
 
+type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
+
+// Newest-known-first, with every 'unknown' age ranked older than any known mtime: a file this build could not
+// stat carries no age evidence to assert a real age from, but still needs the same bounded-retention exit as
+// every other unreadable file (design-philosophy.md principle 11/12), so it is the first to fall outside the
+// retained window once the bound is exceeded rather than being exempted from the bound entirely.
+function byRetentionOrder(
+  left: Readonly<{ name: string; age: RecordAge }>,
+  right: Readonly<{ name: string; age: RecordAge }>,
+): number {
+  if (left.age.kind === 'known' && right.age.kind === 'known') {
+    return right.age.mtimeMs - left.age.mtimeMs || right.name.localeCompare(left.name);
+  }
+  if (left.age.kind !== right.age.kind) return left.age.kind === 'known' ? -1 : 1;
+  return right.name.localeCompare(left.name);
+}
+
 export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRuntime): void {
   const directory = shutdownRemainderPath(runtime.runDir);
   try {
-    const known: { name: string; mtimeMs: number }[] = [];
-    const unreadable: { name: string; mtimeMs: number }[] = [];
+    const known: { name: string; age: RecordAge }[] = [];
+    const unreadable: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory).filter((entry) => entry.endsWith('.json'))) {
       const path = join(directory, name);
-      let mtimeMs: number | null = null;
+      let age: RecordAge = { kind: 'unknown' };
       try {
-        mtimeMs = runtime.storage.statSync(path).mtimeMs;
+        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
-        mtimeMs = null;
       }
 
       const classification = classifyShutdownRemainderFile(runtime.storage, path);
@@ -115,16 +131,14 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
         // Constraint: a record this build cannot prove readable is not proven old or content-invalid, and
         // unknown must not authorize deletion by content (design-philosophy.md principle 11). It competes only
         // against other unreadable files for the bounded slot count below — never against a known-readable
-        // record — so persistent unreadability cannot displace genuinely decodable evidence out of its cap. A
-        // file this build also could not stat carries no age evidence to rank it by, so it is left out of this
-        // bound entirely rather than guessed at.
-        if (mtimeMs !== null) unreadable.push({ name, mtimeMs });
+        // record — so persistent unreadability cannot displace genuinely decodable evidence out of its cap.
+        unreadable.push({ name, age });
         continue;
       }
-      if (mtimeMs === null) continue;
-      known.push({ name, mtimeMs });
+      if (age.kind === 'unknown') continue;
+      known.push({ name, age });
     }
-    known.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+    known.sort(byRetentionOrder);
     for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
@@ -132,11 +146,12 @@ export function pruneShutdownRemainderRecords(runtime: ShutdownRemainderPruneRun
         /* Retention cleanup must not block startup. */
       }
     }
-    unreadable.sort((left, right) => right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name));
+    unreadable.sort(byRetentionOrder);
     // Constraint: this retention bound is the unreadable hold's only exit (design-philosophy.md principle 11 —
-    // every hold names what ends it); a genuine unknown may still be reclaimed once a resource bound is
-    // exceeded, because the eviction is a retention policy over how many such files this build carries
-    // forward, not a claim about the reclaimed file's own content.
+    // every hold names what ends it; principle 12 — no state may wait on an operator who is not there), for
+    // every unreadable file including one this build could not even stat: `byRetentionOrder` ranks it as the
+    // oldest, so it is reclaimed first once the bucket exceeds this same bound, without asserting anything
+    // about its actual age.
     for (const { name } of unreadable.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));

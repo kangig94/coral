@@ -378,7 +378,7 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
       status: { records: [] },
-      skippedRecords: [{ name: 'bounded-instance.json', age: { kind: 'known', mtimeMs: 1 } }],
+      skippedRecords: [{ name: 'bounded-instance.json', reason: 'undecodable' }],
     });
   });
 
@@ -387,7 +387,16 @@ describe('shutdown remainder status', () => {
 
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
-      skippedRecords: [{ name: 'invalid-record-name', age: { kind: 'known', mtimeMs: 1 } }],
+      skippedRecords: [{ name: 'invalid-record-name', reason: 'undecodable' }],
+    });
+  });
+
+  it('normalizes a skipped record filename outside the closed identifier charset', () => {
+    const storage = storageWith([{ name: 'forged command=rm -rf ~ (danger).json', value: '{not-json', mtimeMs: 1 }]);
+
+    expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
+      kind: 'available',
+      skippedRecords: [{ name: 'invalid-record-name', reason: 'undecodable' }],
     });
   });
 
@@ -405,8 +414,8 @@ describe('shutdown remainder status', () => {
       status: { version: 1, records: [decodedRecordAt('known-instance')] },
       skippedEntries: [],
       skippedRecords: [
-        { name: 'corrupt-instance.json', age: { kind: 'known', mtimeMs: 2 }, reason: 'undecodable' },
-        { name: 'foreign-instance.json', age: { kind: 'known', mtimeMs: 3 }, reason: 'undecodable' },
+        { name: 'corrupt-instance.json', reason: 'undecodable' },
+        { name: 'foreign-instance.json', reason: 'undecodable' },
       ],
     });
   });
@@ -422,7 +431,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('names unknown age when a corrupt record metadata read fails', () => {
+  it('classifies content when the metadata read fails for a reason other than vanishing', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refuseStatFor: 'corrupt.json',
       statErrorCode: 'EIO',
@@ -431,7 +440,7 @@ describe('shutdown remainder status', () => {
     expect(readShutdownRemainderStatus({ storage, runDir: RUN_DIR })).toMatchObject({
       kind: 'available',
       status: { records: [] },
-      skippedRecords: [{ name: 'corrupt.json', age: { kind: 'unknown' } }],
+      skippedRecords: [{ name: 'corrupt.json', reason: 'undecodable' }],
     });
   });
 
@@ -631,6 +640,30 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('readable.json');
     expect(storage.fileNames()).not.toContain('unreadable-0.json');
     expect(storage.fileNames()).toContain('unreadable-32.json');
+  });
+
+  it('reclaims an unreadable record with no stat evidence once its bucket exceeds the retention bound', () => {
+    const knownUnreadableFiles = Array.from({ length: 32 }, (_, index) => fileAt(`unreadable-${index}`, index + 1));
+    const storage = storageWith(
+      [fileAt('readable', 100), ...knownUnreadableFiles, fileAt('unreadable-unstattable', 33)],
+      {
+        refuseReadFor: [...knownUnreadableFiles.map(({ name }) => name), 'unreadable-unstattable.json'],
+        readErrorCode: 'EIO',
+        refuseStatFor: 'unreadable-unstattable.json',
+        statErrorCode: 'EACCES',
+      },
+    );
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    // A file this build could not even stat carries no age evidence, but it still competes for the same
+    // 32-slot unreadable bound (design-philosophy.md principle 11/12) — ranked as the oldest, so it is the one
+    // reclaimed once the bucket exceeds that bound, rather than being exempted from the bound entirely.
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('readable.json');
+    expect(storage.fileNames()).not.toContain('unreadable-unstattable.json');
+    expect(storage.fileNames()).toContain('unreadable-0.json');
+    expect(storage.fileNames()).toContain('unreadable-31.json');
   });
 
   it('reclaims a decisively undecodable record regardless of age, even under the retention cap', () => {

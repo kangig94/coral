@@ -153,6 +153,7 @@ const DURABLE_SCHEMA_REGISTRIES = new Set<SchemaKey>([
 const DURABLE_SCHEMA_COMPONENTS = new Set<SchemaKey>([
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableAcquisitionRecoverySubjectSchema',
   'src/discuss/session-types.ts#transcriptMetadataSchema',
+  'src/infra/shutdown-remainder-record.ts#serializedThrownShape',
   'src/jobs/event-bodies.ts#providerHostRefIdentitySchema',
   'src/provider-proxy/bootstrap-capsule.ts#commonBootstrapCapsuleShape',
   'src/provider-proxy/bootstrap-capsule.ts#durableCanonicalEndpoint',

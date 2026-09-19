@@ -1,6 +1,6 @@
 import type { Server, ServerResponse } from 'node:http';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
-import { formatError, serializeThrown } from '../infra/error-format.js';
+import { assertNever, formatError, serializeThrown } from '../infra/error-format.js';
 import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
@@ -50,8 +50,18 @@ export type ShutdownIncidentOccurrence = Readonly<{
 }>;
 
 export function shutdownModeFromReason(reason: ShutdownReason): ShutdownMode {
-  if (reason === 'replaced' || reason === 'sigterm' || reason === 'provider-proxy-lifecycle-fatal') return 'handoff';
-  return 'hard';
+  switch (reason) {
+    case 'replaced':
+    case 'sigterm':
+    case 'provider-proxy-lifecycle-fatal':
+      return 'handoff';
+    case 'sigint':
+    case 'idle':
+    case 'test-teardown':
+      return 'hard';
+    default:
+      return assertNever(reason);
+  }
 }
 
 export function shutdownIncidentUndischarged({

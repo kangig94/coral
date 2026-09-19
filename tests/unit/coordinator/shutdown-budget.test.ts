@@ -2803,7 +2803,7 @@ describe('required provider-proxy shutdown steps', () => {
     expect(woke).toBe(true);
   });
 
-  it('holds a ref-shaped keepalive across a poll reached after the IPC socket already closed', async () => {
+  it('arms a keepalive across a poll reached after the IPC socket already closed, and releases it once the hold resolves', async () => {
     // Provider control has nothing to release (no live sets at `prepare()`), so `commit()` reaches and
     // resolves the IPC release before this fires — reproducing "the listener is already closed" ahead of
     // the boundary discovering it must hold, without a hung control release to also wait out.

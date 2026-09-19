@@ -118,6 +118,14 @@ export async function commitDecision(
       };
     }
 
+    // A shutdown-requested abort must be able to preempt a decision already computed
+    // against pre-abort state: once the live controller signal is aborted, this session
+    // accepts no further commits through this path (the abort marker itself is written
+    // via appendRuntimeEvents, which this guard does not cover).
+    if (ctx.sessions.get(sessionId)?.controller.signal.aborted === true) {
+      return { ok: false, error: 'session_not_found', detail: { session: sessionId } };
+    }
+
     try {
       const snapshot = await ctx.store.append(sessionId, current.lastAppliedSeq, decided.value);
       afterCommit(ctx, sessionId, snapshot, decided.value);

@@ -34,6 +34,7 @@ import { readDiscussEventLog } from '#src/discuss/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
+import * as discussLoop from '#src/discuss/shell/loop.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -6290,6 +6291,16 @@ describe('execution backend server', () => {
         }),
       });
 
+      // Must stay unresolved until after the forced-abort assertions below: `resumeLoop`'s
+      // own continuation is an unsynchronised real timer, and releasing it earlier lets
+      // startup-candidate's natural completion race the forced shutdown for the same
+      // session's decision commit.
+      const naturalCompletionGate = createDeferred();
+      const originalResumeLoop = discussLoop.resumeLoop;
+      vi.spyOn(discussLoop, 'resumeLoop').mockImplementation((ctx, sessionId, invocationCtx) => {
+        void naturalCompletionGate.promise.then(() => originalResumeLoop(ctx, sessionId, invocationCtx));
+      });
+
       controller = serverModule.createCoordinatorServer({
         bootSnapshot: {
           instanceId: 'execution-backend-instance-1',
@@ -6333,6 +6344,7 @@ describe('execution backend server', () => {
       expect(terminalHistoryEvents.at(-1)?.kind).toBe('session.synthesized');
       expect(startupRegistry.contexts.size).toBe(0);
 
+      naturalCompletionGate.resolve();
       releaseStartup.resolve();
       const startResult = await startPromise;
       // The KB daemon starts after `running` and does not gate start()'s return

@@ -47,3 +47,30 @@ inspection verb; the no-daemon reader intentionally renders only the newest rece
 history.
 [`reproducible-fatal-successor-loop`](./reproducible-fatal-successor-loop.md) is observed through this
 reader and should not be costed before it exists.
+
+## A hold reached through the generic ledger fallback has no keepalive
+
+`SettlementHold` (`src/obligation/settlement.ts`) declares `retryAfter?: Promise<void>` as optional, and
+`SettlementLedger`'s `createHeldDisposition` falls back to a bare `this.options.time.sleep(this.options.pollMs)`
+whenever a boundary's `hold()` omits it — the exact shape `keepaliveGuardedRetryAfter`
+(`src/coordinator/shutdown.ts`) exists to guard against: `time.sleep` (`src/infra/time.ts`) unrefs its own
+timer, so a hold reached through this fallback after the IPC listener and HTTP server have already closed
+can leave nothing ref'd, and the process may exit before the fallback sleep ever resolves. Dead today:
+`buildAuthorityReleaseBoundary` (`src/coordinator/shutdown.ts`) is the only production
+`SettlementAuthorityReleaseBoundary`, and its `hold()` always supplies its own keepalive-guarded
+`retryAfter`. Closing it means either wrapping the ledger's fallback sleep in the same keepalive or making
+`retryAfter` required, so a future boundary cannot omit it silently.
+
+## Widening the reason or mode vocabulary makes a rolled-back build delete evidence it should quarantine
+
+`SHUTDOWN_REASONS` and `SHUTDOWN_MODES` (`src/infra/persisted-scalar-contracts.ts`) validate the `reason`
+and `mode` fields of `shutdown-remainder.v1/<instanceId>.json` through `z.enum` derived from those same
+arrays (`src/infra/shutdown-remainder-record.ts`). A build that adds a reason or mode writes a record an
+older, rolled-back build's narrower enum cannot parse; that rejection is exactly `classifyShutdownRemainderFile`'s
+`undecodable` disposition, which is decisive by design (design-philosophy.md §11) and which
+`pruneShutdownRemainderRecords` (`src/coordinator/shutdown-remainder.ts`) deletes outright regardless of
+age — the rollback failure design-philosophy.md §10 asks every durable shape to fail softly against,
+closed there only for the same-build duplicate-vocabulary case. The directory already partitions by
+generation through `SHUTDOWN_REMAINDER_RECORD_VERSION`, so closing this does not need a new mechanism —
+only deriving that version from `SHUTDOWN_REASONS`/`SHUTDOWN_MODES` themselves rather than leaving it a
+constant a future change to either array has to remember to bump.

@@ -72,7 +72,6 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
 
 export type ShutdownRemainderSkippedRecord = Readonly<{
   name: string;
-  age: Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
   /**
    * `unreadable`: the read was refused before any byte reached this build — a genuine unknown about the
    * content, never decisive (design-philosophy.md principle 11). `undecodable`: the bytes were read and are
@@ -94,7 +93,12 @@ export function shutdownRemainderRecordDirectory(runDir: string): string {
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
-const persistedFileNameSchema = z.string().min(1).max(255).regex(PERSISTED_SINGLE_LINE_PATTERN);
+// Constraint: every legitimate file this build writes under `shutdownRemainderRecordDirectory` is
+// `${instanceId}.json` with `instanceId` already bound by `SERIALIZED_THROWN_IDENTIFIER_PATTERN`, so that same
+// charset admits every real name. It crosses to an operator-facing status line unread (`Record: <name>`), so it
+// carries the same restrictive charset as the other identifier-shaped fields on that boundary rather than the
+// single-line-only `PERSISTED_SINGLE_LINE_PATTERN`, which still admits spaces, quotes, and other prose bytes.
+const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
 const persistedIdentifierSchema = z
   .string()
   .min(1)
@@ -111,7 +115,13 @@ function readPersistedIdentifier(value: unknown): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-const serializedThrownSchema: z.ZodType<SerializedThrown> = z.lazy(() =>
+// Constraint: `serializedThrownSchema` is recursive (`cause` refers back to itself), and only a
+// `z.ZodType<X>`-annotated binding breaks that self-reference for the type checker — an un-annotated
+// `z.lazy(() => ...)` here reports "implicitly has type 'any' because it references itself" (measured). The
+// annotation freezes `serializedThrownSchema`'s own declared type to `SerializedThrown`, so a completeness guard
+// checked against `z.infer<typeof serializedThrownSchema>` would compare `SerializedThrown` to itself and catch
+// nothing; `serializedThrownShape` is factored out so the guard below checks its real, un-annotated return type.
+const serializedThrownShape = () =>
   z.discriminatedUnion('kind', [
     z
       .object({
@@ -130,25 +140,24 @@ const serializedThrownSchema: z.ZodType<SerializedThrown> = z.lazy(() =>
         message: z.string(),
       })
       .passthrough(),
-  ]),
-);
-const settlementSchema: z.ZodType<ShutdownRemainderSettlement> = z.discriminatedUnion('cause', [
+  ]);
+const serializedThrownSchema: z.ZodType<SerializedThrown> = z.lazy(serializedThrownShape);
+const settlementSchema = z.discriminatedUnion('cause', [
   z.object({ cause: z.literal('rejected'), error: serializedThrownSchema }).passthrough(),
   z.object({ cause: z.literal('aborted'), error: serializedThrownSchema }).passthrough(),
   z.object({ cause: z.literal('timed-out'), budgetMs: z.number().int().positive() }).passthrough(),
   z.object({ cause: z.literal('budget-exhausted') }).passthrough(),
   z.object({ cause: z.literal('unconfirmed'), detail: z.string() }).passthrough(),
-]);
-const shutdownRemainderSubjectSchema: z.ZodType<ShutdownRemainderSubject> = z
+]) satisfies z.ZodType<ShutdownRemainderSettlement>;
+const shutdownRemainderSubjectSchema = z
   .object({ kind: z.literal('discuss-store'), source: z.string() })
-  .passthrough();
-const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecoveryEvidence> = z.discriminatedUnion(
-  'kind',
-  [
-    z
-      .object({
-        kind: z.literal('startup-adoption'),
-        processes: z.array(
+  .passthrough() satisfies z.ZodType<ShutdownRemainderSubject>;
+const successorRecoveryEvidenceSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('startup-adoption'),
+      processes: z
+        .array(
           z
             .object({
               kind: z.literal('durable-cli-runtime'),
@@ -157,14 +166,14 @@ const successorRecoveryEvidenceSchema: z.ZodType<ShutdownRemainderSuccessorRecov
               leaderIncarnation: persistedProcessIncarnationSchema,
             })
             .passthrough(),
-        ),
-      })
-      .passthrough(),
-    z.object({ kind: z.literal('startup-store-recovery') }).passthrough(),
-    z.object({ kind: z.literal('startup-liveness-recovery') }).passthrough(),
-  ],
-);
-const shutdownRemainderEntrySchema: z.ZodType<ShutdownRemainderEntry> = z
+        )
+        .readonly(),
+    })
+    .passthrough(),
+  z.object({ kind: z.literal('startup-store-recovery') }).passthrough(),
+  z.object({ kind: z.literal('startup-liveness-recovery') }).passthrough(),
+]) satisfies z.ZodType<ShutdownRemainderSuccessorRecoveryEvidence>;
+const shutdownRemainderEntrySchema = z
   .object({
     label: persistedFactSchema,
     subject: shutdownRemainderSubjectSchema.optional(),
@@ -179,7 +188,7 @@ const shutdownRemainderEntrySchema: z.ZodType<ShutdownRemainderEntry> = z
     ]),
     settlement: settlementSchema,
   })
-  .passthrough();
+  .passthrough() satisfies z.ZodType<ShutdownRemainderEntry>;
 const shutdownRemainderRecordEnvelopeSchema = z
   .object({
     instanceId: persistedIdentifierSchema,
@@ -190,12 +199,17 @@ const shutdownRemainderRecordEnvelopeSchema = z
   })
   .passthrough();
 /**
- * Constraint: a `z.ZodType<X>` annotation alone does not force this — a narrower schema output is assignable
- * to a wider annotated `X` with no error, so a hand-edited enum can silently stay behind a widened `X`.
- * `ExactlyMatches` requires assignability in both directions, so it fails to compile the moment `reason` or
- * `mode`'s zod enum and its record field type name a different set of literals.
+ * Constraint: a `z.ZodType<X>` type annotation on a `const` declaration freezes that binding's own declared
+ * type to `X` — `z.infer<typeof binding>` then trivially equals `X` forever after, so checking it against `X`
+ * again catches nothing (measured: a discriminated union missing an arm, or a narrower hand-copied enum, both
+ * still compile under that pattern). `ExactlyMatches` requires assignability in both directions, so it fails to
+ * compile the moment the checked type and the schema's real inferred type name a different set of members —
+ * provided the schema binding is NOT itself `z.ZodType<X>`-annotated. `shutdownRemainderRecordEnvelopeSchema`
+ * (`reason`/`mode`) and the five below (`satisfies z.ZodType<X>` instead of `: z.ZodType<X>`, or — for the
+ * recursive `serializedThrownSchema` — the factored, un-annotated `serializedThrownShape`) all keep their real
+ * inferred type reachable through `z.infer` for exactly this reason.
  */
-type ExactlyMatches<A extends string, B extends string> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+type ExactlyMatches<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const _shutdownReasonStaysSynced: ExactlyMatches<
   ShutdownReason,
   z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['reason']
@@ -203,6 +217,22 @@ const _shutdownReasonStaysSynced: ExactlyMatches<
 const _shutdownModeStaysSynced: ExactlyMatches<
   ShutdownMode,
   z.infer<typeof shutdownRemainderRecordEnvelopeSchema>['mode']
+> = true;
+type SerializedThrownRealShape =
+  ReturnType<typeof serializedThrownShape> extends z.ZodType<infer Output> ? Output : never;
+const _serializedThrownStaysSynced: ExactlyMatches<SerializedThrown, SerializedThrownRealShape> = true;
+const _settlementStaysSynced: ExactlyMatches<ShutdownRemainderSettlement, z.infer<typeof settlementSchema>> = true;
+const _shutdownRemainderSubjectStaysSynced: ExactlyMatches<
+  ShutdownRemainderSubject,
+  z.infer<typeof shutdownRemainderSubjectSchema>
+> = true;
+const _successorRecoveryEvidenceStaysSynced: ExactlyMatches<
+  ShutdownRemainderSuccessorRecoveryEvidence,
+  z.infer<typeof successorRecoveryEvidenceSchema>
+> = true;
+const _shutdownRemainderEntryStaysSynced: ExactlyMatches<
+  ShutdownRemainderEntry,
+  z.infer<typeof shutdownRemainderEntrySchema>
 > = true;
 
 export function decodeShutdownRemainderRecord(value: unknown):
@@ -293,11 +323,7 @@ export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
   directory: string,
 ): ShutdownRemainderRecordScan {
-  type RecordFile = Readonly<{
-    name: string;
-    reportedName: string;
-    age: ShutdownRemainderSkippedRecord['age'];
-  }>;
+  type RecordFile = Readonly<{ name: string; reportedName: string }>;
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
@@ -306,34 +332,22 @@ export function scanShutdownRemainderRecords(
     .filter((name) => name.endsWith('.json'))
     .flatMap((name): RecordFile[] => {
       const reportedName = persistedFileNameSchema.safeParse(name);
+      const recordFile: RecordFile = {
+        name,
+        reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
+      };
       try {
-        return [
-          {
-            name,
-            reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
-            age: { kind: 'known', mtimeMs: storage.statSync(join(directory, name)).mtimeMs },
-          },
-        ];
+        // A stat failure other than ENOENT carries no evidence about the file's content, so it still gets a
+        // read attempt below (see `classifyShutdownRemainderFile`) rather than being treated as decisive.
+        storage.statSync(join(directory, name));
+        return [recordFile];
       } catch (error: unknown) {
-        if (thrownErrnoCode(error) === 'ENOENT') return [];
-        return [
-          {
-            name,
-            reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
-            age: { kind: 'unknown' },
-          },
-        ];
+        return thrownErrnoCode(error) === 'ENOENT' ? [] : [recordFile];
       }
     })
-    .sort((left, right) => {
-      if (left.age.kind === 'known' && right.age.kind === 'known') {
-        return left.age.mtimeMs - right.age.mtimeMs || left.name.localeCompare(right.name);
-      }
-      if (left.age.kind !== right.age.kind) return left.age.kind === 'known' ? -1 : 1;
-      return left.name.localeCompare(right.name);
-    });
+    .sort((left, right) => left.name.localeCompare(right.name));
 
-  for (const { name, reportedName, age } of recordFiles) {
+  for (const { name, reportedName } of recordFiles) {
     const classification = classifyShutdownRemainderFile(storage, join(directory, name));
     switch (classification.kind) {
       // Same race as the `statSync` step above, one step later: the file lost the race between `readdirSync`
@@ -341,10 +355,10 @@ export function scanShutdownRemainderRecords(
       case 'vanished':
         continue;
       case 'unreadable':
-        skippedRecords.push({ name: reportedName, age, reason: 'unreadable' });
+        skippedRecords.push({ name: reportedName, reason: 'unreadable' });
         continue;
       case 'undecodable':
-        skippedRecords.push({ name: reportedName, age, reason: 'undecodable' });
+        skippedRecords.push({ name: reportedName, reason: 'undecodable' });
         continue;
       case 'readable':
         records.push(classification.record);

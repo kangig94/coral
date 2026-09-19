@@ -900,6 +900,15 @@ type LifecycleStartupContext = {
   shutdown: (reason: ShutdownReason) => Promise<LifecycleShutdownDisposition>;
 };
 
+/**
+ * `setImmediate` runs after the current poll phase completes, so a health check already accepted on the
+ * kernel-ready listener gets to send its response before Era II's synchronous work runs; a microtask
+ * (`Promise.resolve()`, `queueMicrotask`) does not span that phase boundary and would not yield here.
+ */
+export async function yieldPastKernelReadyResponse(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 async function runLifecycleStartup({
   deps,
   runStartupRecovery,
@@ -1168,7 +1177,10 @@ async function runLifecycleStartup({
 
     // ===== Era II (recovery) =====
     // Retention here answers to no reader before kernel-ready and none of Era II's recovery reads this
-    // directory, so it must not sit ahead of the CLI-facing KERNEL_READY_DEADLINE_MS.
+    // directory. It must not sit ahead of the CLI-facing KERNEL_READY_DEADLINE_MS, and unlike the rest of
+    // this preamble the prune is not O(1) — readdir, then per file a stat, a read, a parse and a decode,
+    // then unlinks — so `yieldPastKernelReadyResponse` hands the event loop back first.
+    await yieldPastKernelReadyResponse();
     pruneShutdownRemainderRecords({
       storage: runtime.storage,
       runDir: runtime.paths.coral.coordinator.runDir,

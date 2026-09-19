@@ -10,9 +10,11 @@ import {
 } from '#src/discuss/shell/live-registry.js';
 import { abortDiscussSession } from '#src/discuss/shell/operations.js';
 import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
-import { appendRuntimeEvents, readSessionEvents } from '#src/discuss/shell/persistence.js';
+import { appendRuntimeEvents, commitDecision, readSessionEvents } from '#src/discuss/shell/persistence.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
+import { decideEnd } from '#src/discuss/state-machine.js';
+import { makeDecisionContext } from '#src/discuss/shell/flow/primitives.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,
@@ -279,6 +281,98 @@ describe('DiscussContext lifecycle boundaries', () => {
       'session.created',
       'bidding.opened',
     ]);
+  });
+
+  it('commitDecision refuses a decided commit once the live controller signal is aborted', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'aborted-controller-session',
+      recover: false,
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const session = harness.context.sessions.get('aborted-controller-session');
+    if (!session) {
+      throw new Error('Expected attached aborted-controller-session');
+    }
+    session.controller.abort();
+
+    const committed = await commitDecision(harness.context, 'aborted-controller-session', (current) =>
+      decideEnd(
+        current.state,
+        { force: true, reason: 'natural-completion-race' },
+        makeDecisionContext(harness.context, current.sessionId, current.state.topic),
+        current.lastAppliedSeq + 1,
+        '2026-03-10T00:05:00.000Z',
+      ),
+    );
+
+    expect(committed).toMatchObject({ ok: false, error: 'session_not_found' });
+    expect(harness.store.load('aborted-controller-session')?.lastAppliedSeq).toBe(snapshot.lastAppliedSeq);
+    expect(readSessionEvents(harness.context, 'aborted-controller-session').map((event) => event.kind)).toEqual([
+      'session.created',
+      'bidding.opened',
+    ]);
+  });
+
+  it('hard shutdown aborts every live controller before persisting any abort marker, preempting a racing natural commit', async () => {
+    const harness = createDiscussHarness();
+    const registry = createDiscussContextRegistry();
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+
+    const liveSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'racing-session',
+        recover: false,
+      },
+    );
+    attachPersistedSession({ ...harness, context }, liveSnapshot);
+    const liveSession = context.sessions.get('racing-session');
+    if (!liveSession) {
+      throw new Error('Expected attached racing-session');
+    }
+
+    // Stands in for a `continueLoop` invocation that was already scheduled before shutdown
+    // began and only reaches its own commit once shutdown starts persisting the abort marker.
+    let racingCommitResult: Awaited<ReturnType<typeof commitDecision>> | undefined;
+    let signalAbortedWhenPersistRan: boolean | undefined;
+    const persistAbortEndAndRaceNaturalCompletion = async (
+      ctx: Parameters<typeof persistAbortEndForShutdown>[0],
+      sessionId: string,
+      session: Parameters<typeof persistAbortEndForShutdown>[2],
+    ): Promise<void> => {
+      signalAbortedWhenPersistRan = liveSession.controller.signal.aborted;
+      racingCommitResult = await commitDecision(ctx, sessionId, (current) =>
+        decideEnd(
+          current.state,
+          { force: true, reason: 'natural-completion-race' },
+          makeDecisionContext(ctx, current.sessionId, current.state.topic),
+          current.lastAppliedSeq + 1,
+          '2026-03-10T00:05:00.000Z',
+        ),
+      );
+      await persistAbortEndForShutdown(ctx, sessionId, session);
+    };
+
+    await clearAllDiscuss(registry, 'hard', persistAbortEndAndRaceNaturalCompletion);
+
+    // The abort-first pass must have already run by the time the marker persistence
+    // (and the racing commit it wraps) executes.
+    expect(signalAbortedWhenPersistRan).toBe(true);
+    expect(racingCommitResult).toMatchObject({ ok: false, error: 'session_not_found' });
+
+    const events = readSessionEvents(context, 'racing-session');
+    expect(events.at(-1)).toMatchObject({
+      kind: 'session.ended',
+      payload: { force: true, reason: 'abort' },
+    });
   });
 
   it('stale-write shutdown retry skips the abort marker once the session becomes terminal', async () => {
