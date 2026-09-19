@@ -1,4 +1,5 @@
 import { assertNever } from '../../infra/error-format.js';
+import { SHUTDOWN_REMAINDER_SCAN_LIMIT } from '../../infra/shutdown-remainder-record.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
@@ -700,7 +701,7 @@ function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownR
 function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
-      return formatRunningStatus(result.health);
+      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder);
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
@@ -712,7 +713,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
         result.shutdownRemainder,
       );
     case 'undecodable_record':
-      return formatUndecodableRecordStatus(result);
+      return withShutdownRemainderSection(formatUndecodableRecordStatus(result), result.shutdownRemainder);
     case 'unreachable':
       return withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder);
     case 'no_record_socket_present':
@@ -1275,14 +1276,7 @@ function formatRecentShutdownRemainderReport(
     );
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
-  lines.push(
-    ...formatSkippedShutdownRemainderRecords(
-      result.skippedUnreadableRecordNames,
-      result.skippedCorruptRecordCount,
-      result.skippedUnsupportedRecordCount,
-      result.staging,
-    ),
-  );
+  lines.push(...formatSkippedShutdownRemainderRecords(result));
   return lines.join('\n');
 }
 
@@ -1361,12 +1355,7 @@ function formatUnreadableShutdownRemainderReport(
   }
   return [
     'Coral found shutdown remainder records it could not use.',
-    ...formatSkippedShutdownRemainderRecords(
-      result.skippedUnreadableRecordNames,
-      result.skippedCorruptRecordCount,
-      result.skippedUnsupportedRecordCount,
-      result.staging,
-    ),
+    ...formatSkippedShutdownRemainderRecords(result),
   ].join('\n');
 }
 
@@ -1380,49 +1369,72 @@ function formatSkippedShutdownRemainderEntries(
   ]);
 }
 
-function formatSkippedShutdownRemainderRecords(
-  unreadableNames: readonly string[],
-  corruptCount: number,
-  unsupportedCount: number,
-  staging?: Readonly<{ writerAliveCount: number; writerUnobservableCount: number; orphanedCount: number }>,
-): string[] {
+type ShutdownRemainderSkippedRecords =
+  | Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>
+  | Extract<ShutdownRemainderReport, { reason: 'records-skipped' }>;
+
+function formatSkippedShutdownRemainderRecords(result: ShutdownRemainderSkippedRecords): string[] {
   const lines: string[] = [];
-  if (unreadableNames.length > 0) {
+  if (result.skippedUnreadableRecordNames.length > 0) {
     lines.push(
-      `Skipped shutdown remainder records, unreadable: ${unreadableNames.length}`,
-      ...unreadableNames.map((name) => `  Record: ${name}`),
+      `Skipped shutdown remainder records, unreadable: ${result.skippedUnreadableRecordNames.length}`,
+      ...result.skippedUnreadableRecordNames.map((name) => `  Record: ${name}`),
       '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
     );
   }
-  if (corruptCount > 0) {
+  if (result.skippedCorruptRecordCount > 0) {
     lines.push(
-      `Skipped shutdown remainder records, corrupt: ${corruptCount}`,
+      `Skipped shutdown remainder records, corrupt: ${result.skippedCorruptRecordCount}`,
       '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
     );
   }
-  if (unsupportedCount > 0) {
+  if (result.skippedUnsupportedRecordCount > 0) {
     lines.push(
-      `Skipped shutdown remainder records, unsupported: ${unsupportedCount}`,
+      `Skipped shutdown remainder records, unsupported: ${result.skippedUnsupportedRecordCount}`,
       '  Disposition: content decoded but the schema this build reads records with rejects it; a different build may still read it, so it is retained and reclaimed only once too many unsupported records accumulate (oldest first).',
     );
   }
-  if (staging !== undefined) {
-    if (staging.writerAliveCount > 0) {
+  if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
+    lines.push(
+      `Skipped shutdown remainder records, identity mismatch: ${result.skippedIdentityMismatchRecordCount}`,
+      '  Disposition: decoded content named a different instance than the filename; discarded during bounded coordinator-startup cleanup, or retained and reported for the next startup if cleanup is refused.',
+    );
+  }
+  if ((result.unscannedStageCount ?? 0) > 0) {
+    lines.push(
+      `Shutdown remainder publication stages not inspected: ${result.unscannedStageCount}`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-stage bound; retained for a later status read or coordinator startup.`,
+    );
+  }
+  if ((result.unscannedRecordCount ?? 0) > 0) {
+    lines.push(
+      `Shutdown remainder records not inspected: ${result.unscannedRecordCount}`,
+      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-record bound; retained for a later status read or coordinator startup.`,
+    );
+  }
+  if (result.staging !== undefined) {
+    if (result.staging.writerAliveCount > 0) {
       lines.push(
-        `Shutdown remainder publications in progress, writer alive: ${staging.writerAliveCount}`,
-        '  Disposition: retained until the identified writer finishes or is proven absent.',
+        `Shutdown remainder publications in progress, writer alive: ${result.staging.writerAliveCount}`,
+        '  Disposition: retained as durable status while the writer is alive; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup.',
       );
     }
-    if (staging.writerUnobservableCount > 0) {
+    if (result.staging.writerUnobservableCount > 0) {
       lines.push(
-        `Shutdown remainder publications in progress, writer unobservable: ${staging.writerUnobservableCount}`,
-        '  Disposition: retained and retried on every status read and coordinator startup; unknown does not authorize publication or deletion.',
+        `Shutdown remainder publications in progress, writer unobservable: ${result.staging.writerUnobservableCount}`,
+        '  Disposition: retained as durable status; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup. Unknown does not authorize publication or deletion.',
       );
     }
-    if (staging.orphanedCount > 0) {
+    if (result.staging.orphanedCount > 0) {
       lines.push(
-        `Shutdown remainder publication stages with proven-absent writers: ${staging.orphanedCount}`,
-        '  Disposition: a decodable stage is promoted at coordinator startup; other orphaned stages are retained under their own 32-entry bound (newest first).',
+        `Shutdown remainder publication stages with proven-absent writers: ${result.staging.orphanedCount}`,
+        '  Disposition: a decodable stage is promoted during bounded coordinator-startup cleanup; if cleanup is refused, it remains durable reported status for the next startup. Other orphaned stages are retained under their own 32-entry bound (newest first).',
+      );
+    }
+    if ((result.staging.malformedCount ?? 0) > 0) {
+      lines.push(
+        `Malformed shutdown remainder publication stages: ${result.staging.malformedCount}`,
+        '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup retried only for the bounded startup window.',
       );
     }
   }

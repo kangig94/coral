@@ -219,6 +219,26 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
+  it('reports the single stage left unscanned by a 129-entry stage scan', async () => {
+    mockState.remainderFiles = Array.from({ length: 129 }, (_, index) =>
+      remainderFile(`staged-${index}.json.stage.4242.unknown.tmp`, NOW - index, '{partial', 'ENOENT'),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordNames: [],
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
+        unscannedStageCount: 1,
+      },
+    });
+  });
+
   // Same disposition with a known, stale mtime: neither reason is filtered by age.
   it('reports an unreadable record from outside the recent-record window', async () => {
     mockState.remainderFiles = [remainderFile('ancient.json', NOW - 300_001, 'irrelevant', undefined, 'EACCES')];

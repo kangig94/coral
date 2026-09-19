@@ -1170,6 +1170,62 @@ describe('shutdown remainder status', () => {
     expect(scheduled).toBeNull();
   });
 
+  it('stops re-observing a persistently live stage after three follow-up observations', () => {
+    const stageName = 'held.json.stage.4242.unknown';
+    const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held')), mtimeMs: 1 }]);
+    const scheduled: Array<() => void> = [];
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'alive',
+      time: {
+        setTimeout: (callback) => {
+          scheduled.push(callback);
+          return { unref: vi.fn() };
+        },
+        clearTimeout: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const reobserve = scheduled.shift();
+      if (reobserve === undefined) throw new Error('re-observation was not scheduled');
+      reobserve();
+    }
+
+    expect(storage.readdirSync).toHaveBeenCalledTimes(8);
+    expect(scheduled).toEqual([]);
+    expect(storage.fileNames()).toEqual([stageName]);
+  });
+
+  it('stops retrying a refused prune after one follow-up attempt', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePrune: true,
+    });
+    const scheduled: Array<() => void> = [];
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setTimeout: (callback) => {
+          scheduled.push(callback);
+          return { unref: vi.fn() };
+        },
+        clearTimeout: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const retry = scheduled.shift();
+    if (retry === undefined) throw new Error('prune retry was not scheduled');
+    retry();
+
+    expect(storage.readdirSync).toHaveBeenCalledTimes(4);
+    expect(scheduled).toEqual([]);
+    expect(storage.fileNames()).toEqual(['corrupt.json']);
+  });
+
   it('reclaims every partial stage whose writer is proven absent', () => {
     const stages = Array.from({ length: 40 }, (_, index) => ({
       name: `orphan-${index}.json.stage.${5_000 + index}.unknown.tmp`,

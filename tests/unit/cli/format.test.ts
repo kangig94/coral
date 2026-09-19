@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
-import type { BackendStatusFull } from '#src/transport/http/backend/status.js';
+import type { BackendStatusFull, ShutdownRemainderReport } from '#src/transport/http/backend/status.js';
 import type { ShutdownResult } from '#src/transport/http/backend/shutdown.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
@@ -918,7 +918,7 @@ describe('cli format', () => {
       kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
     };
 
-    it('formats a running backend status with online components', () => {
+    it('preserves the exact ordinary running status when there is no shutdown remainder', () => {
       const status = {
         status: 'ok',
         health: {
@@ -941,6 +941,48 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
+        ].join('\n'),
+      );
+    });
+
+    it('formats a shutdown remainder as a section on a healthy running status', () => {
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: { ...baseHealth, components: [], queueDepth: 0 },
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      });
+
+      expect(text).toBe(
+        [
+          'Backend ok',
+          'Version: 1.2.3',
+          'Uptime: 4m12s',
+          'Kernel: running since 2026-05-05T12:00:00.000Z',
+          'System provider scope: unconfigured',
+          '',
+          'Runtime Components:',
+          '',
+          'Active jobs: 1',
+          'Queue depth: 0',
+          'Coral could not inspect shutdown remainder records.',
+        ].join('\n'),
+      );
+    });
+
+    it('formats a shutdown remainder as a section on an undecodable discovery record', () => {
+      const text = formatBackendStatus({
+        status: 'undecodable_record',
+        reason: 'corrupt-json',
+        path: '/run/coral/coordinator.json',
+        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+      });
+
+      expect(text).toBe(
+        [
+          'Backend state is unknown: the coordinator discovery record could not be read (corrupt-json).',
+          'A coordinator may still be running; this is not a report that none is.',
+          'Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete /run/coral/coordinator.json and run a mutating Coral command; it attempts startup or handoff.',
+          'Coral could not inspect shutdown remainder records.',
         ].join('\n'),
       );
     });
@@ -1831,6 +1873,10 @@ describe('cli format', () => {
           skippedUnreadableRecordNames: ['locked-instance.json'],
           skippedCorruptRecordCount: 2,
           skippedUnsupportedRecordCount: 0,
+          skippedIdentityMismatchRecordCount: 1,
+          unscannedStageCount: 2,
+          unscannedRecordCount: 3,
+          staging: { writerAliveCount: 0, writerUnobservableCount: 0, orphanedCount: 0, malformedCount: 4 },
         },
       });
 
@@ -1870,6 +1916,14 @@ describe('cli format', () => {
           '  Disposition: content was never read; retried on every status read, reclaimed only once too many unreadable records accumulate (oldest first).',
           'Skipped shutdown remainder records, corrupt: 2',
           '  Disposition: content is not valid JSON; discarded automatically at the next coordinator startup.',
+          'Skipped shutdown remainder records, identity mismatch: 1',
+          '  Disposition: decoded content named a different instance than the filename; discarded during bounded coordinator-startup cleanup, or retained and reported for the next startup if cleanup is refused.',
+          'Shutdown remainder publication stages not inspected: 2',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for a later status read or coordinator startup.',
+          'Shutdown remainder records not inspected: 3',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for a later status read or coordinator startup.',
+          'Malformed shutdown remainder publication stages: 4',
+          '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup retried only for the bounded startup window.',
         ].join('\n'),
       );
     });
@@ -1964,11 +2018,69 @@ describe('cli format', () => {
       ).toContain(
         [
           'Shutdown remainder publications in progress, writer alive: 1',
-          '  Disposition: retained until the identified writer finishes or is proven absent.',
+          '  Disposition: retained as durable status while the writer is alive; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup.',
           'Shutdown remainder publications in progress, writer unobservable: 2',
-          '  Disposition: retained and retried on every status read and coordinator startup; unknown does not authorize publication or deletion.',
+          '  Disposition: retained as durable status; this coordinator makes bounded follow-up observations, then leaves the stage for status reads and the next coordinator startup. Unknown does not authorize publication or deletion.',
           'Shutdown remainder publication stages with proven-absent writers: 3',
-          '  Disposition: a decodable stage is promoted at coordinator startup; other orphaned stages are retained under their own 32-entry bound (newest first).',
+          '  Disposition: a decodable stage is promoted during bounded coordinator-startup cleanup; if cleanup is refused, it remains durable reported status for the next startup. Other orphaned stages are retained under their own 32-entry bound (newest first).',
+        ].join('\n'),
+      );
+    });
+
+    it.each([
+      [
+        'unscanned stages',
+        { unscannedStageCount: 3 },
+        [
+          'Shutdown remainder publication stages not inspected: 3',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-stage bound; retained for a later status read or coordinator startup.',
+        ],
+      ],
+      [
+        'unscanned records',
+        { unscannedRecordCount: 4 },
+        [
+          'Shutdown remainder records not inspected: 4',
+          '  Disposition: directory enumeration completed, but per-entry inspection stopped at the 128-record bound; retained for a later status read or coordinator startup.',
+        ],
+      ],
+      [
+        'identity-mismatched records',
+        { skippedIdentityMismatchRecordCount: 2 },
+        [
+          'Skipped shutdown remainder records, identity mismatch: 2',
+          '  Disposition: decoded content named a different instance than the filename; discarded during bounded coordinator-startup cleanup, or retained and reported for the next startup if cleanup is refused.',
+        ],
+      ],
+      [
+        'malformed stages',
+        { staging: { writerAliveCount: 0, writerUnobservableCount: 0, orphanedCount: 0, malformedCount: 5 } },
+        [
+          'Malformed shutdown remainder publication stages: 5',
+          '  Disposition: the filename could not identify a writer; retained under the 32-entry stage bound (newest first), with refused cleanup retried only for the bounded startup window.',
+        ],
+      ],
+    ] as const)('reports %s when it is the only shutdown remainder evidence', (_label, evidence, expected) => {
+      const shutdownRemainder: ShutdownRemainderReport = {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        skippedUnreadableRecordNames: [],
+        skippedCorruptRecordCount: 0,
+        skippedUnsupportedRecordCount: 0,
+        ...evidence,
+      };
+
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder,
+        }),
+      ).toBe(
+        [
+          'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.',
+          'Coral found shutdown remainder records it could not use.',
+          ...expected,
         ].join('\n'),
       );
     });

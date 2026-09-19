@@ -248,6 +248,8 @@ export function pruneShutdownRemainderRecords(
 }
 
 const SHUTDOWN_REMAINDER_REOBSERVATION_MS = 1_000;
+const SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT = 3;
+const SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT = 1;
 
 /** Keeps at most one unref'ed re-observation pending; `stop` makes scheduling terminal. */
 export function createShutdownRemainderPruner(
@@ -255,13 +257,30 @@ export function createShutdownRemainderPruner(
 ): Readonly<{ start(): void; stop(): void }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
+  let stageReobservations = 0;
+  let pruneRetries = 0;
+
+  const takeFollowUp = (disposition: ShutdownRemainderPruneDisposition): boolean => {
+    switch (disposition.kind) {
+      case 'stage-ownership-classified':
+        return false;
+      case 'stage-ownership-held':
+        if (stageReobservations >= SHUTDOWN_REMAINDER_STAGE_REOBSERVATION_LIMIT) return false;
+        stageReobservations += 1;
+        return true;
+      case 'prune-refused':
+        if (pruneRetries >= SHUTDOWN_REMAINDER_PRUNE_RETRY_LIMIT) return false;
+        pruneRetries += 1;
+        return true;
+    }
+  };
 
   const pruneNow = (): void => {
     if (stopped) return;
     if (timer !== null) runtime.time.clearTimeout(timer);
     timer = null;
     const disposition = pruneShutdownRemainderRecords(runtime);
-    if (!stopped && disposition.kind !== 'stage-ownership-classified') {
+    if (!stopped && takeFollowUp(disposition)) {
       timer = runtime.time.setTimeout(() => {
         timer = null;
         pruneNow();
