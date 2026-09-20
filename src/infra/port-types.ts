@@ -135,7 +135,7 @@ export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
     path: string,
     limit: number,
     options: { encoding: 'buffer' },
-  ): { readonly entries: readonly Buffer[]; readonly omittedEntryCount: number };
+  ): { readonly entries: readonly Buffer[]; readonly overflow: boolean };
   readDirectoryBoundedSync(
     path: string,
     limit: number,

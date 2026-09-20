@@ -67,9 +67,9 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.occurrence'
   | 'skippedEntries[].owner'
   | 'unusableEntryCount'
-  | 'notInspectedEntryCount'
   | 'futureDatedRecordCount'
-  | 'unreadableRecordNames[]'
+  | 'unreadableRecordSubjects[].identity'
+  | 'unreadableRecordSubjects[].label'
   | 'enumeration.kind'
   | 'enumeration.reason';
 
@@ -77,7 +77,8 @@ type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
   | 'record.entries[].remainder.evidence.processes[].jobId'
-  | 'unreadableRecordNames[]';
+  | 'unreadableRecordSubjects[].identity'
+  | 'unreadableRecordSubjects[].label';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -116,22 +117,18 @@ void skippedEntry.label;
 // @ts-expect-error skipped record identities are absent from the status projection.
 void skippedEntry.recordInstanceId;
 
-// A genuine unknown proves nothing about content (design-philosophy.md principle 11), so the filename is the
-// only evidence an operator-less reader has to act on for an 'unreadable' record — it deliberately crosses,
-// unlike a decisively 'corrupt' or build-relative 'unsupported' one, whose disposition this build alone
-// decides (delete outright, or hold under its own bounded retention) and carries out without reader action.
-declare const unreadableRecordNames: ShutdownRemainderStatus['unreadableRecordNames'];
-const unreadableRecordName: string = unreadableRecordNames[0] ?? '';
-void unreadableRecordName;
+declare const unreadableRecordSubjects: ShutdownRemainderStatus['unreadableRecordSubjects'];
+const unreadableRecordIdentity: string = unreadableRecordSubjects[0]?.identity ?? '';
+const unreadableRecordLabel: string = unreadableRecordSubjects[0]?.label ?? '';
+void unreadableRecordIdentity;
+void unreadableRecordLabel;
 declare const unusableEntryCount: ShutdownRemainderStatus['unusableEntryCount'];
 void unusableEntryCount;
-declare const notInspectedEntryCount: ShutdownRemainderStatus['notInspectedEntryCount'];
-void notInspectedEntryCount;
 // @ts-expect-error cleanup refusals are produced only by the scan-failed variant.
 declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
 void cleanupRefusals;
 // @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
-// unreadable name list and class counts cross.
+// unreadable subject list and class counts cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;
 

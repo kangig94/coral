@@ -578,7 +578,7 @@ export class InMemoryStorage implements StoragePort {
     path: string,
     limit: number,
     options: { encoding: 'buffer' },
-  ): { readonly entries: readonly Buffer[]; readonly omittedEntryCount: number };
+  ): { readonly entries: readonly Buffer[]; readonly overflow: boolean };
   readDirectoryBoundedSync(
     path: string,
     limit: number,
@@ -588,7 +588,7 @@ export class InMemoryStorage implements StoragePort {
     limit: number,
     options?: { encoding: 'buffer' },
   ):
-    | { readonly entries: readonly Buffer[]; readonly omittedEntryCount: number }
+    | { readonly entries: readonly Buffer[]; readonly overflow: boolean }
     | { readonly entries: readonly string[]; readonly overflow: boolean } {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new TypeError('Directory entry limit must be a non-negative safe integer.');
@@ -597,7 +597,7 @@ export class InMemoryStorage implements StoragePort {
     if (options !== undefined) {
       return {
         entries: entries.slice(0, limit).map((name) => Buffer.from(name)),
-        omittedEntryCount: Math.max(0, entries.length - limit),
+        overflow: entries.length > limit,
       };
     }
     return {

@@ -1871,9 +1871,8 @@ describe('cli format', () => {
             },
           ],
           unusableEntryCount: 8,
-          notInspectedEntryCount: 5,
-          unreadableRecordNames: ['locked-instance.json'],
-          enumeration: { kind: 'complete' },
+          unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
+          enumeration: { kind: 'no-overflow-observed' },
         },
       });
 
@@ -1904,13 +1903,13 @@ describe('cli format', () => {
           '  Owner: successor-recovery',
           'Skipped entry 4: stream response close 3',
           '  Owner: process-exit',
-          'Shutdown remainder directory entries this build could not use: 13 (5 not inspected)',
-          '  Unreadable: locked-instance.json',
+          'Shutdown remainder directory entries this build could not use: 8',
+          `  Unreadable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} label="locked-instance.json"`,
         ].join('\n'),
       );
     });
 
-    it('folds skipped classes into one truthful line while retaining unreadable names', () => {
+    it('folds skipped classes into one truthful line while retaining unreadable identities', () => {
       expect(
         formatBackendStatus({
           status: 'recorded_process_absent',
@@ -1919,18 +1918,37 @@ describe('cli format', () => {
             status: 'shutdown_remainder_unreadable',
             reason: 'records-skipped',
             unusableEntryCount: 4,
-            notInspectedEntryCount: 2,
-            unreadableRecordNames: ['locked-instance.json'],
-            enumeration: { kind: 'complete' },
+            unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
+            enumeration: { kind: 'no-overflow-observed' },
           },
         }),
       ).toBe(
         [
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
-          'Shutdown remainder directory entries this build could not use: 6 (2 not inspected)',
-          '  Unreadable: locked-instance.json',
+          'Shutdown remainder directory entries this build could not use: 4',
+          `  Unreadable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} label="locked-instance.json"`,
         ].join('\n'),
       );
+    });
+
+    it('renders raw-distinct unreadable filenames as distinct identities', () => {
+      const left = shutdownRemainderFilesystemSubject(Buffer.from([0x80, 0x80, 0x80, 0x2e, 0x6a, 0x73, 0x6f, 0x6e]));
+      const right = shutdownRemainderFilesystemSubject(Buffer.from([0x80, 0x80, 0x81, 0x2e, 0x6a, 0x73, 0x6f, 0x6e]));
+
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'records-skipped',
+          unusableEntryCount: 2,
+          unreadableRecordSubjects: [left, right],
+          enumeration: { kind: 'no-overflow-observed' },
+        },
+      });
+
+      expect(left.label).toBe(right.label);
+      expect(text).toContain(`identity=${left.identity}`);
+      expect(text).toContain(`identity=${right.identity}`);
     });
 
     it('renders each cleanup refusal as one identity, label, operation, and errno line', () => {
@@ -1987,8 +2005,8 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           unusableEntryCount: 0,
-          unreadableRecordNames: [],
-          enumeration: { kind: 'complete' },
+          unreadableRecordSubjects: [],
+          enumeration: { kind: 'no-overflow-observed' },
         },
       });
 
@@ -2013,8 +2031,8 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           unusableEntryCount: 0,
-          unreadableRecordNames: [],
-          enumeration: { kind: 'complete' },
+          unreadableRecordSubjects: [],
+          enumeration: { kind: 'no-overflow-observed' },
         },
       });
 
@@ -2347,8 +2365,8 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           unusableEntryCount: 0,
-          unreadableRecordNames: [],
-          enumeration: { kind: 'complete' },
+          unreadableRecordSubjects: [],
+          enumeration: { kind: 'no-overflow-observed' },
         },
       },
       {
@@ -2358,8 +2376,8 @@ describe('cli format', () => {
           status: 'shutdown_remainder_unreadable' as const,
           reason: 'records-skipped' as const,
           unusableEntryCount: 1,
-          unreadableRecordNames: ['locked-instance.json'],
-          enumeration: { kind: 'complete' },
+          unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
+          enumeration: { kind: 'no-overflow-observed' },
         },
       },
       {

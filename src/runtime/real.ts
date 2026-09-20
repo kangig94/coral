@@ -323,23 +323,20 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       const directory = opendirSync(path, options as never);
       const entries: Array<string | Buffer> = [];
       let overflow = false;
-      let omittedEntryCount = 0;
       try {
         while (true) {
           const entry = directory.readSync();
           if (entry === null) break;
           if (entries.length === limit) {
             overflow = true;
-            omittedEntryCount += 1;
-            if (options === undefined) break;
-            continue;
+            break;
           }
           entries.push(entry.name);
         }
       } finally {
         directory.closeSync();
       }
-      return options === undefined ? { entries, overflow } : { entries, omittedEntryCount };
+      return { entries, overflow };
     }) as StoragePort['readDirectoryBoundedSync'],
     lstatSync: ((path: string | Buffer, options?: { bigint: true }) => {
       if (options?.bigint === true) {

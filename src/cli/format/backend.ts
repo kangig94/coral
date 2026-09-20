@@ -1336,14 +1336,13 @@ function formatShutdownRemainderReport(
       `Shutdown remainder clock-skew evidence: ${directoryEvidence?.futureDatedRecordCount} readable record(s) are dated after this status observation and were not selected as recent.`,
     );
   }
-  const notInspectedEntryCount = directoryEvidence?.notInspectedEntryCount ?? 0;
-  const unusableEntryCount = (directoryEvidence?.unusableEntryCount ?? 0) + notInspectedEntryCount;
+  const unusableEntryCount = directoryEvidence?.unusableEntryCount ?? 0;
   if (unusableEntryCount > 0) {
     lines.push(
-      `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}${
-        notInspectedEntryCount === 0 ? '' : ` (${notInspectedEntryCount} not inspected)`
-      }`,
-      ...(directoryEvidence?.unreadableRecordNames ?? []).map((name) => `  Unreadable: ${name}`),
+      `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}`,
+      ...(directoryEvidence?.unreadableRecordSubjects ?? []).map(
+        (subject) => `  Unreadable: identity=${subject.identity} label=${JSON.stringify(subject.label)}`,
+      ),
     );
   }
   if (directoryEvidence?.enumeration.kind === 'truncated') {

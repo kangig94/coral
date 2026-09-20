@@ -2,7 +2,6 @@ import { join, sep } from 'node:path';
 import { z } from 'zod';
 
 import {
-  SERIALIZED_THROWN_IDENTIFIER_PATTERN,
   isSystemErrorCode,
   serializedThrownIdentifierSchema,
   serializedThrownSchema,
@@ -83,32 +82,37 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
   owner: string | null;
 }>;
 
-export type ShutdownRemainderSkippedRecord =
+type ShutdownRemainderSkippedRecordSubject = Readonly<{
+  name: string;
+  subject: ShutdownRemainderFilesystemSubject;
+}>;
+
+export type ShutdownRemainderSkippedRecord = ShutdownRemainderSkippedRecordSubject &
   /**
    * The read was refused before any byte reached this build — a genuine unknown about the content, never
    * decisive (design-philosophy.md principle 11).
    */
-  | Readonly<{ name: string; reason: 'unreadable' }>
-  /**
-   * The bytes were read and are not JSON at all — decisive for every build, because nothing can ever parse
-   * them (design-philosophy.md principle 10/11).
-   */
-  | Readonly<{ name: string; reason: 'corrupt' }>
-  /**
-   * The bytes parsed as JSON but this build's envelope schema refused the shape — decisive only about this
-   * build: a build with a different `SHUTDOWN_REASONS`/`SHUTDOWN_MODES` vocabulary (older or newer) may still
-   * decode it, so the fact proven here does not authorize deleting it the way `corrupt` does
-   * (design-philosophy.md principle 10's rollback case, principle 11's third answer). `detail` is
-   * `decodeShutdownRemainderRecord`'s own `shape-rejected` message, carried for a future reader with a wider
-   * schema; it never crosses to an operator-facing surface (see `src/transport/http/backend/status.ts`).
-   */
-  | Readonly<{ name: string; reason: 'unsupported'; detail: string }>
-  | Readonly<{ name: string; reason: 'malformed-staging' | 'record-identity-mismatch' }>
-  | Readonly<{
-      name: string;
-      instanceId: string;
-      reason: 'staging-writer-alive' | 'staging-writer-unobservable' | 'orphaned-staging';
-    }>;
+  (| Readonly<{ reason: 'unreadable' }>
+    /**
+     * The bytes were read and are not JSON at all — decisive for every build, because nothing can ever parse
+     * them (design-philosophy.md principle 10/11).
+     */
+    | Readonly<{ reason: 'corrupt' }>
+    /**
+     * The bytes parsed as JSON but this build's envelope schema refused the shape — decisive only about this
+     * build: a build with a different `SHUTDOWN_REASONS`/`SHUTDOWN_MODES` vocabulary (older or newer) may still
+     * decode it, so the fact proven here does not authorize deleting it the way `corrupt` does
+     * (design-philosophy.md principle 10's rollback case, principle 11's third answer). `detail` is
+     * `decodeShutdownRemainderRecord`'s own `shape-rejected` message, carried for a future reader with a wider
+     * schema; it never crosses to an operator-facing surface (see `src/transport/http/backend/status.ts`).
+     */
+    | Readonly<{ reason: 'unsupported'; detail: string }>
+    | Readonly<{ reason: 'malformed-staging' | 'record-identity-mismatch' }>
+    | Readonly<{
+        instanceId: string;
+        reason: 'staging-writer-alive' | 'staging-writer-unobservable' | 'orphaned-staging';
+      }>
+  );
 
 export type ShutdownRemainderStageWriter = Readonly<{
   pid: number;
@@ -125,7 +129,7 @@ export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
-  unscannedEntryCount?: number;
+  entryOverflow?: true;
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
@@ -138,9 +142,6 @@ export function shutdownRemainderDirectoryEntryPath(directory: string, name: Uin
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
-// Constraint: a persisted filename may cross to an operator-facing status line unread, so it carries the same
-// closed identifier charset as other identifier-shaped fields rather than the broader single-line prose schema.
-const persistedFileNameSchema = z.string().min(1).max(255).regex(SERIALIZED_THROWN_IDENTIFIER_PATTERN);
 
 export type ShutdownRemainderCleanupRefusal = Readonly<{
   subject: ShutdownRemainderCleanupSubject;
@@ -402,10 +403,15 @@ export function scanShutdownRemainderRecords(
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
 ): ShutdownRemainderRecordScan {
-  type RecordFile = Readonly<{ name: string; path: Buffer; reportedName: string }>;
+  type RecordFile = Readonly<{
+    name: string;
+    path: Buffer;
+    subject: ShutdownRemainderFilesystemSubject;
+  }>;
   type StageFile = Readonly<{
     entry: Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
     path: Buffer;
+    subject: ShutdownRemainderFilesystemSubject;
   }>;
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
@@ -415,27 +421,21 @@ export function scanShutdownRemainderRecords(
   const bounded = storage.readDirectoryBoundedSync(directory, SHUTDOWN_REMAINDER_SCAN_LIMIT, {
     encoding: 'buffer',
   });
-  const names = bounded.entries
-    .map((name) => (typeof name === 'string' ? Buffer.from(name) : name))
-    .sort(Buffer.compare);
+  const names = [...bounded.entries].sort(Buffer.compare);
   for (const bytes of names) {
     const name = bytes.toString('utf8');
     const path = shutdownRemainderDirectoryEntryPath(directory, bytes);
+    const subject = shutdownRemainderFilesystemSubject(bytes);
     const entry = classifyShutdownRemainderDirectoryEntry(name);
     if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
-      stageFiles.push({ entry, path });
+      stageFiles.push({ entry, path, subject });
       continue;
     }
     if (entry.kind !== 'record') continue;
-    const reportedName = persistedFileNameSchema.safeParse(name);
-    recordFiles.push({
-      name,
-      path,
-      reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
-    });
+    recordFiles.push({ name, path, subject });
   }
 
-  for (const { entry, path } of stageFiles) {
+  for (const { entry, path, subject } of stageFiles) {
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
     if (entry.kind === 'malformed-stage') {
       try {
@@ -444,7 +444,8 @@ export function scanShutdownRemainderRecords(
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }
       skippedRecords.push({
-        name: persistedFileNameSchema.safeParse(name).success ? name : 'invalid-record-name',
+        name,
+        subject,
         reason: 'malformed-staging',
       });
       continue;
@@ -462,7 +463,8 @@ export function scanShutdownRemainderRecords(
       if (classification.kind === 'vanished') continue;
     }
     skippedRecords.push({
-      name: persistedFileNameSchema.safeParse(stage.name).success ? stage.name : 'invalid-record-name',
+      name: stage.name,
+      subject,
       instanceId: stage.instanceId,
       reason:
         observation === 'alive'
@@ -473,23 +475,23 @@ export function scanShutdownRemainderRecords(
     });
   }
 
-  for (const { name, path, reportedName } of recordFiles) {
+  for (const { name, path, subject } of recordFiles) {
     const classification = classifyShutdownRemainderFile(storage, path);
     switch (classification.kind) {
       case 'vanished':
         continue;
       case 'unreadable':
-        skippedRecords.push({ name: reportedName, reason: 'unreadable' });
+        skippedRecords.push({ name, subject, reason: 'unreadable' });
         continue;
       case 'corrupt':
-        skippedRecords.push({ name: reportedName, reason: 'corrupt' });
+        skippedRecords.push({ name, subject, reason: 'corrupt' });
         continue;
       case 'unsupported':
-        skippedRecords.push({ name: reportedName, reason: 'unsupported', detail: classification.detail });
+        skippedRecords.push({ name, subject, reason: 'unsupported', detail: classification.detail });
         continue;
       case 'readable':
         if (name !== `${classification.record.instanceId}.json`) {
-          skippedRecords.push({ name: reportedName, reason: 'record-identity-mismatch' });
+          skippedRecords.push({ name, subject, reason: 'record-identity-mismatch' });
           continue;
         }
         records.push(classification.record);
@@ -502,6 +504,6 @@ export function scanShutdownRemainderRecords(
     records,
     skippedEntries,
     skippedRecords,
-    ...(bounded.omittedEntryCount === 0 ? {} : { unscannedEntryCount: bounded.omittedEntryCount }),
+    ...(bounded.overflow ? { entryOverflow: true as const } : {}),
   };
 }

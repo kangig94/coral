@@ -22,6 +22,7 @@ import {
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderCleanupRefusal,
+  type ShutdownRemainderFilesystemSubject,
   type ShutdownRemainderRecord,
   type ShutdownRemainderRecordScan,
   type ShutdownRemainderStageObserver,
@@ -256,11 +257,10 @@ type OperatorFacingShutdownRemainderCleanup = Readonly<{
 
 type OperatorFacingShutdownRemainderDirectoryEvidence = Readonly<{
   unusableEntryCount: number;
-  notInspectedEntryCount?: number;
   futureDatedRecordCount?: number;
-  unreadableRecordNames: readonly string[];
+  unreadableRecordSubjects: readonly ShutdownRemainderFilesystemSubject[];
   enumeration:
-    | Readonly<{ kind: 'complete' }>
+    | Readonly<{ kind: 'no-overflow-observed' }>
     | Readonly<{
         kind: 'truncated';
         reason: 'entry-limit-exceeded';
@@ -645,8 +645,8 @@ function readRecentShutdownRemainder(
     }
   }
   const enumerationEvidence: OperatorFacingShutdownRemainderDirectoryEvidence['enumeration'] =
-    scan.unscannedEntryCount === undefined
-      ? { kind: 'complete' }
+    scan.entryOverflow === undefined
+      ? { kind: 'no-overflow-observed' }
       : { kind: 'truncated', reason: 'entry-limit-exceeded' };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
@@ -658,11 +658,10 @@ function readRecentShutdownRemainder(
     (scope.instanceId !== undefined &&
       ('instanceId' in record ? record.instanceId === scope.instanceId : record.name === `${scope.instanceId}.json`));
   const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
-  const unreadableRecordNames = scopedSkippedRecords
+  const unreadableRecordSubjects = scopedSkippedRecords
     .filter(({ reason }) => reason === 'unreadable')
-    .map(({ name }) => name);
+    .map(({ subject }) => subject);
   const unusableEntryCount = scopedSkippedRecords.length;
-  const notInspectedEntryCount = scan.unscannedEntryCount ?? 0;
   const scopedRecords = scan.records.flatMap((candidate) => {
     const recordedAt = parseIsoTimestamp(candidate.recordedAt);
     const hasEntry =
@@ -678,9 +677,8 @@ function readRecentShutdownRemainder(
   const futureDatedRecordCount = scopedRecords.filter(({ recordedAt }) => recordedAt > now).length;
   const directoryEvidence: OperatorFacingShutdownRemainderDirectoryEvidence = {
     unusableEntryCount,
-    ...(notInspectedEntryCount === 0 ? {} : { notInspectedEntryCount }),
     ...(futureDatedRecordCount === 0 ? {} : { futureDatedRecordCount }),
-    unreadableRecordNames,
+    unreadableRecordSubjects,
     enumeration: enumerationEvidence,
   };
   const orderedRecords = scopedRecords.sort(
@@ -725,7 +723,7 @@ function readRecentShutdownRemainder(
         ...directoryEvidence,
       };
     }
-    if (unusableEntryCount === 0 && notInspectedEntryCount === 0) return null;
+    if (unusableEntryCount === 0 && scan.entryOverflow === undefined) return null;
     return {
       status: 'shutdown_remainder_unreadable',
       reason: 'records-skipped',

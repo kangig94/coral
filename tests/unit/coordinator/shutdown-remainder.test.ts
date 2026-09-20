@@ -128,7 +128,7 @@ function storageWith(
         ? { entries: names.slice(0, limit), overflow: names.length > limit }
         : {
             entries: names.slice(0, limit).map((name) => Buffer.from(name)),
-            omittedEntryCount: Math.max(0, names.length - limit),
+            overflow: names.length > limit,
           };
     }) as StoragePort['readDirectoryBoundedSync'],
     readFileSync: vi.fn((rawPath: StoragePath) => {
@@ -675,19 +675,29 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('reports an unsafe skipped filename through a fixed single-line fact', () => {
+  it('carries an unsafe skipped filename as a stable identity and escaped label', () => {
     const storage = storageWith([{ name: 'forged\nrecord.json', value: '{not-json', mtimeMs: 1 }]);
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      skippedRecords: [{ name: 'invalid-record-name', reason: 'corrupt' }],
+      skippedRecords: [
+        {
+          subject: shutdownRemainderFilesystemSubject('forged\nrecord.json'),
+          reason: 'corrupt',
+        },
+      ],
     });
   });
 
-  it('normalizes a skipped record filename outside the closed identifier charset', () => {
+  it('keeps identity for a skipped filename outside the closed identifier charset', () => {
     const storage = storageWith([{ name: 'forged command=rm -rf ~ (danger).json', value: '{not-json', mtimeMs: 1 }]);
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      skippedRecords: [{ name: 'invalid-record-name', reason: 'corrupt' }],
+      skippedRecords: [
+        {
+          subject: shutdownRemainderFilesystemSubject('forged command=rm -rf ~ (danger).json'),
+          reason: 'corrupt',
+        },
+      ],
     });
   });
 
@@ -703,8 +713,17 @@ describe('shutdown remainder status', () => {
       records: [decodedRecordAt('known-instance')],
       skippedEntries: [],
       skippedRecords: [
-        { name: 'corrupt-instance.json', reason: 'corrupt' },
-        { name: 'foreign-instance.json', reason: 'unsupported', detail: expect.any(String) },
+        {
+          name: 'corrupt-instance.json',
+          subject: shutdownRemainderFilesystemSubject('corrupt-instance.json'),
+          reason: 'corrupt',
+        },
+        {
+          name: 'foreign-instance.json',
+          subject: shutdownRemainderFilesystemSubject('foreign-instance.json'),
+          reason: 'unsupported',
+          detail: expect.any(String),
+        },
       ],
     });
   });
@@ -1260,7 +1279,7 @@ describe('shutdown remainder status', () => {
 
     const scan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
 
-    expect(scan.unscannedEntryCount).toBe(1_000 - SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(scan.entryOverflow).toBe(true);
     expect(vi.mocked(storage.lstatSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
       SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
@@ -1296,7 +1315,10 @@ describe('shutdown remainder status', () => {
 
       const scan = scanShutdownRemainderRecords(refusingStorage, directory);
       expect(scan.skippedRecords).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-      expect(scan.unscannedEntryCount).toBe(2);
+      expect(scan.entryOverflow).toBe(true);
+      expect(new Set(scan.skippedRecords.map(({ subject }) => subject.identity)).size).toBe(
+        SHUTDOWN_REMAINDER_SCAN_LIMIT,
+      );
       expect(readAttempts).toBe(SHUTDOWN_REMAINDER_SCAN_LIMIT);
 
       const disposition = pruneShutdownRemainderRecords({ storage: refusingStorage, runDir });
@@ -1607,7 +1629,7 @@ describe('shutdown remainder status', () => {
     expect(storage.lstatSync).not.toHaveBeenCalled();
   });
 
-  it('keeps overflowed retry failures distinct from resolved and unchecked subjects', () => {
+  it('makes every persistent refusal observable within two scheduled snapshots', () => {
     const zFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
       name: `z-${String(index).padStart(3, '0')}.json`,
       value: '{not-json',
@@ -1634,26 +1656,33 @@ describe('shutdown remainder status', () => {
       const name = `a-${String(index).padStart(3, '0')}.json`;
       storage.writeAtomicSync(join(REMAINDER_DIRECTORY, name), '{not-json');
     }
-    now += 60_000;
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    periodic();
+    const observedIdentities = new Set<string>();
+    for (let scheduledSnapshot = 0; scheduledSnapshot < 2; scheduledSnapshot += 1) {
+      now += 60_000;
+      periodic();
+      const snapshot = pruner.readCleanupRefusalSnapshot();
+      expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+      expect(snapshot).toMatchObject({
+        resolvedRefusalCount: 0,
+        absentRefusalCount: 0,
+        unobservableRefusalCount: 0,
+        uncheckedRefusalCount: 0,
+        overflowedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
+        retry: { state: 'scheduled', owner: 'coordinator' },
+      });
+      for (const refusal of snapshot.refusals) observedIdentities.add(refusal.subject.identity);
+    }
 
-    const snapshot = pruner.readCleanupRefusalSnapshot();
-    expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-    expect(snapshot).toMatchObject({
-      resolvedRefusalCount: 0,
-      absentRefusalCount: 0,
-      unobservableRefusalCount: 0,
-      uncheckedRefusalCount: 0,
-      overflowedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
-      observedAt: '2026-09-20T00:01:00.000Z',
-      retry: { state: 'scheduled', owner: 'coordinator' },
-    });
+    const expectedIdentities = new Set(
+      storage.fileNames().map((name) => shutdownRemainderFilesystemSubject(name).identity),
+    );
+    expect(observedIdentities).toEqual(expectedIdentities);
     expect(storage.fileNames()).toContain('z-000.json');
     expect(
       vi.mocked(storage.unlinkSync).mock.calls.filter(([path]) => basename(String(path)) === 'z-000.json'),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
@@ -1893,7 +1922,7 @@ describe('shutdown remainder status', () => {
     expect(disposition?.cleanup.kind).not.toBe('complete');
     expect(
       vi.mocked(storage.readFileSync).mock.calls.filter(([path]) => String(path).startsWith(REMAINDER_DIRECTORY)),
-    ).toHaveLength(1);
+    ).toHaveLength(10);
     expect(storage.fileNames()).toEqual(['locked.json']);
   });
 
@@ -2144,27 +2173,32 @@ describe('shutdown remainder status', () => {
     }
   });
 
-  it('retries quarantined evidence once on the next pruner startup', () => {
+  it('retries a transiently unreadable record on the same pruner schedule', () => {
     const storage = storageWith([fileAt('locked', 1)], {
       refuseReadWhen: (name, attempt) => name === 'locked.json' && attempt === 1,
       readErrorCode: 'EACCES',
     });
+    let scheduled: (() => void) | null = null;
     const time = {
-      setInterval: vi.fn(() => ({ unref: vi.fn() })),
+      setInterval: vi.fn((callback: () => void) => {
+        scheduled = callback;
+        return { unref: vi.fn() };
+      }),
       clearInterval: vi.fn(),
     };
 
-    const first = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
-    expect(first.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
-    first.stop();
+    const pruner = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
+    expect(pruner.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
 
-    const second = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
-    expect(second.start()?.cleanup).toEqual({ kind: 'complete' });
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
     expect(storage.fileNames()).toEqual(['locked.json']);
     expect(
       vi.mocked(storage.readFileSync).mock.calls.filter(([path]) => String(path).startsWith(REMAINDER_DIRECTORY)),
     ).toHaveLength(2);
-    second.stop();
+    pruner.stop();
   });
 
   it('keeps a named cleanup refusal when stage promotion failed and its writer is absent', () => {
@@ -2185,7 +2219,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('does not retry a replaced held subject until the next startup', () => {
+  it('reobserves a replaced held subject on the same pruner schedule', () => {
     const active = JSON.stringify(recordAt('locked', []));
     const quarantined = JSON.stringify(recordAt('locked'));
     const storage = storageWith([{ name: 'locked.json', value: quarantined, mtimeMs: 1 }], {
@@ -2212,19 +2246,8 @@ describe('shutdown remainder status', () => {
     expect(storage.readPublished('locked')).toBe(active);
     expect(
       vi.mocked(storage.readFileSync).mock.calls.filter(([path]) => String(path).startsWith(REMAINDER_DIRECTORY)),
-    ).toHaveLength(1);
-    pruner.stop();
-
-    const retry = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
-    });
-    expect(retry.start()?.cleanup).toEqual({ kind: 'complete' });
-    expect(
-      vi.mocked(storage.readFileSync).mock.calls.filter(([path]) => String(path).startsWith(REMAINDER_DIRECTORY)),
     ).toHaveLength(2);
-    retry.stop();
+    pruner.stop();
   });
 
   it('reclaims every partial stage whose writer is proven absent', () => {
