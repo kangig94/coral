@@ -788,10 +788,7 @@ export function createProviderProxyRecoveryDispatcher(
           } else {
             effects.retry(sinks, {
               producerId: observation.producerId,
-              incident:
-                observation.kind === 'unavailable'
-                  ? observation.incident
-                  : { kind: observation.kind, proof: observation.proof },
+              incident: observation.kind === 'unavailable' ? observation.incident : observation.error,
             });
           }
           return;
@@ -801,12 +798,11 @@ export function createProviderProxyRecoveryDispatcher(
           sinks.evidence(observation.value, sourceId);
           return;
         }
+        // Constraint: a retry-safe uncertainty is reported by the error that proved it retry-safe. Replacing it
+        // with a label drops the cause, which is the only thing separating one retry-safe failure from another.
         effects.retry(sinks, {
           producerId: observation.producerId,
-          incident:
-            observation.kind === 'unavailable'
-              ? observation.incident
-              : { kind: observation.kind, proof: observation.proof },
+          incident: observation.kind === 'unavailable' ? observation.incident : observation.error,
         });
       };
 

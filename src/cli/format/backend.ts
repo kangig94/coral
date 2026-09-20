@@ -1262,9 +1262,10 @@ function formatShutdownRemainderReport(report: ShutdownRemainderReport | undefin
     lines.unshift('The shutdown remainder record is dated after this status observation.');
   }
   if (report?.status === 'shutdown_remainder_unreadable') {
+    const errno = report.reason === 'unreadable' ? ` errno=${report.errno ?? 'unavailable'}` : '';
     lines.push(
       'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
-      `Unusable: path=${report.path} cause=${report.reason}`,
+      `Unusable: path=${report.path} cause=${report.reason}${errno}`,
     );
   }
   return lines.join('\n');

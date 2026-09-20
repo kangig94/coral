@@ -117,9 +117,25 @@ void unusableReason;
 type UnusableShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
 const unusableProjectionLeafCoverage: Equal<
   ProjectionLeafPaths<UnusableShutdownRemainderStatus>,
-  'status' | 'reason' | 'path'
+  'status' | 'reason' | 'errno' | 'path'
 > = true;
 void unusableProjectionLeafCoverage;
+// The rendered unusable line carries exactly one broad string, the path this build composed itself. A code
+// read off a thrown value reaches the reader only as the closed system-errno vocabulary.
+const unusableBroadStringLeafCoverage: Equal<BroadStringLeafPaths<UnusableShutdownRemainderStatus>, 'path'> = true;
+void unusableBroadStringLeafCoverage;
+
+type UnreadableShutdownRemainderStatus = Extract<UnusableShutdownRemainderStatus, { reason: 'unreadable' }>;
+// @ts-expect-error the projected errno is the closed system vocabulary, not a code read off any thrown value.
+const hostileErrno: NonNullable<UnreadableShutdownRemainderStatus['errno']> = 'ERRNO_FROM_SOMEWHERE_ELSE';
+void hostileErrno;
+type ParseRefusedShutdownRemainderStatus = Exclude<UnusableShutdownRemainderStatus, { reason: 'unreadable' }>;
+declare const parseRefusalReason: ParseRefusedShutdownRemainderStatus['reason'];
+const namedParseRefusal: 'corrupt' | 'unsupported' = parseRefusalReason;
+void namedParseRefusal;
+// @ts-expect-error a parse refusal names no system error code, so it carries no errno to be absent.
+declare const parseRefusalErrno: ParseRefusedShutdownRemainderStatus['errno'];
+void parseRefusalErrno;
 
 declare const unusablePath: string;
 void (unusablePath satisfies UnusableShutdownRemainderStatus['path']);

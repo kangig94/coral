@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { errorMessage } from '../infra/error-format.js';
 import type { JobProgressStore } from './contracts/job-store.js';
 import { elapsedDurationMs } from './duration.js';
 import { buildJobEventRefs } from './refs.js';
@@ -54,8 +55,13 @@ export class ProviderOperationAtomicTerminalizationError extends Error {
   readonly operation: ProviderOperationIdentity;
   readonly proof = 'atomic-provider-operation-terminalization' as const;
 
+  // Constraint: the wrapper is raised for every non-journal throw out of one commit closure, so its own
+  // message separates nothing. The cause is what tells a deterministic rejection from lock contention, and a
+  // reader that only ever sees the message must still be told which one it met.
   constructor(operation: ProviderOperationIdentity, cause: unknown) {
-    super('Atomic provider operation terminalization failed with retry-safe uncertainty.', { cause });
+    super(`Atomic provider operation terminalization failed with retry-safe uncertainty: ${errorMessage(cause)}`, {
+      cause,
+    });
     this.name = 'ProviderOperationAtomicTerminalizationError';
     this.operation = operation;
     Object.setPrototypeOf(this, ProviderOperationAtomicTerminalizationError.prototype);

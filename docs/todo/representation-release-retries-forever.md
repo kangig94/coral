@@ -1,8 +1,9 @@
 # A representation release retries every second, forever
 
-**Status**: narrowed, not closed. The unbounded loop is gone and the incident remains recorded below. What
-survives is the classification behind it: a deterministic terminalization failure is still retried as if it were
-transient, now for 60 seconds rather than forever. See *What this does not settle*.
+**Status**: narrowed, not closed. What is gone is the *logged* loop and the unbounded hold on a
+representation slot; the re-attempt itself is unbounded by design and now says what it is waiting for. What
+survives is the classification behind it: a deterministic terminalization failure is still retried as if it
+were transient. See *What this does not settle*.
 
 ## What was seen
 
@@ -54,7 +55,37 @@ is the exit for the record witness: the released slot cleared its delivery retry
 going to try again. The attempt is started and not awaited, because a due turn has to finish whether or not a
 delivery settles.
 
-Nothing durable is written at expiry. The earlier resolution wrote
+Nothing durable is written *at expiry* — but every failed re-attempt after it writes to the record that
+already exists. The consumer transitions it exactly as `#recordRetry` transitions every other failed attempt
+in that reconciler: `revision + 1`, `retryCount + 1`, `retryNotBeforeMs = now + retryDelayMs(retryCount)`, and
+`lastError` set to the cause the store actually refused with, under `#recordRetry`'s own host-refusal guard so
+a `prestart-cleanup-pending` terminal does not lose the evidence it reads back out of `lastError.message`.
+Before this, the record named as the surviving witness was never told it had witnessed anything: the notice
+was re-attempted every due turn, unawaited and unlogged, and `retryCount`, `lastError` and `retryNotBeforeMs`
+stayed frozen at whatever the last drive left.
+
+Two hops had to stop discarding the cause for that to be worth writing. `#terminalizeDisappearance`'s sink
+took no argument and dropped the dispatcher's `retry` incident, and the dispatcher forwarded a
+`retry-safe-unknown` observation as `{ kind, proof }` rather than as the error. So
+`ProviderOperationAtomicTerminalizationError` and its cause — the only fact separating a schema rejection from
+`SQLITE_BUSY` — reached nothing, and `lastError.message` would have read "temporarily unavailable" forever.
+The incident is now the error itself, and that error names its own cause in its message.
+
+Reporting is one line per *change* of cause, derived by comparing the record's stored `lastError` against the
+one about to replace it. That is the "already reported" bit without a bit: it lives in durable state, so it
+survives a restart correctly and never re-fires for the same cause. One line per attempt is the
+twenty-eight-hour flood this entry exists to close.
+
+Pacing falls out of the same write. With `retryNotBeforeMs` in the future,
+`finishProviderOperationDueSelection` answers `already-advanced` and the `#attachments` gate skips. The
+backoff was never the missing piece: `retryDelayMs` tops out at 1,600 ms against a 2,000 ms due poll, and an
+`executing` record with `lastError === null` has no due entry at all (`providerOperationHasDueWork`), so the
+re-attempt reached it through the `#attachments` loop rather than the due index. The shared absence was
+attempt accounting, not pacing. The compare-and-swap is consumed as a decision and re-applied against whatever
+won, because the due turn that started an unawaited attempt repairs its own row while that attempt is still
+running.
+
+The earlier resolution wrote
 `operator_exit_representation_release_retry_exhausted` into the durable operator-disposition store and named
 `durable-representation-release-reconciliation` as the successor. Both were wrong: that row is written as
 `current-writer`, and the reconciler and its scheduler select only `stale` and non-canonical `successor-observed`

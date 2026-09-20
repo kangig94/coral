@@ -162,12 +162,25 @@ describe('getBackendStatusFull record disposition', () => {
   // record address — and carrying which of the three unknowns was observed, because the reader of this output
   // acts on it (principle 12).
   it.each([
-    ['a refused read', { readErrorCode: 'EIO' }, 'unreadable'],
-    ['a refused read on a permission-denied address', { readErrorCode: 'EACCES' }, 'unreadable'],
-    ['an ENOENT read behind a directory entry that is still there', { readErrorCode: 'ENOENT' }, 'unreadable'],
-    ['content that is not JSON', { value: '{not-json' }, 'corrupt'],
-    ['a shape this build cannot decode', { value: JSON.stringify({ version: 2 }) }, 'unsupported'],
-  ] as const)('reports a record this build could not use: %s', async (_case, remainder, reason) => {
+    ['a refused read', { readErrorCode: 'EIO' }, { reason: 'unreadable', errno: 'EIO' }],
+    [
+      'a refused read on a permission-denied address',
+      { readErrorCode: 'EACCES' },
+      { reason: 'unreadable', errno: 'EACCES' },
+    ],
+    [
+      'an ENOENT read behind a directory entry that is still there',
+      { readErrorCode: 'ENOENT' },
+      { reason: 'unreadable', errno: 'ENOENT' },
+    ],
+    [
+      'a refused read whose thrown value named no system code',
+      { readErrorCode: 'NOPE' },
+      { reason: 'unreadable', errno: null },
+    ],
+    ['content that is not JSON', { value: '{not-json' }, { reason: 'corrupt' }],
+    ['a shape this build cannot decode', { value: JSON.stringify({ version: 2 }) }, { reason: 'unsupported' }],
+  ] as const)('reports a record this build could not use: %s', async (_case, remainder, classification) => {
     mockState.remainder = { value: '{not-json', ...remainder };
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -176,7 +189,7 @@ describe('getBackendStatusFull record disposition', () => {
       status: 'no_record_no_socket',
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
-        reason,
+        ...classification,
         path: REMAINDER_PATH,
       },
     });
@@ -233,6 +246,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'unreadable',
+        errno: 'ENOENT',
         path: REMAINDER_PATH,
       },
     });
@@ -1391,6 +1405,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'unreadable',
+        errno: 'EACCES',
         path: REMAINDER_PATH,
       },
     });

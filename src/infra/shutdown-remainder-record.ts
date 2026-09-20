@@ -1,7 +1,13 @@
 import { join } from 'node:path';
 import { z } from 'zod';
 
-import { serializedThrownIdentifierSchema, serializedThrownSchema, thrownErrnoCode } from './error-format.js';
+import {
+  isSystemErrorCode,
+  serializedThrownIdentifierSchema,
+  serializedThrownSchema,
+  thrownErrnoCode,
+  type SystemErrorCode,
+} from './error-format.js';
 import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
@@ -152,7 +158,8 @@ export function decodeShutdownRemainderRecord(value: unknown):
 
 export type ShutdownRemainderFileClassification =
   | Readonly<{ kind: 'vanished' }>
-  | Readonly<{ kind: 'unreadable' }>
+  /** `errno` is `null` only when the thrown value named no system error code, never when one applies. */
+  | Readonly<{ kind: 'unreadable'; errno: SystemErrorCode | null }>
   | Readonly<{ kind: 'corrupt' }>
   | Readonly<{ kind: 'unsupported'; detail: string }>
   | Readonly<{
@@ -170,14 +177,17 @@ export function classifyShutdownRemainderFile(
   try {
     raw = storage.readFileSync(path, 'utf-8');
   } catch (error: unknown) {
-    if (thrownErrnoCode(error) === 'ENOENT') {
+    const code = thrownErrnoCode(error);
+    if (code === 'ENOENT') {
       try {
         storage.lstatSync(path);
       } catch (lexicalError: unknown) {
         if (thrownErrnoCode(lexicalError) === 'ENOENT') return { kind: 'vanished' };
       }
     }
-    return { kind: 'unreadable' };
+    // Constraint: the read is the refusal a reader acts on, so its own code is carried even when the lexical
+    // probe refused differently.
+    return { kind: 'unreadable', errno: code !== undefined && isSystemErrorCode(code) ? code : null };
   }
 
   let parsedJson: unknown;

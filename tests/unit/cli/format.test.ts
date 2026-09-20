@@ -953,6 +953,7 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
           reason: 'unreadable',
+          errno: 'EACCES',
           path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       });
@@ -970,9 +971,43 @@ describe('cli format', () => {
           'Active jobs: 1',
           'Queue depth: 0',
           'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
-          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unreadable`,
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unreadable errno=EACCES`,
         ].join('\n'),
       );
+    });
+
+    // A refused read whose thrown value named no system code is a different unknown from one that named
+    // EACCES, and the line must not read as the second.
+    it('names the errno as unavailable when the refused read carried no system code', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'unreadable',
+          errno: null,
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      });
+
+      expect(text).toContain(
+        `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unreadable errno=unavailable`,
+      );
+    });
+
+    // A parse refusal names no system error code at all, so the line must not offer an errno field for the
+    // reader to act on (design-philosophy.md principle 11's "do not overload one value with two dispositions").
+    it.each(['corrupt', 'unsupported'] as const)('renders no errno field for a %s record', (reason) => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason,
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      });
+
+      expect(text).toContain(`Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=${reason}`);
+      expect(text).not.toContain('errno=');
     });
 
     it('formats a shutdown remainder as a section on an undecodable discovery record', () => {

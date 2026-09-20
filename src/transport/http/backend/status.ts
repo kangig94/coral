@@ -278,10 +278,19 @@ export type ShutdownRemainderReport =
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }>
-  /** No decoded record means no recorded writer, so this member is never scoped to the running instance. */
+  /**
+   * No decoded record means no recorded writer, so these members are never scoped to the running instance.
+   * `errno` belongs to the refused read alone: a parse refusal has no system error code to be missing.
+   */
   | Readonly<{
       status: 'shutdown_remainder_unreadable';
-      reason: 'unreadable' | 'corrupt' | 'unsupported';
+      reason: 'unreadable';
+      errno: SystemErrorCode | null;
+      path: string;
+    }>
+  | Readonly<{
+      status: 'shutdown_remainder_unreadable';
+      reason: 'corrupt' | 'unsupported';
       path: string;
     }>
   | Readonly<{
@@ -569,6 +578,9 @@ function readRecentShutdownRemainder(
   const path = shutdownRemainderRecordPath(runDir);
   const classification = classifyShutdownRemainderFile(storage, path);
   if (classification.kind === 'vanished') return null;
+  if (classification.kind === 'unreadable') {
+    return { status: 'shutdown_remainder_unreadable', reason: 'unreadable', errno: classification.errno, path };
+  }
   if (classification.kind !== 'readable') {
     return { status: 'shutdown_remainder_unreadable', reason: classification.kind, path };
   }

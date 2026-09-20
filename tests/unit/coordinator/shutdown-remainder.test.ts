@@ -511,22 +511,30 @@ describe('shutdown remainder file classification', () => {
       { refuseReadFor: RECORD_PATH, readErrorCode: 'ENOENT' },
     );
 
-    expect(classify(storage)).toEqual({ kind: 'unreadable' });
+    expect(classify(storage)).toEqual({ kind: 'unreadable', errno: 'ENOENT' });
   });
 
+  // The read is the refusal a reader acts on, so the lexical probe's own code must not replace it.
   it('classifies an ENOENT read whose lexical metadata is itself unobservable as unreadable', () => {
     const storage = storageWith(
       {},
       { refuseReadFor: RECORD_PATH, readErrorCode: 'ENOENT', refuseLstatFor: RECORD_PATH, lstatErrorCode: 'EACCES' },
     );
 
-    expect(classify(storage)).toEqual({ kind: 'unreadable' });
+    expect(classify(storage)).toEqual({ kind: 'unreadable', errno: 'ENOENT' });
   });
 
-  it('classifies a refused read as unreadable', () => {
-    const storage = storageWith({}, { refuseReadFor: RECORD_PATH, readErrorCode: 'EIO' });
+  // EACCES, EISDIR and EIO each call for a different next move; 'unreadable' alone calls for none.
+  it.each(['EACCES', 'EISDIR', 'EIO'] as const)('carries the %s a refused read reported', (code) => {
+    const storage = storageWith({}, { refuseReadFor: RECORD_PATH, readErrorCode: code });
 
-    expect(classify(storage)).toEqual({ kind: 'unreadable' });
+    expect(classify(storage)).toEqual({ kind: 'unreadable', errno: code });
+  });
+
+  it('names no errno when the refused read carried no system error code', () => {
+    const storage = storageWith({}, { refuseReadFor: RECORD_PATH, readErrorCode: 'NOT_AN_ERRNO' });
+
+    expect(classify(storage)).toEqual({ kind: 'unreadable', errno: null });
   });
 
   it('classifies non-JSON content as corrupt', () => {
