@@ -74,9 +74,7 @@ type ExpectedProjectionLeafPaths =
   | 'cleanupRefusals[].subject.label'
   | 'cleanupRefusals[].cause.kind'
   | 'cleanupRefusals[].cause.operation'
-  | 'cleanupRefusals[].cause.code'
-  | 'cleanupRefusals[].retry.trigger'
-  | 'cleanupRefusals[].retry.action';
+  | 'cleanupRefusals[].cause.code';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'

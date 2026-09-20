@@ -363,6 +363,7 @@ export type HealthSnapshot = {
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
   unreportedShutdownRemainderCleanupRefusalCount?: number;
+  uncheckedShutdownRemainderCleanupRefusalCount?: number;
   /**
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.

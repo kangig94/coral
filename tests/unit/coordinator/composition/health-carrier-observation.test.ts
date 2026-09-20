@@ -624,13 +624,13 @@ describe('health local carrier observation', () => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
     const readCleanupSnapshot = vi
       .spyOn(core.lifecycleController, 'readShutdownRemainderCleanupSnapshot')
       .mockReturnValue({
         refusals: [refusal],
         unreportedRefusalCount: 7,
+        uncheckedRefusalCount: 11,
       });
 
     const decoded = parseBackendHealth(readHealth());
@@ -638,6 +638,7 @@ describe('health local carrier observation', () => {
     if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
     expect(decoded.health.shutdownRemainderCleanupRefusals).toEqual([refusal]);
     expect(decoded.health.unreportedShutdownRemainderCleanupRefusalCount).toBe(7);
+    expect(decoded.health.uncheckedShutdownRemainderCleanupRefusalCount).toBe(11);
     expect(readCleanupSnapshot).toHaveBeenCalledOnce();
   });
 

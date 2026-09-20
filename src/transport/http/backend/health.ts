@@ -128,6 +128,7 @@ export interface BackendHealth {
   components: TransportRuntimeComponentStatus[];
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
   unreportedShutdownRemainderCleanupRefusalCount?: number;
+  uncheckedShutdownRemainderCleanupRefusalCount?: number;
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
@@ -731,14 +732,11 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
 }
 
 function parseShutdownRemainderCleanupRefusal(value: unknown): ShutdownRemainderCleanupRefusal | null {
-  if (!isRecord(value) || !isRecord(value.cause) || !isRecord(value.retry)) return null;
+  if (!isRecord(value) || !isRecord(value.cause)) return null;
   const operation = value.cause.operation;
-  const action = value.retry.action;
   if (
     !isShutdownRemainderFilesystemSubject(value.subject) ||
-    (operation !== 'delete' && operation !== 'promote' && operation !== 'scan-directory') ||
-    value.retry.trigger !== 'remainder-maintenance' ||
-    (action !== 'rescan-subject' && action !== 'rescan-directory')
+    (operation !== 'delete' && operation !== 'promote' && operation !== 'scan-directory')
   ) {
     return null;
   }
@@ -747,14 +745,12 @@ function parseShutdownRemainderCleanupRefusal(value: unknown): ShutdownRemainder
     return {
       subject: value.subject,
       cause: { kind: 'system-error', operation, code: value.cause.code },
-      retry: { trigger: 'remainder-maintenance', action },
     };
   }
   if (value.cause.kind !== 'unclassified-error') return null;
   return {
     subject: value.subject,
     cause: { kind: 'unclassified-error', operation },
-    retry: { trigger: 'remainder-maintenance', action },
   };
 }
 
@@ -801,6 +797,10 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
       (typeof value.unreportedShutdownRemainderCleanupRefusalCount !== 'number' ||
         !Number.isSafeInteger(value.unreportedShutdownRemainderCleanupRefusalCount) ||
         value.unreportedShutdownRemainderCleanupRefusalCount < 0)) ||
+    (value.uncheckedShutdownRemainderCleanupRefusalCount !== undefined &&
+      (typeof value.uncheckedShutdownRemainderCleanupRefusalCount !== 'number' ||
+        !Number.isSafeInteger(value.uncheckedShutdownRemainderCleanupRefusalCount) ||
+        value.uncheckedShutdownRemainderCleanupRefusalCount < 0)) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {

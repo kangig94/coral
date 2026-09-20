@@ -1464,6 +1464,7 @@ export function createCoordinatorCore(
         const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot() ?? {
           refusals: [],
           unreportedRefusalCount: 0,
+          uncheckedRefusalCount: 0,
         };
 
         let activeJobs = 0;
@@ -1634,6 +1635,11 @@ export function createCoordinatorCore(
             ? {}
             : {
                 unreportedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.unreportedRefusalCount,
+              }),
+          ...(shutdownRemainderCleanup.uncheckedRefusalCount === 0
+            ? {}
+            : {
+                uncheckedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.uncheckedRefusalCount,
               }),
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,

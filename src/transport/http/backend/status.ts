@@ -279,6 +279,7 @@ type BackendStatus =
       diagnostics?: BackendHealth['diagnostics'];
       shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
       unreportedShutdownRemainderCleanupRefusalCount?: number;
+      uncheckedShutdownRemainderCleanupRefusalCount?: number;
       malformedShutdownRemainderCleanupRefusalRowCount?: number;
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
@@ -320,6 +321,7 @@ export type BackendStatusFull =
             kind: 'available';
             refusals: readonly ShutdownRemainderCleanupRefusal[];
             unreportedCount: number;
+            uncheckedCount: number;
             malformedRowCount: number;
           }>
         | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
@@ -599,7 +601,7 @@ function readRecentShutdownRemainder(
   try {
     scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
   } catch (error: unknown) {
-    const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', 'rescan-directory', error);
+    const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
     if (refusal === null) {
       scan = { records: [], skippedEntries: [], skippedRecords: [] };
     } else {
@@ -820,6 +822,7 @@ async function probeDetailedHealth(
         kind: 'available',
         refusals: health.shutdownRemainderCleanupRefusals ?? [],
         unreportedCount: health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
         malformedRowCount: malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
     }

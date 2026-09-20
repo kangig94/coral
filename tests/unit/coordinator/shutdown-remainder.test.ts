@@ -318,14 +318,12 @@ function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(i
 }
 
 function cleanupRefusal(subject: string, operation: 'delete' | 'promote' | 'scan-directory', code?: string) {
-  const action = operation === 'scan-directory' ? 'rescan-directory' : 'rescan-subject';
   return {
     subject: shutdownRemainderFilesystemSubject(subject),
     cause:
       code === undefined
         ? { kind: 'unclassified-error' as const, operation }
         : { kind: 'system-error' as const, operation, code },
-    retry: { trigger: 'remainder-maintenance' as const, action },
   };
 }
 
@@ -665,7 +663,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('escapes terminal controls in unrecognized and quarantined filesystem subjects', () => {
+  it('escapes terminal controls in unrecognized filesystem subjects', () => {
     const storage = storageWith(
       [
         { name: 'bidi\u202E.tmp', value: '', mtimeMs: 1 },
@@ -677,7 +675,7 @@ describe('shutdown remainder status', () => {
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       unrecognizedEntryNames: ['bidi\\u{202E}.tmp', 'line\\u{2028}.tmp'],
-      quarantined: [{ subject: 'control\\u{9B}.json', retry: { trigger: 'coordinator-startup' } }],
+      skippedRecords: [{ name: 'invalid-record-name', reason: 'unreadable' }],
     });
   });
 
@@ -697,7 +695,6 @@ describe('shutdown remainder status', () => {
         { name: 'foreign-instance.json', reason: 'unsupported', detail: expect.any(String) },
       ],
       unrecognizedEntryNames: ['ignored.tmp'],
-      quarantined: [{ subject: 'foreign-instance.json', retry: { trigger: 'coordinator-startup' } }],
     });
   });
 
@@ -1171,7 +1168,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 
-  it('quarantines every unreadable record without finalizing unknown content by count', () => {
+  it('retains at most 32 unreadable records without competing with readable records', () => {
     const unreadableFiles = Array.from({ length: 33 }, (_, index) => fileAt(`unreadable-${index}`, index + 1));
     const storage = storageWith([fileAt('readable', 100), ...unreadableFiles], {
       refuseReadFor: unreadableFiles.map(({ name }) => name),
@@ -1180,9 +1177,9 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(34);
+    expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).toContain('unreadable-0.json');
+    expect(storage.fileNames()).not.toContain('unreadable-0.json');
     expect(storage.fileNames()).toContain('unreadable-32.json');
   });
 
@@ -1278,6 +1275,27 @@ describe('shutdown remainder status', () => {
     );
   });
 
+  it('makes a valid record visible after pruning 128 persistent unknowns that precede it', () => {
+    const unknownFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) =>
+      fileAt(`a-unknown-${String(index).padStart(3, '0')}`, index + 1),
+    );
+    const storage = storageWith([...unknownFiles, fileAt('z-live', 1_000)], {
+      refuseReadFor: unknownFiles.map(({ name }) => name),
+      readErrorCode: 'EIO',
+    });
+
+    const firstScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
+    expect(firstScan.records).toEqual([]);
+    expect(firstScan.unscannedRecordCount).toBe(1);
+
+    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+
+    const secondScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(secondScan.records).toEqual([decodedRecordAt('z-live')]);
+    expect(secondScan.unscannedRecordCount).toBeUndefined();
+  });
+
   it('does not probe past empty quarantine slots or leave the subject behind them', () => {
     const storage = storageWith([fileAt('locked', 1)], { refuseReadFor: 'locked.json' });
     for (let slot = 1; slot <= 1_000; slot += 1) {
@@ -1293,7 +1311,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('locked.json');
   });
 
-  it('quarantines an unreadable record without stat evidence instead of treating unknown age as old', () => {
+  it('ranks an unreadable record without stat evidence last in its retention bucket', () => {
     const knownUnreadableFiles = Array.from({ length: 32 }, (_, index) => fileAt(`unreadable-${index}`, index + 1));
     const storage = storageWith(
       [fileAt('readable', 100), ...knownUnreadableFiles, fileAt('unreadable-unstattable', 33)],
@@ -1307,9 +1325,9 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(34);
+    expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).toContain('unreadable-unstattable.json');
+    expect(storage.fileNames()).not.toContain('unreadable-unstattable.json');
     expect(storage.fileNames()).toContain('unreadable-0.json');
     expect(storage.fileNames()).toContain('unreadable-31.json');
   });
@@ -1346,11 +1364,10 @@ describe('shutdown remainder status', () => {
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       records: [recordAt('readable')],
       skippedRecords: [{ name: 'future-instance.json', reason: 'unsupported', detail: expect.any(String) }],
-      quarantined: [{ subject: 'future-instance.json', retry: { trigger: 'coordinator-startup' } }],
     });
   });
 
-  it('does not finalize unsupported records by count', () => {
+  it('retains at most 32 unsupported records without competing with readable records', () => {
     const unsupportedFiles = Array.from({ length: 33 }, (_, index) => ({
       name: `unsupported-${index}.json`,
       value: JSON.stringify({ ...recordAt(`unsupported-${index}`), reason: 'a-future-shutdown-reason' }),
@@ -1360,9 +1377,9 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(34);
+    expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).toContain('unsupported-0.json');
+    expect(storage.fileNames()).not.toContain('unsupported-0.json');
     expect(storage.fileNames()).toContain('unsupported-32.json');
   });
 
@@ -1616,7 +1633,10 @@ describe('shutdown remainder status', () => {
       time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
     });
     pruner.start();
-    expect(pruner.readCleanupRefusalSnapshot().unreportedRefusalCount).toBe(300 - SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(pruner.readCleanupRefusalSnapshot()).toMatchObject({
+      unreportedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
+      uncheckedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT * 2,
+    });
   });
 
   it('counts a directory scan refusal beyond a full named stage-promotion cap', () => {
@@ -1668,7 +1688,11 @@ describe('shutdown remainder status', () => {
     if (stopBeforeDisappearance) pruner.stop();
     for (const { name } of files) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
 
-    expect(pruner.readCleanupRefusalSnapshot()).toEqual({ refusals: [], unreportedRefusalCount: 0 });
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      unreportedRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
   });
 
   it('bounds refusal freshening work in one atomic snapshot', () => {
@@ -1689,9 +1713,44 @@ describe('shutdown remainder status', () => {
 
     expect(pruner.readCleanupRefusalSnapshot()).toMatchObject({
       refusals: expect.arrayContaining([cleanupRefusal('corrupt-000.json', 'delete')]),
-      unreportedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT * 2,
+      unreportedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
+      uncheckedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
     });
     expect(storage.lstatSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT * 2);
+  });
+
+  it('separates unchecked historical overflow from current cleanup refusals', () => {
+    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT * 3 + 1 }, (_, index) => ({
+      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+      value: '{not-json',
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(files, { refusePruneWhen: (_name, attempt) => attempt === 1 });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+    });
+
+    pruner.start();
+    pruner.stop();
+    for (const { name } of files) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
+
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      unreportedRefusalCount: 0,
+      uncheckedRefusalCount: 129,
+    });
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      unreportedRefusalCount: 0,
+      uncheckedRefusalCount: 1,
+    });
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      unreportedRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
   });
 
   it('quarantines every writer-owned stage whose writer is unobservable without a count bound', () => {
@@ -1963,6 +2022,39 @@ describe('shutdown remainder status', () => {
     expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
   });
 
+  it('bounds broken record symlinks separately from readable records', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-remainder-symlinks-'));
+    const directory = shutdownRemainderRecordDirectory(runDir);
+    try {
+      mkdirSync(directory, { recursive: true });
+      for (let index = 0; index < 300; index += 1) {
+        symlinkSync('missing-target', join(directory, `broken-${String(index).padStart(3, '0')}.json`));
+      }
+      writeFileSync(join(directory, 'z-live.json'), JSON.stringify(recordAt('z-live')));
+
+      pruneShutdownRemainderRecords({
+        runDir,
+        storage: {
+          lstatSync: lstatSync as unknown as StoragePort['lstatSync'],
+          readFileSync,
+          readdirSync,
+          renameSync,
+          statSync,
+          unlinkSync,
+        },
+      });
+
+      const names = readdirSync(directory);
+      expect(names).toHaveLength(33);
+      expect(names.filter((name) => name.startsWith('broken-'))).toHaveLength(32);
+      expect(scanShutdownRemainderRecords({ lstatSync, readFileSync, readdirSync }, directory).records).toEqual([
+        decodedRecordAt('z-live'),
+      ]);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
   it('retains and reports a dangling symlink subject across a pruner restart', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-remainder-symlink-'));
     const directory = shutdownRemainderRecordDirectory(runDir);
@@ -2009,7 +2101,6 @@ describe('shutdown remainder status', () => {
       expect(restarted.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['held.json'] });
       expect(scanShutdownRemainderRecords(storage, directory)).toMatchObject({
         skippedRecords: [{ name: 'held.json', reason: 'unreadable' }],
-        quarantined: [{ subject: 'held.json', retry: { trigger: 'coordinator-startup' } }],
       });
       restarted.stop();
     } finally {
@@ -2040,21 +2131,6 @@ describe('shutdown remainder status', () => {
     second.stop();
   });
 
-  it('keeps quarantined subjects visible with their identity and startup retry disposition', () => {
-    const storage = storageWith([fileAt('locked', 1)], { refuseReadFor: 'locked.json' });
-
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      quarantined: [
-        {
-          subject: 'locked.json',
-          retry: { trigger: 'coordinator-startup' },
-        },
-      ],
-    });
-  });
-
   it('keeps a named cleanup refusal when stage promotion failed and its writer is absent', () => {
     const stageName = 'held-stage.json.stage.4242.unobserved';
     const storage = storageWith([{ name: stageName, value: JSON.stringify(recordAt('held-stage')), mtimeMs: 1 }], {
@@ -2071,9 +2147,6 @@ describe('shutdown remainder status', () => {
       kind: 'refused',
       refusals: [cleanupRefusal(stageName, 'promote', 'EIO')],
     });
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, () => 'absent').quarantined).toEqual([
-      { subject: stageName, retry: { trigger: 'coordinator-startup' } },
-    ]);
   });
 
   it('does not retry a replaced held subject until the next startup', () => {

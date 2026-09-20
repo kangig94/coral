@@ -89,13 +89,13 @@ describe('/health typed shape (AC10a)', () => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [refusal],
         unreportedShutdownRemainderCleanupRefusalCount: 3,
+        uncheckedShutdownRemainderCleanupRefusalCount: 5,
       }),
     ).toBe(true);
   });
@@ -104,7 +104,6 @@ describe('/health typed shape (AC10a)', () => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
 
     expect(
@@ -143,7 +142,7 @@ describe('/health typed shape (AC10a)', () => {
     ['line feed', 'unsafe\n.json', 'unsafe\\u{A}.json'],
     ['delete control', 'unsafe\x7f.json', 'unsafe\\u{7F}.json'],
   ])('round-trips a producer refusal whose filename contains a %s', (_case, subject, expectedLabel) => {
-    const refusal = shutdownRemainderCleanupRefusal(subject, 'delete', 'rescan-subject', { code: 'EACCES' });
+    const refusal = shutdownRemainderCleanupRefusal(subject, 'delete', { code: 'EACCES' });
 
     expect(
       parseBackendHealth({
@@ -154,18 +153,14 @@ describe('/health typed shape (AC10a)', () => {
       {
         subject: { identity: expect.stringMatching(/^[a-f0-9]{64}$/u), label: expectedLabel },
         cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-        retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
       },
     ]);
   });
 
   it('round-trips an absolute scan-directory refusal subject unchanged', () => {
-    const refusal = shutdownRemainderCleanupRefusal(
-      '/run/coral/shutdown-remainder.v1',
-      'scan-directory',
-      'rescan-directory',
-      { code: 'EACCES' },
-    );
+    const refusal = shutdownRemainderCleanupRefusal('/run/coral/shutdown-remainder.v1', 'scan-directory', {
+      code: 'EACCES',
+    });
 
     expect(
       parseBackendHealth({
@@ -179,7 +174,6 @@ describe('/health typed shape (AC10a)', () => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
     };
     expect(
       isBackendHealth({
@@ -188,6 +182,7 @@ describe('/health typed shape (AC10a)', () => {
       }),
     ).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, unreportedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, uncheckedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,
@@ -206,12 +201,10 @@ describe('/health typed shape (AC10a)', () => {
       },
     },
     { subject: { identity: 'a'.repeat(64), label: 'corrupt.json\ninjected' } },
-    { retry: { trigger: 'remainder-maintenance', action: 'retry-delete' } },
   ])('counts an individually malformed cleanup refusal separately from unreported refusals', (override) => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
       ...override,
     };
 

@@ -694,6 +694,7 @@ type CleanupRefusalObservation = Readonly<{
   source: 'coordinator' | 'status process';
   refusals: readonly ShutdownRemainderCleanupRefusal[];
   unreportedRefusalCount: number;
+  uncheckedRefusalCount: number;
 }>;
 
 type LiveShutdownRemainderEvidence =
@@ -727,6 +728,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
           source: 'coordinator',
           refusals: result.health.shutdownRemainderCleanupRefusals ?? [],
           unreportedRefusalCount: result.health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+          uncheckedRefusalCount: result.health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
         },
         malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
@@ -757,6 +759,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
                 source: 'coordinator' as const,
                 refusals: result.liveCleanupRefusals.refusals,
                 unreportedRefusalCount: result.liveCleanupRefusals.unreportedCount,
+                uncheckedRefusalCount: result.liveCleanupRefusals.uncheckedCount,
               },
               malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
             }
@@ -1307,7 +1310,7 @@ function formatShutdownRemainderReport(
     );
   }
   if (liveEvidence.kind === 'unavailable') {
-    lines.push("The draining coordinator's cleanup refusals were not inspected.");
+    lines.push("The draining coordinator's unauthenticated health response did not return cleanup-refusal details.");
   }
   if (liveEvidence.kind === 'available' && liveEvidence.malformedRowCount > 0) {
     lines.push(
@@ -1323,6 +1326,7 @@ function formatShutdownRemainderReport(
         source: 'status process',
         refusals: report.cleanupRefusals,
         unreportedRefusalCount: 0,
+        uncheckedRefusalCount: 0,
       }),
     );
   }
@@ -1415,6 +1419,11 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
       ? []
       : [
           `Additional cleanup refusals observed by ${observation.source} but not listed: ${observation.unreportedRefusalCount}`,
+        ]),
+    ...(observation.uncheckedRefusalCount === 0
+      ? []
+      : [
+          `Cleanup refusal subjects retained by ${observation.source} but not rechecked in this snapshot: ${observation.uncheckedRefusalCount}`,
         ]),
   ];
 }

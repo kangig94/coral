@@ -960,7 +960,6 @@ describe('cli format', () => {
             {
               subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
@@ -1690,7 +1689,6 @@ describe('cli format', () => {
             {
               subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
@@ -1944,7 +1942,6 @@ describe('cli format', () => {
             {
               subject: shutdownRemainderFilesystemSubject('corrupt.json'),
               cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-subject' },
             },
           ],
         },
@@ -1985,7 +1982,6 @@ describe('cli format', () => {
             {
               subject,
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
@@ -1996,7 +1992,6 @@ describe('cli format', () => {
             {
               subject,
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
@@ -2022,7 +2017,6 @@ describe('cli format', () => {
             {
               subject: coordinatorSubject,
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
@@ -2033,7 +2027,6 @@ describe('cli format', () => {
             {
               subject: statusSubject,
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
@@ -2056,9 +2049,9 @@ describe('cli format', () => {
           shutdownRemainderCleanupRefusals: Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
             subject: shutdownRemainderFilesystemSubject(`stage-${index}.json`),
             cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
-            retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
           })),
           unreportedShutdownRemainderCleanupRefusalCount: 1,
+          uncheckedShutdownRemainderCleanupRefusalCount: 129,
         },
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
@@ -2067,13 +2060,15 @@ describe('cli format', () => {
             {
               subject: shutdownRemainderFilesystemSubject(directory),
               cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
-              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
             },
           ],
         },
       });
 
       expect(text).toContain('Additional cleanup refusals observed by coordinator but not listed: 1');
+      expect(text).toContain(
+        'Cleanup refusal subjects retained by coordinator but not rechecked in this snapshot: 129',
+      );
       expect(text).toContain(
         `Cleanup refusal observed by status process: label=${JSON.stringify(directory)} operation=scan-directory errno=EIO`,
       );
@@ -2205,7 +2200,7 @@ describe('cli format', () => {
       },
     );
 
-    it('distinguishes uninspected live cleanup evidence from an observed empty set', () => {
+    it('distinguishes omitted live cleanup details from an observed empty set', () => {
       const unavailable = formatBackendStatus({
         status: 'shutting_down',
         liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
@@ -2216,12 +2211,13 @@ describe('cli format', () => {
           kind: 'available',
           refusals: [],
           unreportedCount: 0,
+          uncheckedCount: 0,
           malformedRowCount: 0,
         },
       });
 
       expect(unavailable).toBe(
-        "Backend shutting down\nThe draining coordinator's cleanup refusals were not inspected.",
+        "Backend shutting down\nThe draining coordinator's unauthenticated health response did not return cleanup-refusal details.",
       );
       expect(availableEmpty).toBe('Backend shutting down');
       expect(unavailable).not.toBe(availableEmpty);

@@ -89,6 +89,7 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
 export type ShutdownRemainderCleanupSnapshot = Readonly<{
   refusals: readonly ShutdownRemainderCleanupRefusal[];
   unreportedRefusalCount: number;
+  uncheckedRefusalCount: number;
 }>;
 
 function byRetentionOrder(
@@ -123,10 +124,9 @@ function recordCleanupFailure(
   collection: CleanupRefusalCollection,
   name: string,
   operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
-  retryAction: ShutdownRemainderCleanupRefusal['retry']['action'],
   error: unknown,
 ): void {
-  const refusal = shutdownRemainderCleanupRefusal(name, operation, retryAction, error);
+  const refusal = shutdownRemainderCleanupRefusal(name, operation, error);
   if (refusal === null) {
     forgetCleanupFailure(collection, name);
     return;
@@ -281,7 +281,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
           runtime.storage.unlinkSync(path);
           forgetCleanupFailure(cleanupRefusals, name);
         } catch (error: unknown) {
-          recordCleanupFailure(cleanupRefusals, name, 'delete', 'rescan-subject', error);
+          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
         }
         continue;
       }
@@ -300,7 +300,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
             forgetCleanupFailure(cleanupRefusals, name);
             continue;
           }
-          recordCleanupFailure(cleanupRefusals, name, 'promote', 'rescan-subject', error);
+          recordCleanupFailure(cleanupRefusals, name, 'promote', error);
         }
       }
       if (writerObservation === 'alive') {
@@ -311,12 +311,9 @@ function pruneShutdownRemainderRecordsWithRefusals(
     }
 
     const known: { name: string; age: RecordAge }[] = [];
+    const quarantinedRecords: { name: string; age: RecordAge }[] = [];
     for (const name of runtime.storage.readdirSync(directory)) {
       if (classifyShutdownRemainderDirectoryEntry(name).kind !== 'record') continue;
-      if (heldSubjectNames.has(name)) {
-        quarantine(name);
-        continue;
-      }
       forgetCleanupFailure(cleanupRefusals, name);
       const path = join(directory, name);
       let age: RecordAge = { kind: 'unknown' };
@@ -332,6 +329,12 @@ function pruneShutdownRemainderRecordsWithRefusals(
         age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
       } catch {
         age = { kind: 'unknown' };
+      }
+
+      if (heldSubjectNames.has(name)) {
+        quarantine(name);
+        quarantinedRecords.push({ name, age });
+        continue;
       }
 
       const classification = classifyShutdownRemainderFile(runtime.storage, path);
@@ -350,16 +353,18 @@ function pruneShutdownRemainderRecordsWithRefusals(
             `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: content is not valid JSON`,
           );
         } catch (error: unknown) {
-          recordCleanupFailure(cleanupRefusals, name, 'delete', 'rescan-subject', error);
+          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
         }
         continue;
       }
       if (classification.kind === 'unsupported') {
         quarantine(name);
+        quarantinedRecords.push({ name, age });
         continue;
       }
       if (classification.kind === 'unreadable') {
         quarantine(name);
+        quarantinedRecords.push({ name, age });
         continue;
       }
       if (name !== `${classification.record.instanceId}.json`) {
@@ -370,7 +375,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
             `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: filename does not match instance identity`,
           );
         } catch (error: unknown) {
-          recordCleanupFailure(cleanupRefusals, name, 'delete', 'rescan-subject', error);
+          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
         }
         continue;
       }
@@ -381,13 +386,16 @@ function pruneShutdownRemainderRecordsWithRefusals(
       // entry in that bucket for exactly this reason.
       known.push({ name, age });
     }
-    known.sort(byRetentionOrder);
-    for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
-      try {
-        runtime.storage.unlinkSync(join(directory, name));
-        forgetCleanupFailure(cleanupRefusals, name);
-      } catch (error: unknown) {
-        recordCleanupFailure(cleanupRefusals, name, 'delete', 'rescan-subject', error);
+    for (const retainedRecords of [known, quarantinedRecords]) {
+      retainedRecords.sort(byRetentionOrder);
+      for (const { name } of retainedRecords.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+        try {
+          runtime.storage.unlinkSync(join(directory, name));
+          forgetCleanupFailure(cleanupRefusals, name);
+          quarantinedSubjectNames.delete(name);
+        } catch (error: unknown) {
+          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
+        }
       }
     }
     return result(true);
@@ -403,7 +411,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       };
     }
     for (const name of heldSubjectNames) quarantine(name);
-    recordCleanupFailure(cleanupRefusals, directory, 'scan-directory', 'rescan-directory', error);
+    recordCleanupFailure(cleanupRefusals, directory, 'scan-directory', error);
     return result(false);
   }
 }
@@ -446,29 +454,42 @@ export function createShutdownRemainderPruner(
     refusalsByName: Map<string, ShutdownRemainderCleanupRefusal>,
     name: string,
     refusal: ShutdownRemainderCleanupRefusal,
-  ): void => {
+  ): 'present' | 'absent' | 'unobserved' => {
     const path =
       refusal.cause.operation === 'scan-directory'
         ? name
         : join(shutdownRemainderRecordDirectory(runtime.runDir), name);
     try {
       runtime.storage.lstatSync(path);
+      return 'present';
     } catch (error: unknown) {
-      if (thrownErrnoCode(error) === 'ENOENT') refusalsByName.delete(name);
+      if (thrownErrnoCode(error) !== 'ENOENT') return 'unobserved';
+      refusalsByName.delete(name);
+      return 'absent';
     }
   };
-  const freshenCleanupRefusals = (): void => {
+  const readCleanupRefusalSnapshot = (): ShutdownRemainderCleanupSnapshot => {
+    const refusals: ShutdownRemainderCleanupRefusal[] = [];
     for (const [name, refusal] of cleanupRefusalsByName) {
-      freshenCleanupRefusal(cleanupRefusalsByName, name, refusal);
+      if (freshenCleanupRefusal(cleanupRefusalsByName, name, refusal) === 'present') refusals.push(refusal);
     }
+    let unreportedRefusalCount = 0;
     for (let inspected = 0; inspected < SHUTDOWN_REMAINDER_SCAN_LIMIT; inspected += 1) {
       const next = unreportedFreshening.next();
       if (next.done) {
         unreportedFreshening = unreportedCleanupRefusalsByName.entries();
         break;
       }
-      freshenCleanupRefusal(unreportedCleanupRefusalsByName, next.value[0], next.value[1]);
+      if (freshenCleanupRefusal(unreportedCleanupRefusalsByName, next.value[0], next.value[1]) === 'present') {
+        unreportedRefusalCount += 1;
+      }
     }
+    return {
+      refusals,
+      unreportedRefusalCount,
+      uncheckedRefusalCount:
+        cleanupRefusalsByName.size - refusals.length + unreportedCleanupRefusalsByName.size - unreportedRefusalCount,
+    };
   };
 
   return {
@@ -484,13 +505,7 @@ export function createShutdownRemainderPruner(
       if (timer !== null) runtime.time.clearInterval(timer);
       timer = null;
     },
-    readCleanupRefusalSnapshot: () => {
-      freshenCleanupRefusals();
-      return {
-        refusals: [...cleanupRefusalsByName.values()],
-        unreportedRefusalCount: unreportedCleanupRefusalsByName.size,
-      };
-    },
+    readCleanupRefusalSnapshot,
   };
 }
 

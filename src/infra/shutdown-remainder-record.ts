@@ -127,7 +127,6 @@ export type ShutdownRemainderRecordScan = Readonly<{
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
   unrecognizedEntryNames?: readonly string[];
   unreportedUnrecognizedEntryCount?: number;
-  quarantined?: readonly ShutdownRemainderQuarantinedEvidence[];
   unscannedStageCount?: number;
   unscannedRecordCount?: number;
 }>;
@@ -135,15 +134,6 @@ export type ShutdownRemainderRecordScan = Readonly<{
 export function shutdownRemainderRecordDirectory(runDir: string): string {
   return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}`);
 }
-
-export type ShutdownRemainderQuarantineRetry = Readonly<{
-  trigger: 'coordinator-startup';
-}>;
-
-export type ShutdownRemainderQuarantinedEvidence = Readonly<{
-  subject: string;
-  retry: ShutdownRemainderQuarantineRetry;
-}>;
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
@@ -156,17 +146,12 @@ export type ShutdownRemainderCleanupRefusal = Readonly<{
   cause:
     | Readonly<{ kind: 'system-error'; operation: 'delete' | 'promote' | 'scan-directory'; code: string }>
     | Readonly<{ kind: 'unclassified-error'; operation: 'delete' | 'promote' | 'scan-directory' }>;
-  retry: Readonly<{
-    trigger: 'remainder-maintenance';
-    action: 'rescan-subject' | 'rescan-directory';
-  }>;
 }>;
 
 /** ENOENT is absence; every other cleanup failure retains only a bounded errno identifier. */
 export function shutdownRemainderCleanupRefusal(
   subject: string,
   operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
-  retryAction: ShutdownRemainderCleanupRefusal['retry']['action'],
   error: unknown,
 ): ShutdownRemainderCleanupRefusal | null {
   const code = thrownErrnoCode(error);
@@ -177,7 +162,6 @@ export function shutdownRemainderCleanupRefusal(
       code !== undefined && isSystemErrorCode(code)
         ? { kind: 'system-error', operation, code }
         : { kind: 'unclassified-error', operation },
-    retry: { trigger: 'remainder-maintenance', action: retryAction },
   };
 }
 
@@ -425,7 +409,6 @@ export function scanShutdownRemainderRecords(
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
-  const quarantined: ShutdownRemainderQuarantinedEvidence[] = [];
   const stageFiles: StageFile[] = [];
   const recordFiles: RecordFile[] = [];
   const stageCandidates: StageFile[] = [];
@@ -477,13 +460,6 @@ export function scanShutdownRemainderRecords(
   const unscannedStageCount = stageCandidates.length - stageFiles.length;
   const unscannedRecordCount = recordCandidates.length - recordFiles.length;
 
-  const quarantine = (subject: string): void => {
-    quarantined.push({
-      subject: shutdownRemainderFilesystemSubject(subject).label,
-      retry: { trigger: 'coordinator-startup' },
-    });
-  };
-
   for (const entry of stageFiles) {
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
     if (entry.kind === 'malformed-stage') {
@@ -496,7 +472,6 @@ export function scanShutdownRemainderRecords(
         name: persistedFileNameSchema.safeParse(name).success ? name : 'invalid-record-name',
         reason: 'malformed-staging',
       });
-      quarantine(name);
       continue;
     }
     const stage = entry.stage;
@@ -507,11 +482,9 @@ export function scanShutdownRemainderRecords(
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }
-      if (observation === 'unknown') quarantine(name);
     } else {
       const classification = classifyShutdownRemainderFile(storage, join(directory, name));
       if (classification.kind === 'vanished') continue;
-      if (observation !== 'alive') quarantine(name);
     }
     skippedRecords.push({
       name: persistedFileNameSchema.safeParse(stage.name).success ? stage.name : 'invalid-record-name',
@@ -532,14 +505,12 @@ export function scanShutdownRemainderRecords(
         continue;
       case 'unreadable':
         skippedRecords.push({ name: reportedName, reason: 'unreadable' });
-        quarantine(name);
         continue;
       case 'corrupt':
         skippedRecords.push({ name: reportedName, reason: 'corrupt' });
         continue;
       case 'unsupported':
         skippedRecords.push({ name: reportedName, reason: 'unsupported', detail: classification.detail });
-        quarantine(name);
         continue;
       case 'readable':
         if (name !== `${classification.record.instanceId}.json`) {
@@ -558,7 +529,6 @@ export function scanShutdownRemainderRecords(
     skippedRecords,
     ...(unrecognizedEntryNames.length === 0 ? {} : { unrecognizedEntryNames }),
     ...(unreportedUnrecognizedEntryCount === 0 ? {} : { unreportedUnrecognizedEntryCount }),
-    ...(quarantined.length === 0 ? {} : { quarantined }),
     ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
     ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),
   };

@@ -1772,7 +1772,6 @@ function scanDirectoryCleanupRefusal() {
   return {
     subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
     cause: { kind: 'system-error' as const, operation: 'scan-directory' as const, code: 'EACCES' },
-    retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-directory' as const },
   };
 }
 
@@ -1821,7 +1820,6 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
     expect(pruner.start()?.cleanup).toEqual({
       kind: 'refused',
@@ -1929,7 +1927,6 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('unobserved.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
     mockState.remainderScanErrorCode = 'EACCES';
     stubProbes(
@@ -2042,7 +2039,6 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('held.json'),
       cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
     };
     mockState.remainderFiles = [remainderFile('held.json', NOW - 10_000, shutdownRemainder('held', NOW - 10_000))];
     stubProbes(
@@ -2051,6 +2047,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         detailed('draining', {
           shutdownRemainderCleanupRefusals: [refusal, { subject: 'not-a-refusal' }],
           unreportedShutdownRemainderCleanupRefusalCount: 2,
+          uncheckedShutdownRemainderCleanupRefusalCount: 3,
         }),
         { status: 200 },
       ),
@@ -2064,6 +2061,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         kind: 'available',
         refusals: [refusal],
         unreportedCount: 2,
+        uncheckedCount: 3,
         malformedRowCount: 1,
       },
       shutdownRemainder: {
