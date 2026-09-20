@@ -28,7 +28,7 @@ export type ShutdownRemainderCleanupSubject = ShutdownRemainderFilesystemSubject
 const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
 const SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/u;
 
-/** Filesystem subject equality must use the raw-name digest, never the bounded terminal label. */
+/** This digest identifies only the raw lexical spelling; it is not a physical filesystem identity. */
 export function shutdownRemainderFilesystemSubject(subject: string): ShutdownRemainderFilesystemSubject {
   const identity = sha256Hex(subject);
   const escaped = subject.replace(
@@ -377,27 +377,22 @@ export type ShutdownRemainderFileClassification =
       skippedEntries: readonly ShutdownRemainderSkippedEntry[];
     }>;
 
-/**
- * Classifies one remainder file by what its content proves, shared by the report path
- * (`scanShutdownRemainderRecords`) and the reclaim path (`pruneShutdownRemainderRecords` in
- * `src/coordinator/shutdown-remainder.ts`) so the two dispositions cannot drift between them.
- *
- * `vanished`: the file lost the readdir-to-read race (`ENOENT`) — silently absent, not corrupt. `unreadable`:
- * the read was refused before any byte reached this build — a genuine unknown (design-philosophy.md principle
- * 11 forbids treating this as decisive). `corrupt`: the bytes were read and are not JSON at all — decisive for
- * every build, nothing can ever parse them. `unsupported`: the bytes parsed but this build's envelope schema
- * refused the shape — decisive only about this build, never about an older or newer one (design-philosophy.md
- * principle 10). `readable`: a decoded record.
- */
+/** A target-following ENOENT proves absence only when the lexical directory entry is also absent. */
 export function classifyShutdownRemainderFile(
-  storage: Pick<StoragePort, 'readFileSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
   path: string,
 ): ShutdownRemainderFileClassification {
   let raw: string;
   try {
     raw = storage.readFileSync(path, 'utf-8');
   } catch (error: unknown) {
-    if (thrownErrnoCode(error) === 'ENOENT') return { kind: 'vanished' };
+    if (thrownErrnoCode(error) === 'ENOENT') {
+      try {
+        storage.lstatSync(path);
+      } catch (lexicalError: unknown) {
+        if (thrownErrnoCode(lexicalError) === 'ENOENT') return { kind: 'vanished' };
+      }
+    }
     return { kind: 'unreadable' };
   }
 
@@ -420,7 +415,7 @@ export function classifyShutdownRemainderFile(
 }
 
 export function scanShutdownRemainderRecords(
-  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync'>,
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
   observeDirectoryEntries?: (names: readonly string[]) => void,
@@ -493,7 +488,7 @@ export function scanShutdownRemainderRecords(
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
     if (entry.kind === 'malformed-stage') {
       try {
-        storage.statSync(join(directory, name));
+        storage.lstatSync(join(directory, name));
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }
@@ -508,7 +503,7 @@ export function scanShutdownRemainderRecords(
     const observation = stageObservation(stage, observeStageWriter);
     if (stage.partial) {
       try {
-        storage.statSync(join(directory, name));
+        storage.lstatSync(join(directory, name));
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }

@@ -690,16 +690,23 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
-type LiveShutdownRemainderEvidence = Readonly<{
+type CleanupRefusalObservation = Readonly<{
+  source: 'coordinator' | 'status process';
   refusals: readonly ShutdownRemainderCleanupRefusal[];
   unreportedRefusalCount: number;
-  malformedRowCount: number;
 }>;
 
+type LiveShutdownRemainderEvidence =
+  | Readonly<{ kind: 'not-requested' }>
+  | Readonly<{ kind: 'unavailable' }>
+  | Readonly<{
+      kind: 'available';
+      observation: CleanupRefusalObservation;
+      malformedRowCount: number;
+    }>;
+
 const NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE: LiveShutdownRemainderEvidence = {
-  refusals: [],
-  unreportedRefusalCount: 0,
-  malformedRowCount: 0,
+  kind: 'not-requested',
 };
 
 function withShutdownRemainderSection(
@@ -715,8 +722,12 @@ function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
       return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder, {
-        refusals: result.health.shutdownRemainderCleanupRefusals ?? [],
-        unreportedRefusalCount: result.health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        kind: 'available',
+        observation: {
+          source: 'coordinator',
+          refusals: result.health.shutdownRemainderCleanupRefusals ?? [],
+          unreportedRefusalCount: result.health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        },
         malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
     case 'no_record_no_socket':
@@ -741,11 +752,15 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       const liveEvidence =
         result.liveCleanupRefusals.kind === 'available'
           ? {
-              refusals: result.liveCleanupRefusals.refusals,
-              unreportedRefusalCount: result.liveCleanupRefusals.unreportedCount,
+              kind: 'available' as const,
+              observation: {
+                source: 'coordinator' as const,
+                refusals: result.liveCleanupRefusals.refusals,
+                unreportedRefusalCount: result.liveCleanupRefusals.unreportedCount,
+              },
               malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
             }
-          : NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE;
+          : ({ kind: 'unavailable' } as const);
       return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder, liveEvidence);
     }
     case 'unauthorized':
@@ -1291,20 +1306,26 @@ function formatShutdownRemainderReport(
       ...(directoryEvidence?.unreadableRecordNames ?? []).map((name) => `  Unreadable: ${name}`),
     );
   }
-  if (liveEvidence.malformedRowCount > 0) {
+  if (liveEvidence.kind === 'unavailable') {
+    lines.push("The draining coordinator's cleanup refusals were not inspected.");
+  }
+  if (liveEvidence.kind === 'available' && liveEvidence.malformedRowCount > 0) {
     lines.push(
       `Shutdown remainder cleanup refusal rows this build could not decode: ${liveEvidence.malformedRowCount}`,
     );
   }
-  const refusalsByIdentity = new Map(
-    liveEvidence.refusals.map((refusal) => [refusal.subject.identity, refusal] as const),
-  );
-  for (const refusal of report?.cleanupRefusals ?? []) {
-    refusalsByIdentity.set(refusal.subject.identity, refusal);
+  if (liveEvidence.kind === 'available') {
+    lines.push(...formatShutdownRemainderCleanupRefusals(liveEvidence.observation));
   }
-  lines.push(
-    ...formatShutdownRemainderCleanupRefusals([...refusalsByIdentity.values()], liveEvidence.unreportedRefusalCount),
-  );
+  if (report?.cleanupRefusals !== undefined) {
+    lines.push(
+      ...formatShutdownRemainderCleanupRefusals({
+        source: 'status process',
+        refusals: report.cleanupRefusals,
+        unreportedRefusalCount: 0,
+      }),
+    );
+  }
   return lines.join('\n');
 }
 
@@ -1384,18 +1405,17 @@ function formatShutdownRemainderEvidenceLines(
   ];
 }
 
-function formatShutdownRemainderCleanupRefusals(
-  refusals: readonly ShutdownRemainderCleanupRefusal[],
-  unreportedCount: number,
-): string[] {
+function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObservation): string[] {
   return [
-    ...refusals.map(
+    ...observation.refusals.map(
       (refusal) =>
-        `Cleanup refusal: label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${
-          refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'
-        }`,
+        `Cleanup refusal observed by ${observation.source}: label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
     ),
-    ...(unreportedCount === 0 ? [] : [`Additional cleanup refusals not listed: ${unreportedCount}`]),
+    ...(observation.unreportedRefusalCount === 0
+      ? []
+      : [
+          `Additional cleanup refusals observed by ${observation.source} but not listed: ${observation.unreportedRefusalCount}`,
+        ]),
   ];
 }
 

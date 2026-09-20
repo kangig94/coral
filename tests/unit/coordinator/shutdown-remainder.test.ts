@@ -62,6 +62,8 @@ function storageWith(
     refusePruneWhen?: (name: string, attempt: number) => boolean;
     refuseStatFor?: string;
     statErrorCode?: string;
+    refuseLstatFor?: string;
+    lstatErrorCode?: string;
     refuseReadFor?: string | readonly string[];
     refuseReadWhen?: (name: string, attempt: number) => boolean;
     readErrorCode?: string;
@@ -162,6 +164,9 @@ function storageWith(
           };
     }) as unknown as StoragePort['statSync'],
     lstatSync: vi.fn((path: string) => {
+      if (basename(path) === options.refuseLstatFor) {
+        throw Object.assign(new Error('lstat refused'), { code: options.lstatErrorCode ?? 'EIO' });
+      }
       const isDirectory = directories.has(path);
       if (!isDirectory && !files.has(path)) throw Object.assign(new Error('missing entry'), { code: 'ENOENT' });
       return {
@@ -722,6 +727,8 @@ describe('shutdown remainder status', () => {
     const storage = storageWith([{ name: 'vanished-after-stat.json', value: '{not-json', mtimeMs: 1 }], {
       refuseReadFor: 'vanished-after-stat.json',
       readErrorCode: 'ENOENT',
+      refuseLstatFor: 'vanished-after-stat.json',
+      lstatErrorCode: 'ENOENT',
     });
 
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
@@ -1221,6 +1228,7 @@ describe('shutdown remainder status', () => {
       const disposition = pruneShutdownRemainderRecords({
         runDir,
         storage: {
+          lstatSync: lstatSync as unknown as StoragePort['lstatSync'],
           readFileSync,
           readdirSync,
           renameSync,
@@ -1265,7 +1273,7 @@ describe('shutdown remainder status', () => {
     expect((scan.unscannedStageCount ?? 0) + (scan.unscannedRecordCount ?? 0)).toBe(
       1_000 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
-    expect(vi.mocked(storage.statSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
+    expect(vi.mocked(storage.lstatSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
       SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
   });
@@ -1513,7 +1521,7 @@ describe('shutdown remainder status', () => {
 
     expect(scan.records).toEqual([decodedRecordAt('published')]);
     expect(scan.unscannedStageCount).toBe(2);
-    expect(vi.mocked(storage.statSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
+    expect(vi.mocked(storage.lstatSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
       SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
   });
@@ -1608,7 +1616,33 @@ describe('shutdown remainder status', () => {
       time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
     });
     pruner.start();
-    expect(pruner.readUnreportedCleanupRefusalCount()).toBe(300 - SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(pruner.readCleanupRefusalSnapshot().unreportedRefusalCount).toBe(300 - SHUTDOWN_REMAINDER_SCAN_LIMIT);
+  });
+
+  it('counts a directory scan refusal beyond a full named stage-promotion cap', () => {
+    const stages = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
+      name: `stage-${index}.json.stage.${5_000 + index}.unobserved`,
+      value: JSON.stringify(recordAt(`stage-${index}`)),
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(stages, {
+      refuseFinalRename: true,
+      refuseReaddirWhen: (_path, attempt) => attempt === 2,
+    });
+
+    const disposition = pruneShutdownRemainderRecords({
+      storage,
+      runDir: RUN_DIR,
+      observeStageWriter: () => 'absent',
+    });
+
+    expect(disposition.cleanup).toMatchObject({
+      kind: 'refused',
+      refusals: expect.arrayContaining([cleanupRefusal(stages[0].name, 'promote', 'EIO')]),
+      unreportedRefusalCount: 1,
+    });
+    if (disposition.cleanup.kind !== 'refused') throw new Error('cleanup refusal was not reported');
+    expect(disposition.cleanup.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
   });
 
   it.each([
@@ -1630,12 +1664,34 @@ describe('shutdown remainder status', () => {
     });
 
     pruner.start();
-    expect(pruner.readUnreportedCleanupRefusalCount()).toBe(1);
+    expect(pruner.readCleanupRefusalSnapshot().unreportedRefusalCount).toBe(1);
     if (stopBeforeDisappearance) pruner.stop();
     for (const { name } of files) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
 
-    expect(pruner.readUnreportedCleanupRefusalCount()).toBe(0);
-    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({ refusals: [], unreportedRefusalCount: 0 });
+  });
+
+  it('bounds refusal freshening work in one atomic snapshot', () => {
+    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT * 3 }, (_, index) => ({
+      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+      value: '{not-json',
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(files, { refusePruneWhen: (_name, attempt) => attempt === 1 });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+    });
+
+    pruner.start();
+    vi.mocked(storage.lstatSync).mockClear();
+
+    expect(pruner.readCleanupRefusalSnapshot()).toMatchObject({
+      refusals: expect.arrayContaining([cleanupRefusal('corrupt-000.json', 'delete')]),
+      unreportedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT * 2,
+    });
+    expect(storage.lstatSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT * 2);
   });
 
   it('quarantines every writer-owned stage whose writer is unobservable without a count bound', () => {
@@ -1788,15 +1844,15 @@ describe('shutdown remainder status', () => {
       kind: 'refused',
       refusals: [cleanupRefusal('corrupt.json', 'delete')],
     });
-    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
 
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
-    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
     periodic();
 
-    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
     expect(storage.fileNames()).toEqual([]);
   });
 
@@ -1825,7 +1881,7 @@ describe('shutdown remainder status', () => {
     periodic();
 
     expect(storage.fileNames()).toEqual(['corrupt.json']);
-    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
   });
 
   it('reports only the cleanup refusals observed by each scan', () => {
@@ -1851,9 +1907,11 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO')]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([
+      cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO'),
+    ]);
     periodic();
-    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
   });
 
   it('clears a named cleanup refusal after the subject decisively disappears', () => {
@@ -1883,7 +1941,7 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
   });
 
   it('freshens cleanup refusals against their raw subjects when a health snapshot reads them', () => {
@@ -1898,14 +1956,14 @@ describe('shutdown remainder status', () => {
     });
 
     expect(pruner.start()?.cleanup.kind).toBe('refused');
-    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal(name, 'delete')]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal(name, 'delete')]);
     storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
 
-    expect(pruner.readCleanupRefusals()).toEqual([]);
-    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
   });
 
-  it('retains a cleanup refusal for a dangling symlink subject', () => {
+  it('retains and reports a dangling symlink subject across a pruner restart', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-remainder-symlink-'));
     const directory = shutdownRemainderRecordDirectory(runDir);
     const targetPath = join(runDir, 'target.json');
@@ -1940,7 +1998,20 @@ describe('shutdown remainder status', () => {
       unlinkSync(targetPath);
 
       expect(lstatSync(subjectPath).isSymbolicLink()).toBe(true);
-      expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('held.json', 'delete', 'EACCES')]);
+      expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('held.json', 'delete', 'EACCES')]);
+      pruner.stop();
+
+      const restarted = createShutdownRemainderPruner({
+        storage,
+        runDir,
+        time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+      });
+      expect(restarted.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['held.json'] });
+      expect(scanShutdownRemainderRecords(storage, directory)).toMatchObject({
+        skippedRecords: [{ name: 'held.json', reason: 'unreadable' }],
+        quarantined: [{ subject: 'held.json', retry: { trigger: 'coordinator-startup' } }],
+      });
+      restarted.stop();
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }

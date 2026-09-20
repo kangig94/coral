@@ -588,7 +588,7 @@ export function statusFromStartupDiagnostic(
 }
 
 function readRecentShutdownRemainder(
-  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync'>,
   runDir: string,
   now: number,
   scope: ShutdownRemainderEvidenceScope,
@@ -696,7 +696,7 @@ function readRecentFailureDiagnostic(
 }
 
 function statusWithRecentCoordinatorEvidence(
-  storage: Pick<StoragePort, 'existsSync' | 'readFileSync' | 'readdirSync' | 'statSync'>,
+  storage: Pick<StoragePort, 'existsSync' | 'lstatSync' | 'readFileSync' | 'readdirSync'>,
   diagnosticFile: string,
   runDir: string,
   now: number,
@@ -731,7 +731,7 @@ function statusWithRecentCoordinatorEvidence(
 }
 
 function statusWithShutdownRemainder<Status extends BackendStatusFull>(
-  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'statSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync'>,
   runDir: string,
   now: number,
   observeStageWriter: ShutdownRemainderStageObserver,

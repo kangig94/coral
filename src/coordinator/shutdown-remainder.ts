@@ -34,7 +34,7 @@ type ShutdownRemainderPruneStageObserver = (
 ) => ShutdownRemainderStageObservation;
 
 type ShutdownRemainderPruneRuntime = Readonly<{
-  storage: Pick<StoragePort, 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync' | 'renameSync' | 'statSync' | 'unlinkSync'>;
   runDir: string;
   observeStageWriter?: ShutdownRemainderPruneStageObserver;
 }>;
@@ -84,6 +84,11 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
     subjectNames: readonly string[];
     unreportedSubjectCount?: number;
   }>;
+}>;
+
+export type ShutdownRemainderCleanupSnapshot = Readonly<{
+  refusals: readonly ShutdownRemainderCleanupRefusal[];
+  unreportedRefusalCount: number;
 }>;
 
 function byRetentionOrder(
@@ -250,7 +255,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       forgetCleanupFailure(cleanupRefusals, name);
       const path = join(directory, name);
       try {
-        runtime.storage.statSync(path);
+        runtime.storage.lstatSync(path);
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') {
           forgetCleanupFailure(cleanupRefusals, name);
@@ -316,12 +321,17 @@ function pruneShutdownRemainderRecordsWithRefusals(
       const path = join(directory, name);
       let age: RecordAge = { kind: 'unknown' };
       try {
-        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
+        runtime.storage.lstatSync(path);
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') {
           forgetCleanupFailure(cleanupRefusals, name);
           continue;
         }
+      }
+      try {
+        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
+      } catch {
+        age = { kind: 'unknown' };
       }
 
       const classification = classifyShutdownRemainderFile(runtime.storage, path);
@@ -402,22 +412,18 @@ const SHUTDOWN_REMAINDER_REOBSERVATION_MS = 60_000;
 
 /** Remainder maintenance must not keep the coordinator process alive. */
 export function createShutdownRemainderPruner(
-  runtime: ShutdownRemainderPruneRuntime &
-    Readonly<{
-      storage: Pick<StoragePort, 'lstatSync'>;
-      time: Pick<TimePort, 'clearInterval' | 'setInterval'>;
-    }>,
+  runtime: ShutdownRemainderPruneRuntime & Readonly<{ time: Pick<TimePort, 'clearInterval' | 'setInterval'> }>,
 ): Readonly<{
   start(): ShutdownRemainderPruneDisposition | null;
   stop(): void;
-  readCleanupRefusals(): readonly ShutdownRemainderCleanupRefusal[];
-  readUnreportedCleanupRefusalCount(): number;
+  readCleanupRefusalSnapshot(): ShutdownRemainderCleanupSnapshot;
 }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
   let heldSubjectNames = new Set<string>();
   let cleanupRefusalsByName = new Map<string, ShutdownRemainderCleanupRefusal>();
   let unreportedCleanupRefusalsByName = new Map<string, ShutdownRemainderCleanupRefusal>();
+  let unreportedFreshening = unreportedCleanupRefusalsByName.entries();
   const prune = (retryHeldSubjects: boolean): ShutdownRemainderPruneDisposition => {
     const {
       disposition: result,
@@ -433,21 +439,35 @@ export function createShutdownRemainderPruner(
     );
     cleanupRefusalsByName = new Map(currentCleanupRefusals);
     unreportedCleanupRefusalsByName = new Map(currentUnreportedCleanupRefusals);
+    unreportedFreshening = unreportedCleanupRefusalsByName.entries();
     return result;
   };
+  const freshenCleanupRefusal = (
+    refusalsByName: Map<string, ShutdownRemainderCleanupRefusal>,
+    name: string,
+    refusal: ShutdownRemainderCleanupRefusal,
+  ): void => {
+    const path =
+      refusal.cause.operation === 'scan-directory'
+        ? name
+        : join(shutdownRemainderRecordDirectory(runtime.runDir), name);
+    try {
+      runtime.storage.lstatSync(path);
+    } catch (error: unknown) {
+      if (thrownErrnoCode(error) === 'ENOENT') refusalsByName.delete(name);
+    }
+  };
   const freshenCleanupRefusals = (): void => {
-    for (const refusalsByName of [cleanupRefusalsByName, unreportedCleanupRefusalsByName]) {
-      for (const [name, refusal] of refusalsByName) {
-        const path =
-          refusal.cause.operation === 'scan-directory'
-            ? name
-            : join(shutdownRemainderRecordDirectory(runtime.runDir), name);
-        try {
-          runtime.storage.lstatSync(path);
-        } catch (error: unknown) {
-          if (thrownErrnoCode(error) === 'ENOENT') refusalsByName.delete(name);
-        }
+    for (const [name, refusal] of cleanupRefusalsByName) {
+      freshenCleanupRefusal(cleanupRefusalsByName, name, refusal);
+    }
+    for (let inspected = 0; inspected < SHUTDOWN_REMAINDER_SCAN_LIMIT; inspected += 1) {
+      const next = unreportedFreshening.next();
+      if (next.done) {
+        unreportedFreshening = unreportedCleanupRefusalsByName.entries();
+        break;
       }
+      freshenCleanupRefusal(unreportedCleanupRefusalsByName, next.value[0], next.value[1]);
     }
   };
 
@@ -464,13 +484,12 @@ export function createShutdownRemainderPruner(
       if (timer !== null) runtime.time.clearInterval(timer);
       timer = null;
     },
-    readCleanupRefusals: () => {
+    readCleanupRefusalSnapshot: () => {
       freshenCleanupRefusals();
-      return [...cleanupRefusalsByName.values()];
-    },
-    readUnreportedCleanupRefusalCount: () => {
-      freshenCleanupRefusals();
-      return unreportedCleanupRefusalsByName.size;
+      return {
+        refusals: [...cleanupRefusalsByName.values()],
+        unreportedRefusalCount: unreportedCleanupRefusalsByName.size,
+      };
     },
   };
 }

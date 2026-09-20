@@ -24,6 +24,7 @@ const mockState = vi.hoisted(() => ({
     value: string;
     mtimeMs: number;
     statErrorCode?: string;
+    lstatErrorCode?: string;
     readErrorCode?: string;
     unlinkErrorCode?: string;
   }>,
@@ -103,6 +104,17 @@ vi.mock('#src/runtime/real.js', () => ({
           throw Object.assign(new Error('remainder metadata unavailable'), { code: file.statErrorCode });
         }
         return { mtimeMs: file.mtimeMs };
+      },
+      lstatSync: (path: string) => {
+        const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
+        const file = mockState.remainderFiles.find((candidate) => candidate.name === name);
+        if (file === undefined) {
+          throw Object.assign(new Error('no remainder entry'), { code: 'ENOENT' });
+        }
+        if (file.lstatErrorCode !== undefined) {
+          throw Object.assign(new Error('remainder entry unavailable'), { code: file.lstatErrorCode });
+        }
+        return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
       },
       readFileSync: (path: string) => {
         if (path === '/tmp/coral-startup.json') {
@@ -280,7 +292,14 @@ describe('getBackendStatusFull record disposition', () => {
 
   it('reports the single stage left unscanned by a 129-entry stage scan', async () => {
     mockState.remainderFiles = Array.from({ length: 129 }, (_, index) =>
-      remainderFile(`staged-${index}.json.stage.4242.unobserved.tmp`, NOW - index, '{partial', 'ENOENT'),
+      remainderFile(
+        `staged-${index}.json.stage.4242.unobserved.tmp`,
+        NOW - index,
+        '{partial',
+        undefined,
+        undefined,
+        'ENOENT',
+      ),
     );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -315,7 +334,9 @@ describe('getBackendStatusFull record disposition', () => {
   });
 
   it('does not report a directory entry confirmed gone during the read race', async () => {
-    mockState.remainderFiles = [remainderFile('vanished.json', NOW - 10_000, '{not-json', undefined, 'ENOENT')];
+    mockState.remainderFiles = [
+      remainderFile('vanished.json', NOW - 10_000, '{not-json', undefined, 'ENOENT', 'ENOENT'),
+    ];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -1433,8 +1454,15 @@ function recentShutdownRemainder(
   return report?.status === 'recent_shutdown_remainder' ? report : null;
 }
 
-function remainderFile(name: string, mtimeMs: number, value: string, statErrorCode?: string, readErrorCode?: string) {
-  return { name, mtimeMs, value, statErrorCode, readErrorCode };
+function remainderFile(
+  name: string,
+  mtimeMs: number,
+  value: string,
+  statErrorCode?: string,
+  readErrorCode?: string,
+  lstatErrorCode?: string,
+) {
+  return { name, mtimeMs, value, statErrorCode, readErrorCode, lstatErrorCode };
 }
 
 function shutdownRemainderEntry(
@@ -1801,11 +1829,11 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     });
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
-      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: pruner.readCleanupRefusals() }), {
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: pruner.readCleanupRefusalSnapshot().refusals }), {
         status: 200,
       }),
       new Response(ping('ok'), { status: 200 }),
-      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: pruner.readCleanupRefusals() }), {
+      new Response(detailed('ok', { shutdownRemainderCleanupRefusals: pruner.readCleanupRefusalSnapshot().refusals }), {
         status: 200,
       }),
     );

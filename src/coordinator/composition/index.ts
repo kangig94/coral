@@ -1461,9 +1461,10 @@ export function createCoordinatorCore(
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
-        const shutdownRemainderCleanupRefusals = lifecycleController?.readShutdownRemainderCleanupRefusals() ?? [];
-        const unreportedShutdownRemainderCleanupRefusalCount =
-          lifecycleController?.readUnreportedShutdownRemainderCleanupRefusalCount() ?? 0;
+        const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot() ?? {
+          refusals: [],
+          unreportedRefusalCount: 0,
+        };
 
         let activeJobs = 0;
         let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
@@ -1626,10 +1627,14 @@ export function createCoordinatorCore(
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           components,
           kbDaemon,
-          ...(shutdownRemainderCleanupRefusals.length === 0 ? {} : { shutdownRemainderCleanupRefusals }),
-          ...(unreportedShutdownRemainderCleanupRefusalCount === 0
+          ...(shutdownRemainderCleanup.refusals.length === 0
             ? {}
-            : { unreportedShutdownRemainderCleanupRefusalCount }),
+            : { shutdownRemainderCleanupRefusals: shutdownRemainderCleanup.refusals }),
+          ...(shutdownRemainderCleanup.unreportedRefusalCount === 0
+            ? {}
+            : {
+                unreportedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.unreportedRefusalCount,
+              }),
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
           ...(systemProviderScope === undefined

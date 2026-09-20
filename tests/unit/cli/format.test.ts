@@ -14,7 +14,10 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
-import { shutdownRemainderFilesystemSubject } from '#src/infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderFilesystemSubject,
+} from '#src/infra/shutdown-remainder-record.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   documentedCoralSetupError,
@@ -975,7 +978,7 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
-          'Cleanup refusal: label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES',
+          'Cleanup refusal observed by status process: label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES',
         ].join('\n'),
       );
     });
@@ -1697,7 +1700,7 @@ describe('cli format', () => {
 
       expect(text).toContain('namespace=another-installation flavor=dev');
       expect(text).toContain(
-        'Cleanup refusal: label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES',
+        'Cleanup refusal observed by status process: label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES',
       );
     });
 
@@ -1947,7 +1950,9 @@ describe('cli format', () => {
         },
       });
 
-      expect(text).toContain('Cleanup refusal: label="corrupt.json" operation=delete errno=EACCES');
+      expect(text).toContain(
+        'Cleanup refusal observed by coordinator: label="corrupt.json" operation=delete errno=EACCES',
+      );
       expect(text).not.toMatch(/Retry (?:trigger|action):/u);
     });
 
@@ -1965,10 +1970,10 @@ describe('cli format', () => {
 
       expect(text).toContain('Shutdown remainder cleanup refusal rows this build could not decode: 3');
       expect(text).not.toContain('Shutdown remainder directory entries this build could not use');
-      expect(text).toContain('Additional cleanup refusals not listed: 7');
+      expect(text).toContain('Additional cleanup refusals observed by coordinator but not listed: 7');
     });
 
-    it('replaces a live cleanup refusal with local evidence for the same subject identity', () => {
+    it('renders coordinator and status-process observations separately for the same raw path', () => {
       const subject = shutdownRemainderFilesystemSubject('/run/shutdown-remainder.v1');
       const text = formatBackendStatus({
         status: 'ok',
@@ -1997,9 +2002,81 @@ describe('cli format', () => {
         },
       });
 
-      expect(text.match(/Cleanup refusal:/gu)).toHaveLength(1);
+      expect(text.match(/Cleanup refusal observed by/gu)).toHaveLength(2);
+      expect(text).toContain('observed by coordinator:');
+      expect(text).toContain('operation=scan-directory errno=EACCES');
+      expect(text).toContain('observed by status process:');
       expect(text).toContain('operation=scan-directory errno=EIO');
-      expect(text).not.toContain('errno=EACCES');
+    });
+
+    it('does not merge differently spelled paths without physical-identity evidence', () => {
+      const coordinatorSubject = shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1');
+      const statusSubject = shutdownRemainderFilesystemSubject('/run/coral/../coral/shutdown-remainder.v1');
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          shutdownRemainderCleanupRefusals: [
+            {
+              subject: coordinatorSubject,
+              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
+            },
+          ],
+        },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'scan-failed',
+          cleanupRefusals: [
+            {
+              subject: statusSubject,
+              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
+            },
+          ],
+        },
+      });
+
+      expect(coordinatorSubject.identity).not.toBe(statusSubject.identity);
+      expect(text.match(/Cleanup refusal observed by/gu)).toHaveLength(2);
+      expect(text).toContain('observed by coordinator:');
+      expect(text).toContain('observed by status process:');
+    });
+
+    it('keeps a coordinator overflow count scoped to that observation when the local scan also fails', () => {
+      const directory = '/run/coral/shutdown-remainder.v1';
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          shutdownRemainderCleanupRefusals: Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
+            subject: shutdownRemainderFilesystemSubject(`stage-${index}.json`),
+            cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
+            retry: { trigger: 'remainder-maintenance' as const, action: 'rescan-subject' as const },
+          })),
+          unreportedShutdownRemainderCleanupRefusalCount: 1,
+        },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'scan-failed',
+          cleanupRefusals: [
+            {
+              subject: shutdownRemainderFilesystemSubject(directory),
+              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
+            },
+          ],
+        },
+      });
+
+      expect(text).toContain('Additional cleanup refusals observed by coordinator but not listed: 1');
+      expect(text).toContain(
+        `Cleanup refusal observed by status process: label=${JSON.stringify(directory)} operation=scan-directory errno=EIO`,
+      );
     });
 
     it('does not print an empty or false remainder headline', () => {
@@ -2128,13 +2205,26 @@ describe('cli format', () => {
       },
     );
 
-    it('formats a shutting-down backend status', () => {
-      expect(
-        formatBackendStatus({
-          status: 'shutting_down',
-          liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
-        }),
-      ).toBe('Backend shutting down');
+    it('distinguishes uninspected live cleanup evidence from an observed empty set', () => {
+      const unavailable = formatBackendStatus({
+        status: 'shutting_down',
+        liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      });
+      const availableEmpty = formatBackendStatus({
+        status: 'shutting_down',
+        liveCleanupRefusals: {
+          kind: 'available',
+          refusals: [],
+          unreportedCount: 0,
+          malformedRowCount: 0,
+        },
+      });
+
+      expect(unavailable).toBe(
+        "Backend shutting down\nThe draining coordinator's cleanup refusals were not inspected.",
+      );
+      expect(availableEmpty).toBe('Backend shutting down');
+      expect(unavailable).not.toBe(availableEmpty);
     });
 
     it('formats an unauthorized backend status with a recovery hint', () => {

@@ -115,11 +115,12 @@ import {
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
-import { createShutdownRemainderPruner, recordShutdownRemainder } from './shutdown-remainder.js';
 import {
-  observeShutdownRemainderStageWriter,
-  type ShutdownRemainderCleanupRefusal,
-} from '../infra/shutdown-remainder-record.js';
+  createShutdownRemainderPruner,
+  recordShutdownRemainder,
+  type ShutdownRemainderCleanupSnapshot,
+} from './shutdown-remainder.js';
+import { observeShutdownRemainderStageWriter } from '../infra/shutdown-remainder-record.js';
 import type {
   ShutdownObligationAbandonRequest,
   ShutdownObligationAbandonResult,
@@ -840,8 +841,7 @@ export type LifecycleController = {
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
-  readShutdownRemainderCleanupRefusals(): readonly ShutdownRemainderCleanupRefusal[];
-  readUnreportedShutdownRemainderCleanupRefusalCount(): number;
+  readShutdownRemainderCleanupSnapshot(): ShutdownRemainderCleanupSnapshot;
 };
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
@@ -1763,7 +1763,6 @@ export function createLifecycle(
       return Promise.reject(new Error('Shutdown has not been requested'));
     },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
-    readShutdownRemainderCleanupRefusals: () => remainderPruner.readCleanupRefusals(),
-    readUnreportedShutdownRemainderCleanupRefusalCount: () => remainderPruner.readUnreportedCleanupRefusalCount(),
+    readShutdownRemainderCleanupSnapshot: () => remainderPruner.readCleanupRefusalSnapshot(),
   };
 }
