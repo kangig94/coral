@@ -83,6 +83,7 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
 
 export type ShutdownRemainderCleanupSnapshot = Readonly<{
   refusals: readonly ShutdownRemainderCleanupRefusal[];
+  nextRefusalCursor?: string;
   resolvedRefusalCount: number;
   absentRefusalCount: number;
   unobservableRefusalCount: number;
@@ -124,13 +125,14 @@ function recordCleanupFailure(
   name: string,
   operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
   error: unknown,
-): void {
+): 'absent' | 'refused' {
   const refusal = shutdownRemainderCleanupRefusal(name, operation, error);
   if (refusal === null) {
     forgetCleanupFailure(collection, name);
-    return;
+    return 'absent';
   }
   collection.bySubject.set(name, refusal);
+  return 'refused';
 }
 
 function pruneDisposition(
@@ -269,7 +271,9 @@ function pruneShutdownRemainderRecordsWithRefusals(
           runtime.storage.unlinkSync(path);
           resolveCleanupFailure(name);
         } catch (error: unknown) {
-          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
+          if (recordCleanupFailure(cleanupRefusals, name, 'delete', error) === 'absent') {
+            absentCleanupSubjectNames.add(name);
+          }
         }
         continue;
       }
@@ -285,11 +289,10 @@ function pruneShutdownRemainderRecordsWithRefusals(
           resolveCleanupFailure(name);
           continue;
         } catch (error: unknown) {
-          if (thrownErrnoCode(error) === 'ENOENT') {
-            forgetCleanupFailure(cleanupRefusals, name);
+          if (recordCleanupFailure(cleanupRefusals, name, 'promote', error) === 'absent') {
+            absentCleanupSubjectNames.add(name);
             continue;
           }
-          recordCleanupFailure(cleanupRefusals, name, 'promote', error);
         }
       }
       if (writerObservation === 'alive') {
@@ -336,7 +339,9 @@ function pruneShutdownRemainderRecordsWithRefusals(
             `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: content is not valid JSON`,
           );
         } catch (error: unknown) {
-          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
+          if (recordCleanupFailure(cleanupRefusals, name, 'delete', error) === 'absent') {
+            absentCleanupSubjectNames.add(name);
+          }
         }
         continue;
       }
@@ -356,7 +361,9 @@ function pruneShutdownRemainderRecordsWithRefusals(
             `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: filename does not match instance identity`,
           );
         } catch (error: unknown) {
-          recordCleanupFailure(cleanupRefusals, name, 'delete', error);
+          if (recordCleanupFailure(cleanupRefusals, name, 'delete', error) === 'absent') {
+            absentCleanupSubjectNames.add(name);
+          }
         }
         continue;
       }
@@ -375,7 +382,9 @@ function pruneShutdownRemainderRecordsWithRefusals(
         runtime.storage.unlinkSync(join(directory, name));
         resolveCleanupFailure(name);
       } catch (error: unknown) {
-        recordCleanupFailure(cleanupRefusals, name, 'delete', error);
+        if (recordCleanupFailure(cleanupRefusals, name, 'delete', error) === 'absent') {
+          absentCleanupSubjectNames.add(name);
+        }
       }
     }
     return result(true);
@@ -393,7 +402,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       };
     }
     for (const name of heldSubjectNames) quarantine(name);
-    recordCleanupFailure(cleanupRefusals, directory, 'scan-directory', error);
+    void recordCleanupFailure(cleanupRefusals, directory, 'scan-directory', error);
     return result(false);
   }
 }
@@ -409,7 +418,7 @@ export function createShutdownRemainderPruner(
 ): Readonly<{
   start(): ShutdownRemainderPruneDisposition | null;
   stop(): void;
-  readCleanupRefusalSnapshot(): ShutdownRemainderCleanupSnapshot;
+  readCleanupRefusalSnapshot(after?: string): ShutdownRemainderCleanupSnapshot;
 }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
@@ -482,16 +491,25 @@ export function createShutdownRemainderPruner(
     observedAt = runtime.time.now === undefined ? null : nowIsoString(runtime.time.now());
     return result;
   };
-  const readCleanupRefusalSnapshot = (): ShutdownRemainderCleanupSnapshot => {
+  const readCleanupRefusalSnapshot = (after?: string): ShutdownRemainderCleanupSnapshot => {
+    const remainingRefusals = [...cleanupRefusalsByName.values()]
+      .sort(
+        (left, right) =>
+          left.subject.identity.localeCompare(right.subject.identity) ||
+          left.subject.label.localeCompare(right.subject.label),
+      )
+      .filter((refusal) => after === undefined || refusal.subject.identity.localeCompare(after) > 0);
+    const refusals = remainingRefusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    const nextRefusalCursor =
+      remainingRefusals.length > refusals.length ? refusals.at(-1)?.subject.identity : undefined;
     return {
-      refusals: [...cleanupRefusalsByName.values()]
-        .sort((left, right) => left.subject.label.localeCompare(right.subject.label))
-        .slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT),
+      refusals,
+      ...(nextRefusalCursor === undefined ? {} : { nextRefusalCursor }),
       resolvedRefusalCount: resolvedCleanupRefusalCount,
       absentRefusalCount: absentCleanupRefusalCount,
       unobservableRefusalCount: unobservableCleanupRefusalCount,
       uncheckedRefusalCount: uncheckedCleanupRefusalCount,
-      overflowedRefusalCount: Math.max(0, cleanupRefusalsByName.size - SHUTDOWN_REMAINDER_SCAN_LIMIT),
+      overflowedRefusalCount: Math.max(0, remainingRefusals.length - SHUTDOWN_REMAINDER_SCAN_LIMIT),
       observedAt,
       retry,
     };

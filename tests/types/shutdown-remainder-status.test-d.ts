@@ -69,22 +69,13 @@ type ExpectedProjectionLeafPaths =
   | 'unusableEntryCount'
   | 'notInspectedEntryCount'
   | 'futureDatedRecordCount'
-  | 'unreadableRecordNames[]'
-  | 'cleanupRefusals'
-  | 'cleanupRefusals[].subject.identity'
-  | 'cleanupRefusals[].subject.label'
-  | 'cleanupRefusals[].cause.kind'
-  | 'cleanupRefusals[].cause.operation'
-  | 'cleanupRefusals[].cause.code';
+  | 'unreadableRecordNames[]';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
   | 'record.entries[].remainder.evidence.processes[].jobId'
-  | 'unreadableRecordNames[]'
-  | 'cleanupRefusals[].subject.identity'
-  | 'cleanupRefusals[].subject.label'
-  | 'cleanupRefusals[].cause.code';
+  | 'unreadableRecordNames[]';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -134,9 +125,9 @@ declare const unusableEntryCount: ShutdownRemainderStatus['unusableEntryCount'];
 void unusableEntryCount;
 declare const notInspectedEntryCount: ShutdownRemainderStatus['notInspectedEntryCount'];
 void notInspectedEntryCount;
+// @ts-expect-error cleanup refusals are produced only by the scan-failed variant.
 declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
-const cleanupRefusedSubjectName: string = cleanupRefusals?.[0]?.subject.label ?? '';
-void cleanupRefusedSubjectName;
+void cleanupRefusals;
 // @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
 // unreadable name list and class counts cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];

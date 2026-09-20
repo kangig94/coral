@@ -304,7 +304,6 @@ export type ShutdownRemainderReport =
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }> &
-      OperatorFacingShutdownRemainderCleanup &
       OperatorFacingShutdownRemainderDirectoryEvidence)
   | (Readonly<{
       status: 'shutdown_remainder_unreadable';
@@ -315,13 +314,12 @@ export type ShutdownRemainderReport =
       status: 'shutdown_remainder_unreadable';
       reason: 'records-skipped';
     }> &
-      OperatorFacingShutdownRemainderCleanup &
       OperatorFacingShutdownRemainderDirectoryEvidence)
   | (Readonly<{
       status: 'shutdown_remainder_clock_skew';
-      futureDatedRecordCount: number;
+      record: OperatorFacingShutdownRemainderRecord;
+      skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }> &
-      OperatorFacingShutdownRemainderCleanup &
       OperatorFacingShutdownRemainderDirectoryEvidence);
 
 export type BackendStatusFull =
@@ -616,10 +614,18 @@ function readRecentShutdownRemainder(
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, {
-      kind: 'probabilistic',
-      generation: Math.floor(now / 60_000),
-    });
+    const records: ShutdownRemainderRecordScan['records'][number][] = [];
+    const skippedEntries: ShutdownRemainderRecordScan['skippedEntries'][number][] = [];
+    const skippedRecords: ShutdownRemainderRecordScan['skippedRecords'][number][] = [];
+    let after: string | undefined;
+    do {
+      const page = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, { after });
+      records.push(...page.records);
+      skippedEntries.push(...page.skippedEntries);
+      skippedRecords.push(...page.skippedRecords);
+      after = page.nextCursor;
+    } while (after !== undefined);
+    scan = { records, skippedEntries, skippedRecords };
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
     if (refusal === null) {
@@ -671,19 +677,32 @@ function readRecentShutdownRemainder(
     ...(futureDatedRecordCount === 0 ? {} : { futureDatedRecordCount }),
     unreadableRecordNames,
   };
-  const record = scopedRecords
+  const orderedRecords = scopedRecords.sort(
+    (left, right) =>
+      left.recordedAt - right.recordedAt || left.candidate.instanceId.localeCompare(right.candidate.instanceId),
+  );
+  const record = orderedRecords
     .filter(({ recordedAt }) => recordedAt <= now && now - recordedAt <= RECENT_COORDINATOR_RECORD_MS)
-    .sort(
-      (left, right) =>
-        left.recordedAt - right.recordedAt || left.candidate.instanceId.localeCompare(right.candidate.instanceId),
-    )
     .at(-1)?.candidate;
+  const reportRecord = (
+    candidate: (typeof scopedRecords)[number]['candidate'],
+  ): Pick<Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>, 'record' | 'skippedEntries'> => ({
+    record: operatorFacingShutdownRemainder(candidate),
+    skippedEntries: scan.skippedEntries
+      .filter((entry) => entry.recordInstanceId === candidate.instanceId)
+      .map((entry) => ({
+        entryNumber: entry.entryNumber,
+        obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+        owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
+      })),
+  });
   if (record === undefined) {
-    if (futureDatedRecordCount > 0) {
+    const timestampSuspectRecord = orderedRecords.at(-1)?.candidate;
+    if (timestampSuspectRecord !== undefined) {
       return {
         status: 'shutdown_remainder_clock_skew',
+        ...reportRecord(timestampSuspectRecord),
         ...directoryEvidence,
-        futureDatedRecordCount,
       };
     }
     if (unusableEntryCount === 0 && notInspectedEntryCount === 0) return null;
@@ -695,14 +714,7 @@ function readRecentShutdownRemainder(
   }
   return {
     status: 'recent_shutdown_remainder',
-    record: operatorFacingShutdownRemainder(record),
-    skippedEntries: scan.skippedEntries
-      .filter((entry) => entry.recordInstanceId === record.instanceId)
-      .map((entry) => ({
-        entryNumber: entry.entryNumber,
-        obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
-        owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
-      })),
+    ...reportRecord(record),
     ...directoryEvidence,
   };
 }
@@ -780,18 +792,16 @@ function shuttingDownStatus(
   };
 }
 
-/**
- * The unauthenticated `/health` ping. Returns a terminal status, or `null` to mean "this said nothing that
- * ends the question — go on to the detailed probe".
- *
- * Split out because the two probes are structurally the same shape (fetch, parse, check identity, check drain)
- * and reading them inline meant holding both in view at once to see that only one of them can return `ok`.
- */
+type PingProbeObservation = Readonly<{
+  result: AddressedProbeStatus | null;
+  instanceId?: string;
+}>;
+
 async function probeUnauthenticatedPing(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string }>,
   notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => AddressedAmbiguityStatus,
   unreachable: (detail: string) => AddressedAmbiguityStatus,
-): Promise<AddressedProbeStatus | null> {
+): Promise<PingProbeObservation> {
   const response = await fetch(`http://${info.host}:${info.port}/health`, {
     method: 'GET',
     signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
@@ -801,35 +811,50 @@ async function probeUnauthenticatedPing(
     // A body this build cannot decode names no peer, so it may only be classified unreachable — never as
     // another coordinator's, and never as a coordinator that answered.
     if (!isBackendPing(body)) {
-      return unreachable('health responded 200 with a body this build could not decode');
+      return { result: unreachable('health responded 200 with a body this build could not decode') };
     }
     if (body.namespace !== info.namespace || body.flavor !== info.flavor) {
-      return notOurCoordinator({ namespace: body.namespace, flavor: body.flavor });
+      return { result: notOurCoordinator({ namespace: body.namespace, flavor: body.flavor }) };
     }
-    return body.status === 'draining'
-      ? shuttingDownStatus({ kind: 'unavailable', reason: 'coordinator-draining' })
-      : null;
+    return {
+      result:
+        body.status === 'draining' ? shuttingDownStatus({ kind: 'unavailable', reason: 'coordinator-draining' }) : null,
+      instanceId: body.instanceId,
+    };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return unreachable(`health responded ${response.status} without a verified Coral health body`);
+    return { result: unreachable(`health responded ${response.status} without a verified Coral health body`) };
   }
-  return unreachable(`health responded ${response.status}`);
+  return { result: unreachable(`health responded ${response.status}`) };
 }
 
-/** The authenticated `/health?detailed=1` probe. Always terminal: it is the last thing asked. */
 async function probeDetailedHealth(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string; bootToken: string }>,
   notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => AddressedAmbiguityStatus,
   unreachable: (detail: string) => AddressedAmbiguityStatus,
+  expectedInstanceId?: string,
 ): Promise<AddressedProbeStatus> {
-  const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1`, {
-    method: 'GET',
-    headers: { 'X-Coral-Boot-Token': info.bootToken },
-    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-  });
-  const body = await parseJsonResponse(response);
-  if (response.status === 200) {
-    // Same split as the unauthenticated ping: a shape rejection says nothing about whose coordinator this is.
+  let cursor: string | undefined;
+  let instanceId = expectedInstanceId;
+  let refusals: ShutdownRemainderCleanupRefusal[] = [];
+  let malformedRowCount = 0;
+  let replacementCount = 0;
+  const seenCursors = new Set<string>();
+  for (;;) {
+    const cursorQuery = cursor === undefined ? '' : `&shutdownRemainderCleanupAfter=${encodeURIComponent(cursor)}`;
+    const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1${cursorQuery}`, {
+      method: 'GET',
+      headers: { 'X-Coral-Boot-Token': info.bootToken },
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+    const body = await parseJsonResponse(response);
+    if (response.status !== 200) {
+      if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
+        return unreachable(`detailed health responded ${response.status} without a verified Coral health body`);
+      }
+      if (response.status === 401) return { status: 'unauthorized' };
+      return unreachable(`detailed health responded ${response.status}`);
+    }
     const parsed = parseBackendHealth(body);
     if (parsed === null) {
       return unreachable('detailed health responded 200 with a body this build could not decode');
@@ -843,10 +868,34 @@ async function probeDetailedHealth(
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
+    if (cursor !== undefined && instanceId !== undefined && health.instanceId !== instanceId) {
+      replacementCount += 1;
+      if (replacementCount > 2) {
+        return unreachable('coordinator changed repeatedly during detailed health pagination');
+      }
+      cursor = undefined;
+      instanceId = health.instanceId;
+      refusals = [];
+      malformedRowCount = 0;
+      seenCursors.clear();
+      continue;
+    }
+    instanceId = health.instanceId;
+    refusals.push(...(health.shutdownRemainderCleanupRefusals ?? []));
+    malformedRowCount += malformedShutdownRemainderCleanupRefusalRowCount ?? 0;
+    const nextCursor = health.shutdownRemainderCleanupNextCursor;
+    if (nextCursor !== undefined) {
+      if (nextCursor === cursor || seenCursors.has(nextCursor)) {
+        return unreachable('detailed health repeated a cleanup-refusal continuation cursor');
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+      continue;
+    }
     if (health.status === 'draining') {
       return shuttingDownStatus({
         kind: 'available',
-        refusals: health.shutdownRemainderCleanupRefusals ?? [],
+        refusals,
         resolvedCount: health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
         absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
         unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
@@ -854,28 +903,28 @@ async function probeDetailedHealth(
         overflowedCount: health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
         observedAt: health.shutdownRemainderCleanupObservedAt ?? null,
         retry: health.shutdownRemainderCleanupRetry ?? null,
-        malformedRowCount: malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
+        malformedRowCount,
       });
     }
-    const { namespace: _namespace, status: _status, ...rest } = health;
+    const {
+      namespace: _namespace,
+      status: _status,
+      shutdownRemainderCleanupNextCursor: _nextCursor,
+      shutdownRemainderCleanupRefusals: _pageRefusals,
+      ...rest
+    } = health;
     return {
       status: 'ok',
       health: {
         ...rest,
         status: 'ok' as const,
-        ...((malformedShutdownRemainderCleanupRefusalRowCount ?? 0) === 0
-          ? {}
-          : { malformedShutdownRemainderCleanupRefusalRowCount }),
+        ...(refusals.length === 0 ? {} : { shutdownRemainderCleanupRefusals: refusals }),
+        ...(malformedRowCount === 0 ? {} : { malformedShutdownRemainderCleanupRefusalRowCount: malformedRowCount }),
         skippedProviderProxySetRows,
         skippedProviderProxySetTokens,
       },
     };
   }
-  if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return unreachable(`detailed health responded ${response.status} without a verified Coral health body`);
-  }
-  if (response.status === 401) return { status: 'unauthorized' };
-  return unreachable(`detailed health responded ${response.status}`);
 }
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
@@ -970,15 +1019,19 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-    if (ping?.status === 'shutting_down') {
+    if (ping.result?.status === 'shutting_down') {
       try {
-        const detailed = await probeDetailedHealth(info, notOurCoordinator, unreachable);
-        result = detailed.status === 'shutting_down' ? detailed : ping;
+        result = await probeDetailedHealth(info, notOurCoordinator, unreachable, ping.instanceId);
       } catch {
-        result = ping;
+        const confirmation = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
+        result =
+          confirmation.instanceId === ping.instanceId && confirmation.result?.status === 'shutting_down'
+            ? ping.result
+            : (confirmation.result ??
+              (await probeDetailedHealth(info, notOurCoordinator, unreachable, confirmation.instanceId)));
       }
     } else {
-      result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
+      result = ping.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable, ping.instanceId));
     }
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused

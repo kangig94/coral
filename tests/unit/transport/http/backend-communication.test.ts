@@ -56,6 +56,21 @@ async function startHttpServer(ports: HttpHandlerPorts): Promise<string> {
 }
 
 describe('transport/http backend communication', () => {
+  it('passes the cleanup-refusal continuation cursor to detailed health', async () => {
+    const ports = recoveryPorts({ clear: vi.fn() });
+    const read = vi.fn((cursor?: string) => ({ cursor }));
+    (ports as unknown as { health: { read: typeof read } }).health = { read };
+    const baseUrl = await startHttpServer(ports);
+
+    const response = await fetch(`${baseUrl}/health?detailed=1&shutdownRemainderCleanupAfter=subject-identity`, {
+      headers: { 'X-Coral-Boot-Token': ports.identity.bootToken },
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ cursor: 'subject-identity' });
+    expect(read).toHaveBeenCalledWith('subject-identity');
+  });
+
   it('projects recovery quarantine clear without widening HTTP backend-token capabilities', async () => {
     const clear = vi.fn();
     const ports = recoveryPorts({ clear });

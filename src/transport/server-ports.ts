@@ -362,6 +362,7 @@ export type HealthSnapshot = {
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
+  shutdownRemainderCleanupNextCursor?: string;
   resolvedShutdownRemainderCleanupRefusalCount?: number;
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
@@ -398,7 +399,7 @@ export type HealthSnapshot = {
 };
 
 interface HealthSnapshotPort {
-  read(): HealthSnapshot;
+  read(shutdownRemainderCleanupCursor?: string): HealthSnapshot;
 }
 
 export type RemoteHttpAccessPolicy = {

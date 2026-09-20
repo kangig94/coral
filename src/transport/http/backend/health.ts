@@ -127,6 +127,7 @@ export interface BackendHealth {
   };
   components: TransportRuntimeComponentStatus[];
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
+  shutdownRemainderCleanupNextCursor?: string;
   resolvedShutdownRemainderCleanupRefusalCount?: number;
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
@@ -808,6 +809,8 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
     (value.shutdownRemainderCleanupRefusals !== undefined && cleanupRefusals === null) ||
+    (value.shutdownRemainderCleanupNextCursor !== undefined &&
+      typeof value.shutdownRemainderCleanupNextCursor !== 'string') ||
     (value.resolvedShutdownRemainderCleanupRefusalCount !== undefined &&
       (typeof value.resolvedShutdownRemainderCleanupRefusalCount !== 'number' ||
         !Number.isSafeInteger(value.resolvedShutdownRemainderCleanupRefusalCount) ||

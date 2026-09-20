@@ -977,7 +977,7 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
-          'Cleanup refusal observed by status process: label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES',
+          `Cleanup refusal observed by status process: identity=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES`,
         ].join('\n'),
       );
     });
@@ -1698,7 +1698,7 @@ describe('cli format', () => {
 
       expect(text).toContain('namespace=another-installation flavor=dev');
       expect(text).toContain(
-        'Cleanup refusal observed by status process: label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES',
+        `Cleanup refusal observed by status process: identity=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} label="/run/coral/shutdown-remainder.v1" operation=scan-directory errno=EACCES`,
       );
     });
 
@@ -1931,7 +1931,7 @@ describe('cli format', () => {
       );
     });
 
-    it('renders each cleanup refusal as one label, operation, and errno line', () => {
+    it('renders each cleanup refusal as one identity, label, operation, and errno line', () => {
       const text = formatBackendStatus({
         status: 'ok',
         health: {
@@ -1948,7 +1948,7 @@ describe('cli format', () => {
       });
 
       expect(text).toContain(
-        'Cleanup refusal observed by coordinator: label="corrupt.json" operation=delete errno=EACCES',
+        `Cleanup refusal observed by coordinator: identity=${shutdownRemainderFilesystemSubject('corrupt.json').identity} label="corrupt.json" operation=delete errno=EACCES`,
       );
       expect(text).not.toMatch(/Retry (?:trigger|action):/u);
     });
@@ -1976,15 +1976,24 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_clock_skew',
           futureDatedRecordCount: 1,
+          record: {
+            instanceId: 'future',
+            recordedAt: '2026-09-20T00:10:00.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [],
+          },
+          skippedEntries: [],
           unusableEntryCount: 0,
           unreadableRecordNames: [],
         },
       });
 
       expect(text).toContain(
-        'Shutdown remainder clock-skew evidence: 1 readable record(s) are dated after this status observation and were not selected as recent.',
+        'Shutdown remainder clock-skew evidence: 1 readable record(s) are dated after this status observation.',
       );
       expect(text).not.toContain('Coral recorded a recent shutdown');
+      expect(text).toContain('Instance: future');
     });
 
     it('renders coordinator and status-process observations separately for the same raw path', () => {
@@ -2101,7 +2110,7 @@ describe('cli format', () => {
         'Cleanup-refusal snapshot observed at 2026-09-20T00:00:00.000Z; retry is stopped until the next coordinator startup.',
       );
       expect(text).toContain(
-        `Cleanup refusal observed by status process: label=${JSON.stringify(directory)} operation=scan-directory errno=EIO`,
+        `Cleanup refusal observed by status process: identity=${shutdownRemainderFilesystemSubject(directory).identity} label=${JSON.stringify(directory)} operation=scan-directory errno=EIO`,
       );
     });
 

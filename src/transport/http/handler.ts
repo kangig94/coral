@@ -1005,12 +1005,13 @@ function readHttpPingSnapshot(deps: HttpHandlerPorts): {
 
 async function readDetailedHealthSnapshot(
   deps: HttpHandlerPorts,
+  shutdownRemainderCleanupCursor?: string,
 ): Promise<ReturnType<HttpHandlerPorts['health']['read']>> {
-  let health = deps.health.read();
+  let health = deps.health.read(shutdownRemainderCleanupCursor);
   if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
     try {
       await deps.admin.probeKbDaemon();
-      health = deps.health.read();
+      health = deps.health.read(shutdownRemainderCleanupCursor);
     } catch {
       // Detailed health must stay available even if the child probe path itself fails.
     }
@@ -1187,13 +1188,20 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[0],
       pattern: compilePathPattern(transportLocalRoutes[0].path),
-      handle: async (req, res, _parsedUrl, spec) => {
+      handle: async (req, res, parsedUrl, spec) => {
         req.resume();
         if (spec.dispatch.kind === 'ping') {
           sendJson(res, 200, readHttpPingSnapshot(deps));
           return;
         }
-        sendJson(res, 200, await readDetailedHealthSnapshot(deps));
+        sendJson(
+          res,
+          200,
+          await readDetailedHealthSnapshot(
+            deps,
+            parsedUrl.searchParams.get('shutdownRemainderCleanupAfter') ?? undefined,
+          ),
+        );
       },
     },
     {

@@ -32,6 +32,7 @@ const mockState = vi.hoisted(() => ({
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
   stageLiveness: 'unknown' as 'alive' | 'absent' | 'unknown',
+  now: 1_700_000_000_000,
 }));
 
 // Mocked at the seam this function depends on. `status` and `shutdown` ask the same three questions about the
@@ -148,7 +149,7 @@ vi.mock('#src/runtime/real.js', () => ({
       observeLiveness: () => mockState.stageLiveness,
       readProcessIncarnation: () => null,
     },
-    time: { now: () => 1_700_000_000_000 },
+    time: { now: () => mockState.now },
     paths: {
       coral: {
         coordinator: {
@@ -187,6 +188,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
     mockState.stageLiveness = 'unknown';
+    mockState.now = NOW;
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -290,7 +292,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('reports the single stage left unscanned by a 129-entry stage scan', async () => {
+  it('follows the continuation and inspects all 129 stages', async () => {
     mockState.remainderFiles = Array.from({ length: 129 }, (_, index) =>
       remainderFile(
         `staged-${index}.json.stage.4242.unobserved.tmp`,
@@ -304,16 +306,7 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'no_record_no_socket',
-      shutdownRemainder: {
-        status: 'shutdown_remainder_unreadable',
-        reason: 'records-skipped',
-        unusableEntryCount: 0,
-        notInspectedEntryCount: 1,
-        unreadableRecordNames: [],
-      },
-    });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
   // Same disposition with a known, stale mtime: neither reason is filtered by age.
@@ -504,6 +497,29 @@ describe('getBackendStatusFull record disposition', () => {
         futureDatedRecordCount: 1,
         unusableEntryCount: 0,
         unreadableRecordNames: [],
+      },
+    });
+  });
+
+  it('keeps future-dated obligations visible after the timestamp passes outside the recent window', async () => {
+    mockState.remainderFiles = [
+      remainderFile('future.json', NOW + 10 * 60_000, shutdownRemainder('future', NOW + 10 * 60_000)),
+    ];
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      shutdownRemainder: {
+        status: 'shutdown_remainder_clock_skew',
+        record: { instanceId: 'future' },
+        futureDatedRecordCount: 1,
+      },
+    });
+
+    mockState.now = NOW + 16 * 60_000;
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      shutdownRemainder: {
+        status: 'shutdown_remainder_clock_skew',
+        record: { instanceId: 'future' },
       },
     });
   });
@@ -906,7 +922,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('reports an undecodable shutdown remainder even when another readable record is stale', async () => {
+  it('reports a stale readable remainder with its obligations and counts an undecodable neighbor', async () => {
     mockState.remainderFiles = [
       remainderFile('stale.json', NOW - 300_001, shutdownRemainder('stale', NOW - 300_001)),
       remainderFile('corrupt.json', NOW - 10_000, '{not-json'),
@@ -914,11 +930,11 @@ describe('getBackendStatusFull record disposition', () => {
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
       shutdownRemainder: {
-        status: 'shutdown_remainder_unreadable',
-        reason: 'records-skipped',
+        status: 'shutdown_remainder_clock_skew',
+        record: { instanceId: 'stale' },
         unusableEntryCount: 1,
         unreadableRecordNames: [],
       },
@@ -986,12 +1002,18 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
-  it('does not report a shutdown remainder outside the recent-record window', async () => {
+  it('does not let the recent-record window suppress unfinished obligations', async () => {
     mockState.remainderFiles = [remainderFile('stale.json', NOW - 300_001, shutdownRemainder('stale', NOW - 300_001))];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_clock_skew',
+        record: { instanceId: 'stale' },
+      },
+    });
   });
 
   it('uses the documented template instead of persisted setup-error text', async () => {
@@ -1563,6 +1585,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
     mockState.stageLiveness = 'unknown';
+    mockState.now = NOW;
   });
 
   it('reports a diagnostic recorded during this run', async () => {
@@ -1826,6 +1849,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.remainderFiles = [];
     mockState.remainderScanErrorCode = null;
     mockState.strictIdentityProven = true;
+    mockState.now = NOW;
   });
 
   // Unlike the first `describe` in this file, none of the tests below restored `fetch` on their own —
@@ -1922,7 +1946,50 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(stopped.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
   });
 
-  it('reports disk evidence when the draining coordinator detailed probe is unavailable', async () => {
+  it('follows cleanup-refusal continuations and returns every identity', async () => {
+    const first = {
+      subject: shutdownRemainderFilesystemSubject('a.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+    };
+    const second = {
+      subject: shutdownRemainderFilesystemSubject('z.json'),
+      cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
+    };
+    const fetchMock = stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [first],
+          shutdownRemainderCleanupNextCursor: first.subject.identity,
+          overflowedShutdownRemainderCleanupRefusalCount: 1,
+        }),
+        { status: 200 },
+      ),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [second],
+          overflowedShutdownRemainderCleanupRefusalCount: 0,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: {
+        shutdownRemainderCleanupRefusals: [first, second],
+        overflowedShutdownRemainderCleanupRefusalCount: 0,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      `http://127.0.0.1:4321/health?detailed=1&shutdownRemainderCleanupAfter=${first.subject.identity}`,
+    );
+  });
+
+  it('keeps disk evidence while returning the later unverified detailed response', async () => {
     mockState.remainderFiles = [
       remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
     ];
@@ -1931,8 +1998,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'shutting_down',
-      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      status: 'unreachable',
+      detail: 'detailed health responded 500',
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'test-instance' },
@@ -1941,8 +2008,16 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('falls back to a draining ping when the detailed diagnostic is unavailable', async () => {
-    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
+  it('falls back to a draining ping only after the same instance confirms it still owns the address', async () => {
+    const responses = [
+      new Response(ping('draining'), { status: 200 }),
+      new Response(ping('draining'), { status: 200 }),
+    ];
+    const fetchMock = vi.fn(async () => {
+      if (fetchMock.mock.calls.length === 2) throw new TypeError('fetch failed');
+      return responses.shift() ?? new Response('{}', { status: 500 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
@@ -1950,7 +2025,33 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       status: 'shutting_down',
       liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns unauthorized when a replacement rejects the draining coordinator boot token', async () => {
+    stubProbes(new Response(ping('draining'), { status: 200 }), new Response('{}', { status: 401 }));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
+  });
+
+  it('returns a foreign peer observed after the draining coordinator leaves the address', async () => {
+    const foreignDetailed = { ...JSON.parse(detailed('ok')), namespace: 'replacement' } as Record<string, unknown>;
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(JSON.stringify(foreignDetailed), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'unreachable',
+      cause: 'foreign_peer',
+      observed: { namespace: 'replacement', flavor: 'prod' },
+      pid: 12345,
+      recordPath: '/run/coral/coordinator.json',
+    });
   });
 
   it('reports malformed cleanup rows without counting them as resolved refusals', async () => {

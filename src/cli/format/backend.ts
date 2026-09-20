@@ -1308,10 +1308,15 @@ function formatShutdownRemainderReport(
   report: ShutdownRemainderReport | undefined,
   liveEvidence: LiveShutdownRemainderEvidence,
 ): string {
-  const lines = report?.status === 'recent_shutdown_remainder' ? formatRecentShutdownRemainderReport(report) : [];
+  const lines =
+    report?.status === 'recent_shutdown_remainder' || report?.status === 'shutdown_remainder_clock_skew'
+      ? formatShutdownRemainderRecord(report)
+      : [];
   if (report?.status === 'shutdown_remainder_clock_skew') {
-    lines.push(
-      `Shutdown remainder clock-skew evidence: ${report.futureDatedRecordCount} readable record(s) are dated after this status observation and were not selected as recent.`,
+    lines.unshift(
+      (report.futureDatedRecordCount ?? 0) > 0
+        ? `Shutdown remainder clock-skew evidence: ${report.futureDatedRecordCount} readable record(s) are dated after this status observation.`
+        : 'Shutdown remainder clock-skew evidence: the record timestamp is outside the trusted recent window.',
     );
   }
   const directoryEvidence =
@@ -1346,7 +1351,11 @@ function formatShutdownRemainderReport(
   if (liveEvidence.kind === 'available') {
     lines.push(...formatShutdownRemainderCleanupRefusals(liveEvidence.observation));
   }
-  if (report?.cleanupRefusals !== undefined) {
+  if (
+    report?.status === 'shutdown_remainder_unreadable' &&
+    report.reason === 'scan-failed' &&
+    report.cleanupRefusals !== undefined
+  ) {
     lines.push(
       ...formatShutdownRemainderCleanupRefusals({
         source: 'status process',
@@ -1364,11 +1373,13 @@ function formatShutdownRemainderReport(
   return lines.join('\n');
 }
 
-function formatRecentShutdownRemainderReport(
-  result: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>,
+function formatShutdownRemainderRecord(
+  result: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' | 'shutdown_remainder_clock_skew' }>,
 ): string[] {
   const lines = [
-    'Coral recorded a recent shutdown with unfinished obligations.',
+    result.status === 'recent_shutdown_remainder'
+      ? 'Coral recorded a recent shutdown with unfinished obligations.'
+      : 'Coral recorded a shutdown with unfinished obligations and an untrusted timestamp.',
     `Instance: ${result.record.instanceId}`,
     `Recorded at: ${result.record.recordedAt}`,
     `Reason: ${result.record.reason}`,
@@ -1444,7 +1455,7 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
   const lines = [
     ...observation.refusals.map(
       (refusal) =>
-        `Cleanup refusal observed by ${observation.source}: label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
+        `Cleanup refusal observed by ${observation.source}: identity=${refusal.subject.identity} label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
     ),
     ...(observation.resolvedRefusalCount === 0
       ? []

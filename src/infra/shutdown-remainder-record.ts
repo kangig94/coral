@@ -127,11 +127,11 @@ export type ShutdownRemainderRecordScan = Readonly<{
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
   unscannedStageCount?: number;
   unscannedRecordCount?: number;
+  nextCursor?: string;
 }>;
 
-export type ShutdownRemainderScanSelection = Readonly<{
-  kind: 'probabilistic';
-  generation: number;
+export type ShutdownRemainderScanPage = Readonly<{
+  after?: string;
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
@@ -405,7 +405,7 @@ export function scanShutdownRemainderRecords(
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
   observeDirectoryEntries?: (names: readonly string[]) => void,
-  selection: ShutdownRemainderScanSelection = { kind: 'probabilistic', generation: 0 },
+  page: ShutdownRemainderScanPage = {},
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
   type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
@@ -432,44 +432,26 @@ export function scanShutdownRemainderRecords(
     });
   }
 
-  const selectionRanks = new Map<string, string>();
-  const selectionRank = (name: string): string => {
-    const existing = selectionRanks.get(name);
-    if (existing !== undefined) return existing;
-    const rank = sha256Hex(`${selection.generation}\0${name}`);
-    selectionRanks.set(name, rank);
-    return rank;
-  };
-  const compareSelectionRank = (left: string, right: string): number =>
-    selectionRank(left).localeCompare(selectionRank(right)) || left.localeCompare(right);
-  stageCandidates.sort((left, right) =>
-    compareSelectionRank(
-      left.kind === 'stage' ? left.stage.name : left.name,
-      right.kind === 'stage' ? right.stage.name : right.name,
-    ),
+  const candidateNames = [
+    ...stageCandidates.map((entry) => (entry.kind === 'stage' ? entry.stage.name : entry.name)),
+    ...recordCandidates.map(({ name }) => name),
+  ]
+    .filter((name) => page.after === undefined || name.localeCompare(page.after) > 0)
+    .sort((left, right) => left.localeCompare(right));
+  const selectedNames = new Set(candidateNames.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT));
+  stageFiles.push(
+    ...stageCandidates.filter((entry) => selectedNames.has(entry.kind === 'stage' ? entry.stage.name : entry.name)),
   );
-  recordCandidates.sort((left, right) => compareSelectionRank(left.name, right.name));
-  let stageIndex = 0;
-  let recordIndex = 0;
-  let takeStage = true;
-  while (
-    stageFiles.length + recordFiles.length < SHUTDOWN_REMAINDER_SCAN_LIMIT &&
-    (stageIndex < stageCandidates.length || recordIndex < recordCandidates.length)
-  ) {
-    const stageCandidate = stageCandidates[stageIndex];
-    const recordCandidate = recordCandidates[recordIndex];
-    if ((takeStage && stageCandidate !== undefined) || recordCandidate === undefined) {
-      if (stageCandidate === undefined) break;
-      stageFiles.push(stageCandidate);
-      stageIndex += 1;
-    } else {
-      recordFiles.push(recordCandidate);
-      recordIndex += 1;
-    }
-    takeStage = !takeStage;
-  }
-  const unscannedStageCount = stageCandidates.length - stageFiles.length;
-  const unscannedRecordCount = recordCandidates.length - recordFiles.length;
+  recordFiles.push(...recordCandidates.filter(({ name }) => selectedNames.has(name)));
+  const unscannedStageCount = stageCandidates.filter((entry) => {
+    const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
+    return (page.after === undefined || name.localeCompare(page.after) > 0) && !selectedNames.has(name);
+  }).length;
+  const unscannedRecordCount = recordCandidates.filter(
+    ({ name }) => (page.after === undefined || name.localeCompare(page.after) > 0) && !selectedNames.has(name),
+  ).length;
+  const selectedNameList = candidateNames.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
+  const nextCursor = candidateNames.length > selectedNameList.length ? selectedNameList.at(-1) : undefined;
 
   for (const entry of stageFiles) {
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
@@ -540,5 +522,6 @@ export function scanShutdownRemainderRecords(
     skippedRecords,
     ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
     ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),
+    ...(nextCursor === undefined ? {} : { nextCursor }),
   };
 }
