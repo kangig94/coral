@@ -1463,6 +1463,7 @@ export function createCoordinatorCore(
         const systemProviderScope = world.systemProviderScope;
         const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot() ?? {
           refusals: [],
+          resolvedRefusalCount: 0,
           absentRefusalCount: 0,
           unobservableRefusalCount: 0,
           uncheckedRefusalCount: 0,
@@ -1632,6 +1633,11 @@ export function createCoordinatorCore(
           ...(shutdownRemainderCleanup.refusals.length === 0
             ? {}
             : { shutdownRemainderCleanupRefusals: shutdownRemainderCleanup.refusals }),
+          ...(shutdownRemainderCleanup.resolvedRefusalCount === 0
+            ? {}
+            : {
+                resolvedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.resolvedRefusalCount,
+              }),
           ...(shutdownRemainderCleanup.absentRefusalCount === 0
             ? {}
             : {

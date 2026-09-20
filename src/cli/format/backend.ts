@@ -693,7 +693,7 @@ export function formatBackendStatus(
 type CleanupRefusalObservation = Readonly<{
   source: 'coordinator' | 'status process';
   refusals: readonly ShutdownRemainderCleanupRefusal[];
-  unreportedRefusalCount: number;
+  resolvedRefusalCount: number;
   absentRefusalCount: number;
   unobservableRefusalCount: number;
   uncheckedRefusalCount: number;
@@ -729,7 +729,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
         observation: {
           source: 'coordinator',
           refusals: result.health.shutdownRemainderCleanupRefusals ?? [],
-          unreportedRefusalCount: result.health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+          resolvedRefusalCount: result.health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
           absentRefusalCount: result.health.absentShutdownRemainderCleanupRefusalCount ?? 0,
           unobservableRefusalCount: result.health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
           uncheckedRefusalCount: result.health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
@@ -762,7 +762,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
               observation: {
                 source: 'coordinator' as const,
                 refusals: result.liveCleanupRefusals.refusals,
-                unreportedRefusalCount: result.liveCleanupRefusals.unreportedCount,
+                resolvedRefusalCount: result.liveCleanupRefusals.resolvedCount,
                 absentRefusalCount: result.liveCleanupRefusals.absentCount,
                 unobservableRefusalCount: result.liveCleanupRefusals.unobservableCount,
                 uncheckedRefusalCount: result.liveCleanupRefusals.uncheckedCount,
@@ -1331,7 +1331,7 @@ function formatShutdownRemainderReport(
       ...formatShutdownRemainderCleanupRefusals({
         source: 'status process',
         refusals: report.cleanupRefusals,
-        unreportedRefusalCount: 0,
+        resolvedRefusalCount: 0,
         absentRefusalCount: 0,
         unobservableRefusalCount: 0,
         uncheckedRefusalCount: 0,
@@ -1423,10 +1423,10 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
       (refusal) =>
         `Cleanup refusal observed by ${observation.source}: label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
     ),
-    ...(observation.unreportedRefusalCount === 0
+    ...(observation.resolvedRefusalCount === 0
       ? []
       : [
-          `Additional cleanup refusals observed by ${observation.source} but not listed: ${observation.unreportedRefusalCount}`,
+          `Cleanup refusal subjects reclassified by ${observation.source} and now resolved: ${observation.resolvedRefusalCount}`,
         ]),
     ...(observation.absentRefusalCount === 0
       ? []

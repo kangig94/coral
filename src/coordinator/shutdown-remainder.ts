@@ -83,6 +83,7 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
 
 export type ShutdownRemainderCleanupSnapshot = Readonly<{
   refusals: readonly ShutdownRemainderCleanupRefusal[];
+  resolvedRefusalCount: number;
   absentRefusalCount: number;
   unobservableRefusalCount: number;
   uncheckedRefusalCount: number;
@@ -181,20 +182,24 @@ export function pruneShutdownRemainderRecords(
 function pruneShutdownRemainderRecordsWithRefusals(
   runtime: ShutdownRemainderPruneRuntime,
   heldSubjectNames: ReadonlySet<string> = new Set(),
+  previousCleanupRefusals: ReadonlyMap<string, ShutdownRemainderCleanupRefusal> = new Map(),
 ): Readonly<{
   disposition: ShutdownRemainderPruneDisposition;
   cleanupRefusalsByName: ReadonlyMap<string, ShutdownRemainderCleanupRefusal>;
+  resolvedCleanupSubjectNames: ReadonlySet<string>;
   uncheckedCleanupRefusalCount: number;
 }> {
   const directory = shutdownRemainderRecordDirectory(runtime.runDir);
   const reobservableStageNames = new Set<string>();
   const cleanupRefusals = cleanupRefusalCollection();
+  const resolvedCleanupSubjectNames = new Set<string>();
   const quarantinedSubjectNames = new Set<string>();
   const result = (
     stageOwnershipClassified: boolean,
   ): Readonly<{
     disposition: ShutdownRemainderPruneDisposition;
     cleanupRefusalsByName: ReadonlyMap<string, ShutdownRemainderCleanupRefusal>;
+    resolvedCleanupSubjectNames: ReadonlySet<string>;
     uncheckedCleanupRefusalCount: number;
   }> => ({
     disposition: pruneDisposition({
@@ -204,8 +209,13 @@ function pruneShutdownRemainderRecordsWithRefusals(
       quarantinedSubjectNames,
     }),
     cleanupRefusalsByName: new Map(cleanupRefusals.bySubject),
+    resolvedCleanupSubjectNames: new Set(resolvedCleanupSubjectNames),
     uncheckedCleanupRefusalCount: cleanupRefusals.unreportedCount,
   });
+  const resolveCleanupFailure = (name: string): void => {
+    forgetCleanupFailure(cleanupRefusals, name);
+    if (previousCleanupRefusals.has(name)) resolvedCleanupSubjectNames.add(name);
+  };
   const quarantine = (name: string): void => {
     quarantinedSubjectNames.add(name);
     reobservableStageNames.delete(name);
@@ -213,6 +223,9 @@ function pruneShutdownRemainderRecordsWithRefusals(
   try {
     const observeStageWriter: ShutdownRemainderPruneStageObserver = runtime.observeStageWriter ?? (() => 'unknown');
     const initialNames = runtime.storage.readdirSync(directory);
+    if (previousCleanupRefusals.get(directory)?.cause.operation === 'scan-directory') {
+      resolvedCleanupSubjectNames.add(directory);
+    }
     for (const name of initialNames) {
       const entry = classifyShutdownRemainderDirectoryEntry(name);
       if (entry.kind === 'other') continue;
@@ -248,7 +261,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
         }
         try {
           runtime.storage.unlinkSync(path);
-          forgetCleanupFailure(cleanupRefusals, name);
+          resolveCleanupFailure(name);
         } catch (error: unknown) {
           recordCleanupFailure(cleanupRefusals, name, 'delete', error);
         }
@@ -262,7 +275,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       if (classification.kind === 'readable' && classification.record.instanceId === stage.instanceId) {
         try {
           runtime.storage.renameSync(path, join(directory, `${stage.instanceId}.json`));
-          forgetCleanupFailure(cleanupRefusals, name);
+          resolveCleanupFailure(name);
           continue;
         } catch (error: unknown) {
           if (thrownErrnoCode(error) === 'ENOENT') {
@@ -308,7 +321,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
         // count below.
         try {
           runtime.storage.unlinkSync(path);
-          forgetCleanupFailure(cleanupRefusals, name);
+          resolveCleanupFailure(name);
           backendLog.warn(
             `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: content is not valid JSON`,
           );
@@ -328,7 +341,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       if (name !== `${classification.record.instanceId}.json`) {
         try {
           runtime.storage.unlinkSync(path);
-          forgetCleanupFailure(cleanupRefusals, name);
+          resolveCleanupFailure(name);
           backendLog.warn(
             `shutdown remainder record ${shutdownRemainderFilesystemSubject(name).label} discarded: filename does not match instance identity`,
           );
@@ -349,7 +362,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
     for (const { name } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(join(directory, name));
-        forgetCleanupFailure(cleanupRefusals, name);
+        resolveCleanupFailure(name);
       } catch (error: unknown) {
         recordCleanupFailure(cleanupRefusals, name, 'delete', error);
       }
@@ -363,6 +376,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
           cleanup: { kind: 'complete' },
         },
         cleanupRefusalsByName: new Map(),
+        resolvedCleanupSubjectNames: new Set(),
         uncheckedCleanupRefusalCount: 0,
       };
     }
@@ -386,13 +400,41 @@ export function createShutdownRemainderPruner(
   let stopped = false;
   let heldSubjectNames = new Set<string>();
   let cleanupRefusalsByName = new Map<string, ShutdownRemainderCleanupRefusal>();
+  let resolvedCleanupRefusalCount = 0;
+  let absentCleanupRefusalCount = 0;
+  let unobservableCleanupRefusalCount = 0;
   let uncheckedCleanupRefusalCount = 0;
   const prune = (retryHeldSubjects: boolean): ShutdownRemainderPruneDisposition => {
+    let resolvedRefusalCount = 0;
+    let absentRefusalCount = 0;
+    let unobservableRefusalCount = 0;
+    const previousCleanupRefusals = cleanupRefusalsByName;
     const {
       disposition: result,
       cleanupRefusalsByName: currentCleanupRefusals,
+      resolvedCleanupSubjectNames,
       uncheckedCleanupRefusalCount: currentUncheckedCleanupRefusalCount,
-    } = pruneShutdownRemainderRecordsWithRefusals(runtime, retryHeldSubjects ? new Set() : heldSubjectNames);
+    } = pruneShutdownRemainderRecordsWithRefusals(
+      runtime,
+      retryHeldSubjects ? new Set() : heldSubjectNames,
+      previousCleanupRefusals,
+    );
+    const directory = shutdownRemainderRecordDirectory(runtime.runDir);
+    for (const [name, refusal] of previousCleanupRefusals) {
+      if (currentCleanupRefusals.has(name)) continue;
+      if (resolvedCleanupSubjectNames.has(name)) {
+        resolvedRefusalCount += 1;
+        continue;
+      }
+      const path = refusal.cause.operation === 'scan-directory' ? name : join(directory, name);
+      try {
+        runtime.storage.lstatSync(path);
+        resolvedRefusalCount += 1;
+      } catch (error: unknown) {
+        if (thrownErrnoCode(error) === 'ENOENT') absentRefusalCount += 1;
+        else unobservableRefusalCount += 1;
+      }
+    }
     heldSubjectNames = new Set(
       result.cleanup.kind === 'quarantined'
         ? result.cleanup.subjectNames
@@ -401,77 +443,18 @@ export function createShutdownRemainderPruner(
           : [],
     );
     cleanupRefusalsByName = new Map(currentCleanupRefusals);
+    resolvedCleanupRefusalCount = resolvedRefusalCount;
+    absentCleanupRefusalCount = absentRefusalCount;
+    unobservableCleanupRefusalCount = unobservableRefusalCount;
     uncheckedCleanupRefusalCount = currentUncheckedCleanupRefusalCount;
     return result;
   };
-  const freshenCleanupRefusal = (
-    name: string,
-    refusal: ShutdownRemainderCleanupRefusal,
-  ):
-    | Readonly<{ kind: 'present-and-current'; refusal: ShutdownRemainderCleanupRefusal }>
-    | Readonly<{ kind: 'absent' }>
-    | Readonly<{ kind: 'unobservable' }> => {
-    const directory = shutdownRemainderRecordDirectory(runtime.runDir);
-    const path = refusal.cause.operation === 'scan-directory' ? name : join(directory, name);
-    try {
-      switch (refusal.cause.operation) {
-        case 'delete':
-          runtime.storage.unlinkSync(path);
-          break;
-        case 'promote': {
-          const entry = classifyShutdownRemainderDirectoryEntry(name);
-          if (entry.kind !== 'stage') return { kind: 'unobservable' };
-          runtime.storage.renameSync(path, join(directory, `${entry.stage.instanceId}.json`));
-          break;
-        }
-        case 'scan-directory':
-          runtime.storage.readdirSync(path);
-          break;
-      }
-      cleanupRefusalsByName.delete(name);
-      return { kind: 'absent' };
-    } catch (error: unknown) {
-      if (thrownErrnoCode(error) === 'ENOENT') {
-        cleanupRefusalsByName.delete(name);
-        return { kind: 'absent' };
-      }
-      try {
-        runtime.storage.lstatSync(path);
-      } catch (observationError: unknown) {
-        if (thrownErrnoCode(observationError) === 'ENOENT') {
-          cleanupRefusalsByName.delete(name);
-          return { kind: 'absent' };
-        }
-        return { kind: 'unobservable' };
-      }
-      const currentRefusal = shutdownRemainderCleanupRefusal(name, refusal.cause.operation, error);
-      if (currentRefusal === null) return { kind: 'unobservable' };
-      cleanupRefusalsByName.set(name, currentRefusal);
-      return { kind: 'present-and-current', refusal: currentRefusal };
-    }
-  };
   const readCleanupRefusalSnapshot = (): ShutdownRemainderCleanupSnapshot => {
-    const refusals: ShutdownRemainderCleanupRefusal[] = [];
-    let absentRefusalCount = 0;
-    let unobservableRefusalCount = 0;
-    for (const [name, refusal] of cleanupRefusalsByName) {
-      const freshened = freshenCleanupRefusal(name, refusal);
-      switch (freshened.kind) {
-        case 'present-and-current':
-          refusals.push(freshened.refusal);
-          break;
-        case 'absent':
-          absentRefusalCount += 1;
-          break;
-        case 'unobservable':
-          unobservableRefusalCount += 1;
-          break;
-      }
-    }
     return {
-      refusals,
-      absentRefusalCount,
-      unobservableRefusalCount,
+      refusals: [...cleanupRefusalsByName.values()],
+      resolvedRefusalCount: resolvedCleanupRefusalCount,
+      absentRefusalCount: absentCleanupRefusalCount,
+      unobservableRefusalCount: unobservableCleanupRefusalCount,
       uncheckedRefusalCount: uncheckedCleanupRefusalCount,
     };
   };

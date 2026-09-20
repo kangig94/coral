@@ -85,7 +85,7 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, components: [] })).toBe(true);
   });
 
-  it('accepts bounded shutdown remainder cleanup refusals with an overflow count', () => {
+  it('accepts bounded shutdown remainder cleanup refusals with disposition counts', () => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
@@ -94,7 +94,7 @@ describe('/health typed shape (AC10a)', () => {
       isBackendHealth({
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [refusal],
-        unreportedShutdownRemainderCleanupRefusalCount: 3,
+        resolvedShutdownRemainderCleanupRefusalCount: 3,
         absentShutdownRemainderCleanupRefusalCount: 4,
         unobservableShutdownRemainderCleanupRefusalCount: 6,
         uncheckedShutdownRemainderCleanupRefusalCount: 5,
@@ -112,13 +112,13 @@ describe('/health typed shape (AC10a)', () => {
       parseBackendHealth({
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [refusal, { ...refusal, subject: 'not-a-subject' }],
-        unreportedShutdownRemainderCleanupRefusalCount: 2,
+        resolvedShutdownRemainderCleanupRefusalCount: 2,
       }),
     ).toEqual({
       health: {
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [refusal],
-        unreportedShutdownRemainderCleanupRefusalCount: 2,
+        resolvedShutdownRemainderCleanupRefusalCount: 2,
       },
       malformedShutdownRemainderCleanupRefusalRowCount: 1,
       skippedProviderProxySetRows: 0,
@@ -127,7 +127,7 @@ describe('/health typed shape (AC10a)', () => {
   });
 
   it.each([{}, 7, { subject: 'not-a-refusal' }])(
-    'attributes a malformed cleanup row without claiming an unlisted refusal (%j)',
+    'attributes a malformed cleanup row without claiming a resolved refusal (%j)',
     (candidate) => {
       const parsed = parseBackendHealth({
         ...HEALTHY_BASE,
@@ -135,7 +135,7 @@ describe('/health typed shape (AC10a)', () => {
       });
 
       expect(parsed?.health.shutdownRemainderCleanupRefusals).toEqual([]);
-      expect(parsed?.health.unreportedShutdownRemainderCleanupRefusalCount).toBeUndefined();
+      expect(parsed?.health.resolvedShutdownRemainderCleanupRefusalCount).toBeUndefined();
       expect(parsed?.malformedShutdownRemainderCleanupRefusalRowCount).toBe(1);
     },
   );
@@ -172,7 +172,7 @@ describe('/health typed shape (AC10a)', () => {
     ).toEqual([refusal]);
   });
 
-  it('rejects unbounded cleanup refusal collections or invalid unreported counts', () => {
+  it('rejects unbounded cleanup refusal collections or invalid disposition counts', () => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
@@ -183,14 +183,14 @@ describe('/health typed shape (AC10a)', () => {
         shutdownRemainderCleanupRefusals: Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, () => refusal),
       }),
     ).toBe(false);
-    expect(isBackendHealth({ ...HEALTHY_BASE, unreportedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, resolvedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, absentShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, unobservableShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, uncheckedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,
-        unreportedShutdownRemainderCleanupRefusalCount: Number.MAX_SAFE_INTEGER + 1,
+        resolvedShutdownRemainderCleanupRefusalCount: Number.MAX_SAFE_INTEGER + 1,
       }),
     ).toBe(false);
   });
@@ -205,7 +205,7 @@ describe('/health typed shape (AC10a)', () => {
       },
     },
     { subject: { identity: 'a'.repeat(64), label: 'corrupt.json\ninjected' } },
-  ])('counts an individually malformed cleanup refusal separately from unreported refusals', (override) => {
+  ])('counts an individually malformed cleanup refusal separately from disposition counts', (override) => {
     const refusal = {
       subject: shutdownRemainderFilesystemSubject('corrupt.json'),
       cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },

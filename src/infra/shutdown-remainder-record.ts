@@ -401,7 +401,7 @@ export function scanShutdownRemainderRecords(
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
   observeDirectoryEntries?: (names: readonly string[]) => void,
-  selectionOffset = 0,
+  selectionGeneration = 0,
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
   type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
@@ -428,32 +428,39 @@ export function scanShutdownRemainderRecords(
     });
   }
 
-  const startIndex = (candidateCount: number): number =>
-    candidateCount === 0 ? 0 : ((selectionOffset % candidateCount) + candidateCount) % candidateCount;
-  const stageStart = startIndex(stageCandidates.length);
-  const recordStart = startIndex(recordCandidates.length);
-  let stageInspected = 0;
-  let recordInspected = 0;
+  const selectionRanks = new Map<string, string>();
+  const selectionRank = (name: string): string => {
+    const existing = selectionRanks.get(name);
+    if (existing !== undefined) return existing;
+    const rank = sha256Hex(`${selectionGeneration}\0${name}`);
+    selectionRanks.set(name, rank);
+    return rank;
+  };
+  const compareSelectionRank = (left: string, right: string): number =>
+    selectionRank(left).localeCompare(selectionRank(right)) || left.localeCompare(right);
+  stageCandidates.sort((left, right) =>
+    compareSelectionRank(
+      left.kind === 'stage' ? left.stage.name : left.name,
+      right.kind === 'stage' ? right.stage.name : right.name,
+    ),
+  );
+  recordCandidates.sort((left, right) => compareSelectionRank(left.name, right.name));
+  let stageIndex = 0;
+  let recordIndex = 0;
   let takeStage = true;
   while (
     stageFiles.length + recordFiles.length < SHUTDOWN_REMAINDER_SCAN_LIMIT &&
-    (stageInspected < stageCandidates.length || recordInspected < recordCandidates.length)
+    (stageIndex < stageCandidates.length || recordIndex < recordCandidates.length)
   ) {
-    const stageCandidate =
-      stageInspected < stageCandidates.length
-        ? stageCandidates[(stageStart + stageInspected) % stageCandidates.length]
-        : undefined;
-    const recordCandidate =
-      recordInspected < recordCandidates.length
-        ? recordCandidates[(recordStart + recordInspected) % recordCandidates.length]
-        : undefined;
+    const stageCandidate = stageCandidates[stageIndex];
+    const recordCandidate = recordCandidates[recordIndex];
     if ((takeStage && stageCandidate !== undefined) || recordCandidate === undefined) {
       if (stageCandidate === undefined) break;
       stageFiles.push(stageCandidate);
-      stageInspected += 1;
+      stageIndex += 1;
     } else {
       recordFiles.push(recordCandidate);
-      recordInspected += 1;
+      recordIndex += 1;
     }
     takeStage = !takeStage;
   }

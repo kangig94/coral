@@ -127,7 +127,7 @@ export interface BackendHealth {
   };
   components: TransportRuntimeComponentStatus[];
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-  unreportedShutdownRemainderCleanupRefusalCount?: number;
+  resolvedShutdownRemainderCleanupRefusalCount?: number;
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
   uncheckedShutdownRemainderCleanupRefusalCount?: number;
@@ -795,10 +795,10 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
     (value.shutdownRemainderCleanupRefusals !== undefined && cleanupRefusals === null) ||
-    (value.unreportedShutdownRemainderCleanupRefusalCount !== undefined &&
-      (typeof value.unreportedShutdownRemainderCleanupRefusalCount !== 'number' ||
-        !Number.isSafeInteger(value.unreportedShutdownRemainderCleanupRefusalCount) ||
-        value.unreportedShutdownRemainderCleanupRefusalCount < 0)) ||
+    (value.resolvedShutdownRemainderCleanupRefusalCount !== undefined &&
+      (typeof value.resolvedShutdownRemainderCleanupRefusalCount !== 'number' ||
+        !Number.isSafeInteger(value.resolvedShutdownRemainderCleanupRefusalCount) ||
+        value.resolvedShutdownRemainderCleanupRefusalCount < 0)) ||
     (value.absentShutdownRemainderCleanupRefusalCount !== undefined &&
       (typeof value.absentShutdownRemainderCleanupRefusalCount !== 'number' ||
         !Number.isSafeInteger(value.absentShutdownRemainderCleanupRefusalCount) ||

@@ -362,7 +362,7 @@ export type HealthSnapshot = {
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-  unreportedShutdownRemainderCleanupRefusalCount?: number;
+  resolvedShutdownRemainderCleanupRefusalCount?: number;
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
   uncheckedShutdownRemainderCleanupRefusalCount?: number;

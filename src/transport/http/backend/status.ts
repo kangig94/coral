@@ -278,7 +278,7 @@ type BackendStatus =
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
       shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-      unreportedShutdownRemainderCleanupRefusalCount?: number;
+      resolvedShutdownRemainderCleanupRefusalCount?: number;
       absentShutdownRemainderCleanupRefusalCount?: number;
       unobservableShutdownRemainderCleanupRefusalCount?: number;
       uncheckedShutdownRemainderCleanupRefusalCount?: number;
@@ -322,7 +322,7 @@ export type BackendStatusFull =
         | Readonly<{
             kind: 'available';
             refusals: readonly ShutdownRemainderCleanupRefusal[];
-            unreportedCount: number;
+            resolvedCount: number;
             absentCount: number;
             unobservableCount: number;
             uncheckedCount: number;
@@ -825,7 +825,7 @@ async function probeDetailedHealth(
       return shuttingDownStatus({
         kind: 'available',
         refusals: health.shutdownRemainderCleanupRefusals ?? [],
-        unreportedCount: health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        resolvedCount: health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
         absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
         unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
         uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,

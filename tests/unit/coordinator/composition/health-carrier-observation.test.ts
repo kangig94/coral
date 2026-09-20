@@ -616,7 +616,7 @@ describe('health local carrier observation', () => {
     expect(readHealth().diagnostics?.launchPermits).toBeUndefined();
   });
 
-  it('projects the producer-bounded cleanup refusals and its overflow count unchanged', () => {
+  it('projects cleanup refusal dispositions unchanged', () => {
     const core = createCore(
       new LocalOperationRegistry(),
       vi.fn(async () => ({ ok: true }) as never),
@@ -629,6 +629,7 @@ describe('health local carrier observation', () => {
       .spyOn(core.lifecycleController, 'readShutdownRemainderCleanupSnapshot')
       .mockReturnValue({
         refusals: [refusal],
+        resolvedRefusalCount: 5,
         absentRefusalCount: 7,
         unobservableRefusalCount: 9,
         uncheckedRefusalCount: 11,
@@ -638,6 +639,7 @@ describe('health local carrier observation', () => {
 
     if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
     expect(decoded.health.shutdownRemainderCleanupRefusals).toEqual([refusal]);
+    expect(decoded.health.resolvedShutdownRemainderCleanupRefusalCount).toBe(5);
     expect(decoded.health.absentShutdownRemainderCleanupRefusalCount).toBe(7);
     expect(decoded.health.unobservableShutdownRemainderCleanupRefusalCount).toBe(9);
     expect(decoded.health.uncheckedShutdownRemainderCleanupRefusalCount).toBe(11);

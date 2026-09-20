@@ -1902,7 +1902,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it('reports malformed cleanup rows without counting them as unlisted refusals', async () => {
+  it('reports malformed cleanup rows without counting them as resolved refusals', async () => {
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
       new Response(detailed('ok', { shutdownRemainderCleanupRefusals: [{}, 7, { subject: 'not-a-refusal' }] }), {
@@ -1920,7 +1920,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         malformedShutdownRemainderCleanupRefusalRowCount: 3,
       },
     });
-    expect(result.health).not.toHaveProperty('unreportedShutdownRemainderCleanupRefusalCount');
+    expect(result.health).not.toHaveProperty('resolvedShutdownRemainderCleanupRefusalCount');
   });
 
   it('preserves a live cleanup refusal when the directory enumeration is unavailable', async () => {
@@ -2046,7 +2046,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(
         detailed('draining', {
           shutdownRemainderCleanupRefusals: [refusal, { subject: 'not-a-refusal' }],
-          unreportedShutdownRemainderCleanupRefusalCount: 2,
+          resolvedShutdownRemainderCleanupRefusalCount: 2,
           uncheckedShutdownRemainderCleanupRefusalCount: 3,
         }),
         { status: 200 },
@@ -2060,7 +2060,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       liveCleanupRefusals: {
         kind: 'available',
         refusals: [refusal],
-        unreportedCount: 2,
+        resolvedCount: 2,
         uncheckedCount: 3,
         malformedRowCount: 1,
       },

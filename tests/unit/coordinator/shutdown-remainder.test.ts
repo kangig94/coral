@@ -1262,13 +1262,21 @@ describe('shutdown remainder status', () => {
       refusePrune: true,
     });
 
-    const firstScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
-    expect(firstScan.records).toEqual([]);
-    expect(firstScan.unscannedRecordCount).toBe(2);
+    const scanAt = (generation: number) =>
+      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, generation);
+    const hiddenGeneration = Array.from({ length: 1_000 }, (_, generation) => generation).find(
+      (generation) => scanAt(generation).records.length === 0,
+    );
+    if (hiddenGeneration === undefined) throw new Error('expected one bounded selection to omit z-live');
+    expect(scanAt(hiddenGeneration).unscannedRecordCount).toBe(2);
 
     expect(pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR }).cleanup).toMatchObject({ kind: 'refused' });
 
-    const secondScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, 1);
+    const visibleGeneration = Array.from({ length: 1_000 }, (_, generation) => generation).find((generation) =>
+      scanAt(generation).records.some(({ instanceId }) => instanceId === 'z-live'),
+    );
+    if (visibleGeneration === undefined) throw new Error('expected one bounded selection to include z-live');
+    const secondScan = scanAt(visibleGeneration);
     expect(storage.fileNames()).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT + 2);
     expect(secondScan.records).toEqual([decodedRecordAt('z-live')]);
     expect(secondScan.unscannedRecordCount).toBe(2);
@@ -1482,8 +1490,8 @@ describe('shutdown remainder status', () => {
       SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
 
-    const rotated = [1, 2].map((selectionOffset) =>
-      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, selectionOffset),
+    const rotated = [1, 2].map((selectionGeneration) =>
+      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, selectionGeneration),
     );
     const inspectedStageNames = new Set(
       [scan, ...rotated]
@@ -1492,6 +1500,28 @@ describe('shutdown remainder status', () => {
         .map(({ name }) => name),
     );
     expect(inspectedStageNames).toEqual(new Set(malformedStages.map(({ name }) => name)));
+  });
+
+  it('does not let arrivals before a record move it with the scan generation', () => {
+    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) =>
+      fileAt(`a-${String(index).padStart(3, '0')}`, index + 1),
+    );
+    const storage = storageWith([...files, fileAt('z-target', 1_000)]);
+    let targetObserved = false;
+
+    for (let generation = 0; generation < 1_000 && !targetObserved; generation += 1) {
+      const instanceId = `00-new-${generation}`;
+      storage.writeAtomicSync(join(REMAINDER_DIRECTORY, `${instanceId}.json`), JSON.stringify(recordAt(instanceId)));
+      targetObserved = scanShutdownRemainderRecords(
+        storage,
+        REMAINDER_DIRECTORY,
+        undefined,
+        undefined,
+        generation,
+      ).records.some(({ instanceId: observedId }) => observedId === 'z-target');
+    }
+
+    expect(targetObserved).toBe(true);
   });
 
   it('requires a final record filename to match its decoded instance identity exactly', () => {
@@ -1583,56 +1613,81 @@ describe('shutdown remainder status', () => {
 
     const snapshot = pruner.readCleanupRefusalSnapshot();
     expect(snapshot).toMatchObject({
+      resolvedRefusalCount: 0,
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
     });
     expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-    expect(storage.unlinkSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-    expect(storage.lstatSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(storage.unlinkSync).not.toHaveBeenCalled();
+    expect(storage.lstatSync).not.toHaveBeenCalled();
   });
 
-  it('retries the refused operation and reports a subject that is now absent', () => {
+  it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (_name, attempt) => attempt === 1,
     });
+    let scheduled: (() => void) | null = null;
     const pruner = createShutdownRemainderPruner({
       storage,
       runDir: RUN_DIR,
-      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
     });
 
     expect(pruner.start()?.cleanup.kind).toBe('refused');
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [],
-      absentRefusalCount: 1,
+      refusals: [cleanupRefusal('corrupt.json', 'delete')],
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
     });
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
     expect(storage.fileNames()).toEqual([]);
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [],
+      resolvedRefusalCount: 1,
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
     });
   });
 
-  it('keeps an observed-but-unobservable retry distinct from work not inspected', () => {
+  it('keeps an unobservable reclassification distinct from work not inspected', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
-      refusePrune: true,
+      refusePruneWhen: (_name, attempt) => attempt === 1,
       refuseLstatFor: 'corrupt.json',
       lstatErrorCode: 'EIO',
     });
+    let scheduled: (() => void) | null = null;
     const pruner = createShutdownRemainderPruner({
       storage,
       runDir: RUN_DIR,
-      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
     });
 
     expect(pruner.start()?.cleanup.kind).toBe('refused');
+    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'corrupt.json'), JSON.stringify(recordAt('corrupt')));
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [],
+      resolvedRefusalCount: 0,
       absentRefusalCount: 0,
       unobservableRefusalCount: 1,
       uncheckedRefusalCount: 0,
@@ -1788,15 +1843,30 @@ describe('shutdown remainder status', () => {
     expect(pruner.start()?.cleanup.kind).toBe('refused');
     storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'corrupt.json'), JSON.stringify(recordAt('corrupt')));
 
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [cleanupRefusal('corrupt.json', 'delete')],
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
+    expect(storage.fileNames()).toEqual(['corrupt.json']);
+
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
     expect(storage.fileNames()).toEqual(['corrupt.json']);
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      resolvedRefusalCount: 1,
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
   });
 
-  it('reports a scan refusal as absent when the same directory operation now succeeds', () => {
+  it('reports a scan refusal as resolved when the same directory operation now succeeds', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePrune: true,
       refuseReaddirWhen: (_path, attempt) => attempt === 3,
@@ -1820,13 +1890,20 @@ describe('shutdown remainder status', () => {
     periodic();
 
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [],
-      absentRefusalCount: 1,
+      refusals: [cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO')],
+      resolvedRefusalCount: 1,
+      absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
     });
     periodic();
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [cleanupRefusal('corrupt.json', 'delete')],
+      resolvedRefusalCount: 1,
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
   });
 
   it('clears a named cleanup refusal after the subject decisively disappears', () => {
@@ -1856,10 +1933,16 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 1,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
   });
 
-  it('retries cleanup refusals against their raw subjects when a health snapshot reads them', () => {
+  it('does not retry cleanup refusals when a health snapshot reads them', () => {
     const name = 'corrupt\n.json';
     const storage = storageWith([{ name, value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (candidate, attempt) => candidate === name && attempt === 1,
@@ -1871,16 +1954,22 @@ describe('shutdown remainder status', () => {
     });
 
     expect(pruner.start()?.cleanup.kind).toBe('refused');
+    vi.mocked(storage.unlinkSync).mockClear();
+    vi.mocked(storage.lstatSync).mockClear();
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [],
-      absentRefusalCount: 1,
+      refusals: [cleanupRefusal(name, 'delete')],
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
     });
-    expect(storage.fileNames()).toEqual([]);
+    expect(storage.fileNames()).toEqual([name]);
+    expect(storage.unlinkSync).not.toHaveBeenCalled();
+    expect(storage.lstatSync).not.toHaveBeenCalled();
 
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [],
+      refusals: [cleanupRefusal(name, 'delete')],
+      resolvedRefusalCount: 0,
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,

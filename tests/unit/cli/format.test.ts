@@ -1953,7 +1953,7 @@ describe('cli format', () => {
       expect(text).not.toMatch(/Retry (?:trigger|action):/u);
     });
 
-    it('renders malformed transport rows separately from disk entries and the producer overflow', () => {
+    it('renders malformed transport rows separately from disk entries and resolved refusals', () => {
       const text = formatBackendStatus({
         status: 'ok',
         health: {
@@ -1961,13 +1961,13 @@ describe('cli format', () => {
           components: [],
           queueDepth: 0,
           malformedShutdownRemainderCleanupRefusalRowCount: 3,
-          unreportedShutdownRemainderCleanupRefusalCount: 7,
+          resolvedShutdownRemainderCleanupRefusalCount: 7,
         },
       });
 
       expect(text).toContain('Shutdown remainder cleanup refusal rows this build could not decode: 3');
       expect(text).not.toContain('Shutdown remainder directory entries this build could not use');
-      expect(text).toContain('Additional cleanup refusals observed by coordinator but not listed: 7');
+      expect(text).toContain('Cleanup refusal subjects reclassified by coordinator and now resolved: 7');
     });
 
     it('renders coordinator and status-process observations separately for the same raw path', () => {
@@ -2038,7 +2038,7 @@ describe('cli format', () => {
       expect(text).toContain('observed by status process:');
     });
 
-    it('keeps a coordinator overflow count scoped to that observation when the local scan also fails', () => {
+    it('keeps coordinator disposition counts scoped to that observation when the local scan also fails', () => {
       const directory = '/run/coral/shutdown-remainder.v1';
       const text = formatBackendStatus({
         status: 'ok',
@@ -2050,7 +2050,7 @@ describe('cli format', () => {
             subject: shutdownRemainderFilesystemSubject(`stage-${index}.json`),
             cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
           })),
-          unreportedShutdownRemainderCleanupRefusalCount: 1,
+          resolvedShutdownRemainderCleanupRefusalCount: 1,
           absentShutdownRemainderCleanupRefusalCount: 7,
           unobservableShutdownRemainderCleanupRefusalCount: 11,
           uncheckedShutdownRemainderCleanupRefusalCount: 129,
@@ -2067,7 +2067,7 @@ describe('cli format', () => {
         },
       });
 
-      expect(text).toContain('Additional cleanup refusals observed by coordinator but not listed: 1');
+      expect(text).toContain('Cleanup refusal subjects reclassified by coordinator and now resolved: 1');
       expect(text).toContain('Cleanup refusal subjects rechecked by coordinator and now absent: 7');
       expect(text).toContain('Cleanup refusal subjects rechecked by coordinator but not observable: 11');
       expect(text).toContain(
@@ -2214,7 +2214,7 @@ describe('cli format', () => {
         liveCleanupRefusals: {
           kind: 'available',
           refusals: [],
-          unreportedCount: 0,
+          resolvedCount: 0,
           absentCount: 0,
           unobservableCount: 0,
           uncheckedCount: 0,
