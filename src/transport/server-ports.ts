@@ -4,7 +4,6 @@ import { z } from 'zod';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import type { TimePort } from '../infra/port-types.js';
-import type { ShutdownRemainderCleanupRefusal } from '../infra/shutdown-remainder-record.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';
@@ -361,16 +360,6 @@ export type HealthSnapshot = {
   systemProviderScope?: { name: string; providers: string[] };
   components: TransportRuntimeComponentStatus[];
   kbDaemon?: TransportKbDaemonHealthSnapshot;
-  shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-  resolvedShutdownRemainderCleanupRefusalCount?: number;
-  absentShutdownRemainderCleanupRefusalCount?: number;
-  unobservableShutdownRemainderCleanupRefusalCount?: number;
-  uncheckedShutdownRemainderCleanupRefusalCount?: number;
-  overflowedShutdownRemainderCleanupRefusalCount?: number;
-  shutdownRemainderCleanupObservedAt?: string | null;
-  shutdownRemainderCleanupRetry?:
-    | { state: 'scheduled'; owner: 'coordinator' }
-    | { state: 'stopped-until-restart'; owner: 'next-coordinator-start' };
   /**
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.

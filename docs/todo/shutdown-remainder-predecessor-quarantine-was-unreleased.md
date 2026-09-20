@@ -5,10 +5,12 @@ migration population again.
 
 ## Decision
 
-Do not add a reader or reconciler for `shutdown-remainder.v1/quarantine/<subject>/<slot>/evidence`. Treat a
-top-level `quarantine` entry, like every other name outside the current flat record/stage vocabulary, as
-present and unrecognized. Status names it and says this build did not act on it; pruning does not report
-`cleanup: complete` while it remains.
+Do not add a reader or reconciler for `shutdown-remainder.v1/quarantine/<subject>/<slot>/evidence`. The
+question is now moot on the reading side as well: the remainder lives at one address,
+`shutdown-remainder.v1.json`, nothing enumerates the run directory, and nothing deletes — so a leftover
+`shutdown-remainder.v1/` directory from an unreleased build is simply never opened. It is disposable
+development state, and a reconciler for it would be exactly the compatibility code design-philosophy
+principle 1 forbids.
 
 ## Proof of the empty supported-runtime population
 
@@ -31,6 +33,8 @@ under design-philosophy principle 1.
 
 ## Regression boundary
 
-`tests/unit/coordinator/shutdown-remainder.test.ts` seeds the exact predecessor layout and asserts both sides
-of the surviving contract: the scanner reports the top-level `quarantine` identity as unrecognized, and the
-pruner refuses to call the directory complete while leaving it untouched.
+There is nothing left to guard. The scanner and the pruner that the predecessor layout was measured against
+were both deleted with the directory, and `tests/unit/coordinator/shutdown-remainder.test.ts` no longer
+seeds that layout: a reader that derives one address opens no directory entry to classify. The boundary that
+survives is the address itself — `SHUTDOWN_REMAINDER_RECORD_NAME`
+(`src/infra/shutdown-remainder-record.ts`) — and the tests that pin it.

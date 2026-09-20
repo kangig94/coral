@@ -1,12 +1,7 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
-import { assertNever, isSystemErrorCode } from '../../../infra/error-format.js';
+import { assertNever } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
-import {
-  isShutdownRemainderFilesystemSubject,
-  SHUTDOWN_REMAINDER_SCAN_LIMIT,
-  type ShutdownRemainderCleanupRefusal,
-} from '../../../infra/shutdown-remainder-record.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
 import { launchPermitDiagnosticsSchema, type LaunchPermitDiagnostics } from '../../server-ports.js';
@@ -127,16 +122,6 @@ export interface BackendHealth {
     fdCount?: number;
   };
   components: TransportRuntimeComponentStatus[];
-  shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-  resolvedShutdownRemainderCleanupRefusalCount?: number;
-  absentShutdownRemainderCleanupRefusalCount?: number;
-  unobservableShutdownRemainderCleanupRefusalCount?: number;
-  uncheckedShutdownRemainderCleanupRefusalCount?: number;
-  overflowedShutdownRemainderCleanupRefusalCount?: number;
-  shutdownRemainderCleanupObservedAt?: string | null;
-  shutdownRemainderCleanupRetry?:
-    | { state: 'scheduled'; owner: 'coordinator' }
-    | { state: 'stopped-until-restart'; owner: 'next-coordinator-start' };
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
@@ -175,7 +160,6 @@ export type ProviderProxySetRowSkip = Readonly<{
 
 export type BackendHealthParseResult = Readonly<{
   health: BackendHealth;
-  malformedShutdownRemainderCleanupRefusalRowCount?: number;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 }>;
@@ -800,58 +784,8 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
   );
 }
 
-function parseShutdownRemainderCleanupRefusal(value: unknown): ShutdownRemainderCleanupRefusal | null {
-  if (!isRecord(value) || !isRecord(value.cause)) return null;
-  const operation = value.cause.operation;
-  if (
-    !isShutdownRemainderFilesystemSubject(value.subject) ||
-    (operation !== 'delete' && operation !== 'inspect-age' && operation !== 'promote' && operation !== 'scan-directory')
-  ) {
-    return null;
-  }
-  if (value.cause.kind === 'system-error') {
-    if (typeof value.cause.code !== 'string' || !isSystemErrorCode(value.cause.code)) return null;
-    return {
-      subject: value.subject,
-      cause: { kind: 'system-error', operation, code: value.cause.code },
-    };
-  }
-  if (value.cause.kind !== 'unclassified-error') return null;
-  return {
-    subject: value.subject,
-    cause: { kind: 'unclassified-error', operation },
-  };
-}
-
-type CleanupRefusalsParseResult = Readonly<{
-  refusals: readonly ShutdownRemainderCleanupRefusal[];
-  malformedRowCount: number;
-}>;
-
-function parseShutdownRemainderCleanupRefusals(value: unknown): CleanupRefusalsParseResult | null {
-  if (!Array.isArray(value) || value.length > SHUTDOWN_REMAINDER_SCAN_LIMIT) return null;
-  const refusals: ShutdownRemainderCleanupRefusal[] = [];
-  for (const candidate of value) {
-    const refusal = parseShutdownRemainderCleanupRefusal(candidate);
-    if (refusal !== null) refusals.push(refusal);
-  }
-  return { refusals, malformedRowCount: value.length - refusals.length };
-}
-
-function isShutdownRemainderCleanupRetry(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    ((value.state === 'scheduled' && value.owner === 'coordinator') ||
-      (value.state === 'stopped-until-restart' && value.owner === 'next-coordinator-start'))
-  );
-}
-
 export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
   if (!isRecord(value)) return null;
-  const cleanupRefusals =
-    value.shutdownRemainderCleanupRefusals === undefined
-      ? null
-      : parseShutdownRemainderCleanupRefusals(value.shutdownRemainderCleanupRefusals);
   if (
     (value.status !== 'starting' && value.status !== 'ok' && value.status !== 'draining') ||
     !isKernel(value.kernel) ||
@@ -869,33 +803,6 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     (value.resources !== undefined && !isResources(value.resources)) ||
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
-    (value.shutdownRemainderCleanupRefusals !== undefined && cleanupRefusals === null) ||
-    (value.resolvedShutdownRemainderCleanupRefusalCount !== undefined &&
-      (typeof value.resolvedShutdownRemainderCleanupRefusalCount !== 'number' ||
-        !Number.isSafeInteger(value.resolvedShutdownRemainderCleanupRefusalCount) ||
-        value.resolvedShutdownRemainderCleanupRefusalCount < 0)) ||
-    (value.absentShutdownRemainderCleanupRefusalCount !== undefined &&
-      (typeof value.absentShutdownRemainderCleanupRefusalCount !== 'number' ||
-        !Number.isSafeInteger(value.absentShutdownRemainderCleanupRefusalCount) ||
-        value.absentShutdownRemainderCleanupRefusalCount < 0)) ||
-    (value.unobservableShutdownRemainderCleanupRefusalCount !== undefined &&
-      (typeof value.unobservableShutdownRemainderCleanupRefusalCount !== 'number' ||
-        !Number.isSafeInteger(value.unobservableShutdownRemainderCleanupRefusalCount) ||
-        value.unobservableShutdownRemainderCleanupRefusalCount < 0)) ||
-    (value.uncheckedShutdownRemainderCleanupRefusalCount !== undefined &&
-      (typeof value.uncheckedShutdownRemainderCleanupRefusalCount !== 'number' ||
-        !Number.isSafeInteger(value.uncheckedShutdownRemainderCleanupRefusalCount) ||
-        value.uncheckedShutdownRemainderCleanupRefusalCount < 0)) ||
-    (value.overflowedShutdownRemainderCleanupRefusalCount !== undefined &&
-      (typeof value.overflowedShutdownRemainderCleanupRefusalCount !== 'number' ||
-        !Number.isSafeInteger(value.overflowedShutdownRemainderCleanupRefusalCount) ||
-        value.overflowedShutdownRemainderCleanupRefusalCount < 0)) ||
-    (value.shutdownRemainderCleanupObservedAt !== undefined &&
-      value.shutdownRemainderCleanupObservedAt !== null &&
-      (typeof value.shutdownRemainderCleanupObservedAt !== 'string' ||
-        !Number.isFinite(Date.parse(value.shutdownRemainderCleanupObservedAt)))) ||
-    (value.shutdownRemainderCleanupRetry !== undefined &&
-      !isShutdownRemainderCleanupRetry(value.shutdownRemainderCleanupRetry)) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {
@@ -910,16 +817,8 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
   return {
     health: {
       ...value,
-      ...(cleanupRefusals === null
-        ? {}
-        : {
-            shutdownRemainderCleanupRefusals: cleanupRefusals.refusals,
-          }),
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
     } as BackendHealth,
-    ...((cleanupRefusals?.malformedRowCount ?? 0) === 0
-      ? {}
-      : { malformedShutdownRemainderCleanupRefusalRowCount: cleanupRefusals?.malformedRowCount }),
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
     skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],
   };

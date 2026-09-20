@@ -116,13 +116,7 @@ import {
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
-import {
-  createShutdownRemainderPruner,
-  logShutdownRemainderStartupPrune,
-  recordShutdownRemainder,
-  type ShutdownRemainderCleanupSnapshot,
-} from './shutdown-remainder.js';
-import { observeShutdownRemainderStageWriter } from '../infra/shutdown-remainder-record.js';
+import { recordShutdownRemainder } from './shutdown-remainder.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
 import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
@@ -842,7 +836,6 @@ export type LifecycleController = {
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
-  readShutdownRemainderCleanupSnapshot(): ShutdownRemainderCleanupSnapshot;
 };
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
@@ -906,7 +899,6 @@ type LifecycleStartupContext = {
   state: LifecycleControlState;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
-  remainderPruner: ReturnType<typeof createShutdownRemainderPruner>;
   shutdown: (reason: ShutdownReason) => Promise<LifecycleShutdownDisposition>;
 };
 
@@ -925,7 +917,6 @@ async function runLifecycleStartup({
   state,
   createInvocationContext,
   ownershipChecker,
-  remainderPruner,
   shutdown,
 }: LifecycleStartupContext): Promise<CoordinatorServerInfo> {
   const {
@@ -1187,15 +1178,7 @@ async function runLifecycleStartup({
     };
 
     // ===== Era II (recovery) =====
-    // Retention here answers to no reader before kernel-ready and none of Era II's recovery reads this
-    // directory. It must not sit ahead of the CLI-facing KERNEL_READY_DEADLINE_MS, and unlike the rest of
-    // this preamble the prune is not O(1) — readdir, then per file a stat, a read, a parse and a decode,
-    // then unlinks — so `yieldPastKernelReadyResponse` hands the event loop back first.
     await yieldPastKernelReadyResponse();
-    const remainderPruneDisposition = remainderPruner.start();
-    if (remainderPruneDisposition !== null) {
-      logShutdownRemainderStartupPrune(remainderPruneDisposition);
-    }
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
@@ -1298,7 +1281,6 @@ async function runLifecycleStartup({
 
     return serverInfo;
   } catch (error: unknown) {
-    remainderPruner.stop();
     const mutationAdmissionDisposition = state.providerOperationMutationAdmission?.close();
     if (
       (error as { name?: string } | null)?.name === 'AbortError' &&
@@ -1428,17 +1410,6 @@ export function createLifecycle(
     pluginRoot,
     instanceId,
   });
-  const remainderPruner = createShutdownRemainderPruner({
-    storage: runtime.storage,
-    time: runtime.time,
-    runDir: runtime.paths.coral.coordinator.runDir,
-    observeStageWriter: (writer) =>
-      observeShutdownRemainderStageWriter(writer, {
-        platform: runtime.env.platform(),
-        observeLiveness: runtime.process.observeLiveness,
-        readProcessIncarnation: runtime.process.readProcessIncarnation,
-      }),
-  });
   function createInvocationContext(rawProjectRoot: string): InvocationContext {
     const projectRoot = canonicalizeWorkDir(rawProjectRoot, process.cwd());
     const principal: Principal = {
@@ -1451,7 +1422,6 @@ export function createLifecycle(
   }
 
   async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
-    remainderPruner.stop();
     state.shutdownReason ??= reason;
     if (reason === 'provider-proxy-lifecycle-fatal' || incident !== undefined) {
       state.shutdownReason = 'provider-proxy-lifecycle-fatal';
@@ -1733,7 +1703,6 @@ export function createLifecycle(
         state,
         createInvocationContext,
         ownershipChecker,
-        remainderPruner,
         shutdown,
       });
     } catch (error: unknown) {
@@ -1777,6 +1746,5 @@ export function createLifecycle(
       return Promise.reject(new Error('Shutdown has not been requested'));
     },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
-    readShutdownRemainderCleanupSnapshot: () => remainderPruner.readCleanupRefusalSnapshot(),
   };
 }

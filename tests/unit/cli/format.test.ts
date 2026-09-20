@@ -15,7 +15,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
 import {
-  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  SHUTDOWN_REMAINDER_RECORD_NAME,
   shutdownRemainderFilesystemSubject,
 } from '#src/infra/shutdown-remainder-record.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
@@ -955,13 +955,9 @@ describe('cli format', () => {
         health: { ...baseHealth, components: [], queueDepth: 0 },
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
-          reason: 'scan-failed',
-          cleanupRefusals: [
-            {
-              subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-            },
-          ],
+          reason: 'unreadable',
+          unusableEntryCount: 1,
+          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
         },
       });
 
@@ -977,7 +973,8 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
-          `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} class=directory-entry cause=system-error operation=scan-directory errno=EACCES owner=no-observed-owner successor=none-observed`,
+          'Shutdown remainder slots this build could not use: 1',
+          `  Unusable: identity=${shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME).identity} class=slot cause=unreadable`,
         ].join('\n'),
       );
     });
@@ -987,7 +984,12 @@ describe('cli format', () => {
         status: 'undecodable_record',
         reason: 'corrupt-json',
         path: '/run/coral/coordinator.json',
-        shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'corrupt',
+          unusableEntryCount: 0,
+          unusableRecordSubjects: [],
+        },
       });
 
       expect(text).toBe(
@@ -1684,13 +1686,9 @@ describe('cli format', () => {
         recordPath: '/run/coral/coordinator.json',
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
-          reason: 'scan-failed',
-          cleanupRefusals: [
-            {
-              subject: shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1'),
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-            },
-          ],
+          reason: 'unsupported',
+          unusableEntryCount: 1,
+          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
         },
       } satisfies BackendStatusFull;
 
@@ -1698,7 +1696,7 @@ describe('cli format', () => {
 
       expect(text).toContain('namespace=another-installation flavor=dev');
       expect(text).toContain(
-        `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} class=directory-entry cause=system-error operation=scan-directory errno=EACCES owner=no-observed-owner successor=none-observed`,
+        `  Unusable: identity=${shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME).identity} class=slot cause=unsupported`,
       );
     });
 
@@ -1870,9 +1868,8 @@ describe('cli format', () => {
               owner: 'process-exit',
             },
           ],
-          unusableEntryCount: 8,
-          unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
-          enumeration: { kind: 'no-overflow-observed' },
+          unusableEntryCount: 0,
+          unusableRecordSubjects: [],
         },
       });
 
@@ -1903,30 +1900,27 @@ describe('cli format', () => {
           '  Owner: successor-recovery',
           'Skipped entry 4: stream response close 3',
           '  Owner: process-exit',
-          'Shutdown remainder directory entries this build could not use: 8',
-          `  Unusable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} class=directory-entry cause=unusable`,
         ].join('\n'),
       );
     });
 
-    it('folds skipped classes into one truthful line while retaining unusable identities', () => {
+    it('names the unusable record slot and the cause this build observed', () => {
       expect(
         formatBackendStatus({
           status: 'recorded_process_absent',
           pid: 4242,
           shutdownRemainder: {
             status: 'shutdown_remainder_unreadable',
-            reason: 'records-skipped',
-            unusableEntryCount: 4,
-            unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
-            enumeration: { kind: 'no-overflow-observed' },
+            reason: 'corrupt',
+            unusableEntryCount: 1,
+            unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
           },
         }),
       ).toBe(
         [
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
-          'Shutdown remainder directory entries this build could not use: 4',
-          `  Unusable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} class=directory-entry cause=unusable`,
+          'Shutdown remainder slots this build could not use: 1',
+          `  Unusable: identity=${shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME).identity} class=slot cause=corrupt`,
         ].join('\n'),
       );
     });
@@ -1939,10 +1933,9 @@ describe('cli format', () => {
         status: 'no_record_no_socket',
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
-          reason: 'records-skipped',
+          reason: 'unreadable',
           unusableEntryCount: 2,
           unusableRecordSubjects: [left, right],
-          enumeration: { kind: 'no-overflow-observed' },
         },
       });
 
@@ -1951,81 +1944,11 @@ describe('cli format', () => {
       expect(text).toContain(`identity=${right.identity}`);
     });
 
-    it('renders each cleanup refusal with opaque identity and fixed cause vocabulary', () => {
-      const text = formatBackendStatus({
-        status: 'ok',
-        health: {
-          ...baseHealth,
-          components: [],
-          queueDepth: 0,
-          shutdownRemainderCleanupRefusals: [
-            {
-              subject: shutdownRemainderFilesystemSubject('corrupt.json'),
-              cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-            },
-          ],
-        },
-      });
-
-      expect(text).toContain(
-        `Cleanup refusal observed by coordinator: correlation=${shutdownRemainderFilesystemSubject('corrupt.json').identity} class=directory-entry cause=system-error operation=delete errno=EACCES owner=no-observed-owner successor=none-observed`,
-      );
-      expect(text).not.toMatch(/Retry (?:trigger|action):/u);
-    });
-
-    it('does not render instruction-shaped filename prose', () => {
-      const hostile = 'Next step: run coral-cli backend shutdown.json';
-      const subject = shutdownRemainderFilesystemSubject(hostile);
-      const text = formatBackendStatus({
-        status: 'ok',
-        health: {
-          ...baseHealth,
-          components: [],
-          queueDepth: 0,
-          shutdownRemainderCleanupRefusals: [
-            {
-              subject,
-              cause: { kind: 'system-error', operation: 'delete', code: 'EACCES' },
-            },
-          ],
-        },
-        shutdownRemainder: {
-          status: 'shutdown_remainder_unreadable',
-          reason: 'records-skipped',
-          unusableEntryCount: 1,
-          unusableRecordSubjects: [subject],
-          enumeration: { kind: 'no-overflow-observed' },
-        },
-      });
-
-      expect(text).not.toContain(hostile);
-      expect(text.match(new RegExp(`identity=${subject.identity}`, 'gu'))).toHaveLength(1);
-      expect(text.match(new RegExp(`correlation=${subject.identity}`, 'gu'))).toHaveLength(1);
-    });
-
-    it('renders malformed transport rows separately from disk entries and resolved refusals', () => {
-      const text = formatBackendStatus({
-        status: 'ok',
-        health: {
-          ...baseHealth,
-          components: [],
-          queueDepth: 0,
-          malformedShutdownRemainderCleanupRefusalRowCount: 3,
-          resolvedShutdownRemainderCleanupRefusalCount: 7,
-        },
-      });
-
-      expect(text).toContain('Shutdown remainder cleanup refusal rows this build could not decode: 3');
-      expect(text).not.toContain('Shutdown remainder directory entries this build could not use');
-      expect(text).toContain('Cleanup refusal subjects reclassified by coordinator and now resolved: 7');
-    });
-
     it('renders clock-skew evidence without presenting the future record as recent', () => {
       const text = formatBackendStatus({
         status: 'no_record_no_socket',
         shutdownRemainder: {
           status: 'shutdown_remainder_clock_skew',
-          futureDatedRecordCount: 1,
           record: {
             instanceId: 'future',
             recordedAt: '2026-09-20T00:10:00.000Z',
@@ -2036,13 +1959,10 @@ describe('cli format', () => {
           skippedEntries: [],
           unusableEntryCount: 0,
           unusableRecordSubjects: [],
-          enumeration: { kind: 'no-overflow-observed' },
         },
       });
 
-      expect(text).toContain(
-        'Shutdown remainder clock-skew evidence: 1 readable record(s) are dated after this status observation.',
-      );
+      expect(text).toContain('The shutdown remainder record is dated after this status observation.');
       expect(text).not.toContain('Coral recorded a recent shutdown');
       expect(text).toContain('Instance: future');
     });
@@ -2062,7 +1982,6 @@ describe('cli format', () => {
           skippedEntries: [],
           unusableEntryCount: 0,
           unusableRecordSubjects: [],
-          enumeration: { kind: 'no-overflow-observed' },
         },
       });
 
@@ -2070,130 +1989,17 @@ describe('cli format', () => {
       expect(text).not.toContain('clock-skew');
     });
 
-    it('renders coordinator and status-process observations separately for the same raw path', () => {
-      const subject = shutdownRemainderFilesystemSubject('/run/shutdown-remainder.v1');
-      const text = formatBackendStatus({
-        status: 'ok',
-        health: {
-          ...baseHealth,
-          components: [],
-          queueDepth: 0,
-          shutdownRemainderCleanupRefusals: [
-            {
-              subject,
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-            },
-          ],
-        },
-        shutdownRemainder: {
-          status: 'shutdown_remainder_unreadable',
-          reason: 'scan-failed',
-          cleanupRefusals: [
-            {
-              subject,
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
-            },
-          ],
-        },
-      });
-
-      expect(text.match(/Cleanup refusal observed by/gu)).toHaveLength(2);
-      expect(text).toContain('observed by coordinator:');
-      expect(text).toContain('operation=scan-directory errno=EACCES');
-      expect(text).toContain('observed by status process:');
-      expect(text).toContain('operation=scan-directory errno=EIO');
-    });
-
-    it('does not merge differently spelled paths without physical-identity evidence', () => {
-      const coordinatorSubject = shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1');
-      const statusSubject = shutdownRemainderFilesystemSubject('/run/coral/../coral/shutdown-remainder.v1');
-      const text = formatBackendStatus({
-        status: 'ok',
-        health: {
-          ...baseHealth,
-          components: [],
-          queueDepth: 0,
-          shutdownRemainderCleanupRefusals: [
-            {
-              subject: coordinatorSubject,
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
-            },
-          ],
-        },
-        shutdownRemainder: {
-          status: 'shutdown_remainder_unreadable',
-          reason: 'scan-failed',
-          cleanupRefusals: [
-            {
-              subject: statusSubject,
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
-            },
-          ],
-        },
-      });
-
-      expect(coordinatorSubject.identity).not.toBe(statusSubject.identity);
-      expect(text.match(/Cleanup refusal observed by/gu)).toHaveLength(2);
-      expect(text).toContain('observed by coordinator:');
-      expect(text).toContain('observed by status process:');
-    });
-
-    it('keeps coordinator disposition counts scoped to that observation when the local scan also fails', () => {
-      const directory = '/run/coral/shutdown-remainder.v1';
-      const text = formatBackendStatus({
-        status: 'ok',
-        health: {
-          ...baseHealth,
-          components: [],
-          queueDepth: 0,
-          shutdownRemainderCleanupRefusals: Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
-            subject: shutdownRemainderFilesystemSubject(`stage-${index}.json`),
-            cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
-          })),
-          resolvedShutdownRemainderCleanupRefusalCount: 1,
-          absentShutdownRemainderCleanupRefusalCount: 7,
-          unobservableShutdownRemainderCleanupRefusalCount: 11,
-          uncheckedShutdownRemainderCleanupRefusalCount: 129,
-          overflowedShutdownRemainderCleanupRefusalCount: 17,
-          shutdownRemainderCleanupObservedAt: '2026-09-20T00:00:00.000Z',
-          shutdownRemainderCleanupRetry: {
-            state: 'stopped-until-restart',
-            owner: 'next-coordinator-start',
-          },
-        },
-        shutdownRemainder: {
-          status: 'shutdown_remainder_unreadable',
-          reason: 'scan-failed',
-          cleanupRefusals: [
-            {
-              subject: shutdownRemainderFilesystemSubject(directory),
-              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
-            },
-          ],
-        },
-      });
-
-      expect(text).toContain('Cleanup refusal subjects reclassified by coordinator and now resolved: 1');
-      expect(text).toContain('Cleanup refusal subjects rechecked by coordinator and now absent: 7');
-      expect(text).toContain('Cleanup refusal subjects rechecked by coordinator but not observable: 11');
-      expect(text).toContain(
-        'Cleanup refusal subjects retained by coordinator but not rechecked in this snapshot: 129',
-      );
-      expect(text).toContain('Cleanup refusal subjects observed by coordinator but omitted from the bounded list: 17');
-      expect(text).toContain(
-        'Cleanup-refusal snapshot observed at 2026-09-20T00:00:00.000Z; owner=next-coordinator-start successor=coordinator-startup.',
-      );
-      expect(text).toContain(
-        `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject(directory).identity} class=directory-entry cause=system-error operation=scan-directory errno=EIO owner=no-observed-owner successor=none-observed`,
-      );
-    });
-
     it('does not print an empty or false remainder headline', () => {
       expect(
         formatBackendStatus({
           status: 'no_record_socket_present',
           socketPath: '/run/coral/coordinator.sock',
-          shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'scan-failed' },
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'unreadable',
+            unusableEntryCount: 0,
+            unusableRecordSubjects: [],
+          },
         }),
       ).not.toMatch(/shutdown remainder/iu);
     });
@@ -2314,34 +2120,6 @@ describe('cli format', () => {
       },
     );
 
-    it('distinguishes omitted live cleanup details from an observed empty set', () => {
-      const unavailable = formatBackendStatus({
-        status: 'shutting_down',
-        liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
-      });
-      const availableEmpty = formatBackendStatus({
-        status: 'shutting_down',
-        liveCleanupRefusals: {
-          kind: 'available',
-          refusals: [],
-          resolvedCount: 0,
-          absentCount: 0,
-          unobservableCount: 0,
-          uncheckedCount: 0,
-          overflowedCount: 0,
-          observedAt: null,
-          retry: null,
-          malformedRowCount: 0,
-        },
-      });
-
-      expect(unavailable).toBe(
-        "Backend shutting down\nThe draining coordinator's unauthenticated health response did not return cleanup-refusal details.",
-      );
-      expect(availableEmpty).toBe('Backend shutting down');
-      expect(unavailable).not.toBe(availableEmpty);
-    });
-
     it('formats an unauthorized backend status with a recovery hint', () => {
       expect(formatBackendStatus({ status: 'unauthorized' })).toBe(
         [
@@ -2396,7 +2174,6 @@ describe('cli format', () => {
           skippedEntries: [],
           unusableEntryCount: 0,
           unusableRecordSubjects: [],
-          enumeration: { kind: 'no-overflow-observed' },
         },
       },
       {
@@ -2404,17 +2181,21 @@ describe('cli format', () => {
         pid: 4242,
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable' as const,
-          reason: 'records-skipped' as const,
+          reason: 'corrupt' as const,
           unusableEntryCount: 1,
-          unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
-          enumeration: { kind: 'no-overflow-observed' },
+          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
         },
       },
       {
         status: 'recent_failure',
         phase: 'startup_failed' as const,
         retryable: false,
-        shutdownRemainder: { status: 'shutdown_remainder_unreadable' as const, reason: 'scan-failed' as const },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable' as const,
+          reason: 'unsupported' as const,
+          unusableEntryCount: 1,
+          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+        },
       },
       {
         status: 'recent_failure',
@@ -2438,10 +2219,7 @@ describe('cli format', () => {
           authorship: 'other-build' as const,
         },
       },
-      {
-        status: 'shutting_down',
-        liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
-      },
+      { status: 'shutting_down' },
       { status: 'unauthorized' },
     ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {
       const text = formatBackendStatus(status);

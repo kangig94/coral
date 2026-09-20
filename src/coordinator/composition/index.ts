@@ -1469,17 +1469,6 @@ export function createCoordinatorCore(
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
-        const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot() ?? {
-          refusals: [],
-          resolvedRefusalCount: 0,
-          absentRefusalCount: 0,
-          unobservableRefusalCount: 0,
-          uncheckedRefusalCount: 0,
-          overflowedRefusalCount: 0,
-          observedAt: null,
-          retry: { state: 'scheduled' as const, owner: 'coordinator' as const },
-        };
-
         let activeJobs = 0;
         let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
         let carrierDiagnostics: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
@@ -1641,36 +1630,6 @@ export function createCoordinatorCore(
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           components,
           kbDaemon,
-          ...(shutdownRemainderCleanup.refusals.length === 0
-            ? {}
-            : { shutdownRemainderCleanupRefusals: shutdownRemainderCleanup.refusals }),
-          ...(shutdownRemainderCleanup.resolvedRefusalCount === 0
-            ? {}
-            : {
-                resolvedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.resolvedRefusalCount,
-              }),
-          ...(shutdownRemainderCleanup.absentRefusalCount === 0
-            ? {}
-            : {
-                absentShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.absentRefusalCount,
-              }),
-          ...(shutdownRemainderCleanup.unobservableRefusalCount === 0
-            ? {}
-            : {
-                unobservableShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.unobservableRefusalCount,
-              }),
-          ...(shutdownRemainderCleanup.uncheckedRefusalCount === 0
-            ? {}
-            : {
-                uncheckedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.uncheckedRefusalCount,
-              }),
-          ...(shutdownRemainderCleanup.overflowedRefusalCount === 0
-            ? {}
-            : {
-                overflowedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.overflowedRefusalCount,
-              }),
-          shutdownRemainderCleanupObservedAt: shutdownRemainderCleanup.observedAt,
-          shutdownRemainderCleanupRetry: shutdownRemainderCleanup.retry,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
           ...(systemProviderScope === undefined

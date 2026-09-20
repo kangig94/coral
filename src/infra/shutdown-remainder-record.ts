@@ -1,33 +1,23 @@
-import { join, sep } from 'node:path';
+import { join } from 'node:path';
 import { z } from 'zod';
 
-import {
-  isSystemErrorCode,
-  serializedThrownIdentifierSchema,
-  serializedThrownSchema,
-  thrownErrnoCode,
-} from './error-format.js';
+import { serializedThrownIdentifierSchema, serializedThrownSchema, thrownErrnoCode } from './error-format.js';
 import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
-import type { ProcessIncarnation, ProcessLiveness } from './node-process.js';
+import type { ProcessIncarnation } from './node-process.js';
 import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
-import type { StorageBigIntStat, StoragePort } from './port-types.js';
+import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
-export const SHUTDOWN_REMAINDER_SCAN_LIMIT = 128;
-export const SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH = 4096;
+export const SHUTDOWN_REMAINDER_RECORD_NAME = `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}.json`;
+const SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH = 4096;
 
 export type ShutdownRemainderFilesystemSubject = Readonly<{
   identity: string;
   label: string;
 }>;
 
-export type ShutdownRemainderCleanupSubject = ShutdownRemainderFilesystemSubject;
-
-export type ShutdownRemainderCleanupIncarnation = Pick<StorageBigIntStat, 'dev' | 'ino' | 'mtimeNs' | 'size'>;
-
 const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
-const SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/u;
 
 export function shutdownRemainderFilesystemSubject(subject: string | Uint8Array): ShutdownRemainderFilesystemSubject {
   const identity = sha256Hex(subject);
@@ -42,34 +32,6 @@ export function shutdownRemainderFilesystemSubject(subject: string | Uint8Array)
     .slice(0, SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH - suffix.length)
     .replace(/[\uD800-\uDBFF]$/u, '');
   return { identity, label: `${prefix}${suffix}` };
-}
-
-export function shutdownRemainderCleanupSubject(
-  subject: string | Uint8Array,
-  incarnation: ShutdownRemainderCleanupIncarnation,
-): ShutdownRemainderCleanupSubject {
-  const pathBytes = typeof subject === 'string' ? Buffer.from(subject) : Buffer.from(subject);
-  const filesystemSubject = shutdownRemainderFilesystemSubject(pathBytes);
-  const identityMaterial = Buffer.concat([
-    Buffer.from(`${pathBytes.length}:`),
-    pathBytes,
-    Buffer.from(
-      `:${incarnation.dev.toString()}:${incarnation.ino.toString()}:${incarnation.mtimeNs.toString()}:${incarnation.size.toString()}`,
-    ),
-  ]);
-  return { ...filesystemSubject, identity: sha256Hex(identityMaterial) };
-}
-
-/** A transported filesystem label must not contain terminal-active code points. */
-export function isShutdownRemainderFilesystemSubject(value: unknown): value is ShutdownRemainderFilesystemSubject {
-  return (
-    isRecord(value) &&
-    typeof value.identity === 'string' &&
-    SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN.test(value.identity) &&
-    typeof value.label === 'string' &&
-    value.label.length <= SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH &&
-    !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value.label)
-  );
 }
 
 type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
@@ -100,189 +62,20 @@ export type ShutdownRemainderSkippedEntry = Readonly<{
   owner: string | null;
 }>;
 
-type ShutdownRemainderSkippedRecordSubject = Readonly<{
-  name: string;
-  subject: ShutdownRemainderFilesystemSubject;
-}>;
-
-export type ShutdownRemainderSkippedRecord = ShutdownRemainderSkippedRecordSubject &
-  /**
-   * The read was refused before any byte reached this build — a genuine unknown about the content, never
-   * decisive (design-philosophy.md principle 11).
-   */
-  (| Readonly<{ reason: 'unreadable' }>
-    /**
-     * The bytes were read and are not JSON at all — decisive for every build, because nothing can ever parse
-     * them (design-philosophy.md principle 10/11).
-     */
-    | Readonly<{ reason: 'corrupt' }>
-    /**
-     * The bytes parsed as JSON but this build's envelope schema refused the shape — decisive only about this
-     * build: a build with a different `SHUTDOWN_REASONS`/`SHUTDOWN_MODES` vocabulary (older or newer) may still
-     * decode it, so the fact proven here does not authorize deleting it the way `corrupt` does
-     * (design-philosophy.md principle 10's rollback case, principle 11's third answer). `detail` is
-     * `decodeShutdownRemainderRecord`'s own `shape-rejected` message, carried for a future reader with a wider
-     * schema; it never crosses to an operator-facing surface (see `src/transport/http/backend/status.ts`).
-     */
-    | Readonly<{ reason: 'unsupported'; detail: string }>
-    | Readonly<{ reason: 'malformed-staging' | 'record-identity-mismatch' }>
-    | Readonly<{
-        instanceId: string;
-        reason: 'staging-writer-alive' | 'staging-writer-unobservable' | 'orphaned-staging';
-      }>
-  );
-
-export type ShutdownRemainderStageWriter = Readonly<{
-  pid: number;
-  incarnationDigest?: string;
-}>;
-
-export type ShutdownRemainderStageObservation = ProcessLiveness;
-
-export type ShutdownRemainderStageObserver = (
-  writer: ShutdownRemainderStageWriter,
-) => ShutdownRemainderStageObservation;
-
-export type ShutdownRemainderRecordScan = Readonly<{
-  records: readonly DecodedShutdownRemainderRecord[];
-  skippedEntries: readonly ShutdownRemainderSkippedEntry[];
-  skippedRecords: readonly ShutdownRemainderSkippedRecord[];
-  entryOverflow?: true;
-}>;
-
-export function shutdownRemainderRecordDirectory(runDir: string): string {
-  return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}`);
-}
-
-export function shutdownRemainderDirectoryEntryPath(directory: string, name: Uint8Array): Buffer {
-  return Buffer.concat([Buffer.from(directory), Buffer.from(sep), Buffer.from(name)]);
+export function shutdownRemainderRecordPath(runDir: string): string {
+  return join(runDir, SHUTDOWN_REMAINDER_RECORD_NAME);
 }
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
 const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
 
-export type ShutdownRemainderCleanupRefusal = Readonly<{
-  subject: ShutdownRemainderCleanupSubject;
-  cause:
-    | Readonly<{
-        kind: 'system-error';
-        operation: 'delete' | 'inspect-age' | 'promote' | 'scan-directory';
-        code: string;
-      }>
-    | Readonly<{
-        kind: 'unclassified-error';
-        operation: 'delete' | 'inspect-age' | 'promote' | 'scan-directory';
-      }>;
-}>;
-
-/** ENOENT is absence; every other cleanup failure retains only a bounded errno identifier. */
-export function shutdownRemainderCleanupRefusal(
-  subject: string | Uint8Array,
-  operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
-  error: unknown,
-  incarnation?: ShutdownRemainderCleanupIncarnation,
-): ShutdownRemainderCleanupRefusal | null {
-  const code = thrownErrnoCode(error);
-  if (code === 'ENOENT') return null;
-  return {
-    subject:
-      incarnation === undefined
-        ? shutdownRemainderFilesystemSubject(subject)
-        : shutdownRemainderCleanupSubject(subject, incarnation),
-    cause:
-      code !== undefined && isSystemErrorCode(code)
-        ? { kind: 'system-error', operation, code }
-        : { kind: 'unclassified-error', operation },
-  };
-}
-
-const SHUTDOWN_REMAINDER_STAGE_PATTERN =
-  /^(?<instanceId>.+)\.json\.stage\.(?<pid>[1-9][0-9]*)\.(?<incarnation>[a-f0-9]{64}|unobserved)(?<partial>\.tmp)?$/u;
-const SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN = /\.json\.(?:stage|tmp)(?:\.|$)/u;
-
-export type ShutdownRemainderStage = Readonly<{
-  name: string;
-  instanceId: string;
-  writer: ShutdownRemainderStageWriter;
-  partial: boolean;
-}>;
-
-export type ShutdownRemainderDirectoryEntry =
-  | Readonly<{ kind: 'stage'; stage: ShutdownRemainderStage }>
-  | Readonly<{ kind: 'malformed-stage'; name: string }>
-  | Readonly<{ kind: 'record'; name: string }>
-  | Readonly<{ kind: 'other' }>;
-
-export function shutdownRemainderStageName(
-  instanceId: string,
+export function shutdownRemainderStagePath(
+  runDir: string,
   writer: Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>,
 ): string {
-  return `${instanceId}.json.stage.${writer.pid}.${
+  return `${shutdownRemainderRecordPath(runDir)}.stage.${writer.pid}.${
     writer.incarnation === null ? 'unobserved' : sha256Hex(writer.incarnation)
   }`;
-}
-
-function parseShutdownRemainderStage(name: string): ShutdownRemainderStage | null {
-  const matched = SHUTDOWN_REMAINDER_STAGE_PATTERN.exec(name);
-  if (matched !== null) {
-    const instanceId = matched.groups?.instanceId;
-    const pid = Number(matched.groups?.pid);
-    const incarnation = matched.groups?.incarnation;
-    if (
-      instanceId === undefined ||
-      !serializedThrownIdentifierSchema.safeParse(instanceId).success ||
-      !Number.isSafeInteger(pid) ||
-      pid <= 0 ||
-      incarnation === undefined
-    ) {
-      return null;
-    }
-    return {
-      name,
-      instanceId,
-      writer: {
-        pid,
-        ...(incarnation === 'unobserved' ? {} : { incarnationDigest: incarnation }),
-      },
-      partial: matched.groups?.partial !== undefined,
-    };
-  }
-  return null;
-}
-
-export function observeShutdownRemainderStageWriter(
-  writer: ShutdownRemainderStageWriter,
-  runtime: Readonly<{
-    platform: string;
-    observeLiveness(pid: number): ProcessLiveness;
-    readProcessIncarnation(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
-  }>,
-): ShutdownRemainderStageObservation {
-  try {
-    if (writer.incarnationDigest === undefined) {
-      return runtime.observeLiveness(writer.pid) === 'absent' ? 'absent' : 'unknown';
-    }
-    const incarnation = runtime.readProcessIncarnation(writer.pid, runtime.platform as NodeJS.Platform);
-    if (incarnation !== null) return sha256Hex(incarnation) === writer.incarnationDigest ? 'alive' : 'absent';
-    return runtime.observeLiveness(writer.pid) === 'absent' ? 'absent' : 'unknown';
-  } catch {
-    return 'unknown';
-  }
-}
-
-function stageObservation(
-  stage: ShutdownRemainderStage,
-  observeStageWriter: ShutdownRemainderStageObserver,
-): ShutdownRemainderStageObservation {
-  return observeStageWriter(stage.writer);
-}
-
-/** Stage-shaped names must be classified before any `.json` entry can be selected as final evidence. */
-export function classifyShutdownRemainderDirectoryEntry(name: string): ShutdownRemainderDirectoryEntry {
-  const stage = parseShutdownRemainderStage(name);
-  if (stage !== null) return { kind: 'stage', stage };
-  if (SHUTDOWN_REMAINDER_STAGE_SHAPE_PATTERN.test(name)) return { kind: 'malformed-stage', name };
-  return name.endsWith('.json') ? { kind: 'record', name } : { kind: 'other' };
 }
 
 function readPersistedFact(value: unknown): string | null {
@@ -425,114 +218,4 @@ export function classifyShutdownRemainderFile(
         record: decoded.record,
         skippedEntries: decoded.skippedEntries,
       };
-}
-
-export function scanShutdownRemainderRecords(
-  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readDirectoryBoundedSync'>,
-  directory: string,
-  observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
-): ShutdownRemainderRecordScan {
-  type RecordFile = Readonly<{
-    name: string;
-    path: Buffer;
-    subject: ShutdownRemainderFilesystemSubject;
-  }>;
-  type StageFile = Readonly<{
-    entry: Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
-    path: Buffer;
-    subject: ShutdownRemainderFilesystemSubject;
-  }>;
-  const records: DecodedShutdownRemainderRecord[] = [];
-  const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
-  const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
-  const stageFiles: StageFile[] = [];
-  const recordFiles: RecordFile[] = [];
-  const bounded = storage.readDirectoryBoundedSync(directory, SHUTDOWN_REMAINDER_SCAN_LIMIT, {
-    encoding: 'buffer',
-  });
-  const names = [...bounded.entries].sort(Buffer.compare);
-  for (const bytes of names) {
-    const name = bytes.toString('utf8');
-    const path = shutdownRemainderDirectoryEntryPath(directory, bytes);
-    const subject = shutdownRemainderFilesystemSubject(bytes);
-    const entry = classifyShutdownRemainderDirectoryEntry(name);
-    if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
-      stageFiles.push({ entry, path, subject });
-      continue;
-    }
-    if (entry.kind !== 'record') continue;
-    recordFiles.push({ name, path, subject });
-  }
-
-  for (const { entry, path, subject } of stageFiles) {
-    const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
-    if (entry.kind === 'malformed-stage') {
-      try {
-        storage.lstatSync(path);
-      } catch (error: unknown) {
-        if (thrownErrnoCode(error) === 'ENOENT') continue;
-      }
-      skippedRecords.push({
-        name,
-        subject,
-        reason: 'malformed-staging',
-      });
-      continue;
-    }
-    const stage = entry.stage;
-    const observation = stageObservation(stage, observeStageWriter);
-    if (stage.partial) {
-      try {
-        storage.lstatSync(path);
-      } catch (error: unknown) {
-        if (thrownErrnoCode(error) === 'ENOENT') continue;
-      }
-    } else {
-      const classification = classifyShutdownRemainderFile(storage, path);
-      if (classification.kind === 'vanished') continue;
-    }
-    skippedRecords.push({
-      name: stage.name,
-      subject,
-      instanceId: stage.instanceId,
-      reason:
-        observation === 'alive'
-          ? 'staging-writer-alive'
-          : observation === 'absent'
-            ? 'orphaned-staging'
-            : 'staging-writer-unobservable',
-    });
-  }
-
-  for (const { name, path, subject } of recordFiles) {
-    const classification = classifyShutdownRemainderFile(storage, path);
-    switch (classification.kind) {
-      case 'vanished':
-        continue;
-      case 'unreadable':
-        skippedRecords.push({ name, subject, reason: 'unreadable' });
-        continue;
-      case 'corrupt':
-        skippedRecords.push({ name, subject, reason: 'corrupt' });
-        continue;
-      case 'unsupported':
-        skippedRecords.push({ name, subject, reason: 'unsupported', detail: classification.detail });
-        continue;
-      case 'readable':
-        if (name !== `${classification.record.instanceId}.json`) {
-          skippedRecords.push({ name, subject, reason: 'record-identity-mismatch' });
-          continue;
-        }
-        records.push(classification.record);
-        skippedEntries.push(...classification.skippedEntries);
-        continue;
-    }
-  }
-
-  return {
-    records,
-    skippedEntries,
-    skippedRecords,
-    ...(bounded.overflow ? { entryOverflow: true as const } : {}),
-  };
 }

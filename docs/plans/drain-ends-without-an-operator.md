@@ -127,11 +127,13 @@ publication throws remains a named `process-exit` loss.
   retained or throwing identity publication still releases the pending launch in a `finally` path. Thus
   every callback outcome leaves the child in exactly one staged obligation — today either throw can leave
   it in both `cleanupHandles` and `pendingDurableLaunches`.
-- **AC7** — Exhaustion publishes `shutdown-remainder.v1/<instanceId>.json` in the run directory at mode `0o600`, one
+- **AC7** — Exhaustion publishes the remainder record in the run directory at mode `0o600`, one
   entry per undischarged obligation keyed by the ledger's own `label`, through a **synchronous inline**
-  `runtime.storage.writeAtomicSync` call after explicitly creating the version directory. The requirement is
+  `runtime.storage.writeAtomicSync` call after explicitly creating the run directory. The requirement is
   **ordering**: the write is the statement before `removeBackendInfoIfOwnerFn`. It is not a durability race,
   so `finalizeStoppedLifecycle` stays synchronous and no process is spawned to perform it.
+  **Corrected after review:** the address is a single `shutdown-remainder.v1.json`, not a directory of
+  per-instance files. See the AC9 correction for why the per-instance directory was withdrawn.
 - **AC8** — The remainder uses its own versioned address and extensible diagnostic labels; the current build
   exposes no shutdown-obligation abandonment producer, command, schema, or route.
 - **AC9** — The remainder record's entries are the ledger's structured dispositions:
@@ -146,16 +148,25 @@ publication throws remains a named `process-exit` loss.
   unknown `SuccessorRecoveryEvidence` kind. Entries decode individually; an undecodable entry is skipped,
   counted, and the count is reported by the programmatic reader, per §10's own "skipped and reported by
   key" precedent. Records decode individually too: an undecodable record is counted by the reader and carried
-  forward verbatim by the writer, which refuses only when the envelope itself is unreadable. Successor boot
-  retains at most the latest 32 instance records (one record keeps all of its entries), so recurring fatal
-  exits have bounded later read cost without putting the scan and unlink work on the predecessor's exit path.
+  forward verbatim by the writer, which refuses only when the envelope itself is unreadable.
   **Pioneer correction:** the implemented vocabulary has two owners. A durably published child's wrapper
   finalizer has custody as its enforcer, while the remainder remains `successor-recovery` because startup
   re-derives adoption from durable truth. `LifecycleShutdownDisposition` has only `held` plus its two terminal
   arms, and `GateResolution` has only `held` and `terminal`: a boundary refusal produces `held`, while
   successful commit or final exhaustion produces `terminal`, where remainder acceptance is attempted. The
-  durable address is the per-instance `shutdown-remainder.v1/<instanceId>.json`, not a shared file. The
-  no-daemon arm of `backend status` renders the newest record only while recent and offers no next step.
+  durable address is a single `shutdown-remainder.v1.json`. The no-daemon arm of `backend status` renders
+  that record only while recent and offers no next step.
+  **Corrected after review:** this clause originally required a per-instance directory, a 32-record
+  retention cap, and a successor-boot pruner. Both premises were refuted by measurement. A readable record
+  states its own age in `recordedAt`, which the reader already orders and windows by, so the pruner's
+  `statSync().mtimeMs` was a second and weaker source for a fact the content carried — `age-unobservable`,
+  the `inspect-age` refusal and retention rank 0 existed only because of that. And the directory could not
+  grow to disk capacity: a record this build cannot delete sits in a directory this build cannot write, so
+  writer and pruner fail together and no new record lands beside an undeletable one. The retention ranking
+  was separately measured to be a defect — ranking an unstattable record ahead of readable ones put it
+  permanently in the retention head and evicted the newest readable record, the one status exists to
+  report. The record still carries `instanceId`, so scoping to a coordinator instance is unchanged; it now
+  reads that field instead of a filename.
 - **AC10** — The shutdown ledger contributes `0` only for `settled` and `1` for every other disposition
   through `recordExitCode`; the process exit code remains the maximum of all contributors. A prior repeated
   signal or startup contribution is therefore never lowered by a later settled ledger.
@@ -483,11 +494,10 @@ ownership-inventory invariant enumerates this table and fails on either `none` o
   types, not one consumed twice; `childTerminationConfirmation` and `retainedChildActions` split with them.
   Delete `terminateAll` — its only production reference is `composition/defaults.ts`'s `terminateAllFn`
   injection, and every other caller is a test. *(AC5, AC6)*
-- **The remainder record.** New `shutdown-remainder.v1/<instanceId>.json` in `runDir`, bounded
-  append-and-replace-by-instance shape and tolerant reader. Writing replaces the same
-  instance; the successor boot path later retains the newest 32 instance records as atomic groups. The serialized entries are the
-  ledger's `{ label, remainder, settlement }` values directly. Shape precedent: `HANDOFF_CAPSULE_FILENAME`
-  in `src/provider-proxy/handoff-capsule-discovery.ts` — a generation admitted by address, derived from
+- **The remainder record.** New `shutdown-remainder.v1.json` in `runDir` — one address, replaced by each
+  writer — with a tolerant reader. The serialized entries are the ledger's `{ label, remainder, settlement }`
+  values directly. Shape precedent: `HANDOFF_CAPSULE_FILENAME` in
+  `src/provider-proxy/handoff-capsule-discovery.ts` — a generation admitted by address, derived from
   `SUPPORTED_HANDOFF_CAPSULE_VERSIONS`. *(AC7, AC9)*
   - **Why a new address.** A remainder record is diagnostic and needs to evolve independently; a shape that
     cannot remain additive gets a new generation at a new address (§10). *(AC8)*
@@ -496,7 +506,7 @@ ownership-inventory invariant enumerates this table and fails on either `none` o
   - **Why the run directory.** The store is finalized by the closing obligations before the boundary; at
     exit the run directory is the only writable durable address.
   - **Written inline, and why no helper.** One synchronous `runtime.storage.writeAtomicSync` at `0o600`, on
-    the coordinator thread after creating the version directory.
+    the coordinator thread after creating the run directory.
     A `false` return or a throw is the typed `refused` of AC12.
 
     An earlier draft put this in a separate `coral-shutdown-remainder-writer.cjs` process to bound a
@@ -723,7 +733,8 @@ npm run test:e2e:build && npm run test:e2e:lifecycle
   survivor-first/fatal-last, and assert retirement itself reevaluates the reducer.
 - `tests/unit/coordinator/services/provider-proxy-set/*` — prove only one retry timer is ever armed per
   hold slot with both sources live, and that a pending `slot.retryTimer` is cleared before re-arming.
-- `tests/unit/coordinator/shutdown-remainder.test.ts` — prove the new address and tolerant reader directly.
+- `tests/unit/coordinator/shutdown-remainder.test.ts` — prove the new address, the stage-then-publish
+  writer, and the five-way tolerant reader directly.
 - `tests/unit/coordinator/bootstrap.test.ts` and `tests/unit/infra/*process-incarnation*.test.ts` — add a
   childless lease whose filesystem probe never settles and prove the initial cleanup deadline reaches exit.
 - `tests/unit/coordinator/live/durable-transport.test.ts` (or the nearest existing durable-launch suite) —

@@ -1,5 +1,4 @@
 import { assertNever } from '../../infra/error-format.js';
-import type { ShutdownRemainderCleanupRefusal } from '../../infra/shutdown-remainder-record.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
@@ -692,58 +691,15 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
-type CleanupRefusalObservation = Readonly<{
-  source: 'coordinator' | 'status process';
-  refusals: readonly ShutdownRemainderCleanupRefusal[];
-  resolvedRefusalCount: number;
-  absentRefusalCount: number;
-  unobservableRefusalCount: number;
-  uncheckedRefusalCount: number;
-  overflowedRefusalCount: number;
-  observedAt: string | null;
-  retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
-}>;
-
-type LiveShutdownRemainderEvidence =
-  | Readonly<{ kind: 'not-requested' }>
-  | Readonly<{ kind: 'unavailable' }>
-  | Readonly<{
-      kind: 'available';
-      observation: CleanupRefusalObservation;
-      malformedRowCount: number;
-    }>;
-
-const NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE: LiveShutdownRemainderEvidence = {
-  kind: 'not-requested',
-};
-
-function withShutdownRemainderSection(
-  base: string,
-  shutdownRemainder: ShutdownRemainderReport | undefined,
-  liveEvidence: LiveShutdownRemainderEvidence = NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE,
-): string {
-  const section = formatShutdownRemainderReport(shutdownRemainder, liveEvidence);
+function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
+  const section = formatShutdownRemainderReport(shutdownRemainder);
   return section.length === 0 ? base : [base, section].join('\n');
 }
 
 function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
-      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder, {
-        kind: 'available',
-        observation: {
-          source: 'coordinator',
-          refusals: result.health.shutdownRemainderCleanupRefusals ?? [],
-          resolvedRefusalCount: result.health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
-          absentRefusalCount: result.health.absentShutdownRemainderCleanupRefusalCount ?? 0,
-          unobservableRefusalCount: result.health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
-          uncheckedRefusalCount: result.health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
-          overflowedRefusalCount: result.health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
-          observedAt: result.health.shutdownRemainderCleanupObservedAt ?? null,
-          retry: result.health.shutdownRemainderCleanupRetry ?? null,
-        },
-        malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
-      });
+      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder);
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
@@ -762,27 +718,8 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
       return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
-    case 'shutting_down': {
-      const liveEvidence =
-        result.liveCleanupRefusals.kind === 'available'
-          ? {
-              kind: 'available' as const,
-              observation: {
-                source: 'coordinator' as const,
-                refusals: result.liveCleanupRefusals.refusals,
-                resolvedRefusalCount: result.liveCleanupRefusals.resolvedCount,
-                absentRefusalCount: result.liveCleanupRefusals.absentCount,
-                unobservableRefusalCount: result.liveCleanupRefusals.unobservableCount,
-                uncheckedRefusalCount: result.liveCleanupRefusals.uncheckedCount,
-                overflowedRefusalCount: result.liveCleanupRefusals.overflowedCount,
-                observedAt: result.liveCleanupRefusals.observedAt,
-                retry: result.liveCleanupRefusals.retry,
-              },
-              malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
-            }
-          : ({ kind: 'unavailable' } as const);
-      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder, liveEvidence);
-    }
+    case 'shutting_down':
+      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder);
     case 'unauthorized':
       return withShutdownRemainderSection(
         [
@@ -1306,10 +1243,7 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
   return [...lines, ...formatSetupErrorLines(result.setupError)].join('\n');
 }
 
-function formatShutdownRemainderReport(
-  report: ShutdownRemainderReport | undefined,
-  liveEvidence: LiveShutdownRemainderEvidence,
-): string {
+function formatShutdownRemainderReport(report: ShutdownRemainderReport | undefined): string {
   const lines =
     report?.status === 'recent_shutdown_remainder' ||
     report?.status === 'stale_shutdown_remainder' ||
@@ -1320,71 +1254,14 @@ function formatShutdownRemainderReport(
     lines.unshift('Shutdown remainder evidence is older than the trusted recent window.');
   }
   if (report?.status === 'shutdown_remainder_clock_skew') {
-    lines.unshift(
-      `Shutdown remainder clock-skew evidence: ${report.futureDatedRecordCount ?? 0} readable record(s) are dated after this status observation.`,
-    );
+    lines.unshift('The shutdown remainder record is dated after this status observation.');
   }
-  const directoryEvidence =
-    report?.status === 'recent_shutdown_remainder' ||
-    report?.status === 'stale_shutdown_remainder' ||
-    report?.status === 'shutdown_remainder_clock_skew' ||
-    (report?.status === 'shutdown_remainder_unreadable' && report.reason !== 'scan-failed')
-      ? report
-      : undefined;
-  if (report?.status !== 'shutdown_remainder_clock_skew' && (directoryEvidence?.futureDatedRecordCount ?? 0) > 0) {
+  if (report?.status === 'shutdown_remainder_unreadable' && report.unusableEntryCount > 0) {
     lines.push(
-      `Shutdown remainder clock-skew evidence: ${directoryEvidence?.futureDatedRecordCount} readable record(s) are dated after this status observation and were not selected as recent.`,
-    );
-  }
-  const unusableEntryCount = directoryEvidence?.unusableEntryCount ?? 0;
-  if (unusableEntryCount > 0) {
-    lines.push(
-      `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}`,
-      ...(directoryEvidence?.unusableRecordSubjects ?? []).map(
-        (subject) => `  Unusable: identity=${subject.identity} class=directory-entry cause=unusable`,
+      `Shutdown remainder slots this build could not use: ${report.unusableEntryCount}`,
+      ...report.unusableRecordSubjects.map(
+        (subject) => `  Unusable: identity=${subject.identity} class=slot cause=${report.reason}`,
       ),
-    );
-  }
-  if (directoryEvidence?.enumeration.kind === 'truncated') {
-    lines.push(
-      `Shutdown remainder directory enumeration truncated (${directoryEvidence.enumeration.reason}); the evidence above is partial.`,
-    );
-  }
-  if (
-    report?.status === 'shutdown_remainder_unreadable' &&
-    report.reason === 'enumeration-inconclusive' &&
-    directoryEvidence?.enumeration.kind === 'no-overflow-observed'
-  ) {
-    lines.push('Shutdown remainder directory enumeration observed no overflow; concurrent changes may be unseen.');
-  }
-  if (liveEvidence.kind === 'unavailable') {
-    lines.push("The draining coordinator's unauthenticated health response did not return cleanup-refusal details.");
-  }
-  if (liveEvidence.kind === 'available' && liveEvidence.malformedRowCount > 0) {
-    lines.push(
-      `Shutdown remainder cleanup refusal rows this build could not decode: ${liveEvidence.malformedRowCount}`,
-    );
-  }
-  if (liveEvidence.kind === 'available') {
-    lines.push(...formatShutdownRemainderCleanupRefusals(liveEvidence.observation));
-  }
-  if (
-    report?.status === 'shutdown_remainder_unreadable' &&
-    report.reason === 'scan-failed' &&
-    report.cleanupRefusals !== undefined
-  ) {
-    lines.push(
-      ...formatShutdownRemainderCleanupRefusals({
-        source: 'status process',
-        refusals: report.cleanupRefusals,
-        resolvedRefusalCount: 0,
-        absentRefusalCount: 0,
-        unobservableRefusalCount: 0,
-        uncheckedRefusalCount: 0,
-        overflowedRefusalCount: 0,
-        observedAt: null,
-        retry: null,
-      }),
     );
   }
   return lines.join('\n');
@@ -1471,51 +1348,6 @@ function formatShutdownRemainderEvidenceLines(
     '  Evidence: startup-adoption',
     ...remainder.evidence.processes.flatMap((process) => [`    Job: ${process.jobId}`, `    PID: ${process.pid}`]),
   ];
-}
-
-function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObservation): string[] {
-  const ownership =
-    observation.source === 'status process'
-      ? 'owner=no-observed-owner successor=none-observed'
-      : observation.retry?.state === 'scheduled'
-        ? 'owner=coordinator successor=periodic-cleanup-retry'
-        : observation.retry?.state === 'stopped-until-restart'
-          ? 'owner=next-coordinator-start successor=coordinator-startup'
-          : 'owner=no-observed-owner successor=none-observed';
-  const lines = [
-    ...observation.refusals.map(
-      (refusal) =>
-        `Cleanup refusal observed by ${observation.source}: correlation=${refusal.subject.identity} class=directory-entry cause=${refusal.cause.kind} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'} ${ownership}`,
-    ),
-    ...(observation.resolvedRefusalCount === 0
-      ? []
-      : [
-          `Cleanup refusal subjects reclassified by ${observation.source} and now resolved: ${observation.resolvedRefusalCount}`,
-        ]),
-    ...(observation.absentRefusalCount === 0
-      ? []
-      : [
-          `Cleanup refusal subjects rechecked by ${observation.source} and now absent: ${observation.absentRefusalCount}`,
-        ]),
-    ...(observation.unobservableRefusalCount === 0
-      ? []
-      : [
-          `Cleanup refusal subjects rechecked by ${observation.source} but not observable: ${observation.unobservableRefusalCount}`,
-        ]),
-    ...(observation.uncheckedRefusalCount === 0
-      ? []
-      : [
-          `Cleanup refusal subjects retained by ${observation.source} but not rechecked in this snapshot: ${observation.uncheckedRefusalCount}`,
-        ]),
-    ...(observation.overflowedRefusalCount === 0
-      ? []
-      : [
-          `Cleanup refusal subjects observed by ${observation.source} but omitted from the bounded list: ${observation.overflowedRefusalCount}`,
-        ]),
-  ];
-  if (lines.length === 0 || observation.source !== 'coordinator') return lines;
-  const observedAt = observation.observedAt ?? 'unavailable';
-  return [...lines, `Cleanup-refusal snapshot observed at ${observedAt}; ${ownership}.`];
 }
 
 function formatSkippedShutdownRemainderEntries(

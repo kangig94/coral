@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { shutdownRemainderRecordDirectory } from '#src/infra/shutdown-remainder-record.js';
+import { shutdownRemainderRecordPath } from '#src/infra/shutdown-remainder-record.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
@@ -231,7 +231,7 @@ describe('coordinator fatal drain integration', () => {
     expect(readDiscoveryRecordForHome(home, 'prod')).toBeNull();
     expect(await waitForCoordinatorSocketRelease(files.socketPath, 5_000)).toBe('unlinked');
 
-    const remainderRecordPath = join(shutdownRemainderRecordDirectory(files.runDir), `${initial.instanceId}.json`);
+    const remainderRecordPath = shutdownRemainderRecordPath(files.runDir);
     expect(existsSync(remainderRecordPath)).toBe(true);
     const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
     expect(rawRemainderRecord).toMatchObject({
@@ -254,8 +254,8 @@ describe('coordinator fatal drain integration', () => {
     // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
     // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
     // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
-    // directory-wide scope only; the instance-scoped branch (exact instanceId match plus a start-time floor)
-    // is reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
+    // unscoped lookup only; the instance-scoped branch (exact instanceId match plus a start-time floor) is
+    // reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
     // `unreachable` — which no case here produces.
     const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
     expect(status).toMatchObject({
@@ -330,7 +330,7 @@ describe('coordinator fatal drain integration', () => {
     expect(actions).not.toContain('child-termination');
     expect(actions).not.toContain('job-terminalization');
 
-    const remainderRecordPath = join(shutdownRemainderRecordDirectory(files.runDir), `${initial.instanceId}.json`);
+    const remainderRecordPath = shutdownRemainderRecordPath(files.runDir);
     const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
     expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
@@ -358,8 +358,8 @@ describe('coordinator fatal drain integration', () => {
     // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
     // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
     // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
-    // directory-wide scope only; the instance-scoped branch (exact instanceId match plus a start-time floor)
-    // is reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
+    // unscoped lookup only; the instance-scoped branch (exact instanceId match plus a start-time floor) is
+    // reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
     // `unreachable` — which no case here produces.
     const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
     expect(status).toMatchObject({
@@ -426,7 +426,7 @@ describe('coordinator fatal drain integration', () => {
     expect(actions).toContain('provider-host-hard-shutdown-started');
     expect(actions).toContain('provider-host-hard-shutdown-budget-expired');
 
-    const remainderRecordPath = join(shutdownRemainderRecordDirectory(files.runDir), `${initial.instanceId}.json`);
+    const remainderRecordPath = shutdownRemainderRecordPath(files.runDir);
     const rawRemainderRecord: unknown = JSON.parse(readFileSync(remainderRecordPath, 'utf-8'));
     expect(rawRemainderRecord).toMatchObject({
       reason: 'provider-proxy-lifecycle-fatal',
@@ -454,8 +454,8 @@ describe('coordinator fatal drain integration', () => {
     // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
     // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
     // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
-    // directory-wide scope only; the instance-scoped branch (exact instanceId match plus a start-time floor)
-    // is reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
+    // unscoped lookup only; the instance-scoped branch (exact instanceId match plus a start-time floor) is
+    // reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
     // `unreachable` — which no case here produces.
     // `AfterBudgetFatalError`/`FATAL_AFTER_BUDGET` are fixture-only, not on the operator-facing allowlist, so
     // only `cause` survives that projection — the raw-bytes assertion above is what proves the rest.

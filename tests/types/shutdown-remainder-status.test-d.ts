@@ -67,11 +67,8 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.occurrence'
   | 'skippedEntries[].owner'
   | 'unusableEntryCount'
-  | 'futureDatedRecordCount'
   | 'unusableRecordSubjects[].identity'
-  | 'unusableRecordSubjects[].label'
-  | 'enumeration.kind'
-  | 'enumeration.reason';
+  | 'unusableRecordSubjects[].label';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
@@ -124,13 +121,24 @@ void unusableRecordIdentity;
 void unusableRecordLabel;
 declare const unusableEntryCount: ShutdownRemainderStatus['unusableEntryCount'];
 void unusableEntryCount;
-// @ts-expect-error cleanup refusals are produced only by the scan-failed variant.
-declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
-void cleanupRefusals;
-// @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
-// unusable subject list and class counts cross.
-declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
-void skippedRecords;
+// @ts-expect-error the classification a reader could not decode belongs to the unusable-record report, not to
+// one carrying a decoded record.
+declare const unusableReason: ShutdownRemainderStatus['reason'];
+void unusableReason;
+
+type UnusableShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
+const unusableProjectionLeafCoverage: Equal<
+  ProjectionLeafPaths<UnusableShutdownRemainderStatus>,
+  'status' | 'reason' | 'unusableEntryCount' | 'unusableRecordSubjects[].identity' | 'unusableRecordSubjects[].label'
+> = true;
+void unusableProjectionLeafCoverage;
+
+declare const unusableCause: UnusableShutdownRemainderStatus['reason'];
+const namedCause: 'unreadable' | 'corrupt' | 'unsupported' = unusableCause;
+void namedCause;
+// @ts-expect-error an unusable record carries no decoded record to project.
+declare const unusableRecord: UnusableShutdownRemainderStatus['record'];
+void unusableRecord;
 
 declare const settlement: OperatorFacingSettlement;
 

@@ -16,16 +16,13 @@ import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
-  observeShutdownRemainderStageWriter,
-  scanShutdownRemainderRecords,
-  shutdownRemainderCleanupRefusal,
-  shutdownRemainderRecordDirectory,
+  classifyShutdownRemainderFile,
+  SHUTDOWN_REMAINDER_RECORD_NAME,
+  shutdownRemainderFilesystemSubject,
+  shutdownRemainderRecordPath,
   type DecodedShutdownRemainderRecord,
-  type ShutdownRemainderCleanupRefusal,
   type ShutdownRemainderFilesystemSubject,
   type ShutdownRemainderRecord,
-  type ShutdownRemainderRecordScan,
-  type ShutdownRemainderStageObserver,
 } from '../../../infra/shutdown-remainder-record.js';
 
 const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
@@ -251,20 +248,9 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   }>[];
 }>;
 
-type OperatorFacingShutdownRemainderCleanup = Readonly<{
-  cleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-}>;
-
-type OperatorFacingShutdownRemainderDirectoryEvidence = Readonly<{
+type OperatorFacingShutdownRemainderSlotEvidence = Readonly<{
   unusableEntryCount: number;
-  futureDatedRecordCount?: number;
   unusableRecordSubjects: readonly ShutdownRemainderFilesystemSubject[];
-  enumeration:
-    | Readonly<{ kind: 'no-overflow-observed' }>
-    | Readonly<{
-        kind: 'truncated';
-        reason: 'entry-limit-exceeded';
-      }>;
 }>;
 
 type BackendStatus =
@@ -284,15 +270,6 @@ type BackendStatus =
       components: BackendHealth['components'];
       systemProviderScope?: BackendHealth['systemProviderScope'];
       diagnostics?: BackendHealth['diagnostics'];
-      shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-      resolvedShutdownRemainderCleanupRefusalCount?: number;
-      absentShutdownRemainderCleanupRefusalCount?: number;
-      unobservableShutdownRemainderCleanupRefusalCount?: number;
-      uncheckedShutdownRemainderCleanupRefusalCount?: number;
-      overflowedShutdownRemainderCleanupRefusalCount?: number;
-      shutdownRemainderCleanupObservedAt?: string | null;
-      shutdownRemainderCleanupRetry?: BackendHealth['shutdownRemainderCleanupRetry'];
-      malformedShutdownRemainderCleanupRefusalRowCount?: number;
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
     }
@@ -310,50 +287,28 @@ export type ShutdownRemainderReport =
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }> &
-      OperatorFacingShutdownRemainderDirectoryEvidence)
+      OperatorFacingShutdownRemainderSlotEvidence)
   | (Readonly<{
       status: 'shutdown_remainder_unreadable';
-      reason: 'scan-failed';
+      reason: 'unreadable' | 'corrupt' | 'unsupported';
     }> &
-      OperatorFacingShutdownRemainderCleanup)
-  | (Readonly<{
-      status: 'shutdown_remainder_unreadable';
-      reason: 'records-skipped' | 'enumeration-inconclusive';
-    }> &
-      OperatorFacingShutdownRemainderDirectoryEvidence)
+      OperatorFacingShutdownRemainderSlotEvidence)
   | (Readonly<{
       status: 'shutdown_remainder_clock_skew';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }> &
-      OperatorFacingShutdownRemainderDirectoryEvidence)
+      OperatorFacingShutdownRemainderSlotEvidence)
   | (Readonly<{
       status: 'stale_shutdown_remainder';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }> &
-      OperatorFacingShutdownRemainderDirectoryEvidence);
+      OperatorFacingShutdownRemainderSlotEvidence);
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
-  | {
-      status: 'shutting_down';
-      liveCleanupRefusals:
-        | Readonly<{
-            kind: 'available';
-            refusals: readonly ShutdownRemainderCleanupRefusal[];
-            resolvedCount: number;
-            absentCount: number;
-            unobservableCount: number;
-            uncheckedCount: number;
-            overflowedCount: number;
-            observedAt: string | null;
-            retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
-            malformedRowCount: number;
-          }>
-        | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
-      shutdownRemainder?: ShutdownRemainderReport;
-    }
+  | { status: 'shutting_down'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'recorded_process_absent'; pid: number; shutdownRemainder?: ShutdownRemainderReport }
@@ -434,7 +389,7 @@ type AddressedProbeStatus = Extract<
   { status: 'ok' | 'unreachable' | 'unauthorized' | 'shutting_down' }
 >;
 type ShutdownRemainderEvidenceScope =
-  | Readonly<{ kind: 'directory' }>
+  | Readonly<{ kind: 'unscoped' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
 
 function isPublicDiagnosticPhase(value: unknown): value is PublicDiagnosticPhase {
@@ -617,74 +572,38 @@ export function statusFromStartupDiagnostic(
 }
 
 function readRecentShutdownRemainder(
-  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readDirectoryBoundedSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
   runDir: string,
   now: number,
   scope: ShutdownRemainderEvidenceScope,
-  observeStageWriter: ShutdownRemainderStageObserver,
 ): ShutdownRemainderReport | null {
-  const directory = shutdownRemainderRecordDirectory(runDir);
-  let scan: ShutdownRemainderRecordScan;
-  try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
-  } catch (error: unknown) {
-    const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
-    if (refusal === null) return null;
-    // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
-    // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
-    // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
-    // field): not knowing which instance to scope to is a different unknown from not knowing whether the
-    // directory could be read at all, and the second one is what this catch observed.
+  const classification = classifyShutdownRemainderFile(storage, shutdownRemainderRecordPath(runDir));
+  if (classification.kind === 'vanished') return null;
+  if (classification.kind !== 'readable') {
     return {
       status: 'shutdown_remainder_unreadable',
-      reason: 'scan-failed',
-      cleanupRefusals: [refusal],
+      reason: classification.kind,
+      unusableEntryCount: 1,
+      unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
     };
   }
-  const enumerationEvidence: OperatorFacingShutdownRemainderDirectoryEvidence['enumeration'] =
-    scan.entryOverflow === undefined
-      ? { kind: 'no-overflow-observed' }
-      : { kind: 'truncated', reason: 'entry-limit-exceeded' };
-  // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
-  // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
-  // anything about when it was written, so an age filter on any of them would silently drop evidence this
-  // build never proved irrelevant. Scope narrowing (to a specific coordinator instance's own file, when one is
-  // known) is the only filter left.
-  const skippedRecordIsRelevant = (record: ShutdownRemainderRecordScan['skippedRecords'][number]): boolean =>
-    scope.kind === 'directory' ||
-    (scope.instanceId !== undefined &&
-      ('instanceId' in record ? record.instanceId === scope.instanceId : record.name === `${scope.instanceId}.json`));
-  const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
-  const unusableRecordSubjects = scopedSkippedRecords.map(({ subject }) => subject);
-  const unusableEntryCount = scopedSkippedRecords.length;
-  const scopedRecords = scan.records.flatMap((candidate) => {
-    const recordedAt = parseIsoTimestamp(candidate.recordedAt);
-    const hasEntry =
-      candidate.entries.length > 0 ||
-      scan.skippedEntries.some((entry) => entry.recordInstanceId === candidate.instanceId);
-    return hasEntry &&
-      Number.isFinite(recordedAt) &&
-      (scope.kind === 'directory' ||
-        (scope.instanceId !== undefined && candidate.instanceId === scope.instanceId && recordedAt >= scope.startedAt))
-      ? [{ candidate, recordedAt }]
-      : [];
-  });
-  const futureDatedRecordCount = scopedRecords.filter(({ recordedAt }) => recordedAt > now).length;
-  const directoryEvidence: OperatorFacingShutdownRemainderDirectoryEvidence = {
-    unusableEntryCount,
-    ...(futureDatedRecordCount === 0 ? {} : { futureDatedRecordCount }),
-    unusableRecordSubjects,
-    enumeration: enumerationEvidence,
+  const { record, skippedEntries } = classification;
+  const recordedAt = parseIsoTimestamp(record.recordedAt);
+  const hasEntry = record.entries.length > 0 || skippedEntries.length > 0;
+  if (
+    !hasEntry ||
+    !Number.isFinite(recordedAt) ||
+    (scope.kind === 'coordinator' &&
+      (scope.instanceId === undefined || record.instanceId !== scope.instanceId || recordedAt < scope.startedAt))
+  ) {
+    return null;
+  }
+  const slotEvidence: OperatorFacingShutdownRemainderSlotEvidence = {
+    unusableEntryCount: 0,
+    unusableRecordSubjects: [],
   };
-  const orderedRecords = scopedRecords.sort(
-    (left, right) =>
-      left.recordedAt - right.recordedAt || left.candidate.instanceId.localeCompare(right.candidate.instanceId),
-  );
-  const record = orderedRecords
-    .filter(({ recordedAt }) => recordedAt <= now && now - recordedAt <= RECENT_COORDINATOR_RECORD_MS)
-    .at(-1)?.candidate;
   const reportRecord = (
-    candidate: (typeof scopedRecords)[number]['candidate'],
+    candidate: DecodedShutdownRemainderRecord,
   ): Pick<
     Extract<
       ShutdownRemainderReport,
@@ -693,41 +612,30 @@ function readRecentShutdownRemainder(
     'record' | 'skippedEntries'
   > => ({
     record: operatorFacingShutdownRemainder(candidate),
-    skippedEntries: scan.skippedEntries
-      .filter((entry) => entry.recordInstanceId === candidate.instanceId)
-      .map((entry) => ({
-        entryNumber: entry.entryNumber,
-        obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
-        owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
-      })),
+    skippedEntries: skippedEntries.map((entry) => ({
+      entryNumber: entry.entryNumber,
+      obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+      owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
+    })),
   });
-  if (record === undefined) {
-    const futureRecord = orderedRecords.filter(({ recordedAt }) => recordedAt > now).at(-1)?.candidate;
-    if (futureRecord !== undefined) {
-      return {
-        status: 'shutdown_remainder_clock_skew',
-        ...reportRecord(futureRecord),
-        ...directoryEvidence,
-      };
-    }
-    const staleRecord = orderedRecords.at(-1)?.candidate;
-    if (staleRecord !== undefined) {
-      return {
-        status: 'stale_shutdown_remainder',
-        ...reportRecord(staleRecord),
-        ...directoryEvidence,
-      };
-    }
+  if (recordedAt > now) {
     return {
-      status: 'shutdown_remainder_unreadable',
-      reason: unusableEntryCount === 0 ? 'enumeration-inconclusive' : 'records-skipped',
-      ...directoryEvidence,
+      status: 'shutdown_remainder_clock_skew',
+      ...reportRecord(record),
+      ...slotEvidence,
+    };
+  }
+  if (now - recordedAt > RECENT_COORDINATOR_RECORD_MS) {
+    return {
+      status: 'stale_shutdown_remainder',
+      ...reportRecord(record),
+      ...slotEvidence,
     };
   }
   return {
     status: 'recent_shutdown_remainder',
     ...reportRecord(record),
-    ...directoryEvidence,
+    ...slotEvidence,
   };
 }
 
@@ -748,12 +656,11 @@ function readRecentFailureDiagnostic(
 }
 
 function statusWithRecentCoordinatorEvidence(
-  storage: Pick<StoragePort, 'existsSync' | 'lstatSync' | 'readFileSync' | 'readDirectoryBoundedSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
   diagnosticFile: string,
   runDir: string,
   now: number,
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
-  observeStageWriter: ShutdownRemainderStageObserver,
   fallback: Extract<
     BackendStatusFull,
     | { status: 'no_record_no_socket' | 'recorded_process_absent' | 'no_record_socket_present' }
@@ -771,37 +678,31 @@ function statusWithRecentCoordinatorEvidence(
   );
   const remainderScope: ShutdownRemainderEvidenceScope =
     coordinator === undefined
-      ? { kind: 'directory' }
+      ? { kind: 'unscoped' }
       : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt };
   // A startup diagnostic is proof about this build's own instance regardless of who now answers the recorded
   // address, and it carries the same optional `shutdownRemainder` field as every other fallback member, so it
   // always runs through the remainder lookup below rather than returning early.
   if (diagnostic !== null) {
-    return statusWithShutdownRemainder(storage, runDir, now, observeStageWriter, diagnostic, remainderScope);
+    return statusWithShutdownRemainder(storage, runDir, now, diagnostic, remainderScope);
   }
-  return statusWithShutdownRemainder(storage, runDir, now, observeStageWriter, fallback, remainderScope);
+  return statusWithShutdownRemainder(storage, runDir, now, fallback, remainderScope);
 }
 
 function statusWithShutdownRemainder<Status extends BackendStatusFull>(
-  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readDirectoryBoundedSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
   runDir: string,
   now: number,
-  observeStageWriter: ShutdownRemainderStageObserver,
   fallback: Status,
   scope: ShutdownRemainderEvidenceScope,
 ): Status {
-  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope, observeStageWriter);
+  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope);
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
 }
 
-function shuttingDownStatus(
-  liveCleanupRefusals: Extract<BackendStatusFull, { status: 'shutting_down' }>['liveCleanupRefusals'],
-): Extract<BackendStatusFull, { status: 'shutting_down' }> {
-  return {
-    status: 'shutting_down',
-    liveCleanupRefusals,
-  };
+function shuttingDownStatus(): Extract<BackendStatusFull, { status: 'shutting_down' }> {
+  return { status: 'shutting_down' };
 }
 
 type PingProbeObservation = Readonly<{
@@ -829,8 +730,7 @@ async function probeUnauthenticatedPing(
       return { result: notOurCoordinator({ namespace: body.namespace, flavor: body.flavor }) };
     }
     return {
-      result:
-        body.status === 'draining' ? shuttingDownStatus({ kind: 'unavailable', reason: 'coordinator-draining' }) : null,
+      result: body.status === 'draining' ? shuttingDownStatus() : null,
       instanceId: body.instanceId,
     };
   }
@@ -856,28 +756,12 @@ async function probeDetailedHealth(
     if (parsed === null) {
       return unreachable('detailed health responded 200 with a body this build could not decode');
     }
-    const {
-      health,
-      malformedShutdownRemainderCleanupRefusalRowCount,
-      skippedProviderProxySetRows,
-      skippedProviderProxySetTokens,
-    } = parsed;
+    const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (health.status === 'draining') {
-      return shuttingDownStatus({
-        kind: 'available',
-        refusals: health.shutdownRemainderCleanupRefusals ?? [],
-        resolvedCount: health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
-        absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
-        unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
-        uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
-        overflowedCount: health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
-        observedAt: health.shutdownRemainderCleanupObservedAt ?? null,
-        retry: health.shutdownRemainderCleanupRetry ?? null,
-        malformedRowCount: malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
-      });
+      return shuttingDownStatus();
     }
     const { namespace: _namespace, status: _status, ...rest } = health;
     return {
@@ -885,9 +769,6 @@ async function probeDetailedHealth(
       health: {
         ...rest,
         status: 'ok' as const,
-        ...((malformedShutdownRemainderCleanupRefusalRowCount ?? 0) === 0
-          ? {}
-          : { malformedShutdownRemainderCleanupRefusalRowCount }),
         skippedProviderProxySetRows,
         skippedProviderProxySetTokens,
       },
@@ -902,12 +783,6 @@ async function probeDetailedHealth(
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
   const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const observeStageWriter: ShutdownRemainderStageObserver = (writer) =>
-    observeShutdownRemainderStageWriter(writer, {
-      platform: runtime.env.platform(),
-      observeLiveness: runtime.process.observeLiveness,
-      readProcessIncarnation: runtime.process.readProcessIncarnation,
-    });
   const observed = observeCoordinator({
     storage: runtime.storage,
     env: runtime.env,
@@ -926,9 +801,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.storage,
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
-        observeStageWriter,
         { status: 'undecodable_record', reason: observed.reason, path: observed.path },
-        { kind: 'directory' },
+        { kind: 'unscoped' },
       );
     case 'no-record':
       return statusWithRecentCoordinatorEvidence(
@@ -937,7 +811,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
-        observeStageWriter,
         { status: 'no_record_no_socket' },
       );
     case 'no-record-socket-present':
@@ -948,7 +821,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
-        observeStageWriter,
         { status: 'no_record_socket_present', socketPath: observed.socketPath },
       );
     case 'process-absent':
@@ -960,7 +832,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
         runtime.paths.coral.coordinator.runDir,
         runtime.time.now(),
         provenSelfIdentity,
-        observeStageWriter,
         { status: 'recorded_process_absent', pid: observed.pid },
         observed,
       );
@@ -1030,9 +901,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
       runtime.time.now(),
-      observeStageWriter,
       result,
-      { kind: 'directory' },
+      { kind: 'unscoped' },
     );
   }
   if (result.status === 'ok') {
@@ -1040,9 +910,8 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
       runtime.time.now(),
-      observeStageWriter,
       result,
-      { kind: 'directory' },
+      { kind: 'unscoped' },
     );
   }
   return statusWithRecentCoordinatorEvidence(
@@ -1051,7 +920,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     runtime.paths.coral.coordinator.runDir,
     runtime.time.now(),
     provenSelfIdentity,
-    observeStageWriter,
     result,
     info,
   );

@@ -42,7 +42,6 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/infra/process-containment.ts#recordedProcessIdentitySchema',
   'src/infra/provider-binding-envelope.ts#providerBindingEnvelopeSchema',
   'src/infra/provider-scope.ts#providerScopeSchema',
-  'src/infra/shutdown-remainder-record.ts#persistedFileNameSchema',
   'src/infra/shutdown-remainder-record.ts#shutdownRemainderEntrySchema',
   'src/infra/shutdown-remainder-record.ts#shutdownRemainderRecordEnvelopeSchema',
   'src/jobs/discussion-run.ts#discussionRunDescriptorSchema',

@@ -8,7 +8,6 @@ import type * as CompositionWorldMod from '#src/coordinator/composition/world.js
 import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
-import { shutdownRemainderFilesystemSubject } from '#src/infra/shutdown-remainder-record.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { formatBackendStatus, formatUnreadableProviderOperationDiscard } from '#src/cli/format/backend.js';
@@ -614,45 +613,6 @@ describe('health local carrier observation', () => {
 
     expect(readHealth().diagnostics).toBeDefined();
     expect(readHealth().diagnostics?.launchPermits).toBeUndefined();
-  });
-
-  it('projects cleanup refusal dispositions unchanged', () => {
-    const core = createCore(
-      new LocalOperationRegistry(),
-      vi.fn(async () => ({ ok: true }) as never),
-    );
-    const refusal = {
-      subject: shutdownRemainderFilesystemSubject('corrupt.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    };
-    const readCleanupSnapshot = vi
-      .spyOn(core.lifecycleController, 'readShutdownRemainderCleanupSnapshot')
-      .mockReturnValue({
-        refusals: [refusal],
-        resolvedRefusalCount: 5,
-        absentRefusalCount: 7,
-        unobservableRefusalCount: 9,
-        uncheckedRefusalCount: 11,
-        overflowedRefusalCount: 13,
-        observedAt: '2026-09-20T00:00:00.000Z',
-        retry: { state: 'stopped-until-restart', owner: 'next-coordinator-start' },
-      });
-
-    const decoded = parseBackendHealth(readHealth());
-
-    if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
-    expect(decoded.health.shutdownRemainderCleanupRefusals).toEqual([refusal]);
-    expect(decoded.health.resolvedShutdownRemainderCleanupRefusalCount).toBe(5);
-    expect(decoded.health.absentShutdownRemainderCleanupRefusalCount).toBe(7);
-    expect(decoded.health.unobservableShutdownRemainderCleanupRefusalCount).toBe(9);
-    expect(decoded.health.uncheckedShutdownRemainderCleanupRefusalCount).toBe(11);
-    expect(decoded.health.overflowedShutdownRemainderCleanupRefusalCount).toBe(13);
-    expect(decoded.health.shutdownRemainderCleanupObservedAt).toBe('2026-09-20T00:00:00.000Z');
-    expect(decoded.health.shutdownRemainderCleanupRetry).toEqual({
-      state: 'stopped-until-restart',
-      owner: 'next-coordinator-start',
-    });
-    expect(readCleanupSnapshot).toHaveBeenCalledOnce();
   });
 
   it('projects non-release dispositions from coordinator-owned diagnostic state', () => {
