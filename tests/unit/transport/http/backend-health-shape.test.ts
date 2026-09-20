@@ -192,6 +192,10 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, uncheckedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, overflowedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupObservedAt: 'not-a-time' })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupNextCursor: 'not-a-subject' })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupNextCursor: 'A'.repeat(64) })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupGeneration: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupGeneration: 1.5 })).toBe(false);
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,

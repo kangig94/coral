@@ -69,7 +69,9 @@ type ExpectedProjectionLeafPaths =
   | 'unusableEntryCount'
   | 'notInspectedEntryCount'
   | 'futureDatedRecordCount'
-  | 'unreadableRecordNames[]';
+  | 'unreadableRecordNames[]'
+  | 'enumeration.kind'
+  | 'enumeration.reason';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'

@@ -119,6 +119,7 @@ import {
   createShutdownRemainderPruner,
   recordShutdownRemainder,
   type ShutdownRemainderCleanupSnapshot,
+  type ShutdownRemainderCleanupContinuation,
 } from './shutdown-remainder.js';
 import { observeShutdownRemainderStageWriter } from '../infra/shutdown-remainder-record.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
@@ -836,7 +837,9 @@ export type LifecycleController = {
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
-  readShutdownRemainderCleanupSnapshot(after?: string): ShutdownRemainderCleanupSnapshot;
+  readShutdownRemainderCleanupSnapshot(
+    continuation?: ShutdownRemainderCleanupContinuation,
+  ): ShutdownRemainderCleanupSnapshot;
 };
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */

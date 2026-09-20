@@ -220,6 +220,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 1,
         unreadableRecordNames: [],
       },
@@ -239,6 +240,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 1,
         unreadableRecordNames: ['unreadable.json'],
       },
@@ -257,6 +259,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 1,
         unreadableRecordNames: [],
       },
@@ -286,6 +289,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 1,
         unreadableRecordNames: ['locked.json'],
       },
@@ -309,6 +313,30 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
 
+  it('bounds directory pagination and returns the evidence inspected before truncation', async () => {
+    mockState.remainderFiles = Array.from({ length: 1_025 }, (_, index) =>
+      remainderFile(`unreadable-${String(index).padStart(4, '0')}.json`, NOW - index, '{not-json', undefined, 'EACCES'),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'records-skipped',
+        unusableEntryCount: 1_024,
+        notInspectedEntryCount: 1,
+        enumeration: { kind: 'truncated', reason: 'page-budget-exhausted' },
+      },
+    });
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(
+      'Shutdown remainder directory enumeration truncated (page-budget-exhausted); the evidence above is partial.',
+    );
+  });
+
   // Same disposition with a known, stale mtime: neither reason is filtered by age.
   it('reports an unreadable record from outside the recent-record window', async () => {
     mockState.remainderFiles = [remainderFile('ancient.json', NOW - 300_001, 'irrelevant', undefined, 'EACCES')];
@@ -320,6 +348,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 1,
         unreadableRecordNames: ['ancient.json'],
       },
@@ -518,7 +547,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.now = NOW + 16 * 60_000;
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       shutdownRemainder: {
-        status: 'shutdown_remainder_clock_skew',
+        status: 'stale_shutdown_remainder',
         record: { instanceId: 'future' },
       },
     });
@@ -675,6 +704,7 @@ describe('getBackendStatusFull record disposition', () => {
     expect([...paths].sort()).toEqual(
       [
         'status',
+        'enumeration.kind',
         'record.instanceId',
         'record.recordedAt',
         'record.reason',
@@ -916,6 +946,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 2,
         unreadableRecordNames: [],
       },
@@ -933,7 +964,7 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
       shutdownRemainder: {
-        status: 'shutdown_remainder_clock_skew',
+        status: 'stale_shutdown_remainder',
         record: { instanceId: 'stale' },
         unusableEntryCount: 1,
         unreadableRecordNames: [],
@@ -954,6 +985,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unusableEntryCount: 1,
         unreadableRecordNames: [],
       },
@@ -1010,7 +1042,7 @@ describe('getBackendStatusFull record disposition', () => {
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
       shutdownRemainder: {
-        status: 'shutdown_remainder_clock_skew',
+        status: 'stale_shutdown_remainder',
         record: { instanceId: 'stale' },
       },
     });
@@ -1053,8 +1085,9 @@ describe('getBackendStatusFull record disposition', () => {
     );
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+    expect(result).toMatchObject({
       status: 'recent_failure',
       setupError: {
         kind: 'self_authored',
@@ -1399,6 +1432,7 @@ describe('getBackendStatusFull record disposition', () => {
       recordPath: '/run/coral/coordinator.json',
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
+        enumeration: { kind: 'complete' },
         record: expect.objectContaining({ instanceId: 'recorded-coordinator' }),
         skippedEntries: [],
         unreadableRecordNames: [],
@@ -1469,6 +1503,7 @@ describe('getBackendStatusFull record disposition', () => {
         path: '/run/coral/coordinator.json',
         shutdownRemainder: {
           status: 'recent_shutdown_remainder',
+          enumeration: { kind: 'complete' },
           record: expect.objectContaining({ instanceId: 'recent' }),
           skippedEntries: [],
           unreadableRecordNames: [],
@@ -1658,6 +1693,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
+        enumeration: { kind: 'complete' },
         unreadableRecordNames: [],
         unusableEntryCount: 1,
       },
@@ -1947,20 +1983,24 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   });
 
   it('follows cleanup-refusal continuations and returns every identity', async () => {
-    const first = {
-      subject: shutdownRemainderFilesystemSubject('a.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    };
-    const second = {
-      subject: shutdownRemainderFilesystemSubject('z.json'),
-      cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
-    };
+    const [first, second] = [
+      {
+        subject: shutdownRemainderFilesystemSubject('a.json'),
+        cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      },
+      {
+        subject: shutdownRemainderFilesystemSubject('z.json'),
+        cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
+      },
+    ].sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
+    if (first === undefined || second === undefined) throw new Error('expected two cleanup refusals');
     const fetchMock = stubProbes(
       new Response(ping('ok'), { status: 200 }),
       new Response(
         detailed('ok', {
           shutdownRemainderCleanupRefusals: [first],
           shutdownRemainderCleanupNextCursor: first.subject.identity,
+          shutdownRemainderCleanupGeneration: 11,
           overflowedShutdownRemainderCleanupRefusalCount: 1,
         }),
         { status: 200 },
@@ -1968,7 +2008,195 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(
         detailed('ok', {
           shutdownRemainderCleanupRefusals: [second],
+          shutdownRemainderCleanupGeneration: 11,
           overflowedShutdownRemainderCleanupRefusalCount: 0,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      health: {
+        shutdownRemainderCleanupRefusals: [first, second],
+        overflowedShutdownRemainderCleanupRefusalCount: 0,
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2]?.[0]).toBe(
+      `http://127.0.0.1:4321/health?detailed=1&shutdownRemainderCleanupAfter=${first.subject.identity}&shutdownRemainderCleanupGeneration=11`,
+    );
+  });
+
+  it('restarts cleanup-refusal pagination when the snapshot generation changes', async () => {
+    const refusals = ['old.json', 'new-a.json', 'new-z.json']
+      .map((name) => ({
+        subject: shutdownRemainderFilesystemSubject(name),
+        cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+      }))
+      .sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
+    const [newFirst, newSecond] = refusals
+      .slice(1)
+      .sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
+    const old = refusals[0];
+    if (old === undefined || newFirst === undefined || newSecond === undefined) {
+      throw new Error('expected cleanup refusal fixtures');
+    }
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [old],
+          shutdownRemainderCleanupNextCursor: old.subject.identity,
+          shutdownRemainderCleanupGeneration: 1,
+        }),
+        { status: 200 },
+      ),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [newFirst],
+          shutdownRemainderCleanupNextCursor: newFirst.subject.identity,
+          shutdownRemainderCleanupGeneration: 2,
+        }),
+        { status: 200 },
+      ),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [newFirst],
+          shutdownRemainderCleanupNextCursor: newFirst.subject.identity,
+          shutdownRemainderCleanupGeneration: 2,
+        }),
+        { status: 200 },
+      ),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [newSecond],
+          shutdownRemainderCleanupGeneration: 2,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      health: {
+        shutdownRemainderCleanupRefusals: [newFirst, newSecond],
+        shutdownRemainderCleanupEnumeration: { kind: 'complete' },
+      },
+    });
+  });
+
+  it('keeps the last verified partial snapshot when a restarted enumeration cannot begin', async () => {
+    const old = {
+      subject: shutdownRemainderFilesystemSubject('old.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+    };
+    const replacement = {
+      subject: shutdownRemainderFilesystemSubject('replacement.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EIO' },
+    };
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [old],
+          shutdownRemainderCleanupNextCursor: old.subject.identity,
+          shutdownRemainderCleanupGeneration: 1,
+        }),
+        { status: 200 },
+      ),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [replacement],
+          shutdownRemainderCleanupNextCursor: replacement.subject.identity,
+          shutdownRemainderCleanupGeneration: 2,
+        }),
+        { status: 200 },
+      ),
+      new Response('{}', { status: 500 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: {
+        shutdownRemainderCleanupRefusals: [old],
+        shutdownRemainderCleanupEnumeration: {
+          kind: 'truncated',
+          reason: 'response-rejected',
+        },
+      },
+    });
+  });
+
+  it('returns one snapshot as partial evidence when the snapshot restart budget is exhausted', async () => {
+    const refusalFor = (generation: number) => ({
+      subject: shutdownRemainderFilesystemSubject(`generation-${generation}.json`),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+    });
+    const page = (generation: number): Response => {
+      const refusal = refusalFor(generation);
+      return new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [refusal],
+          shutdownRemainderCleanupNextCursor: refusal.subject.identity,
+          shutdownRemainderCleanupGeneration: generation,
+          overflowedShutdownRemainderCleanupRefusalCount: 1,
+        }),
+        { status: 200 },
+      );
+    };
+    stubProbes(new Response(ping('ok'), { status: 200 }), page(1), page(2), page(2), page(3), page(3), page(4));
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: {
+        shutdownRemainderCleanupRefusals: [refusalFor(3)],
+        overflowedShutdownRemainderCleanupRefusalCount: 1,
+        shutdownRemainderCleanupEnumeration: {
+          kind: 'truncated',
+          reason: 'snapshot-restart-budget-exhausted',
+        },
+      },
+    });
+  });
+
+  it('restarts cleanup-refusal pagination when a later page comes from a replacement coordinator', async () => {
+    const old = {
+      subject: shutdownRemainderFilesystemSubject('old-instance.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+    };
+    const replacement = {
+      subject: shutdownRemainderFilesystemSubject('replacement-instance.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EIO' },
+    };
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [old],
+          shutdownRemainderCleanupNextCursor: old.subject.identity,
+          shutdownRemainderCleanupGeneration: 1,
+        }),
+        { status: 200 },
+      ),
+      new Response(detailed('ok', { instanceId: 'replacement', shutdownRemainderCleanupGeneration: 1 }), {
+        status: 200,
+      }),
+      new Response(
+        detailed('ok', {
+          instanceId: 'replacement',
+          shutdownRemainderCleanupRefusals: [replacement],
+          shutdownRemainderCleanupGeneration: 1,
         }),
         { status: 200 },
       ),
@@ -1979,14 +2207,101 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'ok',
       health: {
-        shutdownRemainderCleanupRefusals: [first, second],
-        overflowedShutdownRemainderCleanupRefusalCount: 0,
+        instanceId: 'replacement',
+        shutdownRemainderCleanupRefusals: [replacement],
+        shutdownRemainderCleanupEnumeration: { kind: 'complete' },
       },
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[2]?.[0]).toBe(
-      `http://127.0.0.1:4321/health?detailed=1&shutdownRemainderCleanupAfter=${first.subject.identity}`,
+  });
+
+  it('returns verified partial cleanup evidence when a later page is rejected', async () => {
+    const refusal = {
+      subject: shutdownRemainderFilesystemSubject('partial.json'),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+    };
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: [refusal],
+          shutdownRemainderCleanupNextCursor: refusal.subject.identity,
+          shutdownRemainderCleanupGeneration: 3,
+          overflowedShutdownRemainderCleanupRefusalCount: 1,
+        }),
+        { status: 200 },
+      ),
+      new Response('{}', { status: 500 }),
     );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      health: {
+        shutdownRemainderCleanupRefusals: [refusal],
+        overflowedShutdownRemainderCleanupRefusalCount: 1,
+        shutdownRemainderCleanupEnumeration: {
+          kind: 'truncated',
+          reason: 'response-rejected',
+          detail: 'detailed health responded 500',
+        },
+      },
+    });
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(
+      'Cleanup-refusal enumeration truncated (response-rejected); the listed evidence is partial.',
+    );
+  });
+
+  it('bounds cleanup-refusal accumulation and reports the omitted remainder', async () => {
+    const refusals = Array.from({ length: 513 }, (_, index) => ({
+      subject: shutdownRemainderFilesystemSubject(`bounded-${String(index).padStart(3, '0')}.json`),
+      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
+    })).sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
+    const pages = Array.from({ length: 4 }, (_, pageIndex) => {
+      const page = refusals.slice(pageIndex * 128, (pageIndex + 1) * 128);
+      const nextCursor = page.at(-1)?.subject.identity;
+      if (nextCursor === undefined) throw new Error('expected a full cleanup-refusal page');
+      return new Response(
+        detailed('ok', {
+          shutdownRemainderCleanupRefusals: page,
+          shutdownRemainderCleanupNextCursor: nextCursor,
+          shutdownRemainderCleanupGeneration: 5,
+          overflowedShutdownRemainderCleanupRefusalCount: 513 - (pageIndex + 1) * 128,
+        }),
+        { status: 200 },
+      );
+    });
+    const fetchMock = stubProbes(new Response(ping('ok'), { status: 200 }), ...pages);
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({
+      status: 'ok',
+      health: {
+        overflowedShutdownRemainderCleanupRefusalCount: 1,
+        shutdownRemainderCleanupEnumeration: { kind: 'truncated', reason: 'item-budget-exhausted' },
+      },
+    });
+    if (result.status !== 'ok') throw new Error(`expected ok, received ${result.status}`);
+    expect(result.health.shutdownRemainderCleanupRefusals).toHaveLength(512);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('accepts a replacement between the ping and the first detailed response', async () => {
+    stubProbes(
+      new Response(ping('ok'), { status: 200 }),
+      new Response(detailed('ok', { instanceId: 'newer-instance' }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: { instanceId: 'newer-instance' },
+    });
   });
 
   it('keeps disk evidence while returning the later unverified detailed response', async () => {

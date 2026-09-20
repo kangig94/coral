@@ -700,6 +700,9 @@ type CleanupRefusalObservation = Readonly<{
   overflowedRefusalCount: number;
   observedAt: string | null;
   retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
+  enumeration: NonNullable<
+    Extract<BackendStatusFull, { status: 'ok' }>['health']['shutdownRemainderCleanupEnumeration']
+  >;
 }>;
 
 type LiveShutdownRemainderEvidence =
@@ -739,6 +742,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
           overflowedRefusalCount: result.health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
           observedAt: result.health.shutdownRemainderCleanupObservedAt ?? null,
           retry: result.health.shutdownRemainderCleanupRetry ?? null,
+          enumeration: result.health.shutdownRemainderCleanupEnumeration ?? { kind: 'complete' },
         },
         malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
@@ -775,6 +779,7 @@ function formatDaemonStatus(result: BackendStatusFull): string {
                 overflowedRefusalCount: result.liveCleanupRefusals.overflowedCount,
                 observedAt: result.liveCleanupRefusals.observedAt,
                 retry: result.liveCleanupRefusals.retry,
+                enumeration: result.liveCleanupRefusals.enumeration,
               },
               malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
             }
@@ -1309,9 +1314,14 @@ function formatShutdownRemainderReport(
   liveEvidence: LiveShutdownRemainderEvidence,
 ): string {
   const lines =
-    report?.status === 'recent_shutdown_remainder' || report?.status === 'shutdown_remainder_clock_skew'
+    report?.status === 'recent_shutdown_remainder' ||
+    report?.status === 'stale_shutdown_remainder' ||
+    report?.status === 'shutdown_remainder_clock_skew'
       ? formatShutdownRemainderRecord(report)
       : [];
+  if (report?.status === 'stale_shutdown_remainder') {
+    lines.unshift('Shutdown remainder evidence is older than the trusted recent window.');
+  }
   if (report?.status === 'shutdown_remainder_clock_skew') {
     lines.unshift(
       (report.futureDatedRecordCount ?? 0) > 0
@@ -1321,6 +1331,7 @@ function formatShutdownRemainderReport(
   }
   const directoryEvidence =
     report?.status === 'recent_shutdown_remainder' ||
+    report?.status === 'stale_shutdown_remainder' ||
     report?.status === 'shutdown_remainder_clock_skew' ||
     (report?.status === 'shutdown_remainder_unreadable' && report.reason === 'records-skipped')
       ? report
@@ -1338,6 +1349,11 @@ function formatShutdownRemainderReport(
         notInspectedEntryCount === 0 ? '' : ` (${notInspectedEntryCount} not inspected)`
       }`,
       ...(directoryEvidence?.unreadableRecordNames ?? []).map((name) => `  Unreadable: ${name}`),
+    );
+  }
+  if (directoryEvidence?.enumeration.kind === 'truncated') {
+    lines.push(
+      `Shutdown remainder directory enumeration truncated (${directoryEvidence.enumeration.reason}); the evidence above is partial.`,
     );
   }
   if (liveEvidence.kind === 'unavailable') {
@@ -1367,6 +1383,7 @@ function formatShutdownRemainderReport(
         overflowedRefusalCount: 0,
         observedAt: null,
         retry: null,
+        enumeration: { kind: 'complete' },
       }),
     );
   }
@@ -1374,12 +1391,17 @@ function formatShutdownRemainderReport(
 }
 
 function formatShutdownRemainderRecord(
-  result: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' | 'shutdown_remainder_clock_skew' }>,
+  result: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' | 'stale_shutdown_remainder' | 'shutdown_remainder_clock_skew' }
+  >,
 ): string[] {
   const lines = [
     result.status === 'recent_shutdown_remainder'
       ? 'Coral recorded a recent shutdown with unfinished obligations.'
-      : 'Coral recorded a shutdown with unfinished obligations and an untrusted timestamp.',
+      : result.status === 'stale_shutdown_remainder'
+        ? 'Coral recorded an older shutdown with unfinished obligations.'
+        : 'Coral recorded a shutdown with unfinished obligations and an untrusted timestamp.',
     `Instance: ${result.record.instanceId}`,
     `Recorded at: ${result.record.recordedAt}`,
     `Reason: ${result.record.reason}`,
@@ -1482,6 +1504,9 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
       : [
           `Cleanup refusal subjects observed by ${observation.source} but omitted from the bounded list: ${observation.overflowedRefusalCount}`,
         ]),
+    ...(observation.enumeration.kind === 'complete'
+      ? []
+      : [`Cleanup-refusal enumeration truncated (${observation.enumeration.reason}); the listed evidence is partial.`]),
   ];
   if (lines.length === 0 || observation.source !== 'coordinator') return lines;
   const observedAt = observation.observedAt ?? 'unavailable';

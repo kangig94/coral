@@ -1873,6 +1873,7 @@ describe('cli format', () => {
           unusableEntryCount: 8,
           notInspectedEntryCount: 5,
           unreadableRecordNames: ['locked-instance.json'],
+          enumeration: { kind: 'complete' },
         },
       });
 
@@ -1920,6 +1921,7 @@ describe('cli format', () => {
             unusableEntryCount: 4,
             notInspectedEntryCount: 2,
             unreadableRecordNames: ['locked-instance.json'],
+            enumeration: { kind: 'complete' },
           },
         }),
       ).toBe(
@@ -1986,6 +1988,7 @@ describe('cli format', () => {
           skippedEntries: [],
           unusableEntryCount: 0,
           unreadableRecordNames: [],
+          enumeration: { kind: 'complete' },
         },
       });
 
@@ -1994,6 +1997,29 @@ describe('cli format', () => {
       );
       expect(text).not.toContain('Coral recorded a recent shutdown');
       expect(text).toContain('Instance: future');
+    });
+
+    it('renders an old record as stale rather than as clock-skew evidence', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'stale_shutdown_remainder',
+          record: {
+            instanceId: 'stale',
+            recordedAt: '2026-09-19T23:00:00.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [],
+          },
+          skippedEntries: [],
+          unusableEntryCount: 0,
+          unreadableRecordNames: [],
+          enumeration: { kind: 'complete' },
+        },
+      });
+
+      expect(text).toContain('Shutdown remainder evidence is older than the trusted recent window.');
+      expect(text).not.toContain('clock-skew');
     });
 
     it('renders coordinator and status-process observations separately for the same raw path', () => {
@@ -2258,6 +2284,7 @@ describe('cli format', () => {
           observedAt: null,
           retry: null,
           malformedRowCount: 0,
+          enumeration: { kind: 'complete' },
         },
       });
 
@@ -2322,6 +2349,7 @@ describe('cli format', () => {
           skippedEntries: [],
           unusableEntryCount: 0,
           unreadableRecordNames: [],
+          enumeration: { kind: 'complete' },
         },
       },
       {
@@ -2332,6 +2360,7 @@ describe('cli format', () => {
           reason: 'records-skipped' as const,
           unusableEntryCount: 1,
           unreadableRecordNames: ['locked-instance.json'],
+          enumeration: { kind: 'complete' },
         },
       },
       {

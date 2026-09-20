@@ -35,6 +35,7 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 const RUN_DIR = '/run';
 const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
 const SCHEDULED_SNAPSHOT_METADATA = {
+  generation: expect.any(Number),
   overflowedRefusalCount: 0,
   observedAt: null,
   retry: { state: 'scheduled', owner: 'coordinator' },
@@ -1290,6 +1291,28 @@ describe('shutdown remainder status', () => {
     expect(secondScan.nextCursor).toBeUndefined();
   });
 
+  it('does not collapse canonically equivalent filenames at a page boundary', () => {
+    const prefix = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT - 1 }, (_, index) =>
+      fileAt(`a-${String(index).padStart(3, '0')}`, index + 1),
+    );
+    const decomposed = 'e\u0301.json';
+    const composed = 'é.json';
+    const storage = storageWith([
+      ...prefix,
+      { name: decomposed, value: '{not-json', mtimeMs: 1_000 },
+      { name: composed, value: '{not-json', mtimeMs: 1_001 },
+    ]);
+
+    const first = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
+    expect(first.nextCursor).toBe(decomposed);
+    const second = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, {
+      after: first.nextCursor,
+    });
+
+    expect(second.nextCursor).toBeUndefined();
+    expect(vi.mocked(storage.readFileSync)).toHaveBeenCalledWith(join(REMAINDER_DIRECTORY, composed), 'utf-8');
+  });
+
   it('does not probe past empty quarantine slots or leave the subject behind them', () => {
     const storage = storageWith([fileAt('locked', 1)], { refuseReadFor: 'locked.json' });
     for (let slot = 1; slot <= 1_000; slot += 1) {
@@ -1675,7 +1698,10 @@ describe('shutdown remainder status', () => {
       retry: { state: 'scheduled', owner: 'coordinator' },
     });
     if (firstPage.nextRefusalCursor === undefined) throw new Error('expected a second refusal page');
-    const secondPage = pruner.readCleanupRefusalSnapshot(firstPage.nextRefusalCursor);
+    const secondPage = pruner.readCleanupRefusalSnapshot({
+      after: firstPage.nextRefusalCursor,
+      generation: firstPage.generation,
+    });
     expect(secondPage.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
     expect(secondPage.overflowedRefusalCount).toBe(0);
     expect(secondPage.nextRefusalCursor).toBeUndefined();
@@ -1686,6 +1712,41 @@ describe('shutdown remainder status', () => {
     expect(vi.mocked(storage.unlinkSync).mock.calls.filter(([path]) => basename(path) === 'z-000.json')).toHaveLength(
       2,
     );
+  });
+
+  it('restarts a continuation from the beginning when the cleanup snapshot generation changes', () => {
+    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
+      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+      value: '{not-json',
+      mtimeMs: index + 1,
+    }));
+    let scheduled: (() => void) | null = null;
+    const storage = storageWith(files, { refusePrune: true });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const first = pruner.readCleanupRefusalSnapshot();
+    if (first.nextRefusalCursor === undefined) throw new Error('expected a continuation cursor');
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
+
+    const restarted = pruner.readCleanupRefusalSnapshot({
+      after: first.nextRefusalCursor,
+      generation: first.generation,
+    });
+    expect(restarted.generation).toBeGreaterThan(first.generation);
+    expect(restarted.refusals[0]?.subject.identity).toBe(first.refusals[0]?.subject.identity);
   });
 
   it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
@@ -2112,6 +2173,7 @@ describe('shutdown remainder status', () => {
     storage.unlinkSync(join(REMAINDER_DIRECTORY, 'corrupt.json'));
 
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      generation: expect.any(Number),
       refusals: [cleanupRefusal('corrupt.json', 'delete', 'EACCES')],
       resolvedRefusalCount: 0,
       absentRefusalCount: 0,

@@ -12,6 +12,7 @@ import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation, ProcessLiveness } from './node-process.js';
 import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
+import { compareText } from './persisted-contract.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
@@ -26,7 +27,7 @@ export type ShutdownRemainderFilesystemSubject = Readonly<{
 export type ShutdownRemainderCleanupSubject = ShutdownRemainderFilesystemSubject;
 
 const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
-const SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/u;
+export const shutdownRemainderCleanupCursorSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 
 /** This digest identifies only the raw lexical spelling; it is not a physical filesystem identity. */
 export function shutdownRemainderFilesystemSubject(subject: string): ShutdownRemainderFilesystemSubject {
@@ -47,8 +48,7 @@ export function shutdownRemainderFilesystemSubject(subject: string): ShutdownRem
 export function isShutdownRemainderFilesystemSubject(value: unknown): value is ShutdownRemainderFilesystemSubject {
   return (
     isRecord(value) &&
-    typeof value.identity === 'string' &&
-    SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN.test(value.identity) &&
+    shutdownRemainderCleanupCursorSchema.safeParse(value.identity).success &&
     typeof value.label === 'string' &&
     value.label.length <= SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH &&
     !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value.label)
@@ -399,7 +399,6 @@ export function classifyShutdownRemainderFile(
       };
 }
 
-/** Bounded scans sample identities independently per generation and do not promise bounded service. */
 export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync'>,
   directory: string,
@@ -416,7 +415,7 @@ export function scanShutdownRemainderRecords(
   const recordFiles: RecordFile[] = [];
   const stageCandidates: StageFile[] = [];
   const recordCandidates: RecordFile[] = [];
-  const names = storage.readdirSync(directory).sort((left, right) => left.localeCompare(right));
+  const names = storage.readdirSync(directory).sort(compareText);
   observeDirectoryEntries?.(names);
   for (const name of names) {
     const entry = classifyShutdownRemainderDirectoryEntry(name);
@@ -436,8 +435,8 @@ export function scanShutdownRemainderRecords(
     ...stageCandidates.map((entry) => (entry.kind === 'stage' ? entry.stage.name : entry.name)),
     ...recordCandidates.map(({ name }) => name),
   ]
-    .filter((name) => page.after === undefined || name.localeCompare(page.after) > 0)
-    .sort((left, right) => left.localeCompare(right));
+    .filter((name) => page.after === undefined || compareText(name, page.after) > 0)
+    .sort(compareText);
   const selectedNames = new Set(candidateNames.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT));
   stageFiles.push(
     ...stageCandidates.filter((entry) => selectedNames.has(entry.kind === 'stage' ? entry.stage.name : entry.name)),
@@ -445,10 +444,10 @@ export function scanShutdownRemainderRecords(
   recordFiles.push(...recordCandidates.filter(({ name }) => selectedNames.has(name)));
   const unscannedStageCount = stageCandidates.filter((entry) => {
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
-    return (page.after === undefined || name.localeCompare(page.after) > 0) && !selectedNames.has(name);
+    return (page.after === undefined || compareText(name, page.after) > 0) && !selectedNames.has(name);
   }).length;
   const unscannedRecordCount = recordCandidates.filter(
-    ({ name }) => (page.after === undefined || name.localeCompare(page.after) > 0) && !selectedNames.has(name),
+    ({ name }) => (page.after === undefined || compareText(name, page.after) > 0) && !selectedNames.has(name),
   ).length;
   const selectedNameList = candidateNames.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
   const nextCursor = candidateNames.length > selectedNameList.length ? selectedNameList.at(-1) : undefined;

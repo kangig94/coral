@@ -8,6 +8,7 @@ import {
   thrownErrnoCode,
 } from '../infra/error-format.js';
 import type { StoragePort, TimePort, TimerHandle } from '../infra/port-types.js';
+import { compareText } from '../infra/persisted-contract.js';
 import {
   classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
@@ -82,6 +83,7 @@ export type ShutdownRemainderPruneDisposition = Readonly<{
 }>;
 
 export type ShutdownRemainderCleanupSnapshot = Readonly<{
+  generation: number;
   refusals: readonly ShutdownRemainderCleanupRefusal[];
   nextRefusalCursor?: string;
   resolvedRefusalCount: number;
@@ -93,6 +95,11 @@ export type ShutdownRemainderCleanupSnapshot = Readonly<{
   retry:
     | Readonly<{ state: 'scheduled'; owner: 'coordinator' }>
     | Readonly<{ state: 'stopped-until-restart'; owner: 'next-coordinator-start' }>;
+}>;
+
+export type ShutdownRemainderCleanupContinuation = Readonly<{
+  after: string;
+  generation: number;
 }>;
 
 function byRetentionOrder(
@@ -418,7 +425,7 @@ export function createShutdownRemainderPruner(
 ): Readonly<{
   start(): ShutdownRemainderPruneDisposition | null;
   stop(): void;
-  readCleanupRefusalSnapshot(after?: string): ShutdownRemainderCleanupSnapshot;
+  readCleanupRefusalSnapshot(continuation?: ShutdownRemainderCleanupContinuation): ShutdownRemainderCleanupSnapshot;
 }> {
   let timer: TimerHandle | null = null;
   let stopped = false;
@@ -430,6 +437,7 @@ export function createShutdownRemainderPruner(
   let uncheckedCleanupRefusalCount = 0;
   let observedAt: string | null = null;
   let retry: ShutdownRemainderCleanupSnapshot['retry'] = { state: 'scheduled', owner: 'coordinator' };
+  let generation = 0;
   const prune = (retryHeldSubjects: boolean): ShutdownRemainderPruneDisposition => {
     let resolvedRefusalCount = 0;
     let absentRefusalCount = 0;
@@ -489,20 +497,25 @@ export function createShutdownRemainderPruner(
     unobservableCleanupRefusalCount = unobservableRefusalCount;
     uncheckedCleanupRefusalCount = uncheckedRefusalCount;
     observedAt = runtime.time.now === undefined ? null : nowIsoString(runtime.time.now());
+    generation += 1;
     return result;
   };
-  const readCleanupRefusalSnapshot = (after?: string): ShutdownRemainderCleanupSnapshot => {
+  const readCleanupRefusalSnapshot = (
+    continuation?: ShutdownRemainderCleanupContinuation,
+  ): ShutdownRemainderCleanupSnapshot => {
+    const after = continuation?.generation === generation ? continuation.after : undefined;
     const remainingRefusals = [...cleanupRefusalsByName.values()]
       .sort(
         (left, right) =>
-          left.subject.identity.localeCompare(right.subject.identity) ||
-          left.subject.label.localeCompare(right.subject.label),
+          compareText(left.subject.identity, right.subject.identity) ||
+          compareText(left.subject.label, right.subject.label),
       )
-      .filter((refusal) => after === undefined || refusal.subject.identity.localeCompare(after) > 0);
+      .filter((refusal) => after === undefined || compareText(refusal.subject.identity, after) > 0);
     const refusals = remainingRefusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
     const nextRefusalCursor =
       remainingRefusals.length > refusals.length ? refusals.at(-1)?.subject.identity : undefined;
     return {
+      generation,
       refusals,
       ...(nextRefusalCursor === undefined ? {} : { nextRefusalCursor }),
       resolvedRefusalCount: resolvedCleanupRefusalCount,
@@ -525,8 +538,10 @@ export function createShutdownRemainderPruner(
       return disposition;
     },
     stop: () => {
+      const wasStopped = stopped;
       stopped = true;
       retry = { state: 'stopped-until-restart', owner: 'next-coordinator-start' };
+      if (!wasStopped) generation += 1;
       if (timer !== null) runtime.time.clearInterval(timer);
       timer = null;
     },

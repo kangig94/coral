@@ -4,6 +4,7 @@ import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import type { StoragePort } from '../../../infra/port-types.js';
+import { compareText } from '../../../infra/persisted-contract.js';
 import { parseIsoTimestamp } from '../../../infra/time.js';
 import {
   readOperatorFacingCoralSetupError,
@@ -18,6 +19,7 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
   shutdownRemainderCleanupRefusal,
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
@@ -28,6 +30,11 @@ import {
 } from '../../../infra/shutdown-remainder-record.js';
 
 const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
+const SHUTDOWN_REMAINDER_STATUS_SCAN_PAGE_LIMIT = 8;
+const DETAILED_HEALTH_PAGE_LIMIT = 8;
+const DETAILED_HEALTH_REFUSAL_LIMIT = SHUTDOWN_REMAINDER_SCAN_LIMIT * 4;
+const DETAILED_HEALTH_TOTAL_TIMEOUT_MS = HEALTH_TIMEOUT_MS * 4;
+const DETAILED_HEALTH_RESTART_LIMIT = 2;
 const OPERATOR_FACING_ERROR_NAMES = [
   'AbortError',
   'ActiveStoreCoordinationWriteError',
@@ -259,7 +266,29 @@ type OperatorFacingShutdownRemainderDirectoryEvidence = Readonly<{
   notInspectedEntryCount?: number;
   futureDatedRecordCount?: number;
   unreadableRecordNames: readonly string[];
+  enumeration:
+    | Readonly<{ kind: 'complete' }>
+    | Readonly<{
+        kind: 'truncated';
+        reason: 'page-budget-exhausted' | 'scan-failed' | 'directory-vanished';
+      }>;
 }>;
+
+export type CleanupRefusalEnumerationDisposition =
+  | Readonly<{ kind: 'complete' }>
+  | Readonly<{
+      kind: 'truncated';
+      reason:
+        | 'page-budget-exhausted'
+        | 'item-budget-exhausted'
+        | 'time-budget-exhausted'
+        | 'snapshot-restart-budget-exhausted'
+        | 'coordinator-replacement-budget-exhausted'
+        | 'snapshot-generation-unavailable'
+        | 'request-failed'
+        | 'response-rejected';
+      detail?: string;
+    }>;
 
 type BackendStatus =
   | {
@@ -286,6 +315,7 @@ type BackendStatus =
       overflowedShutdownRemainderCleanupRefusalCount?: number;
       shutdownRemainderCleanupObservedAt?: string | null;
       shutdownRemainderCleanupRetry?: BackendHealth['shutdownRemainderCleanupRetry'];
+      shutdownRemainderCleanupEnumeration?: CleanupRefusalEnumerationDisposition;
       malformedShutdownRemainderCleanupRefusalRowCount?: number;
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
@@ -320,6 +350,12 @@ export type ShutdownRemainderReport =
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }> &
+      OperatorFacingShutdownRemainderDirectoryEvidence)
+  | (Readonly<{
+      status: 'stale_shutdown_remainder';
+      record: OperatorFacingShutdownRemainderRecord;
+      skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
+    }> &
       OperatorFacingShutdownRemainderDirectoryEvidence);
 
 export type BackendStatusFull =
@@ -338,6 +374,7 @@ export type BackendStatusFull =
             observedAt: string | null;
             retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
             malformedRowCount: number;
+            enumeration: CleanupRefusalEnumerationDisposition;
           }>
         | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
       shutdownRemainder?: ShutdownRemainderReport;
@@ -612,24 +649,70 @@ function readRecentShutdownRemainder(
   observeStageWriter: ShutdownRemainderStageObserver,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
-  let scan: ShutdownRemainderRecordScan;
+  type Enumeration =
+    | Readonly<{ kind: 'complete'; scan: ShutdownRemainderRecordScan }>
+    | Readonly<{
+        kind: 'truncated';
+        reason: 'page-budget-exhausted' | 'scan-failed' | 'directory-vanished';
+        scan: ShutdownRemainderRecordScan;
+        cleanupRefusal?: ShutdownRemainderCleanupRefusal;
+      }>;
+  let enumeration: Enumeration;
   try {
     const records: ShutdownRemainderRecordScan['records'][number][] = [];
     const skippedEntries: ShutdownRemainderRecordScan['skippedEntries'][number][] = [];
     const skippedRecords: ShutdownRemainderRecordScan['skippedRecords'][number][] = [];
     let after: string | undefined;
-    do {
-      const page = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, { after });
+    let finalPage: ShutdownRemainderRecordScan | undefined;
+    let pageCount = 0;
+    let stoppingReason: Extract<Enumeration, { kind: 'truncated' }>['reason'] | undefined;
+    let cleanupRefusal: ShutdownRemainderCleanupRefusal | undefined;
+    while (pageCount < SHUTDOWN_REMAINDER_STATUS_SCAN_PAGE_LIMIT) {
+      let page: ShutdownRemainderRecordScan;
+      try {
+        page = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, { after });
+      } catch (error: unknown) {
+        if (pageCount === 0) throw error;
+        cleanupRefusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error) ?? undefined;
+        stoppingReason = cleanupRefusal === undefined ? 'directory-vanished' : 'scan-failed';
+        break;
+      }
+      pageCount += 1;
+      finalPage = page;
       records.push(...page.records);
       skippedEntries.push(...page.skippedEntries);
       skippedRecords.push(...page.skippedRecords);
+      if (page.nextCursor === undefined) break;
       after = page.nextCursor;
-    } while (after !== undefined);
-    scan = { records, skippedEntries, skippedRecords };
+    }
+    if (finalPage?.nextCursor !== undefined && stoppingReason === undefined) {
+      stoppingReason = 'page-budget-exhausted';
+    }
+    const scan = {
+      records,
+      skippedEntries,
+      skippedRecords,
+      ...(finalPage?.unscannedStageCount === undefined ? {} : { unscannedStageCount: finalPage.unscannedStageCount }),
+      ...(finalPage?.unscannedRecordCount === undefined
+        ? {}
+        : { unscannedRecordCount: finalPage.unscannedRecordCount }),
+    };
+    enumeration =
+      stoppingReason === undefined
+        ? { kind: 'complete', scan }
+        : {
+            kind: 'truncated',
+            reason: stoppingReason,
+            scan,
+            ...(cleanupRefusal === undefined ? {} : { cleanupRefusal }),
+          };
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
     if (refusal === null) {
-      scan = { records: [], skippedEntries: [], skippedRecords: [] };
+      enumeration = {
+        kind: 'complete',
+        scan: { records: [], skippedEntries: [], skippedRecords: [] },
+      };
     } else {
       // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
       // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
@@ -643,6 +726,9 @@ function readRecentShutdownRemainder(
       };
     }
   }
+  const scan = enumeration.scan;
+  const enumerationEvidence: OperatorFacingShutdownRemainderDirectoryEvidence['enumeration'] =
+    enumeration.kind === 'complete' ? { kind: 'complete' } : { kind: 'truncated', reason: enumeration.reason };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
   // anything about when it was written, so an age filter on any of them would silently drop evidence this
@@ -676,6 +762,7 @@ function readRecentShutdownRemainder(
     ...(notInspectedEntryCount === 0 ? {} : { notInspectedEntryCount }),
     ...(futureDatedRecordCount === 0 ? {} : { futureDatedRecordCount }),
     unreadableRecordNames,
+    enumeration: enumerationEvidence,
   };
   const orderedRecords = scopedRecords.sort(
     (left, right) =>
@@ -686,7 +773,13 @@ function readRecentShutdownRemainder(
     .at(-1)?.candidate;
   const reportRecord = (
     candidate: (typeof scopedRecords)[number]['candidate'],
-  ): Pick<Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>, 'record' | 'skippedEntries'> => ({
+  ): Pick<
+    Extract<
+      ShutdownRemainderReport,
+      { status: 'recent_shutdown_remainder' | 'shutdown_remainder_clock_skew' | 'stale_shutdown_remainder' }
+    >,
+    'record' | 'skippedEntries'
+  > => ({
     record: operatorFacingShutdownRemainder(candidate),
     skippedEntries: scan.skippedEntries
       .filter((entry) => entry.recordInstanceId === candidate.instanceId)
@@ -697,11 +790,19 @@ function readRecentShutdownRemainder(
       })),
   });
   if (record === undefined) {
-    const timestampSuspectRecord = orderedRecords.at(-1)?.candidate;
-    if (timestampSuspectRecord !== undefined) {
+    const futureRecord = orderedRecords.filter(({ recordedAt }) => recordedAt > now).at(-1)?.candidate;
+    if (futureRecord !== undefined) {
       return {
         status: 'shutdown_remainder_clock_skew',
-        ...reportRecord(timestampSuspectRecord),
+        ...reportRecord(futureRecord),
+        ...directoryEvidence,
+      };
+    }
+    const staleRecord = orderedRecords.at(-1)?.candidate;
+    if (staleRecord !== undefined) {
+      return {
+        status: 'stale_shutdown_remainder',
+        ...reportRecord(staleRecord),
         ...directoryEvidence,
       };
     }
@@ -832,23 +933,138 @@ async function probeDetailedHealth(
   info: Readonly<{ host: string; port: number; namespace: string; flavor: string; bootToken: string }>,
   notOurCoordinator: (observed: { namespace: string; flavor: 'prod' | 'dev' }) => AddressedAmbiguityStatus,
   unreachable: (detail: string) => AddressedAmbiguityStatus,
+  now: () => number,
   expectedInstanceId?: string,
 ): Promise<AddressedProbeStatus> {
+  type SnapshotMetadata = Readonly<{
+    resolvedCount: number;
+    absentCount: number;
+    unobservableCount: number;
+    uncheckedCount: number;
+    observedAt: string | null;
+    retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
+  }>;
   let cursor: string | undefined;
   let instanceId = expectedInstanceId;
+  let snapshotGeneration: number | undefined;
   let refusals: ShutdownRemainderCleanupRefusal[] = [];
   let malformedRowCount = 0;
+  let metadata: SnapshotMetadata | undefined;
+  let overflowedCount = 0;
+  let lastHealth: BackendHealth | undefined;
+  let skippedProviderProxySetRows = 0;
+  let skippedProviderProxySetTokens: readonly string[] = [];
   let replacementCount = 0;
-  const seenCursors = new Set<string>();
+  let snapshotRestartCount = 0;
+  let restartPending = false;
+  let requestCount = 0;
+  const startedAt = now();
+
+  const resetEnumeration = (): void => {
+    cursor = undefined;
+    snapshotGeneration = undefined;
+    refusals = [];
+    malformedRowCount = 0;
+    metadata = undefined;
+    overflowedCount = 0;
+    lastHealth = undefined;
+    skippedProviderProxySetRows = 0;
+    skippedProviderProxySetTokens = [];
+  };
+  const finish = (enumeration: CleanupRefusalEnumerationDisposition): AddressedProbeStatus => {
+    if (lastHealth === undefined || metadata === undefined) {
+      return unreachable(
+        enumeration.kind === 'truncated'
+          ? (enumeration.detail ?? `detailed health cleanup-refusal enumeration stopped: ${enumeration.reason}`)
+          : 'detailed health cleanup-refusal enumeration ended without a verified page',
+      );
+    }
+    if (lastHealth.status === 'draining') {
+      return shuttingDownStatus({
+        kind: 'available',
+        refusals,
+        ...metadata,
+        overflowedCount,
+        malformedRowCount,
+        enumeration,
+      });
+    }
+    const {
+      namespace: _namespace,
+      status: _status,
+      shutdownRemainderCleanupNextCursor: _nextCursor,
+      shutdownRemainderCleanupRefusals: _pageRefusals,
+      shutdownRemainderCleanupGeneration: _generation,
+      resolvedShutdownRemainderCleanupRefusalCount: _resolvedCount,
+      absentShutdownRemainderCleanupRefusalCount: _absentCount,
+      unobservableShutdownRemainderCleanupRefusalCount: _unobservableCount,
+      uncheckedShutdownRemainderCleanupRefusalCount: _uncheckedCount,
+      overflowedShutdownRemainderCleanupRefusalCount: _overflowedCount,
+      shutdownRemainderCleanupObservedAt: _observedAt,
+      shutdownRemainderCleanupRetry: _retry,
+      ...rest
+    } = lastHealth;
+    return {
+      status: 'ok',
+      health: {
+        ...rest,
+        status: 'ok' as const,
+        ...(refusals.length === 0 ? {} : { shutdownRemainderCleanupRefusals: refusals }),
+        ...(metadata.resolvedCount === 0
+          ? {}
+          : { resolvedShutdownRemainderCleanupRefusalCount: metadata.resolvedCount }),
+        ...(metadata.absentCount === 0 ? {} : { absentShutdownRemainderCleanupRefusalCount: metadata.absentCount }),
+        ...(metadata.unobservableCount === 0
+          ? {}
+          : { unobservableShutdownRemainderCleanupRefusalCount: metadata.unobservableCount }),
+        ...(metadata.uncheckedCount === 0
+          ? {}
+          : { uncheckedShutdownRemainderCleanupRefusalCount: metadata.uncheckedCount }),
+        overflowedShutdownRemainderCleanupRefusalCount: overflowedCount,
+        shutdownRemainderCleanupObservedAt: metadata.observedAt,
+        ...(metadata.retry === null ? {} : { shutdownRemainderCleanupRetry: metadata.retry }),
+        shutdownRemainderCleanupEnumeration: enumeration,
+        ...(malformedRowCount === 0 ? {} : { malformedShutdownRemainderCleanupRefusalRowCount: malformedRowCount }),
+        skippedProviderProxySetRows,
+        skippedProviderProxySetTokens,
+      },
+    };
+  };
+  const truncated = (
+    reason: Extract<CleanupRefusalEnumerationDisposition, { kind: 'truncated' }>['reason'],
+    detail?: string,
+  ): AddressedProbeStatus => finish({ kind: 'truncated', reason, ...(detail === undefined ? {} : { detail }) });
+
   for (;;) {
-    const cursorQuery = cursor === undefined ? '' : `&shutdownRemainderCleanupAfter=${encodeURIComponent(cursor)}`;
-    const response = await fetch(`http://${info.host}:${info.port}/health?detailed=1${cursorQuery}`, {
-      method: 'GET',
-      headers: { 'X-Coral-Boot-Token': info.bootToken },
-      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-    });
-    const body = await parseJsonResponse(response);
+    const elapsedMs = now() - startedAt;
+    if (elapsedMs >= DETAILED_HEALTH_TOTAL_TIMEOUT_MS) {
+      return truncated('time-budget-exhausted');
+    }
+    if (requestCount >= DETAILED_HEALTH_PAGE_LIMIT) {
+      return truncated('page-budget-exhausted');
+    }
+    const cursorQuery =
+      cursor === undefined || snapshotGeneration === undefined
+        ? ''
+        : `&shutdownRemainderCleanupAfter=${encodeURIComponent(cursor)}&shutdownRemainderCleanupGeneration=${snapshotGeneration}`;
+    let response: Response;
+    let body: unknown;
+    try {
+      requestCount += 1;
+      response = await fetch(`http://${info.host}:${info.port}/health?detailed=1${cursorQuery}`, {
+        method: 'GET',
+        headers: { 'X-Coral-Boot-Token': info.bootToken },
+        signal: AbortSignal.timeout(Math.min(HEALTH_TIMEOUT_MS, DETAILED_HEALTH_TOTAL_TIMEOUT_MS - elapsedMs)),
+      });
+      body = await parseJsonResponse(response);
+    } catch (error: unknown) {
+      if (lastHealth !== undefined) return truncated('request-failed', errorMessage(error));
+      throw error;
+    }
     if (response.status !== 200) {
+      if (lastHealth !== undefined) {
+        return truncated('response-rejected', `detailed health responded ${response.status}`);
+      }
       if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
         return unreachable(`detailed health responded ${response.status} without a verified Coral health body`);
       }
@@ -857,73 +1073,125 @@ async function probeDetailedHealth(
     }
     const parsed = parseBackendHealth(body);
     if (parsed === null) {
+      if (lastHealth !== undefined) {
+        return truncated('response-rejected', 'detailed health returned a body this build could not decode');
+      }
       return unreachable('detailed health responded 200 with a body this build could not decode');
     }
     const {
       health,
       malformedShutdownRemainderCleanupRefusalRowCount,
-      skippedProviderProxySetRows,
-      skippedProviderProxySetTokens,
+      skippedProviderProxySetRows: pageSkippedProviderProxySetRows,
+      skippedProviderProxySetTokens: pageSkippedProviderProxySetTokens,
     } = parsed;
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (cursor !== undefined && instanceId !== undefined && health.instanceId !== instanceId) {
       replacementCount += 1;
-      if (replacementCount > 2) {
-        return unreachable('coordinator changed repeatedly during detailed health pagination');
+      if (replacementCount > DETAILED_HEALTH_RESTART_LIMIT) {
+        return truncated(
+          'coordinator-replacement-budget-exhausted',
+          'coordinator changed repeatedly during detailed health pagination',
+        );
       }
-      cursor = undefined;
       instanceId = health.instanceId;
-      refusals = [];
-      malformedRowCount = 0;
-      seenCursors.clear();
+      cursor = undefined;
+      snapshotGeneration = undefined;
+      restartPending = true;
       continue;
     }
-    instanceId = health.instanceId;
-    refusals.push(...(health.shutdownRemainderCleanupRefusals ?? []));
-    malformedRowCount += malformedShutdownRemainderCleanupRefusalRowCount ?? 0;
-    const nextCursor = health.shutdownRemainderCleanupNextCursor;
-    if (nextCursor !== undefined) {
-      if (nextCursor === cursor || seenCursors.has(nextCursor)) {
-        return unreachable('detailed health repeated a cleanup-refusal continuation cursor');
+    if (
+      cursor !== undefined &&
+      snapshotGeneration !== undefined &&
+      health.shutdownRemainderCleanupGeneration !== snapshotGeneration
+    ) {
+      snapshotRestartCount += 1;
+      if (snapshotRestartCount > DETAILED_HEALTH_RESTART_LIMIT) {
+        return truncated(
+          'snapshot-restart-budget-exhausted',
+          'cleanup-refusal snapshot changed repeatedly during detailed health pagination',
+        );
       }
-      seenCursors.add(nextCursor);
+      instanceId = health.instanceId;
+      cursor = undefined;
+      snapshotGeneration = undefined;
+      restartPending = true;
+      continue;
+    }
+    if (restartPending) {
+      resetEnumeration();
+      restartPending = false;
+    }
+    instanceId = health.instanceId;
+    const pageRefusals = health.shutdownRemainderCleanupRefusals ?? [];
+    const nextCursor = health.shutdownRemainderCleanupNextCursor;
+    const pageIdentities = pageRefusals.map(({ subject }) => subject.identity);
+    const pageIsStrictlyOrdered = pageIdentities.every(
+      (identity, index) => index === 0 || compareText(pageIdentities[index - 1], identity) < 0,
+    );
+    const pageStartsAfterCursor =
+      cursor === undefined || pageIdentities.every((identity) => compareText(identity, cursor as string) > 0);
+    const cursorAdvances =
+      nextCursor === undefined ||
+      ((cursor === undefined || compareText(nextCursor, cursor) > 0) &&
+        (pageIdentities.length === 0 || compareText(nextCursor, pageIdentities.at(-1) as string) >= 0));
+    if (!pageIsStrictlyOrdered || !pageStartsAfterCursor || !cursorAdvances) {
+      if (lastHealth !== undefined) {
+        return truncated('response-rejected', 'detailed health returned a non-advancing cleanup-refusal page');
+      }
+      return unreachable('detailed health returned a non-advancing cleanup-refusal page');
+    }
+    const pageMetadata: SnapshotMetadata = {
+      resolvedCount: health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
+      absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
+      unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
+      uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
+      observedAt: health.shutdownRemainderCleanupObservedAt ?? null,
+      retry: health.shutdownRemainderCleanupRetry ?? null,
+    };
+    if (
+      metadata !== undefined &&
+      (pageMetadata.resolvedCount !== metadata.resolvedCount ||
+        pageMetadata.absentCount !== metadata.absentCount ||
+        pageMetadata.unobservableCount !== metadata.unobservableCount ||
+        pageMetadata.uncheckedCount !== metadata.uncheckedCount ||
+        pageMetadata.observedAt !== metadata.observedAt ||
+        pageMetadata.retry?.state !== metadata.retry?.state ||
+        pageMetadata.retry?.owner !== metadata.retry?.owner)
+    ) {
+      return truncated('response-rejected', 'cleanup-refusal metadata changed within one snapshot generation');
+    }
+    metadata = pageMetadata;
+    snapshotGeneration = health.shutdownRemainderCleanupGeneration;
+    lastHealth = health;
+    skippedProviderProxySetRows = pageSkippedProviderProxySetRows;
+    skippedProviderProxySetTokens = pageSkippedProviderProxySetTokens;
+    malformedRowCount += malformedShutdownRemainderCleanupRefusalRowCount ?? 0;
+    overflowedCount = health.overflowedShutdownRemainderCleanupRefusalCount ?? 0;
+    const availableSlots = DETAILED_HEALTH_REFUSAL_LIMIT - refusals.length;
+    refusals.push(...pageRefusals.slice(0, availableSlots));
+    if (pageRefusals.length > availableSlots) {
+      overflowedCount += pageRefusals.length - availableSlots;
+      return truncated('item-budget-exhausted');
+    }
+    if (nextCursor !== undefined) {
+      if (snapshotGeneration === undefined) {
+        return truncated('snapshot-generation-unavailable');
+      }
+      if (refusals.length >= DETAILED_HEALTH_REFUSAL_LIMIT) {
+        return truncated('item-budget-exhausted');
+      }
+      if (requestCount >= DETAILED_HEALTH_PAGE_LIMIT) {
+        return truncated('page-budget-exhausted');
+      }
+      if (now() - startedAt >= DETAILED_HEALTH_TOTAL_TIMEOUT_MS) {
+        return truncated('time-budget-exhausted');
+      }
       cursor = nextCursor;
       continue;
     }
-    if (health.status === 'draining') {
-      return shuttingDownStatus({
-        kind: 'available',
-        refusals,
-        resolvedCount: health.resolvedShutdownRemainderCleanupRefusalCount ?? 0,
-        absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
-        unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
-        uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
-        overflowedCount: health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
-        observedAt: health.shutdownRemainderCleanupObservedAt ?? null,
-        retry: health.shutdownRemainderCleanupRetry ?? null,
-        malformedRowCount,
-      });
-    }
-    const {
-      namespace: _namespace,
-      status: _status,
-      shutdownRemainderCleanupNextCursor: _nextCursor,
-      shutdownRemainderCleanupRefusals: _pageRefusals,
-      ...rest
-    } = health;
-    return {
-      status: 'ok',
-      health: {
-        ...rest,
-        status: 'ok' as const,
-        ...(refusals.length === 0 ? {} : { shutdownRemainderCleanupRefusals: refusals }),
-        ...(malformedRowCount === 0 ? {} : { malformedShutdownRemainderCleanupRefusalRowCount: malformedRowCount }),
-        skippedProviderProxySetRows,
-        skippedProviderProxySetTokens,
-      },
-    };
+    return finish({ kind: 'complete' });
   }
 }
 
@@ -1021,17 +1289,25 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
     if (ping.result?.status === 'shutting_down') {
       try {
-        result = await probeDetailedHealth(info, notOurCoordinator, unreachable, ping.instanceId);
+        result = await probeDetailedHealth(info, notOurCoordinator, unreachable, runtime.time.now, ping.instanceId);
       } catch {
         const confirmation = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
         result =
           confirmation.instanceId === ping.instanceId && confirmation.result?.status === 'shutting_down'
             ? ping.result
             : (confirmation.result ??
-              (await probeDetailedHealth(info, notOurCoordinator, unreachable, confirmation.instanceId)));
+              (await probeDetailedHealth(
+                info,
+                notOurCoordinator,
+                unreachable,
+                runtime.time.now,
+                confirmation.instanceId,
+              )));
       }
     } else {
-      result = ping.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable, ping.instanceId));
+      result =
+        ping.result ??
+        (await probeDetailedHealth(info, notOurCoordinator, unreachable, runtime.time.now, ping.instanceId));
     }
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused

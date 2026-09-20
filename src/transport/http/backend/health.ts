@@ -5,6 +5,7 @@ import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../
 import {
   isShutdownRemainderFilesystemSubject,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderCleanupCursorSchema,
   type ShutdownRemainderCleanupRefusal,
 } from '../../../infra/shutdown-remainder-record.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
@@ -128,6 +129,7 @@ export interface BackendHealth {
   components: TransportRuntimeComponentStatus[];
   shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
   shutdownRemainderCleanupNextCursor?: string;
+  shutdownRemainderCleanupGeneration?: number;
   resolvedShutdownRemainderCleanupRefusalCount?: number;
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
@@ -810,7 +812,11 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     !value.components.every(isRuntimeComponentStatus) ||
     (value.shutdownRemainderCleanupRefusals !== undefined && cleanupRefusals === null) ||
     (value.shutdownRemainderCleanupNextCursor !== undefined &&
-      typeof value.shutdownRemainderCleanupNextCursor !== 'string') ||
+      !shutdownRemainderCleanupCursorSchema.safeParse(value.shutdownRemainderCleanupNextCursor).success) ||
+    (value.shutdownRemainderCleanupGeneration !== undefined &&
+      (typeof value.shutdownRemainderCleanupGeneration !== 'number' ||
+        !Number.isSafeInteger(value.shutdownRemainderCleanupGeneration) ||
+        value.shutdownRemainderCleanupGeneration < 0)) ||
     (value.resolvedShutdownRemainderCleanupRefusalCount !== undefined &&
       (typeof value.resolvedShutdownRemainderCleanupRefusalCount !== 'number' ||
         !Number.isSafeInteger(value.resolvedShutdownRemainderCleanupRefusalCount) ||
