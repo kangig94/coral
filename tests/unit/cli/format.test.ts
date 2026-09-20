@@ -2284,7 +2284,6 @@ describe('cli format', () => {
           observedAt: null,
           retry: null,
           malformedRowCount: 0,
-          enumeration: { kind: 'complete' },
         },
       });
 

@@ -628,7 +628,6 @@ describe('health local carrier observation', () => {
     const readCleanupSnapshot = vi
       .spyOn(core.lifecycleController, 'readShutdownRemainderCleanupSnapshot')
       .mockReturnValue({
-        generation: 17,
         refusals: [refusal],
         resolvedRefusalCount: 5,
         absentRefusalCount: 7,

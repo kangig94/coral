@@ -700,9 +700,6 @@ type CleanupRefusalObservation = Readonly<{
   overflowedRefusalCount: number;
   observedAt: string | null;
   retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
-  enumeration: NonNullable<
-    Extract<BackendStatusFull, { status: 'ok' }>['health']['shutdownRemainderCleanupEnumeration']
-  >;
 }>;
 
 type LiveShutdownRemainderEvidence =
@@ -742,7 +739,6 @@ function formatDaemonStatus(result: BackendStatusFull): string {
           overflowedRefusalCount: result.health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
           observedAt: result.health.shutdownRemainderCleanupObservedAt ?? null,
           retry: result.health.shutdownRemainderCleanupRetry ?? null,
-          enumeration: result.health.shutdownRemainderCleanupEnumeration ?? { kind: 'complete' },
         },
         malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
@@ -779,7 +775,6 @@ function formatDaemonStatus(result: BackendStatusFull): string {
                 overflowedRefusalCount: result.liveCleanupRefusals.overflowedCount,
                 observedAt: result.liveCleanupRefusals.observedAt,
                 retry: result.liveCleanupRefusals.retry,
-                enumeration: result.liveCleanupRefusals.enumeration,
               },
               malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
             }
@@ -1383,7 +1378,6 @@ function formatShutdownRemainderReport(
         overflowedRefusalCount: 0,
         observedAt: null,
         retry: null,
-        enumeration: { kind: 'complete' },
       }),
     );
   }
@@ -1504,9 +1498,6 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
       : [
           `Cleanup refusal subjects observed by ${observation.source} but omitted from the bounded list: ${observation.overflowedRefusalCount}`,
         ]),
-    ...(observation.enumeration.kind === 'complete'
-      ? []
-      : [`Cleanup-refusal enumeration truncated (${observation.enumeration.reason}); the listed evidence is partial.`]),
   ];
   if (lines.length === 0 || observation.source !== 'coordinator') return lines;
   const observedAt = observation.observedAt ?? 'unavailable';

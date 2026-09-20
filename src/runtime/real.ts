@@ -307,35 +307,41 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
     linkSync: (existingPath, newPath) => linkSync(existingPath, newPath),
     mkdirSync: (path, options) => mkdirSync(path, options),
     rmSync: (path, options) => rmSync(path, options),
-    readdirSync: ((path: string, options?: { withFileTypes: true }) => {
+    readdirSync: ((path: string, options?: { withFileTypes: true } | { encoding: 'buffer' }) => {
+      if (options !== undefined && 'encoding' in options) {
+        return readdirSync(path, options);
+      }
       if (options?.withFileTypes === true) {
         return readdirSync(path, options);
       }
       return readdirSync(path);
     }) as StoragePort['readdirSync'],
-    readDirectoryBoundedSync: (path, limit) => {
+    readDirectoryBoundedSync: ((path: string, limit: number, options?: { encoding: 'buffer' }) => {
       if (!Number.isSafeInteger(limit) || limit < 0) {
         throw new TypeError('Directory entry limit must be a non-negative safe integer.');
       }
-      const directory = opendirSync(path);
-      const entries: string[] = [];
+      const directory = opendirSync(path, options as never);
+      const entries: Array<string | Buffer> = [];
       let overflow = false;
+      let omittedEntryCount = 0;
       try {
         while (true) {
           const entry = directory.readSync();
           if (entry === null) break;
           if (entries.length === limit) {
             overflow = true;
-            break;
+            omittedEntryCount += 1;
+            if (options === undefined) break;
+            continue;
           }
           entries.push(entry.name);
         }
       } finally {
         directory.closeSync();
       }
-      return { entries, overflow };
-    },
-    lstatSync: ((path: string, options?: { bigint: true }) => {
+      return options === undefined ? { entries, overflow } : { entries, omittedEntryCount };
+    }) as StoragePort['readDirectoryBoundedSync'],
+    lstatSync: ((path: string | Buffer, options?: { bigint: true }) => {
       if (options?.bigint === true) {
         const stats = lstatSync(path, { bigint: true });
         return {
@@ -367,7 +373,7 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
       };
     },
     realpathSync: (path) => realpathSync(path),
-    statSync: ((path: string, options?: { bigint: true }) => {
+    statSync: ((path: string | Buffer, options?: { bigint: true }) => {
       if (options?.bigint === true) {
         const stats = statSync(path, { bigint: true });
         return {

@@ -1437,7 +1437,7 @@ export function createCoordinatorCore(
       restartKbDaemon: (reason) => kbDaemonSupervisorWithTrackedShutdown.restart(reason),
     },
     health: {
-      read: (shutdownRemainderCleanupContinuation) => {
+      read: () => {
         const env = { ...world.coralEnvSnapshot };
         delete env.CORAL_SYSTEM_PROVIDER_SCOPE;
         const storeServices = storeServicesRef.tryGet();
@@ -1461,10 +1461,7 @@ export function createCoordinatorCore(
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
-        const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot(
-          shutdownRemainderCleanupContinuation,
-        ) ?? {
-          generation: 0,
+        const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot() ?? {
           refusals: [],
           resolvedRefusalCount: 0,
           absentRefusalCount: 0,
@@ -1636,13 +1633,9 @@ export function createCoordinatorCore(
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           components,
           kbDaemon,
-          shutdownRemainderCleanupGeneration: shutdownRemainderCleanup.generation,
           ...(shutdownRemainderCleanup.refusals.length === 0
             ? {}
             : { shutdownRemainderCleanupRefusals: shutdownRemainderCleanup.refusals }),
-          ...(shutdownRemainderCleanup.nextRefusalCursor === undefined
-            ? {}
-            : { shutdownRemainderCleanupNextCursor: shutdownRemainderCleanup.nextRefusalCursor }),
           ...(shutdownRemainderCleanup.resolvedRefusalCount === 0
             ? {}
             : {

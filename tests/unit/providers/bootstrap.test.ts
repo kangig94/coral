@@ -53,7 +53,7 @@ function recoveryStorage(options: {
   const files = options.files ?? {};
   const tree = options.tree ?? {};
   return {
-    readFileSync: (path) => files[path] ?? '',
+    readFileSync: (path) => files[String(path)] ?? '',
     existsSync: (path) => Object.prototype.hasOwnProperty.call(tree, path),
     readdirSync: ((path: string) => tree[path] ?? []) as unknown as StoragePort['readdirSync'],
     statSync: (() => ({

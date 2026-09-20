@@ -130,7 +130,7 @@ function createDurabilityAwareStorage(
     },
     unlinkSync: (path) => {
       base.unlinkSync(path);
-      if (trackedPaths.has(path)) pendingEntries.delete(path);
+      if (typeof path === 'string' && trackedPaths.has(path)) pendingEntries.delete(path);
     },
     syncDirectoryDurableSync: (directory) => {
       const synced = base.syncDirectoryDurableSync(directory);
@@ -2082,7 +2082,10 @@ describe('handoff-routing/status', () => {
     const baseRuntime = createRealRuntime('prod', { baseDir: dirname(path) });
     const quarantineRoot = join(dirname(path), 'handoff-routing-quarantine');
     mkdirSync(quarantineRoot, { recursive: true, mode: 0o700 });
-    const readDirectoryBoundedSync = vi.fn(() => ({ entries: [], overflow: false }));
+    const readDirectoryBoundedSync = vi.fn(() => ({
+      entries: [],
+      overflow: false,
+    })) as unknown as StoragePort['readDirectoryBoundedSync'];
 
     listHandoffRoutingStoreQuarantines({ ...baseRuntime.storage, readDirectoryBoundedSync }, path);
 

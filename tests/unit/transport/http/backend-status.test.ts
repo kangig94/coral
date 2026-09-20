@@ -8,7 +8,10 @@ import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import { shutdownRemainderFilesystemSubject } from '#src/infra/shutdown-remainder-record.js';
+import {
+  SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderFilesystemSubject,
+} from '#src/infra/shutdown-remainder-record.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -95,7 +98,21 @@ vi.mock('#src/runtime/real.js', () => ({
         if (entries.length === 0) throw Object.assign(new Error('no remainder directory'), { code: 'ENOENT' });
         return entries;
       },
-      statSync: (path: string) => {
+      readDirectoryBoundedSync: (path: string, limit: number) => {
+        if (mockState.remainderScanErrorCode !== null) {
+          throw Object.assign(new Error('remainder directory unreadable'), {
+            code: mockState.remainderScanErrorCode,
+          });
+        }
+        const entries = mockState.remainderFiles.map(({ name }) => Buffer.from(name));
+        if (entries.length === 0) throw Object.assign(new Error('no remainder directory'), { code: 'ENOENT' });
+        return {
+          entries: entries.slice(0, limit),
+          omittedEntryCount: Math.max(0, entries.length - limit),
+        };
+      },
+      statSync: (rawPath: string | Buffer) => {
+        const path = String(rawPath);
         const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
         const file = mockState.remainderFiles.find((candidate) => candidate.name === name);
         if (file === undefined) {
@@ -106,7 +123,8 @@ vi.mock('#src/runtime/real.js', () => ({
         }
         return { mtimeMs: file.mtimeMs };
       },
-      lstatSync: (path: string) => {
+      lstatSync: (rawPath: string | Buffer) => {
+        const path = String(rawPath);
         const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
         const file = mockState.remainderFiles.find((candidate) => candidate.name === name);
         if (file === undefined) {
@@ -117,7 +135,8 @@ vi.mock('#src/runtime/real.js', () => ({
         }
         return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false };
       },
-      readFileSync: (path: string) => {
+      readFileSync: (rawPath: string | Buffer) => {
+        const path = String(rawPath);
         if (path === '/tmp/coral-startup.json') {
           if (mockState.diagnostic === null) throw Object.assign(new Error('no diagnostic'), { code: 'ENOENT' });
           return mockState.diagnostic;
@@ -133,7 +152,8 @@ vi.mock('#src/runtime/real.js', () => ({
       renameSync: () => {
         throw new Error('remainder rename was not expected');
       },
-      unlinkSync: (path: string) => {
+      unlinkSync: (rawPath: string | Buffer) => {
+        const path = String(rawPath);
         const name = path.slice('/run/coral/shutdown-remainder.v1/'.length);
         const index = mockState.remainderFiles.findIndex((candidate) => candidate.name === name);
         const file = mockState.remainderFiles[index];
@@ -296,24 +316,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('follows the continuation and inspects all 129 stages', async () => {
-    mockState.remainderFiles = Array.from({ length: 129 }, (_, index) =>
-      remainderFile(
-        `staged-${index}.json.stage.4242.unobserved.tmp`,
-        NOW - index,
-        '{partial',
-        undefined,
-        undefined,
-        'ENOENT',
-      ),
-    );
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
-  });
-
-  it('bounds directory pagination and returns the evidence inspected before truncation', async () => {
+  it('returns one bounded directory observation with an exact omitted-entry count', async () => {
     mockState.remainderFiles = Array.from({ length: 1_025 }, (_, index) =>
       remainderFile(`unreadable-${String(index).padStart(4, '0')}.json`, NOW - index, '{not-json', undefined, 'EACCES'),
     );
@@ -326,14 +329,14 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
-        unusableEntryCount: 1_024,
-        notInspectedEntryCount: 1,
-        enumeration: { kind: 'truncated', reason: 'page-budget-exhausted' },
+        unusableEntryCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
+        notInspectedEntryCount: 1_025 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
+        enumeration: { kind: 'truncated', reason: 'entry-limit-exceeded' },
       },
     });
     const { formatBackendStatus } = await import('#src/cli/format/backend.js');
     expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(
-      'Shutdown remainder directory enumeration truncated (page-budget-exhausted); the evidence above is partial.',
+      'Shutdown remainder directory enumeration truncated (entry-limit-exceeded); the evidence above is partial.',
     );
   });
 
@@ -1980,314 +1983,6 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       shutdownRemainder: { unusableEntryCount: 1 },
     });
     expect(stopped.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
-  });
-
-  it('follows cleanup-refusal continuations and returns every identity', async () => {
-    const [first, second] = [
-      {
-        subject: shutdownRemainderFilesystemSubject('a.json'),
-        cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      },
-      {
-        subject: shutdownRemainderFilesystemSubject('z.json'),
-        cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
-      },
-    ].sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
-    if (first === undefined || second === undefined) throw new Error('expected two cleanup refusals');
-    const fetchMock = stubProbes(
-      new Response(ping('ok'), { status: 200 }),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [first],
-          shutdownRemainderCleanupNextCursor: first.subject.identity,
-          shutdownRemainderCleanupGeneration: 11,
-          overflowedShutdownRemainderCleanupRefusalCount: 1,
-        }),
-        { status: 200 },
-      ),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [second],
-          shutdownRemainderCleanupGeneration: 11,
-          overflowedShutdownRemainderCleanupRefusalCount: 0,
-        }),
-        { status: 200 },
-      ),
-    );
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result).toMatchObject({
-      status: 'ok',
-      health: {
-        shutdownRemainderCleanupRefusals: [first, second],
-        overflowedShutdownRemainderCleanupRefusalCount: 0,
-      },
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[2]?.[0]).toBe(
-      `http://127.0.0.1:4321/health?detailed=1&shutdownRemainderCleanupAfter=${first.subject.identity}&shutdownRemainderCleanupGeneration=11`,
-    );
-  });
-
-  it('restarts cleanup-refusal pagination when the snapshot generation changes', async () => {
-    const refusals = ['old.json', 'new-a.json', 'new-z.json']
-      .map((name) => ({
-        subject: shutdownRemainderFilesystemSubject(name),
-        cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-      }))
-      .sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
-    const [newFirst, newSecond] = refusals
-      .slice(1)
-      .sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
-    const old = refusals[0];
-    if (old === undefined || newFirst === undefined || newSecond === undefined) {
-      throw new Error('expected cleanup refusal fixtures');
-    }
-    stubProbes(
-      new Response(ping('ok'), { status: 200 }),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [old],
-          shutdownRemainderCleanupNextCursor: old.subject.identity,
-          shutdownRemainderCleanupGeneration: 1,
-        }),
-        { status: 200 },
-      ),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [newFirst],
-          shutdownRemainderCleanupNextCursor: newFirst.subject.identity,
-          shutdownRemainderCleanupGeneration: 2,
-        }),
-        { status: 200 },
-      ),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [newFirst],
-          shutdownRemainderCleanupNextCursor: newFirst.subject.identity,
-          shutdownRemainderCleanupGeneration: 2,
-        }),
-        { status: 200 },
-      ),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [newSecond],
-          shutdownRemainderCleanupGeneration: 2,
-        }),
-        { status: 200 },
-      ),
-    );
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result).toMatchObject({
-      status: 'ok',
-      health: {
-        shutdownRemainderCleanupRefusals: [newFirst, newSecond],
-        shutdownRemainderCleanupEnumeration: { kind: 'complete' },
-      },
-    });
-  });
-
-  it('keeps the last verified partial snapshot when a restarted enumeration cannot begin', async () => {
-    const old = {
-      subject: shutdownRemainderFilesystemSubject('old.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    };
-    const replacement = {
-      subject: shutdownRemainderFilesystemSubject('replacement.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EIO' },
-    };
-    stubProbes(
-      new Response(ping('ok'), { status: 200 }),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [old],
-          shutdownRemainderCleanupNextCursor: old.subject.identity,
-          shutdownRemainderCleanupGeneration: 1,
-        }),
-        { status: 200 },
-      ),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [replacement],
-          shutdownRemainderCleanupNextCursor: replacement.subject.identity,
-          shutdownRemainderCleanupGeneration: 2,
-        }),
-        { status: 200 },
-      ),
-      new Response('{}', { status: 500 }),
-    );
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'ok',
-      health: {
-        shutdownRemainderCleanupRefusals: [old],
-        shutdownRemainderCleanupEnumeration: {
-          kind: 'truncated',
-          reason: 'response-rejected',
-        },
-      },
-    });
-  });
-
-  it('returns one snapshot as partial evidence when the snapshot restart budget is exhausted', async () => {
-    const refusalFor = (generation: number) => ({
-      subject: shutdownRemainderFilesystemSubject(`generation-${generation}.json`),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    });
-    const page = (generation: number): Response => {
-      const refusal = refusalFor(generation);
-      return new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [refusal],
-          shutdownRemainderCleanupNextCursor: refusal.subject.identity,
-          shutdownRemainderCleanupGeneration: generation,
-          overflowedShutdownRemainderCleanupRefusalCount: 1,
-        }),
-        { status: 200 },
-      );
-    };
-    stubProbes(new Response(ping('ok'), { status: 200 }), page(1), page(2), page(2), page(3), page(3), page(4));
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'ok',
-      health: {
-        shutdownRemainderCleanupRefusals: [refusalFor(3)],
-        overflowedShutdownRemainderCleanupRefusalCount: 1,
-        shutdownRemainderCleanupEnumeration: {
-          kind: 'truncated',
-          reason: 'snapshot-restart-budget-exhausted',
-        },
-      },
-    });
-  });
-
-  it('restarts cleanup-refusal pagination when a later page comes from a replacement coordinator', async () => {
-    const old = {
-      subject: shutdownRemainderFilesystemSubject('old-instance.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    };
-    const replacement = {
-      subject: shutdownRemainderFilesystemSubject('replacement-instance.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EIO' },
-    };
-    stubProbes(
-      new Response(ping('ok'), { status: 200 }),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [old],
-          shutdownRemainderCleanupNextCursor: old.subject.identity,
-          shutdownRemainderCleanupGeneration: 1,
-        }),
-        { status: 200 },
-      ),
-      new Response(detailed('ok', { instanceId: 'replacement', shutdownRemainderCleanupGeneration: 1 }), {
-        status: 200,
-      }),
-      new Response(
-        detailed('ok', {
-          instanceId: 'replacement',
-          shutdownRemainderCleanupRefusals: [replacement],
-          shutdownRemainderCleanupGeneration: 1,
-        }),
-        { status: 200 },
-      ),
-    );
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
-      status: 'ok',
-      health: {
-        instanceId: 'replacement',
-        shutdownRemainderCleanupRefusals: [replacement],
-        shutdownRemainderCleanupEnumeration: { kind: 'complete' },
-      },
-    });
-  });
-
-  it('returns verified partial cleanup evidence when a later page is rejected', async () => {
-    const refusal = {
-      subject: shutdownRemainderFilesystemSubject('partial.json'),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    };
-    stubProbes(
-      new Response(ping('ok'), { status: 200 }),
-      new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: [refusal],
-          shutdownRemainderCleanupNextCursor: refusal.subject.identity,
-          shutdownRemainderCleanupGeneration: 3,
-          overflowedShutdownRemainderCleanupRefusalCount: 1,
-        }),
-        { status: 200 },
-      ),
-      new Response('{}', { status: 500 }),
-    );
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result).toMatchObject({
-      status: 'ok',
-      health: {
-        shutdownRemainderCleanupRefusals: [refusal],
-        overflowedShutdownRemainderCleanupRefusalCount: 1,
-        shutdownRemainderCleanupEnumeration: {
-          kind: 'truncated',
-          reason: 'response-rejected',
-          detail: 'detailed health responded 500',
-        },
-      },
-    });
-    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
-    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(
-      'Cleanup-refusal enumeration truncated (response-rejected); the listed evidence is partial.',
-    );
-  });
-
-  it('bounds cleanup-refusal accumulation and reports the omitted remainder', async () => {
-    const refusals = Array.from({ length: 513 }, (_, index) => ({
-      subject: shutdownRemainderFilesystemSubject(`bounded-${String(index).padStart(3, '0')}.json`),
-      cause: { kind: 'system-error' as const, operation: 'delete' as const, code: 'EACCES' },
-    })).sort((left, right) => (left.subject.identity < right.subject.identity ? -1 : 1));
-    const pages = Array.from({ length: 4 }, (_, pageIndex) => {
-      const page = refusals.slice(pageIndex * 128, (pageIndex + 1) * 128);
-      const nextCursor = page.at(-1)?.subject.identity;
-      if (nextCursor === undefined) throw new Error('expected a full cleanup-refusal page');
-      return new Response(
-        detailed('ok', {
-          shutdownRemainderCleanupRefusals: page,
-          shutdownRemainderCleanupNextCursor: nextCursor,
-          shutdownRemainderCleanupGeneration: 5,
-          overflowedShutdownRemainderCleanupRefusalCount: 513 - (pageIndex + 1) * 128,
-        }),
-        { status: 200 },
-      );
-    });
-    const fetchMock = stubProbes(new Response(ping('ok'), { status: 200 }), ...pages);
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result).toMatchObject({
-      status: 'ok',
-      health: {
-        overflowedShutdownRemainderCleanupRefusalCount: 1,
-        shutdownRemainderCleanupEnumeration: { kind: 'truncated', reason: 'item-budget-exhausted' },
-      },
-    });
-    if (result.status !== 'ok') throw new Error(`expected ok, received ${result.status}`);
-    expect(result.health.shutdownRemainderCleanupRefusals).toHaveLength(512);
-    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it('accepts a replacement between the ping and the first detailed response', async () => {

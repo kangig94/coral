@@ -10,7 +10,6 @@ import {
 } from '../../jobs/wait.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
-import { shutdownRemainderCleanupCursorSchema } from '../../infra/shutdown-remainder-record.js';
 import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
 import { CAPABILITIES, type Capability } from '../../security/capability.js';
 import type { Principal } from '../../security/principal.js';
@@ -24,7 +23,7 @@ import { executeCatalogRequest, resolveRequestBinding } from '../dispatch.js';
 import { rpcCatalog, transportOperationalCarveouts, type RpcMethodSpec } from '../rpc/catalog.js';
 import { operationalRouteSpecs, type HttpOperationalSpec } from '../rpc/operational-catalog.js';
 import { formatZodError } from '../validation.js';
-import type { EventStreamHandlers, HttpHandlerPorts, ShutdownRemainderCleanupContinuation } from '../server-ports.js';
+import type { EventStreamHandlers, HttpHandlerPorts } from '../server-ports.js';
 import { domainResultToHttp } from '../response.js';
 import { lifecycleRefusalResult } from '../lifecycle-refusal.js';
 import { subscribeAll } from './sse-subscribe.js';
@@ -104,21 +103,6 @@ const eventStreamQuerySchema = z
       .optional(),
   })
   .passthrough();
-
-const shutdownRemainderCleanupGenerationSchema = z
-  .string()
-  .regex(/^(?:0|[1-9][0-9]*)$/u, 'cleanup-refusal generation must be a non-negative integer')
-  .transform(Number)
-  .refine(Number.isSafeInteger, 'cleanup-refusal generation must be a safe integer');
-
-const detailedHealthContinuationSchema = z
-  .object({
-    after: shutdownRemainderCleanupCursorSchema.optional(),
-    generation: shutdownRemainderCleanupGenerationSchema.optional(),
-  })
-  .refine(({ after, generation }) => (after === undefined) === (generation === undefined), {
-    message: 'cleanup-refusal cursor and generation must be provided together',
-  });
 
 function shouldProbeKbDaemonHealth(health: ReturnType<HttpHandlerPorts['health']['read']>, now: number): boolean {
   const kbDaemon = health.kbDaemon;
@@ -1021,13 +1005,12 @@ function readHttpPingSnapshot(deps: HttpHandlerPorts): {
 
 async function readDetailedHealthSnapshot(
   deps: HttpHandlerPorts,
-  shutdownRemainderCleanupContinuation?: ShutdownRemainderCleanupContinuation,
 ): Promise<ReturnType<HttpHandlerPorts['health']['read']>> {
-  let health = deps.health.read(shutdownRemainderCleanupContinuation);
+  let health = deps.health.read();
   if (shouldProbeKbDaemonHealth(health, deps.identity.now()) && deps.admin.probeKbDaemon) {
     try {
       await deps.admin.probeKbDaemon();
-      health = deps.health.read(shutdownRemainderCleanupContinuation);
+      health = deps.health.read();
     } catch {
       // Detailed health must stay available even if the child probe path itself fails.
     }
@@ -1204,30 +1187,13 @@ function buildTransportLocalRouteTable(deps: HttpHandlerPorts): RouteDispatchTab
     {
       ...transportLocalRoutes[0],
       pattern: compilePathPattern(transportLocalRoutes[0].path),
-      handle: async (req, res, parsedUrl, spec) => {
+      handle: async (req, res, _parsedUrl, spec) => {
         req.resume();
         if (spec.dispatch.kind === 'ping') {
           sendJson(res, 200, readHttpPingSnapshot(deps));
           return;
         }
-        const continuation = detailedHealthContinuationSchema.safeParse({
-          after: parsedUrl.searchParams.get('shutdownRemainderCleanupAfter') ?? undefined,
-          generation: parsedUrl.searchParams.get('shutdownRemainderCleanupGeneration') ?? undefined,
-        });
-        if (!continuation.success) {
-          sendValidationFailure(res, continuation.error);
-          return;
-        }
-        sendJson(
-          res,
-          200,
-          await readDetailedHealthSnapshot(
-            deps,
-            continuation.data.after === undefined
-              ? undefined
-              : { after: continuation.data.after, generation: continuation.data.generation as number },
-          ),
-        );
+        sendJson(res, 200, await readDetailedHealthSnapshot(deps));
       },
     },
     {

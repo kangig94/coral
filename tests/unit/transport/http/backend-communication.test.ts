@@ -56,39 +56,6 @@ async function startHttpServer(ports: HttpHandlerPorts): Promise<string> {
 }
 
 describe('transport/http backend communication', () => {
-  it('passes the cleanup-refusal continuation cursor to detailed health', async () => {
-    const ports = recoveryPorts({ clear: vi.fn() });
-    const read = vi.fn((continuation?: { after: string; generation: number }) => ({ continuation }));
-    (ports as unknown as { health: { read: typeof read } }).health = { read };
-    const baseUrl = await startHttpServer(ports);
-    const cursor = 'a'.repeat(64);
-
-    const response = await fetch(
-      `${baseUrl}/health?detailed=1&shutdownRemainderCleanupAfter=${cursor}&shutdownRemainderCleanupGeneration=7`,
-      { headers: { 'X-Coral-Boot-Token': ports.identity.bootToken } },
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({ continuation: { after: cursor, generation: 7 } });
-    expect(read).toHaveBeenCalledWith({ after: cursor, generation: 7 });
-  });
-
-  it('rejects a non-canonical cleanup-refusal cursor before dispatch', async () => {
-    const ports = recoveryPorts({ clear: vi.fn() });
-    const read = vi.fn();
-    (ports as unknown as { health: { read: typeof read } }).health = { read };
-    const baseUrl = await startHttpServer(ports);
-
-    const response = await fetch(
-      `${baseUrl}/health?detailed=1&shutdownRemainderCleanupAfter=not-a-subject&shutdownRemainderCleanupGeneration=7`,
-      { headers: { 'X-Coral-Boot-Token': ports.identity.bootToken } },
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' });
-    expect(read).not.toHaveBeenCalled();
-  });
-
   it('projects recovery quarantine clear without widening HTTP backend-token capabilities', async () => {
     const clear = vi.fn();
     const ports = recoveryPorts({ clear });

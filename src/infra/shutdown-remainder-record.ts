@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { z } from 'zod';
 
 import {
@@ -12,7 +12,6 @@ import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation, ProcessLiveness } from './node-process.js';
 import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
-import { compareText } from './persisted-contract.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
@@ -27,12 +26,12 @@ export type ShutdownRemainderFilesystemSubject = Readonly<{
 export type ShutdownRemainderCleanupSubject = ShutdownRemainderFilesystemSubject;
 
 const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
-export const shutdownRemainderCleanupCursorSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+const SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/u;
 
-/** This digest identifies only the raw lexical spelling; it is not a physical filesystem identity. */
-export function shutdownRemainderFilesystemSubject(subject: string): ShutdownRemainderFilesystemSubject {
+export function shutdownRemainderFilesystemSubject(subject: string | Uint8Array): ShutdownRemainderFilesystemSubject {
   const identity = sha256Hex(subject);
-  const escaped = subject.replace(
+  const text = typeof subject === 'string' ? subject : Buffer.from(subject).toString('utf8');
+  const escaped = text.replace(
     SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN,
     (character) => `\\u{${(character.codePointAt(0) as number).toString(16).toUpperCase()}}`,
   );
@@ -48,7 +47,8 @@ export function shutdownRemainderFilesystemSubject(subject: string): ShutdownRem
 export function isShutdownRemainderFilesystemSubject(value: unknown): value is ShutdownRemainderFilesystemSubject {
   return (
     isRecord(value) &&
-    shutdownRemainderCleanupCursorSchema.safeParse(value.identity).success &&
+    typeof value.identity === 'string' &&
+    SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN.test(value.identity) &&
     typeof value.label === 'string' &&
     value.label.length <= SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH &&
     !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(value.label)
@@ -125,17 +125,15 @@ export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
-  unscannedStageCount?: number;
-  unscannedRecordCount?: number;
-  nextCursor?: string;
-}>;
-
-export type ShutdownRemainderScanPage = Readonly<{
-  after?: string;
+  unscannedEntryCount?: number;
 }>;
 
 export function shutdownRemainderRecordDirectory(runDir: string): string {
   return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}`);
+}
+
+export function shutdownRemainderDirectoryEntryPath(directory: string, name: Uint8Array): Buffer {
+  return Buffer.concat([Buffer.from(directory), Buffer.from(sep), Buffer.from(name)]);
 }
 
 const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
@@ -153,7 +151,7 @@ export type ShutdownRemainderCleanupRefusal = Readonly<{
 
 /** ENOENT is absence; every other cleanup failure retains only a bounded errno identifier. */
 export function shutdownRemainderCleanupRefusal(
-  subject: string,
+  subject: string | Uint8Array,
   operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
   error: unknown,
 ): ShutdownRemainderCleanupRefusal | null {
@@ -366,7 +364,7 @@ export type ShutdownRemainderFileClassification =
 /** A target-following ENOENT proves absence only when the lexical directory entry is also absent. */
 export function classifyShutdownRemainderFile(
   storage: Pick<StoragePort, 'lstatSync' | 'readFileSync'>,
-  path: string,
+  path: string | Buffer,
 ): ShutdownRemainderFileClassification {
   let raw: string;
   try {
@@ -400,63 +398,48 @@ export function classifyShutdownRemainderFile(
 }
 
 export function scanShutdownRemainderRecords(
-  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync'>,
+  storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readDirectoryBoundedSync'>,
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
-  observeDirectoryEntries?: (names: readonly string[]) => void,
-  page: ShutdownRemainderScanPage = {},
 ): ShutdownRemainderRecordScan {
-  type RecordFile = Readonly<{ name: string; reportedName: string }>;
-  type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
+  type RecordFile = Readonly<{ name: string; path: Buffer; reportedName: string }>;
+  type StageFile = Readonly<{
+    entry: Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
+    path: Buffer;
+  }>;
   const records: DecodedShutdownRemainderRecord[] = [];
   const skippedEntries: ShutdownRemainderSkippedEntry[] = [];
   const skippedRecords: ShutdownRemainderSkippedRecord[] = [];
   const stageFiles: StageFile[] = [];
   const recordFiles: RecordFile[] = [];
-  const stageCandidates: StageFile[] = [];
-  const recordCandidates: RecordFile[] = [];
-  const names = storage.readdirSync(directory).sort(compareText);
-  observeDirectoryEntries?.(names);
-  for (const name of names) {
+  const bounded = storage.readDirectoryBoundedSync(directory, SHUTDOWN_REMAINDER_SCAN_LIMIT, {
+    encoding: 'buffer',
+  });
+  const names = bounded.entries
+    .map((name) => (typeof name === 'string' ? Buffer.from(name) : name))
+    .sort(Buffer.compare);
+  for (const bytes of names) {
+    const name = bytes.toString('utf8');
+    const path = shutdownRemainderDirectoryEntryPath(directory, bytes);
     const entry = classifyShutdownRemainderDirectoryEntry(name);
     if (entry.kind === 'stage' || entry.kind === 'malformed-stage') {
-      stageCandidates.push(entry);
+      stageFiles.push({ entry, path });
       continue;
     }
     if (entry.kind !== 'record') continue;
     const reportedName = persistedFileNameSchema.safeParse(name);
-    recordCandidates.push({
+    recordFiles.push({
       name,
+      path,
       reportedName: reportedName.success ? reportedName.data : 'invalid-record-name',
     });
   }
 
-  const candidateNames = [
-    ...stageCandidates.map((entry) => (entry.kind === 'stage' ? entry.stage.name : entry.name)),
-    ...recordCandidates.map(({ name }) => name),
-  ]
-    .filter((name) => page.after === undefined || compareText(name, page.after) > 0)
-    .sort(compareText);
-  const selectedNames = new Set(candidateNames.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT));
-  stageFiles.push(
-    ...stageCandidates.filter((entry) => selectedNames.has(entry.kind === 'stage' ? entry.stage.name : entry.name)),
-  );
-  recordFiles.push(...recordCandidates.filter(({ name }) => selectedNames.has(name)));
-  const unscannedStageCount = stageCandidates.filter((entry) => {
-    const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
-    return (page.after === undefined || compareText(name, page.after) > 0) && !selectedNames.has(name);
-  }).length;
-  const unscannedRecordCount = recordCandidates.filter(
-    ({ name }) => (page.after === undefined || compareText(name, page.after) > 0) && !selectedNames.has(name),
-  ).length;
-  const selectedNameList = candidateNames.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
-  const nextCursor = candidateNames.length > selectedNameList.length ? selectedNameList.at(-1) : undefined;
-
-  for (const entry of stageFiles) {
+  for (const { entry, path } of stageFiles) {
     const name = entry.kind === 'stage' ? entry.stage.name : entry.name;
     if (entry.kind === 'malformed-stage') {
       try {
-        storage.lstatSync(join(directory, name));
+        storage.lstatSync(path);
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }
@@ -470,12 +453,12 @@ export function scanShutdownRemainderRecords(
     const observation = stageObservation(stage, observeStageWriter);
     if (stage.partial) {
       try {
-        storage.lstatSync(join(directory, name));
+        storage.lstatSync(path);
       } catch (error: unknown) {
         if (thrownErrnoCode(error) === 'ENOENT') continue;
       }
     } else {
-      const classification = classifyShutdownRemainderFile(storage, join(directory, name));
+      const classification = classifyShutdownRemainderFile(storage, path);
       if (classification.kind === 'vanished') continue;
     }
     skippedRecords.push({
@@ -490,8 +473,8 @@ export function scanShutdownRemainderRecords(
     });
   }
 
-  for (const { name, reportedName } of recordFiles) {
-    const classification = classifyShutdownRemainderFile(storage, join(directory, name));
+  for (const { name, path, reportedName } of recordFiles) {
+    const classification = classifyShutdownRemainderFile(storage, path);
     switch (classification.kind) {
       case 'vanished':
         continue;
@@ -519,8 +502,6 @@ export function scanShutdownRemainderRecords(
     records,
     skippedEntries,
     skippedRecords,
-    ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
-    ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),
-    ...(nextCursor === undefined ? {} : { nextCursor }),
+    ...(bounded.omittedEntryCount === 0 ? {} : { unscannedEntryCount: bounded.omittedEntryCount }),
   };
 }

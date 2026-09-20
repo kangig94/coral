@@ -31,7 +31,7 @@ function storageFor(handles: readonly CorpusFileHandle[]): CorpusStorage {
   return {
     existsSync: () => false,
     readFileSync: (path) => {
-      throw noEntryError(path);
+      throw noEntryError(String(path));
     },
     statSync: ((path: string) => {
       throw noEntryError(path);
