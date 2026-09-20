@@ -63,20 +63,44 @@ rows, so the writing process never reconciles its own row; and the successor tha
 **operation**. The CLI's "no command is required: durable representation-release reconciliation owns the
 remainder" was therefore false. The row, the refusal ground, the durable-write retry, and that CLI line are gone.
 
-## Two corrections to this branch's commit messages
+## Three corrections to this branch's commit messages
 
-Both are false sentences in published history, recorded here because a reader meets this file and not a commit
+All are false sentences in published history, recorded here because a reader meets this file and not a commit
 body, and because one of them reads as a licence to delete a guard.
 
 **`28115ec6` says "the `currentDelivery` guard is not what defends a released slot". It is.**
 `#releaseUndischargedRepresentation` sets no `terminalSettlement` and clears no `pendingOperations`, so of
-`currentDelivery`'s three clauses only slot identity refuses a delivery outcome arriving after that release —
-and the `retry` and `fatal` sinks are re-checked nowhere downstream. Removing it would let the retry sink arm a
-1,000 ms timer on a slot `#clearRepresentationReleaseTimers` will never run against again (the loop this entry
-exists to close), and let the fatal sink write a durable operator-exit-refused row for an identity whose slot is
-gone, resurrecting the record `#removeRepresentationSlot` had just deleted. `#retainRepresentationRelease` and
-`#failRepresentationRelease` now carry the same head guard `#acceptRepresentationRelease` always had, so each
-sink refuses on its own; the shared helper's necessity is stated as a constraint where it is defined.
+`currentDelivery`'s three clauses only slot identity refuses a delivery outcome arriving after that release.
+Removing it would let the retry sink arm a 1,000 ms timer on a slot `#clearRepresentationReleaseTimers` will
+never run against again (the loop this entry exists to close), and let the fatal sink write a durable
+operator-exit-refused row for an identity whose slot is gone, resurrecting the record
+`#removeRepresentationSlot` had just deleted. Both are pinned by the two `refuses a … delivery whose
+representation slot was already released undischarged` tests: deleting the clause turns both red.
+
+**The correction above was itself imprecise, and `0a4ede46` acted on the imprecision.** "The `retry` and
+`fatal` sinks are re-checked nowhere downstream" is true and irrelevant — nothing downstream needs to
+re-check, because all three sinks evaluate `currentDelivery()` synchronously at the call site before invoking
+their handler. `0a4ede46` read that clause as a gap and gave `#retainRepresentationRelease` and
+`#failRepresentationRelease` a head guard repeating `currentDelivery`'s first clause; its own commit message
+says the two sinks "were defended by nothing downstream", which is false in the only sense that matters. Both
+head guards were unreachable — each method is `#`-private with exactly one caller — and the mutation table in
+that round already showed it: deleting only the `currentDelivery` clause left the suite green *because the
+head guards closed it*. The guards are deleted, and `currentDelivery` is the one place the predicate lives.
+
+**The same commit's constraint comment claimed more than can be checked, and the claim is measurably
+over-strong.** It said all three `currentDelivery` clauses are load-bearing and none subsumes the others.
+Measured against the whole unit suite with the head guards gone: dropping the slot-identity clause alone
+turns two tests red; dropping `terminalSettlement === null` alone leaves 8,272 tests green; dropping the
+`pendingOperations` membership clause alone leaves them green; dropping both of those together turns one
+test red (`tests/unit/jobs/shell/launch.test.ts`). Tracing why: on a fatally settled slot the retry sink's
+whole effect is refused again downstream (`#scheduleRepresentationReleaseRetry` early-returns on
+`terminalSettlement`, and `#finishInitialDisposition` meets an already-rejected latch), and the fatal sink's
+is too (`#settleFatalRepresentationRelease` returns the existing settlement). The only consequence the
+`terminalSettlement` clause uniquely prevents is the evidence sink deleting from `pendingOperations` on a
+slot that has already settled, and nothing observes that. So the clauses are kept — each is cheap and
+argued reachable — but the comment asserting three independent load-bearing clauses is gone, replaced by
+the one clause a test actually proves. Do not restore the stronger claim without a case for each clause
+that a test can see.
 
 **`28115ec6`'s account of why the due poll could not re-drive a stranded record is wrong, though its
 conclusion held.** It says `acquireAuthority` reaches `containmentAbsent` with no slot and throws. It never got

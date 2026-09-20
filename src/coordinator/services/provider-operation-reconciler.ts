@@ -1044,6 +1044,10 @@ export class ProviderOperationReconciler
     attempt: Promise<DisappearanceDeliveryAttemptOutcome | RepresentationAbandonmentDeliveryAttemptOutcome>,
   ): Promise<void> {
     void attempt.catch((error: unknown) => {
+      // Constraint: a recovery fatal reaching this catch must seal before it is logged. Logging alone leaves
+      // the poll re-arming, which re-attempts the same latched release at the due cadence and re-declares the
+      // same fatal on every turn.
+      if (this.#observeFatal(error)) return;
       this.#deps.onError?.(
         `Provider operation release re-delivery failed for '${key}': ${providerOperationErrorReason(error)}`,
       );

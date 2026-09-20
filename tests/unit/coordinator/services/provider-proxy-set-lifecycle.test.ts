@@ -4960,6 +4960,12 @@ describe('ProviderProxySetLifecycle', () => {
         ]),
       }),
     );
+    // A reason this build itself wrote must reach the refusal taxonomy as the ground the call already
+    // answered with. Falling to `unrecognized` would report the reason as one this build does not name and
+    // discard the next step that ground carries.
+    expect(harness.lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({ setIdentity, operatorExit: { kind: 'refused', ground: 'store-unreadable' } }),
+    );
   });
 
   it.each([
@@ -7079,7 +7085,11 @@ describe('ProviderProxySetLifecycle', () => {
     expect(retireCapsule).toHaveBeenCalledWith('/capsules/zero-claims.handoff.v3.json');
   });
 
-  it('refuses a late delivery retry for a representation slot released undischarged', async () => {
+  // `currentDelivery` is the one place a delivery outcome is checked against its slot, and for a release past
+  // its settlement bound slot identity is the only clause that refuses: that release records no terminal
+  // settlement and clears no pending operation. Without it the retry sink arms a 1,000 ms timer on a slot
+  // `#clearRepresentationReleaseTimers` will never run against again.
+  it('refuses a delivery retry whose representation slot was already released undischarged', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -7113,7 +7123,9 @@ describe('ProviderProxySetLifecycle', () => {
     expect(clock.timers.filter((timer) => timer.active)).toEqual([]);
   });
 
-  it('refuses a late fatal delivery for a representation slot released undischarged', async () => {
+  // The same clause on the fatal sink: without it the sink writes a durable operator-exit-refused row for an
+  // identity whose slot is gone, resurrecting the record `#removeRepresentationSlot` had just deleted.
+  it('refuses a fatal delivery whose representation slot was already released undischarged', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -7420,7 +7432,8 @@ describe('ProviderProxySetLifecycle', () => {
       kind: 'operational-retry-owned',
       exit: 'provider-proxy-set-release-retry',
     });
-    // While the release is live the reported bound is the settlement deadline that will expire it.
+    // While the release is live the disposition names the delivery retry and the settlement deadline that
+    // will expire it.
     expect(lifecycle.snapshot().operatorSets).toContainEqual(
       expect.objectContaining({
         setIdentity: providerProxySetAddress(authority.setIdentity),
@@ -7467,16 +7480,19 @@ describe('ProviderProxySetLifecycle', () => {
       boundMs: 60_000,
       terminalExit: 'representation-released',
     });
+    // The reported disposition changes with it: the only thing still running is the unconditional slot drop,
+    // so naming `release-representation` here would advertise a delivery retry that cannot happen, and naming
+    // `automatic-retry` would advertise a successor for a refusal the slot drop cannot produce.
     expect(lifecycle.snapshot().operatorSets).toContainEqual(
       expect.objectContaining({
         setIdentity: providerProxySetAddress(authority.setIdentity),
         operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
         autonomousDisposition: {
-          kind: 'representation-release',
+          kind: 'representation-release-fatal',
           owner: 'coordinator',
           boundMs: 60_000,
-          retryAction: 'release-representation',
-          refusalSuccessor: 'automatic-retry',
+          retryAction: 'drop-representation-slot',
+          refusalSuccessor: 'not-refusable',
           terminalExit: 'representation-released',
         },
       }),

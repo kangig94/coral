@@ -574,6 +574,9 @@ function readRecentShutdownRemainder(
   }
   const { record, skippedEntries } = classification;
   const recordedAt = parseIsoTimestamp(record.recordedAt);
+  // Constraint: the writer publishes on every shutdown, clean ones included, so this is what keeps an empty
+  // remainder silent. Removing it renders "Coral recorded a recent shutdown with unfinished obligations" after
+  // a shutdown that finished all of them.
   const hasEntry = record.entries.length > 0 || skippedEntries.length > 0;
   if (
     !hasEntry ||

@@ -2000,6 +2000,63 @@ describe('ProviderOperationReconciler publication', () => {
     expect(terminalizeCalls).toHaveBeenCalledTimes(2);
   });
 
+  // The re-attempt runs outside the poll's own try/catch, so the fatal it can raise reaches no other observer.
+  // Logging it without sealing leaves the poll armed, and the next due turn re-attempts the same release.
+  it('seals on a recovery fatal raised by a latched release re-attempt instead of logging it', async () => {
+    const scheduled: Array<{ handle: { unref: () => void } }> = [];
+    const cleared: Array<unknown> = [];
+    const errors: string[] = [];
+    const harness = createHarness({
+      onError: (message) => errors.push(message),
+      time: {
+        setTimeout: () => {
+          const handle = { unref: () => undefined };
+          scheduled.push({ handle });
+          return handle as never;
+        },
+        clearTimeout: (handle) => cleared.push(handle),
+      },
+    });
+    vi.spyOn(harness.terminalization, 'terminalize')
+      .mockImplementationOnce(() => {
+        throw new ProviderOperationAtomicTerminalizationError(
+          harness.record.operation,
+          new Error('transient terminalization failure'),
+        );
+      })
+      .mockImplementation((terminalRecord) => {
+        throw new ProviderOperationTerminalMetadataError(terminalRecord.operation);
+      });
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: recovered.operation,
+        setIdentity: providerProxySetIdentityFromRecord(recovered),
+        disappearanceReceipt: 'stranded-absence-receipt',
+      }),
+    ).resolves.toMatchObject({ kind: 'operational-failure' });
+
+    harness.reconciler.start();
+    expect(scheduled).toHaveLength(1);
+    const pollTimer = scheduled[0]?.handle;
+
+    const stranded = readProviderOperation(harness.db, recovered.operation);
+    if (stranded === null) throw new Error('expected a surviving provider-operation record');
+    await harness.reconciler.reconcile(stranded);
+    await vi.waitFor(() => expect(cleared).toContain(pollTimer));
+
+    expect(errors).toEqual([]);
+    expect(harness.dispatcherFatalErrors).toHaveLength(1);
+    // A sealed reconciler refuses to poll, so nothing re-reaches the same fatal.
+    harness.reconciler.wake();
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(scheduled).toHaveLength(1);
+  });
+
   it('rejects a conflicting disappearance receipt after delivery failure', async () => {
     const harness = createHarness();
     const terminalizeCalls = vi.spyOn(harness.terminalization, 'terminalize').mockImplementationOnce(() => {

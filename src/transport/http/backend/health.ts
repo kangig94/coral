@@ -280,12 +280,21 @@ function parseProviderProxySetAutonomousDisposition(value: unknown): ProviderPro
   if (value === undefined) return { kind: 'unavailable' };
   if (!isRecord(value) || typeof value.kind !== 'string') return null;
   if (value.kind === 'inactive' || value.kind === 'unavailable') return { kind: value.kind };
-  if (
-    value.owner !== 'coordinator' ||
-    !isNonNegativeFiniteNumber(value.boundMs) ||
-    value.refusalSuccessor !== 'automatic-retry'
-  ) {
-    return null;
+  if (value.owner !== 'coordinator' || !isNonNegativeFiniteNumber(value.boundMs)) return null;
+  if (value.refusalSuccessor !== 'automatic-retry') {
+    return value.kind === 'representation-release-fatal' &&
+      value.refusalSuccessor === 'not-refusable' &&
+      value.retryAction === 'drop-representation-slot' &&
+      value.terminalExit === 'representation-released'
+      ? {
+          kind: value.kind,
+          owner: 'coordinator',
+          boundMs: value.boundMs,
+          retryAction: value.retryAction,
+          refusalSuccessor: value.refusalSuccessor,
+          terminalExit: value.terminalExit,
+        }
+      : null;
   }
   const common = {
     owner: 'coordinator' as const,

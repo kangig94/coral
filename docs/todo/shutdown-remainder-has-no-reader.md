@@ -6,10 +6,10 @@ entry retains only the live coordinator health-projection question.
 ## What exists
 
 `recordShutdownRemainder` (`src/coordinator/shutdown-remainder.ts`) writes the run directory's single
-`shutdown-remainder.v1.json` whenever a shutdown finalizes with losses: one entry per undischarged
-obligation, keyed by the ledger's `label`, carrying a `remainder` and a `settlement` shaped by its `cause`
-(the thrown error for `rejected`/`aborted`, `budgetMs` for `timed-out`, a free-text `detail` for
-`unconfirmed`, nothing further for `budget-exhausted`), under a record that carries `instanceId`,
+`shutdown-remainder.v1.json` on every shutdown, a clean one whose entry list is empty included: one entry
+per undischarged obligation, keyed by the ledger's `label`, carrying a `remainder` and a `settlement`
+shaped by its `cause` (the thrown error for `rejected`/`aborted`, `budgetMs` for `timed-out`, a free-text
+`detail` for `unconfirmed`, nothing further for `budget-exhausted`), under a record that carries `instanceId`,
 `recordedAt`, `reason`, and `mode`. `classifyShutdownRemainderFile`
 (`src/infra/shutdown-remainder-record.ts`) decodes that one address tolerantly — per record and per entry,
 skips counted. The no-daemon arm of `backend status`, `readRecentShutdownRemainder`
@@ -43,6 +43,20 @@ of the same question has no threshold to remove, because one address holds one r
 retained history to render.
 [`reproducible-fatal-successor-loop`](./reproducible-fatal-successor-loop.md) is observed through this
 reader and should not be costed before it exists.
+
+## The premise that authorised dropping `exitCode` no longer holds — no action owed
+
+Commit `4ebc60b0` removed the record's `exitCode` field on the argument that "the record is written only
+when losses exist, and losses mean the ledger did not return settled, which by AC10 means the exit code is
+1" — so the field could only ever hold a literal. That premise stopped being true when the writer moved to
+publishing on every shutdown: a clean shutdown now writes a record, and a clean shutdown exits `0`, so
+`exitCode` would today be a field with two constructible values rather than one.
+
+Nothing is broken and nothing is owed. The field is gone, no reader re-derives it, and the reader already
+reports nothing for a record with no entries, so the exit code a record would have carried adds nothing to
+what `backend status` renders. This is recorded only so a later round does not rediscover the false
+sentence and read it as evidence about the current writer. Adding the field back would be additive and
+permitted by design-philosophy.md §10; it needs a reader that acts on it first.
 
 ## A hold reached through the generic ledger fallback has no keepalive
 

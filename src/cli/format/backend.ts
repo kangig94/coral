@@ -210,7 +210,15 @@ function recoveryRecordRemedyMatchesEntry(
   );
 }
 
-type ProviderProxySetOperatorRefusalGround = Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'];
+/**
+ * The refusal grounds a contain or abandon response can actually carry. It is derived from both vocabularies
+ * rather than listed, so a ground the response schema cannot produce has no arm here, and a refusal kind the
+ * schema gains has no arm until one is written.
+ */
+type ProviderProxySetOperatorRefusalGround = Extract<
+  Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'],
+  (ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse)['kind']
+>;
 
 function formatProviderProxySetOperatorRefusalGuidance(
   ground: ProviderProxySetOperatorRefusalGround,
@@ -251,13 +259,6 @@ function formatProviderProxySetOperatorRefusalGuidance(
           command: { kind: 'list' },
         }),
       ].join('\n');
-    case 'representation-release-fatal':
-      return [
-        'Next step: run the abandon command below; this accepts the unresolved representation release without retrying its fatal operation.',
-        abandon,
-      ].join('\n');
-    case 'unrecognized':
-      return 'Coral recorded an operator-exit refusal whose reason this build does not name, so no next step is derived from it.';
     default:
       return assertNever(ground);
   }
@@ -1819,7 +1820,7 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
   }
 }
 
-export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
+export function formatProviderProxySetAutonomousDisposition(set: ProviderProxySetStatus): string {
   const disposition = set.autonomousDisposition;
   switch (disposition.kind) {
     case 'inactive':
@@ -1827,6 +1828,7 @@ export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus):
     case 'unavailable':
       return 'disposition=unavailable';
     case 'representation-release':
+    case 'representation-release-fatal':
     case 'control-or-containment':
     case 'exact-containment':
     case 'durable-reconciliation':
@@ -1979,7 +1981,7 @@ function formatRunningStatus(health: RunningHealth): string {
           `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}${durable}`,
         );
       }
-      lines.push(`    ${formatProviderProxySetOperatorExit(set)}`);
+      lines.push(`    ${formatProviderProxySetAutonomousDisposition(set)}`);
     }
     if (skippedProviderProxySetRows > 0) {
       lines.push(

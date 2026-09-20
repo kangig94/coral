@@ -159,7 +159,7 @@ import {
   formatProviderOperationRemedy,
   formatUnreadableProviderOperationDiscard,
   formatProviderProxySetContainResult,
-  formatProviderProxySetOperatorExit,
+  formatProviderProxySetAutonomousDisposition,
   formatProviderProxySetRowSkips,
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
@@ -1591,7 +1591,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           const providerProxySets = statusBeforeShutdown.health.diagnostics?.providerProxySets ?? [];
           preservedSetRead = {
             dispositions: providerProxySets.map(
-              (set) => `set=${set.setToken} ${formatProviderProxySetOperatorExit(set)}`,
+              (set) => `set=${set.setToken} ${formatProviderProxySetAutonomousDisposition(set)}`,
             ),
             skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
             skippedIdentities: formatProviderProxySetRowSkips(

@@ -2492,6 +2492,7 @@ export class ProviderProxySetLifecycle {
       case 'operator_exit_identity_unobservable':
         return { kind: 'refused', ground: 'identity-unobservable' };
       case 'operator_exit_store_unreadable':
+      case 'operator_exit_disposition_store_write_failed':
         return { kind: 'refused', ground: 'store-unreadable' };
       case 'operator_exit_representation_release_fatal':
         return { kind: 'refused', ground: 'representation-release-fatal' };
@@ -2523,18 +2524,22 @@ export class ProviderProxySetLifecycle {
           };
     }
     if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
-      return {
-        ...active,
-        kind: 'representation-release',
-        // A fatally settled release keeps no delivery retry and no settlement deadline; what remains is the
-        // automatic slot drop, so the bound reported is the one still running.
-        boundMs:
-          slot.terminalSettlement === null
-            ? REPRESENTATION_RELEASE_SETTLEMENT_BOUND_MS
-            : AUTONOMOUS_DISPOSITION_RETRY_MS,
-        retryAction: 'release-representation',
-        terminalExit: 'representation-released',
-      };
+      return slot.terminalSettlement === null
+        ? {
+            ...active,
+            kind: 'representation-release',
+            boundMs: REPRESENTATION_RELEASE_SETTLEMENT_BOUND_MS,
+            retryAction: 'release-representation',
+            terminalExit: 'representation-released',
+          }
+        : {
+            kind: 'representation-release-fatal',
+            owner: 'coordinator',
+            boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS,
+            retryAction: 'drop-representation-slot',
+            refusalSuccessor: 'not-refusable',
+            terminalExit: 'representation-released',
+          };
     }
     if (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') {
       return {
@@ -5812,11 +5817,8 @@ export class ProviderProxySetLifecycle {
     slot: ReleaseDeliveryPendingSlot,
     operation: OperationIdentity,
   ): ProviderProxyRecoveryTurnSinks {
-    // Constraint: all three clauses are load-bearing, and no single one subsumes the others. Slot identity
-    // is the only refusal a release past its settlement bound gets, because that release records no
-    // terminal settlement and clears no pending operation; `terminalSettlement` is the only refusal a
-    // fatally settled slot gets; and membership is the only refusal a second outcome for an operation
-    // already accepted gets.
+    // Constraint: a release past its settlement bound records no terminal settlement and clears no pending
+    // operation, so slot identity is the only clause that refuses a delivery outcome arriving after it.
     const currentDelivery = (): boolean =>
       this.#slots.get(slot.key) === slot &&
       slot.terminalSettlement === null &&
@@ -5865,7 +5867,6 @@ export class ProviderProxySetLifecycle {
       | Extract<DisappearanceDeliveryAttemptOutcome, { kind: 'operational-failure' }>
       | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
   ): void {
-    if (this.#slots.get(slot.key) !== slot) return;
     const key = operationKey(operation);
     const nextAttemptAtMs = this.#deps.time.now() + REPRESENTATION_RELEASE_RETRY_CADENCE_MS;
     const incident: ContainmentAbsenceOperationalIncident =
@@ -5912,7 +5913,6 @@ export class ProviderProxySetLifecycle {
     operation: OperationIdentity,
     error: ProviderProxySetLifecycleFatalError,
   ): void {
-    if (this.#slots.get(slot.key) !== slot) return;
     slot.initialDeliveries.set(operationKey(operation), { kind: 'fatal', error });
     this.#rejectInitialDisposition(slot, this.#settleFatalRepresentationRelease(slot, error));
   }
@@ -5959,9 +5959,10 @@ export class ProviderProxySetLifecycle {
     if (this.#slots.get(slot.key) !== slot) return;
     const pendingOperations = [...slot.pendingOperations.values()].map(operationKey);
     this.#removeRepresentationSlot(slot);
-    // Constraint: the bound is armed only on a slot that survives `#beginRepresentationRelease`, and a slot
-    // with no pending operation survives it only while its capsule is still to retire — so an empty
-    // operation set here means the capsule is what remains outstanding.
+    // Constraint: `pendingOperations` and `claimDischarge` are derived from the same `claimOperations` at slot
+    // construction, and every path that empties the former sets the latter, so an empty operation set always
+    // carries a discharge and retirement is never withheld for want of one. The capsule is therefore the only
+    // obligation an empty operation set can still be holding this slot for.
     const disposition: ProviderProxyRepresentationReleasedUndischarged = {
       kind: 'released-undischarged',
       witness: pendingOperations.length > 0 ? 'provider-operation-record' : 'provider-handoff-capsule',

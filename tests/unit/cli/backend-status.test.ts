@@ -1785,11 +1785,32 @@ describe('backend status provider proxy dispositions', () => {
             },
             holds: [hold],
           },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
+            autonomousDisposition: {
+              kind: 'representation-release-fatal',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'drop-representation-slot',
+              refusalSuccessor: 'not-refusable',
+              terminalExit: 'representation-released',
+            },
+            holds: [hold],
+          },
         ],
       },
     });
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
     expect(rendered).toContain('disposition=inactive waitingFor=control-reattachment');
+    // The one line printed per set is all a reader of this output gets, so a fatally settled release may not
+    // print the live release's retry action or its automatic-retry successor: nothing retries it.
+    expect(rendered).toContain(
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=drop-representation-slot refusalSuccessor=not-refusable terminalExit=representation-released',
+    );
+    expect(rendered).not.toContain('retryAction=release-representation');
     expect(rendered).toContain(
       'disposition=automatic owner=coordinator boundMs=60000 retryAction=recover-control-or-observe-exact-containment refusalSuccessor=automatic-retry terminalExit=control-reattached-or-containment-absent',
     );

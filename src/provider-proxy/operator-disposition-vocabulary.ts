@@ -80,12 +80,13 @@ type ActiveProviderProxySetAutonomousDisposition<
   Kind extends string,
   RetryAction extends string,
   TerminalExit extends string,
+  RefusalSuccessor extends string = 'automatic-retry',
 > = Readonly<{
   kind: Kind;
   owner: 'coordinator';
   boundMs: number;
   retryAction: RetryAction;
-  refusalSuccessor: 'automatic-retry';
+  refusalSuccessor: RefusalSuccessor;
   terminalExit: TerminalExit;
 }>;
 
@@ -101,6 +102,17 @@ export type ProviderProxySetAutonomousDisposition =
       'representation-release',
       'release-representation',
       'representation-released'
+    >
+  /**
+   * A release that settled fatal keeps no delivery retry and no settlement deadline, so `release-representation`
+   * would name an action nothing performs. What is still running is the coordinator's own slot drop, which is
+   * unconditional at `boundMs` and therefore has no refusal to succeed.
+   */
+  | ActiveProviderProxySetAutonomousDisposition<
+      'representation-release-fatal',
+      'drop-representation-slot',
+      'representation-released',
+      'not-refusable'
     >
   | ActiveProviderProxySetAutonomousDisposition<
       'durable-reconciliation',
