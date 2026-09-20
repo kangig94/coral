@@ -1328,7 +1328,7 @@ function formatShutdownRemainderReport(
     report?.status === 'recent_shutdown_remainder' ||
     report?.status === 'stale_shutdown_remainder' ||
     report?.status === 'shutdown_remainder_clock_skew' ||
-    (report?.status === 'shutdown_remainder_unreadable' && report.reason === 'records-skipped')
+    (report?.status === 'shutdown_remainder_unreadable' && report.reason !== 'scan-failed')
       ? report
       : undefined;
   if (report?.status !== 'shutdown_remainder_clock_skew' && (directoryEvidence?.futureDatedRecordCount ?? 0) > 0) {
@@ -1340,8 +1340,8 @@ function formatShutdownRemainderReport(
   if (unusableEntryCount > 0) {
     lines.push(
       `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}`,
-      ...(directoryEvidence?.unreadableRecordSubjects ?? []).map(
-        (subject) => `  Unreadable: identity=${subject.identity} label=${JSON.stringify(subject.label)}`,
+      ...(directoryEvidence?.unusableRecordSubjects ?? []).map(
+        (subject) => `  Unusable: identity=${subject.identity} label=${JSON.stringify(subject.label)}`,
       ),
     );
   }
@@ -1349,6 +1349,13 @@ function formatShutdownRemainderReport(
     lines.push(
       `Shutdown remainder directory enumeration truncated (${directoryEvidence.enumeration.reason}); the evidence above is partial.`,
     );
+  }
+  if (
+    report?.status === 'shutdown_remainder_unreadable' &&
+    report.reason === 'enumeration-inconclusive' &&
+    directoryEvidence?.enumeration.kind === 'no-overflow-observed'
+  ) {
+    lines.push('Shutdown remainder directory enumeration observed no overflow; concurrent changes may be unseen.');
   }
   if (liveEvidence.kind === 'unavailable') {
     lines.push("The draining coordinator's unauthenticated health response did not return cleanup-refusal details.");

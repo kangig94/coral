@@ -116,16 +116,22 @@ function cleanupRefusalCollection(): CleanupRefusalCollection {
   };
 }
 
-function cleanupRefusalSnapshotEntries(
-  bySubject: CleanupRefusalCollection['bySubject'],
-  startAfter: string | null,
-): readonly [string, Readonly<{ path: StoragePath; refusal: ShutdownRemainderCleanupRefusal }>][] {
-  const ordered = [...bySubject.entries()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-  if (ordered.length === 0) return [];
-  const nextIndex = startAfter === null ? 0 : ordered.findIndex(([key]) => key > startAfter);
-  const startIndex = nextIndex < 0 ? 0 : nextIndex;
-  const count = Math.min(ordered.length, SHUTDOWN_REMAINDER_SCAN_LIMIT);
-  return Array.from({ length: count }, (_, offset) => ordered[(startIndex + offset) % ordered.length]);
+function nextCleanupRefusalSnapshotOrder(
+  previousOrder: readonly string[],
+  current: CleanupRefusalCollection['bySubject'],
+): readonly string[] {
+  const rotated = [
+    ...previousOrder.slice(SHUTDOWN_REMAINDER_SCAN_LIMIT),
+    ...previousOrder.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT),
+  ];
+  const retained = rotated.filter((subject) => current.has(subject));
+  const known = new Set(retained);
+  for (const subject of current.keys()) {
+    if (known.has(subject)) continue;
+    retained.push(subject);
+    known.add(subject);
+  }
+  return retained;
 }
 
 function forgetCleanupFailure(collection: CleanupRefusalCollection, key: string): void {
@@ -190,14 +196,12 @@ function pruneDisposition(
 
 export function pruneShutdownRemainderRecords(
   runtime: ShutdownRemainderPruneRuntime,
-  heldSubjectNames: ReadonlySet<string> = new Set(),
 ): ShutdownRemainderPruneDisposition {
-  return pruneShutdownRemainderRecordsWithRefusals(runtime, heldSubjectNames).disposition;
+  return pruneShutdownRemainderRecordsWithRefusals(runtime).disposition;
 }
 
 function pruneShutdownRemainderRecordsWithRefusals(
   runtime: ShutdownRemainderPruneRuntime,
-  heldSubjectNames: ReadonlySet<string> = new Set(),
   previousCleanupRefusals: CleanupRefusalCollection['bySubject'] = new Map(),
 ): Readonly<{
   disposition: ShutdownRemainderPruneDisposition;
@@ -260,10 +264,6 @@ function pruneShutdownRemainderRecordsWithRefusals(
       const entry = classifyShutdownRemainderDirectoryEntry(name);
       if (entry.kind === 'other') continue;
       if (entry.kind === 'record') continue;
-      if (heldSubjectNames.has(key)) {
-        quarantine(key);
-        continue;
-      }
       checkedCleanupSubjectNames.add(key);
       forgetCleanupFailure(cleanupRefusals, key);
       try {
@@ -337,10 +337,6 @@ function pruneShutdownRemainderRecordsWithRefusals(
           forgetCleanupFailure(cleanupRefusals, key);
           continue;
         }
-      }
-      if (heldSubjectNames.has(key)) {
-        quarantine(key);
-        continue;
       }
       checkedCleanupSubjectNames.add(key);
 
@@ -423,7 +419,6 @@ function pruneShutdownRemainderRecordsWithRefusals(
         absentCleanupSubjectNames: new Set(),
       };
     }
-    for (const name of heldSubjectNames) quarantine(name);
     void recordCleanupFailure(cleanupRefusals, directory, directory, directory, 'scan-directory', error);
     return result(false);
   }
@@ -445,7 +440,7 @@ export function createShutdownRemainderPruner(
   let timer: TimerHandle | null = null;
   let stopped = false;
   let cleanupRefusalsByName: CleanupRefusalCollection['bySubject'] = new Map();
-  let cleanupRefusalSnapshotStartAfter: string | null = null;
+  let cleanupRefusalSnapshotOrder: readonly string[] = [];
   let resolvedCleanupRefusalCount = 0;
   let absentCleanupRefusalCount = 0;
   let unobservableCleanupRefusalCount = 0;
@@ -464,7 +459,7 @@ export function createShutdownRemainderPruner(
       resolvedCleanupSubjectNames,
       checkedCleanupSubjectNames,
       absentCleanupSubjectNames,
-    } = pruneShutdownRemainderRecordsWithRefusals(runtime, new Set(), previousCleanupRefusals);
+    } = pruneShutdownRemainderRecordsWithRefusals(runtime, previousCleanupRefusals);
     const retainedCleanupRefusals = new Map(currentCleanupRefusals);
     for (const [name, entry] of previousCleanupRefusals) {
       if (currentCleanupRefusals.has(name)) continue;
@@ -492,11 +487,7 @@ export function createShutdownRemainderPruner(
         }
       }
     }
-    const previousSnapshotEntries = cleanupRefusalSnapshotEntries(
-      previousCleanupRefusals,
-      cleanupRefusalSnapshotStartAfter,
-    );
-    cleanupRefusalSnapshotStartAfter = previousSnapshotEntries.at(-1)?.[0] ?? null;
+    cleanupRefusalSnapshotOrder = nextCleanupRefusalSnapshotOrder(cleanupRefusalSnapshotOrder, retainedCleanupRefusals);
     cleanupRefusalsByName = retainedCleanupRefusals;
     resolvedCleanupRefusalCount = resolvedRefusalCount;
     absentCleanupRefusalCount = absentRefusalCount;
@@ -506,9 +497,10 @@ export function createShutdownRemainderPruner(
     return result;
   };
   const readCleanupRefusalSnapshot = (): ShutdownRemainderCleanupSnapshot => {
-    const refusals = cleanupRefusalSnapshotEntries(cleanupRefusalsByName, cleanupRefusalSnapshotStartAfter).map(
-      ([, { refusal }]) => refusal,
-    );
+    const refusals = cleanupRefusalSnapshotOrder
+      .slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT)
+      .map((subject) => cleanupRefusalsByName.get(subject)?.refusal)
+      .filter((refusal): refusal is ShutdownRemainderCleanupRefusal => refusal !== undefined);
     return {
       refusals,
       resolvedRefusalCount: resolvedCleanupRefusalCount,

@@ -7,6 +7,7 @@ import type {
   StorageBigIntStat,
   StorageData,
   StorageEntryKind,
+  StoragePath,
   StoragePort,
   TimePort,
 } from '../../../src/infra/port-types.js';
@@ -69,8 +70,8 @@ export type InMemoryRoots = {
   coralRoot?: string;
 };
 
-export function normalizePathForStorage(path: string): string {
-  const normalized = normalize(path.replace(/\\/g, '/'));
+export function normalizePathForStorage(path: StoragePath): string {
+  const normalized = normalize(path.toString().replace(/\\/g, '/'));
   if (normalized === '.' || normalized === '') {
     return '/';
   }
@@ -281,7 +282,7 @@ export class InMemoryStorage implements StoragePort {
     return this.readdirSync(path);
   }
 
-  readFileSync(path: string, encoding: 'utf-8'): string {
+  readFileSync(path: StoragePath, encoding: 'utf-8'): string {
     const normalized = normalizePathForStorage(path);
     const file = this.fileNode(normalized);
     if (!file) {
@@ -348,7 +349,7 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(parent);
   }
 
-  renameSync(oldPath: string, newPath: string): void {
+  renameSync(oldPath: StoragePath, newPath: StoragePath): void {
     const from = normalizePathForStorage(oldPath);
     const to = normalizePathForStorage(newPath);
     if (from === to) {
@@ -606,9 +607,9 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
-  lstatSync(path: string): StorageEntryKind;
-  lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
-  lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
+  lstatSync(path: StoragePath): StorageEntryKind;
+  lstatSync(path: StoragePath, options: { bigint: true }): StorageBigIntStat;
+  lstatSync(path: StoragePath, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
     if (options?.bigint === true) {
       return this.statSync(normalized, { bigint: true });
@@ -644,10 +645,10 @@ export class InMemoryStorage implements StoragePort {
     return normalized;
   }
 
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  statSync(path: StoragePath): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
+  statSync(path: StoragePath, options: { bigint: true }): StorageBigIntStat;
   statSync(
-    path: string,
+    path: StoragePath,
     options?: { bigint: true },
   ): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean } | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
@@ -907,7 +908,7 @@ export class InMemoryStorage implements StoragePort {
     }
   }
 
-  unlinkSync(path: string): void {
+  unlinkSync(path: StoragePath): void {
     const normalized = normalizePathForStorage(path);
     if (!this.files.has(normalized)) {
       if (this.directories.has(normalized)) {

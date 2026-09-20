@@ -1871,7 +1871,7 @@ describe('cli format', () => {
             },
           ],
           unusableEntryCount: 8,
-          unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
+          unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
           enumeration: { kind: 'no-overflow-observed' },
         },
       });
@@ -1904,12 +1904,12 @@ describe('cli format', () => {
           'Skipped entry 4: stream response close 3',
           '  Owner: process-exit',
           'Shutdown remainder directory entries this build could not use: 8',
-          `  Unreadable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} label="locked-instance.json"`,
+          `  Unusable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} label="locked-instance.json"`,
         ].join('\n'),
       );
     });
 
-    it('folds skipped classes into one truthful line while retaining unreadable identities', () => {
+    it('folds skipped classes into one truthful line while retaining unusable identities', () => {
       expect(
         formatBackendStatus({
           status: 'recorded_process_absent',
@@ -1918,7 +1918,7 @@ describe('cli format', () => {
             status: 'shutdown_remainder_unreadable',
             reason: 'records-skipped',
             unusableEntryCount: 4,
-            unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
+            unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
             enumeration: { kind: 'no-overflow-observed' },
           },
         }),
@@ -1926,7 +1926,7 @@ describe('cli format', () => {
         [
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
           'Shutdown remainder directory entries this build could not use: 4',
-          `  Unreadable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} label="locked-instance.json"`,
+          `  Unusable: identity=${shutdownRemainderFilesystemSubject('locked-instance.json').identity} label="locked-instance.json"`,
         ].join('\n'),
       );
     });
@@ -1941,7 +1941,7 @@ describe('cli format', () => {
           status: 'shutdown_remainder_unreadable',
           reason: 'records-skipped',
           unusableEntryCount: 2,
-          unreadableRecordSubjects: [left, right],
+          unusableRecordSubjects: [left, right],
           enumeration: { kind: 'no-overflow-observed' },
         },
       });
@@ -2005,7 +2005,7 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           unusableEntryCount: 0,
-          unreadableRecordSubjects: [],
+          unusableRecordSubjects: [],
           enumeration: { kind: 'no-overflow-observed' },
         },
       });
@@ -2031,7 +2031,7 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           unusableEntryCount: 0,
-          unreadableRecordSubjects: [],
+          unusableRecordSubjects: [],
           enumeration: { kind: 'no-overflow-observed' },
         },
       });
@@ -2365,7 +2365,7 @@ describe('cli format', () => {
           },
           skippedEntries: [],
           unusableEntryCount: 0,
-          unreadableRecordSubjects: [],
+          unusableRecordSubjects: [],
           enumeration: { kind: 'no-overflow-observed' },
         },
       },
@@ -2376,7 +2376,7 @@ describe('cli format', () => {
           status: 'shutdown_remainder_unreadable' as const,
           reason: 'records-skipped' as const,
           unusableEntryCount: 1,
-          unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
+          unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked-instance.json')],
           enumeration: { kind: 'no-overflow-observed' },
         },
       },

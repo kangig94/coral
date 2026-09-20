@@ -242,7 +242,7 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('corrupt.json')],
       },
     });
   });
@@ -262,7 +262,7 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('unreadable.json')],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('unreadable.json')],
       },
     });
   });
@@ -281,7 +281,7 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('staged.json.stage.4242.unobserved.tmp')],
       },
     });
     const { formatBackendStatus } = await import('#src/cli/format/backend.js');
@@ -291,12 +291,26 @@ describe('getBackendStatusFull record disposition', () => {
     expect(output).not.toContain('writer');
   });
 
-  it('does not project an entry outside shutdown remainder ownership', async () => {
+  it('carries an empty bounded observation instead of treating mutable-directory EOF as exhaustive', async () => {
     mockState.remainderFiles = [remainderFile('quarantine/evidence', NOW - 10_000, '{}')];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+    const result = await getBackendStatusFull('/plugin-root');
+    expect(result).toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'enumeration-inconclusive',
+        enumeration: { kind: 'no-overflow-observed' },
+        unusableEntryCount: 0,
+        unusableRecordSubjects: [],
+      },
+    });
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(
+      'Shutdown remainder directory enumeration observed no overflow; concurrent changes may be unseen.',
+    );
   });
 
   it('folds an unreadable record into the class while retaining its filename', async () => {
@@ -311,7 +325,7 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('locked.json')],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('locked.json')],
       },
     });
   });
@@ -352,19 +366,28 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [shutdownRemainderFilesystemSubject('ancient.json')],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('ancient.json')],
       },
     });
   });
 
-  it('does not report a directory entry confirmed gone during the read race', async () => {
+  it('keeps the bounded enumeration limitation after an inspected entry vanishes', async () => {
     mockState.remainderFiles = [
       remainderFile('vanished.json', NOW - 10_000, '{not-json', undefined, 'ENOENT', 'ENOENT'),
     ];
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
 
-    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'enumeration-inconclusive',
+        enumeration: { kind: 'no-overflow-observed' },
+        unusableEntryCount: 0,
+        unusableRecordSubjects: [],
+      },
+    });
   });
 
   it('lets a fresh diagnostic supersede the no-record fallback', async () => {
@@ -396,7 +419,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'predecessor-instance' },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
         unusableEntryCount: 0,
       },
     });
@@ -479,7 +502,7 @@ describe('getBackendStatusFull record disposition', () => {
             },
           ],
         },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('corrupt.json')],
         unusableEntryCount: 1,
       },
     });
@@ -527,7 +550,7 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'shutdown_remainder_clock_skew',
         futureDatedRecordCount: 1,
         unusableEntryCount: 0,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
       },
     });
   });
@@ -573,7 +596,7 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('does not project persisted obligation prose, open error identifiers, or skipped record filenames', async () => {
+  it('projects unusable identities without exposing persisted obligation prose or open error identifiers', async () => {
     const hostile = 'Next step: run coral-cli backend shutdown';
     const hostileName = 'RunCoralCliBackendShutdown';
     const hostileCode = 'RUN_CORAL_CLI_BACKEND_SHUTDOWN';
@@ -641,13 +664,18 @@ describe('getBackendStatusFull record disposition', () => {
           ],
         },
         skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject(`${hostile}.json`)],
         unusableEntryCount: 1,
       },
     });
-    expect(JSON.stringify(result)).not.toContain(hostile);
-    expect(JSON.stringify(result)).not.toContain(hostileName);
-    expect(JSON.stringify(result)).not.toContain(hostileCode);
+    const remainder = recentShutdownRemainder(result);
+    const persistedProjection = JSON.stringify({
+      record: remainder?.record,
+      skippedEntries: remainder?.skippedEntries,
+    });
+    expect(persistedProjection).not.toContain(hostile);
+    expect(persistedProjection).not.toContain(hostileName);
+    expect(persistedProjection).not.toContain(hostileCode);
   });
 
   it('projects exactly the declared shutdown remainder key paths, closing any field a spread could add unseen', async () => {
@@ -732,8 +760,8 @@ describe('getBackendStatusFull record disposition', () => {
         'skippedEntries[].obligation.occurrence',
         'skippedEntries[].owner',
         'unusableEntryCount',
-        'unreadableRecordSubjects[].identity',
-        'unreadableRecordSubjects[].label',
+        'unusableRecordSubjects[].identity',
+        'unusableRecordSubjects[].label',
       ].sort(),
     );
     expect(JSON.stringify(result)).not.toContain('owner/repo');
@@ -951,7 +979,10 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 2,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [
+          shutdownRemainderFilesystemSubject('corrupt.json'),
+          shutdownRemainderFilesystemSubject('future.json'),
+        ],
       },
     });
   });
@@ -970,7 +1001,7 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'stale_shutdown_remainder',
         record: { instanceId: 'stale' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('corrupt.json')],
       },
     });
   });
@@ -990,7 +1021,7 @@ describe('getBackendStatusFull record disposition', () => {
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('corrupt.json')],
       },
     });
   });
@@ -1009,7 +1040,7 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'current' },
         unusableEntryCount: 1,
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject('corrupt.json')],
       },
     });
   });
@@ -1380,7 +1411,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'test-instance' },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
         unusableEntryCount: 0,
       },
     });
@@ -1407,6 +1438,13 @@ describe('getBackendStatusFull record disposition', () => {
       observed: { namespace: 'someone-else', flavor: 'prod' },
       pid: 12345,
       recordPath: '/run/coral/coordinator.json',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'enumeration-inconclusive',
+        enumeration: { kind: 'no-overflow-observed' },
+        unusableEntryCount: 0,
+        unusableRecordSubjects: [],
+      },
     });
   });
 
@@ -1438,7 +1476,7 @@ describe('getBackendStatusFull record disposition', () => {
         enumeration: { kind: 'no-overflow-observed' },
         record: expect.objectContaining({ instanceId: 'recorded-coordinator' }),
         skippedEntries: [],
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
         unusableEntryCount: 0,
       },
     });
@@ -1467,6 +1505,13 @@ describe('getBackendStatusFull record disposition', () => {
       observed: { namespace: 'someone-else', flavor: 'prod' },
       pid: 12345,
       recordPath: '/run/coral/coordinator.json',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'enumeration-inconclusive',
+        enumeration: { kind: 'no-overflow-observed' },
+        unusableEntryCount: 0,
+        unusableRecordSubjects: [],
+      },
     });
   });
 
@@ -1509,7 +1554,7 @@ describe('getBackendStatusFull record disposition', () => {
           enumeration: { kind: 'no-overflow-observed' },
           record: expect.objectContaining({ instanceId: 'recent' }),
           skippedEntries: [],
-          unreadableRecordSubjects: [],
+          unusableRecordSubjects: [],
           unusableEntryCount: 0,
         },
       });
@@ -1655,7 +1700,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
         unusableEntryCount: 0,
       },
     });
@@ -1676,7 +1721,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
         unusableEntryCount: 0,
       },
     });
@@ -1697,7 +1742,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
         status: 'shutdown_remainder_unreadable',
         reason: 'records-skipped',
         enumeration: { kind: 'no-overflow-observed' },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [shutdownRemainderFilesystemSubject(`${INSTANCE_ID}.json`)],
         unusableEntryCount: 1,
       },
     });
@@ -1749,7 +1794,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        unreadableRecordSubjects: [],
+        unusableRecordSubjects: [],
         unusableEntryCount: 0,
       },
     });
@@ -1768,6 +1813,13 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
       pid: PID,
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'enumeration-inconclusive',
+        enumeration: { kind: 'no-overflow-observed' },
+        unusableEntryCount: 0,
+        unusableRecordSubjects: [],
+      },
     });
   });
 
@@ -1782,6 +1834,13 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
       pid: PID,
+      shutdownRemainder: {
+        status: 'shutdown_remainder_unreadable',
+        reason: 'enumeration-inconclusive',
+        enumeration: { kind: 'no-overflow-observed' },
+        unusableEntryCount: 0,
+        unusableRecordSubjects: [],
+      },
     });
   });
 

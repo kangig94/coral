@@ -258,7 +258,7 @@ type OperatorFacingShutdownRemainderCleanup = Readonly<{
 type OperatorFacingShutdownRemainderDirectoryEvidence = Readonly<{
   unusableEntryCount: number;
   futureDatedRecordCount?: number;
-  unreadableRecordSubjects: readonly ShutdownRemainderFilesystemSubject[];
+  unusableRecordSubjects: readonly ShutdownRemainderFilesystemSubject[];
   enumeration:
     | Readonly<{ kind: 'no-overflow-observed' }>
     | Readonly<{
@@ -318,7 +318,7 @@ export type ShutdownRemainderReport =
       OperatorFacingShutdownRemainderCleanup)
   | (Readonly<{
       status: 'shutdown_remainder_unreadable';
-      reason: 'records-skipped';
+      reason: 'records-skipped' | 'enumeration-inconclusive';
     }> &
       OperatorFacingShutdownRemainderDirectoryEvidence)
   | (Readonly<{
@@ -629,20 +629,17 @@ function readRecentShutdownRemainder(
     scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
-    if (refusal === null) {
-      scan = { records: [], skippedEntries: [], skippedRecords: [] };
-    } else {
-      // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
-      // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
-      // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
-      // field): not knowing which instance to scope to is a different unknown from not knowing whether the
-      // directory could be read at all, and the second one is what this catch observed.
-      return {
-        status: 'shutdown_remainder_unreadable',
-        reason: 'scan-failed',
-        cleanupRefusals: [refusal],
-      };
-    }
+    if (refusal === null) return null;
+    // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
+    // silence — it must not collapse to `null` ("no remainder evidence") for any scope, including a
+    // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
+    // field): not knowing which instance to scope to is a different unknown from not knowing whether the
+    // directory could be read at all, and the second one is what this catch observed.
+    return {
+      status: 'shutdown_remainder_unreadable',
+      reason: 'scan-failed',
+      cleanupRefusals: [refusal],
+    };
   }
   const enumerationEvidence: OperatorFacingShutdownRemainderDirectoryEvidence['enumeration'] =
     scan.entryOverflow === undefined
@@ -658,9 +655,7 @@ function readRecentShutdownRemainder(
     (scope.instanceId !== undefined &&
       ('instanceId' in record ? record.instanceId === scope.instanceId : record.name === `${scope.instanceId}.json`));
   const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
-  const unreadableRecordSubjects = scopedSkippedRecords
-    .filter(({ reason }) => reason === 'unreadable')
-    .map(({ subject }) => subject);
+  const unusableRecordSubjects = scopedSkippedRecords.map(({ subject }) => subject);
   const unusableEntryCount = scopedSkippedRecords.length;
   const scopedRecords = scan.records.flatMap((candidate) => {
     const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -678,7 +673,7 @@ function readRecentShutdownRemainder(
   const directoryEvidence: OperatorFacingShutdownRemainderDirectoryEvidence = {
     unusableEntryCount,
     ...(futureDatedRecordCount === 0 ? {} : { futureDatedRecordCount }),
-    unreadableRecordSubjects,
+    unusableRecordSubjects,
     enumeration: enumerationEvidence,
   };
   const orderedRecords = scopedRecords.sort(
@@ -723,10 +718,9 @@ function readRecentShutdownRemainder(
         ...directoryEvidence,
       };
     }
-    if (unusableEntryCount === 0 && scan.entryOverflow === undefined) return null;
     return {
       status: 'shutdown_remainder_unreadable',
-      reason: 'records-skipped',
+      reason: unusableEntryCount === 0 ? 'enumeration-inconclusive' : 'records-skipped',
       ...directoryEvidence,
     };
   }

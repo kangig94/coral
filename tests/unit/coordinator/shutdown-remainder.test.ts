@@ -1629,13 +1629,66 @@ describe('shutdown remainder status', () => {
     expect(storage.lstatSync).not.toHaveBeenCalled();
   });
 
-  it('makes every persistent refusal observable within two scheduled snapshots', () => {
-    const zFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
-      name: `z-${String(index).padStart(3, '0')}.json`,
+  it.each([
+    [128, 1],
+    [129, 2],
+    [1_000, 8],
+  ])('reports a stable population of %i refusals within %i snapshots', (population, snapshotCount) => {
+    const files = Array.from({ length: population }, (_, index) => ({
+      name: `refusal-${String(index).padStart(4, '0')}.json`,
       value: '{not-json',
       mtimeMs: index + 1,
     }));
-    const storage = storageWith(zFiles, { refusePrune: true, pruneErrorCode: 'EACCES' });
+    const storage = storageWith(files, { refusePrune: true, pruneErrorCode: 'EACCES' });
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    const observedIdentities = new Set<string>();
+    for (let snapshotNumber = 0; snapshotNumber < snapshotCount; snapshotNumber += 1) {
+      if (snapshotNumber > 0) periodic();
+      for (const refusal of pruner.readCleanupRefusalSnapshot().refusals) {
+        observedIdentities.add(refusal.subject.identity);
+      }
+    }
+
+    expect(observedIdentities).toEqual(
+      new Set(files.map(({ name }) => shutdownRemainderFilesystemSubject(name).identity)),
+    );
+  });
+
+  it('does not let replacement cohorts overtake an older unreported refusal', () => {
+    const targetName = 'z-target.json';
+    const cohortFiles = (prefix: string) =>
+      Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
+        name: `${prefix}-${String(index).padStart(3, '0')}.json`,
+        value: '{not-json',
+        mtimeMs: index + 1,
+      }));
+    let refusePrune = true;
+    const storage = storageWith(
+      [
+        ...cohortFiles('a'),
+        {
+          name: targetName,
+          value: '{not-json',
+          mtimeMs: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1,
+        },
+      ],
+      { refusePruneWhen: () => refusePrune, pruneErrorCode: 'EACCES' },
+    );
     let scheduled: (() => void) | null = null;
     let now = Date.parse('2026-09-20T00:00:00.000Z');
     const pruner = createShutdownRemainderPruner({
@@ -1652,37 +1705,43 @@ describe('shutdown remainder status', () => {
     });
 
     expect(pruner.start()?.cleanup).toMatchObject({ kind: 'refused', refusals: expect.any(Array) });
-    for (let index = 0; index < SHUTDOWN_REMAINDER_SCAN_LIMIT; index += 1) {
-      const name = `a-${String(index).padStart(3, '0')}.json`;
-      storage.writeAtomicSync(join(REMAINDER_DIRECTORY, name), '{not-json');
-    }
+    expect(pruner.readCleanupRefusalSnapshot().refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(pruner.readCleanupRefusalSnapshot().refusals.map(({ subject }) => subject.identity)).not.toContain(
+      shutdownRemainderFilesystemSubject(targetName).identity,
+    );
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     const observedIdentities = new Set<string>();
-    for (let scheduledSnapshot = 0; scheduledSnapshot < 2; scheduledSnapshot += 1) {
+    let previousPrefix = 'a';
+    for (let scheduledSnapshot = 0; scheduledSnapshot < 12; scheduledSnapshot += 1) {
+      const nextPrefix = String.fromCharCode('b'.charCodeAt(0) + scheduledSnapshot);
+      refusePrune = false;
+      for (const { name } of cohortFiles(previousPrefix)) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
+      for (const { name, value } of cohortFiles(nextPrefix)) {
+        storage.writeAtomicSync(join(REMAINDER_DIRECTORY, name), value);
+      }
+      refusePrune = true;
+      previousPrefix = nextPrefix;
       now += 60_000;
       periodic();
       const snapshot = pruner.readCleanupRefusalSnapshot();
       expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
       expect(snapshot).toMatchObject({
         resolvedRefusalCount: 0,
-        absentRefusalCount: 0,
+        absentRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
         unobservableRefusalCount: 0,
         uncheckedRefusalCount: 0,
-        overflowedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
+        overflowedRefusalCount: 1,
         retry: { state: 'scheduled', owner: 'coordinator' },
       });
       for (const refusal of snapshot.refusals) observedIdentities.add(refusal.subject.identity);
     }
 
-    const expectedIdentities = new Set(
-      storage.fileNames().map((name) => shutdownRemainderFilesystemSubject(name).identity),
-    );
-    expect(observedIdentities).toEqual(expectedIdentities);
-    expect(storage.fileNames()).toContain('z-000.json');
+    expect(observedIdentities).toContain(shutdownRemainderFilesystemSubject(targetName).identity);
+    expect(storage.fileNames()).toContain(targetName);
     expect(
-      vi.mocked(storage.unlinkSync).mock.calls.filter(([path]) => basename(String(path)) === 'z-000.json'),
-    ).toHaveLength(3);
+      vi.mocked(storage.unlinkSync).mock.calls.filter(([path]) => basename(String(path)) === targetName),
+    ).toHaveLength(13);
   });
 
   it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
@@ -1999,8 +2058,8 @@ describe('shutdown remainder status', () => {
 
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [
-        cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO'),
         cleanupRefusal('corrupt.json', 'delete'),
+        cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO'),
       ],
       resolvedRefusalCount: 0,
       absentRefusalCount: 0,

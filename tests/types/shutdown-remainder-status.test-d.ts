@@ -68,8 +68,8 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].owner'
   | 'unusableEntryCount'
   | 'futureDatedRecordCount'
-  | 'unreadableRecordSubjects[].identity'
-  | 'unreadableRecordSubjects[].label'
+  | 'unusableRecordSubjects[].identity'
+  | 'unusableRecordSubjects[].label'
   | 'enumeration.kind'
   | 'enumeration.reason';
 
@@ -77,8 +77,8 @@ type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
   | 'record.entries[].remainder.evidence.processes[].jobId'
-  | 'unreadableRecordSubjects[].identity'
-  | 'unreadableRecordSubjects[].label';
+  | 'unusableRecordSubjects[].identity'
+  | 'unusableRecordSubjects[].label';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -114,21 +114,21 @@ const skippedOwner: 'process-exit' | 'successor-recovery' | null = skippedEntry.
 void skippedOwner;
 // @ts-expect-error skipped persisted labels are absent from the status projection.
 void skippedEntry.label;
-// @ts-expect-error skipped record identities are absent from the status projection.
+// @ts-expect-error a skipped entry does not own a record identity; unusable record subjects are separate.
 void skippedEntry.recordInstanceId;
 
-declare const unreadableRecordSubjects: ShutdownRemainderStatus['unreadableRecordSubjects'];
-const unreadableRecordIdentity: string = unreadableRecordSubjects[0]?.identity ?? '';
-const unreadableRecordLabel: string = unreadableRecordSubjects[0]?.label ?? '';
-void unreadableRecordIdentity;
-void unreadableRecordLabel;
+declare const unusableRecordSubjects: ShutdownRemainderStatus['unusableRecordSubjects'];
+const unusableRecordIdentity: string = unusableRecordSubjects[0]?.identity ?? '';
+const unusableRecordLabel: string = unusableRecordSubjects[0]?.label ?? '';
+void unusableRecordIdentity;
+void unusableRecordLabel;
 declare const unusableEntryCount: ShutdownRemainderStatus['unusableEntryCount'];
 void unusableEntryCount;
 // @ts-expect-error cleanup refusals are produced only by the scan-failed variant.
 declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
 void cleanupRefusals;
 // @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
-// unreadable subject list and class counts cross.
+// unusable subject list and class counts cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;
 

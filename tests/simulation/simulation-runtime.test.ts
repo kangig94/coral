@@ -264,6 +264,23 @@ describe('simulation runtime', () => {
     }
   });
 
+  it('accepts the full StoragePath contract on concrete in-memory storage methods', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const source = '/tmp/sim/buffer-source';
+    const destination = '/tmp/sim/buffer-destination';
+    storage.writeFileSync(source, 'content');
+
+    expect(storage.readFileSync(Buffer.from(source), 'utf-8')).toBe('content');
+    expect(storage.statSync(Buffer.from(source)).isFile()).toBe(true);
+    expect(storage.statSync(Buffer.from(source), { bigint: true }).isFile()).toBe(true);
+    expect(storage.lstatSync(Buffer.from(source)).isFile()).toBe(true);
+    expect(storage.lstatSync(Buffer.from(source), { bigint: true }).isFile()).toBe(true);
+
+    storage.renameSync(Buffer.from(source), Buffer.from(destination));
+    storage.unlinkSync(Buffer.from(destination));
+    expect(storage.existsSync(destination)).toBe(false);
+  });
+
   it('matches real descriptor behavior when rename replaces its pathname', () => {
     const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-rename-overwrite-'));
     const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
