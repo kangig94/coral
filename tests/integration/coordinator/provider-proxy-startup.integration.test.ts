@@ -52,7 +52,6 @@ import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import type { StorageBigIntStat, StorageEntryKind, StoragePort, TimePort, TimerHandle } from '#src/infra/port-types.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { ProcessPort, Runtime } from '#src/runtime/ports.js';
-import { ProviderOperationTerminalizationUnavailableError } from '#src/jobs/provider-operation-terminalization.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
@@ -1052,7 +1051,7 @@ async function capsuleRetirementStartupCase(mode: 'unlink-throws' | 'directory-s
   return result;
 }
 
-async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'unavailable' | 'metadata') {
+async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'metadata') {
   const record = providerOperationRecord('executing');
   const time = new VirtualTime();
   const scheduled = vi.spyOn(time, 'setTimeout');
@@ -1111,7 +1110,6 @@ async function terminalizationUncertaintyStartupCase(mode: 'atomic-unknown' | 'u
       : {
           ...validMetadata,
           commit: () => {
-            if (mode === 'unavailable') throw new ProviderOperationTerminalizationUnavailableError();
             throw new Error('atomic-terminalization-sentinel');
           },
         };
@@ -1209,7 +1207,7 @@ describe('provider proxy startup set recovery', () => {
       proofCalls: proof.mock.calls.length,
       redemptionCalls: redemption.mock.calls.length,
       retirementCalls: retirement.mock.calls.length,
-      retrySchedules: scheduled.mock.calls.length,
+      scheduleDelays: scheduled.mock.calls.map(([, delayMs]) => delayMs),
       represented: snapshot.represented,
       states: snapshot.states,
       admission: lifecycle.beginFreshAcquisition('restored-admission', {
@@ -1220,7 +1218,7 @@ describe('provider proxy startup set recovery', () => {
       proofCalls: 1,
       redemptionCalls: 1,
       retirementCalls: 1,
-      retrySchedules: 0,
+      scheduleDelays: [60_000],
       represented: 0,
       states: [],
       admission: 'accepted',
@@ -1268,7 +1266,7 @@ describe('provider proxy startup set recovery', () => {
     await drainMicrotasks();
     const beforeAbort = {
       setBVisits: setBVisits.mock.calls.length,
-      retrySchedules: scheduled.mock.calls.length,
+      scheduleDelays: scheduled.mock.calls.map(([, delayMs]) => delayMs),
       settled,
     };
     abort.abort(new Error('startup delivery mutation observation complete'));
@@ -1276,7 +1274,7 @@ describe('provider proxy startup set recovery', () => {
 
     expect({ ...beforeAbort, outcome: outcome.kind }).toEqual({
       setBVisits: 1,
-      retrySchedules: 1,
+      scheduleDelays: [60_000, 1_000],
       settled: true,
       outcome: 'fulfilled',
     });
@@ -1287,7 +1285,6 @@ describe('provider proxy startup set recovery', () => {
       ]),
     );
     expect(lifecycle.snapshot()).toMatchObject({ states: expect.arrayContaining(['absence-delivery-pending']) });
-    expect(scheduled).toHaveBeenCalledOnce();
   });
 
   it('continues to set B after persistent capsule-retirement failure', async () => {
@@ -1337,7 +1334,7 @@ describe('provider proxy startup set recovery', () => {
     await drainMicrotasks();
     const beforeAbort = {
       setBVisits: setBVisits.mock.calls.length,
-      retrySchedules: scheduled.mock.calls.length,
+      scheduleDelays: scheduled.mock.calls.map(([, delayMs]) => delayMs),
       settled,
     };
     abort.abort(new Error('startup retirement mutation observation complete'));
@@ -1345,7 +1342,7 @@ describe('provider proxy startup set recovery', () => {
 
     expect({ ...beforeAbort, outcome: outcome.kind }).toEqual({
       setBVisits: 1,
-      retrySchedules: 1,
+      scheduleDelays: [60_000, 1_000],
       settled: true,
       outcome: 'fulfilled',
     });
@@ -1358,7 +1355,6 @@ describe('provider proxy startup set recovery', () => {
       ]),
     );
     expect(lifecycle.snapshot()).toMatchObject({ states: expect.arrayContaining(['absence-delivery-pending']) });
-    expect(scheduled).toHaveBeenCalledOnce();
   });
 
   it('aborts while disappearance initial disposition is pending', async () => {
@@ -1465,7 +1461,6 @@ describe('provider proxy startup set recovery', () => {
 describe('production provider proxy startup classification', () => {
   it('classifies terminalization uncertainty only with causal retry safety', async () => {
     const atomic = await terminalizationUncertaintyStartupCase('atomic-unknown');
-    const unavailable = await terminalizationUncertaintyStartupCase('unavailable');
     const metadata = await terminalizationUncertaintyStartupCase('metadata');
     const role = await roleRecoveryStartupCase('protocol-violation');
 
@@ -1477,14 +1472,6 @@ describe('production provider proxy startup classification', () => {
         slotRetained: atomic.slotRetained,
         absenceRetryIncidents: atomic.absenceRetryIncidents,
         deliveryTimers: atomic.deliveryTimers,
-      },
-      unavailable: {
-        outcome: unavailable.outcome.kind,
-        fatalCalls: unavailable.fatalCalls,
-        rowSurvives: unavailable.rowSurvives,
-        slotRetained: unavailable.slotRetained,
-        absenceRetryIncidents: unavailable.absenceRetryIncidents,
-        deliveryTimers: unavailable.deliveryTimers,
       },
       metadata: {
         outcome: metadata.outcome.kind,
@@ -1499,14 +1486,6 @@ describe('production provider proxy startup classification', () => {
       },
     }).toEqual({
       atomic: {
-        outcome: 'fulfilled',
-        fatalCalls: 0,
-        rowSurvives: true,
-        slotRetained: true,
-        absenceRetryIncidents: 1,
-        deliveryTimers: 1,
-      },
-      unavailable: {
         outcome: 'fulfilled',
         fatalCalls: 0,
         rowSurvives: true,

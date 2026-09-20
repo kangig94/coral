@@ -50,17 +50,6 @@ export class ProviderOperationTerminalMetadataError extends Error {
   }
 }
 
-export class ProviderOperationTerminalizationUnavailableError extends Error {
-  readonly incident: Readonly<{ kind: 'provider-operation-terminalization-unavailable' }>;
-
-  constructor(options?: ErrorOptions) {
-    super('Provider operation terminalization store is temporarily unavailable.', options);
-    this.name = 'ProviderOperationTerminalizationUnavailableError';
-    this.incident = { kind: 'provider-operation-terminalization-unavailable' };
-    Object.setPrototypeOf(this, ProviderOperationTerminalizationUnavailableError.prototype);
-  }
-}
-
 export class ProviderOperationAtomicTerminalizationError extends Error {
   readonly operation: ProviderOperationIdentity;
   readonly proof = 'atomic-provider-operation-terminalization' as const;
@@ -176,12 +165,7 @@ export function terminalizeProviderOperation(
       return undefined;
     });
   } catch (error: unknown) {
-    if (
-      error instanceof ProviderOperationJournalError ||
-      error instanceof ProviderOperationTerminalizationUnavailableError
-    ) {
-      throw error;
-    }
+    if (error instanceof ProviderOperationJournalError) throw error;
     throw new ProviderOperationAtomicTerminalizationError(record.operation, error);
   }
 

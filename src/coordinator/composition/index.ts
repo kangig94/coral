@@ -195,6 +195,8 @@ function providerProxySetContainBooleanClaimDischarge(
       return { kind: 'initial-disposition-retry-owned' };
     case 'operational-retry-owned':
       return { kind: discharge.kind, incidents: discharge.incidents };
+    case 'released-undischarged':
+      return discharge;
     default:
       return assertNever(discharge);
   }

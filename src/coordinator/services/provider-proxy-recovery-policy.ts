@@ -2,7 +2,6 @@ import type { TimePort } from '../../infra/port-types.js';
 import {
   ProviderOperationAtomicTerminalizationError,
   ProviderOperationTerminalMetadataError,
-  ProviderOperationTerminalizationUnavailableError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
 import type { HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
@@ -481,9 +480,6 @@ function classifyRejection(
     return unavailable(producerId, foreignCapsuleRetirementRejection(error));
   }
   if (producerId === 'disappearance-terminalization') {
-    if (error instanceof ProviderOperationTerminalizationUnavailableError) {
-      return unavailable(producerId, error.incident);
-    }
     if (error instanceof ProviderOperationAtomicTerminalizationError) {
       return retrySafeTerminalizationUnknown(error);
     }

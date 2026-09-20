@@ -577,8 +577,6 @@ describe('runShutdownSequence drain budget', () => {
       retryCadenceMs: 1_000,
       settlementBoundMs: 60_000,
       retryAction: 'release-representation' as const,
-      exhaustionSuccessor: 'durable-representation-release-reconciliation' as const,
-      terminalExit: 'representation-released-or-durable-reconciliation' as const,
     };
     const representationReleaseSettlement = Promise.resolve({
       kind: 'fatal-successor-pending' as const,

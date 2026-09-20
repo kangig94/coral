@@ -256,8 +256,6 @@ function formatProviderProxySetOperatorRefusalGuidance(
         'Next step: run the abandon command below; this accepts the unresolved representation release without retrying its fatal operation.',
         abandon,
       ].join('\n');
-    case 'representation-release-retry-exhausted':
-      return 'No command is required: the bounded delivery window ended and durable representation-release reconciliation owns the remainder.';
     default:
       return assertNever(ground);
   }
@@ -276,6 +274,8 @@ function formatProviderProxySetClaimDischarge(
       return `Claim discharge has not reached an initial disposition; Coral still represents the set until ${discharge.exit}.`;
     case 'initial-disposition-retry-owned':
       return 'Claim discharge has not reached an initial disposition; the coordinator still owns retry and still represents the set.';
+    case 'released-undischarged':
+      return `Claim discharge did not complete within the representation-release settlement bound; Coral released the set representation and the surviving ${discharge.witness} is re-driven by ${discharge.driver}.`;
     case 'operational-retry-owned':
       return 'exit' in discharge
         ? `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s) with exit=${discharge.exit}; Coral still represents the set until every successor accepts and capsule retirement completes.`
@@ -1825,7 +1825,7 @@ export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus):
     case 'unavailable':
       return 'disposition=unavailable';
     case 'representation-release':
-      return `disposition=automatic owner=${disposition.owner} retryCadenceMs=${Math.ceil(disposition.retryCadenceMs)} settlementBoundMs=${Math.ceil(disposition.settlementBoundMs)} retryAction=${disposition.retryAction} exhaustionSuccessor=${disposition.exhaustionSuccessor} terminalExit=${disposition.terminalExit}`;
+      return `disposition=automatic owner=${disposition.owner} retryCadenceMs=${Math.ceil(disposition.retryCadenceMs)} settlementBoundMs=${Math.ceil(disposition.settlementBoundMs)} retryAction=${disposition.retryAction}`;
     case 'control-or-containment':
     case 'exact-containment':
     case 'durable-reconciliation':

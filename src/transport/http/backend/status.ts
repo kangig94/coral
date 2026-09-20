@@ -106,7 +106,6 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'ProviderOperationJournalError',
   'ProviderOperationReconcilerFatalError',
   'ProviderOperationRecordCodecError',
-  'ProviderOperationTerminalizationUnavailableError',
   'ProviderOperationTerminalMetadataError',
   'ProviderProxyEndpointError',
   'ProviderProxyOperationControlHeldError',

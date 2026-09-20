@@ -284,17 +284,13 @@ function parseProviderProxySetAutonomousDisposition(value: unknown): ProviderPro
     return value.owner === 'coordinator' &&
       isNonNegativeFiniteNumber(value.retryCadenceMs) &&
       isNonNegativeFiniteNumber(value.settlementBoundMs) &&
-      value.retryAction === 'release-representation' &&
-      value.exhaustionSuccessor === 'durable-representation-release-reconciliation' &&
-      value.terminalExit === 'representation-released-or-durable-reconciliation'
+      value.retryAction === 'release-representation'
       ? {
           kind: value.kind,
           owner: value.owner,
           retryCadenceMs: value.retryCadenceMs,
           settlementBoundMs: value.settlementBoundMs,
           retryAction: value.retryAction,
-          exhaustionSuccessor: value.exhaustionSuccessor,
-          terminalExit: value.terminalExit,
         }
       : null;
   }

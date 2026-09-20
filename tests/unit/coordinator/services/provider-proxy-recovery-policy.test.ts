@@ -1,9 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  ProviderOperationAtomicTerminalizationError,
-  ProviderOperationTerminalizationUnavailableError,
-} from '#src/jobs/provider-operation-terminalization.js';
+import { ProviderOperationAtomicTerminalizationError } from '#src/jobs/provider-operation-terminalization.js';
 import { ProviderProxyRoleControlUnavailableError } from '#src/coordinator/live/provider-proxy/role-control.js';
 import {
   type ProviderProxyRecoveryConsumerSeam,
@@ -706,12 +703,6 @@ describe('provider proxy recovery producer classification', () => {
       observe('disappearance-terminalization', {
         kind: 'throw',
         error: new ProviderOperationAtomicTerminalizationError(record.operation, new Error('atomic-unknown')),
-      }),
-    ).resolves.toEqual({ evidence: 0, retry: 1, localFatal: 0, globalFatal: 0 });
-    await expect(
-      observe('disappearance-terminalization', {
-        kind: 'throw',
-        error: new ProviderOperationTerminalizationUnavailableError(),
       }),
     ).resolves.toEqual({ evidence: 0, retry: 1, localFatal: 0, globalFatal: 0 });
     await expect(observe('role-control', { kind: 'throw', error: unavailable })).resolves.toEqual({

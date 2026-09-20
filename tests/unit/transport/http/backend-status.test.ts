@@ -657,7 +657,7 @@ describe('getBackendStatusFull record disposition', () => {
             cause: 'rejected',
             error: {
               kind: 'error',
-              name: 'ProviderOperationTerminalizationUnavailableError',
+              name: 'ProviderOperationTerminalMetadataError',
               code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
               message: 'bounded identifier fixture',
             },
@@ -680,7 +680,7 @@ describe('getBackendStatusFull record disposition', () => {
     expect(recentShutdownRemainder(result)?.record.entries[0]?.settlement ?? null).toEqual({
       cause: 'rejected',
       error: {
-        name: 'ProviderOperationTerminalizationUnavailableError',
+        name: 'ProviderOperationTerminalMetadataError',
         code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
       },
     });

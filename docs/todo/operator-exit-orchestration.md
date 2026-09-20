@@ -18,8 +18,9 @@ that still authorizes.
 
 **"Returns a settled-looking result for a held release."** The settled kinds are minted only after an
 evidence-backed commit, with the fatal case diverted first, and the release obligation is not hidden
-beside the success: every non-completed claim discharge names its own exit, and the CLI refuses exit 0
-for anything but a completed one.
+beside the success: every non-completed claim discharge names what comes next — an `exit` while the
+release is still held, or the surviving witness and its driver once the settlement bound has released the
+slot undischarged — and the CLI refuses exit 0 for anything but a completed one.
 
 Two narrower hazards the reports did not name were found in the same pass and closed: a currentness
 dispatch that fell through to "current" for an unrecognised member, and a retention that was two calls
