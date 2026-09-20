@@ -545,12 +545,20 @@ export class InMemoryStorage implements StoragePort {
   }
 
   readdirSync(path: string): string[];
+  readdirSync(path: string, options: { encoding: 'buffer' }): Buffer[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
-  readdirSync(path: string, options?: { withFileTypes: true }): string[] | DirentLike[] {
+  readdirSync(
+    path: string,
+    options?: { withFileTypes: true } | { encoding: 'buffer' },
+  ): string[] | Buffer[] | DirentLike[] {
     const normalized = normalizePathForStorage(path);
     this.requireDirectory(normalized);
 
     const sortedNames = [...(this.childIndex.get(normalized) ?? [])].sort((left, right) => left.localeCompare(right));
+
+    if (options !== undefined && 'encoding' in options) {
+      return sortedNames.map((name) => Buffer.from(name));
+    }
 
     if (options?.withFileTypes === true) {
       return sortedNames.map((name) => {
@@ -569,11 +577,29 @@ export class InMemoryStorage implements StoragePort {
   readDirectoryBoundedSync(
     path: string,
     limit: number,
-  ): { readonly entries: readonly string[]; readonly overflow: boolean } {
+    options: { encoding: 'buffer' },
+  ): { readonly entries: readonly Buffer[]; readonly omittedEntryCount: number };
+  readDirectoryBoundedSync(
+    path: string,
+    limit: number,
+  ): { readonly entries: readonly string[]; readonly overflow: boolean };
+  readDirectoryBoundedSync(
+    path: string,
+    limit: number,
+    options?: { encoding: 'buffer' },
+  ):
+    | { readonly entries: readonly Buffer[]; readonly omittedEntryCount: number }
+    | { readonly entries: readonly string[]; readonly overflow: boolean } {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new TypeError('Directory entry limit must be a non-negative safe integer.');
     }
     const entries = this.readdirSync(path);
+    if (options !== undefined) {
+      return {
+        entries: entries.slice(0, limit).map((name) => Buffer.from(name)),
+        omittedEntryCount: Math.max(0, entries.length - limit),
+      };
+    }
     return {
       entries: entries.slice(0, limit),
       overflow: entries.length > limit,
