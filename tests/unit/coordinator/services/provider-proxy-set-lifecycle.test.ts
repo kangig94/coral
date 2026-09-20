@@ -794,6 +794,7 @@ async function authorizedOperatorExitForProof(
     lifecycle: ProviderProxySetLifecycle;
     mutationFence: ProviderOperationMutationSetFence;
     stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'];
+    clock: ManualClock;
   }>
 > {
   const claims = new ProviderProxySetClaimMirror();
@@ -843,7 +844,7 @@ async function authorizedOperatorExitForProof(
     throw new Error(`expected authorization, received ${authorization.kind}`);
   }
   if (mutationFence === null) throw new Error('operator exit did not acquire a mutation fence');
-  return { capability: authorization.capability, lifecycle, mutationFence, stopAndReap };
+  return { capability: authorization.capability, lifecycle, mutationFence, stopAndReap, clock };
 }
 
 function capsuleFor(
@@ -5411,6 +5412,23 @@ describe('ProviderProxySetLifecycle', () => {
     expect(proveContainmentAbsent).toHaveBeenCalledOnce();
   });
 
+  it('releases the mutation fence and permits a repeated handback when timer installation throws', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, clock, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(clock, 'setTimeout').mockImplementationOnce(() => {
+      throw new Error('timer installation failed');
+    });
+
+    expect(() => capability.handback()).toThrow('timer installation failed');
+    expect(mutationFence.isHeld()).toBe(false);
+    expect(() => capability.handback()).not.toThrow();
+    expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
+  });
+
   it('returns a pending claim disposition when exact-absence delivery has not settled', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -5625,7 +5643,7 @@ describe('ProviderProxySetLifecycle', () => {
             ? {
                 kind: 'representation-release-abandoned',
                 setIdentity: address,
-                successor: { owner: 'operator-command', acceptance: 'accepted' },
+                successor: { owner: 'coordinator', acceptance: 'accepted' },
                 effect: { ...releaseStartedEffect, representationAction: 'fatal-release-abandoned' },
               }
             : {

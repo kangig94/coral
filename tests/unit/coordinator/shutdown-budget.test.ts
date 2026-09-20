@@ -2864,16 +2864,26 @@ describe('required provider-proxy shutdown steps', () => {
       privateDetail: 'record publication returned false',
     },
     {
-      label: 'throws',
+      label: 'throws EACCES',
       write: () => {
-        throw new Error('remainder storage unavailable\n/private/remainder-path');
+        throw Object.assign(new Error('remainder storage unavailable\n/private/remainder-path'), { code: 'EACCES' });
       },
       expectedCode: 'filesystem-operation-failed',
+      expectedErrno: 'EACCES',
       privateDetail: '/private/remainder-path',
+    },
+    {
+      label: 'throws ENOSPC',
+      write: () => {
+        throw Object.assign(new Error('remainder storage full\n/private/full-volume'), { code: 'ENOSPC' });
+      },
+      expectedCode: 'filesystem-operation-failed',
+      expectedErrno: 'ENOSPC',
+      privateDetail: '/private/full-volume',
     },
   ])(
     'withdraws discovery and requests nonzero exit when the remainder write $label',
-    async ({ write, expectedCode, privateDetail }) => {
+    async ({ write, expectedCode, expectedErrno, privateDetail }) => {
       const harness = buildRemainderWriteRefusalHarness(write, { kind: 'removed' }, rejectingHook);
 
       await expect(harness.controller.shutdown('replaced')).resolves.toMatchObject({
@@ -2887,6 +2897,12 @@ describe('required provider-proxy shutdown steps', () => {
       expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'exit:1']);
       expect(harness.logLines.some((line) => line.includes('shutdown remainder write refused'))).toBe(true);
       expect(harness.logLines.some((line) => line.includes(`code=${expectedCode}`))).toBe(true);
+      expect(harness.logLines.some((line) => line.includes(`errno=${expectedErrno ?? 'unavailable'}`))).toBe(true);
+      expect(
+        harness.logLines.some((line) =>
+          line.includes(`errorName=${expectedErrno === undefined ? 'unavailable' : 'Error'}`),
+        ),
+      ).toBe(true);
       expect(harness.logLines.some((line) => line.includes(privateDetail))).toBe(false);
     },
   );
@@ -2936,7 +2952,7 @@ describe('required provider-proxy shutdown steps', () => {
 
     expect(harness.order).toEqual(['stopped', 'withdraw', 'record', 'exit:1']);
     expect(harness.logLines).toContain(
-      `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed correlation=${unlinkDeniedCorrelation}\n`,
+      `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed errno=EACCES errorName=Error correlation=${unlinkDeniedCorrelation}\n`,
     );
     expect(harness.logLines.join('')).not.toContain('/private/path');
     await expect(harness.controller.shutdown('replaced')).resolves.toBe(first);
@@ -2957,7 +2973,7 @@ describe('required provider-proxy shutdown steps', () => {
     expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'record', 'exit:1']);
     expect(harness.logLines.filter((line) => line.includes('shutdown remainder write refused'))).toHaveLength(2);
     expect(harness.logLines).toContain(
-      `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed correlation=${unlinkDeniedCorrelation}\n`,
+      `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed errno=EACCES errorName=Error correlation=${unlinkDeniedCorrelation}\n`,
     );
   });
 
@@ -2979,7 +2995,7 @@ describe('required provider-proxy shutdown steps', () => {
     expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'record', 'exit:1']);
     expect(harness.logLines.filter((line) => line.includes('shutdown remainder write refused'))).toEqual([
       expect.stringMatching(
-        /^shutdown remainder write refused operation=publish code=write-returned-false correlation=[a-f0-9]{64}\n$/u,
+        /^shutdown remainder write refused operation=publish code=write-returned-false errno=unavailable errorName=unavailable correlation=[a-f0-9]{64}\n$/u,
       ),
     ]);
   });
@@ -3057,7 +3073,7 @@ describe('required provider-proxy shutdown steps', () => {
       }),
     );
     expect(logLines).toContain(
-      `backend discovery withdrawal refused operation=read code=filesystem-operation-failed correlation=${'c'.repeat(64)}\n`,
+      `backend discovery withdrawal refused operation=read code=filesystem-operation-failed errno=EACCES errorName=Error correlation=${'c'.repeat(64)}\n`,
     );
     expect(logLines.join('')).not.toContain('discovery read denied');
   });

@@ -400,6 +400,10 @@ function bestEffortLifecycleLog(log: (message: string) => void, message: string)
   }
 }
 
+function lifecycleDiagnosticFields(diagnostic: SerializedThrown): string {
+  return `errno=${diagnostic.code ?? 'unavailable'} errorName=${diagnostic.kind === 'error' ? diagnostic.name : 'unavailable'}`;
+}
+
 function bestEffortLifecycleWarning(message: string): void {
   try {
     backendLog.warn(message);
@@ -1351,7 +1355,7 @@ async function runLifecycleStartup({
     const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
     if (withdrawal !== undefined && withdrawal.kind === 'refused') {
       backendLog.error(
-        `backend discovery withdrawal refused during startup-failure cleanup operation=${withdrawal.operation} code=${withdrawal.code} correlation=${withdrawal.correlation}`,
+        `backend discovery withdrawal refused during startup-failure cleanup operation=${withdrawal.operation} code=${withdrawal.code} ${lifecycleDiagnosticFields(withdrawal.error)} correlation=${withdrawal.correlation}`,
       );
     }
 
@@ -1505,13 +1509,13 @@ export function createLifecycle(
             case 'refused':
               bestEffortLifecycleLog(
                 log,
-                `shutdown remainder write refused operation=${publication.operation} code=${publication.code} correlation=${publication.correlation}\n`,
+                `shutdown remainder write refused operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
               );
               return;
             case 'verification-unavailable':
               bestEffortLifecycleLog(
                 log,
-                `shutdown remainder publication verification unavailable operation=${publication.operation} code=${publication.code} correlation=${publication.correlation}\n`,
+                `shutdown remainder publication verification unavailable operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
               );
               return;
           }
@@ -1520,7 +1524,7 @@ export function createLifecycle(
           const correlation = sha256Hex(`publish\0unexpected-exception\0${JSON.stringify(diagnostic)}`);
           bestEffortLifecycleLog(
             log,
-            `shutdown remainder write refused operation=publish code=unexpected-exception correlation=${correlation}\n`,
+            `shutdown remainder write refused operation=publish code=unexpected-exception ${lifecycleDiagnosticFields(diagnostic)} correlation=${correlation}\n`,
           );
         }
       };
@@ -1550,7 +1554,7 @@ export function createLifecycle(
         if (refusal !== null) {
           bestEffortLifecycleLog(
             log,
-            `backend discovery withdrawal refused operation=${refusal.operation} code=${refusal.code} correlation=${refusal.correlation}\n`,
+            `backend discovery withdrawal refused operation=${refusal.operation} code=${refusal.code} ${lifecycleDiagnosticFields(refusal.error)} correlation=${refusal.correlation}\n`,
           );
           losses.push({
             label: 'backend discovery withdrawal',

@@ -354,7 +354,7 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
     .object({
       kind: z.literal('representation-release-abandoned'),
       ...providerProxySetContainResultBase,
-      successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
+      successor: z.object({ owner: z.literal('coordinator'), acceptance: z.literal('accepted') }).strict(),
     })
     .strict(),
   z

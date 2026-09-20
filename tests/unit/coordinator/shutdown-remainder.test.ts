@@ -69,6 +69,7 @@ function storageWith(
     refusePruneWhen?: (name: string, attempt: number) => boolean;
     disappearDuringPruneWhen?: (name: string, attempt: number) => boolean;
     pruneErrorCode?: string;
+    refuseStat?: boolean;
     refuseStatFor?: string;
     statErrorCode?: string;
     refuseLstatFor?: string;
@@ -147,7 +148,7 @@ function storageWith(
     }) as StoragePort['readFileSync'],
     statSync: vi.fn((rawPath: StoragePath, statOptions?: { bigint: true }) => {
       const path = String(rawPath);
-      if (basename(path) === options.refuseStatFor) {
+      if (options.refuseStat === true || basename(path) === options.refuseStatFor) {
         throw Object.assign(new Error('stat refused'), { code: options.statErrorCode ?? 'EIO' });
       }
       if (directories.has(path)) {
@@ -373,7 +374,11 @@ function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(i
   return { name: `${instanceId}.json`, value: JSON.stringify(value), mtimeMs };
 }
 
-function cleanupRefusal(subject: string, operation: 'delete' | 'promote' | 'scan-directory', code?: string) {
+function cleanupRefusal(
+  subject: string,
+  operation: 'delete' | 'inspect-age' | 'promote' | 'scan-directory',
+  code?: string,
+) {
   return {
     subject: {
       ...shutdownRemainderFilesystemSubject(subject),
@@ -1168,15 +1173,19 @@ describe('shutdown remainder status', () => {
     expect(storage.unlinkSync).toHaveBeenCalledTimes(2);
   });
 
-  it('does not delete a record it cannot stat while the retention cap is not exceeded', () => {
+  it('retains and refuses a record whose age cannot be inspected while the retention cap is not exceeded', () => {
     const storage = storageWith([fileAt('readable', 1), fileAt('unstattable', 2)], {
       refuseStatFor: 'unstattable.json',
       statErrorCode: 'EIO',
     });
 
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+    const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(storage.fileNames()).toEqual(['readable.json', 'unstattable.json']);
+    expect(disposition.cleanup).toEqual({
+      kind: 'refused',
+      refusals: [cleanupRefusal('unstattable.json', 'inspect-age', 'EIO')],
+    });
   });
 
   it('retains an unstattable readable record until its age becomes observable', () => {
@@ -1187,9 +1196,9 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toHaveLength(32);
     expect(storage.fileNames()).toContain('unstattable.json');
-    expect(storage.fileNames()).toContain('instance-0.json');
+    expect(storage.fileNames()).not.toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-31.json');
   });
 
@@ -1201,11 +1210,51 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toHaveLength(32);
     expect(storage.fileNames()).toContain('unstattable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
-    expect(storage.fileNames()).toContain('instance-1.json');
+    expect(storage.fileNames()).not.toContain('instance-1.json');
     expect(storage.fileNames()).toContain('instance-32.json');
+  });
+
+  it('bounds repeated publications when every readable record age remains unobservable', () => {
+    const storage = storageWith([], { refuseStat: true, statErrorCode: 'EIO' });
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+    pruner.start();
+
+    for (let index = 0; index < 40; index += 1) {
+      expect(
+        recordShutdownRemainder(writeRuntime(storage), {
+          instanceId: `unobservable-${String(index).padStart(3, '0')}`,
+          reason: 'sigterm',
+          mode: 'handoff',
+          undischarged: [KNOWN_LOSS],
+        }),
+      ).toEqual({ kind: 'published' });
+      const periodic = scheduled as (() => void) | null;
+      if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+      periodic();
+    }
+
+    expect(storage.fileNames()).toHaveLength(32);
+    expect(pruner.readCleanupRefusalSnapshot()).toMatchObject({
+      refusals: Array.from({ length: 32 }, () =>
+        expect.objectContaining({ cause: { kind: 'system-error', operation: 'inspect-age', code: 'EIO' } }),
+      ),
+      retry: { state: 'scheduled', owner: 'coordinator' },
+    });
+    pruner.stop();
   });
 
   it('prunes only the oldest known records once they exceed the cap and quarantines an unreadable record', () => {

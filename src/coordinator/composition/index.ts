@@ -1220,7 +1220,7 @@ export function createCoordinatorCore(
           return {
             kind: 'representation-release-abandoned',
             setIdentity: request.setIdentity,
-            successor: { owner: 'operator-command', acceptance: 'accepted' },
+            successor: { owner: 'coordinator', acceptance: 'accepted' },
             effect: {
               signalsSent: [],
               containmentAbsent: false,
@@ -1260,7 +1260,11 @@ export function createCoordinatorCore(
         ? await lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
         : await lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
     } finally {
-      authorization.capability.handback();
+      try {
+        authorization.capability.handback();
+      } catch {
+        authorization.capability.handback();
+      }
     }
   };
 

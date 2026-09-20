@@ -791,7 +791,7 @@ function parseShutdownRemainderCleanupRefusal(value: unknown): ShutdownRemainder
   const operation = value.cause.operation;
   if (
     !isShutdownRemainderFilesystemSubject(value.subject) ||
-    (operation !== 'delete' && operation !== 'promote' && operation !== 'scan-directory')
+    (operation !== 'delete' && operation !== 'inspect-age' && operation !== 'promote' && operation !== 'scan-directory')
   ) {
     return null;
   }

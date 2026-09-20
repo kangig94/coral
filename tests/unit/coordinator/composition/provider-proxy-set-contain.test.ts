@@ -359,6 +359,17 @@ describe('provider proxy set operator RPC composition', () => {
     expect(handback).toHaveBeenCalledOnce();
   });
 
+  it('preserves a proof-collection error when handback rearming transiently throws', async () => {
+    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
+    vi.spyOn(harness.prover, 'collectContainmentProof').mockRejectedValue(new Error('proof collection failed'));
+    handback.mockImplementationOnce(() => {
+      throw new Error('timer installation failed');
+    });
+
+    await expect(harness.contain({ setIdentity: address, mode: 'contain' })).rejects.toThrow('proof collection failed');
+    expect(handback).toHaveBeenCalledTimes(2);
+  });
+
   it.each<Readonly<{ evidence: ProviderProxySetContainmentEvidence; result: ProviderProxySetOperatorExitResult }>>([
     {
       evidence: {

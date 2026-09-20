@@ -164,8 +164,15 @@ const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LI
 export type ShutdownRemainderCleanupRefusal = Readonly<{
   subject: ShutdownRemainderCleanupSubject;
   cause:
-    | Readonly<{ kind: 'system-error'; operation: 'delete' | 'promote' | 'scan-directory'; code: string }>
-    | Readonly<{ kind: 'unclassified-error'; operation: 'delete' | 'promote' | 'scan-directory' }>;
+    | Readonly<{
+        kind: 'system-error';
+        operation: 'delete' | 'inspect-age' | 'promote' | 'scan-directory';
+        code: string;
+      }>
+    | Readonly<{
+        kind: 'unclassified-error';
+        operation: 'delete' | 'inspect-age' | 'promote' | 'scan-directory';
+      }>;
 }>;
 
 /** ENOENT is absence; every other cleanup failure retains only a bounded errno identifier. */

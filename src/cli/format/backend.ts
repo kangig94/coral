@@ -340,7 +340,7 @@ export function formatProviderProxySetContainResult(
     case 'representation-release-abandoned':
       return [
         `Provider proxy set ${token}'s fatal representation release was abandoned.`,
-        'Observed: the operator command accepted the unresolved representation-release remainder.',
+        `Observed: the ${result.successor.owner} accepted the unresolved representation-release remainder.`,
         'Not observed: successful delivery or capsule retirement; the fatal operation was not retried.',
         `Effect: ${effect}.`,
         'Next step: inspect backend status.',
@@ -1319,9 +1319,7 @@ function formatShutdownRemainderReport(
   }
   if (report?.status === 'shutdown_remainder_clock_skew') {
     lines.unshift(
-      (report.futureDatedRecordCount ?? 0) > 0
-        ? `Shutdown remainder clock-skew evidence: ${report.futureDatedRecordCount} readable record(s) are dated after this status observation.`
-        : 'Shutdown remainder clock-skew evidence: the record timestamp is outside the trusted recent window.',
+      `Shutdown remainder clock-skew evidence: ${report.futureDatedRecordCount ?? 0} readable record(s) are dated after this status observation.`,
     );
   }
   const directoryEvidence =

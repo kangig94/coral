@@ -34,6 +34,8 @@ import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 const MAX_SHUTDOWN_REMAINDER_RECORDS = 32;
 
+type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
+
 type ShutdownRemainderPruneStageObserver = (
   writer: ShutdownRemainderStageWriter,
   stageName: string,
@@ -133,10 +135,14 @@ export type ShutdownRemainderCleanupSnapshot = Readonly<{
 }>;
 
 function byRetentionOrder(
-  left: Readonly<{ name: string; mtimeMs: number }>,
-  right: Readonly<{ name: string; mtimeMs: number }>,
+  left: Readonly<{ name: string; age: RecordAge }>,
+  right: Readonly<{ name: string; age: RecordAge }>,
 ): number {
-  return right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name);
+  if (left.age.kind === 'known' && right.age.kind === 'known') {
+    return right.age.mtimeMs - left.age.mtimeMs || right.name.localeCompare(left.name);
+  }
+  if (left.age.kind !== right.age.kind) return left.age.kind === 'unknown' ? -1 : 1;
+  return right.name.localeCompare(left.name);
 }
 
 type CleanupRefusalCollection = {
@@ -426,7 +432,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       name: string;
       path: Buffer;
       rawName: Buffer;
-      mtimeMs: number;
+      age: RecordAge;
       incarnation?: ShutdownRemainderCleanupIncarnation;
     }[] = [];
     for (const { name, path, rawName } of initialNames) {
@@ -507,19 +513,33 @@ function pruneShutdownRemainderRecordsWithRefusals(
         }
         continue;
       }
-      if (previousCleanupRefusals.has(key)) resolvedCleanupSubjectNames.add(key);
-      let mtimeMs: number;
+      let age: RecordAge;
       try {
-        mtimeMs = runtime.storage.statSync(path).mtimeMs;
-      } catch {
-        continue;
+        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
+      } catch (error: unknown) {
+        age = { kind: 'unknown' };
+        if (
+          recordCleanupFailure(
+            cleanupRefusals,
+            key,
+            path,
+            rawName,
+            'inspect-age',
+            error,
+            subjectObservation.kind === 'observed' ? subjectObservation.incarnation : undefined,
+          ) === 'absent'
+        ) {
+          absentCleanupSubjectNames.add(key);
+          continue;
+        }
       }
+      if (age.kind === 'known' && previousCleanupRefusals.has(key)) resolvedCleanupSubjectNames.add(key);
       retentionCandidates.push({
         key,
         name,
         path,
         rawName,
-        mtimeMs,
+        age,
         ...(subjectObservation.kind === 'observed' ? { incarnation: subjectObservation.incarnation } : {}),
       });
     }

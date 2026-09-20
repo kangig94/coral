@@ -632,7 +632,7 @@ export type ProviderProxySetOperatorExitResult = (
   | Readonly<{
       kind: 'representation-release-abandoned';
       setIdentity: ProviderProxySetAddress;
-      successor: Readonly<{ owner: 'operator-command'; acceptance: 'accepted' }>;
+      successor: Readonly<{ owner: 'coordinator'; acceptance: 'accepted' }>;
     }>
   | Readonly<{
       kind: 'representation-release-abandonment-required';
@@ -1014,6 +1014,8 @@ export class ProviderProxySetLifecycle {
     ProviderProxySetFencedContainmentProofAuthorization
   >();
   readonly #settledOperatorExitCapabilities = new WeakSet<ProviderProxySetOperatorExitCapability>();
+  readonly #rearmedOperatorExitCapabilities = new WeakSet<ProviderProxySetOperatorExitCapability>();
+  readonly #releasedOperatorExitCapabilities = new WeakSet<ProviderProxySetOperatorExitCapability>();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
 
@@ -2771,7 +2773,7 @@ export class ProviderProxySetLifecycle {
         return {
           kind: 'representation-release-abandoned',
           setIdentity: address,
-          successor: { owner: 'operator-command', acceptance: 'accepted' },
+          successor: { owner: 'coordinator', acceptance: 'accepted' },
           effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
         };
       }
@@ -3097,7 +3099,7 @@ export class ProviderProxySetLifecycle {
     }
   }
 
-  #resumeAutonomousDisposition(capability: ProviderProxySetOperatorExitCapability): void {
+  #resumeAutonomousDisposition(capability: ProviderProxySetOperatorExitCapability, fenceReleased = false): void {
     const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
     if (
       slot === undefined ||
@@ -3108,7 +3110,8 @@ export class ProviderProxySetLifecycle {
       !('attemptToken' in slot) ||
       slot.operatorExitGeneration !== capability.operatorExitGeneration ||
       slot.attemptToken !== capability.attemptToken ||
-      this.#operatorExitFenceAuthorizations.get(slot.key) !== capability.containmentProofAuthorization
+      (!fenceReleased &&
+        this.#operatorExitFenceAuthorizations.get(slot.key) !== capability.containmentProofAuthorization)
     ) {
       return;
     }
@@ -3195,7 +3198,7 @@ export class ProviderProxySetLifecycle {
     return {
       kind: 'representation-release-abandoned',
       setIdentity: slot.address,
-      successor: { owner: 'operator-command', acceptance: 'accepted' },
+      successor: { owner: 'coordinator', acceptance: 'accepted' },
       effect: { ...effect, representationAction: 'fatal-release-abandoned' },
     };
   }
@@ -3245,9 +3248,23 @@ export class ProviderProxySetLifecycle {
 
   #handbackOperatorExit(capability: ProviderProxySetOperatorExitCapability): void {
     if (this.#settledOperatorExitCapabilities.has(capability)) return;
-    this.#settledOperatorExitCapabilities.add(capability);
-    this.#resumeAutonomousDisposition(capability);
-    this.#releaseOperatorExitFence(capability);
+    try {
+      if (!this.#rearmedOperatorExitCapabilities.has(capability)) {
+        this.#resumeAutonomousDisposition(capability, this.#releasedOperatorExitCapabilities.has(capability));
+        this.#rearmedOperatorExitCapabilities.add(capability);
+      }
+    } finally {
+      if (!this.#releasedOperatorExitCapabilities.has(capability)) {
+        this.#releaseOperatorExitFence(capability);
+        this.#releasedOperatorExitCapabilities.add(capability);
+      }
+      if (
+        this.#rearmedOperatorExitCapabilities.has(capability) &&
+        this.#releasedOperatorExitCapabilities.has(capability)
+      ) {
+        this.#settledOperatorExitCapabilities.add(capability);
+      }
+    }
   }
 
   #detachOperatorExitFence(capability: ProviderProxySetOperatorExitCapability): void {

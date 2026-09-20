@@ -172,7 +172,7 @@ describe('coordinator lifecycle startup-failure cleanup', () => {
         operation: 'unlink',
         code: 'filesystem-operation-failed',
         correlation: 'b'.repeat(64),
-        error: { kind: 'error', name: 'Error', message: 'unlink failed\n/private/discovery-path' },
+        error: { kind: 'error', name: 'Error', code: 'EACCES', message: 'unlink failed\n/private/discovery-path' },
       });
 
       const outcome = await raceAgainstTimeout(harness.controller.start(), 500);
@@ -186,6 +186,8 @@ describe('coordinator lifecycle startup-failure cleanup', () => {
       );
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('operation=unlink'));
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('code=filesystem-operation-failed'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('errno=EACCES'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('errorName=Error'));
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(`correlation=${'b'.repeat(64)}`));
       expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('/private/discovery-path'));
     } finally {
