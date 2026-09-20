@@ -18,10 +18,8 @@ import {
   type StrictBundleManifest,
 } from '#src/infra/bundle-manifest.js';
 import { documentedCoralSetupError } from '#src/runtime/errors.js';
-import { shutdownObligationAbandonMethod } from '#src/obligation/shutdown-abandonment.js';
 import { TOOL_TIMEOUT_MS } from '#src/transport/http/sse.js';
 import type { IpcClient } from '#src/transport/ipc/client.js';
-import { ipcRouteRefusalDisposition } from '#src/transport/rpc/operational-catalog.js';
 import { jobsAbortRpcSpec, providerProxySetContainRpcSpec } from '#src/transport/rpc/catalog.js';
 
 const mockState = vi.hoisted(() => ({
@@ -1050,7 +1048,6 @@ describe('ipc ensure', () => {
         expect(envelope.remediation).toContain(
           "The CLI's 30s bounded wait for the coordinator address to be released expired.",
         );
-        expect(envelope.remediation).not.toContain('coral-cli backend shutdown-recovery abandon');
       },
     );
 
@@ -1128,35 +1125,6 @@ describe('ipc ensure', () => {
       expect((raised as Error).message).toContain('spawn was refused by the host');
       expect((raised as Error).cause).toBe(refusal);
       expect(issue).toHaveBeenCalledTimes(1);
-    });
-
-    it('raises a refused shutdown-obligation abandon without reaching for a successor', async () => {
-      makeHome();
-      const root = createPluginRoot();
-      drainingIncumbent(root);
-
-      expect(ipcRouteRefusalDisposition(shutdownObligationAbandonMethod)).toBe('report-refusal');
-
-      const { issueWithSuccessorAfterLifecycleRefusal } = await importEnsure();
-      const { IpcLifecycleRefusal } = await import('#src/transport/ipc/client.js');
-      const issue = vi.fn(async () => {
-        throw new IpcLifecycleRefusal(socketPath(root), shutdownObligationAbandonMethod);
-      });
-
-      const raised: unknown = await issueWithSuccessorAfterLifecycleRefusal(
-        shutdownObligationAbandonMethod,
-        root,
-        issue,
-      ).then(
-        (result: unknown) => result,
-        (error: unknown) => error,
-      );
-
-      expect(raised).toBeInstanceOf(IpcLifecycleRefusal);
-      expect(raised).toMatchObject({ method: shutdownObligationAbandonMethod });
-      expect(issue).toHaveBeenCalledTimes(1);
-      expect(mockState.bindSocket).not.toHaveBeenCalled();
-      expect(mockState.spawn).not.toHaveBeenCalled();
     });
   });
 

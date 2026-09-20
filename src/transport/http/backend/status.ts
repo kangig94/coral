@@ -279,6 +279,8 @@ type BackendStatus =
       diagnostics?: BackendHealth['diagnostics'];
       shutdownRemainderCleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
       unreportedShutdownRemainderCleanupRefusalCount?: number;
+      absentShutdownRemainderCleanupRefusalCount?: number;
+      unobservableShutdownRemainderCleanupRefusalCount?: number;
       uncheckedShutdownRemainderCleanupRefusalCount?: number;
       malformedShutdownRemainderCleanupRefusalRowCount?: number;
       skippedProviderProxySetRows: number;
@@ -321,6 +323,8 @@ export type BackendStatusFull =
             kind: 'available';
             refusals: readonly ShutdownRemainderCleanupRefusal[];
             unreportedCount: number;
+            absentCount: number;
+            unobservableCount: number;
             uncheckedCount: number;
             malformedRowCount: number;
           }>
@@ -599,7 +603,7 @@ function readRecentShutdownRemainder(
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, Math.floor(now / 60_000));
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
     if (refusal === null) {
@@ -822,6 +826,8 @@ async function probeDetailedHealth(
         kind: 'available',
         refusals: health.shutdownRemainderCleanupRefusals ?? [],
         unreportedCount: health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
+        unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
         uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
         malformedRowCount: malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });

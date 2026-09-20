@@ -106,19 +106,11 @@ describe('provider-host operator documentation', () => {
 
     // A string this build's own remediation does not name must stay absent from the document
     // describing that same remediation, so the document cannot re-offer what the code no longer produces.
-    for (const marker of [
-      'provider-proxy-set contain',
-      'provider-proxy-set abandon',
-      'successor',
-      're-establish',
-      'shutdown-recovery abandon',
-    ]) {
+    for (const marker of ['provider-proxy-set contain', 'provider-proxy-set abandon', 'successor', 're-establish']) {
       expect(body.remediation).not.toContain(marker);
       expect(paragraph).not.toContain(marker);
       expect(entry).not.toContain(marker);
     }
-    expect(cliErrors).not.toContain('coral-cli backend shutdown-recovery abandon');
-
     // Every exit the running remediation actually names must still be named in the document.
     expect(body.remediation).toContain('coral-cli backend status');
     expect(entry).toContain('coral-cli backend status');

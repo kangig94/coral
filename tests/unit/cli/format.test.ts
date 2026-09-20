@@ -2051,6 +2051,8 @@ describe('cli format', () => {
             cause: { kind: 'system-error' as const, operation: 'promote' as const, code: 'EIO' },
           })),
           unreportedShutdownRemainderCleanupRefusalCount: 1,
+          absentShutdownRemainderCleanupRefusalCount: 7,
+          unobservableShutdownRemainderCleanupRefusalCount: 11,
           uncheckedShutdownRemainderCleanupRefusalCount: 129,
         },
         shutdownRemainder: {
@@ -2066,6 +2068,8 @@ describe('cli format', () => {
       });
 
       expect(text).toContain('Additional cleanup refusals observed by coordinator but not listed: 1');
+      expect(text).toContain('Cleanup refusal subjects rechecked by coordinator and now absent: 7');
+      expect(text).toContain('Cleanup refusal subjects rechecked by coordinator but not observable: 11');
       expect(text).toContain(
         'Cleanup refusal subjects retained by coordinator but not rechecked in this snapshot: 129',
       );
@@ -2211,6 +2215,8 @@ describe('cli format', () => {
           kind: 'available',
           refusals: [],
           unreportedCount: 0,
+          absentCount: 0,
+          unobservableCount: 0,
           uncheckedCount: 0,
           malformedRowCount: 0,
         },

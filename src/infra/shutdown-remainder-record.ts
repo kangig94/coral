@@ -125,8 +125,6 @@ export type ShutdownRemainderRecordScan = Readonly<{
   records: readonly DecodedShutdownRemainderRecord[];
   skippedEntries: readonly ShutdownRemainderSkippedEntry[];
   skippedRecords: readonly ShutdownRemainderSkippedRecord[];
-  unrecognizedEntryNames?: readonly string[];
-  unreportedUnrecognizedEntryCount?: number;
   unscannedStageCount?: number;
   unscannedRecordCount?: number;
 }>;
@@ -403,6 +401,7 @@ export function scanShutdownRemainderRecords(
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
   observeDirectoryEntries?: (names: readonly string[]) => void,
+  selectionOffset = 0,
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
   type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
@@ -413,8 +412,6 @@ export function scanShutdownRemainderRecords(
   const recordFiles: RecordFile[] = [];
   const stageCandidates: StageFile[] = [];
   const recordCandidates: RecordFile[] = [];
-  const unrecognizedEntryNames: string[] = [];
-  let unreportedUnrecognizedEntryCount = 0;
   const names = storage.readdirSync(directory).sort((left, right) => left.localeCompare(right));
   observeDirectoryEntries?.(names);
   for (const name of names) {
@@ -423,14 +420,7 @@ export function scanShutdownRemainderRecords(
       stageCandidates.push(entry);
       continue;
     }
-    if (entry.kind !== 'record') {
-      if (unrecognizedEntryNames.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
-        unrecognizedEntryNames.push(shutdownRemainderFilesystemSubject(name).label);
-      } else {
-        unreportedUnrecognizedEntryCount += 1;
-      }
-      continue;
-    }
+    if (entry.kind !== 'record') continue;
     const reportedName = persistedFileNameSchema.safeParse(name);
     recordCandidates.push({
       name,
@@ -438,22 +428,32 @@ export function scanShutdownRemainderRecords(
     });
   }
 
-  let stageIndex = 0;
-  let recordIndex = 0;
+  const startIndex = (candidateCount: number): number =>
+    candidateCount === 0 ? 0 : ((selectionOffset % candidateCount) + candidateCount) % candidateCount;
+  const stageStart = startIndex(stageCandidates.length);
+  const recordStart = startIndex(recordCandidates.length);
+  let stageInspected = 0;
+  let recordInspected = 0;
   let takeStage = true;
   while (
     stageFiles.length + recordFiles.length < SHUTDOWN_REMAINDER_SCAN_LIMIT &&
-    (stageIndex < stageCandidates.length || recordIndex < recordCandidates.length)
+    (stageInspected < stageCandidates.length || recordInspected < recordCandidates.length)
   ) {
-    const stageCandidate = stageCandidates[stageIndex];
-    const recordCandidate = recordCandidates[recordIndex];
+    const stageCandidate =
+      stageInspected < stageCandidates.length
+        ? stageCandidates[(stageStart + stageInspected) % stageCandidates.length]
+        : undefined;
+    const recordCandidate =
+      recordInspected < recordCandidates.length
+        ? recordCandidates[(recordStart + recordInspected) % recordCandidates.length]
+        : undefined;
     if ((takeStage && stageCandidate !== undefined) || recordCandidate === undefined) {
       if (stageCandidate === undefined) break;
       stageFiles.push(stageCandidate);
-      stageIndex += 1;
+      stageInspected += 1;
     } else {
       recordFiles.push(recordCandidate);
-      recordIndex += 1;
+      recordInspected += 1;
     }
     takeStage = !takeStage;
   }
@@ -527,8 +527,6 @@ export function scanShutdownRemainderRecords(
     records,
     skippedEntries,
     skippedRecords,
-    ...(unrecognizedEntryNames.length === 0 ? {} : { unrecognizedEntryNames }),
-    ...(unreportedUnrecognizedEntryCount === 0 ? {} : { unreportedUnrecognizedEntryCount }),
     ...(unscannedStageCount === 0 ? {} : { unscannedStageCount }),
     ...(unscannedRecordCount === 0 ? {} : { unscannedRecordCount }),
   };

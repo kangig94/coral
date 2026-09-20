@@ -121,10 +121,6 @@ import {
   type ShutdownRemainderCleanupSnapshot,
 } from './shutdown-remainder.js';
 import { observeShutdownRemainderStageWriter } from '../infra/shutdown-remainder-record.js';
-import type {
-  ShutdownObligationAbandonRequest,
-  ShutdownObligationAbandonResult,
-} from '../obligation/shutdown-abandonment.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
 import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
@@ -837,7 +833,6 @@ export type LifecycleDeps = {
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
   shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition>;
-  abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult;
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
@@ -1744,18 +1739,9 @@ export function createLifecycle(
       });
   }
 
-  function abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult {
-    const disposition = state.lastShutdownDisposition;
-    if (disposition === null || isLifecycleShutdownTerminal(disposition)) {
-      return { kind: 'not-held', subject: request.subject };
-    }
-    return { kind: 'not-offered', subject: request.subject };
-  }
-
   return {
     start,
     shutdown,
-    abandonShutdownObligation,
     requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;

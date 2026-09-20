@@ -3044,34 +3044,6 @@ describe('required provider-proxy shutdown steps', () => {
     expect(logLines).toContain('backend discovery withdrawal refused (discovery read denied)\n');
   });
 
-  it('never offers abandonment: not-held around a shutdown, not-offered while the boundary is held', async () => {
-    const { controller, harness } = buildBoundaryExhaustionHarness('abandon-never-offered');
-    const subject = 'provider-control-and-ipc-authority-release' as const;
-
-    expect(controller.abandonShutdownObligation({ subject })).toEqual({ kind: 'not-held', subject });
-
-    const initial = controller.shutdown('replaced');
-    await flush(64);
-    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS);
-    await flush(64);
-    const held = await initial;
-    expect(isLifecycleShutdownTerminal(held)).toBe(false);
-    expect(controller.abandonShutdownObligation({ subject })).toEqual({ kind: 'not-offered', subject });
-
-    for (const attempt of [1, 2]) {
-      harness.time.tick(50);
-      await flush(64);
-      harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS / 2);
-      await flush(64);
-      if (attempt === 1) {
-        expect(controller.abandonShutdownObligation({ subject })).toEqual({ kind: 'not-offered', subject });
-      }
-    }
-    const exhausted = await controller.waitForShutdown();
-    expect(isLifecycleShutdownTerminal(exhausted)).toBe(true);
-    expect(controller.abandonShutdownObligation({ subject })).toEqual({ kind: 'not-held', subject });
-  });
-
   it("a sigint landing between attempts records the ledger's original reason", async () => {
     const { controller, harness, remainderDocuments } = buildBoundaryExhaustionHarness('interrupted-drain');
 

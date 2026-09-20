@@ -663,22 +663,6 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('escapes terminal controls in unrecognized filesystem subjects', () => {
-    const storage = storageWith(
-      [
-        { name: 'bidi\u202E.tmp', value: '', mtimeMs: 1 },
-        { name: 'line\u2028.tmp', value: '', mtimeMs: 2 },
-        { name: 'control\u009B.json', value: '{}', mtimeMs: 3 },
-      ],
-      { refuseReadFor: 'control\u009B.json', readErrorCode: 'EACCES' },
-    );
-
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      unrecognizedEntryNames: ['bidi\\u{202E}.tmp', 'line\\u{2028}.tmp'],
-      skippedRecords: [{ name: 'invalid-record-name', reason: 'unreadable' }],
-    });
-  });
-
   it('skips corrupt and unsupported files beside readable records', () => {
     const storage = storageWith([
       fileAt('known-instance', 1),
@@ -694,7 +678,6 @@ describe('shutdown remainder status', () => {
         { name: 'corrupt-instance.json', reason: 'corrupt' },
         { name: 'foreign-instance.json', reason: 'unsupported', detail: expect.any(String) },
       ],
-      unrecognizedEntryNames: ['ignored.tmp'],
     });
   });
 
@@ -1168,7 +1151,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toContain('instance-32.json');
   });
 
-  it('retains at most 32 unreadable records without competing with readable records', () => {
+  it('retains every unreadable record without ranking or deleting unknown evidence', () => {
     const unreadableFiles = Array.from({ length: 33 }, (_, index) => fileAt(`unreadable-${index}`, index + 1));
     const storage = storageWith([fileAt('readable', 100), ...unreadableFiles], {
       refuseReadFor: unreadableFiles.map(({ name }) => name),
@@ -1177,10 +1160,12 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toHaveLength(34);
     expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).not.toContain('unreadable-0.json');
+    expect(storage.fileNames()).toContain('unreadable-0.json');
     expect(storage.fileNames()).toContain('unreadable-32.json');
+    expect(storage.statSync).toHaveBeenCalledTimes(1);
+    expect(storage.unlinkSync).not.toHaveBeenCalled();
   });
 
   it('holds repeated quarantine dispositions at the canonical subject path', () => {
@@ -1242,19 +1227,6 @@ describe('shutdown remainder status', () => {
     }
   });
 
-  it('reports the unreleased predecessor quarantine layout as present but not owned by cleanup', () => {
-    const storage = storageWith([], { refuseStatFor: 'evidence', statErrorCode: 'EACCES' });
-    storage.mkdirSync(join(REMAINDER_DIRECTORY, 'quarantine', 'held.json', '1', 'evidence'), { recursive: true });
-
-    expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
-      unrecognizedEntryNames: ['quarantine'],
-    });
-    expect(pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR })).toMatchObject({
-      cleanup: { kind: 'complete' },
-      unowned: { kind: 'present', subjectNames: ['quarantine'] },
-    });
-  });
-
   it('applies one flat-scan I/O budget across stage and record subjects', () => {
     const files = Array.from({ length: 500 }, (_, index) => {
       const ordinal = String(index).padStart(3, '0');
@@ -1275,25 +1247,31 @@ describe('shutdown remainder status', () => {
     );
   });
 
-  it('makes a valid record visible after pruning 128 persistent unknowns that precede it', () => {
+  it('rotates past 128 persistent unknowns even when every deletion would be refused', () => {
     const unknownFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) =>
       fileAt(`a-unknown-${String(index).padStart(3, '0')}`, index + 1),
     );
-    const storage = storageWith([...unknownFiles, fileAt('z-live', 1_000)], {
+    const mismatched = {
+      name: 'zz-mismatched.json',
+      value: JSON.stringify(recordAt('different-instance')),
+      mtimeMs: 2_000,
+    };
+    const storage = storageWith([...unknownFiles, fileAt('z-live', 1_000), mismatched], {
       refuseReadFor: unknownFiles.map(({ name }) => name),
       readErrorCode: 'EIO',
+      refusePrune: true,
     });
 
     const firstScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
     expect(firstScan.records).toEqual([]);
-    expect(firstScan.unscannedRecordCount).toBe(1);
+    expect(firstScan.unscannedRecordCount).toBe(2);
 
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
+    expect(pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR }).cleanup).toMatchObject({ kind: 'refused' });
 
-    const secondScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY);
-    expect(storage.fileNames()).toHaveLength(33);
+    const secondScan = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, 1);
+    expect(storage.fileNames()).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT + 2);
     expect(secondScan.records).toEqual([decodedRecordAt('z-live')]);
-    expect(secondScan.unscannedRecordCount).toBeUndefined();
+    expect(secondScan.unscannedRecordCount).toBe(2);
   });
 
   it('does not probe past empty quarantine slots or leave the subject behind them', () => {
@@ -1306,30 +1284,8 @@ describe('shutdown remainder status', () => {
     const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
-    expect(disposition.unowned).toEqual({ kind: 'present', subjectNames: ['quarantine'] });
     expect(storage.mkdirSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toContain('locked.json');
-  });
-
-  it('ranks an unreadable record without stat evidence last in its retention bucket', () => {
-    const knownUnreadableFiles = Array.from({ length: 32 }, (_, index) => fileAt(`unreadable-${index}`, index + 1));
-    const storage = storageWith(
-      [fileAt('readable', 100), ...knownUnreadableFiles, fileAt('unreadable-unstattable', 33)],
-      {
-        refuseReadFor: [...knownUnreadableFiles.map(({ name }) => name), 'unreadable-unstattable.json'],
-        readErrorCode: 'EIO',
-        refuseStatFor: 'unreadable-unstattable.json',
-        statErrorCode: 'EACCES',
-      },
-    );
-
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-
-    expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).not.toContain('unreadable-unstattable.json');
-    expect(storage.fileNames()).toContain('unreadable-0.json');
-    expect(storage.fileNames()).toContain('unreadable-31.json');
   });
 
   it('reclaims a decisively corrupt record regardless of age, even under the retention cap', () => {
@@ -1365,22 +1321,6 @@ describe('shutdown remainder status', () => {
       records: [recordAt('readable')],
       skippedRecords: [{ name: 'future-instance.json', reason: 'unsupported', detail: expect.any(String) }],
     });
-  });
-
-  it('retains at most 32 unsupported records without competing with readable records', () => {
-    const unsupportedFiles = Array.from({ length: 33 }, (_, index) => ({
-      name: `unsupported-${index}.json`,
-      value: JSON.stringify({ ...recordAt(`unsupported-${index}`), reason: 'a-future-shutdown-reason' }),
-      mtimeMs: index + 1,
-    }));
-    const storage = storageWith([fileAt('readable', 100), ...unsupportedFiles]);
-
-    pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-
-    expect(storage.fileNames()).toHaveLength(33);
-    expect(storage.fileNames()).toContain('readable.json');
-    expect(storage.fileNames()).not.toContain('unsupported-0.json');
-    expect(storage.fileNames()).toContain('unsupported-32.json');
   });
 
   it('does not unlink a live atomic-write staging file when prune runs before rename', () => {
@@ -1526,7 +1466,7 @@ describe('shutdown remainder status', () => {
     },
   );
 
-  it('bounds stage scan I/O without starving a published record', () => {
+  it('rotates a bounded stage scan without starving a published record', () => {
     const malformedStages = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
       name: `held-${index}.json.stage.bad`,
       value: '{}',
@@ -1541,6 +1481,17 @@ describe('shutdown remainder status', () => {
     expect(vi.mocked(storage.lstatSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
       SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
+
+    const rotated = [1, 2].map((selectionOffset) =>
+      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, selectionOffset),
+    );
+    const inspectedStageNames = new Set(
+      [scan, ...rotated]
+        .flatMap(({ skippedRecords }) => skippedRecords)
+        .filter(({ reason }) => reason === 'malformed-staging')
+        .map(({ name }) => name),
+    );
+    expect(inspectedStageNames).toEqual(new Set(malformedStages.map(({ name }) => name)));
   });
 
   it('requires a final record filename to match its decoded instance identity exactly', () => {
@@ -1609,72 +1560,40 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('bounds cleanup refusal details and reports the unlisted remainder', () => {
+  it('bounds retained cleanup refusals and leaves overflow explicitly not inspected', () => {
     const files = Array.from({ length: 300 }, (_, index) => ({
-      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+      name: 'corrupt-' + String(index).padStart(3, '0') + '.json',
       value: '{not-json',
       mtimeMs: index + 1,
     }));
     const storage = storageWith(files, { refusePrune: true });
-
-    const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
-
-    expect(disposition.cleanup).toMatchObject({
-      kind: 'refused',
-      unreportedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
-    });
-    if (disposition.cleanup.kind !== 'refused') throw new Error('cleanup refusal was not reported');
-    expect(disposition.cleanup.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-    expect(disposition.cleanup.refusals[0]).toEqual(cleanupRefusal('corrupt-000.json', 'delete'));
-
     const pruner = createShutdownRemainderPruner({
       storage,
       runDir: RUN_DIR,
       time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
     });
-    pruner.start();
-    expect(pruner.readCleanupRefusalSnapshot()).toMatchObject({
-      unreportedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
-      uncheckedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT * 2,
-    });
-  });
 
-  it('counts a directory scan refusal beyond a full named stage-promotion cap', () => {
-    const stages = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
-      name: `stage-${index}.json.stage.${5_000 + index}.unobserved`,
-      value: JSON.stringify(recordAt(`stage-${index}`)),
-      mtimeMs: index + 1,
-    }));
-    const storage = storageWith(stages, {
-      refuseFinalRename: true,
-      refuseReaddirWhen: (_path, attempt) => attempt === 2,
-    });
-
-    const disposition = pruneShutdownRemainderRecords({
-      storage,
-      runDir: RUN_DIR,
-      observeStageWriter: () => 'absent',
-    });
-
-    expect(disposition.cleanup).toMatchObject({
+    const disposition = pruner.start();
+    expect(disposition?.cleanup).toMatchObject({
       kind: 'refused',
-      refusals: expect.arrayContaining([cleanupRefusal(stages[0].name, 'promote', 'EIO')]),
-      unreportedRefusalCount: 1,
+      unreportedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
     });
-    if (disposition.cleanup.kind !== 'refused') throw new Error('cleanup refusal was not reported');
-    expect(disposition.cleanup.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    vi.mocked(storage.unlinkSync).mockClear();
+    vi.mocked(storage.lstatSync).mockClear();
+
+    const snapshot = pruner.readCleanupRefusalSnapshot();
+    expect(snapshot).toMatchObject({
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
+    });
+    expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(storage.unlinkSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(storage.lstatSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT);
   });
 
-  it.each([
-    { phase: 'before the periodic retry', stopBeforeDisappearance: false },
-    { phase: 'after the pruner stops', stopBeforeDisappearance: true },
-  ])('freshens overflow refusals $phase', ({ stopBeforeDisappearance }) => {
-    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
-      name: `corrupt-${String(index).padStart(3, '0')}.json`,
-      value: '{not-json',
-      mtimeMs: index + 1,
-    }));
-    const storage = storageWith(files, {
+  it('retries the refused operation and reports a subject that is now absent', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (_name, attempt) => attempt === 1,
     });
     const pruner = createShutdownRemainderPruner({
@@ -1683,72 +1602,39 @@ describe('shutdown remainder status', () => {
       time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
     });
 
-    pruner.start();
-    expect(pruner.readCleanupRefusalSnapshot().unreportedRefusalCount).toBe(1);
-    if (stopBeforeDisappearance) pruner.stop();
-    for (const { name } of files) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
-
+    expect(pruner.start()?.cleanup.kind).toBe('refused');
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [],
-      unreportedRefusalCount: 0,
+      absentRefusalCount: 1,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
+    expect(storage.fileNames()).toEqual([]);
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
     });
   });
 
-  it('bounds refusal freshening work in one atomic snapshot', () => {
-    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT * 3 }, (_, index) => ({
-      name: `corrupt-${String(index).padStart(3, '0')}.json`,
-      value: '{not-json',
-      mtimeMs: index + 1,
-    }));
-    const storage = storageWith(files, { refusePruneWhen: (_name, attempt) => attempt === 1 });
+  it('keeps an observed-but-unobservable retry distinct from work not inspected', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePrune: true,
+      refuseLstatFor: 'corrupt.json',
+      lstatErrorCode: 'EIO',
+    });
     const pruner = createShutdownRemainderPruner({
       storage,
       runDir: RUN_DIR,
       time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
     });
 
-    pruner.start();
-    vi.mocked(storage.lstatSync).mockClear();
-
-    expect(pruner.readCleanupRefusalSnapshot()).toMatchObject({
-      refusals: expect.arrayContaining([cleanupRefusal('corrupt-000.json', 'delete')]),
-      unreportedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
-      uncheckedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
-    });
-    expect(storage.lstatSync).toHaveBeenCalledTimes(SHUTDOWN_REMAINDER_SCAN_LIMIT * 2);
-  });
-
-  it('separates unchecked historical overflow from current cleanup refusals', () => {
-    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT * 3 + 1 }, (_, index) => ({
-      name: `corrupt-${String(index).padStart(3, '0')}.json`,
-      value: '{not-json',
-      mtimeMs: index + 1,
-    }));
-    const storage = storageWith(files, { refusePruneWhen: (_name, attempt) => attempt === 1 });
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
-    });
-
-    pruner.start();
-    pruner.stop();
-    for (const { name } of files) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
-
+    expect(pruner.start()?.cleanup.kind).toBe('refused');
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [],
-      unreportedRefusalCount: 0,
-      uncheckedRefusalCount: 129,
-    });
-    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [],
-      unreportedRefusalCount: 0,
-      uncheckedRefusalCount: 1,
-    });
-    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [],
-      unreportedRefusalCount: 0,
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 1,
       uncheckedRefusalCount: 0,
     });
   });
@@ -1882,39 +1768,6 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['locked.json']);
   });
 
-  it('retains a named cleanup refusal until a periodic retry succeeds', () => {
-    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
-      refusePruneWhen: (name, attempt) => name === 'corrupt.json' && attempt <= 2,
-    });
-    let scheduled: (() => void) | null = null;
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: {
-        setInterval: (callback) => {
-          scheduled = callback;
-          return { unref: vi.fn() };
-        },
-        clearInterval: vi.fn(),
-      },
-    });
-
-    expect(pruner.start()?.cleanup).toEqual({
-      kind: 'refused',
-      refusals: [cleanupRefusal('corrupt.json', 'delete')],
-    });
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
-
-    const periodic = scheduled as (() => void) | null;
-    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    periodic();
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
-    periodic();
-
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
-    expect(storage.fileNames()).toEqual([]);
-  });
-
   it('clears a cleanup refusal when the subject is replaced by a record that does not qualify for deletion', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (name, attempt) => name === 'corrupt.json' && attempt === 1,
@@ -1943,7 +1796,7 @@ describe('shutdown remainder status', () => {
     expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
   });
 
-  it('reports only the cleanup refusals observed by each scan', () => {
+  it('reports a scan refusal as absent when the same directory operation now succeeds', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePrune: true,
       refuseReaddirWhen: (_path, attempt) => attempt === 3,
@@ -1966,9 +1819,12 @@ describe('shutdown remainder status', () => {
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
 
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([
-      cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO'),
-    ]);
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      absentRefusalCount: 1,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
     periodic();
     expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal('corrupt.json', 'delete')]);
   });
@@ -2003,7 +1859,7 @@ describe('shutdown remainder status', () => {
     expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
   });
 
-  it('freshens cleanup refusals against their raw subjects when a health snapshot reads them', () => {
+  it('retries cleanup refusals against their raw subjects when a health snapshot reads them', () => {
     const name = 'corrupt\n.json';
     const storage = storageWith([{ name, value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (candidate, attempt) => candidate === name && attempt === 1,
@@ -2015,44 +1871,20 @@ describe('shutdown remainder status', () => {
     });
 
     expect(pruner.start()?.cleanup.kind).toBe('refused');
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([cleanupRefusal(name, 'delete')]);
-    storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      absentRefusalCount: 1,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
+    expect(storage.fileNames()).toEqual([]);
 
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toEqual([]);
-  });
-
-  it('bounds broken record symlinks separately from readable records', () => {
-    const runDir = mkdtempSync(join(tmpdir(), 'coral-remainder-symlinks-'));
-    const directory = shutdownRemainderRecordDirectory(runDir);
-    try {
-      mkdirSync(directory, { recursive: true });
-      for (let index = 0; index < 300; index += 1) {
-        symlinkSync('missing-target', join(directory, `broken-${String(index).padStart(3, '0')}.json`));
-      }
-      writeFileSync(join(directory, 'z-live.json'), JSON.stringify(recordAt('z-live')));
-
-      pruneShutdownRemainderRecords({
-        runDir,
-        storage: {
-          lstatSync: lstatSync as unknown as StoragePort['lstatSync'],
-          readFileSync,
-          readdirSync,
-          renameSync,
-          statSync,
-          unlinkSync,
-        },
-      });
-
-      const names = readdirSync(directory);
-      expect(names).toHaveLength(33);
-      expect(names.filter((name) => name.startsWith('broken-'))).toHaveLength(32);
-      expect(scanShutdownRemainderRecords({ lstatSync, readFileSync, readdirSync }, directory).records).toEqual([
-        decodedRecordAt('z-live'),
-      ]);
-    } finally {
-      rmSync(runDir, { recursive: true, force: true });
-    }
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [],
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+    });
   });
 
   it('retains and reports a dangling symlink subject across a pruner restart', () => {

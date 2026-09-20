@@ -629,7 +629,8 @@ describe('health local carrier observation', () => {
       .spyOn(core.lifecycleController, 'readShutdownRemainderCleanupSnapshot')
       .mockReturnValue({
         refusals: [refusal],
-        unreportedRefusalCount: 7,
+        absentRefusalCount: 7,
+        unobservableRefusalCount: 9,
         uncheckedRefusalCount: 11,
       });
 
@@ -637,7 +638,8 @@ describe('health local carrier observation', () => {
 
     if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
     expect(decoded.health.shutdownRemainderCleanupRefusals).toEqual([refusal]);
-    expect(decoded.health.unreportedShutdownRemainderCleanupRefusalCount).toBe(7);
+    expect(decoded.health.absentShutdownRemainderCleanupRefusalCount).toBe(7);
+    expect(decoded.health.unobservableShutdownRemainderCleanupRefusalCount).toBe(9);
     expect(decoded.health.uncheckedShutdownRemainderCleanupRefusalCount).toBe(11);
     expect(readCleanupSnapshot).toHaveBeenCalledOnce();
   });

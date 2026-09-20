@@ -29,7 +29,6 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetAcquisitionDispositionRecordSchema',
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetOperatorDispositionFileSchema',
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetOperatorDispositionRecordSchema',
-  'src/coordinator/shutdown-abandonment.ts#shutdownAbandonmentStatusSchema',
   'src/discuss/projections.ts#persistedDiscussSnapshotSchema',
   'src/discuss/events.ts#persistedDiscussRuntimeSchema',
   'src/discuss/session-types.ts#discussStateSchema',
@@ -137,7 +136,6 @@ const IN_MEMORY_PERSISTENCE_CONTEXT_SCHEMAS = new Set<SchemaKey>([
 
 const DURABLE_SCHEMA_FACTORIES = new Set<SchemaKey>([
   'src/coordinator/handoff-routing/status.ts#createHandoffRoutingRecordSchemaRegistry',
-  'src/obligation/shutdown-abandonment.ts#createShutdownObligationAbandonmentReceiptParser',
   'src/providers/claude/binding.ts#createClaudeBindingSchema',
   'src/providers/claude/binding.ts#createClaudeCredentialProfileSchema',
   'src/providers/codex/binding.ts#createCodexBindingSchema',

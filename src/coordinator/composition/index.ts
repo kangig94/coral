@@ -1463,7 +1463,8 @@ export function createCoordinatorCore(
         const systemProviderScope = world.systemProviderScope;
         const shutdownRemainderCleanup = lifecycleController?.readShutdownRemainderCleanupSnapshot() ?? {
           refusals: [],
-          unreportedRefusalCount: 0,
+          absentRefusalCount: 0,
+          unobservableRefusalCount: 0,
           uncheckedRefusalCount: 0,
         };
 
@@ -1631,10 +1632,15 @@ export function createCoordinatorCore(
           ...(shutdownRemainderCleanup.refusals.length === 0
             ? {}
             : { shutdownRemainderCleanupRefusals: shutdownRemainderCleanup.refusals }),
-          ...(shutdownRemainderCleanup.unreportedRefusalCount === 0
+          ...(shutdownRemainderCleanup.absentRefusalCount === 0
             ? {}
             : {
-                unreportedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.unreportedRefusalCount,
+                absentShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.absentRefusalCount,
+              }),
+          ...(shutdownRemainderCleanup.unobservableRefusalCount === 0
+            ? {}
+            : {
+                unobservableShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.unobservableRefusalCount,
               }),
           ...(shutdownRemainderCleanup.uncheckedRefusalCount === 0
             ? {}
@@ -1834,8 +1840,6 @@ export function createCoordinatorCore(
   ipcServer.onShutdownRequest = (reason) => {
     void resolvedLifecycleController.shutdown(reason).catch(() => {});
   };
-  ipcServer.onShutdownObligationAbandonment = (request) =>
-    resolvedLifecycleController.abandonShutdownObligation(request);
   ipcServer.onShutdownRecoveryAccepted = () => {
     resolvedLifecycleController.requestShutdownRetry();
   };

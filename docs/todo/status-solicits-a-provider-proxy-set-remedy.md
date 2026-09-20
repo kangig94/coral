@@ -21,8 +21,7 @@ the one operator who could judge it is not on the machine.
 ## Why it was not fixed with the rest
 
 The drain branch removed the *coordinator's* shutdown-obligation abandonment offer, because that offer was
-unreachable by construction and could be deleted without deciding anything (see
-[`shutdown-abandonment-offer-is-dead-in-the-coordinator.md`](./shutdown-abandonment-offer-is-dead-in-the-coordinator.md)).
+unreachable by construction and could be deleted without deciding anything.
 This one is different: the offer is reachable, the commands behind it work, and something still has to
 happen to a set whose containment cannot be proven. Deleting the lines without deciding who contains the
 set replaces a bad prompt with silence.

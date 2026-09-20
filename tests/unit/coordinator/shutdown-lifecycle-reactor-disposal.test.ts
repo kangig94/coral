@@ -35,7 +35,6 @@ function fakeCoordinatorCore(shutdownDisposition: () => Promise<LifecycleShutdow
       start: vi.fn(),
       shutdown: vi.fn(shutdownDisposition),
       waitForShutdown: vi.fn(shutdownDisposition),
-      abandonShutdownObligation: vi.fn(),
       requestShutdownRetry: vi.fn(),
       getRecoveryRegistry: vi.fn(() => null),
     },

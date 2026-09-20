@@ -95,6 +95,8 @@ describe('/health typed shape (AC10a)', () => {
         ...HEALTHY_BASE,
         shutdownRemainderCleanupRefusals: [refusal],
         unreportedShutdownRemainderCleanupRefusalCount: 3,
+        absentShutdownRemainderCleanupRefusalCount: 4,
+        unobservableShutdownRemainderCleanupRefusalCount: 6,
         uncheckedShutdownRemainderCleanupRefusalCount: 5,
       }),
     ).toBe(true);
@@ -182,6 +184,8 @@ describe('/health typed shape (AC10a)', () => {
       }),
     ).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, unreportedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, absentShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, unobservableShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, uncheckedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(
       isBackendHealth({

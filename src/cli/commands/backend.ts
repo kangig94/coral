@@ -15,10 +15,6 @@ import {
   type NonEmptyReadonlyArray,
 } from '../../coordinator/handoff-routing/runner.js';
 import {
-  readShutdownAbandonmentStatus,
-  type ShutdownAbandonmentStatusRead,
-} from '../../coordinator/shutdown-abandonment.js';
-import {
   parseHandoffRoutingInvocationId,
   type HandoffRepairOperation,
 } from '../../coordinator/handoff-routing/repair-operation.js';
@@ -38,7 +34,6 @@ import type {
   HandoffRoutingStatusQuarantineClearResult,
 } from '../../coordinator/handoff-routing/status-operator.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
-import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -108,18 +103,9 @@ import {
 } from '../../store/handoff-routing-status-store/index.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
-import {
-  shutdownObligationAbandonMethod,
-  shutdownObligationAbandonResultSchema,
-  shutdownObligationSubjects,
-  shutdownObligationSubjectSchema,
-  type ShutdownObligationAbandonResult,
-  type ShutdownObligationSubject,
-} from '../../obligation/shutdown-abandonment.js';
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
 import {
-  createIpcClient,
   IpcDrainRequestUnanswered,
   IpcLifecycleRefusal,
   IpcRequestTimeout,
@@ -593,11 +579,6 @@ export interface ProviderProxySetCommandOperations {
   contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
 }
 
-export interface ShutdownRecoveryCommandOperations {
-  abandon(subject: ShutdownObligationSubject): Promise<ShutdownObligationAbandonResult>;
-  status(): ShutdownAbandonmentStatusRead;
-}
-
 export type BackendCommandOperations = Readonly<{
   storeReset?: StoreResetCommandOperations;
   kbCommit?: KbCommitCommandOperations;
@@ -607,7 +588,6 @@ export type BackendCommandOperations = Readonly<{
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
   providerProxySets?: ProviderProxySetCommandOperations;
-  shutdownRecovery?: ShutdownRecoveryCommandOperations;
   providerProxyRoleTermination?: ProviderProxyRoleTerminationCommandOperations;
 }>;
 
@@ -1416,99 +1396,6 @@ export function createProviderProxySetCommandOperations(
   };
 }
 
-export function createShutdownRecoveryCommandOperations(
-  options: {
-    getClient?: () => Promise<Pick<IpcClient, 'request'>>;
-    runtime?: Runtime;
-    createClient?: typeof createIpcClient;
-  } = {},
-): ShutdownRecoveryCommandOperations {
-  const runtime = options.runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
-  const createClient = options.createClient ?? createIpcClient;
-  const getClient =
-    options.getClient ??
-    (async () => {
-      const incumbent = readBackendInfo(runtime);
-      if (incumbent === null) {
-        throw new BackendUnreachableError(
-          'Shutdown recovery requires a readable coordinator discovery record; no coordinator was started or replaced.',
-        );
-      }
-      return createClient(incumbent.socketPath, runtime.time, {
-        kind: 'boot',
-        token: incumbent.bootToken,
-      });
-    });
-  return {
-    abandon: async (subject) => {
-      const client = await getClient();
-      const response = await client.request(
-        shutdownObligationAbandonMethod,
-        { subject },
-        {
-          timeoutMs: TOOL_TIMEOUT_MS,
-          ...childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
-        },
-      );
-      return shutdownObligationAbandonResultSchema.parse(response);
-    },
-    status: () =>
-      readShutdownAbandonmentStatus({
-        storage: runtime.storage,
-        runDir: runtime.paths.coral.coordinator.runDir,
-      }),
-  };
-}
-
-export function formatShutdownRecoveryStatus(status: ShutdownAbandonmentStatusRead): string {
-  switch (status.kind) {
-    case 'absent':
-      return `No durable shutdown-obligation abandonment status at ${status.path}.`;
-    case 'unreadable':
-      return `Shutdown-obligation abandonment status is unreadable at ${status.path}: ${status.detail}`;
-    case 'available':
-      return [
-        `Shutdown-obligation abandonment status: ${status.path}`,
-        ...status.status.entries.map(
-          (entry) =>
-            `${entry.recordedAt} instance=${entry.instanceId} subject=${entry.subject} disposition=${entry.disposition}\n` +
-            `  ${entry.detail}\n` +
-            '  This is not evidence of completion or absence.',
-        ),
-      ].join('\n');
-  }
-}
-
-export function formatShutdownObligationAbandonResult(result: ShutdownObligationAbandonResult): string {
-  switch (result.kind) {
-    case 'accepted':
-      return [
-        `Recorded operator abandonment for ${result.receipt.subject}.`,
-        `Disposition: ${result.receipt.disposition}`,
-        result.receipt.detail,
-        `Durable status: ${result.receipt.statusPath}`,
-        'This is not evidence of completion or absence.',
-      ].join('\n');
-    case 'not-held':
-      return `Refusing to abandon ${result.subject}: no held shutdown currently owns that obligation.`;
-    case 'not-offered':
-      return `Refusing to abandon ${result.subject}: the current held shutdown did not offer that exact action.`;
-    case 'status-write-refused':
-      return `Refusing to abandon ${result.subject}: durable status was not confirmed (${result.detail}).`;
-  }
-}
-
-function parseShutdownObligationSubject(value: string): ShutdownObligationSubject {
-  const parsed = shutdownObligationSubjectSchema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  // No other command lists ShutdownObligationSubject's members, so an invalid value learns the closed
-  // set only here. See abandonShutdownObligation in src/coordinator/lifecycle.ts for why a valid value
-  // is refused too on this coordinator.
-  throw new InvalidArgumentError(
-    `Unknown shutdown obligation subject: ${value}. One of: ${shutdownObligationSubjects.join(', ')}.`,
-  );
-}
-
 export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
   const {
     storeReset = {
@@ -1526,7 +1413,6 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
     providerProxySets = createProviderProxySetCommandOperations(),
-    shutdownRecovery = createShutdownRecoveryCommandOperations(),
     providerProxyRoleTermination = createDirectProviderProxyRoleTerminationCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
@@ -1686,39 +1572,6 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         }
         process.stderr.write(`${formatRoutingStatusQuarantineMaintenanceRefusal(result, options.id)}\n`);
         process.exitCode = 75;
-      } catch (error: unknown) {
-        emitError(error);
-      }
-    });
-
-  const shutdownRecoveryCommand = backend
-    .command('shutdown-recovery')
-    .description('Inspect or explicitly abandon a currently held shutdown obligation');
-  shutdownRecoveryCommand
-    .command('status')
-    .description('Show durable shutdown-obligation abandonment status')
-    .action(() => {
-      const status = shutdownRecovery.status();
-      const output = formatShutdownRecoveryStatus(status);
-      (status.kind === 'unreadable' ? process.stderr : process.stdout).write(`${output}\n`);
-      process.exitCode = status.kind === 'unreadable' ? 75 : 0;
-    });
-  shutdownRecoveryCommand
-    .command('abandon')
-    .description(
-      'Abandon one exact obligation a held shutdown offered on an older coordinator; this coordinator offers none, so the attempt is refused',
-    )
-    .argument(
-      '<subject>',
-      'Exact subject a held shutdown offered on an older coordinator; this coordinator offers none, so any value is refused',
-      parseShutdownObligationSubject,
-    )
-    .action(async (subject: ShutdownObligationSubject) => {
-      try {
-        const result = await shutdownRecovery.abandon(subject);
-        const accepted = result.kind === 'accepted';
-        (accepted ? process.stdout : process.stderr).write(`${formatShutdownObligationAbandonResult(result)}\n`);
-        process.exitCode = accepted ? 0 : result.kind === 'status-write-refused' ? 75 : 1;
       } catch (error: unknown) {
         emitError(error);
       }

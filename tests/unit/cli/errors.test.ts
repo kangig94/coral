@@ -8,7 +8,6 @@ import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtim
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 import { ChildPrincipalBindingError } from '#src/transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '#src/transport/ipc/client.js';
-import { shutdownObligationAbandonMethod } from '#src/obligation/shutdown-abandonment.js';
 import { domainResultToHttp, launchToHttp } from '#src/transport/response.js';
 
 describe('cli errors', () => {
@@ -241,7 +240,6 @@ describe('cli errors', () => {
       expect(result.envelope.remediation).toContain('coral-cli backend status');
       expect(result.envelope.remediation).toContain('bounded asynchronous wait');
       expect(result.envelope.remediation).toContain('Retry this command after');
-      expect(result.envelope.remediation).not.toContain('coral-cli backend shutdown-recovery abandon');
     });
 
     it.each([
@@ -256,21 +254,6 @@ describe('cli errors', () => {
       expect(envelope.remediation).toContain('refused jobs.abort before dispatch, so it did not run');
     });
 
-    it('does not solicit abandonment for any lifecycle refusal', () => {
-      const refusals = [
-        new IpcLifecycleRefusal('/tmp/coral.sock', shutdownObligationAbandonMethod),
-        new IpcLifecycleRefusal('/tmp/coral.sock', shutdownObligationAbandonMethod).stillHoldingAddress(30_000),
-      ];
-
-      for (const refusal of refusals) {
-        const { envelope, exitCode } = buildErrorEnvelope(refusal);
-        expect(exitCode).toBe(75);
-        expect(envelope.remediation).not.toContain('shutdown-recovery abandon');
-        expect(envelope.remediation).toContain('coral-cli backend status');
-        expect(envelope.remediation).toContain(`refused ${shutdownObligationAbandonMethod} before dispatch`);
-      }
-    });
-
     it('renders a refusal that itself carries a refusal cause without adding a destructive remedy', () => {
       const refusal = new IpcLifecycleRefusal('/tmp/coral.sock', 'jobs.abort');
       refusal.cause = new IpcLifecycleRefusal('/tmp/coral.sock', 'jobs.abort').stillHoldingAddress(30_000);
@@ -278,7 +261,6 @@ describe('cli errors', () => {
       const { envelope } = buildErrorEnvelope(refusal);
 
       expect(envelope.remediation).toContain('bounded asynchronous wait');
-      expect(envelope.remediation).not.toContain('shutdown-recovery abandon <subject>');
     });
 
     it('reports when to retry in both address-disposition branches', () => {
@@ -293,7 +275,6 @@ describe('cli errors', () => {
         expect(remediation).toContain(
           'Retry this command after `coral-cli backend status` no longer reports that coordinator as shutting down.',
         );
-        expect(remediation).not.toContain('coral-cli backend shutdown-recovery abandon');
       }
       expect(unobserved).not.toContain('bounded wait for the coordinator address to be released expired');
       expect(held).toContain("The CLI's 30s bounded wait for the coordinator address to be released expired.");
@@ -311,7 +292,6 @@ describe('cli errors', () => {
       expect(result.envelope.message).toBe('Coral coordinator socket was never bound.');
       expect(result.envelope.remediation).toContain('refused jobs.abort');
       expect(result.envelope.remediation).toContain('bounded asynchronous wait');
-      expect(result.envelope.remediation).not.toContain('coral-cli backend shutdown-recovery abandon');
     });
 
     it('reaches a refusal nested behind an intermediate cause, and appends nothing when there is none', () => {
@@ -357,7 +337,6 @@ describe('cli errors', () => {
       expect(heldEnvelope.envelope.remediation).toContain(
         "The CLI's 30s bounded wait for the coordinator address to be released expired.",
       );
-      expect(heldEnvelope.envelope.remediation).not.toContain('coral-cli backend shutdown-recovery abandon');
       expect(buildErrorEnvelope(refused).envelope.remediation).not.toContain(
         'bounded wait for the coordinator address to be released expired',
       );
@@ -568,7 +547,6 @@ describe('cli errors', () => {
       for (const text of [exitRow, shutdownParagraph]) {
         expect(text).toContain('bounded');
         expect(text).toContain('retry');
-        expect(text).not.toContain('shutdown-recovery abandon');
       }
     });
 

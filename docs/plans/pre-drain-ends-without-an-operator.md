@@ -87,19 +87,16 @@ Design decisions settled by pioneer (`fable`), traced against the tree at `7ae70
   `#isCurrentControlReattachment` with stale evidence released through `#releaseLateReattachmentEvidence`,
   is the only generation that matters — and it exports no promise, so "a waiter never sees its promise
   replaced" holds trivially.
-- **Compatibility.** `shutdown-abandonment-status.v1.json` keeps its exact shape and reader — its parser
-  `createShutdownObligationAbandonmentReceiptParser` is strict with `disposition: z.literal('abandoned-unconfirmed')`
-  and a closed subject enum, so nothing new can go in. Exhaustion writes a **separate**
-  `shutdown-remainder.v1.json` in the same `runDir`, same append-and-replace-by-instance shape,
+- **Compatibility.** Exhaustion writes a versioned `shutdown-remainder.v1.json` in `runDir`, using an
+  append-and-replace-by-instance shape,
   `writeAtomicDurableSync` at mode `0o600`, reader tolerant (`.passthrough()`), additive-only per §10.
   Entry shape: `{ label, owner: 'process-exit' | 'successor-recovery', via?, settlement: { cause, detail } }`,
   with `instanceId`, `recordedAt`, `reason`, and `mode` on the record. **Corrected before release:**
   `exitCode` was removed because the record exists only for losses and therefore already implies the
   lifecycle's exit contribution of 1; older pre-release records carrying it remain readable through
   `.passthrough()`. Keyed by obligation
-  `label` — the identity the ledger already uses in `deferredFailures` — not by a subject enum: the
-  abandonment subjects are an enum because they are *arguments to a command*, while a remainder record is
-  diagnostic, and a closed enum there would need extending for every obligation the ledger ever gains.
+  `label` — the identity the ledger already uses in `deferredFailures` — not by a closed subject enum, which
+  would need extending for every obligation the ledger ever gains.
   The shape precedent is `HANDOFF_CAPSULE_FILENAME` in `src/provider-proxy/handoff-capsule-discovery.ts`
   — a generation admitted by address, derived from `SUPPORTED_HANDOFF_CAPSULE_VERSIONS`. An older CLI
   never looks for the new file, so the mixed-window answer is "nothing".

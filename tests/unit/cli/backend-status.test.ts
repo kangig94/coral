@@ -5,17 +5,14 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createShutdownRecoveryCommandOperations,
   registerBackendCommands,
   type BackendStatusCommandOperations,
   type DirectProviderProxySetHolderStatus,
-  type ShutdownRecoveryCommandOperations,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { releaseStoreReset } from '#src/store/operator-store-reset.js';
-import type { createIpcClient, IpcClient } from '#src/transport/ipc/client.js';
 import {
   formatBackendStatus,
   formatHandoffContinuationReason,
@@ -51,22 +48,6 @@ import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
-
-// A literal copy of ShutdownObligationSubject's (src/obligation/shutdown-abandonment.ts) members: importing
-// that array here would let a member silently dropped from the schema shrink this expectation instead of
-// failing it.
-const KNOWN_SHUTDOWN_OBLIGATION_SUBJECTS = [
-  'recovery-coordinator-teardown',
-  'kb-child-shutdown',
-  'provider-operation-mutation-drain',
-  'provider-host-shutdown',
-  'child-termination',
-  'app-server-handoff-quiesce',
-  'provider-host-drain-for-handoff',
-  'process-incarnation-probe-shutdown',
-  'lifecycle-reactor-dispose',
-  'provider-control-and-ipc-authority-release',
-] as const;
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -284,231 +265,6 @@ describe('backend store-reset release failures', () => {
     expect(stderr).toContain('Store-reset release failed. [code=store_reset_release_failed]');
     expect(stderr).not.toContain('Store-reset reporting failed');
     expect(process.exitCode).toBe(70);
-  });
-});
-
-describe('backend shutdown recovery commands', () => {
-  it('dials the recorded draining coordinator directly with its boot credential', async () => {
-    const request = vi.fn(async () => ({
-      kind: 'not-offered' as const,
-      subject: 'app-server-handoff-quiesce' as const,
-    }));
-    const createClient = vi.fn<typeof createIpcClient>(() => ({ request }) as unknown as IpcClient);
-    const runtime = {
-      time: TEST_TIME,
-      storage: {
-        readFileSync: vi.fn(() =>
-          JSON.stringify({
-            pid: 4_242,
-            port: 4_242,
-            socketPath: '/run/draining.sock',
-            bundleHash: 'bundle',
-            flavor: 'prod',
-            namespace: 'namespace',
-            startedAt: 1,
-            token: 'token',
-            bootToken: 'draining-boot-token',
-            host: '127.0.0.1',
-            version: 'test',
-            instanceId: 'draining-instance',
-          }),
-        ),
-      },
-      env: { platform: () => process.platform },
-      paths: {
-        coral: {
-          coordinator: {
-            infoFile: '/run/coordinator.json',
-            runDir: '/run',
-          },
-        },
-      },
-    } as unknown as Runtime;
-    const operations = createShutdownRecoveryCommandOperations({ runtime, createClient });
-
-    await expect(operations.abandon('app-server-handoff-quiesce')).resolves.toEqual({
-      kind: 'not-offered',
-      subject: 'app-server-handoff-quiesce',
-    });
-
-    expect(createClient).toHaveBeenCalledWith('/run/draining.sock', TEST_TIME, {
-      kind: 'boot',
-      token: 'draining-boot-token',
-    });
-    expect(request).toHaveBeenCalledWith(
-      'coordinator.shutdown_obligation.abandon',
-      { subject: 'app-server-handoff-quiesce' },
-      expect.objectContaining({ timeoutMs: expect.any(Number) }),
-    );
-  });
-
-  it('renders durable abandoned-unconfirmed status after the coordinator exits', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn(),
-      status: () => ({
-        kind: 'available',
-        path: '/run/shutdown-abandonment-status.v1.json',
-        status: {
-          version: 1,
-          entries: [
-            {
-              subject: 'app-server-handoff-quiesce',
-              instanceId: 'exited-instance',
-              recordedAt: '2026-09-07T00:00:00.000Z',
-              disposition: 'abandoned-unconfirmed',
-              detail: 'App-server write completion was not observed; the write may or may not have landed.',
-              statusPath: '/run/shutdown-abandonment-status.v1.json',
-            },
-          ],
-        },
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'status']);
-
-    expect(stdout).toContain('subject=app-server-handoff-quiesce disposition=abandoned-unconfirmed');
-    expect(stdout).toContain('This is not evidence of completion or absence.');
-    expect(stderr).toBe('');
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('returns success only for an accepted durable abandonment receipt', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(async () => ({
-        kind: 'accepted',
-        receipt: {
-          subject: 'app-server-handoff-quiesce',
-          instanceId: 'held-instance',
-          recordedAt: '2026-09-07T00:00:00.000Z',
-          disposition: 'abandoned-unconfirmed',
-          detail: 'App-server write completion was not observed; the write may or may not have landed.',
-          statusPath: '/run/shutdown-abandonment-status.v1.json',
-        },
-      })),
-      status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'shutdown-recovery',
-      'abandon',
-      'app-server-handoff-quiesce',
-    ]);
-
-    expect(shutdownRecovery.abandon).toHaveBeenCalledWith('app-server-handoff-quiesce');
-    expect(stdout).toContain('Disposition: abandoned-unconfirmed');
-    expect(stdout).toContain('This is not evidence of completion or absence.');
-    expect(stderr).toBe('');
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('returns a refusal exit when the held shutdown did not offer the subject', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(async (subject) => ({
-        kind: 'not-offered',
-        subject,
-      })),
-      status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'shutdown-recovery',
-      'abandon',
-      'provider-host-shutdown',
-    ]);
-
-    expect(stdout).toBe('');
-    expect(stderr).toContain('current held shutdown did not offer that exact action');
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('names the closed subject set for an unrecognized value, but no longer offers any subject in --help', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(),
-      status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await expect(
-      program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'abandon', 'not-a-held-obligation']),
-    ).rejects.toThrow('not-a-held-obligation');
-
-    // see parseShutdownObligationSubject in src/cli/commands/backend.ts
-    for (const subject of KNOWN_SHUTDOWN_OBLIGATION_SUBJECTS) {
-      expect(stderr).toContain(subject);
-    }
-    expect(shutdownRecovery.abandon).not.toHaveBeenCalled();
-
-    const helpProgram = new Command();
-    helpProgram.exitOverride();
-    registerBackendCommands(helpProgram, { storeReset, shutdownRecovery });
-    await expect(
-      helpProgram.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'abandon', '--help']),
-    ).rejects.toThrow();
-
-    // see abandonShutdownObligation in src/coordinator/lifecycle.ts
-    // --help must not read as a menu of subjects to pick from: it must say every attempt is refused
-    // regardless of which subject is named, and must name none of them.
-    expect(stdout).toContain('this coordinator offers none, so the attempt is refused');
-    expect(stdout).toContain('any value is refused');
-    for (const subject of KNOWN_SHUTDOWN_OBLIGATION_SUBJECTS) {
-      expect(stdout).not.toContain(subject);
-    }
-  });
-
-  it('returns undetermined when durable status cannot be read or written', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(async (subject) => ({
-        kind: 'status-write-refused',
-        subject,
-        detail: 'atomic durable status publication was not confirmed',
-      })),
-      status: () => ({
-        kind: 'unreadable',
-        path: '/run/shutdown-abandonment-status.v1.json',
-        detail: 'invalid JSON',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'status']);
-    expect(stderr).toContain('status is unreadable');
-    expect(process.exitCode).toBe(75);
-
-    stdout = '';
-    stderr = '';
-    process.exitCode = undefined;
-    const abandonProgram = new Command();
-    abandonProgram.exitOverride();
-    registerBackendCommands(abandonProgram, { storeReset, shutdownRecovery });
-    await abandonProgram.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'shutdown-recovery',
-      'abandon',
-      'provider-host-shutdown',
-    ]);
-    expect(stderr).toContain('durable status was not confirmed');
-    expect(process.exitCode).toBe(75);
   });
 });
 

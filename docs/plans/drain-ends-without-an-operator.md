@@ -132,9 +132,8 @@ publication throws remains a named `process-exit` loss.
   `runtime.storage.writeAtomicSync` call after explicitly creating the version directory. The requirement is
   **ordering**: the write is the statement before `removeBackendInfoIfOwnerFn`. It is not a durability race,
   so `finalizeStoppedLifecycle` stays synchronous and no process is spawned to perform it.
-- **AC8** — `shutdown-abandonment-status.v1.json` and
-  `createShutdownObligationAbandonmentReceiptParser` are byte-for-byte unchanged; an older reader of the
-  abandonment family still parses every record this build writes to it.
+- **AC8** — The remainder uses its own versioned address and extensible diagnostic labels; the current build
+  exposes no shutdown-obligation abandonment producer, command, schema, or route.
 - **AC9** — The remainder record's entries are the ledger's structured dispositions:
   `{ label, remainder, settlement: { cause, detail } }`. `remainder` is either `{ owner: 'process-exit' }`
   or `{ owner: 'successor-recovery', evidence: SuccessorRecoveryEvidence }` (`startup-adoption`, carrying
@@ -343,7 +342,7 @@ declined successor remainders under a success type.
 | AC5 | `src/coordinator/live/admission.ts`, `src/coordinator/shutdown.ts`, `src/coordinator/composition/defaults.ts`, `src/coordinator/composition/types.ts` |
 | AC6 | `src/coordinator/live/durable-transport.ts` |
 | AC7 | `src/coordinator/shutdown-remainder.ts` |
-| AC8 | `src/obligation/shutdown-abandonment.ts` |
+| AC8 | `src/infra/shutdown-remainder-record.ts` |
 | AC9 | `src/coordinator/shutdown-remainder.ts` |
 | AC10 | `src/coordinator/bootstrap.ts` |
 | AC11 | `src/coordinator/lifecycle.ts` |
@@ -484,22 +483,16 @@ ownership-inventory invariant enumerates this table and fails on either `none` o
   types, not one consumed twice; `childTerminationConfirmation` and `retainedChildActions` split with them.
   Delete `terminateAll` — its only production reference is `composition/defaults.ts`'s `terminateAllFn`
   injection, and every other caller is a test. *(AC5, AC6)*
-- **The remainder record.** New `shutdown-remainder.v1/<instanceId>.json` in the same `runDir` as the abandonment
-  family, bounded append-and-replace-by-instance shape and tolerant reader. Writing replaces the same
+- **The remainder record.** New `shutdown-remainder.v1/<instanceId>.json` in `runDir`, bounded
+  append-and-replace-by-instance shape and tolerant reader. Writing replaces the same
   instance; the successor boot path later retains the newest 32 instance records as atomic groups. The serialized entries are the
   ledger's `{ label, remainder, settlement }` values directly. Shape precedent: `HANDOFF_CAPSULE_FILENAME`
   in `src/provider-proxy/handoff-capsule-discovery.ts` — a generation admitted by address, derived from
   `SUPPORTED_HANDOFF_CAPSULE_VERSIONS`. *(AC7, AC9)*
-  - **Why a new address, not the existing family.** `readShutdownAbandonmentStatus`
-    (`src/coordinator/shutdown-abandonment.ts`) parses through
-    `createShutdownObligationAbandonmentReceiptParser` (`src/obligation/shutdown-abandonment.ts`), strict,
-    with `disposition: z.literal('abandoned-unconfirmed')` and a closed subject enum. Nothing new can go
-    in (§10). *(AC8)*
-  - **Why keyed by `label`.** The abandonment subjects are an enum because they are *arguments to a
-    command*. A remainder record is diagnostic, and a closed enum there needs extending for every
-    obligation the ledger ever gains — which is exactly why the current enum lacks store-epoch sweep,
-    ownership-checker, components, hooks, discuss-store and the connection/stream obligations. `label` is
-    the identity the ledger already uses in `deferredFailures`.
+  - **Why a new address.** A remainder record is diagnostic and needs to evolve independently; a shape that
+    cannot remain additive gets a new generation at a new address (§10). *(AC8)*
+  - **Why keyed by `label`.** A closed enum would need extending for every obligation the ledger ever gains.
+    `label` is the identity the ledger already uses in `deferredFailures`.
   - **Why the run directory.** The store is finalized by the closing obligations before the boundary; at
     exit the run directory is the only writable durable address.
   - **Written inline, and why no helper.** One synchronous `runtime.storage.writeAtomicSync` at `0o600`, on
@@ -730,8 +723,7 @@ npm run test:e2e:build && npm run test:e2e:lifecycle
   survivor-first/fatal-last, and assert retirement itself reevaluates the reducer.
 - `tests/unit/coordinator/services/provider-proxy-set/*` — prove only one retry timer is ever armed per
   hold slot with both sources live, and that a pending `slot.retryTimer` is cleared before re-arming.
-- `tests/unit/coordinator/shutdown-abandonment.test.ts` — v1 assertions stay as compatibility tests;
-  the new address is tested separately in `tests/unit/coordinator/shutdown-remainder.test.ts`.
+- `tests/unit/coordinator/shutdown-remainder.test.ts` — prove the new address and tolerant reader directly.
 - `tests/unit/coordinator/bootstrap.test.ts` and `tests/unit/infra/*process-incarnation*.test.ts` — add a
   childless lease whose filesystem probe never settles and prove the initial cleanup deadline reaches exit.
 - `tests/unit/coordinator/live/durable-transport.test.ts` (or the nearest existing durable-launch suite) —
