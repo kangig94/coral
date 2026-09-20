@@ -6,8 +6,9 @@ import type { CoralPaths } from './path/index.js';
 import type { EnvPort, StoragePort } from './port-types.js';
 import { MAX_PROCESS_INCARNATION_LENGTH, observeProcessLiveness, type ProcessIncarnation } from './node-process.js';
 import { backendLog } from './backend-log.js';
-import { formatError, serializeThrown, type SerializedThrown } from './error-format.js';
+import { serializeThrown, type SerializedThrown } from './error-format.js';
 import { isNoEntryError } from './fs-errors.js';
+import { sha256Hex } from './hash.js';
 import type { Runtime } from '../runtime/ports.js';
 
 /** Connection and authentication evidence only; executable identity comes from authenticated health. */
@@ -245,7 +246,28 @@ export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
 export type BackendInfoRemovalResult =
   | Readonly<{ kind: 'removed' }>
   | Readonly<{ kind: 'unchanged' }>
-  | Readonly<{ kind: 'refused'; detail: string; error: SerializedThrown }>;
+  | Readonly<{
+      kind: 'refused';
+      operation: 'read' | 'decode' | 'unlink';
+      code: 'filesystem-operation-failed' | 'corrupt-json' | 'shape-rejected';
+      correlation: string;
+      error: SerializedThrown;
+    }>;
+
+function backendInfoRemovalRefusal(
+  operation: 'read' | 'decode' | 'unlink',
+  code: 'filesystem-operation-failed' | 'corrupt-json' | 'shape-rejected',
+  error: unknown,
+): Extract<BackendInfoRemovalResult, { kind: 'refused' }> {
+  const serialized = serializeThrown(error);
+  return {
+    kind: 'refused',
+    operation,
+    code,
+    correlation: sha256Hex(`${operation}\0${code}\0${JSON.stringify(serialized)}`),
+    error: serialized,
+  };
+}
 
 /**
  * Delete the discovery record, but only when this caller is provably the one that wrote it.
@@ -258,12 +280,11 @@ export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntim
   try {
     read = readDiscoveryRecordDisposition(runtime);
   } catch (error: unknown) {
-    return { kind: 'refused', detail: `read failed: ${formatError(error)}`, error: serializeThrown(error) };
+    return backendInfoRemovalRefusal('read', 'filesystem-operation-failed', error);
   }
   if (read.kind === 'missing') return { kind: 'unchanged' };
   if (read.kind === 'undecodable') {
-    const detail = `record undecodable (${read.reason})`;
-    return { kind: 'refused', detail, error: { kind: 'unknown', message: detail } };
+    return backendInfoRemovalRefusal('decode', read.reason, `record undecodable (${read.reason})`);
   }
 
   const { record } = read;
@@ -282,7 +303,7 @@ export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntim
     if (isNoEntryError(error)) {
       return { kind: 'unchanged' };
     }
-    return { kind: 'refused', detail: `unlink failed: ${formatError(error)}`, error: serializeThrown(error) };
+    return backendInfoRemovalRefusal('unlink', 'filesystem-operation-failed', error);
   }
   return { kind: 'removed' };
 }

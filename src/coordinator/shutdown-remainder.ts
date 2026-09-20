@@ -4,9 +4,11 @@ import { backendLog } from '../infra/backend-log.js';
 import {
   SERIALIZED_THROWN_IDENTIFIER_MAX_LENGTH,
   SERIALIZED_THROWN_IDENTIFIER_PATTERN,
-  formatError,
+  serializeThrown,
   thrownErrnoCode,
+  type SerializedThrown,
 } from '../infra/error-format.js';
+import { sha256Hex } from '../infra/hash.js';
 import type { StoragePath, StoragePort, TimePort, TimerHandle } from '../infra/port-types.js';
 import {
   classifyShutdownRemainderDirectoryEntry,
@@ -59,10 +61,42 @@ export type ShutdownRemainderRecordInput = Readonly<{
 
 export type ShutdownRemainderWriteDisposition =
   | Readonly<{ kind: 'published' }>
-  | Readonly<{ kind: 'refused'; detail: string }>
-  | Readonly<{ kind: 'verification-unavailable'; detail: string }>;
+  | Readonly<{
+      kind: 'refused';
+      operation: 'publish';
+      code: 'write-returned-false' | 'filesystem-operation-failed';
+      correlation: string;
+      diagnostic: SerializedThrown;
+    }>
+  | Readonly<{
+      kind: 'verification-unavailable';
+      operation: 'verify-publication';
+      code: 'filesystem-operation-failed';
+      correlation: string;
+      diagnostic: SerializedThrown;
+    }>;
 
-type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind: 'unknown' }>;
+function shutdownRemainderWriteFailure<
+  Operation extends 'publish' | 'verify-publication',
+  Code extends 'write-returned-false' | 'filesystem-operation-failed',
+>(
+  operation: Operation,
+  code: Code,
+  error: unknown,
+): Readonly<{
+  operation: Operation;
+  code: Code;
+  correlation: string;
+  diagnostic: SerializedThrown;
+}> {
+  const diagnostic = serializeThrown(error);
+  return {
+    operation,
+    code,
+    correlation: sha256Hex(`${operation}\0${code}\0${JSON.stringify(diagnostic)}`),
+    diagnostic,
+  };
+}
 
 type ShutdownRemainderCleanupDisposition =
   | Readonly<{ kind: 'complete' }>
@@ -99,14 +133,10 @@ export type ShutdownRemainderCleanupSnapshot = Readonly<{
 }>;
 
 function byRetentionOrder(
-  left: Readonly<{ name: string; age: RecordAge }>,
-  right: Readonly<{ name: string; age: RecordAge }>,
+  left: Readonly<{ name: string; mtimeMs: number }>,
+  right: Readonly<{ name: string; mtimeMs: number }>,
 ): number {
-  if (left.age.kind === 'known' && right.age.kind === 'known') {
-    return right.age.mtimeMs - left.age.mtimeMs || right.name.localeCompare(left.name);
-  }
-  if (left.age.kind !== right.age.kind) return left.age.kind === 'known' ? -1 : 1;
-  return right.name.localeCompare(left.name);
+  return right.mtimeMs - left.mtimeMs || right.name.localeCompare(left.name);
 }
 
 type CleanupRefusalCollection = {
@@ -391,12 +421,12 @@ function pruneShutdownRemainderRecordsWithRefusals(
       if (!cleanupRefusals.bySubject.has(key)) retain(key);
     }
 
-    const known: {
+    const retentionCandidates: {
       key: string;
       name: string;
       path: Buffer;
       rawName: Buffer;
-      age: RecordAge;
+      mtimeMs: number;
       incarnation?: ShutdownRemainderCleanupIncarnation;
     }[] = [];
     for (const { name, path, rawName } of initialNames) {
@@ -478,23 +508,23 @@ function pruneShutdownRemainderRecordsWithRefusals(
         continue;
       }
       if (previousCleanupRefusals.has(key)) resolvedCleanupSubjectNames.add(key);
-      let age: RecordAge = { kind: 'unknown' };
+      let mtimeMs: number;
       try {
-        age = { kind: 'known', mtimeMs: runtime.storage.statSync(path).mtimeMs };
+        mtimeMs = runtime.storage.statSync(path).mtimeMs;
       } catch {
-        age = { kind: 'unknown' };
+        continue;
       }
-      known.push({
+      retentionCandidates.push({
         key,
         name,
         path,
         rawName,
-        age,
+        mtimeMs,
         ...(subjectObservation.kind === 'observed' ? { incarnation: subjectObservation.incarnation } : {}),
       });
     }
-    known.sort(byRetentionOrder);
-    for (const { key, path, rawName, incarnation } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+    retentionCandidates.sort(byRetentionOrder);
+    for (const { key, path, rawName, incarnation } of retentionCandidates.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(path);
         resolveCleanupFailure(key);
@@ -706,7 +736,6 @@ export function recordShutdownRemainder(
     entries: input.undischarged,
   };
   const serializedRecord = `${JSON.stringify(record, null, 2)}\n`;
-  runtime.storage.mkdirSync(directory, { recursive: true });
   // Constraint: do not use `writeAtomicDurableSync`; `docs/design-rationale.md` §12.5 excludes its unbounded
   // journal commit waits from the coordinator exit path.
   const removeStage = (): void => {
@@ -719,6 +748,7 @@ export function recordShutdownRemainder(
     }
   };
   try {
+    runtime.storage.mkdirSync(directory, { recursive: true });
     if (
       !runtime.storage.writeAtomicSync(stagePath, serializedRecord, {
         encoding: 'utf-8',
@@ -726,7 +756,10 @@ export function recordShutdownRemainder(
       })
     ) {
       removeStage();
-      return { kind: 'refused', detail: 'record publication returned false' };
+      return {
+        kind: 'refused',
+        ...shutdownRemainderWriteFailure('publish', 'write-returned-false', 'record publication returned false'),
+      };
     }
     try {
       runtime.storage.renameSync(stagePath, path);
@@ -736,7 +769,10 @@ export function recordShutdownRemainder(
           if (runtime.storage.readFileSync(path, 'utf-8') === serializedRecord) return { kind: 'published' };
         } catch (verificationError: unknown) {
           removeStage();
-          return { kind: 'verification-unavailable', detail: formatError(verificationError) };
+          return {
+            kind: 'verification-unavailable',
+            ...shutdownRemainderWriteFailure('verify-publication', 'filesystem-operation-failed', verificationError),
+          };
         }
       }
       throw error;
@@ -744,6 +780,9 @@ export function recordShutdownRemainder(
     return { kind: 'published' };
   } catch (error: unknown) {
     removeStage();
-    return { kind: 'refused', detail: formatError(error) };
+    return {
+      kind: 'refused',
+      ...shutdownRemainderWriteFailure('publish', 'filesystem-operation-failed', error),
+    };
   }
 }

@@ -68,7 +68,8 @@ const noEffect = {
   representationAction: 'none' as const,
 };
 const proofAuthorization = {} as ProviderProxySetContainmentProofAuthorization;
-const capability = { setIdentity: address, containmentProofAuthorization: proofAuthorization } as never;
+const handback = vi.fn();
+const capability = { setIdentity: address, containmentProofAuthorization: proofAuthorization, handback } as never;
 const opaqueProof = {} as ProviderProxySetContainmentProof;
 const operator: Principal = {
   subject: 'operator',
@@ -157,6 +158,7 @@ let harness: ReturnType<typeof createHarness>;
 beforeEach(() => {
   captured.ports = null;
   captured.world = null;
+  handback.mockClear();
   harness = createHarness();
 });
 
@@ -330,6 +332,31 @@ describe('provider proxy set operator RPC composition', () => {
 
     await expect(pending).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address, effect: noEffect });
     expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, false, signal);
+    expect(handback).toHaveBeenCalledOnce();
+  });
+
+  it('hands authorization back when aborted proof collection rejects', async () => {
+    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
+    const controller = new AbortController();
+    const proof = vi.spyOn(harness.prover, 'collectContainmentProof').mockImplementation(
+      (_authorization, _db, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(signal.reason instanceof Error ? signal.reason : new Error('request aborted')),
+            { once: true },
+          );
+        }),
+    );
+    const complete = vi.spyOn(harness.lifecycle, 'completeOperatorExit');
+
+    const pending = harness.contain({ setIdentity: address, mode: 'contain' }, controller.signal);
+    controller.abort(new Error('request aborted'));
+
+    await expect(pending).rejects.toThrow('request aborted');
+    expect(proof).toHaveBeenCalledExactlyOnceWith(proofAuthorization, harness.db, controller.signal);
+    expect(complete).not.toHaveBeenCalled();
+    expect(handback).toHaveBeenCalledOnce();
   });
 
   it.each<Readonly<{ evidence: ProviderProxySetContainmentEvidence; result: ProviderProxySetOperatorExitResult }>>([

@@ -2,6 +2,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
 import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
+import { sha256Hex } from '../infra/hash.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -1349,7 +1350,9 @@ async function runLifecycleStartup({
     }
     const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
     if (withdrawal !== undefined && withdrawal.kind === 'refused') {
-      backendLog.error(`backend discovery withdrawal refused during startup-failure cleanup (${withdrawal.detail})`);
+      backendLog.error(
+        `backend discovery withdrawal refused during startup-failure cleanup operation=${withdrawal.operation} code=${withdrawal.code} correlation=${withdrawal.correlation}`,
+      );
     }
 
     if (error instanceof HandoffEscalationError) {
@@ -1500,27 +1503,44 @@ export function createLifecycle(
             case 'published':
               return;
             case 'refused':
-              bestEffortLifecycleLog(log, `shutdown remainder write refused (${publication.detail})\n`);
+              bestEffortLifecycleLog(
+                log,
+                `shutdown remainder write refused operation=${publication.operation} code=${publication.code} correlation=${publication.correlation}\n`,
+              );
               return;
             case 'verification-unavailable':
               bestEffortLifecycleLog(
                 log,
-                `shutdown remainder publication verification unavailable (${publication.detail})\n`,
+                `shutdown remainder publication verification unavailable operation=${publication.operation} code=${publication.code} correlation=${publication.correlation}\n`,
               );
               return;
           }
         } catch (error: unknown) {
-          bestEffortLifecycleLog(log, `shutdown remainder write refused (${formatError(error)})\n`);
+          const diagnostic = serializeThrown(error);
+          const correlation = sha256Hex(`publish\0unexpected-exception\0${JSON.stringify(diagnostic)}`);
+          bestEffortLifecycleLog(
+            log,
+            `shutdown remainder write refused operation=publish code=unexpected-exception correlation=${correlation}\n`,
+          );
         }
       };
-      const withdraw = (): Readonly<{ detail: string; error: SerializedThrown }> | null => {
+      const withdraw = (): Readonly<{
+        operation: 'read' | 'decode' | 'unlink' | 'callback';
+        code: 'filesystem-operation-failed' | 'corrupt-json' | 'shape-rejected' | 'unexpected-exception';
+        correlation: string;
+        error: SerializedThrown;
+      }> | null => {
         try {
           const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
-          return withdrawal !== undefined && withdrawal.kind === 'refused'
-            ? { detail: withdrawal.detail, error: withdrawal.error }
-            : null;
+          return withdrawal !== undefined && withdrawal.kind === 'refused' ? withdrawal : null;
         } catch (error: unknown) {
-          return { detail: formatError(error), error: serializeThrown(error) };
+          const serialized = serializeThrown(error);
+          return {
+            operation: 'callback',
+            code: 'unexpected-exception',
+            correlation: sha256Hex(`callback\0unexpected-exception\0${JSON.stringify(serialized)}`),
+            error: serialized,
+          };
         }
       };
 
@@ -1528,7 +1548,10 @@ export function createLifecycle(
         if (losses.length > 0) publish();
         const refusal = withdraw();
         if (refusal !== null) {
-          bestEffortLifecycleLog(log, `backend discovery withdrawal refused (${refusal.detail})\n`);
+          bestEffortLifecycleLog(
+            log,
+            `backend discovery withdrawal refused operation=${refusal.operation} code=${refusal.code} correlation=${refusal.correlation}\n`,
+          );
           losses.push({
             label: 'backend discovery withdrawal',
             remainder: { owner: 'process-exit' },

@@ -395,7 +395,7 @@ describe('coordinator discovery', () => {
       storage: {
         ...runtime.storage,
         readFileSync: () => {
-          throw Object.assign(new Error('read denied'), { code: 'EACCES' });
+          throw Object.assign(new Error('read denied\n/private/discovery-path'), { code: 'EACCES' });
         },
       },
     } as DiscoveryWriterRuntime;
@@ -404,11 +404,12 @@ describe('coordinator discovery', () => {
 
     expect(result.kind).toBe('refused');
     if (result.kind !== 'refused') throw new Error(`expected refusal, got ${result.kind}`);
-    expect(result.detail).toContain('read failed:');
-    expect(result.detail).toContain('read denied');
-    // The thrown value's own `code` must survive into the structured fact, not just into the log-facing
-    // string — a caller that re-serializes `result.detail` instead of reading `result.error` loses it.
-    expect(result.error).toMatchObject({ kind: 'error', code: 'EACCES' });
+    expect(result).toMatchObject({
+      operation: 'read',
+      code: 'filesystem-operation-failed',
+      correlation: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      error: { kind: 'error', code: 'EACCES', message: 'read denied\n/private/discovery-path' },
+    });
   });
 
   it('returns a typed refusal when owned discovery cannot be unlinked', async () => {
@@ -435,7 +436,7 @@ describe('coordinator discovery', () => {
       storage: {
         ...runtime.storage,
         unlinkSync: () => {
-          throw Object.assign(new Error('unlink denied'), { code: 'EACCES' });
+          throw Object.assign(new Error('unlink denied\n/private/discovery-path'), { code: 'EACCES' });
         },
       },
     } as DiscoveryWriterRuntime;
@@ -444,9 +445,12 @@ describe('coordinator discovery', () => {
 
     expect(result.kind).toBe('refused');
     if (result.kind !== 'refused') throw new Error(`expected refusal, got ${result.kind}`);
-    expect(result.detail).toContain('unlink failed:');
-    expect(result.detail).toContain('unlink denied');
-    expect(result.error).toMatchObject({ kind: 'error', code: 'EACCES' });
+    expect(result).toMatchObject({
+      operation: 'unlink',
+      code: 'filesystem-operation-failed',
+      correlation: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      error: { kind: 'error', code: 'EACCES', message: 'unlink denied\n/private/discovery-path' },
+    });
   });
 
   // The fourth outcome, and the only one that is not a variant: a file that exists and cannot be *opened* is

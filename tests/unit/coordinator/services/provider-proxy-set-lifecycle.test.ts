@@ -72,6 +72,7 @@ import {
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
+  type ProviderProxySetOperatorExitAuthorization,
   type ProviderProxySetOperatorExitCapability,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
@@ -5284,16 +5285,18 @@ describe('ProviderProxySetLifecycle', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
     const clock = new ManualClock();
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
     const authority = fakeAuthority({ record });
+    const superseding: { authorization: ProviderProxySetOperatorExitAuthorization | null } = {
+      authorization: null,
+    };
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
       async (_identity, _proof, _signal, onSignal, assertSignalAuthorized) => {
         assertSignalAuthorized?.();
         onSignal('SIGTERM');
-        const supersedingAuthorization = lifecycle.authorizeOperatorExit(
-          providerProxySetAddress(authority.setIdentity),
-        );
-        if (supersedingAuthorization.kind !== 'authorized') {
-          throw new Error(`expected superseding authorization, received ${supersedingAuthorization.kind}`);
+        superseding.authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+        if (superseding.authorization.kind !== 'authorized') {
+          throw new Error(`expected superseding authorization, received ${superseding.authorization.kind}`);
         }
         assertSignalAuthorized?.();
         return { kind: 'containment-absent', disappearanceReceipt: 'must-not-complete' };
@@ -5304,7 +5307,7 @@ describe('ProviderProxySetLifecycle', () => {
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
-      proveContainmentAbsent: noContainmentProof,
+      proveContainmentAbsent,
       reapRecordedContainment,
     });
     lifecycle.initializeClaimSlots();
@@ -5318,6 +5321,7 @@ describe('ProviderProxySetLifecycle', () => {
     if (authorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${authorization.kind}`);
     }
+    proveContainmentAbsent.mockClear();
 
     await expect(
       lifecycle.completeOperatorExit(
@@ -5332,6 +5336,79 @@ describe('ProviderProxySetLifecycle', () => {
     });
     expect(reapRecordedContainment).toHaveBeenCalledOnce();
     expect(lifecycle.snapshot().states).toEqual(['containment-wait']);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).not.toHaveBeenCalled();
+
+    const supersedingAuthorization = superseding.authorization;
+    if (supersedingAuthorization === null || supersedingAuthorization.kind !== 'authorized') {
+      throw new Error('superseding authorization did not retain ownership');
+    }
+    supersedingAuthorization.capability.handback();
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).toHaveBeenCalledOnce();
+  });
+
+  it('restarts automatic containment after aborted proof collection hands authorization back', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    const address = providerProxySetAddress(authority.setIdentity);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
+    const authorization = lifecycle.authorizeOperatorExit(address);
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${authorization.kind}`);
+    }
+    proveContainmentAbsent.mockClear();
+    const controller = new AbortController();
+    const proofCollection = new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener(
+        'abort',
+        () =>
+          reject(
+            controller.signal.reason instanceof Error
+              ? controller.signal.reason
+              : new Error('proof collection aborted'),
+          ),
+        { once: true },
+      );
+    });
+    const pending = (async () => {
+      try {
+        await proofCollection;
+      } finally {
+        authorization.capability.handback();
+      }
+    })();
+
+    controller.abort(new Error('proof collection aborted'));
+    await expect(pending).rejects.toThrow('proof collection aborted');
+    authorization.capability.handback();
+    expect(proveContainmentAbsent).not.toHaveBeenCalled();
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).toHaveBeenCalledOnce();
   });
 
   it('returns a pending claim disposition when exact-absence delivery has not settled', async () => {

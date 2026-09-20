@@ -169,8 +169,10 @@ describe('coordinator lifecycle startup-failure cleanup', () => {
       const harness = buildStartupFailureHarness(async () => HOLDING_DISPOSAL);
       harness.removeBackendInfoIfOwnerFn.mockReturnValue({
         kind: 'refused',
-        detail: 'unlink failed: EACCES',
-        error: { kind: 'error', name: 'Error', message: 'unlink failed: EACCES' },
+        operation: 'unlink',
+        code: 'filesystem-operation-failed',
+        correlation: 'b'.repeat(64),
+        error: { kind: 'error', name: 'Error', message: 'unlink failed\n/private/discovery-path' },
       });
 
       const outcome = await raceAgainstTimeout(harness.controller.start(), 500);
@@ -179,12 +181,13 @@ describe('coordinator lifecycle startup-failure cleanup', () => {
       if (outcome.kind !== 'rejected') throw new Error('startup-failure cleanup hung on the KB daemon disposal');
 
       expect(harness.removeBackendInfoIfOwnerFn).toHaveBeenCalledWith('startup-failure-kb-disposal');
-      // A refused withdrawal must not vanish silently: the process exits leaving a discovery record naming a
-      // dead instance, and this is the only place that says so.
       expect(errorSpy).toHaveBeenCalledWith(
         expect.stringContaining('backend discovery withdrawal refused during startup-failure cleanup'),
       );
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('unlink failed: EACCES'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('operation=unlink'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('code=filesystem-operation-failed'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(`correlation=${'b'.repeat(64)}`));
+      expect(errorSpy).not.toHaveBeenCalledWith(expect.stringContaining('/private/discovery-path'));
     } finally {
       errorSpy.mockRestore();
     }

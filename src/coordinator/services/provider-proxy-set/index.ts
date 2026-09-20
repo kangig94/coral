@@ -212,6 +212,7 @@ export type ProviderProxySetOperatorExitCapability = Readonly<{
   operatorExitGeneration: number;
   attemptToken: number;
   priorDestructiveAttemptsSettled: Promise<void>;
+  handback(): void;
   [operatorExitCapabilityBrand]: ProviderProxySetLifecycle;
 }>;
 
@@ -1012,6 +1013,7 @@ export class ProviderProxySetLifecycle {
     ProviderProxySetKey,
     ProviderProxySetFencedContainmentProofAuthorization
   >();
+  readonly #settledOperatorExitCapabilities = new WeakSet<ProviderProxySetOperatorExitCapability>();
   #nextSlotId = 1;
   #startupDiscoveryCompleted = false;
 
@@ -2642,18 +2644,17 @@ export class ProviderProxySetLifecycle {
     if (priorFenceAuthorization !== undefined) {
       releaseProviderProxySetContainmentProofFence(priorFenceAuthorization);
     }
-    return {
-      kind: 'authorized',
-      capability: Object.freeze({
-        setIdentity: authorizedSlot.identity,
-        containmentProofAuthorization,
-        notBeforeMonotonicMs,
-        operatorExitGeneration,
-        attemptToken,
-        priorDestructiveAttemptsSettled,
-        [operatorExitCapabilityBrand]: this,
-      }) as ProviderProxySetOperatorExitCapability,
-    };
+    const capability = Object.freeze({
+      setIdentity: authorizedSlot.identity,
+      containmentProofAuthorization,
+      notBeforeMonotonicMs,
+      operatorExitGeneration,
+      attemptToken,
+      priorDestructiveAttemptsSettled,
+      handback: () => this.#handbackOperatorExit(capability),
+      [operatorExitCapabilityBrand]: this,
+    }) as ProviderProxySetOperatorExitCapability;
+    return { kind: 'authorized', capability };
   }
 
   async completeOperatorExit(
@@ -2703,6 +2704,7 @@ export class ProviderProxySetLifecycle {
     let operatorExitFenceTransferred = false;
     const transferOperatorExitFence = (): void => {
       this.#detachOperatorExitFence(capability);
+      this.#settledOperatorExitCapabilities.add(capability);
       operatorExitFenceTransferred = true;
     };
     try {
@@ -3091,10 +3093,7 @@ export class ProviderProxySetLifecycle {
         }),
       });
     } finally {
-      if (!operatorExitFenceTransferred) {
-        this.#resumeAutonomousDisposition(capability);
-        this.#releaseOperatorExitFence(capability);
-      }
+      if (!operatorExitFenceTransferred) this.#handbackOperatorExit(capability);
     }
   }
 
@@ -3104,7 +3103,12 @@ export class ProviderProxySetLifecycle {
       slot === undefined ||
       slot.kind === 'acquiring' ||
       slot.kind === 'capsule-foreign' ||
-      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
+      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity) ||
+      !('operatorExitGeneration' in slot) ||
+      !('attemptToken' in slot) ||
+      slot.operatorExitGeneration !== capability.operatorExitGeneration ||
+      slot.attemptToken !== capability.attemptToken ||
+      this.#operatorExitFenceAuthorizations.get(slot.key) !== capability.containmentProofAuthorization
     ) {
       return;
     }
@@ -3237,6 +3241,13 @@ export class ProviderProxySetLifecycle {
   #releaseOperatorExitFence(capability: ProviderProxySetOperatorExitCapability): void {
     this.#detachOperatorExitFence(capability);
     releaseProviderProxySetContainmentProofFence(capability.containmentProofAuthorization);
+  }
+
+  #handbackOperatorExit(capability: ProviderProxySetOperatorExitCapability): void {
+    if (this.#settledOperatorExitCapabilities.has(capability)) return;
+    this.#settledOperatorExitCapabilities.add(capability);
+    this.#resumeAutonomousDisposition(capability);
+    this.#releaseOperatorExitFence(capability);
   }
 
   #detachOperatorExitFence(capability: ProviderProxySetOperatorExitCapability): void {

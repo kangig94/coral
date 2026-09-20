@@ -27,7 +27,7 @@ import type {
 import type { DurableProcessRetention } from '#src/coordinator/live/durable-transport.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 import type { Runtime } from '#src/runtime/ports.js';
-import type { SerializedThrown } from '#src/infra/error-format.js';
+import type { BackendInfoRemovalResult } from '#src/infra/backend-discovery.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
@@ -218,20 +218,23 @@ const rejectingHook = async (): Promise<void> => {
   throw new Error('hook failed');
 };
 
-// A refusal carrying a real errno code, standing in for the `unlink` failure `removeBackendInfoIfOwner`
-// (backend-discovery.ts) reports: proves `withdraw()` (lifecycle.ts) carries `error` through unchanged
-// rather than re-serializing the formatted `detail` string, which would collapse `code` into `unknown`.
+const unlinkDeniedCorrelation = 'a'.repeat(64);
 const unlinkDeniedRefusal = Object.freeze({
   kind: 'refused' as const,
-  detail: 'unlink denied',
-  error: Object.freeze({ kind: 'error' as const, name: 'Error', code: 'EACCES', message: 'unlink denied' }),
+  operation: 'unlink' as const,
+  code: 'filesystem-operation-failed' as const,
+  correlation: unlinkDeniedCorrelation,
+  error: Object.freeze({
+    kind: 'error' as const,
+    name: 'Error',
+    code: 'EACCES',
+    message: 'unlink denied\n/private/path',
+  }),
 });
 
 function buildRemainderWriteRefusalHarness(
   write: () => boolean,
-  withdrawal: Readonly<{ kind: 'removed' }> | Readonly<{ kind: 'refused'; detail: string; error: SerializedThrown }> = {
-    kind: 'removed',
-  },
+  withdrawal: BackendInfoRemovalResult = { kind: 'removed' },
   hooksOnShutdown: () => Promise<void> = async () => {},
   publicationRace: 'none' | 'verification-unavailable' = 'none',
 ) {
@@ -2392,7 +2395,9 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         finalizationOrder.push('withdraw');
         return {
           kind: 'refused',
-          detail: 'discovery read denied',
+          operation: 'read',
+          code: 'filesystem-operation-failed',
+          correlation: 'c'.repeat(64),
           error: { kind: 'error', name: 'Error', code: 'EACCES', message: 'discovery read denied' },
         };
       },
@@ -2855,18 +2860,20 @@ describe('required provider-proxy shutdown steps', () => {
     {
       label: 'returns false',
       write: () => false,
-      expectedDetail: 'record publication returned false',
+      expectedCode: 'write-returned-false',
+      privateDetail: 'record publication returned false',
     },
     {
       label: 'throws',
       write: () => {
-        throw new Error('remainder storage unavailable');
+        throw new Error('remainder storage unavailable\n/private/remainder-path');
       },
-      expectedDetail: 'remainder storage unavailable',
+      expectedCode: 'filesystem-operation-failed',
+      privateDetail: '/private/remainder-path',
     },
   ])(
     'withdraws discovery and requests nonzero exit when the remainder write $label',
-    async ({ write, expectedDetail }) => {
+    async ({ write, expectedCode, privateDetail }) => {
       const harness = buildRemainderWriteRefusalHarness(write, { kind: 'removed' }, rejectingHook);
 
       await expect(harness.controller.shutdown('replaced')).resolves.toMatchObject({
@@ -2879,7 +2886,8 @@ describe('required provider-proxy shutdown steps', () => {
       expect(harness.onStopped).toHaveBeenCalledWith(1);
       expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'exit:1']);
       expect(harness.logLines.some((line) => line.includes('shutdown remainder write refused'))).toBe(true);
-      expect(harness.logLines.some((line) => line.includes(expectedDetail))).toBe(true);
+      expect(harness.logLines.some((line) => line.includes(`code=${expectedCode}`))).toBe(true);
+      expect(harness.logLines.some((line) => line.includes(privateDetail))).toBe(false);
     },
   );
 
@@ -2905,7 +2913,9 @@ describe('required provider-proxy shutdown steps', () => {
     });
 
     expect(harness.logLines.some((line) => line.includes('publication verification unavailable'))).toBe(true);
-    expect(harness.logLines.some((line) => line.includes('canonical read unavailable'))).toBe(true);
+    expect(harness.logLines.some((line) => line.includes('operation=verify-publication'))).toBe(true);
+    expect(harness.logLines.some((line) => line.includes('code=filesystem-operation-failed'))).toBe(true);
+    expect(harness.logLines.some((line) => line.includes('canonical read unavailable'))).toBe(false);
     expect(harness.logLines.some((line) => line.includes('shutdown remainder write refused'))).toBe(false);
   });
 
@@ -2925,7 +2935,10 @@ describe('required provider-proxy shutdown steps', () => {
     });
 
     expect(harness.order).toEqual(['stopped', 'withdraw', 'record', 'exit:1']);
-    expect(harness.logLines).toContain('backend discovery withdrawal refused (unlink denied)\n');
+    expect(harness.logLines).toContain(
+      `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed correlation=${unlinkDeniedCorrelation}\n`,
+    );
+    expect(harness.logLines.join('')).not.toContain('/private/path');
     await expect(harness.controller.shutdown('replaced')).resolves.toBe(first);
     expect(harness.order).toEqual(['stopped', 'withdraw', 'record', 'exit:1']);
   });
@@ -2943,7 +2956,9 @@ describe('required provider-proxy shutdown steps', () => {
 
     expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'record', 'exit:1']);
     expect(harness.logLines.filter((line) => line.includes('shutdown remainder write refused'))).toHaveLength(2);
-    expect(harness.logLines).toContain('backend discovery withdrawal refused (unlink denied)\n');
+    expect(harness.logLines).toContain(
+      `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed correlation=${unlinkDeniedCorrelation}\n`,
+    );
   });
 
   it('consumes a refused withdrawal-loss rewrite without delaying exit', async () => {
@@ -2963,7 +2978,9 @@ describe('required provider-proxy shutdown steps', () => {
 
     expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'record', 'exit:1']);
     expect(harness.logLines.filter((line) => line.includes('shutdown remainder write refused'))).toEqual([
-      'shutdown remainder write refused (record publication returned false)\n',
+      expect.stringMatching(
+        /^shutdown remainder write refused operation=publish code=write-returned-false correlation=[a-f0-9]{64}\n$/u,
+      ),
     ]);
   });
 
@@ -3012,9 +3029,6 @@ describe('required provider-proxy shutdown steps', () => {
         expect.objectContaining({
           label: 'backend discovery withdrawal',
           remainder: { owner: 'process-exit' },
-          // The withdrawal's own `code` must reach the settlement record — a caller that re-serializes the
-          // formatted `detail` string instead of the carried `error` loses it (see backend-discovery.ts's
-          // `removeBackendInfoIfOwner`).
           settlement: expect.objectContaining({
             cause: 'rejected',
             error: expect.objectContaining({ kind: 'error', code: 'EACCES' }),
@@ -3042,7 +3056,10 @@ describe('required provider-proxy shutdown steps', () => {
         ]),
       }),
     );
-    expect(logLines).toContain('backend discovery withdrawal refused (discovery read denied)\n');
+    expect(logLines).toContain(
+      `backend discovery withdrawal refused operation=read code=filesystem-operation-failed correlation=${'c'.repeat(64)}\n`,
+    );
+    expect(logLines.join('')).not.toContain('discovery read denied');
   });
 
   it("a sigint landing between attempts records the ledger's original reason", async () => {

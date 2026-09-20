@@ -1179,7 +1179,7 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['readable.json', 'unstattable.json']);
   });
 
-  it('reclaims an unstattable-but-readable record as the oldest entry once the known bucket exceeds the cap', () => {
+  it('retains an unstattable readable record until its age becomes observable', () => {
     const storage = storageWith(
       [...Array.from({ length: 32 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 33)],
       { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
@@ -1187,17 +1187,13 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    // A decodable record with no age evidence is not exempt from the bound its readable content would
-    // otherwise compete under (design-philosophy.md principle 11) — it joins the known bucket ranked as the
-    // oldest entry, so it is the one reclaimed once that bucket exceeds the cap, even though its real mtime
-    // (33) is the newest of the group.
-    expect(storage.fileNames()).toHaveLength(32);
-    expect(storage.fileNames()).not.toContain('unstattable.json');
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('unstattable.json');
     expect(storage.fileNames()).toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-31.json');
   });
 
-  it('prunes the oldest known record and an unstattable record together once they exceed the cap', () => {
+  it('prunes only the oldest known record while retaining an unstattable record', () => {
     const storage = storageWith(
       [...Array.from({ length: 33 }, (_, index) => fileAt(`instance-${index}`, index + 1)), fileAt('unstattable', 34)],
       { refuseStatFor: 'unstattable.json', statErrorCode: 'EIO' },
@@ -1205,11 +1201,8 @@ describe('shutdown remainder status', () => {
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    // The unstattable record competes in the same bucket as every other decodable record, ranked as its
-    // oldest entry (see the previous test); with 34 entries against the 32-slot cap, it and the next-oldest
-    // known record by real mtime are both reclaimed.
-    expect(storage.fileNames()).toHaveLength(32);
-    expect(storage.fileNames()).not.toContain('unstattable.json');
+    expect(storage.fileNames()).toHaveLength(33);
+    expect(storage.fileNames()).toContain('unstattable.json');
     expect(storage.fileNames()).not.toContain('instance-0.json');
     expect(storage.fileNames()).toContain('instance-1.json');
     expect(storage.fileNames()).toContain('instance-32.json');
@@ -1552,7 +1545,12 @@ describe('shutdown remainder status', () => {
         mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
-    ).toMatchObject({ kind: 'refused', detail: expect.stringContaining('missing file') });
+    ).toMatchObject({
+      kind: 'refused',
+      operation: 'publish',
+      code: 'filesystem-operation-failed',
+      diagnostic: { message: expect.stringContaining('missing file') },
+    });
     expect(storage.readPublished('current-instance')).toBe('third-party');
   });
 
@@ -1579,7 +1577,12 @@ describe('shutdown remainder status', () => {
         mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
-    ).toMatchObject({ kind: 'refused', detail: expect.stringContaining('atomic rename refused') });
+    ).toMatchObject({
+      kind: 'refused',
+      operation: 'publish',
+      code: 'filesystem-operation-failed',
+      diagnostic: { message: expect.stringContaining('atomic rename refused') },
+    });
     expect(storage.fileNames()).toEqual(['declined.json.stage.4242.unobserved.tmp']);
 
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR, observeStageWriter: () => 'absent' });
@@ -1738,7 +1741,7 @@ describe('shutdown remainder status', () => {
     expect(observedSubjects).toEqual(new Set(files.map(({ name }) => name)));
   });
 
-  it('rotates stable refusal cohorts across pruner restarts', () => {
+  it('uses wall-clock windows to distribute initial refusal snapshots without claiming restart progress', () => {
     const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
       name: `refusal-${String(index).padStart(3, '0')}.json`,
       value: '{not-json',
@@ -1769,6 +1772,13 @@ describe('shutdown remainder status', () => {
     const omittedSubject = files.find(({ name }) => !firstSubjects.has(name))?.name;
     if (omittedSubject === undefined) throw new Error('expected one refusal outside the first bounded cohort');
 
+    const immediateRestartSubjects = new Set(
+      startPruner()
+        .readCleanupRefusalSnapshot()
+        .refusals.map(({ subject }) => subject.label),
+    );
+    expect(immediateRestartSubjects).toEqual(firstSubjects);
+
     now += 60_000;
     const restartedSubjects = new Set(
       startPruner()
@@ -1777,6 +1787,14 @@ describe('shutdown remainder status', () => {
     );
     expect(restartedSubjects).toContain(omittedSubject);
     expect(new Set([...firstSubjects, ...restartedSubjects])).toEqual(new Set(files.map(({ name }) => name)));
+
+    now += 60_000;
+    const wrappedSubjects = new Set(
+      startPruner()
+        .readCleanupRefusalSnapshot()
+        .refusals.map(({ subject }) => subject.label),
+    );
+    expect(wrappedSubjects).toEqual(firstSubjects);
   });
 
   it('assigns a replacement at the same path a new cleanup identity', () => {
@@ -2418,7 +2436,12 @@ describe('shutdown remainder status', () => {
         mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
-    ).toMatchObject({ kind: 'refused', detail: expect.stringContaining('rename refused') });
+    ).toMatchObject({
+      kind: 'refused',
+      operation: 'publish',
+      code: 'filesystem-operation-failed',
+      diagnostic: { message: expect.stringContaining('rename refused') },
+    });
     expect(storage.fileNames()).toEqual([]);
   });
 
@@ -2450,7 +2473,13 @@ describe('shutdown remainder status', () => {
         mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
-    ).toEqual({ kind: 'refused', detail: 'record publication returned false' });
+    ).toMatchObject({
+      kind: 'refused',
+      operation: 'publish',
+      code: 'write-returned-false',
+      correlation: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      diagnostic: { kind: 'unknown', message: 'record publication returned false' },
+    });
     expect(storage.fileNames()).toEqual(['existing-instance.json']);
   });
 

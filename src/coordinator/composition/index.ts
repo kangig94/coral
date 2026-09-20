@@ -1250,14 +1250,18 @@ export function createCoordinatorCore(
         effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
       };
     }
-    const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
-      authorization.capability.containmentProofAuthorization,
-      getProgressStore().getDb(),
-      signal ?? new AbortController().signal,
-    );
-    return contract === 'boolean'
-      ? lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
-      : lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
+    try {
+      const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
+        authorization.capability.containmentProofAuthorization,
+        getProgressStore().getDb(),
+        signal ?? new AbortController().signal,
+      );
+      return contract === 'boolean'
+        ? await lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
+        : await lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
+    } finally {
+      authorization.capability.handback();
+    }
   };
 
   const rpcPorts: RpcPorts = {
