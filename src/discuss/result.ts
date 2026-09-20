@@ -2,7 +2,7 @@ import { isRecord } from '../infra/json.js';
 
 export type DiscussToolResult =
   | { ok: true; data: unknown }
-  | { ok: false; code: string; message: string; remediation?: string; detail?: unknown };
+  | { ok: false; code: string; message: string; detail?: unknown };
 
 export function discussToolSuccess(data: unknown): DiscussToolResult {
   return { ok: true, data };

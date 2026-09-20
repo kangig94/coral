@@ -1970,6 +1970,23 @@ describe('cli format', () => {
       expect(text).toContain('Cleanup refusal subjects reclassified by coordinator and now resolved: 7');
     });
 
+    it('renders clock-skew evidence without presenting the future record as recent', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_clock_skew',
+          futureDatedRecordCount: 1,
+          unusableEntryCount: 0,
+          unreadableRecordNames: [],
+        },
+      });
+
+      expect(text).toContain(
+        'Shutdown remainder clock-skew evidence: 1 readable record(s) are dated after this status observation and were not selected as recent.',
+      );
+      expect(text).not.toContain('Coral recorded a recent shutdown');
+    });
+
     it('renders coordinator and status-process observations separately for the same raw path', () => {
       const subject = shutdownRemainderFilesystemSubject('/run/shutdown-remainder.v1');
       const text = formatBackendStatus({
@@ -2054,6 +2071,12 @@ describe('cli format', () => {
           absentShutdownRemainderCleanupRefusalCount: 7,
           unobservableShutdownRemainderCleanupRefusalCount: 11,
           uncheckedShutdownRemainderCleanupRefusalCount: 129,
+          overflowedShutdownRemainderCleanupRefusalCount: 17,
+          shutdownRemainderCleanupObservedAt: '2026-09-20T00:00:00.000Z',
+          shutdownRemainderCleanupRetry: {
+            state: 'stopped-until-restart',
+            owner: 'next-coordinator-start',
+          },
         },
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
@@ -2072,6 +2095,10 @@ describe('cli format', () => {
       expect(text).toContain('Cleanup refusal subjects rechecked by coordinator but not observable: 11');
       expect(text).toContain(
         'Cleanup refusal subjects retained by coordinator but not rechecked in this snapshot: 129',
+      );
+      expect(text).toContain('Cleanup refusal subjects observed by coordinator but omitted from the bounded list: 17');
+      expect(text).toContain(
+        'Cleanup-refusal snapshot observed at 2026-09-20T00:00:00.000Z; retry is stopped until the next coordinator startup.',
       );
       expect(text).toContain(
         `Cleanup refusal observed by status process: label=${JSON.stringify(directory)} operation=scan-directory errno=EIO`,
@@ -2218,6 +2245,9 @@ describe('cli format', () => {
           absentCount: 0,
           unobservableCount: 0,
           uncheckedCount: 0,
+          overflowedCount: 0,
+          observedAt: null,
+          retry: null,
           malformedRowCount: 0,
         },
       });

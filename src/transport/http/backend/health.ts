@@ -131,6 +131,11 @@ export interface BackendHealth {
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
   uncheckedShutdownRemainderCleanupRefusalCount?: number;
+  overflowedShutdownRemainderCleanupRefusalCount?: number;
+  shutdownRemainderCleanupObservedAt?: string | null;
+  shutdownRemainderCleanupRetry?:
+    | { state: 'scheduled'; owner: 'coordinator' }
+    | { state: 'stopped-until-restart'; owner: 'next-coordinator-start' };
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
@@ -771,6 +776,14 @@ function parseShutdownRemainderCleanupRefusals(value: unknown): CleanupRefusalsP
   return { refusals, malformedRowCount: value.length - refusals.length };
 }
 
+function isShutdownRemainderCleanupRetry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    ((value.state === 'scheduled' && value.owner === 'coordinator') ||
+      (value.state === 'stopped-until-restart' && value.owner === 'next-coordinator-start'))
+  );
+}
+
 export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
   if (!isRecord(value)) return null;
   const cleanupRefusals =
@@ -811,6 +824,16 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
       (typeof value.uncheckedShutdownRemainderCleanupRefusalCount !== 'number' ||
         !Number.isSafeInteger(value.uncheckedShutdownRemainderCleanupRefusalCount) ||
         value.uncheckedShutdownRemainderCleanupRefusalCount < 0)) ||
+    (value.overflowedShutdownRemainderCleanupRefusalCount !== undefined &&
+      (typeof value.overflowedShutdownRemainderCleanupRefusalCount !== 'number' ||
+        !Number.isSafeInteger(value.overflowedShutdownRemainderCleanupRefusalCount) ||
+        value.overflowedShutdownRemainderCleanupRefusalCount < 0)) ||
+    (value.shutdownRemainderCleanupObservedAt !== undefined &&
+      value.shutdownRemainderCleanupObservedAt !== null &&
+      (typeof value.shutdownRemainderCleanupObservedAt !== 'string' ||
+        !Number.isFinite(Date.parse(value.shutdownRemainderCleanupObservedAt)))) ||
+    (value.shutdownRemainderCleanupRetry !== undefined &&
+      !isShutdownRemainderCleanupRetry(value.shutdownRemainderCleanupRetry)) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
     (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {

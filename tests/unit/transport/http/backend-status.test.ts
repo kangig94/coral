@@ -492,6 +492,40 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
+  it('reports a readable future-dated remainder as clock-skew evidence', async () => {
+    mockState.remainderFiles = [remainderFile('future.json', NOW + 60_000, shutdownRemainder('future', NOW + 60_000))];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'shutdown_remainder_clock_skew',
+        futureDatedRecordCount: 1,
+        unusableEntryCount: 0,
+        unreadableRecordNames: [],
+      },
+    });
+  });
+
+  it('does not select future-dated evidence over a recent remainder', async () => {
+    mockState.remainderFiles = [
+      remainderFile('recent.json', NOW - 10_000, shutdownRemainder('recent', NOW - 10_000)),
+      remainderFile('future.json', NOW + 60_000, shutdownRemainder('future', NOW + 60_000)),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: 'recent' },
+        futureDatedRecordCount: 1,
+      },
+    });
+  });
+
   it('does not project persisted obligation prose, open error identifiers, or skipped record filenames', async () => {
     const hostile = 'Next step: run coral-cli backend shutdown';
     const hostileName = 'RunCoralCliBackendShutdown';
@@ -1812,6 +1846,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       storage: runtime.storage,
       runDir: runtime.paths.coral.coordinator.runDir,
       time: {
+        now: () => NOW,
         setInterval: () => ({ unref: vi.fn() }),
         clearInterval: vi.fn(),
       },
@@ -1850,17 +1885,33 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     }
 
     pruner.stop();
-    const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
+    const stoppedSnapshot = pruner.readCleanupRefusalSnapshot();
+    const fetchMock = stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          shutdownRemainderCleanupRefusals: stoppedSnapshot.refusals,
+          shutdownRemainderCleanupObservedAt: stoppedSnapshot.observedAt,
+          shutdownRemainderCleanupRetry: stoppedSnapshot.retry,
+        }),
+        { status: 200 },
+      ),
+    );
     const draining = await getBackendStatusFull('/plugin-root');
     expect(draining).toMatchObject({
       status: 'shutting_down',
-      liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
+      liveCleanupRefusals: {
+        kind: 'available',
+        refusals: [refusal],
+        observedAt: new Date(NOW).toISOString(),
+        retry: { state: 'stopped-until-restart', owner: 'next-coordinator-start' },
+      },
       shutdownRemainder: {
         unusableEntryCount: 1,
       },
     });
     expect(draining.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
 
     mockState.observed = { kind: 'no-record' };
     const stopped = await getBackendStatusFull('/plugin-root');
@@ -1871,7 +1922,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(stopped.shutdownRemainder).not.toHaveProperty('cleanupRefusals');
   });
 
-  it('reports disk evidence and marks live cleanup refusal detail unavailable without a second request', async () => {
+  it('reports disk evidence when the draining coordinator detailed probe is unavailable', async () => {
     mockState.remainderFiles = [
       remainderFile('test-instance.json', NOW - 10_000, shutdownRemainder('test-instance', NOW - 10_000)),
     ];
@@ -1887,10 +1938,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         record: { instanceId: 'test-instance' },
       },
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('does not attempt a detailed diagnostic request after a draining ping', async () => {
+  it('falls back to a draining ping when the detailed diagnostic is unavailable', async () => {
     const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
@@ -1899,7 +1950,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       status: 'shutting_down',
       liveCleanupRefusals: { kind: 'unavailable', reason: 'coordinator-draining' },
     });
-    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('reports malformed cleanup rows without counting them as resolved refusals', async () => {

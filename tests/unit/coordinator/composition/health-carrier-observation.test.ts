@@ -633,6 +633,9 @@ describe('health local carrier observation', () => {
         absentRefusalCount: 7,
         unobservableRefusalCount: 9,
         uncheckedRefusalCount: 11,
+        overflowedRefusalCount: 13,
+        observedAt: '2026-09-20T00:00:00.000Z',
+        retry: { state: 'stopped-until-restart', owner: 'next-coordinator-start' },
       });
 
     const decoded = parseBackendHealth(readHealth());
@@ -643,6 +646,12 @@ describe('health local carrier observation', () => {
     expect(decoded.health.absentShutdownRemainderCleanupRefusalCount).toBe(7);
     expect(decoded.health.unobservableShutdownRemainderCleanupRefusalCount).toBe(9);
     expect(decoded.health.uncheckedShutdownRemainderCleanupRefusalCount).toBe(11);
+    expect(decoded.health.overflowedShutdownRemainderCleanupRefusalCount).toBe(13);
+    expect(decoded.health.shutdownRemainderCleanupObservedAt).toBe('2026-09-20T00:00:00.000Z');
+    expect(decoded.health.shutdownRemainderCleanupRetry).toEqual({
+      state: 'stopped-until-restart',
+      owner: 'next-coordinator-start',
+    });
     expect(readCleanupSnapshot).toHaveBeenCalledOnce();
   });
 

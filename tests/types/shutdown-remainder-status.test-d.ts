@@ -68,6 +68,7 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].owner'
   | 'unusableEntryCount'
   | 'notInspectedEntryCount'
+  | 'futureDatedRecordCount'
   | 'unreadableRecordNames[]'
   | 'cleanupRefusals'
   | 'cleanupRefusals[].subject.identity'

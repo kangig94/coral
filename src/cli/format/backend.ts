@@ -697,6 +697,9 @@ type CleanupRefusalObservation = Readonly<{
   absentRefusalCount: number;
   unobservableRefusalCount: number;
   uncheckedRefusalCount: number;
+  overflowedRefusalCount: number;
+  observedAt: string | null;
+  retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
 }>;
 
 type LiveShutdownRemainderEvidence =
@@ -733,6 +736,9 @@ function formatDaemonStatus(result: BackendStatusFull): string {
           absentRefusalCount: result.health.absentShutdownRemainderCleanupRefusalCount ?? 0,
           unobservableRefusalCount: result.health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
           uncheckedRefusalCount: result.health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
+          overflowedRefusalCount: result.health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
+          observedAt: result.health.shutdownRemainderCleanupObservedAt ?? null,
+          retry: result.health.shutdownRemainderCleanupRetry ?? null,
         },
         malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
@@ -766,6 +772,9 @@ function formatDaemonStatus(result: BackendStatusFull): string {
                 absentRefusalCount: result.liveCleanupRefusals.absentCount,
                 unobservableRefusalCount: result.liveCleanupRefusals.unobservableCount,
                 uncheckedRefusalCount: result.liveCleanupRefusals.uncheckedCount,
+                overflowedRefusalCount: result.liveCleanupRefusals.overflowedCount,
+                observedAt: result.liveCleanupRefusals.observedAt,
+                retry: result.liveCleanupRefusals.retry,
               },
               malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
             }
@@ -1300,11 +1309,22 @@ function formatShutdownRemainderReport(
   liveEvidence: LiveShutdownRemainderEvidence,
 ): string {
   const lines = report?.status === 'recent_shutdown_remainder' ? formatRecentShutdownRemainderReport(report) : [];
+  if (report?.status === 'shutdown_remainder_clock_skew') {
+    lines.push(
+      `Shutdown remainder clock-skew evidence: ${report.futureDatedRecordCount} readable record(s) are dated after this status observation and were not selected as recent.`,
+    );
+  }
   const directoryEvidence =
     report?.status === 'recent_shutdown_remainder' ||
+    report?.status === 'shutdown_remainder_clock_skew' ||
     (report?.status === 'shutdown_remainder_unreadable' && report.reason === 'records-skipped')
       ? report
       : undefined;
+  if (report?.status !== 'shutdown_remainder_clock_skew' && (directoryEvidence?.futureDatedRecordCount ?? 0) > 0) {
+    lines.push(
+      `Shutdown remainder clock-skew evidence: ${directoryEvidence?.futureDatedRecordCount} readable record(s) are dated after this status observation and were not selected as recent.`,
+    );
+  }
   const notInspectedEntryCount = directoryEvidence?.notInspectedEntryCount ?? 0;
   const unusableEntryCount = (directoryEvidence?.unusableEntryCount ?? 0) + notInspectedEntryCount;
   if (unusableEntryCount > 0) {
@@ -1335,6 +1355,9 @@ function formatShutdownRemainderReport(
         absentRefusalCount: 0,
         unobservableRefusalCount: 0,
         uncheckedRefusalCount: 0,
+        overflowedRefusalCount: 0,
+        observedAt: null,
+        retry: null,
       }),
     );
   }
@@ -1418,7 +1441,7 @@ function formatShutdownRemainderEvidenceLines(
 }
 
 function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObservation): string[] {
-  return [
+  const lines = [
     ...observation.refusals.map(
       (refusal) =>
         `Cleanup refusal observed by ${observation.source}: label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
@@ -1443,7 +1466,21 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
       : [
           `Cleanup refusal subjects retained by ${observation.source} but not rechecked in this snapshot: ${observation.uncheckedRefusalCount}`,
         ]),
+    ...(observation.overflowedRefusalCount === 0
+      ? []
+      : [
+          `Cleanup refusal subjects observed by ${observation.source} but omitted from the bounded list: ${observation.overflowedRefusalCount}`,
+        ]),
   ];
+  if (lines.length === 0 || observation.source !== 'coordinator') return lines;
+  const observedAt = observation.observedAt ?? 'unavailable';
+  const retry =
+    observation.retry?.state === 'scheduled'
+      ? 'scheduled by the coordinator'
+      : observation.retry?.state === 'stopped-until-restart'
+        ? 'stopped until the next coordinator startup'
+        : 'unavailable';
+  return [...lines, `Cleanup-refusal snapshot observed at ${observedAt}; retry is ${retry}.`];
 }
 
 function formatSkippedShutdownRemainderEntries(

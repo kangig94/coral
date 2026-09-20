@@ -257,6 +257,7 @@ type OperatorFacingShutdownRemainderCleanup = Readonly<{
 type OperatorFacingShutdownRemainderDirectoryEvidence = Readonly<{
   unusableEntryCount: number;
   notInspectedEntryCount?: number;
+  futureDatedRecordCount?: number;
   unreadableRecordNames: readonly string[];
 }>;
 
@@ -282,6 +283,9 @@ type BackendStatus =
       absentShutdownRemainderCleanupRefusalCount?: number;
       unobservableShutdownRemainderCleanupRefusalCount?: number;
       uncheckedShutdownRemainderCleanupRefusalCount?: number;
+      overflowedShutdownRemainderCleanupRefusalCount?: number;
+      shutdownRemainderCleanupObservedAt?: string | null;
+      shutdownRemainderCleanupRetry?: BackendHealth['shutdownRemainderCleanupRetry'];
       malformedShutdownRemainderCleanupRefusalRowCount?: number;
       skippedProviderProxySetRows: number;
       skippedProviderProxySetTokens: readonly string[];
@@ -312,6 +316,12 @@ export type ShutdownRemainderReport =
       reason: 'records-skipped';
     }> &
       OperatorFacingShutdownRemainderCleanup &
+      OperatorFacingShutdownRemainderDirectoryEvidence)
+  | (Readonly<{
+      status: 'shutdown_remainder_clock_skew';
+      futureDatedRecordCount: number;
+    }> &
+      OperatorFacingShutdownRemainderCleanup &
       OperatorFacingShutdownRemainderDirectoryEvidence);
 
 export type BackendStatusFull =
@@ -326,6 +336,9 @@ export type BackendStatusFull =
             absentCount: number;
             unobservableCount: number;
             uncheckedCount: number;
+            overflowedCount: number;
+            observedAt: string | null;
+            retry: BackendHealth['shutdownRemainderCleanupRetry'] | null;
             malformedRowCount: number;
           }>
         | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
@@ -603,7 +616,10 @@ function readRecentShutdownRemainder(
   const directory = shutdownRemainderRecordDirectory(runDir);
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, Math.floor(now / 60_000));
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, undefined, {
+      kind: 'probabilistic',
+      generation: Math.floor(now / 60_000),
+    });
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', error);
     if (refusal === null) {
@@ -636,34 +652,40 @@ function readRecentShutdownRemainder(
     .map(({ name }) => name);
   const unusableEntryCount = scopedSkippedRecords.length;
   const notInspectedEntryCount = (scan.unscannedStageCount ?? 0) + (scan.unscannedRecordCount ?? 0);
+  const scopedRecords = scan.records.flatMap((candidate) => {
+    const recordedAt = parseIsoTimestamp(candidate.recordedAt);
+    const hasEntry =
+      candidate.entries.length > 0 ||
+      scan.skippedEntries.some((entry) => entry.recordInstanceId === candidate.instanceId);
+    return hasEntry &&
+      Number.isFinite(recordedAt) &&
+      (scope.kind === 'directory' ||
+        (scope.instanceId !== undefined && candidate.instanceId === scope.instanceId && recordedAt >= scope.startedAt))
+      ? [{ candidate, recordedAt }]
+      : [];
+  });
+  const futureDatedRecordCount = scopedRecords.filter(({ recordedAt }) => recordedAt > now).length;
   const directoryEvidence: OperatorFacingShutdownRemainderDirectoryEvidence = {
     unusableEntryCount,
     ...(notInspectedEntryCount === 0 ? {} : { notInspectedEntryCount }),
+    ...(futureDatedRecordCount === 0 ? {} : { futureDatedRecordCount }),
     unreadableRecordNames,
   };
-  const record = scan.records
-    .flatMap((candidate) => {
-      const recordedAt = parseIsoTimestamp(candidate.recordedAt);
-      const hasEntry =
-        candidate.entries.length > 0 ||
-        scan.skippedEntries.some((entry) => entry.recordInstanceId === candidate.instanceId);
-      return hasEntry &&
-        Number.isFinite(recordedAt) &&
-        (scope.kind === 'directory' ||
-          (scope.instanceId !== undefined &&
-            candidate.instanceId === scope.instanceId &&
-            recordedAt >= scope.startedAt)) &&
-        recordedAt <= now &&
-        now - recordedAt <= RECENT_COORDINATOR_RECORD_MS
-        ? [{ candidate, recordedAt }]
-        : [];
-    })
+  const record = scopedRecords
+    .filter(({ recordedAt }) => recordedAt <= now && now - recordedAt <= RECENT_COORDINATOR_RECORD_MS)
     .sort(
       (left, right) =>
         left.recordedAt - right.recordedAt || left.candidate.instanceId.localeCompare(right.candidate.instanceId),
     )
     .at(-1)?.candidate;
   if (record === undefined) {
+    if (futureDatedRecordCount > 0) {
+      return {
+        status: 'shutdown_remainder_clock_skew',
+        ...directoryEvidence,
+        futureDatedRecordCount,
+      };
+    }
     if (unusableEntryCount === 0 && notInspectedEntryCount === 0) return null;
     return {
       status: 'shutdown_remainder_unreadable',
@@ -829,6 +851,9 @@ async function probeDetailedHealth(
         absentCount: health.absentShutdownRemainderCleanupRefusalCount ?? 0,
         unobservableCount: health.unobservableShutdownRemainderCleanupRefusalCount ?? 0,
         uncheckedCount: health.uncheckedShutdownRemainderCleanupRefusalCount ?? 0,
+        overflowedCount: health.overflowedShutdownRemainderCleanupRefusalCount ?? 0,
+        observedAt: health.shutdownRemainderCleanupObservedAt ?? null,
+        retry: health.shutdownRemainderCleanupRetry ?? null,
         malformedRowCount: malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
       });
     }
@@ -945,7 +970,16 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
   let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-    result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
+    if (ping?.status === 'shutting_down') {
+      try {
+        const detailed = await probeDetailedHealth(info, notOurCoordinator, unreachable);
+        result = detailed.status === 'shutting_down' ? detailed : ping;
+      } catch {
+        result = ping;
+      }
+    } else {
+      result = ping ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
+    }
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels

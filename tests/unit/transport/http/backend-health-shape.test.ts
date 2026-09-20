@@ -98,6 +98,9 @@ describe('/health typed shape (AC10a)', () => {
         absentShutdownRemainderCleanupRefusalCount: 4,
         unobservableShutdownRemainderCleanupRefusalCount: 6,
         uncheckedShutdownRemainderCleanupRefusalCount: 5,
+        overflowedShutdownRemainderCleanupRefusalCount: 7,
+        shutdownRemainderCleanupObservedAt: '2026-09-20T00:00:00.000Z',
+        shutdownRemainderCleanupRetry: { state: 'scheduled', owner: 'coordinator' },
       }),
     ).toBe(true);
   });
@@ -187,6 +190,14 @@ describe('/health typed shape (AC10a)', () => {
     expect(isBackendHealth({ ...HEALTHY_BASE, absentShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, unobservableShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
     expect(isBackendHealth({ ...HEALTHY_BASE, uncheckedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, overflowedShutdownRemainderCleanupRefusalCount: -1 })).toBe(false);
+    expect(isBackendHealth({ ...HEALTHY_BASE, shutdownRemainderCleanupObservedAt: 'not-a-time' })).toBe(false);
+    expect(
+      isBackendHealth({
+        ...HEALTHY_BASE,
+        shutdownRemainderCleanupRetry: { state: 'scheduled', owner: 'next-coordinator-start' },
+      }),
+    ).toBe(false);
     expect(
       isBackendHealth({
         ...HEALTHY_BASE,

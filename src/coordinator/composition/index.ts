@@ -1467,6 +1467,9 @@ export function createCoordinatorCore(
           absentRefusalCount: 0,
           unobservableRefusalCount: 0,
           uncheckedRefusalCount: 0,
+          overflowedRefusalCount: 0,
+          observedAt: null,
+          retry: { state: 'scheduled' as const, owner: 'coordinator' as const },
         };
 
         let activeJobs = 0;
@@ -1653,6 +1656,13 @@ export function createCoordinatorCore(
             : {
                 uncheckedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.uncheckedRefusalCount,
               }),
+          ...(shutdownRemainderCleanup.overflowedRefusalCount === 0
+            ? {}
+            : {
+                overflowedShutdownRemainderCleanupRefusalCount: shutdownRemainderCleanup.overflowedRefusalCount,
+              }),
+          shutdownRemainderCleanupObservedAt: shutdownRemainderCleanup.observedAt,
+          shutdownRemainderCleanupRetry: shutdownRemainderCleanup.retry,
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
           ...(systemProviderScope === undefined

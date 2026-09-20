@@ -366,6 +366,11 @@ export type HealthSnapshot = {
   absentShutdownRemainderCleanupRefusalCount?: number;
   unobservableShutdownRemainderCleanupRefusalCount?: number;
   uncheckedShutdownRemainderCleanupRefusalCount?: number;
+  overflowedShutdownRemainderCleanupRefusalCount?: number;
+  shutdownRemainderCleanupObservedAt?: string | null;
+  shutdownRemainderCleanupRetry?:
+    | { state: 'scheduled'; owner: 'coordinator' }
+    | { state: 'stopped-until-restart'; owner: 'next-coordinator-start' };
   /**
    * Carrier coverage is observational even when complete. Incident-only fields remain omitted when healthy
    * so operators can still grep for blocked writers and stuck consumers.

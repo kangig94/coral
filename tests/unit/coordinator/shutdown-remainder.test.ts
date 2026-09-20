@@ -34,6 +34,11 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const RUN_DIR = '/run';
 const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
+const SCHEDULED_SNAPSHOT_METADATA = {
+  overflowedRefusalCount: 0,
+  observedAt: null,
+  retry: { state: 'scheduled', owner: 'coordinator' },
+} as const;
 
 type RemainderStorage = Pick<
   StoragePort,
@@ -60,6 +65,7 @@ function storageWith(
     publish?: boolean;
     refusePrune?: boolean;
     refusePruneWhen?: (name: string, attempt: number) => boolean;
+    pruneErrorCode?: string;
     refuseStatFor?: string;
     statErrorCode?: string;
     refuseLstatFor?: string;
@@ -180,7 +186,8 @@ function storageWith(
       const attempt = (pruneAttempts.get(name) ?? 0) + 1;
       pruneAttempts.set(name, attempt);
       if (options.refusePrune === true || options.refusePruneWhen?.(name, attempt) === true) {
-        throw new Error('prune refused');
+        const error = new Error('prune refused');
+        throw options.pruneErrorCode === undefined ? error : Object.assign(error, { code: options.pruneErrorCode });
       }
       if (!files.delete(path)) throw Object.assign(new Error('missing file'), { code: 'ENOENT' });
     }),
@@ -1247,7 +1254,7 @@ describe('shutdown remainder status', () => {
     );
   });
 
-  it('rotates past 128 persistent unknowns even when every deletion would be refused', () => {
+  it('samples past 128 persistent unknowns across probabilistic generations', () => {
     const unknownFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) =>
       fileAt(`a-unknown-${String(index).padStart(3, '0')}`, index + 1),
     );
@@ -1263,7 +1270,10 @@ describe('shutdown remainder status', () => {
     });
 
     const scanAt = (generation: number) =>
-      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, generation);
+      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, {
+        kind: 'probabilistic',
+        generation,
+      });
     const hiddenGeneration = Array.from({ length: 1_000 }, (_, generation) => generation).find(
       (generation) => scanAt(generation).records.length === 0,
     );
@@ -1474,7 +1484,7 @@ describe('shutdown remainder status', () => {
     },
   );
 
-  it('rotates a bounded stage scan without starving a published record', () => {
+  it('keeps a probabilistic sample stable within one generation and changes it across generations', () => {
     const malformedStages = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
       name: `held-${index}.json.stage.bad`,
       value: '{}',
@@ -1489,9 +1499,18 @@ describe('shutdown remainder status', () => {
     expect(vi.mocked(storage.lstatSync).mock.calls.length + vi.mocked(storage.readFileSync).mock.calls.length).toBe(
       SHUTDOWN_REMAINDER_SCAN_LIMIT,
     );
+    expect(
+      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, {
+        kind: 'probabilistic',
+        generation: 0,
+      }),
+    ).toEqual(scan);
 
     const rotated = [1, 2].map((selectionGeneration) =>
-      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, selectionGeneration),
+      scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, {
+        kind: 'probabilistic',
+        generation: selectionGeneration,
+      }),
     );
     const inspectedStageNames = new Set(
       [scan, ...rotated]
@@ -1502,7 +1521,7 @@ describe('shutdown remainder status', () => {
     expect(inspectedStageNames).toEqual(new Set(malformedStages.map(({ name }) => name)));
   });
 
-  it('does not let arrivals before a record move it with the scan generation', () => {
+  it('can sample a fixed record across generations while the population changes', () => {
     const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) =>
       fileAt(`a-${String(index).padStart(3, '0')}`, index + 1),
     );
@@ -1512,13 +1531,10 @@ describe('shutdown remainder status', () => {
     for (let generation = 0; generation < 1_000 && !targetObserved; generation += 1) {
       const instanceId = `00-new-${generation}`;
       storage.writeAtomicSync(join(REMAINDER_DIRECTORY, `${instanceId}.json`), JSON.stringify(recordAt(instanceId)));
-      targetObserved = scanShutdownRemainderRecords(
-        storage,
-        REMAINDER_DIRECTORY,
-        undefined,
-        undefined,
+      targetObserved = scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY, undefined, undefined, {
+        kind: 'probabilistic',
         generation,
-      ).records.some(({ instanceId: observedId }) => observedId === 'z-target');
+      }).records.some(({ instanceId: observedId }) => observedId === 'z-target');
     }
 
     expect(targetObserved).toBe(true);
@@ -1590,7 +1606,7 @@ describe('shutdown remainder status', () => {
     });
   });
 
-  it('bounds retained cleanup refusals and leaves overflow explicitly not inspected', () => {
+  it('bounds reported cleanup refusals without relabelling overflow as unchecked', () => {
     const files = Array.from({ length: 300 }, (_, index) => ({
       name: 'corrupt-' + String(index).padStart(3, '0') + '.json',
       value: '{not-json',
@@ -1616,11 +1632,62 @@ describe('shutdown remainder status', () => {
       resolvedRefusalCount: 0,
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
-      uncheckedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
+      uncheckedRefusalCount: 0,
+      overflowedRefusalCount: 300 - SHUTDOWN_REMAINDER_SCAN_LIMIT,
     });
     expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.lstatSync).not.toHaveBeenCalled();
+  });
+
+  it('keeps overflowed retry failures distinct from resolved and unchecked subjects', () => {
+    const zFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
+      name: `z-${String(index).padStart(3, '0')}.json`,
+      value: '{not-json',
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(zFiles, { refusePrune: true, pruneErrorCode: 'EACCES' });
+    let scheduled: (() => void) | null = null;
+    let now = Date.parse('2026-09-20T00:00:00.000Z');
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        now: () => now,
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    expect(pruner.start()?.cleanup).toMatchObject({ kind: 'refused', refusals: expect.any(Array) });
+    for (let index = 0; index < SHUTDOWN_REMAINDER_SCAN_LIMIT; index += 1) {
+      const name = `a-${String(index).padStart(3, '0')}.json`;
+      storage.writeAtomicSync(join(REMAINDER_DIRECTORY, name), '{not-json');
+    }
+    now += 60_000;
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    periodic();
+
+    const snapshot = pruner.readCleanupRefusalSnapshot();
+    expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    expect(snapshot.refusals.every(({ subject }) => subject.label.startsWith('a-'))).toBe(true);
+    expect(snapshot).toMatchObject({
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+      overflowedRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
+      observedAt: '2026-09-20T00:01:00.000Z',
+      retry: { state: 'scheduled', owner: 'coordinator' },
+    });
+    expect(storage.fileNames()).toContain('z-000.json');
+    expect(vi.mocked(storage.unlinkSync).mock.calls.filter(([path]) => basename(path) === 'z-000.json')).toHaveLength(
+      2,
+    );
   });
 
   it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
@@ -1647,6 +1714,7 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
@@ -1658,10 +1726,11 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
   });
 
-  it('keeps an unobservable reclassification distinct from work not inspected', () => {
+  it('uses a successful content reclassification despite an inconclusive lexical metadata read', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (_name, attempt) => attempt === 1,
       refuseLstatFor: 'corrupt.json',
@@ -1687,10 +1756,11 @@ describe('shutdown remainder status', () => {
     periodic();
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [],
-      resolvedRefusalCount: 0,
+      resolvedRefusalCount: 1,
       absentRefusalCount: 0,
-      unobservableRefusalCount: 1,
+      unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
   });
 
@@ -1849,6 +1919,7 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
     expect(storage.fileNames()).toEqual(['corrupt.json']);
 
@@ -1863,10 +1934,11 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
   });
 
-  it('reports a scan refusal as resolved when the same directory operation now succeeds', () => {
+  it('retains a cleanup refusal as unchecked when directory scanning stops before its retry', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePrune: true,
       refuseReaddirWhen: (_path, attempt) => attempt === 3,
@@ -1890,11 +1962,15 @@ describe('shutdown remainder status', () => {
     periodic();
 
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
-      refusals: [cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO')],
-      resolvedRefusalCount: 1,
+      refusals: [
+        cleanupRefusal(REMAINDER_DIRECTORY, 'scan-directory', 'EIO'),
+        cleanupRefusal('corrupt.json', 'delete'),
+      ],
+      resolvedRefusalCount: 0,
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
-      uncheckedRefusalCount: 0,
+      uncheckedRefusalCount: 1,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
     periodic();
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
@@ -1903,6 +1979,7 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
   });
 
@@ -1939,6 +2016,7 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 1,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
   });
 
@@ -1962,6 +2040,7 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
     expect(storage.fileNames()).toEqual([name]);
     expect(storage.unlinkSync).not.toHaveBeenCalled();
@@ -1973,7 +2052,40 @@ describe('shutdown remainder status', () => {
       absentRefusalCount: 0,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
+      ...SCHEDULED_SNAPSHOT_METADATA,
     });
+  });
+
+  it('marks a stopped snapshot with its observation time and next retry owner', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePruneWhen: (name, attempt) => name === 'corrupt.json' && attempt === 1,
+      pruneErrorCode: 'EACCES',
+    });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        now: () => Date.parse('2026-09-20T00:00:00.000Z'),
+        setInterval: () => ({ unref: vi.fn() }),
+        clearInterval: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    pruner.stop();
+    storage.unlinkSync(join(REMAINDER_DIRECTORY, 'corrupt.json'));
+
+    expect(pruner.readCleanupRefusalSnapshot()).toEqual({
+      refusals: [cleanupRefusal('corrupt.json', 'delete', 'EACCES')],
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 0,
+      unobservableRefusalCount: 0,
+      uncheckedRefusalCount: 0,
+      overflowedRefusalCount: 0,
+      observedAt: '2026-09-20T00:00:00.000Z',
+      retry: { state: 'stopped-until-restart', owner: 'next-coordinator-start' },
+    });
+    expect(storage.fileNames()).toEqual([]);
   });
 
   it('retains and reports a dangling symlink subject across a pruner restart', () => {

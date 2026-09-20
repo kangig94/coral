@@ -129,6 +129,11 @@ export type ShutdownRemainderRecordScan = Readonly<{
   unscannedRecordCount?: number;
 }>;
 
+export type ShutdownRemainderScanSelection = Readonly<{
+  kind: 'probabilistic';
+  generation: number;
+}>;
+
 export function shutdownRemainderRecordDirectory(runDir: string): string {
   return join(runDir, `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}`);
 }
@@ -354,7 +359,6 @@ export type ShutdownRemainderFileClassification =
   | Readonly<{ kind: 'unsupported'; detail: string }>
   | Readonly<{
       kind: 'readable';
-      contentDigest: string;
       record: DecodedShutdownRemainderRecord;
       skippedEntries: readonly ShutdownRemainderSkippedEntry[];
     }>;
@@ -390,18 +394,18 @@ export function classifyShutdownRemainderFile(
     ? { kind: 'unsupported', detail: decoded.detail }
     : {
         kind: 'readable',
-        contentDigest: sha256Hex(raw),
         record: decoded.record,
         skippedEntries: decoded.skippedEntries,
       };
 }
 
+/** Bounded scans sample identities independently per generation and do not promise bounded service. */
 export function scanShutdownRemainderRecords(
   storage: Pick<StoragePort, 'lstatSync' | 'readFileSync' | 'readdirSync'>,
   directory: string,
   observeStageWriter: ShutdownRemainderStageObserver = () => 'unknown',
   observeDirectoryEntries?: (names: readonly string[]) => void,
-  selectionGeneration = 0,
+  selection: ShutdownRemainderScanSelection = { kind: 'probabilistic', generation: 0 },
 ): ShutdownRemainderRecordScan {
   type RecordFile = Readonly<{ name: string; reportedName: string }>;
   type StageFile = Extract<ShutdownRemainderDirectoryEntry, { kind: 'stage' | 'malformed-stage' }>;
@@ -432,7 +436,7 @@ export function scanShutdownRemainderRecords(
   const selectionRank = (name: string): string => {
     const existing = selectionRanks.get(name);
     if (existing !== undefined) return existing;
-    const rank = sha256Hex(`${selectionGeneration}\0${name}`);
+    const rank = sha256Hex(`${selection.generation}\0${name}`);
     selectionRanks.set(name, rank);
     return rank;
   };
