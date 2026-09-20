@@ -65,17 +65,12 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.label'
   | 'skippedEntries[].obligation.ordinal'
   | 'skippedEntries[].obligation.occurrence'
-  | 'skippedEntries[].owner'
-  | 'unusableEntryCount'
-  | 'unusableRecordSubjects[].identity'
-  | 'unusableRecordSubjects[].label';
+  | 'skippedEntries[].owner';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
-  | 'record.entries[].remainder.evidence.processes[].jobId'
-  | 'unusableRecordSubjects[].identity'
-  | 'unusableRecordSubjects[].label';
+  | 'record.entries[].remainder.evidence.processes[].jobId';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -111,16 +106,9 @@ const skippedOwner: 'process-exit' | 'successor-recovery' | null = skippedEntry.
 void skippedOwner;
 // @ts-expect-error skipped persisted labels are absent from the status projection.
 void skippedEntry.label;
-// @ts-expect-error a skipped entry does not own a record identity; unusable record subjects are separate.
+// @ts-expect-error a skipped entry does not own a record identity.
 void skippedEntry.recordInstanceId;
 
-declare const unusableRecordSubjects: ShutdownRemainderStatus['unusableRecordSubjects'];
-const unusableRecordIdentity: string = unusableRecordSubjects[0]?.identity ?? '';
-const unusableRecordLabel: string = unusableRecordSubjects[0]?.label ?? '';
-void unusableRecordIdentity;
-void unusableRecordLabel;
-declare const unusableEntryCount: ShutdownRemainderStatus['unusableEntryCount'];
-void unusableEntryCount;
 // @ts-expect-error the classification a reader could not decode belongs to the unusable-record report, not to
 // one carrying a decoded record.
 declare const unusableReason: ShutdownRemainderStatus['reason'];
@@ -129,10 +117,12 @@ void unusableReason;
 type UnusableShutdownRemainderStatus = Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>;
 const unusableProjectionLeafCoverage: Equal<
   ProjectionLeafPaths<UnusableShutdownRemainderStatus>,
-  'status' | 'reason' | 'unusableEntryCount' | 'unusableRecordSubjects[].identity' | 'unusableRecordSubjects[].label'
+  'status' | 'reason' | 'path'
 > = true;
 void unusableProjectionLeafCoverage;
 
+declare const unusablePath: string;
+void (unusablePath satisfies UnusableShutdownRemainderStatus['path']);
 declare const unusableCause: UnusableShutdownRemainderStatus['reason'];
 const namedCause: 'unreadable' | 'corrupt' | 'unsupported' = unusableCause;
 void namedCause;

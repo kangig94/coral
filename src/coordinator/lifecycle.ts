@@ -28,9 +28,10 @@ import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
-import type {
-  ProviderOperationReconcilerStopDisposition,
-  StartupReconciliationReport,
+import {
+  describeStartupReconciliationIncident,
+  type ProviderOperationReconcilerStopDisposition,
+  type StartupReconciliationReport,
 } from './services/provider-operation-reconciler.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
@@ -1186,7 +1187,15 @@ async function runLifecycleStartup({
       providerOperationStartupSnapshot,
     );
     signal.throwIfAborted();
-    await reconcileProviderOperationsAtStartup?.(providerOperationStartupOwnership, signal);
+    const providerOperationStartupReport = await reconcileProviderOperationsAtStartup?.(
+      providerOperationStartupOwnership,
+      signal,
+    );
+    for (const incident of providerOperationStartupReport?.incidents ?? []) {
+      backendLog.warn(
+        `Provider operation startup reconciliation left an obligation open: ${describeStartupReconciliationIncident(incident)}`,
+      );
+    }
     signal.throwIfAborted();
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
@@ -1519,7 +1528,10 @@ export function createLifecycle(
       };
 
       try {
-        if (losses.length > 0) publish();
+        // Constraint: the store holds the latest remainder, not the latest loss. Publishing only when this
+        // shutdown lost something leaves a record this build cannot read with no writer that will replace it,
+        // and a clean shutdown is itself the answer that supersedes it.
+        publish();
         const refusal = withdraw();
         if (refusal !== null) {
           bestEffortLifecycleLog(

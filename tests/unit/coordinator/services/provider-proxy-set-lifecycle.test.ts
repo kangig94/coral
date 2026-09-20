@@ -1609,6 +1609,56 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
+  // A refusal ground this build's vocabulary dropped still decodes, and reading it as no refusal at all is
+  // the third answer collapsing into one of the binaries.
+  it('reads a durable refusal reason it cannot name as a refusal, not as no refusal', () => {
+    const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+    const subjectKey = JSON.stringify(['guardian', 'guardian.heartbeat.v1']);
+    const key = durableProviderProxySetOperatorDispositionKey(identity, PREDECESSOR_INCARNATION, subjectKey);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    storage.mkdirSync(DURABLE_DISPOSITION_RUN_DIR, { recursive: true });
+    storage.writeFileSync(
+      `${DURABLE_DISPOSITION_RUN_DIR}/provider-proxy-set-operator-dispositions.v${PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_GENERATION}.json`,
+      JSON.stringify({
+        entries: {
+          [key]: {
+            generation: PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_GENERATION,
+            scope: 'set',
+            key,
+            writerIncarnation: PREDECESSOR_INCARNATION,
+            setIdentity: identity,
+            subjectKey,
+            disposition: {
+              disposition: 'operator-exit-refused',
+              incidentReason: 'operator_exit_representation_release_retry_exhausted',
+              waitingFor: 'operator-abandonment',
+            },
+            status: { kind: 'current-writer', recordedAtMs: 0 },
+          },
+        },
+      }),
+    );
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR),
+      writerIncarnation: PREDECESSOR_INCARNATION,
+    });
+
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: providerProxySetAddress(identity),
+        operatorExit: { kind: 'refused', ground: 'unrecognized' },
+      }),
+    );
+  });
+
   it('skips decodable set and acquisition rows whose keys do not match their payload identities', () => {
     const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
     const address = providerProxySetAddress(identity);
@@ -5771,7 +5821,7 @@ describe('ProviderProxySetLifecycle', () => {
           disposition: expect.objectContaining({
             kind: 'fatal-successor-pending',
             exit: 'provider-proxy-set-autonomous-release',
-            successor: expect.objectContaining({ owner: 'coordinator', retryAction: 'release-representation' }),
+            successor: expect.objectContaining({ owner: 'coordinator', terminalExit: 'representation-released' }),
           }),
         }),
       ]);
@@ -6821,7 +6871,6 @@ describe('ProviderProxySetLifecycle', () => {
     const undischarged = {
       kind: 'released-undischarged',
       witness: 'provider-operation-record',
-      driver: 'coordinator-startup-set-recovery',
     };
     await expect(hold.settlement).resolves.toEqual(undischarged);
     await expect(acceptance.initialDisposition).resolves.toEqual(undischarged);
@@ -6876,7 +6925,6 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(hold.settlement).resolves.toEqual({
       kind: 'released-undischarged',
       witness: 'provider-operation-record',
-      driver: 'coordinator-startup-set-recovery',
     });
     expect(lifecycle.representationReleaseHolds()).toEqual([]);
     expect(lifecycle.snapshot().represented).toBe(0);
@@ -6989,6 +7037,125 @@ describe('ProviderProxySetLifecycle', () => {
     await expect(acceptance.initialDisposition).resolves.toEqual({ kind: 'completed' });
     expect(successorDelivery).toHaveBeenCalledTimes(1);
     expect(successor.representationReleaseHolds()).toEqual([]);
+  });
+
+  // The witness is derived, not asserted: with no claim there is no provider-operation record to name, and
+  // what survives the bound is the capsule the retirement turn never finished unlinking.
+  it('names the capsule as witness when no operation was ever pending at the bound', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const retireCapsule = vi.fn(() => new Promise<never>(() => undefined));
+    const containmentDisappeared = vi.fn(() => Promise.reject(new Error('no operation should be delivered')));
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/zero-claims.handoff.v3.json');
+    latchAuthorityFault(authority, terminalAuthorityFault());
+
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'zero-claims');
+    await drainMicrotasks();
+    const [hold] = lifecycle.representationReleaseHolds();
+    if (hold === undefined) throw new Error('expected representation release hold');
+    expect(hold.pendingOperations).toEqual([]);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    const undischarged = { kind: 'released-undischarged', witness: 'provider-handoff-capsule' };
+    await expect(hold.settlement).resolves.toEqual(undischarged);
+    await expect(acceptance.initialDisposition).resolves.toEqual(undischarged);
+    expect(containmentDisappeared).not.toHaveBeenCalled();
+    expect(retireCapsule).toHaveBeenCalledWith('/capsules/zero-claims.handoff.v3.json');
+  });
+
+  it('refuses a late delivery retry for a representation slot released undischarged', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: () => delivery.promise },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'late-retry');
+    await drainMicrotasks();
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+
+    delivery.resolve({
+      kind: 'operational-failure',
+      code: 'disappearance_consumer_unavailable',
+      reason: 'store repair pending',
+    });
+    await drainMicrotasks();
+
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(clock.timers.filter((timer) => timer.active)).toEqual([]);
+  });
+
+  it('refuses a late fatal delivery for a representation slot released undischarged', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const operatorDispositionStore = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const fatals: ProviderProxySetLifecycleFatalError[] = [];
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: () => delivery.promise },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore,
+      onFatal: (error) => fatals.push(error),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'late-fatal');
+    await drainMicrotasks();
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(operatorDispositionStore.read().records).toEqual([]);
+
+    delivery.resolve({
+      kind: 'accepted',
+      acceptance: {
+        kind: 'accepted',
+        operation: { ...record.operation, operationId: randomUUID() },
+        disposition: 'record-absent',
+      },
+    });
+    await drainMicrotasks();
+
+    expect(fatals).toHaveLength(1);
+    expect(operatorDispositionStore.read().records).toEqual([]);
+    expect(lifecycle.snapshot().operatorSets).toEqual([]);
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(clock.timers.filter((timer) => timer.active)).toEqual([]);
   });
 
   it('dispatches post-start disappearance corruption through the global fatal route', async () => {
@@ -7253,6 +7420,20 @@ describe('ProviderProxySetLifecycle', () => {
       kind: 'operational-retry-owned',
       exit: 'provider-proxy-set-release-retry',
     });
+    // While the release is live the reported bound is the settlement deadline that will expire it.
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: providerProxySetAddress(authority.setIdentity),
+        autonomousDisposition: {
+          kind: 'representation-release',
+          owner: 'coordinator',
+          boundMs: 60_000,
+          retryAction: 'release-representation',
+          refusalSuccessor: 'automatic-retry',
+          terminalExit: 'representation-released',
+        },
+      }),
+    );
 
     clock.elapse(1_000);
     clock.runDue();
@@ -7267,9 +7448,8 @@ describe('ProviderProxySetLifecycle', () => {
       error: globalFatals[0],
       successor: {
         owner: 'coordinator',
-        retryCadenceMs: 1_000,
-        settlementBoundMs: 60_000,
-        retryAction: 'release-representation',
+        boundMs: 60_000,
+        terminalExit: 'representation-released',
       },
       operatorDispositionRecording: { kind: 'recorded' },
     });
@@ -7280,15 +7460,25 @@ describe('ProviderProxySetLifecycle', () => {
       operatorDispositionRecording: { kind: 'recorded' },
     });
     expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+    // A fatally settled release keeps no delivery retry and no settlement deadline; the successor names the
+    // automatic slot drop that is still running, and nothing advertises a retry cadence for it.
+    expect(fatalHold.disposition.kind === 'fatal-successor-pending' ? fatalHold.disposition.successor : null).toEqual({
+      owner: 'coordinator',
+      boundMs: 60_000,
+      terminalExit: 'representation-released',
+    });
     expect(lifecycle.snapshot().operatorSets).toContainEqual(
       expect.objectContaining({
         setIdentity: providerProxySetAddress(authority.setIdentity),
         operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
-        autonomousDisposition: expect.objectContaining({
+        autonomousDisposition: {
           kind: 'representation-release',
           owner: 'coordinator',
+          boundMs: 60_000,
           retryAction: 'release-representation',
-        }),
+          refusalSuccessor: 'automatic-retry',
+          terminalExit: 'representation-released',
+        },
       }),
     );
 
@@ -7371,9 +7561,8 @@ describe('ProviderProxySetLifecycle', () => {
       error: globalFatals[0],
       successor: {
         owner: 'coordinator',
-        retryCadenceMs: 1_000,
-        settlementBoundMs: 60_000,
-        retryAction: 'release-representation',
+        boundMs: 60_000,
+        terminalExit: 'representation-released',
       },
       operatorDispositionRecording: { kind: 'recorded' },
     });

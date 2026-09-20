@@ -23,6 +23,7 @@ import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/servi
 import type { ProviderOperationBindingPort } from '#src/jobs/contracts/provider-operation-lifecycle.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
+  describeStartupReconciliationIncident,
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
   type ProviderOperationReconciliationEvidence,
@@ -1965,6 +1966,40 @@ describe('ProviderOperationReconciler publication', () => {
     }).toEqual({ retryError: null, terminalizeCalls: 2, phase: 'missing' });
   });
 
+  // Once the representation slot releases at its settlement bound it clears its delivery retry timer, so the
+  // only owner left for a latched-but-undelivered notice is this reconciler's own poll.
+  it('re-attempts a latched release nothing outside the poll retries', async () => {
+    const harness = createHarness();
+    const terminalize = harness.terminalization.terminalize;
+    const terminalizeCalls = vi
+      .spyOn(harness.terminalization, 'terminalize')
+      .mockImplementationOnce(() => {
+        throw new ProviderOperationAtomicTerminalizationError(
+          harness.record.operation,
+          new Error('transient terminalization failure'),
+        );
+      })
+      .mockImplementation(terminalize);
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: recovered.operation,
+        setIdentity: providerProxySetIdentityFromRecord(recovered),
+        disappearanceReceipt: 'stranded-absence-receipt',
+      }),
+    ).resolves.toMatchObject({ kind: 'operational-failure' });
+    expect(readProviderOperation(harness.db, recovered.operation)?.phase).toBe('executing');
+
+    const stranded = readProviderOperation(harness.db, recovered.operation);
+    if (stranded === null) throw new Error('expected a surviving provider-operation record');
+    await harness.reconciler.reconcile(stranded);
+
+    await vi.waitFor(() => expect(readProviderOperation(harness.db, recovered.operation)).toBeNull());
+    expect(terminalizeCalls).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a conflicting disappearance receipt after delivery failure', async () => {
     const harness = createHarness();
     const terminalizeCalls = vi.spyOn(harness.terminalization, 'terminalize').mockImplementationOnce(() => {
@@ -2396,6 +2431,68 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
     expect(harness.registry.activate).not.toHaveBeenCalled();
     expect(harness.appended).toEqual([]);
+  });
+
+  // An undischarged release is not a clean reconciliation: startup must not report recovery complete while
+  // the obligation it admitted to is still outstanding.
+  it('reports an undischarged representation release as a startup incident', async () => {
+    const harness = createHarness();
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+    const reconciler = new ProviderOperationReconciler({
+      getProgressStore: () => harness.progressStore,
+      authorityFor: () => null,
+      startupSetRecovery: {
+        recoverSetAtStartup: async () => ({
+          kind: 'absence-accepted',
+          acceptance: {
+            kind: 'accepted',
+            disappearanceReceipt: 'undischarged-startup-receipt',
+            initialDispositionState: 'resolved',
+            initialDisposition: Promise.resolve({
+              kind: 'released-undischarged',
+              witness: 'provider-operation-record',
+            }),
+          },
+        }),
+      },
+      registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
+      binding: harness.startupOwnership.binding,
+      releaseStartupOwnership: harness.startupOwnership.releaseStartupOwnership,
+      materializePrepare: () => MATERIALIZED_PREPARED,
+      recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
+      completeLocalRecovery: () => undefined,
+      terminalization: harness.terminalization,
+      recoveryDispatcher: harness.recoveryDispatcher,
+      backendNamespace: 'tests',
+      onFatal: (error) => {
+        throw error;
+      },
+      time: {
+        now: () => 100,
+        setTimeout: () => ({ unref: () => undefined }),
+        clearTimeout: () => undefined,
+      },
+    });
+
+    const report = await reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor([recovered]),
+      new AbortController().signal,
+    );
+
+    expect(report.incidents).toEqual([
+      {
+        kind: 'absence-released-undischarged',
+        setIdentity: providerProxySetIdentityFromRecord(recovered),
+        disappearanceReceipt: 'undischarged-startup-receipt',
+        witness: 'provider-operation-record',
+      },
+    ]);
+    const [incident] = report.incidents;
+    if (incident === undefined) throw new Error('expected a startup reconciliation incident');
+    expect(describeStartupReconciliationIncident(incident)).toContain(
+      'kind=absence-released-undischarged witness=provider-operation-record',
+    );
   });
 
   it('keeps a recovered activation pending when its durable proxy locator is unreachable', async () => {

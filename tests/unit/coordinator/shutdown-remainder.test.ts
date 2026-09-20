@@ -4,7 +4,6 @@ import { recordShutdownRemainder } from '#src/coordinator/shutdown-remainder.js'
 import {
   classifyShutdownRemainderFile,
   SHUTDOWN_REMAINDER_RECORD_NAME,
-  shutdownRemainderFilesystemSubject,
   shutdownRemainderRecordPath,
   shutdownRemainderStagePath,
 } from '#src/infra/shutdown-remainder-record.js';
@@ -551,22 +550,6 @@ describe('shutdown remainder file classification', () => {
     expect(classify(storageHolding({ ...recordAt('bounded-instance'), ...override }))).toMatchObject({
       kind: 'unsupported',
     });
-  });
-
-  it('keeps raw-name identity distinct when terminal labels require escaping or truncation', () => {
-    const escaped = shutdownRemainderFilesystemSubject('same\n.json');
-    const replacement = shutdownRemainderFilesystemSubject('same�.json');
-    const longA = shutdownRemainderFilesystemSubject(`${'x'.repeat(4096)}a`);
-    const longB = shutdownRemainderFilesystemSubject(`${'x'.repeat(4096)}b`);
-
-    expect(escaped).toEqual({ identity: sha256Hex('same\n.json'), label: 'same\\u{A}.json' });
-    expect(replacement).toEqual({ identity: sha256Hex('same�.json'), label: 'same�.json' });
-    expect(escaped.identity).not.toBe(replacement.identity);
-    expect(escaped.label).not.toBe(replacement.label);
-    expect(longA.identity).not.toBe(longB.identity);
-    expect(longA.label).not.toBe(longB.label);
-    expect(longA.label).toHaveLength(4096);
-    expect(longB.label).toHaveLength(4096);
   });
 });
 

@@ -717,6 +717,10 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #attemptExecutingAttachment :: catch#1 :: calls=[readProviderOperation, this.#deps.getProgressStore().getDb, this.#deps.getProgressStore, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: Promise.then(rejected) :: pending.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: catch#1 :: calls=[reject, errorMessage] assignments=[]',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedAbandonment :: Promise.then(rejected) :: active.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedAbandonment :: Promise.then(rejected) :: promise.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedDisappearance :: Promise.then(rejected) :: active.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedDisappearance :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveActivationResolution :: catch#1 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveActivationResolution :: catch#2 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveActivationResolution :: catch#3 :: calls=[this.#recordRetry] assignments=[]',
@@ -734,18 +738,15 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveSettlement :: catch#1 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#1 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#2 :: calls=[this.#observeFatal, this.#deps.onError, providerOperationErrorReason] assignments=[]',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #reattemptLatchedRelease :: Promise.catch :: attempt.catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#1 :: calls=[] assignments=[driveError]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#2 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#1 :: calls=[providerOperationErrorIsAmbiguous, this.#transition, this.#prepareRefusalRecord, providerOperationPreparePermanentRefusalSchema.parse, boundedPrepareRefusalReason, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#2 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: awaitStartup :: Promise.then(rejected) :: operation.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: begin :: catch#1 :: calls=[this.#failPublication, providerOperationErrorReason] assignments=[]',
-  'src/coordinator/services/provider-operation-reconciler.ts :: containmentDisappeared :: Promise.then(rejected) :: active.then',
-  'src/coordinator/services/provider-operation-reconciler.ts :: containmentDisappeared :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: onControlEstablished :: Promise.catch :: this.#reconcileActiveForAuthority(authority).catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: reconcile :: Promise.catch :: this.#driveContext .run(context, () => this.#drive(record, preferredAuthority, context.signal)) .catch',
-  'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: active.then',
-  'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: requestStop :: catch#1 :: calls=[this.#deps.onError, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: stop :: catch#1 :: calls=[this.#deps.time.setTimeout, timer.unref] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: errorCode :: catch#1 :: calls=[] assignments=[]',
@@ -790,6 +791,9 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: stop :: ')) {
     return 'Store admission unavailability remains a typed shutdown hold with a scheduled retry.';
+  }
+  if (fingerprint.includes(' :: #reattemptLatchedRelease :: ')) {
+    return 'A re-attempted release delivery reports its own throw and cannot fail the due turn that started it.';
   }
   if (fingerprint.startsWith('src/coordinator/services/provider-operation-reconciler.ts')) {
     return 'Existing phase-specific serialization or publication boundary preserves the r17 disposition contract.';

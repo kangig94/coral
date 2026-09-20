@@ -241,13 +241,15 @@ function buildRemainderWriteRefusalHarness(
   const harness = buildHarness({ hooksOnShutdown });
   const order: string[] = [];
   const logLines: string[] = [];
+  const published: string[] = [];
   const runtime = {
     ...harness.runtime,
     storage: {
       ...harness.runtime.storage,
       existsSync: () => false,
-      writeAtomicSync: () => {
+      writeAtomicSync: (_path: string, content: string) => {
         order.push('record');
+        published.push(content);
         return write();
       },
       renameSync: () => {
@@ -334,7 +336,7 @@ function buildRemainderWriteRefusalHarness(
     async () => [],
   );
 
-  return { controller, logLines, onStopped, order, readSelfIncarnationFn, removeBackendInfoIfOwnerFn };
+  return { controller, logLines, onStopped, order, published, readSelfIncarnationFn, removeBackendInfoIfOwnerFn };
 }
 
 type ShutdownSequenceHold = Extract<Awaited<ReturnType<typeof runShutdownSequence>>, { disposition: 'held' }>;
@@ -574,9 +576,8 @@ describe('runShutdownSequence drain budget', () => {
     const fatalError = new Error('fatal release remains operator-owned') as never;
     const successor = {
       owner: 'coordinator' as const,
-      retryCadenceMs: 1_000,
-      settlementBoundMs: 60_000,
-      retryAction: 'release-representation' as const,
+      boundMs: 60_000,
+      terminalExit: 'representation-released' as const,
     };
     const representationReleaseSettlement = Promise.resolve({
       kind: 'fatal-successor-pending' as const,
@@ -2906,12 +2907,20 @@ describe('required provider-proxy shutdown steps', () => {
     },
   );
 
-  it('a fully discharged shutdown writes no remainder record', async () => {
+  // The store holds the latest remainder, not the latest loss. A clean shutdown that skipped the write left a
+  // record this build could not read with no writer that would ever replace it.
+  it('a fully discharged shutdown still publishes its own empty remainder over whatever preceded it', async () => {
     const harness = buildRemainderWriteRefusalHarness(() => true);
 
     await expect(harness.controller.shutdown('replaced')).resolves.toEqual({ disposition: 'finalized' });
 
-    expect(harness.order).toEqual(['stopped', 'withdraw', 'exit:0']);
+    expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'exit:0']);
+    expect(harness.published).toHaveLength(1);
+    expect(JSON.parse(harness.published[0] ?? '')).toMatchObject({
+      instanceId: 'remainder-write-refusal',
+      reason: 'replaced',
+      entries: [],
+    });
     expect(harness.onStopped).toHaveBeenCalledWith(0);
   });
 
@@ -2949,13 +2958,13 @@ describe('required provider-proxy shutdown steps', () => {
       ],
     });
 
-    expect(harness.order).toEqual(['stopped', 'withdraw', 'record', 'exit:1']);
+    expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'record', 'exit:1']);
     expect(harness.logLines).toContain(
       `backend discovery withdrawal refused operation=unlink code=filesystem-operation-failed errno=EACCES errorName=Error correlation=${unlinkDeniedCorrelation}\n`,
     );
     expect(harness.logLines.join('')).not.toContain('/private/path');
     await expect(harness.controller.shutdown('replaced')).resolves.toBe(first);
-    expect(harness.order).toEqual(['stopped', 'withdraw', 'record', 'exit:1']);
+    expect(harness.order).toEqual(['stopped', 'record', 'withdraw', 'record', 'exit:1']);
   });
 
   it('rewrites a withdrawal loss after the original remainder publication was refused', async () => {

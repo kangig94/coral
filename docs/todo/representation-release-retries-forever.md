@@ -46,9 +46,13 @@ never reached it; the deadline now expires either way.
 Expiry releases the **slot**, which is capacity rather than an obligation: `#removeRepresentationSlot` frees a
 `MAX_COORDINATOR_PROXY_SET_SLOTS` slot, the mutation fence, the route, and the in-memory operator dispositions,
 and the hold settles as `released-undischarged` — a variant of the settlement type, not a success carrying a
-field. It names what survives (the provider-operation record the consumer never deleted) and who re-drives it
-(`coordinator-startup-set-recovery`: the claim mirror is rebuilt from surviving records, `initializeClaimSlots`
-gives each one a recovering slot, and startup set recovery drives `containmentAbsent` against that slot).
+field. Its one `witness` field is derived from what is still outstanding at the bound: the provider-operation
+record while an operation is pending, the handoff capsule when none is.
+
+`reconcile` (`ProviderOperationReconciler`) re-attempts a latched notice whose delivery is not in flight. That
+is the exit for the record witness: the released slot cleared its delivery retry timer, so nothing else was
+going to try again. The attempt is started and not awaited, because a due turn has to finish whether or not a
+delivery settles.
 
 Nothing durable is written at expiry. The earlier resolution wrote
 `operator_exit_representation_release_retry_exhausted` into the durable operator-disposition store and named
@@ -58,6 +62,30 @@ rows, so the writing process never reconciles its own row; and the successor tha
 `#retireDurableSetDispositionsAfterContainmentAbsence`, retires the **row** and never terminalizes the
 **operation**. The CLI's "no command is required: durable representation-release reconciliation owns the
 remainder" was therefore false. The row, the refusal ground, the durable-write retry, and that CLI line are gone.
+
+## Two corrections to this branch's commit messages
+
+Both are false sentences in published history, recorded here because a reader meets this file and not a commit
+body, and because one of them reads as a licence to delete a guard.
+
+**`28115ec6` says "the `currentDelivery` guard is not what defends a released slot". It is.**
+`#releaseUndischargedRepresentation` sets no `terminalSettlement` and clears no `pendingOperations`, so of
+`currentDelivery`'s three clauses only slot identity refuses a delivery outcome arriving after that release —
+and the `retry` and `fatal` sinks are re-checked nowhere downstream. Removing it would let the retry sink arm a
+1,000 ms timer on a slot `#clearRepresentationReleaseTimers` will never run against again (the loop this entry
+exists to close), and let the fatal sink write a durable operator-exit-refused row for an identity whose slot is
+gone, resurrecting the record `#removeRepresentationSlot` had just deleted. `#retainRepresentationRelease` and
+`#failRepresentationRelease` now carry the same head guard `#acceptRepresentationRelease` always had, so each
+sink refuses on its own; the shared helper's necessity is stated as a constraint where it is defined.
+
+**`28115ec6`'s account of why the due poll could not re-drive a stranded record is wrong, though its
+conclusion held.** It says `acquireAuthority` reaches `containmentAbsent` with no slot and throws. It never got
+that far: `reconcile` short-circuited on the latched disappearance (`case 'ready': return Promise.resolve()`)
+before any authority lookup, so there was no throw, no WARN, and no loop — a silent permanent park, which on a
+machine with nobody watching is worse than the flood. Re-minting the recovering slot on the live path was
+considered and rejected: `#occupiedSlotCount` counts every non-`capsule-foreign` slot, so a re-minted
+`recovering` slot re-occupies one of the four the bound exists to free. Consuming the notice needs no slot, so
+the re-attempt runs through the consumer instead.
 
 ## What this does not settle
 

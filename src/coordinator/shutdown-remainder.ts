@@ -96,6 +96,8 @@ export function recordShutdownRemainder(
     entries: input.undischarged,
   };
   const serializedRecord = `${JSON.stringify(record, null, 2)}\n`;
+  // Constraint: do not use `writeAtomicDurableSync`; `docs/design-rationale.md` §12.5 excludes its unbounded
+  // journal commit waits from the coordinator exit path.
   const removeStage = (): void => {
     for (const candidate of [stagePath, `${stagePath}.tmp`]) {
       try {

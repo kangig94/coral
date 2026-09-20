@@ -256,6 +256,8 @@ function formatProviderProxySetOperatorRefusalGuidance(
         'Next step: run the abandon command below; this accepts the unresolved representation release without retrying its fatal operation.',
         abandon,
       ].join('\n');
+    case 'unrecognized':
+      return 'Coral recorded an operator-exit refusal whose reason this build does not name, so no next step is derived from it.';
     default:
       return assertNever(ground);
   }
@@ -275,7 +277,9 @@ function formatProviderProxySetClaimDischarge(
     case 'initial-disposition-retry-owned':
       return 'Claim discharge has not reached an initial disposition; the coordinator still owns retry and still represents the set.';
     case 'released-undischarged':
-      return `Claim discharge did not complete within the representation-release settlement bound; Coral released the set representation and the surviving ${discharge.witness} is re-driven by ${discharge.driver}.`;
+      return discharge.witness === 'provider-operation-record'
+        ? 'Claim discharge did not complete within the representation-release settlement bound; Coral released the set representation, and the provider-operation records it left behind are retried by the coordinator that is still running.'
+        : 'Claim discharge did not complete within the representation-release settlement bound; Coral released the set representation, and the handoff capsule it left behind is reclaimed at the next coordinator start.';
     case 'operational-retry-owned':
       return 'exit' in discharge
         ? `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s) with exit=${discharge.exit}; Coral still represents the set until every successor accepts and capsule retirement completes.`
@@ -1256,12 +1260,10 @@ function formatShutdownRemainderReport(report: ShutdownRemainderReport | undefin
   if (report?.status === 'shutdown_remainder_clock_skew') {
     lines.unshift('The shutdown remainder record is dated after this status observation.');
   }
-  if (report?.status === 'shutdown_remainder_unreadable' && report.unusableEntryCount > 0) {
+  if (report?.status === 'shutdown_remainder_unreadable') {
     lines.push(
-      `Shutdown remainder slots this build could not use: ${report.unusableEntryCount}`,
-      ...report.unusableRecordSubjects.map(
-        (subject) => `  Unusable: identity=${subject.identity} class=slot cause=${report.reason}`,
-      ),
+      'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+      `Unusable: path=${report.path} cause=${report.reason}`,
     );
   }
   return lines.join('\n');
@@ -1825,7 +1827,6 @@ export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus):
     case 'unavailable':
       return 'disposition=unavailable';
     case 'representation-release':
-      return `disposition=automatic owner=${disposition.owner} retryCadenceMs=${Math.ceil(disposition.retryCadenceMs)} settlementBoundMs=${Math.ceil(disposition.settlementBoundMs)} retryAction=${disposition.retryAction}`;
     case 'control-or-containment':
     case 'exact-containment':
     case 'durable-reconciliation':

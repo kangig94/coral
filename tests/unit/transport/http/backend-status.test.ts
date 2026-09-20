@@ -8,10 +8,7 @@ import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import {
-  SHUTDOWN_REMAINDER_RECORD_NAME,
-  shutdownRemainderFilesystemSubject,
-} from '#src/infra/shutdown-remainder-record.js';
+import {} from '#src/infra/shutdown-remainder-record.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -180,8 +177,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason,
-        unusableEntryCount: 1,
-        unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+        path: REMAINDER_PATH,
       },
     });
   });
@@ -217,8 +213,7 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'unreadable',
-        unusableEntryCount: 1,
-        unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+        path: REMAINDER_PATH,
       },
     });
   });
@@ -250,8 +245,6 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'predecessor-instance' },
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
   });
@@ -321,8 +314,6 @@ describe('getBackendStatusFull record disposition', () => {
             },
           ],
         },
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
     expect(recentShutdownRemainder(result)?.skippedEntries ?? null).toEqual([
@@ -360,8 +351,6 @@ describe('getBackendStatusFull record disposition', () => {
       status: 'no_record_no_socket',
       shutdownRemainder: {
         status: 'shutdown_remainder_clock_skew',
-        unusableEntryCount: 0,
-        unusableRecordSubjects: [],
       },
     });
   });
@@ -449,8 +438,6 @@ describe('getBackendStatusFull record disposition', () => {
           ],
         },
         skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
     const remainder = recentShutdownRemainder(result);
@@ -537,14 +524,11 @@ describe('getBackendStatusFull record disposition', () => {
         'skippedEntries[].obligation.ordinal',
         'skippedEntries[].obligation.occurrence',
         'skippedEntries[].owner',
-        'unusableEntryCount',
       ].sort(),
     );
     expect(JSON.stringify(result)).not.toContain('owner/repo');
   });
 
-  // A readable report always carries an empty `unusableRecordSubjects`, so the populated leaves of that list
-  // can only be walked from the report that owns them.
   it('projects exactly the declared key paths of an unusable-record report', async () => {
     mockState.remainder = { value: '{not-json' };
 
@@ -555,15 +539,7 @@ describe('getBackendStatusFull record disposition', () => {
     const paths = new Set<string>();
     collectLeafPaths(report, '', paths);
 
-    expect([...paths].sort()).toEqual(
-      [
-        'status',
-        'reason',
-        'unusableEntryCount',
-        'unusableRecordSubjects[].identity',
-        'unusableRecordSubjects[].label',
-      ].sort(),
-    );
+    expect([...paths].sort()).toEqual(['status', 'reason', 'path'].sort());
   });
 
   it('projects ordinary runtime errnos from the platform registry', async () => {
@@ -1068,8 +1044,6 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: 'test-instance' },
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
   });
@@ -1123,8 +1097,6 @@ describe('getBackendStatusFull record disposition', () => {
         status: 'recent_shutdown_remainder',
         record: expect.objectContaining({ instanceId: 'recorded-coordinator' }),
         skippedEntries: [],
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
   });
@@ -1189,8 +1161,6 @@ describe('getBackendStatusFull record disposition', () => {
           status: 'recent_shutdown_remainder',
           record: expect.objectContaining({ instanceId: 'recent' }),
           skippedEntries: [],
-          unusableRecordSubjects: [],
-          unusableEntryCount: 0,
         },
       });
     },
@@ -1321,8 +1291,6 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
   });
@@ -1339,8 +1307,6 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'recent_shutdown_remainder',
         record: { instanceId: INSTANCE_ID },
-        unusableRecordSubjects: [],
-        unusableEntryCount: 0,
       },
     });
   });
@@ -1359,8 +1325,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'corrupt',
-        unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
-        unusableEntryCount: 1,
+        path: REMAINDER_PATH,
       },
     });
   });
@@ -1406,8 +1371,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
       shutdownRemainder: {
         status: 'shutdown_remainder_unreadable',
         reason: 'unreadable',
-        unusableEntryCount: 1,
-        unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+        path: REMAINDER_PATH,
       },
     });
   });

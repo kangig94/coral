@@ -60,6 +60,8 @@ export const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
   'identity-unobservable',
   'store-unreadable',
   'representation-release-fatal',
+  /** A refusal this build's vocabulary does not name; unknown must not read as no refusal at all. */
+  'unrecognized',
 ] as const;
 export type ProviderProxySetOperatorExitRefusalGround =
   (typeof PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS)[number];
@@ -95,13 +97,11 @@ export type ProviderProxySetAutonomousDisposition =
       'control-reattached-or-containment-absent'
     >
   | ActiveProviderProxySetAutonomousDisposition<'exact-containment', 'observe-exact-containment', 'containment-absent'>
-  | Readonly<{
-      kind: 'representation-release';
-      owner: 'coordinator';
-      retryCadenceMs: number;
-      settlementBoundMs: number;
-      retryAction: 'release-representation';
-    }>
+  | ActiveProviderProxySetAutonomousDisposition<
+      'representation-release',
+      'release-representation',
+      'representation-released'
+    >
   | ActiveProviderProxySetAutonomousDisposition<
       'durable-reconciliation',
       'reconcile-durable-disposition',

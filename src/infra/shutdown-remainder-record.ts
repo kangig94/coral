@@ -10,29 +10,6 @@ import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 export const SHUTDOWN_REMAINDER_RECORD_NAME = `shutdown-remainder.v${SHUTDOWN_REMAINDER_RECORD_VERSION}.json`;
-const SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH = 4096;
-
-export type ShutdownRemainderFilesystemSubject = Readonly<{
-  identity: string;
-  label: string;
-}>;
-
-const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
-
-export function shutdownRemainderFilesystemSubject(subject: string | Uint8Array): ShutdownRemainderFilesystemSubject {
-  const identity = sha256Hex(subject);
-  const text = typeof subject === 'string' ? subject : Buffer.from(subject).toString('utf8');
-  const escaped = text.replace(
-    SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN,
-    (character) => `\\u{${(character.codePointAt(0) as number).toString(16).toUpperCase()}}`,
-  );
-  if (escaped.length <= SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH) return { identity, label: escaped };
-  const suffix = `...[sha256:${identity}]`;
-  const prefix = escaped
-    .slice(0, SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH - suffix.length)
-    .replace(/[\uD800-\uDBFF]$/u, '');
-  return { identity, label: `${prefix}${suffix}` };
-}
 
 type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
   ? Value

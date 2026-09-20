@@ -280,20 +280,6 @@ function parseProviderProxySetAutonomousDisposition(value: unknown): ProviderPro
   if (value === undefined) return { kind: 'unavailable' };
   if (!isRecord(value) || typeof value.kind !== 'string') return null;
   if (value.kind === 'inactive' || value.kind === 'unavailable') return { kind: value.kind };
-  if (value.kind === 'representation-release') {
-    return value.owner === 'coordinator' &&
-      isNonNegativeFiniteNumber(value.retryCadenceMs) &&
-      isNonNegativeFiniteNumber(value.settlementBoundMs) &&
-      value.retryAction === 'release-representation'
-      ? {
-          kind: value.kind,
-          owner: value.owner,
-          retryCadenceMs: value.retryCadenceMs,
-          settlementBoundMs: value.settlementBoundMs,
-          retryAction: value.retryAction,
-        }
-      : null;
-  }
   if (
     value.owner !== 'coordinator' ||
     !isNonNegativeFiniteNumber(value.boundMs) ||
@@ -314,6 +300,10 @@ function parseProviderProxySetAutonomousDisposition(value: unknown): ProviderPro
         : null;
     case 'exact-containment':
       return value.retryAction === 'observe-exact-containment' && value.terminalExit === 'containment-absent'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'representation-release':
+      return value.retryAction === 'release-representation' && value.terminalExit === 'representation-released'
         ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
         : null;
     case 'durable-reconciliation':

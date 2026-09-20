@@ -17,11 +17,8 @@ import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.
 import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   classifyShutdownRemainderFile,
-  SHUTDOWN_REMAINDER_RECORD_NAME,
-  shutdownRemainderFilesystemSubject,
   shutdownRemainderRecordPath,
   type DecodedShutdownRemainderRecord,
-  type ShutdownRemainderFilesystemSubject,
   type ShutdownRemainderRecord,
 } from '../../../infra/shutdown-remainder-record.js';
 
@@ -247,11 +244,6 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   }>[];
 }>;
 
-type OperatorFacingShutdownRemainderSlotEvidence = Readonly<{
-  unusableEntryCount: number;
-  unusableRecordSubjects: readonly ShutdownRemainderFilesystemSubject[];
-}>;
-
 type BackendStatus =
   | {
       status: 'ok';
@@ -281,29 +273,27 @@ type BackendStatus =
  * observations must not be filtered by an mtime that proves neither content nor writer disposition.
  */
 export type ShutdownRemainderReport =
-  | (Readonly<{
+  | Readonly<{
       status: 'recent_shutdown_remainder';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
-    }> &
-      OperatorFacingShutdownRemainderSlotEvidence)
-  | (Readonly<{
+    }>
+  /** No decoded record means no recorded writer, so this member is never scoped to the running instance. */
+  | Readonly<{
       status: 'shutdown_remainder_unreadable';
       reason: 'unreadable' | 'corrupt' | 'unsupported';
-    }> &
-      OperatorFacingShutdownRemainderSlotEvidence)
-  | (Readonly<{
+      path: string;
+    }>
+  | Readonly<{
       status: 'shutdown_remainder_clock_skew';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
-    }> &
-      OperatorFacingShutdownRemainderSlotEvidence)
-  | (Readonly<{
+    }>
+  | Readonly<{
       status: 'stale_shutdown_remainder';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
-    }> &
-      OperatorFacingShutdownRemainderSlotEvidence);
+    }>;
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
@@ -576,15 +566,11 @@ function readRecentShutdownRemainder(
   now: number,
   scope: ShutdownRemainderEvidenceScope,
 ): ShutdownRemainderReport | null {
-  const classification = classifyShutdownRemainderFile(storage, shutdownRemainderRecordPath(runDir));
+  const path = shutdownRemainderRecordPath(runDir);
+  const classification = classifyShutdownRemainderFile(storage, path);
   if (classification.kind === 'vanished') return null;
   if (classification.kind !== 'readable') {
-    return {
-      status: 'shutdown_remainder_unreadable',
-      reason: classification.kind,
-      unusableEntryCount: 1,
-      unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
-    };
+    return { status: 'shutdown_remainder_unreadable', reason: classification.kind, path };
   }
   const { record, skippedEntries } = classification;
   const recordedAt = parseIsoTimestamp(record.recordedAt);
@@ -597,10 +583,6 @@ function readRecentShutdownRemainder(
   ) {
     return null;
   }
-  const slotEvidence: OperatorFacingShutdownRemainderSlotEvidence = {
-    unusableEntryCount: 0,
-    unusableRecordSubjects: [],
-  };
   const reportRecord = (
     candidate: DecodedShutdownRemainderRecord,
   ): Pick<
@@ -621,20 +603,17 @@ function readRecentShutdownRemainder(
     return {
       status: 'shutdown_remainder_clock_skew',
       ...reportRecord(record),
-      ...slotEvidence,
     };
   }
   if (now - recordedAt > RECENT_COORDINATOR_RECORD_MS) {
     return {
       status: 'stale_shutdown_remainder',
       ...reportRecord(record),
-      ...slotEvidence,
     };
   }
   return {
     status: 'recent_shutdown_remainder',
     ...reportRecord(record),
-    ...slotEvidence,
   };
 }
 

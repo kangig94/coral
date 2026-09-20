@@ -14,10 +14,7 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
-import {
-  SHUTDOWN_REMAINDER_RECORD_NAME,
-  shutdownRemainderFilesystemSubject,
-} from '#src/infra/shutdown-remainder-record.js';
+import { SHUTDOWN_REMAINDER_RECORD_NAME } from '#src/infra/shutdown-remainder-record.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   documentedCoralSetupError,
@@ -956,8 +953,7 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
           reason: 'unreadable',
-          unusableEntryCount: 1,
-          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       });
 
@@ -973,8 +969,8 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
-          'Shutdown remainder slots this build could not use: 1',
-          `  Unusable: identity=${shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME).identity} class=slot cause=unreadable`,
+          'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unreadable`,
         ].join('\n'),
       );
     });
@@ -987,8 +983,7 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
           reason: 'corrupt',
-          unusableEntryCount: 0,
-          unusableRecordSubjects: [],
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       });
 
@@ -997,6 +992,8 @@ describe('cli format', () => {
           'Backend state is unknown: the coordinator discovery record could not be read (corrupt-json).',
           'A coordinator may still be running; this is not a report that none is.',
           'Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete /run/coral/coordinator.json and run a mutating Coral command; it attempts startup or handoff.',
+          'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=corrupt`,
         ].join('\n'),
       );
     });
@@ -1687,17 +1684,14 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
           reason: 'unsupported',
-          unusableEntryCount: 1,
-          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       } satisfies BackendStatusFull;
 
       const text = formatBackendStatus(status);
 
       expect(text).toContain('namespace=another-installation flavor=dev');
-      expect(text).toContain(
-        `  Unusable: identity=${shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME).identity} class=slot cause=unsupported`,
-      );
+      expect(text).toContain(`Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unsupported`);
     });
 
     // `formatBackendStatus`'s `unreachable` case had no test anywhere. The load-bearing part is that the
@@ -1868,8 +1862,6 @@ describe('cli format', () => {
               owner: 'process-exit',
             },
           ],
-          unusableEntryCount: 0,
-          unusableRecordSubjects: [],
         },
       });
 
@@ -1912,36 +1904,16 @@ describe('cli format', () => {
           shutdownRemainder: {
             status: 'shutdown_remainder_unreadable',
             reason: 'corrupt',
-            unusableEntryCount: 1,
-            unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+            path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
           },
         }),
       ).toBe(
         [
           `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
-          'Shutdown remainder slots this build could not use: 1',
-          `  Unusable: identity=${shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME).identity} class=slot cause=corrupt`,
+          'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=corrupt`,
         ].join('\n'),
       );
-    });
-
-    it('renders raw-distinct unreadable filenames as distinct identities', () => {
-      const left = shutdownRemainderFilesystemSubject(Buffer.from([0x80, 0x80, 0x80, 0x2e, 0x6a, 0x73, 0x6f, 0x6e]));
-      const right = shutdownRemainderFilesystemSubject(Buffer.from([0x80, 0x80, 0x81, 0x2e, 0x6a, 0x73, 0x6f, 0x6e]));
-
-      const text = formatBackendStatus({
-        status: 'no_record_no_socket',
-        shutdownRemainder: {
-          status: 'shutdown_remainder_unreadable',
-          reason: 'unreadable',
-          unusableEntryCount: 2,
-          unusableRecordSubjects: [left, right],
-        },
-      });
-
-      expect(left.label).toBe(right.label);
-      expect(text).toContain(`identity=${left.identity}`);
-      expect(text).toContain(`identity=${right.identity}`);
     });
 
     it('renders clock-skew evidence without presenting the future record as recent', () => {
@@ -1957,8 +1929,6 @@ describe('cli format', () => {
             entries: [],
           },
           skippedEntries: [],
-          unusableEntryCount: 0,
-          unusableRecordSubjects: [],
         },
       });
 
@@ -1980,28 +1950,11 @@ describe('cli format', () => {
             entries: [],
           },
           skippedEntries: [],
-          unusableEntryCount: 0,
-          unusableRecordSubjects: [],
         },
       });
 
       expect(text).toContain('Shutdown remainder evidence is older than the trusted recent window.');
       expect(text).not.toContain('clock-skew');
-    });
-
-    it('does not print an empty or false remainder headline', () => {
-      expect(
-        formatBackendStatus({
-          status: 'no_record_socket_present',
-          socketPath: '/run/coral/coordinator.sock',
-          shutdownRemainder: {
-            status: 'shutdown_remainder_unreadable',
-            reason: 'unreadable',
-            unusableEntryCount: 0,
-            unusableRecordSubjects: [],
-          },
-        }),
-      ).not.toMatch(/shutdown remainder/iu);
     });
 
     it('formats an unrecognized setup-error code without printing persisted text', () => {
@@ -2172,8 +2125,6 @@ describe('cli format', () => {
             entries: [],
           },
           skippedEntries: [],
-          unusableEntryCount: 0,
-          unusableRecordSubjects: [],
         },
       },
       {
@@ -2182,8 +2133,7 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable' as const,
           reason: 'corrupt' as const,
-          unusableEntryCount: 1,
-          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       },
       {
@@ -2193,8 +2143,7 @@ describe('cli format', () => {
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable' as const,
           reason: 'unsupported' as const,
-          unusableEntryCount: 1,
-          unusableRecordSubjects: [shutdownRemainderFilesystemSubject(SHUTDOWN_REMAINDER_RECORD_NAME)],
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       },
       {

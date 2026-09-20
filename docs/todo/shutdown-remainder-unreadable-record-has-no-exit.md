@@ -12,11 +12,24 @@ and nothing deletes on any of them; the bytes stay where they are, so a build th
 finds them. `readRecentShutdownRemainder` (`src/transport/http/backend/status.ts`) reports the
 classification it observed, which is the visibility half of design-philosophy principle 11.
 
-The exit is the next shutdown that leaves losses: `recordShutdownRemainder`
-(`src/coordinator/shutdown-remainder.ts`) publishes by renaming its own stage over that address, which needs
-write permission on the directory rather than read permission on the record, so a record this build cannot
-read is still replaceable. Until then the report is one line naming one slot and its cause — not a hold, not
-a growing set, and not something an operator is asked to clear (design-philosophy principle 12).
+The exit is the next shutdown of any kind. `recordShutdownRemainder` (`src/coordinator/shutdown-remainder.ts`)
+publishes by renaming its own stage over that address, which needs write permission on the directory rather
+than read permission on the record, so a record this build cannot read is still replaceable. It used to publish
+only when the ledger left losses, and that made the exit unreachable for the case it was claimed for: a
+shutdown that leaves losses is by construction the pathological one, so an installation that keeps shutting
+down cleanly would never overwrite the bad bytes while the line stayed on every `backend status` forever.
+The writer's obligation is to hold the *latest* remainder rather than the latest loss, so it now writes on
+every shutdown, including a clean one whose entry list is empty. The reader already reports nothing for a
+record with no entries and no skipped entries, so the replacement is silent when there is nothing to say.
+
+Until that shutdown the report is one line carrying the record path and the cause this build observed — not a
+hold, not a growing set, and not something an operator is asked to clear (design-philosophy principle 12). The
+line does not attribute the record to the running coordinator, because there is no decoded record and
+therefore no recorded writer to scope by.
+
+An `unsupported` record — a newer build's, met after a rollback — is a separate case and is correctly left
+alone: the bytes mean something to the build that wrote them, and this one has nothing to preserve of its own
+until it shuts down.
 
 ## Superseded observations
 

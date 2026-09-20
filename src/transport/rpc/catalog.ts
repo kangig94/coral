@@ -283,8 +283,7 @@ const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('released-undischarged'),
-      witness: z.literal('provider-operation-record'),
-      driver: z.literal('coordinator-startup-set-recovery'),
+      witness: z.enum(['provider-operation-record', 'provider-handoff-capsule']),
     })
     .strict(),
   z
@@ -307,8 +306,7 @@ const providerProxySetContainBooleanClaimDischargeSchema = z.discriminatedUnion(
   z
     .object({
       kind: z.literal('released-undischarged'),
-      witness: z.literal('provider-operation-record'),
-      driver: z.literal('coordinator-startup-set-recovery'),
+      witness: z.enum(['provider-operation-record', 'provider-handoff-capsule']),
     })
     .strict(),
   z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),

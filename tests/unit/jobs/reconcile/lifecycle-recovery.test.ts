@@ -1093,6 +1093,71 @@ describe('lifecycle recovery', () => {
     }
   });
 
+  // A report the caller discards makes a startup incident unobservable: the reconciler named an obligation it
+  // did not discharge, and nothing downstream reads it.
+  it('logs every incident the provider-operation startup reconciliation reports', async () => {
+    const modules = await loadModules();
+    const { backendLog } = await import('#src/infra/backend-log.js');
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    const pluginRoot = createPluginRoot('plugin-startup-incident');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const setIdentity = {
+      buildSetId: '00000000-0000-4000-8000-0000000000aa',
+      hostFingerprint: 'b'.repeat(64),
+      proxyInstanceId: '00000000-0000-4000-8000-0000000000bb',
+    };
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      runStartupRecoveryFn: vi.fn(async (_inputs: StartupRecoveryInputs) => []),
+      reconcileProviderOperationsAtStartup: vi.fn(async () => ({
+        setsVisited: 1,
+        operationsVisited: 1,
+        incidents: [
+          {
+            kind: 'absence-released-undischarged',
+            setIdentity,
+            disappearanceReceipt: 'undischarged-receipt',
+            witness: 'provider-operation-record',
+          },
+        ],
+      })),
+      startProviderOperationReconciler: vi.fn(),
+      startupRecoveryBarrierPublisher: { publish: vi.fn() },
+      cleanupStaleJobsFn: vi.fn(),
+      discussion: {
+        getDiscussStoreForSource: vi.fn(),
+        knownDiscussSources: () => new Set(),
+        getDiscussContext: vi.fn(),
+        recoverPersistedDiscussFn: vi.fn(async () => []),
+        hooks: {
+          onShutdown: vi.fn(async () => {}),
+          onIdleCheck: () => false,
+          onRecoveryComplete: vi.fn(async () => {}),
+        },
+      },
+    });
+
+    try {
+      await controller.start();
+      expect(
+        warn.mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.includes('startup reconciliation left an obligation open')),
+      ).toEqual([expect.stringContaining('kind=absence-released-undischarged witness=provider-operation-record')]);
+    } finally {
+      await stopLifecycleController(controller);
+      warn.mockRestore();
+    }
+  });
+
   it('P5 cursor barrier failure prevents recovery and never reaches running', async () => {
     const modules = await loadModules();
     const pluginRoot = createPluginRoot('plugin-p5-cursor-barrier');
