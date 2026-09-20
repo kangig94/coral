@@ -4,20 +4,19 @@
 
 ## Resolution
 
-`pruneShutdownRemainderRecords` no longer retains unreadable or unsupported records in the active record set
-until a count bound deletes them. It atomically renames them with a `.quarantined` suffix and returns
-`cleanup.kind = 'quarantined'` with the original subject names. The same successor owns malformed stages,
-partial stages whose writer is unobservable, and complete stages that cannot be published after their writer
-is no longer known alive.
+`pruneShutdownRemainderRecords` returns unreadable, unsupported, age-unobservable, and unpublishable subjects
+as typed deferrals. Their bytes stay at the original address; there is no `.quarantined` rename. The disposition
+names `next-coordinator-start` as successor and permits exactly one content retry there.
+`createShutdownRemainderPruner` keeps the subject's incarnation with that disposition, so periodic maintenance
+does not reread the same evidence. Replacing the directory entry changes its incarnation and makes the new
+subject eligible for ordinary classification.
 
-Quarantined names are durable but do not match either the record or stage address, so the periodic maintenance
-pass classifies them in its returned disposition without reading or reclassifying their content.
-`createShutdownRemainderPruner` retries each quarantine once when the next coordinator starts, before its
-initial prune. Evidence that has become readable or publishable returns to the active set; a persistent refusal
-returns to quarantine rather than entering an unbounded periodic loop.
-
-No count or age limit finalizes quarantined evidence. The 32-record limit remains only for records whose bytes
-were decoded and whose identity matches their canonical filename.
+The active record store is still finite. When more than 32 final-record subjects exist, decodable records are
+retained before opaque ones and ties use bytewise subject order. A deletion that overrides unknown age or
+content is returned as `cleanup.kind = 'truncated'`: it names the exact lost subjects and causes, the
+`bounded-shutdown-remainder-store` authority, the retained count, and that subject identity plus cause are the
+only surviving evidence. This is capacity authority, not an age inference. A refused deletion remains a named
+cleanup refusal and is not reported as truncation.
 
 ## Superseded observations
 

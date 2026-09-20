@@ -257,6 +257,8 @@ function formatProviderProxySetOperatorRefusalGuidance(
         'Next step: run the abandon command below; this accepts the unresolved representation release without retrying its fatal operation.',
         abandon,
       ].join('\n');
+    case 'representation-release-retry-exhausted':
+      return 'No command is required: the bounded delivery window ended and durable representation-release reconciliation owns the remainder.';
     default:
       return assertNever(ground);
   }
@@ -304,7 +306,7 @@ export function formatProviderProxySetContainResult(
         ? 'Coral started evidence-backed representation release'
         : result.effect.representationAction === 'abandonment-release-started'
           ? 'Coral started operator-abandonment representation release'
-          : 'the operator accepted the fatal representation-release remainder',
+          : 'the coordinator accepted the fatal representation-release remainder',
   ].join('; ');
   switch (result.kind) {
     case 'contained':
@@ -1472,10 +1474,18 @@ function formatShutdownRemainderEvidenceLines(
 }
 
 function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObservation): string[] {
+  const ownership =
+    observation.source === 'status process'
+      ? 'owner=no-observed-owner successor=none-observed'
+      : observation.retry?.state === 'scheduled'
+        ? 'owner=coordinator successor=periodic-cleanup-retry'
+        : observation.retry?.state === 'stopped-until-restart'
+          ? 'owner=next-coordinator-start successor=coordinator-startup'
+          : 'owner=no-observed-owner successor=none-observed';
   const lines = [
     ...observation.refusals.map(
       (refusal) =>
-        `Cleanup refusal observed by ${observation.source}: correlation=${refusal.subject.identity} class=directory-entry cause=${refusal.cause.kind} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'} owner=coordinator successor=periodic-cleanup-retry`,
+        `Cleanup refusal observed by ${observation.source}: correlation=${refusal.subject.identity} class=directory-entry cause=${refusal.cause.kind} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'} ${ownership}`,
     ),
     ...(observation.resolvedRefusalCount === 0
       ? []
@@ -1505,16 +1515,7 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
   ];
   if (lines.length === 0 || observation.source !== 'coordinator') return lines;
   const observedAt = observation.observedAt ?? 'unavailable';
-  const retry =
-    observation.retry?.state === 'scheduled'
-      ? 'scheduled by the coordinator'
-      : observation.retry?.state === 'stopped-until-restart'
-        ? 'stopped until the next coordinator startup'
-        : 'unavailable';
-  return [
-    ...lines,
-    `Cleanup-refusal snapshot observed at ${observedAt}; automatic cleanup is the sole owner and retry is ${retry}.`,
-  ];
+  return [...lines, `Cleanup-refusal snapshot observed at ${observedAt}; ${ownership}.`];
 }
 
 function formatSkippedShutdownRemainderEntries(
@@ -1991,9 +1992,10 @@ export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus):
       return `disposition=inactive waitingFor=${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
     case 'unavailable':
       return 'disposition=unavailable';
+    case 'representation-release':
+      return `disposition=automatic owner=${disposition.owner} retryCadenceMs=${Math.ceil(disposition.retryCadenceMs)} settlementBoundMs=${Math.ceil(disposition.settlementBoundMs)} retryAction=${disposition.retryAction} exhaustionSuccessor=${disposition.exhaustionSuccessor} terminalExit=${disposition.terminalExit}`;
     case 'control-or-containment':
     case 'exact-containment':
-    case 'representation-release':
     case 'durable-reconciliation':
     case 'publication-recovery':
       return `disposition=automatic owner=${disposition.owner} boundMs=${Math.ceil(disposition.boundMs)} retryAction=${disposition.retryAction} refusalSuccessor=${disposition.refusalSuccessor} terminalExit=${disposition.terminalExit}`;

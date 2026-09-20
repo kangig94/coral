@@ -792,6 +792,7 @@ async function authorizedOperatorExitForProof(
   Readonly<{
     capability: ProviderProxySetOperatorExitCapability;
     lifecycle: ProviderProxySetLifecycle;
+    mutationAdmission: ProviderOperationMutationAdmission;
     mutationFence: ProviderOperationMutationSetFence;
     stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'];
     clock: ManualClock;
@@ -844,7 +845,7 @@ async function authorizedOperatorExitForProof(
     throw new Error(`expected authorization, received ${authorization.kind}`);
   }
   if (mutationFence === null) throw new Error('operator exit did not acquire a mutation fence');
-  return { capability: authorization.capability, lifecycle, mutationFence, stopAndReap, clock };
+  return { capability: authorization.capability, lifecycle, mutationAdmission, mutationFence, stopAndReap, clock };
 }
 
 function capsuleFor(
@@ -5429,6 +5430,90 @@ describe('ProviderProxySetLifecycle', () => {
     expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
   });
 
+  it('retries a handback whose mutation-fence release throws before taking effect', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, clock, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(mutationFence, 'release').mockImplementationOnce(() => {
+      throw new Error('release failed');
+    });
+
+    expect(() => capability.handback()).toThrow('release failed');
+    expect(mutationFence.isHeld()).toBe(true);
+    expect(() => capability.handback()).not.toThrow();
+    expect(mutationFence.isHeld()).toBe(false);
+    expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
+  });
+
+  it('retries both handback phases when timer installation and mutation-fence release each throw once', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, clock, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(clock, 'setTimeout').mockImplementationOnce(() => {
+      throw new Error('timer installation failed');
+    });
+    vi.spyOn(mutationFence, 'release').mockImplementationOnce(() => {
+      throw new Error('release failed');
+    });
+
+    expect(() => capability.handback()).toThrow('timer installation failed');
+    expect(mutationFence.isHeld()).toBe(true);
+    expect(() => capability.handback()).not.toThrow();
+    expect(mutationFence.isHeld()).toBe(false);
+    expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
+  });
+
+  it('keeps a persistently failing mutation-fence release owned and unsettled', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(mutationFence, 'release').mockImplementation(() => {
+      throw new Error('release unavailable');
+    });
+
+    expect(() => capability.handback()).toThrow('release unavailable');
+    expect(() => capability.handback()).toThrow('release unavailable');
+    expect(mutationFence.isHeld()).toBe(true);
+  });
+
+  it('lets mutation-admission shutdown finish after a failed handback release is retried', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, mutationAdmission, mutationFence } = await authorizedOperatorExitForProof(
+      record,
+      reapRecordedContainment,
+    );
+    vi.spyOn(mutationFence, 'release').mockImplementationOnce(() => {
+      throw new Error('release failed');
+    });
+
+    expect(() => capability.handback()).toThrow('release failed');
+    const shutdown = mutationAdmission.close();
+    expect(shutdown).toEqual(
+      expect.objectContaining({
+        kind: 'holding',
+        pendingMutations: ['provider-operation-mutation-set-fence'],
+      }),
+    );
+    if (shutdown.kind !== 'holding') throw new Error('mutation admission did not retain the failed release');
+
+    capability.handback();
+    await expect(shutdown.retryAfter).resolves.toBeUndefined();
+    await expect(mutationAdmission.released()).resolves.toBeUndefined();
+  });
+
   it('returns a pending claim disposition when exact-absence delivery has not settled', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -6698,6 +6783,127 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.representationReleaseHolds()).toEqual([]);
   });
 
+  it('transfers a persistently unavailable representation release to its durable successor at the settlement bound', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const containmentDisappeared = vi.fn(async () => ({
+      kind: 'operational-failure' as const,
+      code: 'disappearance_consumer_unavailable' as const,
+      reason: 'consumer remains unavailable',
+    }));
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+
+    const acceptance = lifecycle.containmentAbsent(
+      providerProxySetIdentityFromRecord(record),
+      'bounded-authority-null-release',
+    );
+    await expect(acceptance.initialDisposition).resolves.toEqual(
+      expect.objectContaining({ kind: 'operational-retry-owned' }),
+    );
+    const [hold] = lifecycle.representationReleaseHolds();
+    if (hold === undefined) throw new Error('expected representation release hold');
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      clock.elapse(1_000);
+      clock.runDue();
+      await drainMicrotasks();
+    }
+
+    await expect(hold.settlement).resolves.toEqual({
+      kind: 'retry-exhausted-successor-pending',
+      incident: expect.objectContaining({
+        code: 'disappearance_consumer_unavailable',
+        reason: 'consumer remains unavailable',
+        nextAttemptAtMs: 60_000,
+      }),
+      successor: {
+        owner: 'coordinator',
+        retryCadenceMs: 1_000,
+        settlementBoundMs: 60_000,
+        retryAction: 'release-representation',
+        exhaustionSuccessor: 'durable-representation-release-reconciliation',
+        terminalExit: 'representation-released-or-durable-reconciliation',
+      },
+      operatorDispositionRecording: { kind: 'recorded' },
+    });
+    expect(containmentDisappeared).toHaveBeenCalledTimes(60);
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        operatorExit: { kind: 'refused', ground: 'representation-release-retry-exhausted' },
+        autonomousDisposition: expect.objectContaining({
+          kind: 'durable-reconciliation',
+          owner: 'coordinator',
+        }),
+      }),
+    );
+  });
+
+  it('retains an exhausted representation release until its durable successor is recorded', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const operatorDispositionStore = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: {
+        containmentDisappeared: async () => ({
+          kind: 'operational-failure',
+          code: 'disappearance_consumer_unavailable',
+          reason: 'consumer remains unavailable',
+        }),
+      },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    vi.spyOn(storage, 'writeAtomicDurableSync').mockReturnValue(false);
+
+    const acceptance = lifecycle.containmentAbsent(
+      providerProxySetIdentityFromRecord(record),
+      'unpersisted-bounded-release',
+    );
+    await expect(acceptance.initialDisposition).resolves.toEqual(
+      expect.objectContaining({ kind: 'operational-retry-owned' }),
+    );
+    const [hold] = lifecycle.representationReleaseHolds();
+    if (hold === undefined) throw new Error('expected representation release hold');
+
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      clock.elapse(1_000);
+      clock.runDue();
+      await drainMicrotasks();
+    }
+
+    await expect(hold.settlement).resolves.toEqual(
+      expect.objectContaining({
+        kind: 'retry-exhausted-successor-pending',
+        operatorDispositionRecording: expect.objectContaining({ kind: 'held', waitingFor: 'store-repair' }),
+      }),
+    );
+    expect(lifecycle.representationReleaseHolds()).toHaveLength(1);
+    expect(operatorDispositionStore.read().records).toEqual([]);
+
+    clock.elapse(1_000);
+    clock.runDue();
+    expect(lifecycle.representationReleaseHolds()).toHaveLength(1);
+  });
+
   it('dispatches post-start disappearance corruption through the global fatal route', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -6974,10 +7180,11 @@ describe('ProviderProxySetLifecycle', () => {
       error: globalFatals[0],
       successor: {
         owner: 'coordinator',
-        boundMs: 60_000,
+        retryCadenceMs: 1_000,
+        settlementBoundMs: 60_000,
         retryAction: 'release-representation',
-        refusalSuccessor: 'automatic-retry',
-        terminalExit: 'representation-released',
+        exhaustionSuccessor: 'durable-representation-release-reconciliation',
+        terminalExit: 'representation-released-or-durable-reconciliation',
       },
       operatorDispositionRecording: { kind: 'recorded' },
     });
@@ -7079,10 +7286,11 @@ describe('ProviderProxySetLifecycle', () => {
       error: globalFatals[0],
       successor: {
         owner: 'coordinator',
-        boundMs: 60_000,
+        retryCadenceMs: 1_000,
+        settlementBoundMs: 60_000,
         retryAction: 'release-representation',
-        refusalSuccessor: 'automatic-retry',
-        terminalExit: 'representation-released',
+        exhaustionSuccessor: 'durable-representation-release-reconciliation',
+        terminalExit: 'representation-released-or-durable-reconciliation',
       },
       operatorDispositionRecording: { kind: 'recorded' },
     });

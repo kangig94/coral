@@ -60,6 +60,7 @@ export const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
   'identity-unobservable',
   'store-unreadable',
   'representation-release-fatal',
+  'representation-release-retry-exhausted',
 ] as const;
 export type ProviderProxySetOperatorExitRefusalGround =
   (typeof PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS)[number];
@@ -95,11 +96,15 @@ export type ProviderProxySetAutonomousDisposition =
       'control-reattached-or-containment-absent'
     >
   | ActiveProviderProxySetAutonomousDisposition<'exact-containment', 'observe-exact-containment', 'containment-absent'>
-  | ActiveProviderProxySetAutonomousDisposition<
-      'representation-release',
-      'release-representation',
-      'representation-released'
-    >
+  | Readonly<{
+      kind: 'representation-release';
+      owner: 'coordinator';
+      retryCadenceMs: number;
+      settlementBoundMs: number;
+      retryAction: 'release-representation';
+      exhaustionSuccessor: 'durable-representation-release-reconciliation';
+      terminalExit: 'representation-released-or-durable-reconciliation';
+    }>
   | ActiveProviderProxySetAutonomousDisposition<
       'durable-reconciliation',
       'reconcile-durable-disposition',

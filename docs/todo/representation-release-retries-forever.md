@@ -1,6 +1,7 @@
 # A representation release retries every second, forever
 
-**Status**: open. Observed in the wild on a developer machine, 2026-09-18, not reproduced from a test.
+**Status**: resolved. The incident remains recorded below; a regression test now reproduces the permanent
+consumer failure and proves the terminal transfer.
 
 ## What was seen
 
@@ -19,7 +20,7 @@ first `containment-retry` line **one second later**. The loop is therefore rebui
 provider-proxy set state on every boot, not held in memory by one unlucky instance, which is why 28 hours
 of it spanned more than one coordinator.
 
-## Why it does not stop
+## Why it did not stop
 
 `#scheduleRepresentationReleaseRetry` (`ProviderProxySetLifecycle`,
 `src/coordinator/services/provider-proxy-set/index.ts`) schedules a fixed 1,000 ms timer that calls
@@ -34,13 +35,16 @@ by itself an exit — exhausting it must reach a named successor, not the same h
 bounded, so there is nothing to exhaust. Principle 12 is what makes it matter: nobody is watching, so
 nothing was going to notice 28 hours of it.
 
-## What a fix has to decide
+## Resolution
 
-The loop is cheap per iteration, which is why it survived — the cost is a log that reached 10 MB and an
-obligation that never settles, not CPU. So the question is not the interval but the terminus: what a
-representation release means when its consumer never comes back, and which of principle 11's two
-remaining exits it takes. Note that `#recordLateness` is already called on every iteration, so the
-lateness telemetry this produced is also 72,641 samples of nothing.
+Representation delivery now has two separate bounds in its public disposition: a 1,000 ms retry cadence
+and a 60,000 ms settlement window. Exhausting the window does not claim that a consumer accepted the
+release. It records `operator_exit_representation_release_retry_exhausted` in the durable operator
+disposition store and transfers ownership to
+`durable-representation-release-reconciliation`. The in-memory representation is released only after
+that record is durable; if the store write is held, the existing store-repair successor retains the
+slot and retries the write.
 
-Worth checking while there: the same file has `acquisition-publication-retry` and
-`containment-attempt-deadline` stages feeding `#recordLateness`, and whether either has the same shape.
+The regression test advances the full window against a permanently unavailable disappearance consumer,
+asserts the exact attempt count, the distinct exhausted settlement, the durable refusal, and the absence
+of a remaining representation-release hold.

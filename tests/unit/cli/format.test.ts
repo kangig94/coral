@@ -977,7 +977,7 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
-          `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} class=directory-entry cause=system-error operation=scan-directory errno=EACCES owner=coordinator successor=periodic-cleanup-retry`,
+          `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} class=directory-entry cause=system-error operation=scan-directory errno=EACCES owner=no-observed-owner successor=none-observed`,
         ].join('\n'),
       );
     });
@@ -1698,7 +1698,7 @@ describe('cli format', () => {
 
       expect(text).toContain('namespace=another-installation flavor=dev');
       expect(text).toContain(
-        `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} class=directory-entry cause=system-error operation=scan-directory errno=EACCES owner=coordinator successor=periodic-cleanup-retry`,
+        `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject('/run/coral/shutdown-remainder.v1').identity} class=directory-entry cause=system-error operation=scan-directory errno=EACCES owner=no-observed-owner successor=none-observed`,
       );
     });
 
@@ -1968,7 +1968,7 @@ describe('cli format', () => {
       });
 
       expect(text).toContain(
-        `Cleanup refusal observed by coordinator: correlation=${shutdownRemainderFilesystemSubject('corrupt.json').identity} class=directory-entry cause=system-error operation=delete errno=EACCES owner=coordinator successor=periodic-cleanup-retry`,
+        `Cleanup refusal observed by coordinator: correlation=${shutdownRemainderFilesystemSubject('corrupt.json').identity} class=directory-entry cause=system-error operation=delete errno=EACCES owner=no-observed-owner successor=none-observed`,
       );
       expect(text).not.toMatch(/Retry (?:trigger|action):/u);
     });
@@ -2181,10 +2181,10 @@ describe('cli format', () => {
       );
       expect(text).toContain('Cleanup refusal subjects observed by coordinator but omitted from the bounded list: 17');
       expect(text).toContain(
-        'Cleanup-refusal snapshot observed at 2026-09-20T00:00:00.000Z; automatic cleanup is the sole owner and retry is stopped until the next coordinator startup.',
+        'Cleanup-refusal snapshot observed at 2026-09-20T00:00:00.000Z; owner=next-coordinator-start successor=coordinator-startup.',
       );
       expect(text).toContain(
-        `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject(directory).identity} class=directory-entry cause=system-error operation=scan-directory errno=EIO owner=coordinator successor=periodic-cleanup-retry`,
+        `Cleanup refusal observed by status process: correlation=${shutdownRemainderFilesystemSubject(directory).identity} class=directory-entry cause=system-error operation=scan-directory errno=EIO owner=no-observed-owner successor=none-observed`,
       );
     });
 

@@ -56,6 +56,7 @@ import type { ProviderHandoffCapsuleRetirementOutcome } from '../provider-proxy-
 import { classifyProviderProxySetInheritance, type ProviderProxySetRedemptionOutcome } from './inheritance.js';
 import {
   authorizeProviderProxySetContainmentProof,
+  handbackProviderProxySetContainmentProofFence,
   providerProxySetContainmentEvidenceFor,
   releaseProviderProxySetContainmentProofFence,
   verifyProviderProxySetContainmentProofCurrent,
@@ -160,6 +161,8 @@ const OPERATOR_EXIT_OBSERVATION_MS = 1_000;
 const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
 const REATTACHMENT_HOLD_RETRY_MS = 60_000;
 const AUTONOMOUS_DISPOSITION_RETRY_MS = 60_000;
+const REPRESENTATION_RELEASE_RETRY_CADENCE_MS = 1_000;
+const REPRESENTATION_RELEASE_SETTLEMENT_BOUND_MS = 60_000;
 
 declare const processContainmentEvidenceBrand: unique symbol;
 declare const durableClaimDischargeBrand: unique symbol;
@@ -291,6 +294,7 @@ type PendingReleaseSlot = {
   pendingOperations: Map<string, OperationIdentity>;
   initialDeliveries: Map<string, AbsenceDeliveryState>;
   deliveryRetryTimers: Map<string, TimerHandle>;
+  representationReleaseStartedAtMonotonicMs: bigint;
   capsulePath: string | null;
   routeKey: string | null;
   retirementState: 'not-ready' | 'initial-pending' | 'retry-owned' | 'fatal' | 'retired';
@@ -298,7 +302,7 @@ type PendingReleaseSlot = {
   initialDisposition: InitialDispositionLatch;
   representationReleaseSettlement: Promise<ProviderProxyRepresentationReleaseSettlement>;
   settleRepresentationRelease(disposition: ProviderProxyRepresentationReleaseSettlement): void;
-  fatalSettlement: ProviderProxyRepresentationReleaseFatalSettlement | null;
+  terminalSettlement: ProviderProxyRepresentationReleaseTerminalSettlement | null;
   operatorExitNotBeforeMonotonicMs: bigint | null;
   operatorExitGeneration: number;
   attemptToken: number;
@@ -552,10 +556,11 @@ export type ProviderProxySetDurableAcquisitionAbandonment =
 
 export type ProviderProxyRepresentationReleaseSuccessor = Readonly<{
   owner: 'coordinator';
-  boundMs: number;
+  retryCadenceMs: number;
+  settlementBoundMs: number;
   retryAction: 'release-representation';
-  refusalSuccessor: 'automatic-retry';
-  terminalExit: 'representation-released';
+  exhaustionSuccessor: 'durable-representation-release-reconciliation';
+  terminalExit: 'representation-released-or-durable-reconciliation';
 }>;
 
 export type ProviderProxyRepresentationReleaseSettlement =
@@ -565,11 +570,22 @@ export type ProviderProxyRepresentationReleaseSettlement =
       error: ProviderProxySetLifecycleFatalError;
       successor: ProviderProxyRepresentationReleaseSuccessor;
       operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
+    }>
+  | Readonly<{
+      kind: 'retry-exhausted-successor-pending';
+      incident: ContainmentAbsenceOperationalIncident;
+      successor: ProviderProxyRepresentationReleaseSuccessor;
+      operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
     }>;
 
-type ProviderProxyRepresentationReleaseFatalSettlement = Exclude<
+type ProviderProxyRepresentationReleaseTerminalSettlement = Exclude<
   ProviderProxyRepresentationReleaseSettlement,
   Readonly<{ kind: 'released' }>
+>;
+
+type ProviderProxyRepresentationReleaseFatalSettlement = Extract<
+  ProviderProxyRepresentationReleaseTerminalSettlement,
+  Readonly<{ kind: 'fatal-successor-pending' }>
 >;
 
 export type ProviderProxyRepresentationReleaseDisposition =
@@ -579,6 +595,13 @@ export type ProviderProxyRepresentationReleaseDisposition =
       kind: 'fatal-successor-pending';
       exit: 'provider-proxy-set-autonomous-release';
       error: ProviderProxySetLifecycleFatalError;
+      successor: ProviderProxyRepresentationReleaseSuccessor;
+      operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
+    }>
+  | Readonly<{
+      kind: 'retry-exhausted-successor-pending';
+      exit: 'provider-proxy-set-durable-release-reconciliation';
+      incident: ContainmentAbsenceOperationalIncident;
       successor: ProviderProxyRepresentationReleaseSuccessor;
       operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
     }>;
@@ -598,7 +621,7 @@ type ProviderProxySetOperatorClaimDischarge =
 
 type ProviderProxySetOperatorClaimDischargeObservation =
   | ProviderProxySetOperatorClaimDischarge
-  | ProviderProxyRepresentationReleaseFatalSettlement;
+  | ProviderProxyRepresentationReleaseTerminalSettlement;
 
 export type ProviderProxySetOperatorExitEffect = Readonly<{
   signalsSent: readonly ProviderProxySetContainmentSignal[];
@@ -2211,11 +2234,10 @@ export class ProviderProxySetLifecycle {
   }
 
   #representationReleaseDisposition(slot: ReleaseDeliveryPendingSlot): ProviderProxyRepresentationReleaseDisposition {
-    if (slot.fatalSettlement !== null) {
-      return {
-        ...slot.fatalSettlement,
-        exit: 'provider-proxy-set-autonomous-release',
-      };
+    if (slot.terminalSettlement !== null) {
+      return slot.terminalSettlement.kind === 'fatal-successor-pending'
+        ? { ...slot.terminalSettlement, exit: 'provider-proxy-set-autonomous-release' }
+        : { ...slot.terminalSettlement, exit: 'provider-proxy-set-durable-release-reconciliation' };
     }
     if (
       slot.retirementState === 'retry-owned' ||
@@ -2410,7 +2432,7 @@ export class ProviderProxySetLifecycle {
       }> {
     const fatalReleasePending =
       (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
-      slot.fatalSettlement !== null;
+      slot.terminalSettlement !== null;
     const heldWhileRoutable = (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
     if (
       slot.kind !== 'reattaching' &&
@@ -2445,19 +2467,31 @@ export class ProviderProxySetLifecycle {
   ): ProviderProxySetOperatorExit {
     if (
       (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
-      slot.fatalSettlement !== null
+      slot.terminalSettlement !== null
     ) {
-      return { kind: 'refused', ground: 'representation-release-fatal' };
+      return {
+        kind: 'refused',
+        ground:
+          slot.terminalSettlement?.kind === 'retry-exhausted-successor-pending'
+            ? 'representation-release-retry-exhausted'
+            : 'representation-release-fatal',
+      };
     }
     const availability = this.#operatorExitAvailability(slot);
     if (availability.kind === 'not-held') return { kind: 'none' };
     if (availability.kind === 'deadline-pending') {
       return { kind: 'gated', remainingMs: availability.remainingMs };
     }
+    return this.#operatorExitRefusal(dispositions) ?? { kind: 'contain' };
+  }
+
+  #operatorExitRefusal(
+    dispositions: ReadonlyMap<string, ProviderProxySetOperatorDisposition>,
+  ): Extract<ProviderProxySetOperatorExit, { kind: 'refused' }> | null {
     const refusal = [...dispositions.values()].find(
       (disposition) => disposition.disposition === 'operator-exit-refused',
     );
-    if (refusal === undefined) return { kind: 'contain' };
+    if (refusal === undefined) return null;
     switch (refusal.incidentReason) {
       case 'operator_exit_enforcer-alive':
         return { kind: 'refused', ground: 'enforcer-alive' };
@@ -2473,11 +2507,13 @@ export class ProviderProxySetLifecycle {
         return { kind: 'refused', ground: 'store-unreadable' };
       case 'operator_exit_representation_release_fatal':
         return { kind: 'refused', ground: 'representation-release-fatal' };
+      case 'operator_exit_representation_release_retry_exhausted':
+        return { kind: 'refused', ground: 'representation-release-retry-exhausted' };
       case 'operator_exit_deadline_pending':
       case 'operator_exit_requires_held_set':
-        return { kind: 'contain' };
+        return null;
       default:
-        return { kind: 'none' };
+        return null;
     }
   }
 
@@ -2503,10 +2539,12 @@ export class ProviderProxySetLifecycle {
     if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
       return {
         kind: 'representation-release',
-        ...active,
-        boundMs: slot.fatalSettlement === null ? 1_000 : AUTONOMOUS_DISPOSITION_RETRY_MS,
+        owner: 'coordinator',
+        retryCadenceMs: REPRESENTATION_RELEASE_RETRY_CADENCE_MS,
+        settlementBoundMs: REPRESENTATION_RELEASE_SETTLEMENT_BOUND_MS,
         retryAction: 'release-representation',
-        terminalExit: 'representation-released',
+        exhaustionSuccessor: 'durable-representation-release-reconciliation',
+        terminalExit: 'representation-released-or-durable-reconciliation',
       };
     }
     if (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') {
@@ -2546,7 +2584,7 @@ export class ProviderProxySetLifecycle {
     if (slot === undefined) return { kind: 'set-not-found' };
     if (
       (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
-      slot.fatalSettlement !== null
+      slot.terminalSettlement !== null
     ) {
       return { kind: 'unsupported-contract' };
     }
@@ -2579,6 +2617,14 @@ export class ProviderProxySetLifecycle {
     const fenceProviderOperationMutations = this.#deps.fenceProviderOperationMutations;
     if (fenceProviderOperationMutations === undefined) {
       throw new Error('provider_proxy_operator_exit_mutation_fence_unavailable');
+    }
+    const priorFenceAuthorization = this.#operatorExitFenceAuthorizations.get(authorizedSlot.key);
+    if (priorFenceAuthorization !== undefined) {
+      const release = releaseProviderProxySetContainmentProofFence(priorFenceAuthorization);
+      if (release.kind === 'held') throw release.error;
+      if (this.#operatorExitFenceAuthorizations.get(authorizedSlot.key) === priorFenceAuthorization) {
+        this.#operatorExitFenceAuthorizations.delete(authorizedSlot.key);
+      }
     }
     if ('operatorExitObservedGate' in authorizedSlot) this.#clearObservedOperatorExitGate(authorizedSlot);
     authorizedSlot.operatorExitGeneration += 1;
@@ -2641,11 +2687,7 @@ export class ProviderProxySetLifecycle {
       mutationFence,
       closeAdmission,
     });
-    const priorFenceAuthorization = this.#operatorExitFenceAuthorizations.get(authorizedSlot.key);
     this.#operatorExitFenceAuthorizations.set(authorizedSlot.key, containmentProofAuthorization);
-    if (priorFenceAuthorization !== undefined) {
-      releaseProviderProxySetContainmentProofFence(priorFenceAuthorization);
-    }
     const capability = Object.freeze({
       setIdentity: authorizedSlot.identity,
       containmentProofAuthorization,
@@ -2728,7 +2770,7 @@ export class ProviderProxySetLifecycle {
       }
       const fatalReleasePending =
         (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') &&
-        slot.fatalSettlement !== null;
+        slot.terminalSettlement !== null;
       const heldWhileRoutable =
         (slot.kind === 'available' || slot.kind === 'draining') && this.#hasLiveClaimsHold(slot);
       if (
@@ -2763,13 +2805,13 @@ export class ProviderProxySetLifecycle {
           return assertNever(proofCurrentness);
       }
       if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
-        if (slot.fatalSettlement === null) {
+        if (slot.terminalSettlement === null) {
           return { kind: 'not-held', setIdentity: address, state: slot.kind, effect: noEffect };
         }
         if (request.behavior === 'contain') {
           return { kind: 'representation-release-abandonment-required', setIdentity: address, effect: noEffect };
         }
-        this.#acceptFatalRepresentationReleaseSuccessor(slot);
+        this.#acceptTerminalRepresentationReleaseSuccessor(slot);
         return {
           kind: 'representation-release-abandoned',
           setIdentity: address,
@@ -3033,8 +3075,11 @@ export class ProviderProxySetLifecycle {
           accepted,
           pendingRelease,
         );
-        if (claimDischarge.kind === 'fatal-successor-pending') {
-          return this.#completeFatalOperatorExit(pendingRelease, request, effect);
+        if (
+          claimDischarge.kind === 'fatal-successor-pending' ||
+          claimDischarge.kind === 'retry-exhausted-successor-pending'
+        ) {
+          return this.#completeTerminalOperatorExit(pendingRelease, request, effect);
         }
         return {
           kind: 'contained',
@@ -3116,7 +3161,7 @@ export class ProviderProxySetLifecycle {
       return;
     }
     if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
-      if (slot.fatalSettlement !== null) this.#scheduleFatalRepresentationRelease(slot);
+      if (slot.terminalSettlement !== null) this.#scheduleTerminalRepresentationRelease(slot);
       return;
     }
     if (slot.kind === 'capsule-recovering') {
@@ -3172,8 +3217,11 @@ export class ProviderProxySetLifecycle {
       pending.initialDisposition,
       pending,
     );
-    if (claimDischarge.kind === 'fatal-successor-pending') {
-      return this.#completeFatalOperatorExit(pending, request, releaseEffect);
+    if (
+      claimDischarge.kind === 'fatal-successor-pending' ||
+      claimDischarge.kind === 'retry-exhausted-successor-pending'
+    ) {
+      return this.#completeTerminalOperatorExit(pending, request, releaseEffect);
     }
     return resultForClaimDischarge(claimDischarge, releaseEffect);
   }
@@ -3186,7 +3234,7 @@ export class ProviderProxySetLifecycle {
     for (const operation of slot.pendingOperations.values()) this.#deliverRepresentationRelease(slot, operation);
   }
 
-  #completeFatalOperatorExit(
+  #completeTerminalOperatorExit(
     slot: ReleaseDeliveryPendingSlot,
     request: ProviderProxySetOperatorExitRequest,
     effect: ProviderProxySetOperatorExitEffect,
@@ -3194,7 +3242,7 @@ export class ProviderProxySetLifecycle {
     if (request.behavior !== 'abandon') {
       return { kind: 'representation-release-abandonment-required', setIdentity: slot.address, effect };
     }
-    this.#acceptFatalRepresentationReleaseSuccessor(slot);
+    this.#acceptTerminalRepresentationReleaseSuccessor(slot);
     return {
       kind: 'representation-release-abandoned',
       setIdentity: slot.address,
@@ -3241,30 +3289,28 @@ export class ProviderProxySetLifecycle {
     return this.#absenceAcceptance(pending);
   }
 
-  #releaseOperatorExitFence(capability: ProviderProxySetOperatorExitCapability): void {
-    this.#detachOperatorExitFence(capability);
-    releaseProviderProxySetContainmentProofFence(capability.containmentProofAuthorization);
-  }
-
   #handbackOperatorExit(capability: ProviderProxySetOperatorExitCapability): void {
     if (this.#settledOperatorExitCapabilities.has(capability)) return;
-    try {
+    const handback = handbackProviderProxySetContainmentProofFence(capability.containmentProofAuthorization, () => {
       if (!this.#rearmedOperatorExitCapabilities.has(capability)) {
         this.#resumeAutonomousDisposition(capability, this.#releasedOperatorExitCapabilities.has(capability));
         this.#rearmedOperatorExitCapabilities.add(capability);
       }
-    } finally {
+    });
+    if (handback.release.kind !== 'held') {
+      this.#detachOperatorExitFence(capability);
       if (!this.#releasedOperatorExitCapabilities.has(capability)) {
-        this.#releaseOperatorExitFence(capability);
         this.#releasedOperatorExitCapabilities.add(capability);
       }
-      if (
-        this.#rearmedOperatorExitCapabilities.has(capability) &&
-        this.#releasedOperatorExitCapabilities.has(capability)
-      ) {
-        this.#settledOperatorExitCapabilities.add(capability);
-      }
     }
+    if (
+      this.#rearmedOperatorExitCapabilities.has(capability) &&
+      this.#releasedOperatorExitCapabilities.has(capability)
+    ) {
+      this.#settledOperatorExitCapabilities.add(capability);
+    }
+    if (handback.rearm.kind === 'failed') throw handback.rearm.error;
+    if (handback.release.kind === 'held') throw handback.release.error;
   }
 
   #detachOperatorExitFence(capability: ProviderProxySetOperatorExitCapability): void {
@@ -3354,13 +3400,14 @@ export class ProviderProxySetLifecycle {
         [...pendingOperations.keys()].map((key) => [key, { kind: 'initial-pending' } as const]),
       ),
       deliveryRetryTimers: new Map<string, TimerHandle>(),
+      representationReleaseStartedAtMonotonicMs: this.#deps.time.monotonicNow(),
       capsulePath: slot.capsulePath,
       retirementState: 'not-ready' as const,
       retirementTimer: null,
       initialDisposition: createInitialDispositionLatch(),
       representationReleaseSettlement,
       settleRepresentationRelease,
-      fatalSettlement: null,
+      terminalSettlement: null,
       operatorExitNotBeforeMonotonicMs: null,
       operatorExitGeneration: 0,
       attemptToken: 0,
@@ -3546,7 +3593,7 @@ export class ProviderProxySetLifecycle {
         liveClaims: this.#deps.claims.claimsFor(identity).length,
         operatorExit:
           slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign'
-            ? { kind: 'none' as const }
+            ? (this.#operatorExitRefusal(dispositions) ?? { kind: 'none' as const })
             : this.#operatorExit(slot, dispositions),
         autonomousDisposition: this.#autonomousDisposition(slot, dispositions),
         holds: [...dispositions.values()],
@@ -5775,7 +5822,7 @@ export class ProviderProxySetLifecycle {
   ): ProviderProxyRecoveryTurnSinks {
     const currentDelivery = (): boolean =>
       this.#slots.get(slot.key) === slot &&
-      slot.fatalSettlement === null &&
+      slot.terminalSettlement === null &&
       slot.pendingOperations.has(operationKey(operation));
     return {
       evidence: () => {
@@ -5822,7 +5869,8 @@ export class ProviderProxySetLifecycle {
       | Extract<RepresentationAbandonmentDeliveryAttemptOutcome, { kind: 'operational-failure' }>,
   ): void {
     const key = operationKey(operation);
-    const nextAttemptAtMs = this.#deps.time.now() + 1_000;
+    const retryDelayMs = this.#representationReleaseRetryDelayMs(slot);
+    const nextAttemptAtMs = this.#deps.time.now() + retryDelayMs;
     const incident: ContainmentAbsenceOperationalIncident =
       slot.kind === 'absence-delivery-pending'
         ? {
@@ -5840,24 +5888,42 @@ export class ProviderProxySetLifecycle {
             nextAttemptAtMs,
           };
     slot.initialDeliveries.set(key, { kind: 'retry-owned', incident });
-    this.#scheduleRepresentationReleaseRetry(slot, operation, nextAttemptAtMs);
     this.#finishInitialDisposition(slot);
+    if (retryDelayMs === 0) {
+      void this.#settleExhaustedRepresentationRelease(slot, incident);
+      return;
+    }
+    this.#scheduleRepresentationReleaseRetry(slot, operation, incident, nextAttemptAtMs, retryDelayMs);
+  }
+
+  #representationReleaseRetryDelayMs(slot: ReleaseDeliveryPendingSlot): number {
+    const elapsedMs = Number(this.#deps.time.monotonicNow() - slot.representationReleaseStartedAtMonotonicMs);
+    return Math.min(
+      REPRESENTATION_RELEASE_RETRY_CADENCE_MS,
+      Math.max(0, REPRESENTATION_RELEASE_SETTLEMENT_BOUND_MS - elapsedMs),
+    );
   }
 
   #scheduleRepresentationReleaseRetry(
     slot: ReleaseDeliveryPendingSlot,
     operation: OperationIdentity,
+    incident: ContainmentAbsenceOperationalIncident,
     nextAttemptAtMs: number,
+    retryDelayMs: number,
   ): void {
-    if (slot.fatalSettlement !== null) return;
+    if (slot.terminalSettlement !== null) return;
     const key = operationKey(operation);
     const previous = slot.deliveryRetryTimers.get(key);
     if (previous !== undefined) this.#deps.time.clearTimeout(previous);
     const timer = this.#deps.time.setTimeout(() => {
       slot.deliveryRetryTimers.delete(key);
       this.#recordLateness('containment-retry', nextAttemptAtMs);
+      if (this.#representationReleaseRetryDelayMs(slot) === 0) {
+        void this.#settleExhaustedRepresentationRelease(slot, incident);
+        return;
+      }
       void this.#deliverRepresentationRelease(slot, operation);
-    }, 1_000);
+    }, retryDelayMs);
     timer.unref?.();
     slot.deliveryRetryTimers.set(key, timer);
   }
@@ -5878,17 +5944,14 @@ export class ProviderProxySetLifecycle {
     slot: ReleaseDeliveryPendingSlot,
     error: ProviderProxySetLifecycleFatalError,
   ): ProviderProxyRepresentationReleaseFatalSettlement {
-    if (slot.fatalSettlement !== null) return slot.fatalSettlement;
-    const successor: ProviderProxyRepresentationReleaseSuccessor = {
-      owner: 'coordinator',
-      boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS,
-      retryAction: 'release-representation',
-      refusalSuccessor: 'automatic-retry',
-      terminalExit: 'representation-released',
-    };
+    if (slot.terminalSettlement !== null) {
+      if (slot.terminalSettlement.kind !== 'fatal-successor-pending') {
+        throw new Error('provider_proxy_representation_release_terminal_already_settled');
+      }
+      return slot.terminalSettlement;
+    }
     slot.retirementState = 'fatal';
     slot.operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow();
-    this.#clearRepresentationReleaseTimers(slot);
     const recording = this.#recordOperatorExitRefusal(
       slot,
       'operator_exit_representation_release_fatal',
@@ -5897,11 +5960,11 @@ export class ProviderProxySetLifecycle {
     const disposition: ProviderProxyRepresentationReleaseFatalSettlement = {
       kind: 'fatal-successor-pending',
       error,
-      successor,
+      successor: this.#representationReleaseSuccessor(),
       operatorDispositionRecording: recording,
     };
-    slot.fatalSettlement = disposition;
-    this.#scheduleFatalRepresentationRelease(slot);
+    slot.terminalSettlement = disposition;
+    this.#scheduleTerminalRepresentationRelease(slot);
     if (recording.kind === 'held') {
       this.#report(
         'warn',
@@ -5912,16 +5975,78 @@ export class ProviderProxySetLifecycle {
     return disposition;
   }
 
-  #scheduleFatalRepresentationRelease(slot: ReleaseDeliveryPendingSlot): void {
+  #settleExhaustedRepresentationRelease(
+    slot: ReleaseDeliveryPendingSlot,
+    incident: ContainmentAbsenceOperationalIncident,
+  ): ProviderProxyRepresentationReleaseTerminalSettlement {
+    if (slot.terminalSettlement !== null) return slot.terminalSettlement;
+    slot.retirementState = 'fatal';
+    slot.operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow();
+    this.#clearRepresentationReleaseTimers(slot);
+    const recording = this.#recordOperatorExitRefusal(
+      slot,
+      'operator_exit_representation_release_retry_exhausted',
+      'independent-containment-absence',
+    );
+    const disposition: ProviderProxyRepresentationReleaseTerminalSettlement = {
+      kind: 'retry-exhausted-successor-pending',
+      incident,
+      successor: this.#representationReleaseSuccessor(),
+      operatorDispositionRecording: recording,
+    };
+    slot.terminalSettlement = disposition;
+    slot.settleRepresentationRelease(disposition);
+    if (recording.kind === 'recorded') {
+      this.#acceptTerminalRepresentationReleaseSuccessor(slot);
+    } else {
+      this.#scheduleTerminalRepresentationRelease(slot);
+    }
+    return disposition;
+  }
+
+  #representationReleaseSuccessor(): ProviderProxyRepresentationReleaseSuccessor {
+    return {
+      owner: 'coordinator',
+      retryCadenceMs: REPRESENTATION_RELEASE_RETRY_CADENCE_MS,
+      settlementBoundMs: REPRESENTATION_RELEASE_SETTLEMENT_BOUND_MS,
+      retryAction: 'release-representation',
+      exhaustionSuccessor: 'durable-representation-release-reconciliation',
+      terminalExit: 'representation-released-or-durable-reconciliation',
+    };
+  }
+
+  #scheduleTerminalRepresentationRelease(slot: ReleaseDeliveryPendingSlot): void {
     if (slot.retirementTimer !== null) this.#deps.time.clearTimeout(slot.retirementTimer);
     slot.retirementTimer = null;
-    if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement === null) return;
+    if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement === null) return;
+    const retryMs =
+      slot.terminalSettlement.kind === 'retry-exhausted-successor-pending'
+        ? OPERATOR_DISPOSITION_STORE_RETRY_MS
+        : AUTONOMOUS_DISPOSITION_RETRY_MS;
     slot.retirementTimer = this.#deps.time.setTimeout(() => {
       slot.retirementTimer = null;
-      if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement === null) return;
-      this.#acceptFatalRepresentationReleaseSuccessor(slot);
-    }, AUTONOMOUS_DISPOSITION_RETRY_MS);
+      if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement === null) return;
+      if (
+        slot.terminalSettlement.kind === 'retry-exhausted-successor-pending' &&
+        !this.#hasDurableRepresentationReleaseExhaustion(slot)
+      ) {
+        this.#scheduleTerminalRepresentationRelease(slot);
+        return;
+      }
+      this.#acceptTerminalRepresentationReleaseSuccessor(slot);
+    }, retryMs);
     slot.retirementTimer.unref?.();
+  }
+
+  #hasDurableRepresentationReleaseExhaustion(slot: ReleaseDeliveryPendingSlot): boolean {
+    const setKey = providerProxySetKey(slot.identity);
+    const subjectKey = operatorDispositionSubjectKey('operator-exit');
+    return [...this.#durableOperatorDispositions.values()].some(
+      (record) =>
+        providerProxySetKey(record.setIdentity) === setKey &&
+        record.subjectKey === subjectKey &&
+        record.disposition.incidentReason === 'operator_exit_representation_release_retry_exhausted',
+    );
   }
 
   #clearRepresentationReleaseTimers(slot: ReleaseDeliveryPendingSlot): void {
@@ -5942,7 +6067,7 @@ export class ProviderProxySetLifecycle {
   #startRetirement(slot: ReleaseDeliveryPendingSlot): void {
     if (
       this.#slots.get(slot.key) !== slot ||
-      slot.fatalSettlement !== null ||
+      slot.terminalSettlement !== null ||
       slot.pendingOperations.size !== 0 ||
       slot.claimDischarge === null ||
       slot.retirementState !== 'not-ready'
@@ -5962,7 +6087,7 @@ export class ProviderProxySetLifecycle {
   #attemptRetirement(slot: ReleaseDeliveryPendingSlot): void {
     if (
       this.#slots.get(slot.key) !== slot ||
-      slot.fatalSettlement !== null ||
+      slot.terminalSettlement !== null ||
       slot.pendingOperations.size !== 0 ||
       slot.capsulePath === null
     ) {
@@ -5975,13 +6100,13 @@ export class ProviderProxySetLifecycle {
       { setIdentity: slot.identity },
       {
         evidence: () => {
-          if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement !== null) return;
+          if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement !== null) return;
           slot.retirementState = 'retired';
           this.#releaseRepresentationSlot(slot, this.#providerProxySetDischarge(slot));
           this.#finishInitialDisposition(slot);
         },
         retry: (retry) => {
-          if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement !== null) return;
+          if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement !== null) return;
           this.#recordRetirementOperationalFailure(slot, {
             kind: 'temporarily-unavailable',
             incident: retry.incident as Extract<
@@ -5991,7 +6116,7 @@ export class ProviderProxySetLifecycle {
           });
         },
         fatal: (error) => {
-          if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement !== null) return;
+          if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement !== null) return;
           this.#recordRetirementRetry(slot, { kind: 'fatal', error });
         },
       },
@@ -6012,10 +6137,22 @@ export class ProviderProxySetLifecycle {
       | Readonly<{ kind: 'operational'; reason: string }>
       | Readonly<{ kind: 'fatal'; error: ProviderProxySetLifecycleFatalError }>,
   ): void {
-    const nextAttemptAtMs = this.#deps.time.now() + 1_000;
     if (outcome.kind === 'fatal') {
       const disposition = this.#settleFatalRepresentationRelease(slot, outcome.error);
       this.#rejectInitialDisposition(slot, disposition);
+      return;
+    }
+    const retryDelayMs = this.#representationReleaseRetryDelayMs(slot);
+    const nextAttemptAtMs = this.#deps.time.now() + retryDelayMs;
+    const incident: ContainmentAbsenceOperationalIncident = {
+      stage: 'capsule-retirement',
+      code: 'capsule_retirement_unavailable',
+      reason: outcome.reason,
+      nextAttemptAtMs,
+    };
+    this.#finishInitialDisposition(slot, incident);
+    if (retryDelayMs === 0) {
+      void this.#settleExhaustedRepresentationRelease(slot, incident);
       return;
     }
     slot.retirementState = 'retry-owned';
@@ -6023,23 +6160,21 @@ export class ProviderProxySetLifecycle {
     slot.retirementTimer = this.#deps.time.setTimeout(() => {
       slot.retirementTimer = null;
       this.#recordLateness('containment-retry', nextAttemptAtMs);
+      if (this.#representationReleaseRetryDelayMs(slot) === 0) {
+        void this.#settleExhaustedRepresentationRelease(slot, incident);
+        return;
+      }
       this.#attemptRetirement(slot);
-    }, 1_000);
+    }, retryDelayMs);
     slot.retirementTimer.unref?.();
-    this.#finishInitialDisposition(slot, {
-      stage: 'capsule-retirement',
-      code: 'capsule_retirement_unavailable',
-      reason: outcome.reason,
-      nextAttemptAtMs,
-    });
   }
 
-  #acceptFatalRepresentationReleaseSuccessor(slot: ReleaseDeliveryPendingSlot): void {
-    if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement === null) {
+  #acceptTerminalRepresentationReleaseSuccessor(slot: ReleaseDeliveryPendingSlot): void {
+    if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement === null) {
       throw new Error('provider_proxy_representation_release_successor_not_pending');
     }
     this.#clearRepresentationReleaseTimers(slot);
-    this.#removeRepresentationSlot(slot);
+    this.#removeRepresentationSlot(slot, slot.terminalSettlement.kind === 'retry-exhausted-successor-pending');
   }
 
   #releaseRepresentationSlot(slot: ReleaseDeliveryPendingSlot, discharge: ProviderProxySetDischarge): void {
@@ -6055,9 +6190,9 @@ export class ProviderProxySetLifecycle {
     slot.settleRepresentationRelease({ kind: 'released' });
   }
 
-  #removeRepresentationSlot(slot: ReleaseDeliveryPendingSlot): void {
+  #removeRepresentationSlot(slot: ReleaseDeliveryPendingSlot, preserveOperatorDisposition = false): void {
     this.#slots.delete(slot.key);
-    void this.#deleteOperatorDispositions(slot.identity);
+    if (!preserveOperatorDisposition) void this.#deleteOperatorDispositions(slot.identity);
     this.#identityIndex.delete(slot.identity);
     for (const [address, path] of this.#capsuleAddresses) {
       if (path === slot.capsulePath) this.#capsuleAddresses.delete(address);

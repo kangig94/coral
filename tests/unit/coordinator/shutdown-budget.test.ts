@@ -574,10 +574,11 @@ describe('runShutdownSequence drain budget', () => {
     const fatalError = new Error('fatal release remains operator-owned') as never;
     const successor = {
       owner: 'coordinator' as const,
-      boundMs: 60_000,
+      retryCadenceMs: 1_000,
+      settlementBoundMs: 60_000,
       retryAction: 'release-representation' as const,
-      refusalSuccessor: 'automatic-retry' as const,
-      terminalExit: 'representation-released' as const,
+      exhaustionSuccessor: 'durable-representation-release-reconciliation' as const,
+      terminalExit: 'representation-released-or-durable-reconciliation' as const,
     };
     const representationReleaseSettlement = Promise.resolve({
       kind: 'fatal-successor-pending' as const,
