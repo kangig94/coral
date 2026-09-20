@@ -281,6 +281,45 @@ describe('simulation runtime', () => {
     expect(storage.existsSync(destination)).toBe(false);
   });
 
+  it('keeps invalid UTF-8 buffer paths distinct like real storage', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-raw-paths-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const exercise = (storage: StoragePort, directory: string) => {
+      const leftSource = join(directory, 'left-source');
+      const rightSource = join(directory, 'right-source');
+      const leftDestination = Buffer.concat([Buffer.from(`${directory}/`), Buffer.from([0x80]), Buffer.from('.json')]);
+      const rightDestination = Buffer.concat([Buffer.from(`${directory}/`), Buffer.from([0x81]), Buffer.from('.json')]);
+      storage.mkdirSync(directory, { recursive: true });
+      storage.writeFileSync(leftSource, 'left');
+      storage.writeFileSync(rightSource, 'right');
+      storage.renameSync(leftSource, leftDestination);
+      storage.renameSync(rightSource, rightDestination);
+      const result: Array<string | boolean> = [
+        storage.readFileSync(leftDestination, 'utf-8'),
+        storage.readFileSync(rightDestination, 'utf-8'),
+        storage.statSync(leftDestination).isFile(),
+        storage.statSync(rightDestination).isFile(),
+      ];
+      storage.renameSync(leftDestination, leftSource);
+      result.push(storage.readFileSync(leftSource, 'utf-8'));
+      storage.unlinkSync(rightDestination);
+      try {
+        storage.readFileSync(rightDestination, 'utf-8');
+        result.push('still-present');
+      } catch (error: unknown) {
+        result.push((error as NodeJS.ErrnoException).code ?? 'unknown');
+      }
+      return result;
+    };
+
+    try {
+      expect(exercise(simulatedStorage, '/tmp/sim/raw-paths')).toEqual(exercise(realStorage, realRoot));
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
   it('matches real descriptor behavior when rename replaces its pathname', () => {
     const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-rename-overwrite-'));
     const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;

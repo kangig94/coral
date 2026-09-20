@@ -1744,6 +1744,61 @@ describe('shutdown remainder status', () => {
     ).toHaveLength(13);
   });
 
+  it('preserves unreported debt when a retention-boundary refusal temporarily resolves', () => {
+    const targetName = 'target.json';
+    const corruptFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
+      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+      value: '{not-json',
+      mtimeMs: index + 1,
+    }));
+    const peerNames = Array.from({ length: 32 }, (_, index) => `peer-${String(index).padStart(2, '0')}`);
+    const storage = storageWith(
+      [
+        ...corruptFiles,
+        { name: targetName, value: JSON.stringify(recordAt('target')), mtimeMs: 0 },
+        ...peerNames.map((name, index) => fileAt(name, 1_000 + index)),
+      ],
+      { refusePrune: true, pruneErrorCode: 'EACCES' },
+    );
+    let scheduled: (() => void) | null = null;
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: {
+        setInterval: (callback) => {
+          scheduled = callback;
+          return { unref: vi.fn() };
+        },
+        clearInterval: vi.fn(),
+      },
+    });
+
+    pruner.start();
+    const targetIdentity = shutdownRemainderFilesystemSubject(targetName).identity;
+    expect(pruner.readCleanupRefusalSnapshot().refusals.map(({ subject }) => subject.identity)).not.toContain(
+      targetIdentity,
+    );
+    const periodic = scheduled as (() => void) | null;
+    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
+    const observedIdentities = new Set<string>();
+    for (let pruneNumber = 0; pruneNumber < 12; pruneNumber += 1) {
+      if (pruneNumber % 2 === 0) {
+        storage.writeAtomicSync(join(REMAINDER_DIRECTORY, targetName), JSON.stringify(recordAt('target')));
+      } else {
+        for (const name of peerNames) {
+          storage.writeAtomicSync(join(REMAINDER_DIRECTORY, `${name}.json`), JSON.stringify(recordAt(name)));
+        }
+      }
+      periodic();
+      for (const refusal of pruner.readCleanupRefusalSnapshot().refusals) {
+        observedIdentities.add(refusal.subject.identity);
+      }
+    }
+
+    expect(observedIdentities).toContain(targetIdentity);
+    expect(storage.fileNames()).toContain(targetName);
+  });
+
   it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
     const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
       refusePruneWhen: (_name, attempt) => attempt === 1,

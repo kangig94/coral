@@ -119,6 +119,7 @@ function cleanupRefusalCollection(): CleanupRefusalCollection {
 function nextCleanupRefusalSnapshotOrder(
   previousOrder: readonly string[],
   current: CleanupRefusalCollection['bySubject'],
+  reportedSubjects: ReadonlySet<string>,
 ): readonly string[] {
   const rotated = [
     ...previousOrder.slice(SHUTDOWN_REMAINDER_SCAN_LIMIT),
@@ -131,7 +132,10 @@ function nextCleanupRefusalSnapshotOrder(
     retained.push(subject);
     known.add(subject);
   }
-  return retained;
+  return [
+    ...retained.filter((subject) => !reportedSubjects.has(subject)),
+    ...retained.filter((subject) => reportedSubjects.has(subject)),
+  ];
 }
 
 function forgetCleanupFailure(collection: CleanupRefusalCollection, key: string): void {
@@ -441,6 +445,7 @@ export function createShutdownRemainderPruner(
   let stopped = false;
   let cleanupRefusalsByName: CleanupRefusalCollection['bySubject'] = new Map();
   let cleanupRefusalSnapshotOrder: readonly string[] = [];
+  const reportedCleanupRefusalSubjects = new Set<string>();
   let resolvedCleanupRefusalCount = 0;
   let absentCleanupRefusalCount = 0;
   let unobservableCleanupRefusalCount = 0;
@@ -487,7 +492,11 @@ export function createShutdownRemainderPruner(
         }
       }
     }
-    cleanupRefusalSnapshotOrder = nextCleanupRefusalSnapshotOrder(cleanupRefusalSnapshotOrder, retainedCleanupRefusals);
+    cleanupRefusalSnapshotOrder = nextCleanupRefusalSnapshotOrder(
+      cleanupRefusalSnapshotOrder,
+      retainedCleanupRefusals,
+      reportedCleanupRefusalSubjects,
+    );
     cleanupRefusalsByName = retainedCleanupRefusals;
     resolvedCleanupRefusalCount = resolvedRefusalCount;
     absentCleanupRefusalCount = absentRefusalCount;
@@ -501,6 +510,9 @@ export function createShutdownRemainderPruner(
       .slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT)
       .map((subject) => cleanupRefusalsByName.get(subject)?.refusal)
       .filter((refusal): refusal is ShutdownRemainderCleanupRefusal => refusal !== undefined);
+    for (const subject of cleanupRefusalSnapshotOrder.slice(0, refusals.length)) {
+      reportedCleanupRefusalSubjects.add(subject);
+    }
     return {
       refusals,
       resolvedRefusalCount: resolvedCleanupRefusalCount,

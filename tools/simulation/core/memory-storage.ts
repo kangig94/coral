@@ -18,6 +18,7 @@ const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
 const DIRECTORY_TYPE_BITS = 0o040000n;
 const REGULAR_FILE_TYPE_BITS = 0o100000n;
 const POSIX_MODE_BITS = 0o7777;
+const RAW_STORAGE_NAME_PREFIX = '\0';
 // Measured constraint: Node 24 `node:sqlite` grows a 0-byte file to 4096 bytes at `PRAGMA journal_mode=WAL`.
 const SQLITE_WAL_MAIN_FILE_SIZE = 4096;
 
@@ -71,12 +72,45 @@ export type InMemoryRoots = {
 };
 
 export function normalizePathForStorage(path: StoragePath): string {
-  const normalized = normalize(path.toString().replace(/\\/g, '/'));
+  const value = typeof path === 'string' ? path.replace(/\\/g, '/') : storagePathBufferToKey(path);
+  const normalized = normalize(value);
   if (normalized === '.' || normalized === '') {
     return '/';
   }
   const absolute = normalized.startsWith('/') ? normalized : `/${normalized}`;
   return absolute.length > 1 && absolute.endsWith('/') ? absolute.slice(0, -1) : absolute;
+}
+
+function storageNameBuffer(name: string): Buffer {
+  return name.startsWith(RAW_STORAGE_NAME_PREFIX)
+    ? Buffer.from(name.slice(RAW_STORAGE_NAME_PREFIX.length), 'hex')
+    : Buffer.from(name);
+}
+
+function storageNameString(name: string): string {
+  return storageNameBuffer(name).toString('utf8');
+}
+
+function storagePathString(path: string): string {
+  return path.split('/').map(storageNameString).join('/');
+}
+
+function storagePathBufferToKey(path: Buffer): string {
+  const bytes = Buffer.from(path);
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (bytes[index] === 0x5c) bytes[index] = 0x2f;
+  }
+  return bytes
+    .toString('latin1')
+    .split('/')
+    .map((segment) => {
+      const segmentBytes = Buffer.from(segment, 'latin1');
+      const decoded = segmentBytes.toString('utf8');
+      return Buffer.from(decoded).equals(segmentBytes)
+        ? decoded
+        : `${RAW_STORAGE_NAME_PREFIX}${segmentBytes.toString('hex')}`;
+    })
+    .join('/');
 }
 
 function parentPath(path: string): string {
@@ -558,21 +592,21 @@ export class InMemoryStorage implements StoragePort {
     const sortedNames = [...(this.childIndex.get(normalized) ?? [])].sort((left, right) => left.localeCompare(right));
 
     if (options !== undefined && 'encoding' in options) {
-      return sortedNames.map((name) => Buffer.from(name));
+      return sortedNames.map(storageNameBuffer);
     }
 
     if (options?.withFileTypes === true) {
       return sortedNames.map((name) => {
         const childPathValue = childPath(normalized, name);
         return {
-          name,
+          name: storageNameString(name),
           isDirectory: () => this.directories.has(childPathValue),
           isFile: () => this.files.has(childPathValue),
         };
       });
     }
 
-    return sortedNames;
+    return sortedNames.map(storageNameString);
   }
 
   readDirectoryBoundedSync(
@@ -594,13 +628,14 @@ export class InMemoryStorage implements StoragePort {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new TypeError('Directory entry limit must be a non-negative safe integer.');
     }
-    const entries = this.readdirSync(path);
     if (options !== undefined) {
+      const entries = this.readdirSync(path, { encoding: 'buffer' });
       return {
-        entries: entries.slice(0, limit).map((name) => Buffer.from(name)),
+        entries: entries.slice(0, limit),
         overflow: entries.length > limit,
       };
     }
+    const entries = this.readdirSync(path);
     return {
       entries: entries.slice(0, limit),
       overflow: entries.length > limit,
@@ -642,7 +677,7 @@ export class InMemoryStorage implements StoragePort {
     if (!this.files.has(normalized) && !this.directories.has(normalized)) {
       throw createErrnoError('ENOENT', normalized);
     }
-    return normalized;
+    return storagePathString(normalized);
   }
 
   statSync(path: StoragePath): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };

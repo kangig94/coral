@@ -226,11 +226,9 @@ describe('provider-host RPC authorization', () => {
       body: {
         code: 'provider_host_owner_torn_down',
         remediation:
-          "Run `coral-cli backend status`. If it reports this coordinator as draining, the drain ends by itself once its budget is exhausted; retry the original command once status no longer reports it as shutting down. If it does not report draining, status instead reports the released set under its own token together with that set's exact next action; take the action status reports for that token.",
+          "Run `coral-cli backend status` to observe the released set's automatic disposition and timing. The bounded drain ends by itself; otherwise Coral retries control recovery or exact containment observation. Retry the original command after status no longer reports this released owner.",
       },
     });
-    // Neither destructive command is named directly: the reader is pointed at `backend status`'s own
-    // per-set `action=` line, which is the only surface that already knows which one currently applies.
     expect(result).not.toMatchObject({
       kind: 'unary',
       body: { remediation: expect.stringContaining('provider-proxy-set contain') },
@@ -239,7 +237,10 @@ describe('provider-host RPC authorization', () => {
       kind: 'unary',
       body: { remediation: expect.stringContaining('provider-proxy-set abandon') },
     });
-    // A refusal must not tell the reader to wait on a condition no command reports.
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('take the action') },
+    });
     expect(result).not.toMatchObject({
       kind: 'unary',
       body: { remediation: expect.stringContaining('succession') },
@@ -459,7 +460,7 @@ describe('provider-host RPC authorization', () => {
         message:
           'This coordinator has released administration control of provider-proxy:set-a and can no longer ask it, so it cannot say whether the selected provider host exists on it.',
         remediation: expect.stringContaining(
-          'Run `coral-cli backend provider-host list`; an exact reference on an owner that answered is served now, and `coral-cli backend provider-host inspect` with that exact reference reports it. Run `coral-cli backend status`.',
+          "Run `coral-cli backend status` to observe the released set's automatic disposition and timing.",
         ),
         detail: { ownerIds: ['provider-proxy:set-a'], hostRefs: [], workDir: process.cwd() },
       },

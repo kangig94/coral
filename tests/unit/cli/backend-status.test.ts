@@ -17,7 +17,6 @@ import {
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
-  formatProviderProxySetContainResult,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
 import type { SetupErrorAuthorIdentity } from '#src/runtime/errors.js';
@@ -1701,7 +1700,7 @@ describe('backend status recovery quarantine propagation', () => {
 });
 
 describe('backend status provider proxy dispositions', () => {
-  it('renders every asserted set exit and shares refusal guidance with the command result', async () => {
+  it('reports automatic set dispositions without soliciting containment or abandonment', () => {
     const setIdentity = {
       buildSetId: '11111111-1111-4111-8111-111111111111',
       hostFingerprint: 'a'.repeat(64),
@@ -1747,33 +1746,16 @@ describe('backend status provider proxy dispositions', () => {
       },
     });
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
-    const commandGuidance = formatProviderProxySetContainResult({
-      kind: 'enforcer-unobservable',
-      setIdentity,
-      enforcerObservations: [
-        { role: 'guardian', observation: 'unknown' },
-        { role: 'reaper', observation: 'absent' },
-      ],
-      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
-    })
-      .split('\n')
-      .find((line) => line.startsWith('Next step:'));
-
-    expect(rendered).toContain('action=wait for control-reattachment');
-    expect(rendered).toContain(`action=wait ~1201ms for the operator-exit gate, then contain ${setToken}`);
-    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
-    if (commandGuidance === undefined) throw new Error('Expected refusal guidance');
-    expect(rendered).toContain(commandGuidance);
-    const dispatched: RecordedBackendCommand[] = [];
-    const program = backendCommandProgram(dispatched);
-    await executeRenderedCommand(program, rendered, { label: 'action', includes: 'coral-cli' });
-    await executeRenderedCommand(program, rendered, { label: 'command', includes: ' contain ' });
-    await executeRenderedCommand(program, rendered, { label: 'command', includes: ' abandon ' });
-    expect(dispatched).toEqual([
-      { kind: 'provider-proxy-set-contain', token: setToken },
-      { kind: 'provider-proxy-set-contain', token: setToken },
-      { kind: 'provider-proxy-set-abandon', token: setToken },
-    ]);
+    expect(rendered).toContain('disposition=waiting for=control-reattachment');
+    expect(rendered).toContain(
+      'disposition=automatic-bounded-wait remainingMs=1201 exit=control-reattached-or-containment-absent',
+    );
+    expect(rendered).toContain(
+      'disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent',
+    );
+    expect(rendered).toContain('disposition=stopped needs=enforcer-unobservable');
+    expect(rendered).not.toContain('provider-proxy-set contain');
+    expect(rendered).not.toContain('provider-proxy-set abandon');
   });
 
   it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {
@@ -1914,7 +1896,7 @@ describe('backend status provider proxy dispositions', () => {
         '    identity buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
         '    - disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence enforcers=guardian:alive,reaper:unknown',
-        `    action=coral-cli backend provider-proxy-set contain ${tokens.first}`,
+        '    disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -1924,7 +1906,7 @@ describe('backend status provider proxy dispositions', () => {
           'b'.repeat(64),
         '    - disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
         '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
-        '    action=wait for control-reattachment,set-adoption-deadline',
+        '    disposition=waiting for=control-reattachment,set-adoption-deadline',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -2014,7 +1996,7 @@ describe('backend status provider proxy dispositions', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toContain(
-      'action=wait; Coral retries publication automatically until publication is confirmed or control is released.',
+      'disposition=automatic-retry retryWithinMs=60000 exit=publication-confirmed-or-control-released',
     );
     expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${setToken}`);
     expect(process.exitCode).toBe(75);

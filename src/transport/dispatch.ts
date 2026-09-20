@@ -487,7 +487,7 @@ function providerHostAdministrationCopy(
           : 'Run `coral-cli backend provider-host list`; an exact reference on an owner that answered is served now, and `coral-cli backend provider-host inspect` with that exact reference reports it. ';
       return {
         message: `This coordinator has released administration control of ${owners} and can no longer ask ${ownerPronoun}, so it cannot say whether ${subject} exists on ${ownerPronoun}.`,
-        remediation: `${exactReferenceExit}Run \`coral-cli backend status\`. If it reports this coordinator as draining, the drain ends by itself once its budget is exhausted; retry the original command once status no longer reports it as shutting down. If it does not report draining, status instead reports the released set under its own token together with that set's exact next action; take the action status reports for that token.`,
+        remediation: `${exactReferenceExit}Run \`coral-cli backend status\` to observe the released set's automatic disposition and timing. The bounded drain ends by itself; otherwise Coral retries control recovery or exact containment observation. Retry the original command after status no longer reports this released owner.`,
       };
     }
     case 'provider_host_not_found':

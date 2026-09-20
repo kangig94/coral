@@ -117,6 +117,8 @@ describe('provider-host operator documentation', () => {
     expect(paragraph).toContain('coral-cli backend status');
     expect(body.remediation).toContain('drain ends by itself');
     expect(paragraph).toContain('ends by itself when its budget is exhausted');
+    expect(body.remediation).toContain('automatic disposition and timing');
+    expect(paragraph).toContain('automatic retry or bounded wait');
     expect(body.remediation).toContain('coral-cli backend provider-host list');
     expect(paragraph).toContain(
       'for a work directory the rendered remediation therefore starts with `coral-cli backend provider-host list`',

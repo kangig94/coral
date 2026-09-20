@@ -1581,7 +1581,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
       let preservedSetRead: Readonly<{
-        operatorExits: readonly string[];
+        dispositions: readonly string[];
         skippedRows: number;
         skippedIdentities: readonly string[];
       }> | null = null;
@@ -1590,7 +1590,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         if (statusBeforeShutdown.status === 'ok') {
           const providerProxySets = statusBeforeShutdown.health.diagnostics?.providerProxySets ?? [];
           preservedSetRead = {
-            operatorExits: providerProxySets.map(formatProviderProxySetOperatorExit),
+            dispositions: providerProxySets.map(
+              (set) => `set=${set.setToken} ${formatProviderProxySetOperatorExit(set)}`,
+            ),
             skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
             skippedIdentities: formatProviderProxySetRowSkips(
               statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
@@ -1610,13 +1612,13 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           if (preservedSetRead === null) {
             return 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.';
           }
-          if (preservedSetRead.operatorExits.length === 0 && preservedSetRead.skippedRows === 0) {
+          if (preservedSetRead.dispositions.length === 0 && preservedSetRead.skippedRows === 0) {
             return 'No held provider proxy sets were reported before shutdown.';
           }
-          const lines = preservedSetRead.operatorExits.length
+          const lines = preservedSetRead.dispositions.length
             ? [
-                'Provider proxy set exits reported before shutdown:',
-                ...preservedSetRead.operatorExits.map((operatorExit) => `  ${operatorExit}`),
+                'Provider proxy set dispositions reported before shutdown:',
+                ...preservedSetRead.dispositions.map((disposition) => `  ${disposition}`),
               ]
             : [];
           if (preservedSetRead.skippedRows > 0) {

@@ -1341,7 +1341,7 @@ function formatShutdownRemainderReport(
     lines.push(
       `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}`,
       ...(directoryEvidence?.unusableRecordSubjects ?? []).map(
-        (subject) => `  Unusable: identity=${subject.identity} label=${JSON.stringify(subject.label)}`,
+        (subject) => `  Unusable: identity=${subject.identity} class=directory-entry cause=unusable`,
       ),
     );
   }
@@ -1477,7 +1477,7 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
   const lines = [
     ...observation.refusals.map(
       (refusal) =>
-        `Cleanup refusal observed by ${observation.source}: identity=${refusal.subject.identity} label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
+        `Cleanup refusal observed by ${observation.source}: identity=${refusal.subject.identity} class=directory-entry cause=${refusal.cause.kind} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
     ),
     ...(observation.resolvedRefusalCount === 0
       ? []
@@ -1986,21 +1986,18 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
 export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
   switch (set.operatorExit.kind) {
     case 'contain':
-      return formatBackendOperatorCommand({ kind: 'provider-proxy-set-contain', token: set.setToken }, 'action');
+      return 'disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent';
     case 'abandon':
-      return formatBackendOperatorCommand({ kind: 'provider-proxy-set-abandon', token: set.setToken }, 'action');
+      return 'disposition=automatic-reobservation retryWithinMs=60000 exit=durable-reconciliation-terminal';
     case 'gated':
-      return (
-        `action=wait ~${Math.ceil(set.operatorExit.remainingMs)}ms for the operator-exit gate, ` +
-        `then contain ${set.setToken}`
-      );
+      return `disposition=automatic-bounded-wait remainingMs=${Math.ceil(set.operatorExit.remainingMs)} exit=control-reattached-or-containment-absent`;
     case 'refused':
-      return formatProviderProxySetOperatorRefusalGuidance(set.operatorExit.ground, set.setToken);
+      return `disposition=stopped needs=${set.operatorExit.ground}`;
     case 'none':
       if (set.holds.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
-        return 'action=wait; Coral retries publication automatically until publication is confirmed or control is released.';
+        return 'disposition=automatic-retry retryWithinMs=60000 exit=publication-confirmed-or-control-released';
       }
-      return `action=wait for ${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
+      return `disposition=waiting for=${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
     default:
       return assertNever(set.operatorExit);
   }

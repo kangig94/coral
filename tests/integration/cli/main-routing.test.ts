@@ -592,7 +592,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout).toContain(
+      'disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent',
+    );
+    expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${token}`);
     expect(stdout.split(token)).toHaveLength(2);
     expect(process.exitCode).toBeUndefined();
   });
@@ -639,7 +642,9 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${token}`);
-    expect(stdout).toContain('action=wait; Coral retries publication automatically');
+    expect(stdout).toContain(
+      'disposition=automatic-retry retryWithinMs=60000 exit=publication-confirmed-or-control-released',
+    );
     expect(process.exitCode).toBeUndefined();
   });
 
