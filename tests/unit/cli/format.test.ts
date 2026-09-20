@@ -1951,7 +1951,7 @@ describe('cli format', () => {
       expect(text).not.toMatch(/Retry (?:trigger|action):/u);
     });
 
-    it('uses the class line for malformed rows and the producer overflow once', () => {
+    it('renders malformed transport rows separately from disk entries and the producer overflow', () => {
       const text = formatBackendStatus({
         status: 'ok',
         health: {
@@ -1963,8 +1963,43 @@ describe('cli format', () => {
         },
       });
 
-      expect(text).toContain('Shutdown remainder directory entries this build could not use: 3');
+      expect(text).toContain('Shutdown remainder cleanup refusal rows this build could not decode: 3');
+      expect(text).not.toContain('Shutdown remainder directory entries this build could not use');
       expect(text).toContain('Additional cleanup refusals not listed: 7');
+    });
+
+    it('replaces a live cleanup refusal with local evidence for the same subject identity', () => {
+      const subject = shutdownRemainderFilesystemSubject('/run/shutdown-remainder.v1');
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: {
+          ...baseHealth,
+          components: [],
+          queueDepth: 0,
+          shutdownRemainderCleanupRefusals: [
+            {
+              subject,
+              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EACCES' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
+            },
+          ],
+        },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'scan-failed',
+          cleanupRefusals: [
+            {
+              subject,
+              cause: { kind: 'system-error', operation: 'scan-directory', code: 'EIO' },
+              retry: { trigger: 'remainder-maintenance', action: 'rescan-directory' },
+            },
+          ],
+        },
+      });
+
+      expect(text.match(/Cleanup refusal:/gu)).toHaveLength(1);
+      expect(text).toContain('operation=scan-directory errno=EIO');
+      expect(text).not.toContain('errno=EACCES');
     });
 
     it('does not print an empty or false remainder headline', () => {

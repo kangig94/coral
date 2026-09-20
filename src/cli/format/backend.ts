@@ -1282,8 +1282,7 @@ function formatShutdownRemainderReport(
       ? report
       : undefined;
   const notInspectedEntryCount = directoryEvidence?.notInspectedEntryCount ?? 0;
-  const unusableEntryCount =
-    (directoryEvidence?.unusableEntryCount ?? 0) + notInspectedEntryCount + liveEvidence.malformedRowCount;
+  const unusableEntryCount = (directoryEvidence?.unusableEntryCount ?? 0) + notInspectedEntryCount;
   if (unusableEntryCount > 0) {
     lines.push(
       `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}${
@@ -1292,11 +1291,19 @@ function formatShutdownRemainderReport(
       ...(directoryEvidence?.unreadableRecordNames ?? []).map((name) => `  Unreadable: ${name}`),
     );
   }
+  if (liveEvidence.malformedRowCount > 0) {
+    lines.push(
+      `Shutdown remainder cleanup refusal rows this build could not decode: ${liveEvidence.malformedRowCount}`,
+    );
+  }
+  const refusalsByIdentity = new Map(
+    liveEvidence.refusals.map((refusal) => [refusal.subject.identity, refusal] as const),
+  );
+  for (const refusal of report?.cleanupRefusals ?? []) {
+    refusalsByIdentity.set(refusal.subject.identity, refusal);
+  }
   lines.push(
-    ...formatShutdownRemainderCleanupRefusals(
-      [...liveEvidence.refusals, ...(report?.cleanupRefusals ?? [])],
-      liveEvidence.unreportedRefusalCount,
-    ),
+    ...formatShutdownRemainderCleanupRefusals([...refusalsByIdentity.values()], liveEvidence.unreportedRefusalCount),
   );
   return lines.join('\n');
 }

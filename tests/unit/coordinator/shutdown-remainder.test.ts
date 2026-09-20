@@ -2,11 +2,13 @@ import { basename, dirname, join, relative } from 'node:path';
 import {
   mkdirSync,
   mkdtempSync,
+  lstatSync,
   readFileSync,
   readdirSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -36,6 +38,7 @@ const REMAINDER_DIRECTORY = '/run/shutdown-remainder.v1';
 type RemainderStorage = Pick<
   StoragePort,
   | 'mkdirSync'
+  | 'lstatSync'
   | 'readFileSync'
   | 'readdirSync'
   | 'renameSync'
@@ -158,6 +161,15 @@ function storageWith(
             isFile: () => true,
           };
     }) as unknown as StoragePort['statSync'],
+    lstatSync: vi.fn((path: string) => {
+      const isDirectory = directories.has(path);
+      if (!isDirectory && !files.has(path)) throw Object.assign(new Error('missing entry'), { code: 'ENOENT' });
+      return {
+        isDirectory: () => isDirectory,
+        isFile: () => !isDirectory,
+        isSymbolicLink: () => false,
+      };
+    }) as unknown as StoragePort['lstatSync'],
     unlinkSync: vi.fn((path: string) => {
       const name = basename(path);
       const attempt = (pruneAttempts.get(name) ?? 0) + 1;
@@ -1599,6 +1611,33 @@ describe('shutdown remainder status', () => {
     expect(pruner.readUnreportedCleanupRefusalCount()).toBe(300 - SHUTDOWN_REMAINDER_SCAN_LIMIT);
   });
 
+  it.each([
+    { phase: 'before the periodic retry', stopBeforeDisappearance: false },
+    { phase: 'after the pruner stops', stopBeforeDisappearance: true },
+  ])('freshens overflow refusals $phase', ({ stopBeforeDisappearance }) => {
+    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
+      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+      value: '{not-json',
+      mtimeMs: index + 1,
+    }));
+    const storage = storageWith(files, {
+      refusePruneWhen: (_name, attempt) => attempt === 1,
+    });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+    });
+
+    pruner.start();
+    expect(pruner.readUnreportedCleanupRefusalCount()).toBe(1);
+    if (stopBeforeDisappearance) pruner.stop();
+    for (const { name } of files) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
+
+    expect(pruner.readUnreportedCleanupRefusalCount()).toBe(0);
+    expect(pruner.readCleanupRefusals()).toEqual([]);
+  });
+
   it('quarantines every writer-owned stage whose writer is unobservable without a count bound', () => {
     const stages = Array.from({ length: 33 }, (_, index) => ({
       name: `held-${index}.json.stage.${5_000 + index}.unobserved.tmp`,
@@ -1864,6 +1903,47 @@ describe('shutdown remainder status', () => {
 
     expect(pruner.readCleanupRefusals()).toEqual([]);
     expect(pruner.readCleanupRefusals()).toEqual([]);
+  });
+
+  it('retains a cleanup refusal for a dangling symlink subject', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-remainder-symlink-'));
+    const directory = shutdownRemainderRecordDirectory(runDir);
+    const targetPath = join(runDir, 'target.json');
+    const subjectPath = join(directory, 'held.json');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(targetPath, '{not-json');
+    symlinkSync(targetPath, subjectPath);
+    try {
+      const storage = {
+        readFileSync,
+        readdirSync,
+        renameSync,
+        statSync,
+        lstatSync: lstatSync as unknown as StoragePort['lstatSync'],
+        unlinkSync: (path: string) => {
+          if (path === subjectPath) {
+            throw Object.assign(new Error('delete refused'), { code: 'EACCES' });
+          }
+          unlinkSync(path);
+        },
+      };
+      const pruner = createShutdownRemainderPruner({
+        storage,
+        runDir,
+        time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+      });
+
+      expect(pruner.start()?.cleanup).toEqual({
+        kind: 'refused',
+        refusals: [cleanupRefusal('held.json', 'delete', 'EACCES')],
+      });
+      unlinkSync(targetPath);
+
+      expect(lstatSync(subjectPath).isSymbolicLink()).toBe(true);
+      expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal('held.json', 'delete', 'EACCES')]);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
   });
 
   it('retries quarantined evidence once on the next pruner startup', () => {

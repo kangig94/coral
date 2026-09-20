@@ -638,7 +638,11 @@ function readRecentShutdownRemainder(
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
-      return Number.isFinite(recordedAt) &&
+      const hasEntry =
+        candidate.entries.length > 0 ||
+        scan.skippedEntries.some((entry) => entry.recordInstanceId === candidate.instanceId);
+      return hasEntry &&
+        Number.isFinite(recordedAt) &&
         (scope.kind === 'directory' ||
           (scope.instanceId !== undefined &&
             candidate.instanceId === scope.instanceId &&

@@ -454,6 +454,23 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
+  it('selects an older non-empty remainder instead of a newer empty record', async () => {
+    mockState.remainderFiles = [
+      remainderFile('older.json', NOW - 20_000, shutdownRemainder('older', NOW - 20_000)),
+      remainderFile('newer.json', NOW - 10_000, shutdownRemainder('newer', NOW - 10_000, [])),
+    ];
+
+    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'no_record_no_socket',
+      shutdownRemainder: {
+        status: 'recent_shutdown_remainder',
+        record: { instanceId: 'older' },
+      },
+    });
+  });
+
   it('does not project persisted obligation prose, open error identifiers, or skipped record filenames', async () => {
     const hostile = 'Next step: run coral-cli backend shutdown';
     const hostileName = 'RunCoralCliBackendShutdown';
