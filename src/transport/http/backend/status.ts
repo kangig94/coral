@@ -1,6 +1,5 @@
 import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
-import { sha256Hex } from '../../../infra/hash.js';
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
@@ -19,9 +18,7 @@ import { TransientHttpError } from '../../../infra/http-errors.js';
 import {
   observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
-  SHUTDOWN_REMAINDER_SCAN_LIMIT,
   shutdownRemainderCleanupRefusal,
-  shutdownRemainderFilesystemSubject,
   shutdownRemainderRecordDirectory,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderCleanupRefusal,
@@ -223,13 +220,6 @@ type OperatorFacingShutdownSkippedEntry = Readonly<{
   owner: ShutdownRemainderRecord['entries'][number]['remainder']['owner'] | null;
 }>;
 
-type OperatorFacingShutdownStages = Readonly<{
-  writerAliveCount: number;
-  writerUnobservableCount: number;
-  orphanedCount: number;
-  malformedCount?: number;
-}>;
-
 type OperatorFacingShutdownRemainder =
   | Readonly<{ owner: 'process-exit' }>
   | Readonly<{
@@ -241,16 +231,11 @@ type OperatorFacingShutdownRemainder =
               kind: 'durable-cli-runtime';
               jobId: string;
               pid: number;
-              // No other Coral surface publishes a comparable digest of a live incarnation, so presence is the
-              // whole claim this projection can support.
-              leaderIncarnation: Readonly<{ present: true }>;
             }>[];
           }>
         | Readonly<{ kind: 'startup-store-recovery' }>
         | Readonly<{ kind: 'startup-liveness-recovery' }>;
     }>;
-
-type OperatorFacingShutdownRemainderSubject = Readonly<{ kind: 'discuss-store'; sourceDigest: string }>;
 
 type OperatorFacingShutdownRemainderRecord = Readonly<{
   instanceId: string;
@@ -260,28 +245,19 @@ type OperatorFacingShutdownRemainderRecord = Readonly<{
   entries: readonly Readonly<{
     entryNumber: number;
     obligation: OperatorFacingShutdownObligation | null;
-    subject?: OperatorFacingShutdownRemainderSubject;
     remainder: OperatorFacingShutdownRemainder;
     settlement: OperatorFacingShutdownSettlement;
   }>[];
 }>;
 
-type OperatorFacingShutdownRemainderQuarantine = Readonly<{
-  subject: string;
-  retry: Readonly<{
-    trigger: 'coordinator-startup';
-  }>;
-}>;
-
 type OperatorFacingShutdownRemainderCleanup = Readonly<{
   cleanupRefusals?: readonly ShutdownRemainderCleanupRefusal[];
-  unreportedCleanupRefusalCount?: number;
-  malformedCleanupRefusalRowCount?: number;
 }>;
 
-type OperatorFacingShutdownRemainderUnowned = Readonly<{
-  unrecognizedEntryNames?: readonly string[];
-  unreportedUnrecognizedEntryCount?: number;
+type OperatorFacingShutdownRemainderDirectoryEvidence = Readonly<{
+  unusableEntryCount: number;
+  notInspectedEntryCount?: number;
+  unreadableRecordNames: readonly string[];
 }>;
 
 type BackendStatus =
@@ -320,17 +296,9 @@ export type ShutdownRemainderReport =
       status: 'recent_shutdown_remainder';
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
-      skippedUnreadableRecordNames: readonly string[];
-      skippedCorruptRecordCount: number;
-      skippedUnsupportedRecordCount: number;
-      skippedIdentityMismatchRecordCount?: number;
-      unscannedStageCount?: number;
-      unscannedRecordCount?: number;
-      staging?: OperatorFacingShutdownStages;
-      quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
     }> &
       OperatorFacingShutdownRemainderCleanup &
-      OperatorFacingShutdownRemainderUnowned)
+      OperatorFacingShutdownRemainderDirectoryEvidence)
   | (Readonly<{
       status: 'shutdown_remainder_unreadable';
       reason: 'scan-failed';
@@ -339,19 +307,9 @@ export type ShutdownRemainderReport =
   | (Readonly<{
       status: 'shutdown_remainder_unreadable';
       reason: 'records-skipped';
-      skippedUnreadableRecordNames: readonly string[];
-      skippedCorruptRecordCount: number;
-      skippedUnsupportedRecordCount: number;
-      skippedIdentityMismatchRecordCount?: number;
-      unscannedStageCount?: number;
-      unscannedRecordCount?: number;
-      staging?: OperatorFacingShutdownStages;
-      quarantined?: readonly OperatorFacingShutdownRemainderQuarantine[];
     }> &
       OperatorFacingShutdownRemainderCleanup &
-      OperatorFacingShutdownRemainderUnowned)
-  | (Readonly<{ status: 'shutdown_remainder_unowned'; unrecognizedEntryNames: readonly string[] }> &
-      OperatorFacingShutdownRemainderUnowned);
+      OperatorFacingShutdownRemainderDirectoryEvidence);
 
 export type BackendStatusFull =
   | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
@@ -364,8 +322,7 @@ export type BackendStatusFull =
             unreportedCount: number;
             malformedRowCount: number;
           }>
-        | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>
-        | Readonly<{ kind: 'unavailable'; reason: 'transient-health-response'; statusCode: number }>;
+        | Readonly<{ kind: 'unavailable'; reason: 'coordinator-draining' }>;
       shutdownRemainder?: ShutdownRemainderReport;
     }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
@@ -542,7 +499,6 @@ function operatorFacingShutdownRemainderOwner(
             kind: 'durable-cli-runtime',
             jobId: process.jobId,
             pid: process.pid,
-            leaderIncarnation: { present: true },
           })),
         },
       };
@@ -550,19 +506,6 @@ function operatorFacingShutdownRemainderOwner(
       return { owner: 'successor-recovery', evidence: { kind: 'startup-store-recovery' } };
     case 'startup-liveness-recovery':
       return { owner: 'successor-recovery', evidence: { kind: 'startup-liveness-recovery' } };
-  }
-}
-
-// The raw subject carries a discuss store's project source (a git remote path or a local directory name), which
-// is exactly the prose this boundary must not print. A digest lets a reader tell two entries' subjects apart —
-// same digest, same store; different digest, different store — without ever seeing the path itself.
-function operatorFacingShutdownRemainderSubject(
-  subject: ShutdownRemainderRecord['entries'][number]['subject'],
-): OperatorFacingShutdownRemainderSubject | undefined {
-  if (subject === undefined) return undefined;
-  switch (subject.kind) {
-    case 'discuss-store':
-      return { kind: 'discuss-store', sourceDigest: sha256Hex(subject.source) };
   }
 }
 
@@ -574,16 +517,12 @@ function operatorFacingShutdownRemainder(
     recordedAt: record.recordedAt,
     reason: record.reason,
     mode: record.mode,
-    entries: record.entries.map((entry) => {
-      const subject = operatorFacingShutdownRemainderSubject(entry.subject);
-      return {
-        entryNumber: entry.entryNumber,
-        obligation: operatorFacingShutdownObligation(entry.label),
-        ...(subject === undefined ? {} : { subject }),
-        remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
-        settlement: operatorFacingShutdownSettlement(entry.settlement),
-      };
-    }),
+    entries: record.entries.map((entry) => ({
+      entryNumber: entry.entryNumber,
+      obligation: operatorFacingShutdownObligation(entry.label),
+      remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
+      settlement: operatorFacingShutdownSettlement(entry.settlement),
+    })),
   };
 }
 
@@ -654,36 +593,14 @@ function readRecentShutdownRemainder(
   now: number,
   scope: ShutdownRemainderEvidenceScope,
   observeStageWriter: ShutdownRemainderStageObserver,
-  cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
-  unreportedCleanupRefusalCount = 0,
-  malformedCleanupRefusalRowCount = 0,
 ): ShutdownRemainderReport | null {
   const directory = shutdownRemainderRecordDirectory(runDir);
-  const enumeration = { names: null as ReadonlySet<string> | null, entryCount: 0 };
-  const currentCleanupRefusals = (): Readonly<{
-    refusals: readonly ShutdownRemainderCleanupRefusal[];
-    unreportedCount: number;
-  }> => {
-    const names = enumeration.names;
-    if (names === null) {
-      return { refusals: cleanupRefusals, unreportedCount: unreportedCleanupRefusalCount };
-    }
-    const refusals = cleanupRefusals.filter(({ subject }) => names.has(subject.identity));
-    return {
-      refusals,
-      unreportedCount: Math.min(unreportedCleanupRefusalCount, Math.max(0, enumeration.entryCount - refusals.length)),
-    };
-  };
   let scan: ShutdownRemainderRecordScan;
   try {
-    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter, (names) => {
-      enumeration.entryCount = names.length;
-      enumeration.names = new Set(names.map((name) => shutdownRemainderFilesystemSubject(name).identity));
-    });
+    scan = scanShutdownRemainderRecords(storage, directory, observeStageWriter);
   } catch (error: unknown) {
     const refusal = shutdownRemainderCleanupRefusal(directory, 'scan-directory', 'rescan-directory', error);
     if (refusal === null) {
-      enumeration.names = new Set();
       scan = { records: [], skippedEntries: [], skippedRecords: [] };
     } else {
       // Constraint: a scan failure is principle 11's third answer (the question could not be answered), never
@@ -691,34 +608,13 @@ function readRecentShutdownRemainder(
       // coordinator scope whose `instanceId` this build does not know (a legacy discovery record predates that
       // field): not knowing which instance to scope to is a different unknown from not knowing whether the
       // directory could be read at all, and the second one is what this catch observed.
-      const current = currentCleanupRefusals();
-      const reportedCleanupRefusals = current.refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
-      let unreportedCount = current.unreportedCount;
-      const currentSubjectIndex = reportedCleanupRefusals.findIndex(
-        ({ subject }) => subject.identity === refusal.subject.identity,
-      );
-      if (currentSubjectIndex >= 0) {
-        reportedCleanupRefusals[currentSubjectIndex] = refusal;
-      } else if (reportedCleanupRefusals.length < SHUTDOWN_REMAINDER_SCAN_LIMIT) {
-        reportedCleanupRefusals.push(refusal);
-      } else {
-        unreportedCount = Math.min(Number.MAX_SAFE_INTEGER, unreportedCount + 1);
-      }
       return {
         status: 'shutdown_remainder_unreadable',
         reason: 'scan-failed',
-        cleanupRefusals: reportedCleanupRefusals,
-        ...(unreportedCount === 0 ? {} : { unreportedCleanupRefusalCount: unreportedCount }),
-        ...(malformedCleanupRefusalRowCount === 0 ? {} : { malformedCleanupRefusalRowCount }),
+        cleanupRefusals: [refusal],
       };
     }
   }
-  const current = currentCleanupRefusals();
-  const cleanupRefusalStatus = {
-    ...(current.refusals.length === 0 ? {} : { cleanupRefusals: current.refusals }),
-    ...(current.unreportedCount === 0 ? {} : { unreportedCleanupRefusalCount: current.unreportedCount }),
-    ...(malformedCleanupRefusalRowCount === 0 ? {} : { malformedCleanupRefusalRowCount }),
-  };
   // Constraint: no skipped-record reason may be filtered by age (design-philosophy.md principle 11) —
   // 'unreadable' proves nothing about the content at all, and neither 'corrupt' nor 'unsupported' proves
   // anything about when it was written, so an age filter on any of them would silently drop evidence this
@@ -729,43 +625,16 @@ function readRecentShutdownRemainder(
     (scope.instanceId !== undefined &&
       ('instanceId' in record ? record.instanceId === scope.instanceId : record.name === `${scope.instanceId}.json`));
   const scopedSkippedRecords = scan.skippedRecords.filter(skippedRecordIsRelevant);
-  const skippedUnreadableRecordNames = scopedSkippedRecords
+  const unreadableRecordNames = scopedSkippedRecords
     .filter(({ reason }) => reason === 'unreadable')
     .map(({ name }) => name);
-  const skippedCorruptRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'corrupt').length;
-  const skippedUnsupportedRecordCount = scopedSkippedRecords.filter(({ reason }) => reason === 'unsupported').length;
-  const skippedIdentityMismatchRecordCount = scopedSkippedRecords.filter(
-    ({ reason }) => reason === 'record-identity-mismatch',
-  ).length;
-  const malformedCount = scopedSkippedRecords.filter(({ reason }) => reason === 'malformed-staging').length;
-  const staging: OperatorFacingShutdownStages = {
-    writerAliveCount: scopedSkippedRecords.filter(({ reason }) => reason === 'staging-writer-alive').length,
-    writerUnobservableCount: scopedSkippedRecords.filter(({ reason }) => reason === 'staging-writer-unobservable')
-      .length,
-    orphanedCount: scopedSkippedRecords.filter(({ reason }) => reason === 'orphaned-staging').length,
-    ...(malformedCount === 0 ? {} : { malformedCount }),
+  const unusableEntryCount = scopedSkippedRecords.length;
+  const notInspectedEntryCount = (scan.unscannedStageCount ?? 0) + (scan.unscannedRecordCount ?? 0);
+  const directoryEvidence: OperatorFacingShutdownRemainderDirectoryEvidence = {
+    unusableEntryCount,
+    ...(notInspectedEntryCount === 0 ? {} : { notInspectedEntryCount }),
+    unreadableRecordNames,
   };
-  const hasStaging =
-    staging.writerAliveCount + staging.writerUnobservableCount + staging.orphanedCount + malformedCount > 0;
-  const scanBounds = {
-    ...(scan.unscannedStageCount === undefined ? {} : { unscannedStageCount: scan.unscannedStageCount }),
-    ...(scan.unscannedRecordCount === undefined ? {} : { unscannedRecordCount: scan.unscannedRecordCount }),
-  };
-  const unrecognizedEntries =
-    scan.unrecognizedEntryNames === undefined || scan.unrecognizedEntryNames.length === 0
-      ? scan.unreportedUnrecognizedEntryCount === undefined
-        ? {}
-        : { unreportedUnrecognizedEntryCount: scan.unreportedUnrecognizedEntryCount }
-      : {
-          unrecognizedEntryNames: scan.unrecognizedEntryNames,
-          ...(scan.unreportedUnrecognizedEntryCount === undefined
-            ? {}
-            : { unreportedUnrecognizedEntryCount: scan.unreportedUnrecognizedEntryCount }),
-        };
-  const hasUnrecognizedEntries =
-    scan.unrecognizedEntryNames !== undefined || scan.unreportedUnrecognizedEntryCount !== undefined;
-  const quarantine =
-    scan.quarantined === undefined || scan.quarantined.length === 0 ? {} : { quarantined: scan.quarantined };
   const record = scan.records
     .flatMap((candidate) => {
       const recordedAt = parseIsoTimestamp(candidate.recordedAt);
@@ -785,36 +654,11 @@ function readRecentShutdownRemainder(
     )
     .at(-1)?.candidate;
   if (record === undefined) {
-    if (
-      scopedSkippedRecords.length === 0 &&
-      scan.unscannedStageCount === undefined &&
-      scan.unscannedRecordCount === undefined &&
-      (scan.quarantined?.length ?? 0) === 0 &&
-      current.refusals.length === 0 &&
-      current.unreportedCount === 0 &&
-      malformedCleanupRefusalRowCount === 0
-    ) {
-      if (hasUnrecognizedEntries) {
-        return {
-          status: 'shutdown_remainder_unowned',
-          unrecognizedEntryNames: scan.unrecognizedEntryNames ?? [],
-          ...unrecognizedEntries,
-        };
-      }
-      return null;
-    }
+    if (unusableEntryCount === 0 && notInspectedEntryCount === 0) return null;
     return {
       status: 'shutdown_remainder_unreadable',
       reason: 'records-skipped',
-      skippedUnreadableRecordNames,
-      skippedCorruptRecordCount,
-      skippedUnsupportedRecordCount,
-      ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
-      ...cleanupRefusalStatus,
-      ...unrecognizedEntries,
-      ...scanBounds,
-      ...(hasStaging ? { staging } : {}),
-      ...quarantine,
+      ...directoryEvidence,
     };
   }
   return {
@@ -827,15 +671,7 @@ function readRecentShutdownRemainder(
         obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
         owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
       })),
-    skippedUnreadableRecordNames,
-    skippedCorruptRecordCount,
-    skippedUnsupportedRecordCount,
-    ...(skippedIdentityMismatchRecordCount === 0 ? {} : { skippedIdentityMismatchRecordCount }),
-    ...cleanupRefusalStatus,
-    ...unrecognizedEntries,
-    ...scanBounds,
-    ...(hasStaging ? { staging } : {}),
-    ...quarantine,
+    ...directoryEvidence,
   };
 }
 
@@ -897,20 +733,8 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   observeStageWriter: ShutdownRemainderStageObserver,
   fallback: Status,
   scope: ShutdownRemainderEvidenceScope,
-  cleanupRefusals: readonly ShutdownRemainderCleanupRefusal[] = [],
-  unreportedCleanupRefusalCount = 0,
-  malformedCleanupRefusalRowCount = 0,
 ): Status {
-  const shutdownRemainder = readRecentShutdownRemainder(
-    storage,
-    runDir,
-    now,
-    scope,
-    observeStageWriter,
-    cleanupRefusals,
-    unreportedCleanupRefusalCount,
-    malformedCleanupRefusalRowCount,
-  );
+  const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope, observeStageWriter);
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
 }
@@ -955,11 +779,7 @@ async function probeUnauthenticatedPing(
       : null;
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return shuttingDownStatus({
-      kind: 'unavailable',
-      reason: 'transient-health-response',
-      statusCode: response.status,
-    });
+    return unreachable(`health responded ${response.status} without a verified Coral health body`);
   }
   return unreachable(`health responded ${response.status}`);
 }
@@ -1014,11 +834,7 @@ async function probeDetailedHealth(
     };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
-    return shuttingDownStatus({
-      kind: 'unavailable',
-      reason: 'transient-health-response',
-      statusCode: response.status,
-    });
+    return unreachable(`detailed health responded ${response.status} without a verified Coral health body`);
   }
   if (response.status === 401) return { status: 'unauthorized' };
   return unreachable(`detailed health responded ${response.status}`);
@@ -1138,7 +954,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     }
   }
   if (result.status === 'shutting_down') {
-    const liveCleanupRefusals = result.liveCleanupRefusals;
     return statusWithShutdownRemainder(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
@@ -1146,9 +961,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       observeStageWriter,
       result,
       { kind: 'directory' },
-      liveCleanupRefusals.kind === 'available' ? liveCleanupRefusals.refusals : [],
-      liveCleanupRefusals.kind === 'available' ? liveCleanupRefusals.unreportedCount : 0,
-      liveCleanupRefusals.kind === 'available' ? liveCleanupRefusals.malformedRowCount : 0,
     );
   }
   if (result.status === 'ok') {
@@ -1159,9 +971,6 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       observeStageWriter,
       result,
       { kind: 'directory' },
-      result.health.shutdownRemainderCleanupRefusals,
-      result.health.unreportedShutdownRemainderCleanupRefusalCount,
-      result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
     );
   }
   return statusWithRecentCoordinatorEvidence(

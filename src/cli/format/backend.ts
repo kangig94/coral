@@ -1,8 +1,5 @@
 import { assertNever } from '../../infra/error-format.js';
-import {
-  SHUTDOWN_REMAINDER_SCAN_LIMIT,
-  type ShutdownRemainderCleanupRefusal,
-} from '../../infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderCleanupRefusal } from '../../infra/shutdown-remainder-record.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
@@ -693,83 +690,64 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
-type ShutdownRemainderRecheckContext =
-  | 'coordinator-running'
-  | 'coordinator-draining'
-  | 'startup-required'
-  | 'coordinator-unconfirmed';
+type LiveShutdownRemainderEvidence = Readonly<{
+  refusals: readonly ShutdownRemainderCleanupRefusal[];
+  unreportedRefusalCount: number;
+  malformedRowCount: number;
+}>;
 
-// A shutdown remainder is additional evidence about a departed instance's undischarged obligations, carried
-// alongside — never instead of — whichever status observed the coordinator's current absence, ambiguity, or a
-// recent startup failure: the reader must end up with both what the coordinator's current state is and what
-// happens next.
+const NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE: LiveShutdownRemainderEvidence = {
+  refusals: [],
+  unreportedRefusalCount: 0,
+  malformedRowCount: 0,
+};
+
 function withShutdownRemainderSection(
   base: string,
   shutdownRemainder: ShutdownRemainderReport | undefined,
-  recheckContext: ShutdownRemainderRecheckContext,
+  liveEvidence: LiveShutdownRemainderEvidence = NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE,
 ): string {
-  return shutdownRemainder === undefined
-    ? base
-    : [base, formatShutdownRemainderReport(shutdownRemainder, recheckContext)].join('\n');
+  const section = formatShutdownRemainderReport(shutdownRemainder, liveEvidence);
+  return section.length === 0 ? base : [base, section].join('\n');
 }
 
 function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
-      return withShutdownRemainderSection(
-        formatRunningStatus(result.health),
-        result.shutdownRemainder,
-        'coordinator-running',
-      );
+      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder, {
+        refusals: result.health.shutdownRemainderCleanupRefusals ?? [],
+        unreportedRefusalCount: result.health.unreportedShutdownRemainderCleanupRefusalCount ?? 0,
+        malformedRowCount: result.health.malformedShutdownRemainderCleanupRefusalRowCount ?? 0,
+      });
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
         result.shutdownRemainder,
-        'startup-required',
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
         `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
         result.shutdownRemainder,
-        'coordinator-unconfirmed',
       );
     case 'undecodable_record':
-      return withShutdownRemainderSection(
-        formatUndecodableRecordStatus(result),
-        result.shutdownRemainder,
-        'coordinator-unconfirmed',
-      );
+      return withShutdownRemainderSection(formatUndecodableRecordStatus(result), result.shutdownRemainder);
     case 'unreachable':
-      return withShutdownRemainderSection(
-        formatUnreachableStatus(result),
-        result.shutdownRemainder,
-        'coordinator-unconfirmed',
-      );
+      return withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder);
     case 'no_record_socket_present':
-      return withShutdownRemainderSection(
-        formatNoRecordSocketPresentStatus(result),
-        result.shutdownRemainder,
-        'coordinator-unconfirmed',
-      );
+      return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
-      return withShutdownRemainderSection(
-        formatRecentFailureStatus(result),
-        result.shutdownRemainder,
-        'coordinator-unconfirmed',
-      );
-    case 'shutting_down':
-      return withShutdownRemainderSection(
-        [
-          'Backend shutting down',
-          result.liveCleanupRefusals.kind === 'available'
-            ? 'Live cleanup refusal detail was decoded from the draining coordinator.'
-            : result.liveCleanupRefusals.reason === 'coordinator-draining'
-              ? 'Live cleanup refusal detail is unavailable because only the draining ping was obtained; shutdown remainder evidence below comes only from disk.'
-              : `Live cleanup refusal detail is unavailable because the health endpoint responded ${result.liveCleanupRefusals.statusCode}; shutdown remainder evidence below comes only from disk.`,
-        ].join('\n'),
-        result.shutdownRemainder,
-        'coordinator-draining',
-      );
+      return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
+    case 'shutting_down': {
+      const liveEvidence =
+        result.liveCleanupRefusals.kind === 'available'
+          ? {
+              refusals: result.liveCleanupRefusals.refusals,
+              unreportedRefusalCount: result.liveCleanupRefusals.unreportedCount,
+              malformedRowCount: result.liveCleanupRefusals.malformedRowCount,
+            }
+          : NO_LIVE_SHUTDOWN_REMAINDER_EVIDENCE;
+      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder, liveEvidence);
+    }
     case 'unauthorized':
       return withShutdownRemainderSection(
         [
@@ -777,7 +755,6 @@ function formatDaemonStatus(result: BackendStatusFull): string {
           formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
         ].join('\n'),
         result.shutdownRemainder,
-        'coordinator-unconfirmed',
       );
     default:
       return assertNever(result);
@@ -1295,28 +1272,38 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
 }
 
 function formatShutdownRemainderReport(
-  report: ShutdownRemainderReport,
-  recheckContext: ShutdownRemainderRecheckContext,
+  report: ShutdownRemainderReport | undefined,
+  liveEvidence: LiveShutdownRemainderEvidence,
 ): string {
-  switch (report.status) {
-    case 'recent_shutdown_remainder':
-      return formatRecentShutdownRemainderReport(report, recheckContext);
-    case 'shutdown_remainder_unreadable':
-      return formatUnreadableShutdownRemainderReport(report, recheckContext);
-    case 'shutdown_remainder_unowned':
-      return [
-        "Coral found shutdown remainder directory entries outside this subsystem's ownership.",
-        ...formatShutdownRemainderUnowned(report),
-      ].join('\n');
-    default:
-      return assertNever(report);
+  const lines = report?.status === 'recent_shutdown_remainder' ? formatRecentShutdownRemainderReport(report) : [];
+  const directoryEvidence =
+    report?.status === 'recent_shutdown_remainder' ||
+    (report?.status === 'shutdown_remainder_unreadable' && report.reason === 'records-skipped')
+      ? report
+      : undefined;
+  const notInspectedEntryCount = directoryEvidence?.notInspectedEntryCount ?? 0;
+  const unusableEntryCount =
+    (directoryEvidence?.unusableEntryCount ?? 0) + notInspectedEntryCount + liveEvidence.malformedRowCount;
+  if (unusableEntryCount > 0) {
+    lines.push(
+      `Shutdown remainder directory entries this build could not use: ${unusableEntryCount}${
+        notInspectedEntryCount === 0 ? '' : ` (${notInspectedEntryCount} not inspected)`
+      }`,
+      ...(directoryEvidence?.unreadableRecordNames ?? []).map((name) => `  Unreadable: ${name}`),
+    );
   }
+  lines.push(
+    ...formatShutdownRemainderCleanupRefusals(
+      [...liveEvidence.refusals, ...(report?.cleanupRefusals ?? [])],
+      liveEvidence.unreportedRefusalCount,
+    ),
+  );
+  return lines.join('\n');
 }
 
 function formatRecentShutdownRemainderReport(
   result: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>,
-  recheckContext: ShutdownRemainderRecheckContext,
-): string {
+): string[] {
   const lines = [
     'Coral recorded a recent shutdown with unfinished obligations.',
     `Instance: ${result.record.instanceId}`,
@@ -1327,18 +1314,13 @@ function formatRecentShutdownRemainderReport(
   for (const entry of result.record.entries) {
     lines.push(
       `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
-      ...formatShutdownRemainderSubjectLines(entry.subject),
       `  Owner: ${entry.remainder.owner}`,
       ...formatShutdownSettlementLines(entry.settlement),
       ...formatShutdownRemainderEvidenceLines(entry.remainder),
     );
   }
   lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
-  lines.push(...formatSkippedShutdownRemainderRecords(result, recheckContext));
-  lines.push(...formatShutdownRemainderUnowned(result));
-  lines.push(...formatShutdownRemainderQuarantines(result));
-  lines.push(...formatShutdownRemainderCleanupRefusals(result));
-  return lines.join('\n');
+  return lines;
 }
 
 function formatShutdownObligation(
@@ -1356,15 +1338,6 @@ function formatShutdownObligation(
     default:
       return obligation.label;
   }
-}
-
-function formatShutdownRemainderSubjectLines(
-  subject: Extract<
-    ShutdownRemainderReport,
-    { status: 'recent_shutdown_remainder' }
-  >['record']['entries'][number]['subject'],
-): string[] {
-  return subject === undefined ? [] : [`  Subject: ${subject.kind} sha256:${subject.sourceDigest}`];
 }
 
 function formatShutdownSettlementLines(
@@ -1400,109 +1373,23 @@ function formatShutdownRemainderEvidenceLines(
   if (remainder.evidence.kind !== 'startup-adoption') return [`  Evidence: ${remainder.evidence.kind}`];
   return [
     '  Evidence: startup-adoption',
-    ...remainder.evidence.processes.flatMap((process) => [
-      `    Job: ${process.jobId}`,
-      `    PID: ${process.pid}`,
-      '    Leader incarnation: present',
-    ]),
+    ...remainder.evidence.processes.flatMap((process) => [`    Job: ${process.jobId}`, `    PID: ${process.pid}`]),
   ];
 }
 
-function formatUnreadableShutdownRemainderReport(
-  result: Extract<ShutdownRemainderReport, { status: 'shutdown_remainder_unreadable' }>,
-  recheckContext: ShutdownRemainderRecheckContext,
-): string {
-  if (result.reason === 'scan-failed') {
-    return [
-      'Coral could not inspect shutdown remainder records.',
-      ...formatShutdownRemainderCleanupRefusals(result),
-    ].join('\n');
-  }
+function formatShutdownRemainderCleanupRefusals(
+  refusals: readonly ShutdownRemainderCleanupRefusal[],
+  unreportedCount: number,
+): string[] {
   return [
-    'Coral found shutdown remainder records it could not use.',
-    ...formatSkippedShutdownRemainderRecords(result, recheckContext),
-    ...formatShutdownRemainderUnowned(result),
-    ...formatShutdownRemainderQuarantines(result),
-    ...formatShutdownRemainderCleanupRefusals(result),
-  ].join('\n');
-}
-
-function formatShutdownRemainderCleanupRefusals(result: ShutdownRemainderReport): string[] {
-  const refusals = 'cleanupRefusals' in result ? (result.cleanupRefusals ?? []) : [];
-  const malformed = 'malformedCleanupRefusalRowCount' in result ? (result.malformedCleanupRefusalRowCount ?? 0) : 0;
-  const reported = refusals.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
-  const unreported =
-    ('unreportedCleanupRefusalCount' in result ? (result.unreportedCleanupRefusalCount ?? 0) : 0) +
-    Math.max(0, refusals.length - reported.length);
-  if (refusals.length === 0 && unreported === 0 && malformed === 0) return [];
-  return [
-    ...(refusals.length === 0 && unreported === 0
-      ? []
-      : [`Shutdown remainder cleanup refusals: ${reported.length + unreported}`]),
-    ...reported.flatMap((refusal, index) => [
-      `  Refusal ${index + 1}:`,
-      `    Subject: ${JSON.stringify(refusal.subject.label)}`,
-      `    Cause: ${refusal.cause.operation} ${
-        refusal.cause.kind === 'system-error' ? `failed with ${refusal.cause.code}` : 'failed without an errno code'
-      }`,
-      '    Retry trigger: coordinator startup and periodic remainder maintenance',
-      `    Retry action: ${formatShutdownRemainderCleanupRetryAction(refusal.retry.action)}`,
-    ]),
-    ...(unreported === 0 ? [] : [`  Additional refusals not listed: ${unreported}`]),
-    ...(malformed === 0 ? [] : [`Malformed shutdown remainder cleanup refusal rows: ${malformed}`]),
+    ...refusals.map(
+      (refusal) =>
+        `Cleanup refusal: label=${JSON.stringify(refusal.subject.label)} operation=${refusal.cause.operation} errno=${
+          refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'
+        }`,
+    ),
+    ...(unreportedCount === 0 ? [] : [`Additional cleanup refusals not listed: ${unreportedCount}`]),
   ];
-}
-
-function formatShutdownRemainderCleanupRetryAction(action: ShutdownRemainderCleanupRefusal['retry']['action']): string {
-  switch (action) {
-    case 'rescan-subject':
-      return 'reclassify the subject and retry only if it still qualifies';
-    case 'rescan-directory':
-      return 'rescan the directory';
-    default:
-      return assertNever(action);
-  }
-}
-
-function formatShutdownRemainderUnowned(result: ShutdownRemainderReport): string[] {
-  const names = 'unrecognizedEntryNames' in result ? (result.unrecognizedEntryNames ?? []) : [];
-  const reported = names.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT);
-  const unreported =
-    ('unreportedUnrecognizedEntryCount' in result ? (result.unreportedUnrecognizedEntryCount ?? 0) : 0) +
-    Math.max(0, names.length - reported.length);
-  if (names.length === 0 && unreported === 0) return [];
-  return [
-    `Unrecognized shutdown remainder directory entries: ${reported.length + unreported}`,
-    ...reported.map((name) => `  Entry: ${JSON.stringify(name)}`),
-    ...(unreported === 0 ? [] : [`  Additional entries not listed: ${unreported}`]),
-    '  Disposition: present, not owned by shutdown remainder cleanup, and not scheduled for action.',
-  ];
-}
-
-type ShutdownRemainderWithQuarantine =
-  | Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>
-  | Extract<ShutdownRemainderReport, { reason: 'records-skipped' }>;
-
-function formatShutdownRemainderQuarantines(result: ShutdownRemainderWithQuarantine): string[] {
-  const quarantined = result.quarantined ?? [];
-  return quarantined.flatMap((entry, index) => [
-    `Quarantined shutdown remainder subject ${index + 1}:`,
-    `  Subject: ${JSON.stringify(entry.subject)}`,
-    '  Disposition: retained at its original path; periodic maintenance will neither move nor retry it.',
-    `  Retry trigger: ${formatShutdownRemainderQuarantineRetryTrigger(entry.retry.trigger)}`,
-    '  Hold ends: the startup retry resolves the subject; if it remains unreadable or unsupported, the startup renews this hold.',
-  ]);
-}
-
-function formatShutdownRemainderQuarantineRetryTrigger(
-  trigger: NonNullable<ShutdownRemainderWithQuarantine['quarantined']>[number]['retry']['trigger'],
-): string {
-  switch (trigger) {
-    case 'coordinator-startup':
-      return 'next coordinator startup';
-    default:
-      return assertNever(trigger);
-  }
 }
 
 function formatSkippedShutdownRemainderEntries(
@@ -1511,101 +1398,7 @@ function formatSkippedShutdownRemainderEntries(
   return entries.flatMap((entry) => [
     `Skipped entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
     `  Owner: ${entry.owner ?? 'unavailable'}`,
-    '  Disposition: not decoded or included as an obligation by this build; shutdown remainder records do not drive recovery.',
   ]);
-}
-
-type ShutdownRemainderSkippedRecords =
-  | Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>
-  | Extract<ShutdownRemainderReport, { reason: 'records-skipped' }>;
-
-function formatSkippedShutdownRemainderRecords(
-  result: ShutdownRemainderSkippedRecords,
-  recheckContext: ShutdownRemainderRecheckContext,
-): string[] {
-  const lines: string[] = [];
-  const recheckLine = formatShutdownRemainderRecheckLine(recheckContext);
-  if (result.skippedUnreadableRecordNames.length > 0) {
-    lines.push(
-      `Skipped shutdown remainder records, unreadable: ${result.skippedUnreadableRecordNames.length}`,
-      ...result.skippedUnreadableRecordNames.map((name) => `  Record: ${name}`),
-      '  Disposition: content was never read; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
-    );
-  }
-  if (result.skippedCorruptRecordCount > 0) {
-    lines.push(
-      `Skipped shutdown remainder records, corrupt: ${result.skippedCorruptRecordCount}`,
-      '  Disposition: content is not valid JSON; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
-    );
-  }
-  if (result.skippedUnsupportedRecordCount > 0) {
-    lines.push(
-      `Skipped shutdown remainder records, unsupported: ${result.skippedUnsupportedRecordCount}`,
-      '  Disposition: content decoded but the schema this build reads records with rejects it; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
-    );
-  }
-  if ((result.skippedIdentityMismatchRecordCount ?? 0) > 0) {
-    lines.push(
-      `Skipped shutdown remainder records, identity mismatch: ${result.skippedIdentityMismatchRecordCount}`,
-      '  Disposition: decoded content named a different instance than the filename; a running coordinator attempts deletion in its periodic remainder scan, otherwise the next coordinator startup attempts it.',
-    );
-  }
-  if ((result.unscannedStageCount ?? 0) > 0) {
-    lines.push(
-      `Shutdown remainder publication stages not inspected: ${result.unscannedStageCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
-    );
-  }
-  if ((result.unscannedRecordCount ?? 0) > 0) {
-    lines.push(
-      `Shutdown remainder records not inspected: ${result.unscannedRecordCount}`,
-      `  Disposition: directory enumeration completed, but per-entry inspection stopped at the shared ${SHUTDOWN_REMAINDER_SCAN_LIMIT}-subject bound; retained for the next status read. A running coordinator also inspects it in its periodic remainder scan, otherwise the next coordinator startup does.`,
-    );
-  }
-  if (result.staging !== undefined) {
-    if (result.staging.writerAliveCount > 0) {
-      lines.push(
-        `Shutdown remainder publication stages with live writers: ${result.staging.writerAliveCount}`,
-        '  Disposition: retained as durable status while the writer is alive.',
-        recheckLine,
-      );
-    }
-    if (result.staging.writerUnobservableCount > 0) {
-      lines.push(
-        `Shutdown remainder publication stages with unobservable writers: ${result.staging.writerUnobservableCount}`,
-        '  Disposition: writer state is unknown; an unresolved stage remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
-      );
-    }
-    if (result.staging.orphanedCount > 0) {
-      lines.push(
-        `Shutdown remainder publication stages with proven-absent writers: ${result.staging.orphanedCount}`,
-        '  Disposition: coordinator maintenance promotes a decodable stage, deletes a partial stage, and holds other retained subjects in place as quarantined.',
-        recheckLine,
-      );
-    }
-    if ((result.staging.malformedCount ?? 0) > 0) {
-      lines.push(
-        `Malformed shutdown remainder publication stages: ${result.staging.malformedCount}`,
-        '  Disposition: the filename could not identify a writer; the subject remains at its original path as quarantined, is excluded from periodic maintenance, and is retried only at the next coordinator startup.',
-      );
-    }
-  }
-  return lines;
-}
-
-function formatShutdownRemainderRecheckLine(context: ShutdownRemainderRecheckContext): string {
-  switch (context) {
-    case 'coordinator-running':
-      return '  Recheck: this coordinator rescans shutdown remainder files periodically; no action is required while the evidence remains reported.';
-    case 'coordinator-draining':
-      return '  Recheck: shutdown has stopped periodic maintenance; the next coordinator startup retries scheduled remainder work.';
-    case 'startup-required':
-      return '  Recheck: no discovery record and no socket at the current expected address were found. The next coordinator startup scans once and then rechecks live-writer stages periodically while it runs.';
-    case 'coordinator-unconfirmed':
-      return '  Recheck: a running coordinator rescans periodically; otherwise the next coordinator startup scans once. The evidence remains reported meanwhile.';
-    default:
-      return assertNever(context);
-  }
 }
 
 export function formatShutdown(result: ShutdownResult): string {

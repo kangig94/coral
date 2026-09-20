@@ -51,15 +51,11 @@ type ExpectedProjectionLeafPaths =
   | 'record.entries[].obligation.label'
   | 'record.entries[].obligation.ordinal'
   | 'record.entries[].obligation.occurrence'
-  | 'record.entries[].subject'
-  | 'record.entries[].subject.kind'
-  | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.owner'
   | 'record.entries[].remainder.evidence.kind'
   | 'record.entries[].remainder.evidence.processes[].kind'
   | 'record.entries[].remainder.evidence.processes[].jobId'
   | 'record.entries[].remainder.evidence.processes[].pid'
-  | 'record.entries[].remainder.evidence.processes[].leaderIncarnation.present'
   | 'record.entries[].settlement.cause'
   | 'record.entries[].settlement.error.name'
   | 'record.entries[].settlement.error.code'
@@ -70,10 +66,9 @@ type ExpectedProjectionLeafPaths =
   | 'skippedEntries[].obligation.ordinal'
   | 'skippedEntries[].obligation.occurrence'
   | 'skippedEntries[].owner'
-  | 'skippedUnreadableRecordNames[]'
-  | 'skippedCorruptRecordCount'
-  | 'skippedUnsupportedRecordCount'
-  | 'skippedIdentityMismatchRecordCount'
+  | 'unusableEntryCount'
+  | 'notInspectedEntryCount'
+  | 'unreadableRecordNames[]'
   | 'cleanupRefusals'
   | 'cleanupRefusals[].subject.identity'
   | 'cleanupRefusals[].subject.label'
@@ -81,34 +76,16 @@ type ExpectedProjectionLeafPaths =
   | 'cleanupRefusals[].cause.operation'
   | 'cleanupRefusals[].cause.code'
   | 'cleanupRefusals[].retry.trigger'
-  | 'cleanupRefusals[].retry.action'
-  | 'unreportedCleanupRefusalCount'
-  | 'malformedCleanupRefusalRowCount'
-  | 'unrecognizedEntryNames'
-  | 'unrecognizedEntryNames[]'
-  | 'unreportedUnrecognizedEntryCount'
-  | 'quarantined'
-  | 'quarantined[].subject'
-  | 'quarantined[].retry.trigger'
-  | 'unscannedStageCount'
-  | 'unscannedRecordCount'
-  | 'staging'
-  | 'staging.writerAliveCount'
-  | 'staging.writerUnobservableCount'
-  | 'staging.orphanedCount'
-  | 'staging.malformedCount';
+  | 'cleanupRefusals[].retry.action';
 
 type ExpectedBroadStringLeafPaths =
   | 'record.instanceId'
   | 'record.recordedAt'
-  | 'record.entries[].subject.sourceDigest'
   | 'record.entries[].remainder.evidence.processes[].jobId'
-  | 'skippedUnreadableRecordNames[]'
+  | 'unreadableRecordNames[]'
   | 'cleanupRefusals[].subject.identity'
   | 'cleanupRefusals[].subject.label'
-  | 'cleanupRefusals[].cause.code'
-  | 'unrecognizedEntryNames[]'
-  | 'quarantined[].subject';
+  | 'cleanupRefusals[].cause.code';
 
 const projectionLeafCoverage: Equal<ProjectionLeafPaths<ShutdownRemainderStatus>, ExpectedProjectionLeafPaths> = true;
 const broadStringLeafCoverage: Equal<
@@ -124,25 +101,16 @@ void entry.obligation;
 // @ts-expect-error persisted prose is absent from the status projection.
 void entry.label;
 
-if (entry.subject !== undefined) {
-  const subjectKind: 'discuss-store' = entry.subject.kind;
-  const subjectDigest: string = entry.subject.sourceDigest;
-  void subjectKind;
-  void subjectDigest;
-  // @ts-expect-error the raw discuss-store project source is absent from the status projection.
-  void entry.subject.source;
-}
+// @ts-expect-error persisted subjects are absent from the status projection.
+void entry.subject;
 
 if (entry.remainder.owner === 'successor-recovery' && entry.remainder.evidence.kind === 'startup-adoption') {
   const process = entry.remainder.evidence.processes[0];
   if (process !== undefined) {
-    const incarnationPresent: true = process.leaderIncarnation.present;
-    void incarnationPresent;
-    // @ts-expect-error no other Coral surface publishes a comparable digest, so a digest here is decoration.
-    void process.leaderIncarnation.sha256;
-    // @ts-expect-error the opaque persisted incarnation is absent from the status projection.
-    const rawIncarnation: string = process.leaderIncarnation;
-    void rawIncarnation;
+    void process.jobId;
+    void process.pid;
+    // @ts-expect-error a constant incarnation-presence marker is absent from the status projection.
+    void process.leaderIncarnation;
   }
 }
 
@@ -160,21 +128,18 @@ void skippedEntry.recordInstanceId;
 // only evidence an operator-less reader has to act on for an 'unreadable' record — it deliberately crosses,
 // unlike a decisively 'corrupt' or build-relative 'unsupported' one, whose disposition this build alone
 // decides (delete outright, or hold under its own bounded retention) and carries out without reader action.
-declare const skippedUnreadableRecordNames: ShutdownRemainderStatus['skippedUnreadableRecordNames'];
-const unreadableRecordName: string = skippedUnreadableRecordNames[0] ?? '';
+declare const unreadableRecordNames: ShutdownRemainderStatus['unreadableRecordNames'];
+const unreadableRecordName: string = unreadableRecordNames[0] ?? '';
 void unreadableRecordName;
-declare const skippedCorruptRecordCount: ShutdownRemainderStatus['skippedCorruptRecordCount'];
-void skippedCorruptRecordCount;
-declare const skippedUnsupportedRecordCount: ShutdownRemainderStatus['skippedUnsupportedRecordCount'];
-void skippedUnsupportedRecordCount;
+declare const unusableEntryCount: ShutdownRemainderStatus['unusableEntryCount'];
+void unusableEntryCount;
+declare const notInspectedEntryCount: ShutdownRemainderStatus['notInspectedEntryCount'];
+void notInspectedEntryCount;
 declare const cleanupRefusals: ShutdownRemainderStatus['cleanupRefusals'];
 const cleanupRefusedSubjectName: string = cleanupRefusals?.[0]?.subject.label ?? '';
 void cleanupRefusedSubjectName;
-declare const unrecognizedEntryNames: ShutdownRemainderStatus['unrecognizedEntryNames'];
-const unrecognizedEntryName: string = unrecognizedEntryNames?.[0] ?? '';
-void unrecognizedEntryName;
 // @ts-expect-error the internal skipped-record shape is absent from the status projection; only the derived
-// name list (for 'unreadable') and counts (for 'corrupt'/'unsupported') cross.
+// unreadable name list and class counts cross.
 declare const skippedRecords: ShutdownRemainderStatus['skippedRecords'];
 void skippedRecords;
 

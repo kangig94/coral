@@ -1847,6 +1847,25 @@ describe('shutdown remainder status', () => {
     expect(pruner.readCleanupRefusals()).toEqual([]);
   });
 
+  it('freshens cleanup refusals against their raw subjects when a health snapshot reads them', () => {
+    const name = 'corrupt\n.json';
+    const storage = storageWith([{ name, value: '{not-json', mtimeMs: 1 }], {
+      refusePruneWhen: (candidate, attempt) => candidate === name && attempt === 1,
+    });
+    const pruner = createShutdownRemainderPruner({
+      storage,
+      runDir: RUN_DIR,
+      time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
+    });
+
+    expect(pruner.start()?.cleanup.kind).toBe('refused');
+    expect(pruner.readCleanupRefusals()).toEqual([cleanupRefusal(name, 'delete')]);
+    storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
+
+    expect(pruner.readCleanupRefusals()).toEqual([]);
+    expect(pruner.readCleanupRefusals()).toEqual([]);
+  });
+
   it('retries quarantined evidence once on the next pruner startup', () => {
     const storage = storageWith([fileAt('locked', 1)], {
       refuseReadWhen: (name, attempt) => name === 'locked.json' && attempt === 1,
