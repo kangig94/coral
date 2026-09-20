@@ -1477,7 +1477,7 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
   const lines = [
     ...observation.refusals.map(
       (refusal) =>
-        `Cleanup refusal observed by ${observation.source}: identity=${refusal.subject.identity} class=directory-entry cause=${refusal.cause.kind} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
+        `Cleanup refusal observed by ${observation.source}: correlation=${refusal.subject.identity} class=directory-entry cause=${refusal.cause.kind} operation=${refusal.cause.operation} errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'} owner=coordinator successor=periodic-cleanup-retry`,
     ),
     ...(observation.resolvedRefusalCount === 0
       ? []
@@ -1513,7 +1513,10 @@ function formatShutdownRemainderCleanupRefusals(observation: CleanupRefusalObser
       : observation.retry?.state === 'stopped-until-restart'
         ? 'stopped until the next coordinator startup'
         : 'unavailable';
-  return [...lines, `Cleanup-refusal snapshot observed at ${observedAt}; retry is ${retry}.`];
+  return [
+    ...lines,
+    `Cleanup-refusal snapshot observed at ${observedAt}; automatic cleanup is the sole owner and retry is ${retry}.`,
+  ];
 }
 
 function formatSkippedShutdownRemainderEntries(
@@ -1984,22 +1987,20 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
 }
 
 export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
-  switch (set.operatorExit.kind) {
-    case 'contain':
-      return 'disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent';
-    case 'abandon':
-      return 'disposition=automatic-reobservation retryWithinMs=60000 exit=durable-reconciliation-terminal';
-    case 'gated':
-      return `disposition=automatic-bounded-wait remainingMs=${Math.ceil(set.operatorExit.remainingMs)} exit=control-reattached-or-containment-absent`;
-    case 'refused':
-      return `disposition=stopped needs=${set.operatorExit.ground}`;
-    case 'none':
-      if (set.holds.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
-        return 'disposition=automatic-retry retryWithinMs=60000 exit=publication-confirmed-or-control-released';
-      }
-      return `disposition=waiting for=${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
+  const disposition = set.autonomousDisposition;
+  switch (disposition.kind) {
+    case 'inactive':
+      return `disposition=inactive waitingFor=${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
+    case 'unavailable':
+      return 'disposition=unavailable';
+    case 'control-or-containment':
+    case 'exact-containment':
+    case 'representation-release':
+    case 'durable-reconciliation':
+    case 'publication-recovery':
+      return `disposition=automatic owner=${disposition.owner} boundMs=${Math.ceil(disposition.boundMs)} retryAction=${disposition.retryAction} refusalSuccessor=${disposition.refusalSuccessor} terminalExit=${disposition.terminalExit}`;
     default:
-      return assertNever(set.operatorExit);
+      return assertNever(disposition);
   }
 }
 

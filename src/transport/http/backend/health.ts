@@ -17,6 +17,7 @@ import {
   PROVIDER_PROXY_SET_OPERATOR_EXIT_KINDS,
   PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS,
   type ProviderProxySetOperatorDisposition,
+  type ProviderProxySetAutonomousDisposition,
   type ProviderProxySetDurableDispositionSkipStatus,
   type ProviderProxySetOperatorExit,
   type ProviderProxySetOperatorExitKind,
@@ -291,6 +292,51 @@ function parseProviderProxySetOperatorExit(value: unknown): ProviderProxySetOper
   }
 }
 
+function parseProviderProxySetAutonomousDisposition(value: unknown): ProviderProxySetAutonomousDisposition | null {
+  if (value === undefined) return { kind: 'unavailable' };
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  if (value.kind === 'inactive' || value.kind === 'unavailable') return { kind: value.kind };
+  if (
+    value.owner !== 'coordinator' ||
+    !isNonNegativeFiniteNumber(value.boundMs) ||
+    value.refusalSuccessor !== 'automatic-retry'
+  ) {
+    return null;
+  }
+  const common = {
+    owner: 'coordinator' as const,
+    boundMs: value.boundMs,
+    refusalSuccessor: 'automatic-retry' as const,
+  };
+  switch (value.kind) {
+    case 'control-or-containment':
+      return value.retryAction === 'recover-control-or-observe-exact-containment' &&
+        value.terminalExit === 'control-reattached-or-containment-absent'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'exact-containment':
+      return value.retryAction === 'observe-exact-containment' && value.terminalExit === 'containment-absent'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'representation-release':
+      return value.retryAction === 'release-representation' && value.terminalExit === 'representation-released'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'durable-reconciliation':
+      return value.retryAction === 'reconcile-durable-disposition' &&
+        value.terminalExit === 'durable-reconciliation-terminal'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'publication-recovery':
+      return value.retryAction === 'confirm-publication-or-release-control' &&
+        value.terminalExit === 'publication-confirmed-or-control-released'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    default:
+      return null;
+  }
+}
+
 function parseProviderProxySetHold(value: unknown): ProviderProxySet['holds'][number] | null {
   if (
     !isRecord(value) ||
@@ -446,8 +492,9 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       continue;
     }
     const operatorExit = parseProviderProxySetOperatorExit(entry.operatorExit);
+    const autonomousDisposition = parseProviderProxySetAutonomousDisposition(entry.autonomousDisposition);
     const holds = entry.holds.map(parseProviderProxySetHold);
-    if (operatorExit === null || holds.some((hold) => hold === null)) {
+    if (operatorExit === null || autonomousDisposition === null || holds.some((hold) => hold === null)) {
       skippedRows.push({ reason: 'unsupported-row', setToken, setIdentity });
       skippedSetTokens.push(setToken);
       continue;
@@ -457,6 +504,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       setToken,
       liveClaims: entry.liveClaims,
       operatorExit,
+      autonomousDisposition,
       holds: holds as ProviderProxySet['holds'],
     });
   }

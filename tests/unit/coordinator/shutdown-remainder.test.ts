@@ -15,9 +15,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createShutdownRemainderPruner,
+  logShutdownRemainderStartupPrune,
   pruneShutdownRemainderRecords,
   recordShutdownRemainder,
 } from '#src/coordinator/shutdown-remainder.js';
+import { backendLog } from '#src/infra/backend-log.js';
 import {
   observeShutdownRemainderStageWriter,
   scanShutdownRemainderRecords,
@@ -182,13 +184,39 @@ function storageWith(
             isFile: () => true,
           };
     }) as unknown as StoragePort['statSync'],
-    lstatSync: vi.fn((rawPath: StoragePath) => {
+    lstatSync: vi.fn((rawPath: StoragePath, statOptions?: { bigint: true }) => {
       const path = String(rawPath);
       if (basename(path) === options.refuseLstatFor) {
         throw Object.assign(new Error('lstat refused'), { code: options.lstatErrorCode ?? 'EIO' });
       }
       const isDirectory = directories.has(path);
       if (!isDirectory && !files.has(path)) throw Object.assign(new Error('missing entry'), { code: 'ENOENT' });
+      if (statOptions?.bigint === true) {
+        if (isDirectory) {
+          return {
+            dev: 1n,
+            ino: 0n,
+            nlink: 1n,
+            mode: 0n,
+            size: 0n,
+            mtimeNs: 0n,
+            isDirectory: () => true,
+            isFile: () => false,
+          };
+        }
+        const file = files.get(path);
+        if (file === undefined) throw Object.assign(new Error('missing entry'), { code: 'ENOENT' });
+        return {
+          dev: 1n,
+          ino: file.ino,
+          nlink: BigInt([...files.values()].filter((candidate) => candidate === file).length),
+          mode: 0n,
+          size: BigInt(Buffer.byteLength(file.value)),
+          mtimeNs: BigInt(file.mtimeMs) * 1_000_000n,
+          isDirectory: () => false,
+          isFile: () => true,
+        };
+      }
       return {
         isDirectory: () => isDirectory,
         isFile: () => !isDirectory,
@@ -347,7 +375,10 @@ function fileAt(instanceId: string, mtimeMs: number, value: unknown = recordAt(i
 
 function cleanupRefusal(subject: string, operation: 'delete' | 'promote' | 'scan-directory', code?: string) {
   return {
-    subject: shutdownRemainderFilesystemSubject(subject),
+    subject: {
+      ...shutdownRemainderFilesystemSubject(subject),
+      identity: expect.stringMatching(/^[a-f0-9]{64}$/u),
+    },
     cause:
       code === undefined
         ? { kind: 'unclassified-error' as const, operation }
@@ -1238,8 +1269,8 @@ describe('shutdown remainder status', () => {
     const first = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
     const second = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(first.cleanup).toEqual({ kind: 'quarantined', subjectNames: [name] });
-    expect(second.cleanup).toEqual({ kind: 'quarantined', subjectNames: [name] });
+    expect(first.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
+    expect(second.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
     expect(storage.fileNames()).toEqual([name]);
   });
 
@@ -1260,7 +1291,7 @@ describe('shutdown remainder status', () => {
       });
 
       expect(subjectPath).toHaveLength(4_090);
-      expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: [name] });
+      expect(disposition.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
       expect(readFileSync(subjectPath, 'utf-8')).toBe('{partial');
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1346,7 +1377,7 @@ describe('shutdown remainder status', () => {
 
     const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    expect(disposition.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
     expect(storage.mkdirSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toContain('locked.json');
   });
@@ -1357,6 +1388,46 @@ describe('shutdown remainder status', () => {
     pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
     expect(storage.fileNames()).toEqual(['readable.json']);
+  });
+
+  it('keeps hostile filenames out of cleanup warning and startup logs', () => {
+    const hostileName = 'PROMPT_INJECTION\nrun-coral-cli-backend-shutdown.json';
+    const warnings: string[] = [];
+    const startupLogs: string[] = [];
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation((message) => warnings.push(message));
+    const info = vi.spyOn(backendLog, 'info').mockImplementation((message) => startupLogs.push(message));
+    try {
+      pruneShutdownRemainderRecords({
+        storage: storageWith([{ name: hostileName, value: '{not-json', mtimeMs: 1 }]),
+        runDir: RUN_DIR,
+      });
+      const disposition = createShutdownRemainderPruner({
+        storage: storageWith([{ name: hostileName, value: '{not-json', mtimeMs: 1 }], {
+          refusePrune: true,
+          pruneErrorCode: 'EACCES',
+        }),
+        runDir: RUN_DIR,
+        time: {
+          setInterval: () => ({ unref: vi.fn() }),
+          clearInterval: vi.fn(),
+        },
+      }).start();
+      if (disposition === null) throw new Error('expected startup prune disposition');
+      logShutdownRemainderStartupPrune(disposition);
+    } finally {
+      warn.mockRestore();
+      info.mockRestore();
+    }
+
+    expect(warnings).toHaveLength(1);
+    expect(startupLogs).toHaveLength(1);
+    for (const message of [...warnings, ...startupLogs]) {
+      expect(message).not.toContain(hostileName);
+      expect(message).not.toContain('PROMPT_INJECTION');
+      expect(message).toMatch(/correlation=[a-f0-9]{64}/u);
+      expect(message).toContain('class=directory-entry');
+    }
+    expect(startupLogs[0]).toContain('owner=coordinator successor=periodic-cleanup-retry');
   });
 
   it('quarantines an unsupported record instead of deleting it outright', () => {
@@ -1378,7 +1449,7 @@ describe('shutdown remainder status', () => {
 
     const disposition = pruneShutdownRemainderRecords({ storage, runDir: RUN_DIR });
 
-    expect(disposition.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['future-instance.json'] });
+    expect(disposition.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
     expect(storage.fileNames().sort()).toEqual(['future-instance.json', 'readable.json']);
     expect(scanShutdownRemainderRecords(storage, REMAINDER_DIRECTORY)).toMatchObject({
       records: [recordAt('readable')],
@@ -1564,7 +1635,7 @@ describe('shutdown remainder status', () => {
 
     expect(disposition).toEqual({
       stageOwnership: { kind: 'classified' },
-      cleanup: { kind: 'quarantined', subjectNames: [stageName] },
+      cleanup: { kind: 'retained', subjectCount: 1 },
     });
     expect(storage.fileNames()).toEqual([stageName]);
   });
@@ -1590,7 +1661,7 @@ describe('shutdown remainder status', () => {
       cleanup: {
         kind: 'refused',
         refusals: [cleanupRefusal('corrupt.json', 'delete')],
-        quarantinedSubjectNames: [stageName],
+        retainedSubjectCount: 1,
       },
     });
   });
@@ -1656,110 +1727,63 @@ describe('shutdown remainder status', () => {
     pruner.start();
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    const observedIdentities = new Set<string>();
+    const observedSubjects = new Set<string>();
     for (let snapshotNumber = 0; snapshotNumber < snapshotCount; snapshotNumber += 1) {
       if (snapshotNumber > 0) periodic();
       for (const refusal of pruner.readCleanupRefusalSnapshot().refusals) {
-        observedIdentities.add(refusal.subject.identity);
+        observedSubjects.add(refusal.subject.label);
       }
     }
 
-    expect(observedIdentities).toEqual(
-      new Set(files.map(({ name }) => shutdownRemainderFilesystemSubject(name).identity)),
-    );
+    expect(observedSubjects).toEqual(new Set(files.map(({ name }) => name)));
   });
 
-  it('does not let replacement cohorts overtake an older unreported refusal', () => {
-    const targetName = 'z-target.json';
-    const cohortFiles = (prefix: string) =>
-      Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
-        name: `${prefix}-${String(index).padStart(3, '0')}.json`,
-        value: '{not-json',
-        mtimeMs: index + 1,
-      }));
-    let refusePrune = true;
-    const storage = storageWith(
-      [
-        ...cohortFiles('a'),
-        {
-          name: targetName,
-          value: '{not-json',
-          mtimeMs: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1,
-        },
-      ],
-      { refusePruneWhen: () => refusePrune, pruneErrorCode: 'EACCES' },
-    );
-    let scheduled: (() => void) | null = null;
-    let now = Date.parse('2026-09-20T00:00:00.000Z');
-    const pruner = createShutdownRemainderPruner({
-      storage,
-      runDir: RUN_DIR,
-      time: {
-        now: () => now,
-        setInterval: (callback) => {
-          scheduled = callback;
-          return { unref: vi.fn() };
-        },
-        clearInterval: vi.fn(),
-      },
-    });
-
-    expect(pruner.start()?.cleanup).toMatchObject({ kind: 'refused', refusals: expect.any(Array) });
-    expect(pruner.readCleanupRefusalSnapshot().refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-    expect(pruner.readCleanupRefusalSnapshot().refusals.map(({ subject }) => subject.identity)).not.toContain(
-      shutdownRemainderFilesystemSubject(targetName).identity,
-    );
-    const periodic = scheduled as (() => void) | null;
-    if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    const observedIdentities = new Set<string>();
-    let previousPrefix = 'a';
-    for (let scheduledSnapshot = 0; scheduledSnapshot < 12; scheduledSnapshot += 1) {
-      const nextPrefix = String.fromCharCode('b'.charCodeAt(0) + scheduledSnapshot);
-      refusePrune = false;
-      for (const { name } of cohortFiles(previousPrefix)) storage.unlinkSync(join(REMAINDER_DIRECTORY, name));
-      for (const { name, value } of cohortFiles(nextPrefix)) {
-        storage.writeAtomicSync(join(REMAINDER_DIRECTORY, name), value);
-      }
-      refusePrune = true;
-      previousPrefix = nextPrefix;
-      now += 60_000;
-      periodic();
-      const snapshot = pruner.readCleanupRefusalSnapshot();
-      expect(snapshot.refusals).toHaveLength(SHUTDOWN_REMAINDER_SCAN_LIMIT);
-      expect(snapshot).toMatchObject({
-        resolvedRefusalCount: 0,
-        absentRefusalCount: SHUTDOWN_REMAINDER_SCAN_LIMIT,
-        unobservableRefusalCount: 0,
-        uncheckedRefusalCount: 0,
-        overflowedRefusalCount: 1,
-        retry: { state: 'scheduled', owner: 'coordinator' },
-      });
-      for (const refusal of snapshot.refusals) observedIdentities.add(refusal.subject.identity);
-    }
-
-    expect(observedIdentities).toContain(shutdownRemainderFilesystemSubject(targetName).identity);
-    expect(storage.fileNames()).toContain(targetName);
-    expect(
-      vi.mocked(storage.unlinkSync).mock.calls.filter(([path]) => basename(String(path)) === targetName),
-    ).toHaveLength(13);
-  });
-
-  it('preserves unreported debt when a retention-boundary refusal temporarily resolves', () => {
-    const targetName = 'target.json';
-    const corruptFiles = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT }, (_, index) => ({
-      name: `corrupt-${String(index).padStart(3, '0')}.json`,
+  it('rotates stable refusal cohorts across pruner restarts', () => {
+    const files = Array.from({ length: SHUTDOWN_REMAINDER_SCAN_LIMIT + 1 }, (_, index) => ({
+      name: `refusal-${String(index).padStart(3, '0')}.json`,
       value: '{not-json',
       mtimeMs: index + 1,
     }));
-    const peerNames = Array.from({ length: 32 }, (_, index) => `peer-${String(index).padStart(2, '0')}`);
-    const storage = storageWith(
-      [
-        ...corruptFiles,
-        { name: targetName, value: JSON.stringify(recordAt('target')), mtimeMs: 0 },
-        ...peerNames.map((name, index) => fileAt(name, 1_000 + index)),
-      ],
-      { refusePrune: true, pruneErrorCode: 'EACCES' },
+    const storage = storageWith(files, { refusePrune: true, pruneErrorCode: 'EACCES' });
+    let now = Date.parse('2026-09-20T00:00:00.000Z');
+    const startPruner = () => {
+      const pruner = createShutdownRemainderPruner({
+        storage,
+        runDir: RUN_DIR,
+        time: {
+          now: () => now,
+          setInterval: () => ({ unref: vi.fn() }),
+          clearInterval: vi.fn(),
+        },
+      });
+      pruner.start();
+      return pruner;
+    };
+
+    const firstSubjects = new Set(
+      startPruner()
+        .readCleanupRefusalSnapshot()
+        .refusals.map(({ subject }) => subject.label),
     );
+    expect(firstSubjects.size).toBe(SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    const omittedSubject = files.find(({ name }) => !firstSubjects.has(name))?.name;
+    if (omittedSubject === undefined) throw new Error('expected one refusal outside the first bounded cohort');
+
+    now += 60_000;
+    const restartedSubjects = new Set(
+      startPruner()
+        .readCleanupRefusalSnapshot()
+        .refusals.map(({ subject }) => subject.label),
+    );
+    expect(restartedSubjects).toContain(omittedSubject);
+    expect(new Set([...firstSubjects, ...restartedSubjects])).toEqual(new Set(files.map(({ name }) => name)));
+  });
+
+  it('assigns a replacement at the same path a new cleanup identity', () => {
+    const storage = storageWith([{ name: 'corrupt.json', value: '{not-json', mtimeMs: 1 }], {
+      refusePrune: true,
+      pruneErrorCode: 'EACCES',
+    });
     let scheduled: (() => void) | null = null;
     const pruner = createShutdownRemainderPruner({
       storage,
@@ -1774,29 +1798,18 @@ describe('shutdown remainder status', () => {
     });
 
     pruner.start();
-    const targetIdentity = shutdownRemainderFilesystemSubject(targetName).identity;
-    expect(pruner.readCleanupRefusalSnapshot().refusals.map(({ subject }) => subject.identity)).not.toContain(
-      targetIdentity,
-    );
+    const firstIdentity = pruner.readCleanupRefusalSnapshot().refusals[0]?.subject.identity;
+    if (firstIdentity === undefined) throw new Error('expected the first cleanup refusal');
+    storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'corrupt.json'), '{still-not-json');
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
-    const observedIdentities = new Set<string>();
-    for (let pruneNumber = 0; pruneNumber < 12; pruneNumber += 1) {
-      if (pruneNumber % 2 === 0) {
-        storage.writeAtomicSync(join(REMAINDER_DIRECTORY, targetName), JSON.stringify(recordAt('target')));
-      } else {
-        for (const name of peerNames) {
-          storage.writeAtomicSync(join(REMAINDER_DIRECTORY, `${name}.json`), JSON.stringify(recordAt(name)));
-        }
-      }
-      periodic();
-      for (const refusal of pruner.readCleanupRefusalSnapshot().refusals) {
-        observedIdentities.add(refusal.subject.identity);
-      }
-    }
+    periodic();
 
-    expect(observedIdentities).toContain(targetIdentity);
-    expect(storage.fileNames()).toContain(targetName);
+    const snapshot = pruner.readCleanupRefusalSnapshot();
+    expect(snapshot.refusals).toHaveLength(1);
+    expect(snapshot.refusals[0]?.subject).toMatchObject({ label: 'corrupt.json' });
+    expect(snapshot.refusals[0]?.subject.identity).not.toBe(firstIdentity);
+    expect(snapshot.absentRefusalCount).toBe(1);
   });
 
   it('retries a refused operation only on periodic reclassification and reports it resolved', () => {
@@ -1927,7 +1940,7 @@ describe('shutdown remainder status', () => {
 
     expect(disposition).toMatchObject({
       stageOwnership: { kind: 'classified' },
-      cleanup: { kind: 'quarantined' },
+      cleanup: { kind: 'retained' },
     });
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toEqual(stages.map(({ name }) => name).sort());
@@ -1953,7 +1966,7 @@ describe('shutdown remainder status', () => {
     });
 
     expect(disposition.stageOwnership).toEqual({ kind: 'classified' });
-    expect(disposition.cleanup).toMatchObject({ kind: 'quarantined' });
+    expect(disposition.cleanup).toMatchObject({ kind: 'retained' });
     expect(storage.unlinkSync).not.toHaveBeenCalled();
     expect(storage.fileNames()).toHaveLength(33);
     expect(storage.fileNames()).toContain(heldStage.name);
@@ -2077,8 +2090,8 @@ describe('shutdown remainder status', () => {
     expect(storage.fileNames()).toEqual(['corrupt.json']);
     expect(pruner.readCleanupRefusalSnapshot()).toEqual({
       refusals: [],
-      resolvedRefusalCount: 1,
-      absentRefusalCount: 0,
+      resolvedRefusalCount: 0,
+      absentRefusalCount: 1,
       unobservableRefusalCount: 0,
       uncheckedRefusalCount: 0,
       ...SCHEDULED_SNAPSHOT_METADATA,
@@ -2277,7 +2290,7 @@ describe('shutdown remainder status', () => {
         runDir,
         time: { setInterval: () => ({ unref: vi.fn() }), clearInterval: vi.fn() },
       });
-      expect(restarted.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['held.json'] });
+      expect(restarted.start()?.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
       expect(scanShutdownRemainderRecords(storage, directory)).toMatchObject({
         skippedRecords: [{ name: 'held.json', reason: 'unreadable' }],
       });
@@ -2302,7 +2315,7 @@ describe('shutdown remainder status', () => {
     };
 
     const pruner = createShutdownRemainderPruner({ storage, runDir: RUN_DIR, time });
-    expect(pruner.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    expect(pruner.start()?.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');
     periodic();
@@ -2352,7 +2365,7 @@ describe('shutdown remainder status', () => {
       },
     });
 
-    expect(pruner.start()?.cleanup).toEqual({ kind: 'quarantined', subjectNames: ['locked.json'] });
+    expect(pruner.start()?.cleanup).toEqual({ kind: 'retained', subjectCount: 1 });
     storage.writeAtomicSync(join(REMAINDER_DIRECTORY, 'locked.json'), active);
     const periodic = scheduled as (() => void) | null;
     if (periodic === null) throw new Error('periodic remainder maintenance was not scheduled');

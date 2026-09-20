@@ -320,6 +320,28 @@ describe('simulation runtime', () => {
     }
   });
 
+  it('keeps a backslash byte distinct from a path separator like real storage', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-backslash-paths-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const exercise = (storage: StoragePort, directory: string) => {
+      const backslashPath = Buffer.concat([Buffer.from(`${directory}/a`), Buffer.from([0x5c]), Buffer.from('b')]);
+      const nestedPath = join(directory, 'a', 'b');
+      const sourcePath = join(directory, 'backslash-source');
+      storage.mkdirSync(join(directory, 'a'), { recursive: true });
+      storage.writeFileSync(sourcePath, 'backslash');
+      storage.renameSync(sourcePath, backslashPath);
+      storage.writeFileSync(nestedPath, 'separator');
+      return [storage.readFileSync(backslashPath, 'utf-8'), storage.readFileSync(nestedPath, 'utf-8')];
+    };
+
+    try {
+      expect(exercise(simulatedStorage, '/tmp/sim/backslash-paths')).toEqual(exercise(realStorage, realRoot));
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
   it('matches real descriptor behavior when rename replaces its pathname', () => {
     const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-rename-overwrite-'));
     const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;

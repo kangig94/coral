@@ -79,6 +79,7 @@ import type {
 } from '../provider-representation-abandonment.js';
 import type { ProviderProxySetClaimMirror } from './claim-mirror.js';
 import type {
+  ProviderProxySetAutonomousDisposition,
   ProviderProxySetOperatorDisposition,
   ProviderProxySetOperatorExit,
   ProviderProxySetOperatorStatus,
@@ -158,6 +159,7 @@ const CONTAINMENT_ATTEMPT_MS = 30_000;
 const OPERATOR_EXIT_OBSERVATION_MS = 1_000;
 const ACQUISITION_PUBLICATION_ATTEMPT_LIMIT = 5;
 const REATTACHMENT_HOLD_RETRY_MS = 60_000;
+const AUTONOMOUS_DISPOSITION_RETRY_MS = 60_000;
 
 declare const processContainmentEvidenceBrand: unique symbol;
 declare const durableClaimDischargeBrand: unique symbol;
@@ -548,10 +550,11 @@ export type ProviderProxySetDurableAcquisitionAbandonment =
     }>;
 
 export type ProviderProxyRepresentationReleaseSuccessor = Readonly<{
-  owner: 'operator-command';
-  acceptance: 'pending';
-  inspectCommand: 'coral-cli backend status';
-  actionCommand: string;
+  owner: 'coordinator';
+  boundMs: number;
+  retryAction: 'release-representation';
+  refusalSuccessor: 'automatic-retry';
+  terminalExit: 'representation-released';
 }>;
 
 export type ProviderProxyRepresentationReleaseSettlement =
@@ -573,7 +576,7 @@ export type ProviderProxyRepresentationReleaseDisposition =
   | Readonly<{ kind: 'operational-retry-owned'; exit: 'provider-proxy-set-release-retry' }>
   | Readonly<{
       kind: 'fatal-successor-pending';
-      exit: 'provider-proxy-set-operator-abandonment';
+      exit: 'provider-proxy-set-autonomous-release';
       error: ProviderProxySetLifecycleFatalError;
       successor: ProviderProxyRepresentationReleaseSuccessor;
       operatorDispositionRecording: ProviderProxySetOperatorDispositionRecording;
@@ -2207,7 +2210,7 @@ export class ProviderProxySetLifecycle {
     if (slot.fatalSettlement !== null) {
       return {
         ...slot.fatalSettlement,
-        exit: 'provider-proxy-set-operator-abandonment',
+        exit: 'provider-proxy-set-autonomous-release',
       };
     }
     if (
@@ -2472,6 +2475,64 @@ export class ProviderProxySetLifecycle {
       default:
         return { kind: 'none' };
     }
+  }
+
+  #autonomousDisposition(
+    slot: ProviderProxySetSlot | undefined,
+    dispositions: ReadonlyMap<string, ProviderProxySetOperatorDisposition>,
+  ): ProviderProxySetAutonomousDisposition {
+    const active = {
+      owner: 'coordinator' as const,
+      boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS,
+      refusalSuccessor: 'automatic-retry' as const,
+    };
+    if (slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign') {
+      return dispositions.size === 0
+        ? { kind: 'inactive' }
+        : {
+            kind: 'durable-reconciliation',
+            ...active,
+            retryAction: 'reconcile-durable-disposition',
+            terminalExit: 'durable-reconciliation-terminal',
+          };
+    }
+    if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
+      return {
+        kind: 'representation-release',
+        ...active,
+        boundMs: slot.fatalSettlement === null ? 1_000 : AUTONOMOUS_DISPOSITION_RETRY_MS,
+        retryAction: 'release-representation',
+        terminalExit: 'representation-released',
+      };
+    }
+    if (slot.kind === 'reattaching' || slot.kind === 'reattachment-hold') {
+      return {
+        kind: 'control-or-containment',
+        ...active,
+        retryAction: 'recover-control-or-observe-exact-containment',
+        terminalExit: 'control-reattached-or-containment-absent',
+      };
+    }
+    if (slot.kind === 'containing' || slot.kind === 'containment-wait' || slot.kind === 'capsule-recovering') {
+      return {
+        kind: 'exact-containment',
+        ...active,
+        retryAction: 'observe-exact-containment',
+        terminalExit: 'containment-absent',
+      };
+    }
+    if (
+      dispositions.size > 0 &&
+      [...dispositions.values()].some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')
+    ) {
+      return {
+        kind: 'publication-recovery',
+        ...active,
+        retryAction: 'confirm-publication-or-release-control',
+        terminalExit: 'publication-confirmed-or-control-released',
+      };
+    }
+    return { kind: 'inactive' };
   }
 
   authorizeBooleanOperatorExit(address: ProviderProxySetAddress): ProviderProxySetBooleanOperatorExitAuthorization {
@@ -3030,8 +3091,32 @@ export class ProviderProxySetLifecycle {
         }),
       });
     } finally {
-      if (!operatorExitFenceTransferred) this.#releaseOperatorExitFence(capability);
+      if (!operatorExitFenceTransferred) {
+        this.#resumeAutonomousDisposition(capability);
+        this.#releaseOperatorExitFence(capability);
+      }
     }
+  }
+
+  #resumeAutonomousDisposition(capability: ProviderProxySetOperatorExitCapability): void {
+    const slot = this.#slots.get(providerProxySetKey(capability.setIdentity));
+    if (
+      slot === undefined ||
+      slot.kind === 'acquiring' ||
+      slot.kind === 'capsule-foreign' ||
+      !providerProxySetIdentitiesEqual(slot.identity, capability.setIdentity)
+    ) {
+      return;
+    }
+    if (slot.kind === 'absence-delivery-pending' || slot.kind === 'abandonment-delivery-pending') {
+      if (slot.fatalSettlement !== null) this.#scheduleFatalRepresentationRelease(slot);
+      return;
+    }
+    if (slot.kind === 'capsule-recovering') {
+      if (slot.recoveryPhase === 'containment-wait') this.#scheduleAutomaticContainmentObservation(slot);
+      return;
+    }
+    if (slot.kind === 'containment-wait') this.#scheduleAutomaticContainmentObservation(slot);
   }
 
   async #completeOperatorAbandonment({
@@ -3435,6 +3520,7 @@ export class ProviderProxySetLifecycle {
           slot === undefined || slot.kind === 'acquiring' || slot.kind === 'capsule-foreign'
             ? { kind: 'none' as const }
             : this.#operatorExit(slot, dispositions),
+        autonomousDisposition: this.#autonomousDisposition(slot, dispositions),
         holds: [...dispositions.values()],
       };
     });
@@ -3477,6 +3563,14 @@ export class ProviderProxySetLifecycle {
         setToken: encodeProviderProxySetAddress(record.setAddress),
         liveClaims: 0,
         operatorExit: { kind: 'abandon' },
+        autonomousDisposition: {
+          kind: 'durable-reconciliation',
+          owner: 'coordinator',
+          boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS,
+          retryAction: 'reconcile-durable-disposition',
+          refusalSuccessor: 'automatic-retry',
+          terminalExit: 'durable-reconciliation-terminal',
+        },
         holds: [disposition],
       });
     }
@@ -5396,7 +5490,7 @@ export class ProviderProxySetLifecycle {
 
   #runContainmentAttempt(
     slot: EstablishedSlot | Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>,
-    decision: ProviderProxySetContainmentDecision,
+    decision: ProviderProxySetContainmentDecision | null,
   ): void {
     const capsuleRecovery = slot.kind === 'capsule-recovering';
     if (
@@ -5452,7 +5546,7 @@ export class ProviderProxySetLifecycle {
             }
             // An unconfirmed commit must retain reconciliation ownership until confirmed absence, accepted
             // succession, or operator override.
-            if (slot.kind !== 'capsule-recovering' && decision.action === 'stop-and-reap') {
+            if (slot.kind !== 'capsule-recovering' && decision?.action === 'stop-and-reap') {
               const aggregateOutcome =
                 slot.containmentCommitStatus === 'outcome-unknown' ? 'outcome-unknown' : outcome.kind;
               slot.containmentCommitStatus = aggregateOutcome;
@@ -5483,6 +5577,11 @@ export class ProviderProxySetLifecycle {
               },
             );
           } else {
+            if (decision === null) {
+              releaseProviderProxySetContainmentProofFence(proof);
+              this.#finishContainmentAttempt(slot, null, token, abort, null);
+              return;
+            }
             if (!capsuleRecovery && decision.action === 'stop-and-reap') {
               committedAbsenceProof = proof;
               settleCommittedAbsence();
@@ -5498,7 +5597,9 @@ export class ProviderProxySetLifecycle {
         retry: (retry) => {
           this.#deps.onError?.(`Provider containment source '${retry.producerId}' is temporarily unavailable.`);
         },
-        fatal: () => undefined,
+        fatal: () => {
+          if (decision === null) this.#finishContainmentAttempt(slot, null, token, abort, null);
+        },
         disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
@@ -5511,7 +5612,7 @@ export class ProviderProxySetLifecycle {
       this.#finishContainmentAttempt(slot, decision, token, abort, null);
     }, CONTAINMENT_ATTEMPT_MS);
     slot.retryTimer.unref?.();
-    if (decision.action === 'stop-and-reap') {
+    if (decision?.action === 'stop-and-reap') {
       if (slot.kind === 'capsule-recovering') throw new Error('provider_proxy_containment_authority_missing');
       turn.start({
         sourceId: 'stop-and-reap',
@@ -5537,7 +5638,7 @@ export class ProviderProxySetLifecycle {
 
   #finishContainmentAttempt(
     slot: EstablishedSlot | Extract<ProviderProxySetSlot, { kind: 'capsule-recovering' }>,
-    decision: ProviderProxySetContainmentDecision,
+    decision: ProviderProxySetContainmentDecision | null,
     token: number,
     abort: AbortController,
     receipt: string | null,
@@ -5565,13 +5666,31 @@ export class ProviderProxySetLifecycle {
     }
     if (slot.kind === 'capsule-recovering') slot.recoveryPhase = 'containment-wait';
     else slot.kind = 'containment-wait';
-    const delayMs = retryDelayMs(slot.completedAttempts);
+    const delayMs = decision === null ? AUTONOMOUS_DISPOSITION_RETRY_MS : retryDelayMs(slot.completedAttempts);
     const requestedRetryMs = this.#deps.time.now() + delayMs;
     slot.retryTimer = this.#deps.time.setTimeout(() => {
       slot.retryTimer = null;
       this.#recordLateness('containment-retry', requestedRetryMs);
       this.#runContainmentAttempt(slot, decision);
     }, delayMs);
+    slot.retryTimer.unref?.();
+  }
+
+  #scheduleAutomaticContainmentObservation(slot: EstablishedSlot | CapsuleRecoveringSlot): void {
+    if (slot.retryTimer !== null) this.#deps.time.clearTimeout(slot.retryTimer);
+    slot.retryTimer = null;
+    if (
+      this.#slots.get(slot.key) !== slot ||
+      (slot.kind === 'capsule-recovering'
+        ? slot.recoveryPhase !== 'containment-wait'
+        : slot.kind !== 'containment-wait')
+    ) {
+      return;
+    }
+    slot.retryTimer = this.#deps.time.setTimeout(() => {
+      slot.retryTimer = null;
+      this.#runContainmentAttempt(slot, null);
+    }, AUTONOMOUS_DISPOSITION_RETRY_MS);
     slot.retryTimer.unref?.();
   }
 
@@ -5733,10 +5852,11 @@ export class ProviderProxySetLifecycle {
   ): ProviderProxyRepresentationReleaseFatalSettlement {
     if (slot.fatalSettlement !== null) return slot.fatalSettlement;
     const successor: ProviderProxyRepresentationReleaseSuccessor = {
-      owner: 'operator-command',
-      acceptance: 'pending',
-      inspectCommand: 'coral-cli backend status',
-      actionCommand: `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(slot.address)}`,
+      owner: 'coordinator',
+      boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS,
+      retryAction: 'release-representation',
+      refusalSuccessor: 'automatic-retry',
+      terminalExit: 'representation-released',
     };
     slot.retirementState = 'fatal';
     slot.operatorExitNotBeforeMonotonicMs = this.#deps.time.monotonicNow();
@@ -5753,6 +5873,7 @@ export class ProviderProxySetLifecycle {
       operatorDispositionRecording: recording,
     };
     slot.fatalSettlement = disposition;
+    this.#scheduleFatalRepresentationRelease(slot);
     if (recording.kind === 'held') {
       this.#report(
         'warn',
@@ -5761,6 +5882,18 @@ export class ProviderProxySetLifecycle {
     }
     slot.settleRepresentationRelease(disposition);
     return disposition;
+  }
+
+  #scheduleFatalRepresentationRelease(slot: ReleaseDeliveryPendingSlot): void {
+    if (slot.retirementTimer !== null) this.#deps.time.clearTimeout(slot.retirementTimer);
+    slot.retirementTimer = null;
+    if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement === null) return;
+    slot.retirementTimer = this.#deps.time.setTimeout(() => {
+      slot.retirementTimer = null;
+      if (this.#slots.get(slot.key) !== slot || slot.fatalSettlement === null) return;
+      this.#acceptFatalRepresentationReleaseSuccessor(slot);
+    }, AUTONOMOUS_DISPOSITION_RETRY_MS);
+    slot.retirementTimer.unref?.();
   }
 
   #clearRepresentationReleaseTimers(slot: ReleaseDeliveryPendingSlot): void {

@@ -12,12 +12,15 @@ import {
   classifyShutdownRemainderDirectoryEntry,
   classifyShutdownRemainderFile,
   SHUTDOWN_REMAINDER_SCAN_LIMIT,
+  shutdownRemainderCleanupSubject,
   shutdownRemainderCleanupRefusal,
   shutdownRemainderDirectoryEntryPath,
   shutdownRemainderFilesystemSubject,
   shutdownRemainderStageName,
   shutdownRemainderRecordDirectory,
   type ShutdownRemainderCleanupRefusal,
+  type ShutdownRemainderCleanupIncarnation,
+  type ShutdownRemainderCleanupSubject,
   type ShutdownRemainderRecord,
   type ShutdownRemainderStageObservation,
   type ShutdownRemainderStageWriter,
@@ -64,21 +67,21 @@ type RecordAge = Readonly<{ kind: 'known'; mtimeMs: number }> | Readonly<{ kind:
 type ShutdownRemainderCleanupDisposition =
   | Readonly<{ kind: 'complete' }>
   | Readonly<{
-      kind: 'quarantined';
-      subjectNames: readonly string[];
+      kind: 'retained';
+      subjectCount: number;
     }>
   | Readonly<{
       kind: 'refused';
       refusals: readonly ShutdownRemainderCleanupRefusal[];
       unreportedRefusalCount?: number;
-      quarantinedSubjectNames?: readonly string[];
+      retainedSubjectCount?: number;
     }>;
 
 export type ShutdownRemainderPruneDisposition = Readonly<{
   stageOwnership:
     | Readonly<{ kind: 'classified' }>
-    | Readonly<{ kind: 'held'; stageNames: readonly string[] }>
-    | Readonly<{ kind: 'unclassified'; stageNames: readonly string[] }>;
+    | Readonly<{ kind: 'held'; subjectCorrelations: readonly string[] }>
+    | Readonly<{ kind: 'unclassified'; subjectCorrelations: readonly string[] }>;
   cleanup: ShutdownRemainderCleanupDisposition;
 }>;
 
@@ -107,7 +110,10 @@ function byRetentionOrder(
 }
 
 type CleanupRefusalCollection = {
-  readonly bySubject: Map<string, Readonly<{ path: StoragePath; refusal: ShutdownRemainderCleanupRefusal }>>;
+  readonly bySubject: Map<
+    string,
+    Readonly<{ path: StoragePath; rawSubject: string | Uint8Array; refusal: ShutdownRemainderCleanupRefusal }>
+  >;
 };
 
 function cleanupRefusalCollection(): CleanupRefusalCollection {
@@ -120,7 +126,16 @@ function nextCleanupRefusalSnapshotOrder(
   previousOrder: readonly string[],
   current: CleanupRefusalCollection['bySubject'],
   reportedSubjects: ReadonlySet<string>,
+  observedAtMs: number,
 ): readonly string[] {
+  if (previousOrder.length === 0) {
+    const ordered = [...current.keys()].sort((left, right) => left.localeCompare(right));
+    const cohortCount = Math.ceil(ordered.length / SHUTDOWN_REMAINDER_SCAN_LIMIT);
+    if (cohortCount <= 1) return ordered;
+    const cohort = Math.floor(observedAtMs / SHUTDOWN_REMAINDER_REOBSERVATION_MS) % cohortCount;
+    const start = cohort * SHUTDOWN_REMAINDER_SCAN_LIMIT;
+    return [...ordered.slice(start), ...ordered.slice(0, start)];
+  }
   const rotated = [
     ...previousOrder.slice(SHUTDOWN_REMAINDER_SCAN_LIMIT),
     ...previousOrder.slice(0, SHUTDOWN_REMAINDER_SCAN_LIMIT),
@@ -142,6 +157,33 @@ function forgetCleanupFailure(collection: CleanupRefusalCollection, key: string)
   collection.bySubject.delete(key);
 }
 
+type CleanupSubjectObservation =
+  | Readonly<{
+      kind: 'observed';
+      incarnation: ShutdownRemainderCleanupIncarnation;
+      subject: ShutdownRemainderCleanupSubject;
+    }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unobservable'; error: unknown; subject: ShutdownRemainderCleanupSubject }>;
+
+function observeCleanupSubject(
+  runtime: ShutdownRemainderPruneRuntime,
+  path: StoragePath,
+  rawSubject: string | Uint8Array,
+): CleanupSubjectObservation {
+  try {
+    const incarnation = runtime.storage.lstatSync(path, { bigint: true });
+    return {
+      kind: 'observed',
+      incarnation,
+      subject: shutdownRemainderCleanupSubject(rawSubject, incarnation),
+    };
+  } catch (error: unknown) {
+    if (thrownErrnoCode(error) === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unobservable', error, subject: shutdownRemainderFilesystemSubject(rawSubject) };
+  }
+}
+
 function recordCleanupFailure(
   collection: CleanupRefusalCollection,
   key: string,
@@ -149,13 +191,14 @@ function recordCleanupFailure(
   subject: string | Uint8Array,
   operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
   error: unknown,
+  incarnation?: ShutdownRemainderCleanupIncarnation,
 ): 'absent' | 'refused' {
-  const refusal = shutdownRemainderCleanupRefusal(subject, operation, error);
+  const refusal = shutdownRemainderCleanupRefusal(subject, operation, error, incarnation);
   if (refusal === null) {
     forgetCleanupFailure(collection, key);
     return 'absent';
   }
-  collection.bySubject.set(key, { path, refusal });
+  collection.bySubject.set(key, { path, rawSubject: subject, refusal });
   return 'refused';
 }
 
@@ -164,36 +207,36 @@ function pruneDisposition(
     stageOwnershipClassified: boolean;
     reobservableStageNames: ReadonlySet<string>;
     cleanupRefusals: CleanupRefusalCollection;
-    quarantinedSubjectNames: ReadonlySet<string>;
+    retainedSubjectKeys: ReadonlySet<string>;
   }>,
 ): ShutdownRemainderPruneDisposition {
-  const stageNames = [...input.reobservableStageNames].sort((left, right) => left.localeCompare(right));
+  const stageSubjectCorrelations = [...input.reobservableStageNames].sort((left, right) => left.localeCompare(right));
   const refusals: ShutdownRemainderCleanupRefusal[] = [];
   for (const { refusal } of input.cleanupRefusals.bySubject.values()) {
     if (refusals.length === SHUTDOWN_REMAINDER_SCAN_LIMIT) break;
     refusals.push(refusal);
   }
   const unreportedRefusalCount = input.cleanupRefusals.bySubject.size - refusals.length;
-  const quarantinedNames = [...input.quarantinedSubjectNames].sort((left, right) => left.localeCompare(right));
+  const retainedSubjectCount = input.retainedSubjectKeys.size;
   let cleanup: ShutdownRemainderCleanupDisposition;
   if (refusals.length > 0 || unreportedRefusalCount > 0) {
     cleanup = {
       kind: 'refused',
       refusals,
       ...(unreportedRefusalCount === 0 ? {} : { unreportedRefusalCount }),
-      ...(quarantinedNames.length === 0 ? {} : { quarantinedSubjectNames: quarantinedNames }),
+      ...(retainedSubjectCount === 0 ? {} : { retainedSubjectCount }),
     };
-  } else if (quarantinedNames.length > 0) {
-    cleanup = { kind: 'quarantined', subjectNames: quarantinedNames };
+  } else if (retainedSubjectCount > 0) {
+    cleanup = { kind: 'retained', subjectCount: retainedSubjectCount };
   } else {
     cleanup = { kind: 'complete' };
   }
   return {
     stageOwnership: input.stageOwnershipClassified
-      ? stageNames.length === 0
+      ? stageSubjectCorrelations.length === 0
         ? { kind: 'classified' }
-        : { kind: 'held', stageNames }
-      : { kind: 'unclassified', stageNames },
+        : { kind: 'held', subjectCorrelations: stageSubjectCorrelations }
+      : { kind: 'unclassified', subjectCorrelations: stageSubjectCorrelations },
     cleanup,
   };
 }
@@ -215,12 +258,13 @@ function pruneShutdownRemainderRecordsWithRefusals(
   absentCleanupSubjectNames: ReadonlySet<string>;
 }> {
   const directory = shutdownRemainderRecordDirectory(runtime.runDir);
+  const directoryKey = shutdownRemainderFilesystemSubject(directory).identity;
   const reobservableStageNames = new Set<string>();
   const cleanupRefusals = cleanupRefusalCollection();
   const resolvedCleanupSubjectNames = new Set<string>();
   const checkedCleanupSubjectNames = new Set<string>();
   const absentCleanupSubjectNames = new Set<string>();
-  const quarantinedSubjectNames = new Set<string>();
+  const retainedSubjectKeys = new Set<string>();
   const result = (
     stageOwnershipClassified: boolean,
   ): Readonly<{
@@ -234,7 +278,7 @@ function pruneShutdownRemainderRecordsWithRefusals(
       stageOwnershipClassified,
       reobservableStageNames,
       cleanupRefusals,
-      quarantinedSubjectNames,
+      retainedSubjectKeys,
     }),
     cleanupRefusalsByName: new Map(cleanupRefusals.bySubject),
     resolvedCleanupSubjectNames: new Set(resolvedCleanupSubjectNames),
@@ -245,8 +289,8 @@ function pruneShutdownRemainderRecordsWithRefusals(
     forgetCleanupFailure(cleanupRefusals, key);
     if (previousCleanupRefusals.has(key)) resolvedCleanupSubjectNames.add(key);
   };
-  const quarantine = (key: string): void => {
-    quarantinedSubjectNames.add(key);
+  const retain = (key: string): void => {
+    retainedSubjectKeys.add(key);
     reobservableStageNames.delete(key);
   };
   try {
@@ -255,50 +299,58 @@ function pruneShutdownRemainderRecordsWithRefusals(
       const bytes = rawName;
       const name = bytes.toString('utf8');
       return {
-        key: Buffer.from(name).equals(bytes) ? name : `raw:${bytes.toString('hex')}`,
         name,
         path: shutdownRemainderDirectoryEntryPath(directory, bytes),
         rawName: bytes,
       };
     });
-    if (previousCleanupRefusals.get(directory)?.refusal.cause.operation === 'scan-directory') {
-      resolvedCleanupSubjectNames.add(directory);
+    if (previousCleanupRefusals.get(directoryKey)?.refusal.cause.operation === 'scan-directory') {
+      resolvedCleanupSubjectNames.add(directoryKey);
     }
-    for (const { key, name, path, rawName } of initialNames) {
+    for (const { name, path, rawName } of initialNames) {
       const entry = classifyShutdownRemainderDirectoryEntry(name);
       if (entry.kind === 'other') continue;
       if (entry.kind === 'record') continue;
+      const subjectObservation = observeCleanupSubject(runtime, path, rawName);
+      const subject =
+        subjectObservation.kind === 'absent' ? shutdownRemainderFilesystemSubject(rawName) : subjectObservation.subject;
+      const key = subject.identity;
       checkedCleanupSubjectNames.add(key);
       forgetCleanupFailure(cleanupRefusals, key);
-      try {
-        runtime.storage.lstatSync(path);
-      } catch (error: unknown) {
-        if (thrownErrnoCode(error) === 'ENOENT') {
-          absentCleanupSubjectNames.add(key);
-          forgetCleanupFailure(cleanupRefusals, key);
-          continue;
-        }
+      if (subjectObservation.kind === 'absent') {
+        absentCleanupSubjectNames.add(key);
+        continue;
       }
       if (entry.kind === 'malformed-stage') {
-        quarantine(key);
+        retain(key);
         continue;
       }
       const stage = entry.stage;
       const writerObservation = observeStageWriter(stage.writer, name);
       if (stage.partial) {
         if (writerObservation === 'alive') {
-          reobservableStageNames.add(name);
+          reobservableStageNames.add(key);
           continue;
         }
         if (writerObservation === 'unknown') {
-          quarantine(key);
+          retain(key);
           continue;
         }
         try {
           runtime.storage.unlinkSync(path);
           resolveCleanupFailure(key);
         } catch (error: unknown) {
-          if (recordCleanupFailure(cleanupRefusals, key, path, rawName, 'delete', error) === 'absent') {
+          if (
+            recordCleanupFailure(
+              cleanupRefusals,
+              key,
+              path,
+              rawName,
+              'delete',
+              error,
+              subjectObservation.kind === 'observed' ? subjectObservation.incarnation : undefined,
+            ) === 'absent'
+          ) {
             absentCleanupSubjectNames.add(key);
           }
         }
@@ -316,31 +368,47 @@ function pruneShutdownRemainderRecordsWithRefusals(
           resolveCleanupFailure(key);
           continue;
         } catch (error: unknown) {
-          if (recordCleanupFailure(cleanupRefusals, key, path, rawName, 'promote', error) === 'absent') {
+          if (
+            recordCleanupFailure(
+              cleanupRefusals,
+              key,
+              path,
+              rawName,
+              'promote',
+              error,
+              subjectObservation.kind === 'observed' ? subjectObservation.incarnation : undefined,
+            ) === 'absent'
+          ) {
             absentCleanupSubjectNames.add(key);
             continue;
           }
         }
       }
       if (writerObservation === 'alive') {
-        reobservableStageNames.add(name);
+        reobservableStageNames.add(key);
         continue;
       }
-      if (!cleanupRefusals.bySubject.has(key)) quarantine(key);
+      if (!cleanupRefusals.bySubject.has(key)) retain(key);
     }
 
-    const known: { key: string; name: string; path: Buffer; rawName: Buffer; age: RecordAge }[] = [];
-    for (const { key, name, path, rawName } of initialNames) {
+    const known: {
+      key: string;
+      name: string;
+      path: Buffer;
+      rawName: Buffer;
+      age: RecordAge;
+      incarnation?: ShutdownRemainderCleanupIncarnation;
+    }[] = [];
+    for (const { name, path, rawName } of initialNames) {
       if (classifyShutdownRemainderDirectoryEntry(name).kind !== 'record') continue;
+      const subjectObservation = observeCleanupSubject(runtime, path, rawName);
+      const subject =
+        subjectObservation.kind === 'absent' ? shutdownRemainderFilesystemSubject(rawName) : subjectObservation.subject;
+      const key = subject.identity;
       forgetCleanupFailure(cleanupRefusals, key);
-      try {
-        runtime.storage.lstatSync(path);
-      } catch (error: unknown) {
-        if (thrownErrnoCode(error) === 'ENOENT') {
-          absentCleanupSubjectNames.add(key);
-          forgetCleanupFailure(cleanupRefusals, key);
-          continue;
-        }
+      if (subjectObservation.kind === 'absent') {
+        absentCleanupSubjectNames.add(key);
+        continue;
       }
       checkedCleanupSubjectNames.add(key);
 
@@ -358,21 +426,31 @@ function pruneShutdownRemainderRecordsWithRefusals(
           runtime.storage.unlinkSync(path);
           resolveCleanupFailure(key);
           backendLog.warn(
-            `shutdown remainder record ${shutdownRemainderFilesystemSubject(rawName).label} discarded: content is not valid JSON`,
+            `shutdown remainder cleanup correlation=${subject.identity} class=directory-entry cause=corrupt-record operation=delete outcome=discarded`,
           );
         } catch (error: unknown) {
-          if (recordCleanupFailure(cleanupRefusals, key, path, rawName, 'delete', error) === 'absent') {
+          if (
+            recordCleanupFailure(
+              cleanupRefusals,
+              key,
+              path,
+              rawName,
+              'delete',
+              error,
+              subjectObservation.kind === 'observed' ? subjectObservation.incarnation : undefined,
+            ) === 'absent'
+          ) {
             absentCleanupSubjectNames.add(key);
           }
         }
         continue;
       }
       if (classification.kind === 'unsupported') {
-        quarantine(key);
+        retain(key);
         continue;
       }
       if (classification.kind === 'unreadable') {
-        quarantine(key);
+        retain(key);
         continue;
       }
       if (name !== `${classification.record.instanceId}.json`) {
@@ -380,10 +458,20 @@ function pruneShutdownRemainderRecordsWithRefusals(
           runtime.storage.unlinkSync(path);
           resolveCleanupFailure(key);
           backendLog.warn(
-            `shutdown remainder record ${shutdownRemainderFilesystemSubject(rawName).label} discarded: filename does not match instance identity`,
+            `shutdown remainder cleanup correlation=${subject.identity} class=directory-entry cause=identity-mismatch operation=delete outcome=discarded`,
           );
         } catch (error: unknown) {
-          if (recordCleanupFailure(cleanupRefusals, key, path, rawName, 'delete', error) === 'absent') {
+          if (
+            recordCleanupFailure(
+              cleanupRefusals,
+              key,
+              path,
+              rawName,
+              'delete',
+              error,
+              subjectObservation.kind === 'observed' ? subjectObservation.incarnation : undefined,
+            ) === 'absent'
+          ) {
             absentCleanupSubjectNames.add(key);
           }
         }
@@ -396,15 +484,22 @@ function pruneShutdownRemainderRecordsWithRefusals(
       } catch {
         age = { kind: 'unknown' };
       }
-      known.push({ key, name, path, rawName, age });
+      known.push({
+        key,
+        name,
+        path,
+        rawName,
+        age,
+        ...(subjectObservation.kind === 'observed' ? { incarnation: subjectObservation.incarnation } : {}),
+      });
     }
     known.sort(byRetentionOrder);
-    for (const { key, path, rawName } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
+    for (const { key, path, rawName, incarnation } of known.slice(MAX_SHUTDOWN_REMAINDER_RECORDS)) {
       try {
         runtime.storage.unlinkSync(path);
         resolveCleanupFailure(key);
       } catch (error: unknown) {
-        if (recordCleanupFailure(cleanupRefusals, key, path, rawName, 'delete', error) === 'absent') {
+        if (recordCleanupFailure(cleanupRefusals, key, path, rawName, 'delete', error, incarnation) === 'absent') {
           absentCleanupSubjectNames.add(key);
         }
       }
@@ -423,12 +518,40 @@ function pruneShutdownRemainderRecordsWithRefusals(
         absentCleanupSubjectNames: new Set(),
       };
     }
-    void recordCleanupFailure(cleanupRefusals, directory, directory, directory, 'scan-directory', error);
+    void recordCleanupFailure(cleanupRefusals, directoryKey, directory, directory, 'scan-directory', error);
     return result(false);
   }
 }
 
 const SHUTDOWN_REMAINDER_REOBSERVATION_MS = 60_000;
+
+export function logShutdownRemainderStartupPrune(disposition: ShutdownRemainderPruneDisposition): void {
+  const stage =
+    disposition.stageOwnership.kind === 'classified'
+      ? 'stageOwnership=classified'
+      : `stageOwnership=${disposition.stageOwnership.kind} stageCorrelations=${disposition.stageOwnership.subjectCorrelations.join(',')}`;
+  const cleanup =
+    disposition.cleanup.kind === 'complete'
+      ? 'cleanup=complete'
+      : disposition.cleanup.kind === 'retained'
+        ? `cleanup=retained owner=coordinator successor=periodic-reobservation retained=${disposition.cleanup.subjectCount}`
+        : [
+            'cleanup=refused',
+            'owner=coordinator',
+            'successor=periodic-cleanup-retry',
+            ...disposition.cleanup.refusals.map(
+              (refusal) =>
+                `correlation=${refusal.subject.identity}:class=directory-entry:cause=${refusal.cause.kind}:operation=${refusal.cause.operation}:errno=${refusal.cause.kind === 'system-error' ? refusal.cause.code : 'unavailable'}`,
+            ),
+            ...(disposition.cleanup.unreportedRefusalCount === undefined
+              ? []
+              : [`unreported=${disposition.cleanup.unreportedRefusalCount}`]),
+            ...(disposition.cleanup.retainedSubjectCount === undefined
+              ? []
+              : [`retained=${disposition.cleanup.retainedSubjectCount}`]),
+          ].join(' ');
+  backendLog.info(`Shutdown remainder startup prune: ${stage} ${cleanup}`);
+}
 
 /** Remainder maintenance must not keep the coordinator process alive. */
 export function createShutdownRemainderPruner(
@@ -480,29 +603,36 @@ export function createShutdownRemainderPruner(
         retainedCleanupRefusals.set(name, entry);
         continue;
       }
-      try {
-        runtime.storage.lstatSync(entry.path);
+      const observation = observeCleanupSubject(runtime, entry.path, entry.rawSubject);
+      if (observation.kind === 'observed') {
+        if (observation.subject.identity !== name) {
+          absentRefusalCount += 1;
+          continue;
+        }
         uncheckedRefusalCount += 1;
         retainedCleanupRefusals.set(name, entry);
-      } catch (error: unknown) {
-        if (thrownErrnoCode(error) === 'ENOENT') absentRefusalCount += 1;
-        else {
-          unobservableRefusalCount += 1;
-          retainedCleanupRefusals.set(name, entry);
-        }
+        continue;
       }
+      if (observation.kind === 'absent') {
+        absentRefusalCount += 1;
+        continue;
+      }
+      unobservableRefusalCount += 1;
+      retainedCleanupRefusals.set(name, entry);
     }
+    const observedAtMs = runtime.time.now?.() ?? 0;
     cleanupRefusalSnapshotOrder = nextCleanupRefusalSnapshotOrder(
       cleanupRefusalSnapshotOrder,
       retainedCleanupRefusals,
       reportedCleanupRefusalSubjects,
+      observedAtMs,
     );
     cleanupRefusalsByName = retainedCleanupRefusals;
     resolvedCleanupRefusalCount = resolvedRefusalCount;
     absentCleanupRefusalCount = absentRefusalCount;
     unobservableCleanupRefusalCount = unobservableRefusalCount;
     uncheckedCleanupRefusalCount = uncheckedRefusalCount;
-    observedAt = runtime.time.now === undefined ? null : nowIsoString(runtime.time.now());
+    observedAt = runtime.time.now === undefined ? null : nowIsoString(observedAtMs);
     return result;
   };
   const readCleanupRefusalSnapshot = (): ShutdownRemainderCleanupSnapshot => {

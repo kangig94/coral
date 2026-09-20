@@ -570,10 +570,11 @@ describe('runShutdownSequence drain budget', () => {
     const set = fakeSet('release-pending', authorityCalls);
     const fatalError = new Error('fatal release remains operator-owned') as never;
     const successor = {
-      owner: 'operator-command' as const,
-      acceptance: 'pending' as const,
-      inspectCommand: 'coral-cli backend status' as const,
-      actionCommand: 'coral-cli backend provider-proxy-set abandon release-pending-token',
+      owner: 'coordinator' as const,
+      boundMs: 60_000,
+      retryAction: 'release-representation' as const,
+      refusalSuccessor: 'automatic-retry' as const,
+      terminalExit: 'representation-released' as const,
     };
     const representationReleaseSettlement = Promise.resolve({
       kind: 'fatal-successor-pending' as const,
@@ -600,7 +601,7 @@ describe('runShutdownSequence drain budget', () => {
             pendingOperations: ['provider-operation:job-1:operation-1'],
             disposition: {
               kind: 'fatal-successor-pending' as const,
-              exit: 'provider-proxy-set-operator-abandonment' as const,
+              exit: 'provider-proxy-set-autonomous-release' as const,
               error: fatalError,
               successor,
               operatorDispositionRecording: { kind: 'recorded' as const },

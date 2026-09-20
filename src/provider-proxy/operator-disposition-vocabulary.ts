@@ -74,6 +74,43 @@ export type ProviderProxySetOperatorExit =
       ground: ProviderProxySetOperatorExitRefusalGround;
     }>;
 
+type ActiveProviderProxySetAutonomousDisposition<
+  Kind extends string,
+  RetryAction extends string,
+  TerminalExit extends string,
+> = Readonly<{
+  kind: Kind;
+  owner: 'coordinator';
+  boundMs: number;
+  retryAction: RetryAction;
+  refusalSuccessor: 'automatic-retry';
+  terminalExit: TerminalExit;
+}>;
+
+export type ProviderProxySetAutonomousDisposition =
+  | Readonly<{ kind: 'inactive' | 'unavailable' }>
+  | ActiveProviderProxySetAutonomousDisposition<
+      'control-or-containment',
+      'recover-control-or-observe-exact-containment',
+      'control-reattached-or-containment-absent'
+    >
+  | ActiveProviderProxySetAutonomousDisposition<'exact-containment', 'observe-exact-containment', 'containment-absent'>
+  | ActiveProviderProxySetAutonomousDisposition<
+      'representation-release',
+      'release-representation',
+      'representation-released'
+    >
+  | ActiveProviderProxySetAutonomousDisposition<
+      'durable-reconciliation',
+      'reconcile-durable-disposition',
+      'durable-reconciliation-terminal'
+    >
+  | ActiveProviderProxySetAutonomousDisposition<
+      'publication-recovery',
+      'confirm-publication-or-release-control',
+      'publication-confirmed-or-control-released'
+    >;
+
 export type ProviderProxySetOperatorDisposition = Readonly<{
   disposition: ProviderProxySetOperatorDispositionKind;
   role?: string;
@@ -109,6 +146,7 @@ export type ProviderProxySetOperatorStatus = Readonly<{
   setToken: string;
   liveClaims: number;
   operatorExit: ProviderProxySetOperatorExit;
+  autonomousDisposition: ProviderProxySetAutonomousDisposition;
   holds: readonly ProviderProxySetOperatorDisposition[];
 }>;
 

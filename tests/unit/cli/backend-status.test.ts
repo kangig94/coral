@@ -1732,28 +1732,70 @@ describe('backend status provider proxy dispositions', () => {
       ...base,
       diagnostics: {
         providerProxySets: [
-          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'none' }, holds: [hold] },
-          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'gated', remainingMs: 1200.2 }, holds: [hold] },
-          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'contain' }, holds: [hold] },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'none' },
+            autonomousDisposition: { kind: 'inactive' },
+            holds: [hold],
+          },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'gated', remainingMs: 1200.2 },
+            autonomousDisposition: {
+              kind: 'control-or-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'recover-control-or-observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'control-reattached-or-containment-absent',
+            },
+            holds: [hold],
+          },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'contain' },
+            autonomousDisposition: {
+              kind: 'exact-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'containment-absent',
+            },
+            holds: [hold],
+          },
           {
             setIdentity,
             setToken,
             liveClaims: 0,
             operatorExit: { kind: 'refused', ground: 'enforcer-unobservable' },
+            autonomousDisposition: {
+              kind: 'exact-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'containment-absent',
+            },
             holds: [hold],
           },
         ],
       },
     });
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
-    expect(rendered).toContain('disposition=waiting for=control-reattachment');
+    expect(rendered).toContain('disposition=inactive waitingFor=control-reattachment');
     expect(rendered).toContain(
-      'disposition=automatic-bounded-wait remainingMs=1201 exit=control-reattached-or-containment-absent',
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=recover-control-or-observe-exact-containment refusalSuccessor=automatic-retry terminalExit=control-reattached-or-containment-absent',
     );
     expect(rendered).toContain(
-      'disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent',
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=observe-exact-containment refusalSuccessor=automatic-retry terminalExit=containment-absent',
     );
-    expect(rendered).toContain('disposition=stopped needs=enforcer-unobservable');
     expect(rendered).not.toContain('provider-proxy-set contain');
     expect(rendered).not.toContain('provider-proxy-set abandon');
   });
@@ -1810,6 +1852,14 @@ describe('backend status provider proxy dispositions', () => {
             setToken: tokens.first,
             liveClaims: 0,
             operatorExit: { kind: 'contain' },
+            autonomousDisposition: {
+              kind: 'exact-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'containment-absent',
+            },
             holds: [
               {
                 disposition: 'awaiting-containment-absence',
@@ -1833,6 +1883,7 @@ describe('backend status provider proxy dispositions', () => {
             setToken: tokens.second,
             liveClaims: 2,
             operatorExit: { kind: 'none' },
+            autonomousDisposition: { kind: 'inactive' },
             holds: [
               {
                 disposition: 'held',
@@ -1896,7 +1947,7 @@ describe('backend status provider proxy dispositions', () => {
         '    identity buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
         '    - disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence enforcers=guardian:alive,reaper:unknown',
-        '    disposition=automatic-retry retryWithinMs=60000 exit=control-reattached-or-containment-absent',
+        '    disposition=automatic owner=coordinator boundMs=60000 retryAction=observe-exact-containment refusalSuccessor=automatic-retry terminalExit=containment-absent',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -1906,7 +1957,7 @@ describe('backend status provider proxy dispositions', () => {
           'b'.repeat(64),
         '    - disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
         '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
-        '    disposition=waiting for=control-reattachment,set-adoption-deadline',
+        '    disposition=inactive waitingFor=control-reattachment,set-adoption-deadline',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -1970,6 +2021,14 @@ describe('backend status provider proxy dispositions', () => {
             setToken,
             liveClaims: 0,
             operatorExit: { kind: 'none' },
+            autonomousDisposition: {
+              kind: 'publication-recovery',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'confirm-publication-or-release-control',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'publication-confirmed-or-control-released',
+            },
             holds: [
               {
                 disposition: 'held',
@@ -1996,7 +2055,7 @@ describe('backend status provider proxy dispositions', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toContain(
-      'disposition=automatic-retry retryWithinMs=60000 exit=publication-confirmed-or-control-released',
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=confirm-publication-or-release-control refusalSuccessor=automatic-retry terminalExit=publication-confirmed-or-control-released',
     );
     expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${setToken}`);
     expect(process.exitCode).toBe(75);

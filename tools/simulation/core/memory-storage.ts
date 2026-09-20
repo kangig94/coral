@@ -1,4 +1,4 @@
-import { dirname, normalize } from 'node:path';
+import { dirname, normalize, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   DirectoryTraversability,
@@ -72,7 +72,8 @@ export type InMemoryRoots = {
 };
 
 export function normalizePathForStorage(path: StoragePath): string {
-  const value = typeof path === 'string' ? path.replace(/\\/g, '/') : storagePathBufferToKey(path);
+  const value =
+    typeof path === 'string' ? (sep === '\\' ? path.replace(/\\/g, '/') : path) : storagePathBufferToKey(path);
   const normalized = normalize(value);
   if (normalized === '.' || normalized === '') {
     return '/';
@@ -97,8 +98,10 @@ function storagePathString(path: string): string {
 
 function storagePathBufferToKey(path: Buffer): string {
   const bytes = Buffer.from(path);
-  for (let index = 0; index < bytes.length; index += 1) {
-    if (bytes[index] === 0x5c) bytes[index] = 0x2f;
+  if (sep === '\\') {
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] === 0x5c) bytes[index] = 0x2f;
+    }
   }
   return bytes
     .toString('latin1')

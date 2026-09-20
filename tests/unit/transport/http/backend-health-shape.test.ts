@@ -63,6 +63,14 @@ const PROVIDER_PROXY_SET = {
   }),
   liveClaims: 0,
   operatorExit: { kind: 'contain' },
+  autonomousDisposition: {
+    kind: 'control-or-containment',
+    owner: 'coordinator',
+    boundMs: 60_000,
+    retryAction: 'recover-control-or-observe-exact-containment',
+    refusalSuccessor: 'automatic-retry',
+    terminalExit: 'control-reattached-or-containment-absent',
+  },
   holds: [PROVIDER_PROXY_SET_HOLD],
 } as const;
 

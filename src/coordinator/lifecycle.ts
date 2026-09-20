@@ -117,6 +117,7 @@ import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
 import {
   createShutdownRemainderPruner,
+  logShutdownRemainderStartupPrune,
   recordShutdownRemainder,
   type ShutdownRemainderCleanupSnapshot,
 } from './shutdown-remainder.js';
@@ -1188,7 +1189,7 @@ async function runLifecycleStartup({
     await yieldPastKernelReadyResponse();
     const remainderPruneDisposition = remainderPruner.start();
     if (remainderPruneDisposition !== null) {
-      backendLog.info(`Shutdown remainder startup prune: ${JSON.stringify(remainderPruneDisposition)}`);
+      logShutdownRemainderStartupPrune(remainderPruneDisposition);
     }
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.

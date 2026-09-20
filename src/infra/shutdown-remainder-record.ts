@@ -11,7 +11,7 @@ import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation, ProcessLiveness } from './node-process.js';
 import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
-import type { StoragePort } from './port-types.js';
+import type { StorageBigIntStat, StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
 export const SHUTDOWN_REMAINDER_SCAN_LIMIT = 128;
@@ -23,6 +23,8 @@ export type ShutdownRemainderFilesystemSubject = Readonly<{
 }>;
 
 export type ShutdownRemainderCleanupSubject = ShutdownRemainderFilesystemSubject;
+
+export type ShutdownRemainderCleanupIncarnation = Pick<StorageBigIntStat, 'dev' | 'ino' | 'mtimeNs' | 'size'>;
 
 const SHUTDOWN_REMAINDER_SUBJECT_UNSAFE_PATTERN = /[\\\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
 const SHUTDOWN_REMAINDER_SUBJECT_IDENTITY_PATTERN = /^[a-f0-9]{64}$/u;
@@ -40,6 +42,22 @@ export function shutdownRemainderFilesystemSubject(subject: string | Uint8Array)
     .slice(0, SHUTDOWN_REMAINDER_FILESYSTEM_SUBJECT_MAX_LENGTH - suffix.length)
     .replace(/[\uD800-\uDBFF]$/u, '');
   return { identity, label: `${prefix}${suffix}` };
+}
+
+export function shutdownRemainderCleanupSubject(
+  subject: string | Uint8Array,
+  incarnation: ShutdownRemainderCleanupIncarnation,
+): ShutdownRemainderCleanupSubject {
+  const pathBytes = typeof subject === 'string' ? Buffer.from(subject) : Buffer.from(subject);
+  const filesystemSubject = shutdownRemainderFilesystemSubject(pathBytes);
+  const identityMaterial = Buffer.concat([
+    Buffer.from(`${pathBytes.length}:`),
+    pathBytes,
+    Buffer.from(
+      `:${incarnation.dev.toString()}:${incarnation.ino.toString()}:${incarnation.mtimeNs.toString()}:${incarnation.size.toString()}`,
+    ),
+  ]);
+  return { ...filesystemSubject, identity: sha256Hex(identityMaterial) };
 }
 
 /** A transported filesystem label must not contain terminal-active code points. */
@@ -155,11 +173,15 @@ export function shutdownRemainderCleanupRefusal(
   subject: string | Uint8Array,
   operation: ShutdownRemainderCleanupRefusal['cause']['operation'],
   error: unknown,
+  incarnation?: ShutdownRemainderCleanupIncarnation,
 ): ShutdownRemainderCleanupRefusal | null {
   const code = thrownErrnoCode(error);
   if (code === 'ENOENT') return null;
   return {
-    subject: shutdownRemainderFilesystemSubject(subject),
+    subject:
+      incarnation === undefined
+        ? shutdownRemainderFilesystemSubject(subject)
+        : shutdownRemainderCleanupSubject(subject, incarnation),
     cause:
       code !== undefined && isSystemErrorCode(code)
         ? { kind: 'system-error', operation, code }
