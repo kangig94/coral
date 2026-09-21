@@ -49,7 +49,12 @@ import {
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
-import type { ShutdownHoldExit, ShutdownHoldReason, ShutdownUndischarged } from '../infra/shutdown-remainder-record.js';
+import type {
+  ShutdownHoldExit,
+  ShutdownHoldReason,
+  ShutdownRemainderProjection,
+  ShutdownUndischarged,
+} from '../infra/shutdown-remainder-record.js';
 import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
@@ -832,6 +837,7 @@ export type LifecycleDeps = {
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
   shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition>;
+  observeShutdown(): ShutdownRemainderProjection | undefined;
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
@@ -885,6 +891,7 @@ type LifecycleControlState = LifecycleWiringState & {
   shutdownIncidentCount: number;
   shutdownRetryAfter: Promise<void> | null;
   shutdownRetry: Readonly<{ retry: () => Promise<ShutdownSequenceDisposition> }> | null;
+  shutdownObservationReader: (() => Omit<ShutdownRemainderProjection, 'reason' | 'mode'>) | null;
   lastShutdownDisposition: LifecycleShutdownDisposition | null;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
@@ -1402,6 +1409,7 @@ export function createLifecycle(
     shutdownIncidentCount: 0,
     shutdownRetryAfter: null,
     shutdownRetry: null,
+    shutdownObservationReader: null,
     lastShutdownDisposition: null,
     started: false,
     ownershipCheckerTeardown: null,
@@ -1579,6 +1587,7 @@ export function createLifecycle(
       }
       state.shutdownRetryAfter = null;
       state.shutdownRetry = null;
+      state.shutdownObservationReader = null;
       state.shutdownContinuationAbort?.abort();
       state.shutdownContinuationAbort = null;
       switch (disposition.disposition) {
@@ -1615,6 +1624,9 @@ export function createLifecycle(
           await runShutdownSequence({
             reason: currentShutdownReason(),
             currentReason: currentShutdownReason,
+            registerShutdownObservationReader: (reader) => {
+              state.shutdownObservationReader = reader;
+            },
             takeIncidents: takeShutdownIncidents,
             hardConsequencesAbort: hardConsequencesAbort.signal,
             state,
@@ -1746,9 +1758,21 @@ export function createLifecycle(
       });
   }
 
+  function observeShutdown(): ShutdownRemainderProjection | undefined {
+    const reader = state.shutdownObservationReader;
+    const reason = state.shutdownReason;
+    if (reader === null || reason === null) return undefined;
+    return {
+      reason,
+      mode: shutdownModeFromReason(reason),
+      ...reader(),
+    };
+  }
+
   return {
     start,
     shutdown,
+    observeShutdown,
     requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;

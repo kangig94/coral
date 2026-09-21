@@ -6,7 +6,11 @@ import {
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
-import type { ShutdownUndischarged, UndischargedRemainder } from '../infra/shutdown-remainder-record.js';
+import type {
+  ShutdownRemainderProjection,
+  ShutdownUndischarged,
+  UndischargedRemainder,
+} from '../infra/shutdown-remainder-record.js';
 import { createJoinableSettlementTask, type SettlementConfirmation } from '../obligation/settlement.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { IpcListener } from '../transport/ipc/server.js';
@@ -87,6 +91,7 @@ type RunShutdownSequenceContext = {
   reason: ShutdownReason;
   incident?: ShutdownIncident;
   currentReason?: () => ShutdownReason;
+  registerShutdownObservationReader?: (reader: () => Omit<ShutdownRemainderProjection, 'reason' | 'mode'>) => void;
   takeIncidents?: () => readonly ShutdownIncidentOccurrence[];
   hardConsequencesAbort?: AbortSignal;
   state: LifecycleWiringState;
@@ -1014,6 +1019,7 @@ export async function runShutdownSequence({
   reason,
   incident,
   currentReason,
+  registerShutdownObservationReader,
   takeIncidents,
   hardConsequencesAbort,
   state,
@@ -1056,6 +1062,7 @@ export async function runShutdownSequence({
     pollMs: SHUTDOWN_POLL_MS,
     ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
   });
+  registerShutdownObservationReader?.(() => ledger.snapshot());
   let initialIncident = incident;
   const recordPendingIncidents = (): void => {
     // Do not consume incidents after exhaustion: `SettlementLedger.run` would replace their observed evidence

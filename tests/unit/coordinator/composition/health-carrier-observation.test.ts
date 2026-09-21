@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import type { ShutdownRemainderProjection } from '#src/infra/shutdown-remainder-record.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type * as CompositionWorldMod from '#src/coordinator/composition/world.js';
 import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
@@ -91,7 +92,11 @@ import {
 import type { FetchFn } from '#src/coordinator/composition/types.js';
 import { LocalOperationRegistry } from '#src/coordinator/services/operation-registry.js';
 import type { CoordinatorStoreServices } from '#src/coordinator/composition/store-services-ref.js';
-import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
+import type {
+  ProviderHostCleanupObligations,
+  ProviderHostManager,
+} from '#src/coordinator/live/provider-hosts/index.js';
+import type { ProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/authority.js';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -123,6 +128,9 @@ import {
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 } from '#src/recovery/source-registry.js';
 import { MAX_SETTLED_UNBOUND_STATUS_ENTRIES } from '#src/coordinator/services/recovery/settled-unbound-status.js';
+import { HANDOFF_DRAIN_TIMEOUT_MS, SHUTDOWN_POLL_MS } from '#src/coordinator/shutdown.js';
+import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
+import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 
 type ExecutingRecord = Extract<ProviderOperationRecord, { phase: 'executing' }>;
 
@@ -178,7 +186,10 @@ function queuedDetail(jobId: string): JobProjectionDetail {
   };
 }
 
-function providerHostManager(): ProviderHostManager {
+function providerHostManager(
+  liveProxySets: readonly ProviderProxySetAuthority[] = [],
+  cleanupObligations?: () => ProviderHostCleanupObligations,
+): ProviderHostManager {
   return {
     openSession: async () => {
       throw new Error('provider host was not expected');
@@ -186,17 +197,32 @@ function providerHostManager(): ProviderHostManager {
     attachSession: async () => null,
     drainForHandoff: async () => ({
       kind: 'provider-hosts-quiesced',
-      liveProxySets: [],
+      liveProxySets,
       acquisitionCleanupHolds: [],
       closingHosts: [],
     }),
     shutdown: async () => ({
       kind: 'provider-hosts-quiesced',
-      liveProxySets: [],
+      liveProxySets,
       acquisitionCleanupHolds: [],
       closingHosts: [],
     }),
+    ...(cleanupObligations === undefined ? {} : { cleanupObligations }),
     routeAppServerOperation: () => null,
+  };
+}
+
+function hangingProviderSet(initiateControlClose: () => Promise<void>): ProviderProxySetAuthority {
+  return {
+    proxyInstanceId: 'health-shutdown-proxy',
+    providerHosts: unexercisedProviderHostControls,
+    stopAndReap: async () => ({ disappearanceReceipt: 'health-shutdown-proxy-gone' }),
+    commitContainment: async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'health-shutdown-proxy-gone',
+    }),
+    stopHeartbeats: () => undefined,
+    initiateControlClose,
   };
 }
 
@@ -204,6 +230,11 @@ function createCore(
   operationRegistry: LocalOperationRegistry,
   networkObserver: FetchFn,
   runtime: Runtime = createRealRuntime('prod'),
+  shutdownOptions: Readonly<{
+    closeServerFn?: (server: ReturnType<typeof createServer>) => Promise<void>;
+    providerHostManager?: ProviderHostManager;
+    removeBackendInfoIfOwnerFn?: () => { kind: 'removed' };
+  }> = {},
 ) {
   const core = createCoordinatorCore(
     {
@@ -224,7 +255,11 @@ function createCore(
       },
       createServerFn: (handler) => createServer(handler),
       fetchFn: networkObserver,
-      providerHostManager: providerHostManager(),
+      providerHostManager: shutdownOptions.providerHostManager ?? providerHostManager(),
+      ...(shutdownOptions.closeServerFn === undefined ? {} : { closeServerFn: shutdownOptions.closeServerFn }),
+      ...(shutdownOptions.removeBackendInfoIfOwnerFn === undefined
+        ? {}
+        : { removeBackendInfoIfOwnerFn: shutdownOptions.removeBackendInfoIfOwnerFn }),
       operationRegistry,
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),
       getConsumerStuck: () => [],
@@ -255,6 +290,29 @@ function readHealth() {
   return captured.healthRead();
 }
 
+function readShutdownHealth(): ShutdownRemainderProjection | undefined {
+  return (readHealth() as ReturnType<typeof readHealth> & { shutdown?: ShutdownRemainderProjection }).shutdown;
+}
+
+async function flush(rounds = 32): Promise<void> {
+  for (let index = 0; index < rounds; index += 1) await Promise.resolve();
+}
+
+function shutdownTestRuntime(time: VirtualTime): Runtime {
+  const runtime = createRealRuntime('prod');
+  return {
+    ...runtime,
+    time,
+    storage: {
+      ...runtime.storage,
+      mkdirSync: () => undefined,
+      writeAtomicSync: () => true,
+      renameSync: () => undefined,
+      unlinkSync: () => undefined,
+    },
+  } satisfies Runtime;
+}
+
 beforeEach(() => {
   captured.healthRead = null;
   captured.publishRecovery = null;
@@ -267,6 +325,126 @@ beforeEach(() => {
 afterEach(() => {
   for (const db of openDbs) db.close();
   openDbs.clear();
+});
+
+describe('health live shutdown observation', () => {
+  it('projects opening, held, retry-in-flight, and terminal lifecycle states without refreshing retained authority', async () => {
+    const time = new VirtualTime();
+    const runtime = shutdownTestRuntime(time);
+    let releaseOpening!: () => void;
+    const opening = new Promise<void>((resolve) => {
+      releaseOpening = resolve;
+    });
+    const initiateControlClose = vi.fn(() => new Promise<void>(() => undefined));
+    const retainedSet = hangingProviderSet(initiateControlClose);
+    const cleanupObligations = vi.fn(() => ({
+      liveProxySets: [retainedSet],
+      acquisitionCleanupHolds: [],
+      closingHosts: [],
+      representationReleaseHolds: [],
+    }));
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+      {
+        closeServerFn: async () => opening,
+        providerHostManager: providerHostManager([retainedSet], cleanupObligations),
+        removeBackendInfoIfOwnerFn: () => ({ kind: 'removed' }),
+      },
+    );
+
+    const shutdown = core.lifecycleController.shutdown('replaced');
+    const openingObservation = readShutdownHealth();
+    expect(openingObservation).toMatchObject({
+      reason: 'replaced',
+      mode: 'handoff',
+      elapsedMs: 0,
+      boundMs: expect.any(Number),
+      attempt: { started: 0, limit: 3 },
+    });
+    expect(openingObservation).not.toHaveProperty('lastDeclined');
+
+    releaseOpening();
+    await flush(64);
+    time.tick(HANDOFF_DRAIN_TIMEOUT_MS);
+    await flush(64);
+    await shutdown;
+
+    const firstHeld = readShutdownHealth();
+    expect(firstHeld).toMatchObject({
+      attempt: { started: 1, limit: 3 },
+      lastDeclined: {
+        attempt: 1,
+        reason: 'required-shutdown-step-unsettled',
+        exit: 'shutdown-budget-exhaustion',
+        undischarged: expect.any(Array),
+        retainedAuthority: expect.objectContaining({
+          ipcSocket: expect.any(Boolean),
+          providerControlProxyInstanceIds: expect.any(Array),
+          cleanupObligations: expect.any(Array),
+        }),
+      },
+    });
+    const refreshCallsBeforeRead = cleanupObligations.mock.calls.length;
+    readHealth();
+    expect(cleanupObligations).toHaveBeenCalledTimes(refreshCallsBeforeRead);
+
+    time.tick(SHUTDOWN_POLL_MS);
+    await flush(64);
+    time.tick(HANDOFF_DRAIN_TIMEOUT_MS / 2);
+    await flush(64);
+    expect(readShutdownHealth()).toMatchObject({
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    const previousBoundMs = readShutdownHealth()?.boundMs;
+
+    time.tick(SHUTDOWN_POLL_MS);
+    await flush(64);
+    const retryInFlight = readShutdownHealth();
+    expect(retryInFlight).toMatchObject({
+      attempt: { started: 3, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(retryInFlight).not.toHaveProperty('state');
+    expect(retryInFlight?.boundMs).toBeLessThan(previousBoundMs ?? Number.POSITIVE_INFINITY);
+
+    time.tick(HANDOFF_DRAIN_TIMEOUT_MS / 2);
+    await flush(64);
+    await core.lifecycleController.waitForShutdown();
+    expect(readShutdownHealth()).toBeUndefined();
+  });
+
+  it('reports a hard-to-handoff promotion from current lifecycle truth without changing the ledger schedule', async () => {
+    const time = new VirtualTime();
+    const runtime = shutdownTestRuntime(time);
+    const opening = new Promise<void>(() => undefined);
+    const core = createCore(
+      new LocalOperationRegistry(),
+      vi.fn(async () => ({ ok: true }) as never),
+      runtime,
+      {
+        closeServerFn: async () => opening,
+        removeBackendInfoIfOwnerFn: () => ({ kind: 'removed' }),
+      },
+    );
+
+    void core.lifecycleController.shutdown('sigint');
+    const hard = readShutdownHealth();
+    expect(hard).toMatchObject({ reason: 'sigint', mode: 'hard', attempt: { started: 0, limit: 3 } });
+
+    void core.lifecycleController.shutdown('provider-proxy-lifecycle-fatal', {
+      kind: 'provider-proxy-lifecycle-fatal',
+      error: new Error('promoted during opening'),
+    });
+    expect(readShutdownHealth()).toMatchObject({
+      reason: 'provider-proxy-lifecycle-fatal',
+      mode: 'handoff',
+      boundMs: hard?.boundMs,
+      attempt: { started: 0, limit: 3 },
+    });
+  });
 });
 
 describe('health local carrier observation', () => {
