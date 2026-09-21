@@ -1,11 +1,11 @@
 # Plans — temporary, per-branch
 
 > [!WARNING]
-> **Every file in this directory is temporary and is deleted when its branch's PR closes.**
+> **Every file in this directory is temporary and is deleted before its branch's PR leaves draft.**
 
 A preplan and a plan are the record of what a branch was *trying* to do and which premises it
-questioned along the way. They live here only while their PR is open, so a reviewer can read the
-intent beside the diff instead of reconstructing it from commit messages.
+questioned along the way. They live here only while the branch is still being worked, so the intent can be read beside the
+diff instead of reconstructed from commit messages.
 
 They are **not** documentation, and nothing outside this directory may link to them.
 
@@ -13,7 +13,7 @@ They are **not** documentation, and nothing outside this directory may link to t
 - Reasoning that outlives the branch goes to [`docs/design-rationale.md`](../design-rationale.md) or
   to a principle in [`.claude/rules/design-philosophy.md`](../../.claude/rules/design-philosophy.md).
 
-If a plan here contains something worth keeping, move it to one of those before the PR closes. Deleting
+If a plan here contains something worth keeping, move it to one of those before deleting it. Deleting
 this directory's contents must never lose a decision.
 
 ## How to read a plan when reviewing
@@ -30,6 +30,4 @@ recorded in place.
 
 ## Current
 
-| Branch | PR | Files |
-|---|---|---|
-| `fix/a-drain-ends-without-an-operator` | #363 | `pre-drain-ends-without-an-operator.md`, `drain-ends-without-an-operator.md` |
+None. This directory is empty between branches.
