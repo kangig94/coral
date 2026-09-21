@@ -1,6 +1,8 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
+import type { ShutdownRemainderProjection } from '#src/infra/shutdown-remainder-record.js';
+import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import type {
   AssertDispositionCausesCoverIncident,
   AssertIncidentCoversDispositionCauses,
@@ -74,11 +76,115 @@ const UNSUPPORTED_PROVIDER_PROXY_SET_ROW = {
   setIdentity: PROVIDER_PROXY_SET.setIdentity,
 } as const;
 
+const SHUTDOWN_ENTRY = {
+  label: 'server close',
+  remainder: { owner: 'process-exit' },
+  settlement: { cause: 'budget-exhausted' },
+} as const;
+
+const SHUTDOWN_PROJECTION = {
+  reason: 'sigterm',
+  mode: 'hard',
+  elapsedMs: 750,
+  boundMs: 9_250,
+  attempt: { started: 1, limit: 3 },
+  lastDeclined: {
+    attempt: 1,
+    reason: 'required-shutdown-step-unsettled',
+    exit: 'shutdown-budget-exhaustion',
+    undischarged: [SHUTDOWN_ENTRY],
+    retainedAuthority: {
+      ipcSocket: true,
+      providerControlProxyInstanceIds: [],
+      cleanupObligations: [],
+    },
+  },
+} as const satisfies ShutdownRemainderProjection;
+
 function isBackendHealth(value: unknown): boolean {
   return parseBackendHealth(value) !== null;
 }
 
 describe('/health typed shape (AC10a)', () => {
+  it('derives the optional producer field from the infra projection type', () => {
+    expectTypeOf<HealthSnapshot['shutdown']>().toEqualTypeOf<ShutdownRemainderProjection | undefined>();
+    expectTypeOf<
+      Exclude<NonNullable<BackendHealth['shutdown']>, { kind: 'unreadable' }>
+    >().toMatchTypeOf<ShutdownRemainderProjection>();
+  });
+
+  it('accepts an older payload without a shutdown projection', () => {
+    expect(parseBackendHealth(HEALTHY_BASE)?.health).not.toHaveProperty('shutdown');
+  });
+
+  it('keeps the health payload readable when the shutdown envelope is unsupported', () => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      status: 'draining',
+      kernel: { phase: 'draining', readyAt: HEALTHY_BASE.kernel.readyAt },
+      shutdown: { ...SHUTDOWN_PROJECTION, attempt: { started: 'one', limit: 3 } },
+      diagnostics: { mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 } },
+    });
+
+    expect(parsed?.health.shutdown).toEqual({ kind: 'unreadable' });
+    expect(parsed?.health).toMatchObject({
+      status: 'draining',
+      kernel: { phase: 'draining' },
+      diagnostics: { mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 } },
+    });
+  });
+
+  it('keeps readable shutdown entries and names an unsupported entry by its original slot', () => {
+    const malformedEntry = {
+      label: 'provider host dispose',
+      remainder: { owner: 'successor-recovery' },
+      settlement: { cause: 'from-a-newer-build' },
+    };
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        lastDeclined: {
+          ...SHUTDOWN_PROJECTION.lastDeclined,
+          undischarged: [SHUTDOWN_ENTRY, malformedEntry, { ...SHUTDOWN_ENTRY, label: 'stream response close' }],
+        },
+      },
+    });
+
+    expect(parsed?.health.shutdown).toEqual({
+      ...SHUTDOWN_PROJECTION,
+      lastDeclined: {
+        ...SHUTDOWN_PROJECTION.lastDeclined,
+        undischarged: [SHUTDOWN_ENTRY, { ...SHUTDOWN_ENTRY, label: 'stream response close' }],
+      },
+      skippedEntries: [{ entryNumber: 2, label: 'provider host dispose', owner: 'successor-recovery' }],
+    });
+  });
+
+  it('does not preserve malformed skipped-entry labels or owners', () => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        lastDeclined: {
+          ...SHUTDOWN_PROJECTION.lastDeclined,
+          undischarged: [
+            {
+              label: 'provider host dispose\nforged line',
+              remainder: { owner: '' },
+              settlement: { cause: 'from-a-newer-build' },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed?.health.shutdown).toMatchObject({
+      lastDeclined: { undischarged: [] },
+      skippedEntries: [{ entryNumber: 1, label: null, owner: null }],
+    });
+  });
+
   it('accepts a healthy shape with one online component and no diagnostics', () => {
     expect(isBackendHealth(HEALTHY_BASE)).toBe(true);
   });
