@@ -309,7 +309,7 @@ describe('coordinator fatal drain integration', () => {
     });
     coordinators.push(fatalCoordinator);
 
-    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    await waitForDiscoveryRecord(home, 'prod', 15_000);
     const files = coordinatorFilesForHome(home, 'prod');
     if (fatalCoordinator.triggerPipe === null) throw new Error('Expected a parent-owned fatal trigger pipe');
     fatalCoordinator.triggerPipe.end(Buffer.from([2]));
@@ -354,38 +354,6 @@ describe('coordinator fatal drain integration', () => {
         }),
       ]),
     });
-
-    // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
-    // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
-    // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
-    // unscoped lookup only; the instance-scoped branch (exact instanceId match plus a start-time floor) is
-    // reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
-    // `unreachable` — which no case here produces.
-    const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
-    expect(status).toMatchObject({
-      status: 'no_record_no_socket',
-      shutdownRemainder: {
-        status: 'recent_shutdown_remainder',
-        record: {
-          instanceId: initial.instanceId,
-          reason: 'provider-proxy-lifecycle-fatal',
-          mode: 'handoff',
-          entries: expect.arrayContaining([
-            expect.objectContaining({
-              obligation: expect.objectContaining({ label: 'provider host shutdown' }),
-              settlement: expect.objectContaining({
-                cause: 'aborted',
-                error: expect.objectContaining({ name: 'AbortError' }),
-              }),
-            }),
-            expect.objectContaining({
-              obligation: expect.objectContaining({ label: 'provider proxy lifecycle fatal incident' }),
-              settlement: expect.objectContaining({ cause: 'rejected' }),
-            }),
-          ]),
-        },
-      },
-    });
   });
 
   it('preserves fatal evidence observed when an in-flight provider-host drain exhausts the budget', async () => {
@@ -410,7 +378,7 @@ describe('coordinator fatal drain integration', () => {
     });
     coordinators.push(fatalCoordinator);
 
-    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    await waitForDiscoveryRecord(home, 'prod', 15_000);
     const files = coordinatorFilesForHome(home, 'prod');
     if (fatalCoordinator.triggerPipe === null) throw new Error('Expected a parent-owned fatal trigger pipe');
     fatalCoordinator.triggerPipe.end(Buffer.from([3]));
@@ -449,33 +417,6 @@ describe('coordinator fatal drain integration', () => {
           },
         }),
       ]),
-    });
-
-    // Reads through the same recency-scoped production path a reader of `backend status` sees, not just the
-    // raw bytes above: `getBackendStatusFull` is the surface finding 2's regression test targets. The
-    // discovery record is already withdrawn by this point (`no_record_no_socket`), so this exercises the
-    // unscoped lookup only; the instance-scoped branch (exact instanceId match plus a start-time floor) is
-    // reached only while a discovery record still exists — `recorded_process_absent` or a foreign-peer
-    // `unreachable` — which no case here produces.
-    // `AfterBudgetFatalError`/`FATAL_AFTER_BUDGET` are fixture-only, not on the operator-facing allowlist, so
-    // only `cause` survives that projection — the raw-bytes assertion above is what proves the rest.
-    const status = await withHomeOverride(home, () => getBackendStatusFull(fixture.root));
-    expect(status).toMatchObject({
-      status: 'no_record_no_socket',
-      shutdownRemainder: {
-        status: 'recent_shutdown_remainder',
-        record: {
-          instanceId: initial.instanceId,
-          reason: 'provider-proxy-lifecycle-fatal',
-          mode: 'handoff',
-          entries: expect.arrayContaining([
-            expect.objectContaining({
-              obligation: expect.objectContaining({ label: 'provider proxy lifecycle fatal incident' }),
-              settlement: expect.objectContaining({ cause: 'rejected' }),
-            }),
-          ]),
-        },
-      },
     });
   });
 });

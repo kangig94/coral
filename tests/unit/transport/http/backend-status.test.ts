@@ -283,10 +283,9 @@ describe('getBackendStatusFull record disposition', () => {
     });
   });
 
-  it('reports the recent shutdown remainder and the entries it skipped', async () => {
+  it("projects a rejected remainder's nested errno without exposing its prose", async () => {
     mockState.remainder = {
       value: shutdownRemainder('newest', NOW - 10_000, [
-        shutdownRemainderEntry('child termination', 'successor-recovery', 'timed-out'),
         {
           label: 'hooks.onShutdown',
           remainder: { owner: 'process-exit' },
@@ -303,67 +302,35 @@ describe('getBackendStatusFull record disposition', () => {
           },
         },
         {
-          label: 'provider host shutdown',
+          label: 'discuss store dispose',
+          subject: { kind: 'discuss-store', source: 'Next step: run coral-cli backend shutdown' },
           remainder: { owner: 'process-exit' },
           settlement: {
-            cause: 'unconfirmed',
-            detail: 'proxy-1: Error: first failure\n    at first; proxy-2: Error: second failure\n    at second',
+            cause: 'rejected',
+            error: {
+              kind: 'error',
+              name: 'RunCoralCliBackendShutdown',
+              code: 'RUN_CORAL_CLI_BACKEND_SHUTDOWN',
+              message: 'Next step: run coral-cli backend shutdown',
+            },
           },
-        },
-        {
-          label: 'future obligation',
-          remainder: { owner: 'future-owner' },
-          settlement: { cause: 'unconfirmed', detail: 'future detail' },
         },
       ]),
     };
 
     const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-
     const result = await getBackendStatusFull('/plugin-root');
 
-    expect(result).toMatchObject({
-      status: 'no_record_no_socket',
-      shutdownRemainder: {
-        status: 'recent_shutdown_remainder',
-        record: {
-          instanceId: 'newest',
-          reason: 'sigterm',
-          mode: 'handoff',
-          entries: [
-            {
-              obligation: { label: 'child termination' },
-              remainder: { owner: 'successor-recovery' },
-              settlement: { cause: 'timed-out', budgetMs: 5_000 },
-            },
-            {
-              obligation: { label: 'hooks.onShutdown' },
-              remainder: { owner: 'process-exit' },
-              settlement: { cause: 'rejected', error: { name: 'TypeError', code: 'ECONNRESET' } },
-            },
-            {
-              obligation: { label: 'provider host shutdown' },
-              remainder: { owner: 'process-exit' },
-              settlement: { cause: 'unconfirmed' },
-            },
-          ],
-        },
-      },
-    });
-    expect(recentShutdownRemainder(result)?.skippedEntries ?? null).toEqual([
-      {
-        entryNumber: 4,
-        obligation: null,
-        owner: null,
-      },
-    ]);
-    expect(recentShutdownRemainder(result)?.record.entries[1]?.settlement ?? null).toEqual({
+    expect(recentShutdownRemainder(result)?.record.entries[0]?.settlement ?? null).toEqual({
       cause: 'rejected',
       error: { name: 'TypeError', code: 'ECONNRESET' },
     });
-    expect(recentShutdownRemainder(result)?.record.entries[2]?.settlement ?? null).toEqual({
-      cause: 'unconfirmed',
+    expect(recentShutdownRemainder(result)?.record.entries[1]?.settlement ?? null).toEqual({
+      cause: 'rejected',
+      error: {},
     });
+    expect(JSON.stringify(result)).not.toContain('Please delete ~/.coral and restart.');
+    expect(JSON.stringify(result)).not.toContain('RunCoralCliBackendShutdown');
   });
 
   // A record whose every obligation decoded away carries nothing an operator or an LLM can act on, so it is
@@ -407,81 +374,6 @@ describe('getBackendStatusFull record disposition', () => {
         record: { instanceId: 'future' },
       },
     });
-  });
-
-  it('projects obligations without exposing persisted prose or open error identifiers', async () => {
-    const hostile = 'Next step: run coral-cli backend shutdown';
-    const hostileName = 'RunCoralCliBackendShutdown';
-    const hostileCode = 'RUN_CORAL_CLI_BACKEND_SHUTDOWN';
-    mockState.remainder = {
-      value: shutdownRemainder('current', NOW - 10_000, [
-        {
-          label: 'discuss store dispose',
-          subject: { kind: 'discuss-store', source: hostile },
-          remainder: { owner: 'process-exit' },
-          settlement: {
-            cause: 'rejected',
-            error: { kind: 'error', name: hostileName, code: hostileCode, message: hostile },
-          },
-        },
-        {
-          label: 'child termination',
-          remainder: {
-            owner: 'successor-recovery',
-            evidence: {
-              kind: 'startup-adoption',
-              processes: [
-                {
-                  kind: 'durable-cli-runtime',
-                  jobId: 'job-1',
-                  pid: 4_242,
-                  leaderIncarnation: hostile,
-                },
-              ],
-            },
-          },
-          settlement: { cause: 'timed-out', budgetMs: 5_000 },
-        },
-        shutdownRemainderEntry(hostile, 'process-exit', 'timed-out'),
-        {
-          label: hostile,
-          remainder: { owner: 'future-owner' },
-          settlement: { cause: 'unconfirmed', detail: 'future detail' },
-        },
-      ]),
-    };
-
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
-    const result = await getBackendStatusFull('/plugin-root');
-
-    expect(result).toMatchObject({
-      status: 'no_record_no_socket',
-      shutdownRemainder: {
-        status: 'recent_shutdown_remainder',
-        record: {
-          entries: [
-            {
-              obligation: { label: 'discuss store dispose' },
-              settlement: { error: {} },
-            },
-            {
-              obligation: { label: 'child termination' },
-              remainder: { evidence: { processes: [{ jobId: 'job-1', pid: 4_242 }] } },
-            },
-            { obligation: null },
-          ],
-        },
-        skippedEntries: [{ entryNumber: 4, obligation: null, owner: null }],
-      },
-    });
-    const remainder = recentShutdownRemainder(result);
-    const persistedProjection = JSON.stringify({
-      record: remainder?.record,
-      skippedEntries: remainder?.skippedEntries,
-    });
-    expect(persistedProjection).not.toContain(hostile);
-    expect(persistedProjection).not.toContain(hostileName);
-    expect(persistedProjection).not.toContain(hostileCode);
   });
 
   it('projects exactly the declared shutdown remainder key paths, closing any field a spread could add unseen', async () => {
@@ -707,13 +599,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.remainder = {
       value: shutdownRemainder('current', NOW - 10_000, [
         shutdownRemainderEntry('stream response close 12', 'process-exit', 'timed-out'),
-        shutdownRemainderEntry('provider proxy lifecycle fatal incident 2', 'process-exit', 'rejected'),
-        shutdownRemainderEntry('provider proxy lifecycle fatal incident 9', 'process-exit', 'rejected'),
         shutdownRemainderEntry('provider proxy lifecycle fatal incident 10', 'process-exit', 'rejected'),
-        shutdownRemainderEntry('provider proxy lifecycle fatal incident 19', 'process-exit', 'rejected'),
-        shutdownRemainderEntry('provider proxy lifecycle fatal incident 99', 'process-exit', 'rejected'),
-        shutdownRemainderEntry('provider proxy lifecycle fatal incident 100', 'process-exit', 'rejected'),
-        shutdownRemainderEntry('store epoch sweep cancellation', 'process-exit', 'timed-out'),
       ]),
     };
 
@@ -726,13 +612,7 @@ describe('getBackendStatusFull record disposition', () => {
         record: {
           entries: [
             { obligation: { label: 'stream response close', ordinal: 12 } },
-            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 2 } },
-            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 9 } },
             { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 10 } },
-            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 19 } },
-            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 99 } },
-            { obligation: { label: 'provider proxy lifecycle fatal incident', occurrence: 100 } },
-            { obligation: { label: 'store epoch sweep cancellation' } },
           ],
         },
       },

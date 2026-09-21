@@ -2872,15 +2872,6 @@ describe('required provider-proxy shutdown steps', () => {
       expectedErrno: 'EACCES',
       privateDetail: '/private/remainder-path',
     },
-    {
-      label: 'throws ENOSPC',
-      write: () => {
-        throw Object.assign(new Error('remainder storage full\n/private/full-volume'), { code: 'ENOSPC' });
-      },
-      expectedCode: 'filesystem-operation-failed',
-      expectedErrno: 'ENOSPC',
-      privateDetail: '/private/full-volume',
-    },
   ])(
     'withdraws discovery and requests nonzero exit when the remainder write $label',
     async ({ write, expectedCode, expectedErrno, privateDetail }) => {

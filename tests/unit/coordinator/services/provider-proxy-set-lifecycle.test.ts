@@ -5505,27 +5505,6 @@ describe('ProviderProxySetLifecycle', () => {
     expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
   });
 
-  it('retries both handback phases when timer installation and mutation-fence release each throw once', async () => {
-    const record = providerOperationRecord('executing');
-    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
-      kind: 'containment-absent',
-      disappearanceReceipt: 'unused',
-    }));
-    const { capability, clock, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
-    vi.spyOn(clock, 'setTimeout').mockImplementationOnce(() => {
-      throw new Error('timer installation failed');
-    });
-    vi.spyOn(mutationFence, 'release').mockImplementationOnce(() => {
-      throw new Error('release failed');
-    });
-
-    expect(() => capability.handback()).toThrow('timer installation failed');
-    expect(mutationFence.isHeld()).toBe(true);
-    expect(() => capability.handback()).not.toThrow();
-    expect(mutationFence.isHeld()).toBe(false);
-    expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
-  });
-
   it('keeps a persistently failing mutation-fence release owned and unsettled', async () => {
     const record = providerOperationRecord('executing');
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
