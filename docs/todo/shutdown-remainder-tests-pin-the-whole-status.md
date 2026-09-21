@@ -4,7 +4,7 @@
 
 ## What is wrong
 
-`tests/unit/transport/backend-status.test.ts` has many `toEqual({...})` assertions against the complete
+`tests/unit/cli/backend-status-selector.test.ts` has many `toEqual({...})` assertions against the complete
 `getBackendStatusFull` result. Some test names claim a narrower shutdown-remainder behavior, such as recency,
 instance scoping, or one skipped classification, but their assertions pin unrelated fields in the status
 union too. Adding an unrelated additive field can therefore break a test whose named behavior is unchanged,

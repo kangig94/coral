@@ -1765,6 +1765,152 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(formatBackendStatus(result, { kind: 'absent' }, null)).not.toContain('Backend starting');
   });
 
+  it('normalizes live and durable shutdown entries into byte-identical observable lines', async () => {
+    const entry = shutdownRemainderEntry('hooks.onShutdown', 'process-exit', 'rejected');
+    const skippedEntry = {
+      label: 'stream response close 2',
+      remainder: { owner: 'successor-recovery' },
+      settlement: { cause: 'timed-out', budgetMs: 0 },
+    };
+    mockState.remainder = {
+      value: shutdownRemainder('test-instance', NOW - 10_000, [entry, skippedEntry]),
+    };
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          kernel: { phase: 'draining', readyAt: null },
+          shutdown: {
+            reason: 'sigterm',
+            mode: 'handoff',
+            elapsedMs: 12_000,
+            boundMs: 0,
+            attempt: { started: 3, limit: 3 },
+            lastDeclined: {
+              attempt: 2,
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'authority-release-settlement',
+              undischarged: [entry, skippedEntry],
+              retainedAuthority: {
+                ipcSocket: true,
+                providerControlProxyInstanceIds: ['22222222-2222-4222-8222-222222222222'],
+                cleanupObligations: ['child termination', 'cleanup pid=4242', 'closing host exit=1'],
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+    const rendered = formatBackendStatus(result, { kind: 'absent' }, null);
+    const liveStart = rendered.indexOf('Shutdown drain:');
+    const durableStart = rendered.indexOf('Coral recorded a recent shutdown with unfinished obligations.');
+    const sharedLines = (section: string): string[] =>
+      section
+        .split('\n')
+        .filter((line) =>
+          /^(?: {2}(?:Obligation|Owner|Cause|Error|Code|Budget|Evidence):| {4}(?:Job|PID):|Skipped entry )/u.test(line),
+        );
+
+    expect(liveStart).toBeGreaterThanOrEqual(0);
+    expect(durableStart).toBeGreaterThan(liveStart);
+    const liveSection = rendered.slice(liveStart, durableStart);
+    const durableSection = rendered.slice(durableStart);
+    expect(sharedLines(liveSection)).toEqual(sharedLines(durableSection));
+    expect(liveSection).toContain('Bound to drain terminal: 0ms');
+    expect(liveSection).toContain('Current attempt: 3/3');
+    expect(liveSection).toContain('Attempt 2/3 declined: required-shutdown-step-unsettled');
+    expect(liveSection.toLowerCase()).not.toContain('recorded');
+    expect(liveSection).toContain('Provider control proxy instances retained: 1');
+    expect(liveSection).toContain('Provider proxy instance: 22222222-2222-4222-8222-222222222222');
+    expect(liveSection).toContain('Provider cleanup obligation: child termination');
+    expect(liveSection).toContain('2 provider cleanup obligations this build does not name');
+    expect(liveSection).not.toContain('cleanup pid=4242');
+    expect(liveSection).not.toContain('closing host exit=1');
+    expect(liveSection).toContain('IPC socket retained: yes');
+  });
+
+  it.each([
+    [true, 'yes'],
+    [false, 'no'],
+  ] as const)('renders retained IPC authority directly when ipcSocket=%s', async (ipcSocket, renderedValue) => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          shutdown: {
+            reason: 'sigterm',
+            mode: 'handoff',
+            elapsedMs: 1,
+            boundMs: 1,
+            attempt: { started: 1, limit: 3 },
+            lastDeclined: {
+              attempt: 1,
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'authority-release-settlement',
+              undischarged: [],
+              retainedAuthority: {
+                ipcSocket,
+                providerControlProxyInstanceIds: [],
+                cleanupObligations: [],
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(`IPC socket retained: ${renderedValue}`);
+  });
+
+  it('renders an unreadable live drain report without losing the draining health', async () => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(detailed('draining', { shutdown: { reason: 'future-reason' } }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+    const rendered = formatBackendStatus(result, { kind: 'absent' }, null);
+
+    expect(result).toMatchObject({ status: 'ok', health: { status: 'draining', shutdown: { kind: 'unreadable' } } });
+    expect(rendered).toContain("Shutdown drain:\nThis build could not read the coordinator's drain report.");
+  });
+
+  it('renders a v0.10.9 draining health with no shutdown field as an unbounded absent schedule', async () => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          version: '0.10.9',
+          kernel: { phase: 'running', readyAt: null },
+          inflightRequests: 4,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+    const rendered = formatBackendStatus(result, { kind: 'absent' }, null);
+
+    expect(rendered).toContain('The coordinator reports no drain schedule and no bound for this wait.');
+    expect(rendered).toContain('Kernel phase: running');
+    expect(rendered).toContain('Inflight requests: 4');
+    expect(rendered).not.toContain('Current attempt:');
+  });
+
   it('keeps a detailed answer usable while carrying the count of provider proxy set rows it skipped', async () => {
     const understoodRow = {
       setIdentity: {

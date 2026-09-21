@@ -59,7 +59,7 @@ describe('observeCoordinator', () => {
   // Reset here rather than at the tail of each test that mutates it. Three tests below set `liveness` and two
   // restored it on their last line — a restore an assertion that throws skips, leaking `'absent'` into
   // whatever ran next and turning one failure into a cascade that names the wrong test. The same reasoning
-  // already put an `afterEach` in `tests/unit/transport/backend-status.test.ts`.
+  // already put an `afterEach` in `tests/unit/cli/backend-status-selector.test.ts`.
   beforeEach(() => {
     mockState.read = { kind: 'missing' };
     mockState.liveness = 'alive';

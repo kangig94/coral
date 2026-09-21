@@ -51,6 +51,10 @@ import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/cli/ba
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
+import {
+  PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS,
+  type ProviderProxySetOperatorExit,
+} from '#src/provider-proxy/operator-disposition-vocabulary.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
@@ -113,7 +117,7 @@ function liveHandoffResult(
 function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatusFull, { status: 'ok' }> {
   const parsed = parseBackendHealth(payload);
   if (parsed === null) throw new Error('expected the produced health snapshot to validate');
-  const { namespace: _namespace, status: _status, ...health } = parsed.health;
+  const { namespace: _namespace, status: _status, shutdown: _shutdown, ...health } = parsed.health;
   return {
     status: 'ok',
     health: {
@@ -2397,6 +2401,93 @@ describe('backend status recovery quarantine propagation', () => {
       '  recovery: offline\n    reason: Status unavailable:',
     );
   });
+});
+
+describe('backend status live drain section', () => {
+  const readableShutdown = {
+    reason: 'sigterm',
+    mode: 'handoff',
+    elapsedMs: 100,
+    boundMs: 0,
+    attempt: { started: 0, limit: 3 },
+  } as const satisfies NonNullable<RunningBackendHealth['shutdown']>;
+
+  it.each([
+    ['projection', readableShutdown],
+    ['unreadable', { kind: 'unreadable' } as const],
+    ['absent', undefined],
+  ] as const)('keeps diagnostic commands outside the %s drain region', (_state, shutdown) => {
+    const status = runningBackendStatus(
+      {
+        providerProxySetRowSkips: [{ reason: 'invalid-token', setToken: 'invalid-token', setIdentity: null }],
+      },
+      {
+        status: 'draining',
+        kernel: { phase: 'draining', readyAt: null },
+        skippedProviderProxySetRows: 1,
+        skippedProviderProxySetTokens: ['invalid-token'],
+        ...(shutdown === undefined ? {} : { shutdown }),
+      },
+    );
+    const output = formatBackendStatus(status, { kind: 'absent' }, null);
+    const drainStart = output.indexOf('Shutdown drain:');
+
+    expect(drainStart).toBeGreaterThanOrEqual(0);
+    expect(output.slice(0, drainStart)).toContain('command=coral-cli backend status');
+    expect(output.slice(drainStart)).not.toContain('command=');
+  });
+
+  it.each(['ok', 'draining'] as const)(
+    'does not render operatorExit in otherwise identical %s provider-set output',
+    (healthStatus) => {
+      const setIdentity = {
+        buildSetId: '11111111-1111-4111-8111-111111111111',
+        hostFingerprint: 'a'.repeat(64),
+        proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+      };
+      const variants: readonly ProviderProxySetOperatorExit[] = [
+        { kind: 'none' },
+        { kind: 'gated', remainingMs: 1200.2 },
+        { kind: 'contain' },
+        { kind: 'abandon' },
+        ...PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS.map((ground) => ({ kind: 'refused', ground }) as const),
+      ];
+      const outputs = variants.map((operatorExit) =>
+        formatBackendStatus(
+          runningBackendStatus(
+            {
+              providerProxySets: [
+                {
+                  setIdentity,
+                  setToken: encodeProviderProxySetAddress(setIdentity),
+                  liveClaims: 0,
+                  operatorExit,
+                  autonomousDisposition: { kind: 'unavailable' },
+                  holds: [],
+                },
+              ],
+            },
+            {
+              status: healthStatus,
+              kernel: {
+                phase: healthStatus === 'draining' ? 'draining' : 'running',
+                readyAt: healthStatus === 'draining' ? null : 1_700_000_000_000,
+              },
+            },
+          ),
+          { kind: 'absent' },
+          null,
+        ),
+      );
+
+      expect([...new Set(outputs)]).toHaveLength(1);
+      expect(outputs[0]).not.toContain('operatorExit');
+      expect(outputs[0]).not.toContain('1200.2');
+      for (const ground of PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS) {
+        expect(outputs[0]).not.toContain(ground);
+      }
+    },
+  );
 });
 
 describe('backend status provider proxy dispositions', () => {

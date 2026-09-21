@@ -18,7 +18,7 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull, ShutdownRemainderReport } from '../backend-status.js';
+import type { BackendStatusFull, OperatorFacingShutdownEntryView, ShutdownRemainderReport } from '../backend-status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -1281,15 +1281,22 @@ function formatShutdownRemainderRecord(
     `Reason: ${result.record.reason}`,
     `Mode: ${result.record.mode}`,
   ];
-  for (const entry of result.record.entries) {
+  lines.push(...formatShutdownEntryView({ entries: result.record.entries, skippedEntries: result.skippedEntries }));
+  return lines;
+}
+
+function formatShutdownEntryView(view: OperatorFacingShutdownEntryView): string[] {
+  const lines: string[] = [];
+  for (const entry of view.entries) {
+    if (entry.entryNumber !== undefined) lines.push(`Entry ${entry.entryNumber}:`);
     lines.push(
-      `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+      `  Obligation: ${formatShutdownObligation(entry.obligation)}`,
       `  Owner: ${entry.remainder.owner}`,
       ...formatShutdownSettlementLines(entry.settlement),
       ...formatShutdownRemainderEvidenceLines(entry.remainder),
     );
   }
-  lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
+  lines.push(...formatSkippedShutdownRemainderEntries(view.skippedEntries));
   return lines;
 }
 
@@ -1662,6 +1669,9 @@ function formatRecoveryRevisionValue(revision: string | null): string {
 }
 
 type RunningHealth = Extract<BackendStatusFull, { status: 'ok' }>['health'];
+type LiveShutdown = NonNullable<RunningHealth['shutdown']>;
+type LiveShutdownProjection = Exclude<LiveShutdown, { kind: 'unreadable' }>;
+type LiveShutdownRetainedAuthority = NonNullable<LiveShutdownProjection['lastDeclined']>['retainedAuthority'];
 type RuntimeComponent = BackendHealth['components'][number];
 type DegradedReason = Extract<RuntimeComponent, { phase: 'degraded' }>['reason'];
 type ProviderProxySetStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
@@ -2001,7 +2011,59 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
+  lines.push(...formatLiveShutdownSection(health));
   return lines.join('\n');
+}
+
+function formatLiveShutdownSection(health: RunningHealth): string[] {
+  if (health.status !== 'draining') return [];
+
+  const lines = ['', 'Shutdown drain:'];
+  if (health.shutdown === undefined) {
+    return [
+      ...lines,
+      'The coordinator reports no drain schedule and no bound for this wait.',
+      `Kernel phase: ${health.kernel.phase}`,
+      `Inflight requests: ${health.inflightRequests}`,
+    ];
+  }
+  if ('kind' in health.shutdown) {
+    return [...lines, "This build could not read the coordinator's drain report."];
+  }
+
+  const shutdown = health.shutdown;
+  lines.push(
+    `Reason: ${shutdown.reason}`,
+    `Mode: ${shutdown.mode}`,
+    `Elapsed: ${shutdown.elapsedMs}ms`,
+    `Bound to drain terminal: ${shutdown.boundMs}ms`,
+    `Current attempt: ${shutdown.attempt.started}/${shutdown.attempt.limit}`,
+  );
+  if (shutdown.lastDeclined !== undefined) {
+    lines.push(
+      `Attempt ${shutdown.lastDeclined.attempt}/${shutdown.attempt.limit} declined: ${shutdown.lastDeclined.reason}`,
+      `Declined exit: ${shutdown.lastDeclined.exit}`,
+      ...formatShutdownEntryView(shutdown.lastDeclined),
+      ...formatShutdownRetainedAuthorityLines(shutdown.lastDeclined.retainedAuthority),
+    );
+  }
+  return lines;
+}
+
+function formatShutdownRetainedAuthorityLines(authority: LiveShutdownRetainedAuthority): string[] {
+  return [
+    `Provider control proxy instances retained: ${authority.providerControlProxyInstanceIds.length}`,
+    ...authority.providerControlProxyInstanceIds.map(
+      (proxyInstanceId) => `  Provider proxy instance: ${proxyInstanceId}`,
+    ),
+    `IPC socket retained: ${authority.ipcSocket ? 'yes' : 'no'}`,
+    ...authority.cleanupObligations.map(
+      (obligation) => `Provider cleanup obligation: ${formatShutdownObligation(obligation)}`,
+    ),
+    ...(authority.unnamedCleanupObligations === 0
+      ? []
+      : [`${authority.unnamedCleanupObligations} provider cleanup obligations this build does not name`]),
+  ];
 }
 
 function formatSystemProviderScope(scope: RunningHealth['systemProviderScope']): string {

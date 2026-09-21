@@ -746,11 +746,12 @@ describe('health local carrier observation', () => {
     };
     const decoded = parseBackendHealth(roundTripReport);
     if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    const { shutdown: _shutdown, ...health } = decoded.health;
     const formatted = formatBackendStatus(
       {
         status: 'ok',
         health: {
-          ...decoded.health,
+          ...health,
           status: 'ok',
           skippedProviderProxySetRows: decoded.skippedProviderProxySetRows,
           skippedProviderProxySetTokens: decoded.skippedProviderProxySetTokens,
@@ -897,11 +898,12 @@ describe('health local carrier observation', () => {
     ]);
     const decoded = parseBackendHealth(produced);
     if (decoded === null) throw new Error('The produced health report did not pass the transport decoder.');
+    const { shutdown: _shutdown, ...health } = decoded.health;
     const formatted = formatBackendStatus(
       {
         status: 'ok',
         health: {
-          ...decoded.health,
+          ...health,
           status: 'ok',
           skippedProviderProxySetRows: decoded.skippedProviderProxySetRows,
           skippedProviderProxySetTokens: decoded.skippedProviderProxySetTokens,

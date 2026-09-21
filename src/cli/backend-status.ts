@@ -25,7 +25,9 @@ import {
   classifyShutdownRemainderFile,
   shutdownRemainderRecordPath,
   type DecodedShutdownRemainderRecord,
+  type ShutdownRemainderProjection,
   type ShutdownRemainderRecord,
+  type ShutdownUndischarged,
 } from '../infra/shutdown-remainder-record.js';
 import {
   discoveryRecordIdentity,
@@ -242,18 +244,48 @@ type OperatorFacingShutdownRemainder =
         | Readonly<{ kind: 'startup-liveness-recovery' }>;
     }>;
 
+type OperatorFacingShutdownEntry = Readonly<{
+  entryNumber?: number;
+  obligation: OperatorFacingShutdownObligation | null;
+  remainder: OperatorFacingShutdownRemainder;
+  settlement: OperatorFacingShutdownSettlement;
+}>;
+
+export type OperatorFacingShutdownEntryView = Readonly<{
+  entries: readonly OperatorFacingShutdownEntry[];
+  skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
+}>;
+
 type OperatorFacingShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
   reason: ShutdownRemainderRecord['reason'];
   mode: ShutdownRemainderRecord['mode'];
-  entries: readonly Readonly<{
-    entryNumber: number;
-    obligation: OperatorFacingShutdownObligation | null;
-    remainder: OperatorFacingShutdownRemainder;
-    settlement: OperatorFacingShutdownSettlement;
-  }>[];
+  entries: readonly OperatorFacingShutdownEntry[];
 }>;
+
+type OperatorFacingShutdownRetainedAuthority = Readonly<{
+  ipcSocket: boolean;
+  providerControlProxyInstanceIds: readonly string[];
+  cleanupObligations: readonly OperatorFacingShutdownObligation[];
+  unnamedCleanupObligations: number;
+}>;
+
+type OperatorFacingLiveShutdown =
+  | Readonly<{ kind: 'unreadable' }>
+  | Readonly<{
+      reason: ShutdownRemainderProjection['reason'];
+      mode: ShutdownRemainderProjection['mode'];
+      elapsedMs: number;
+      boundMs: number;
+      attempt: ShutdownRemainderProjection['attempt'];
+      lastDeclined?: Readonly<
+        Pick<NonNullable<ShutdownRemainderProjection['lastDeclined']>, 'attempt' | 'reason' | 'exit'> &
+          OperatorFacingShutdownEntryView & {
+            retainedAuthority: OperatorFacingShutdownRetainedAuthority;
+          }
+      >;
+    }>;
 
 type BackendStatus = {
   status: BackendHealth['status'];
@@ -271,6 +303,7 @@ type BackendStatus = {
   components: BackendHealth['components'];
   systemProviderScope?: BackendHealth['systemProviderScope'];
   diagnostics?: BackendHealth['diagnostics'];
+  shutdown?: OperatorFacingLiveShutdown;
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 };
@@ -487,6 +520,66 @@ function operatorFacingShutdownRemainderOwner(
   }
 }
 
+function operatorFacingShutdownEntry(entry: ShutdownUndischarged, entryNumber?: number): OperatorFacingShutdownEntry {
+  return {
+    ...(entryNumber === undefined ? {} : { entryNumber }),
+    obligation: operatorFacingShutdownObligation(entry.label),
+    remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
+    settlement: operatorFacingShutdownSettlement(entry.settlement),
+  };
+}
+
+function operatorFacingShutdownSkippedEntries(
+  entries: readonly Readonly<{ entryNumber: number; label: string | null; owner: string | null }>[],
+): readonly OperatorFacingShutdownSkippedEntry[] {
+  return entries.map((entry) => ({
+    entryNumber: entry.entryNumber,
+    obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+    owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
+  }));
+}
+
+function operatorFacingShutdownRetainedAuthority(
+  retainedAuthority: NonNullable<ShutdownRemainderProjection['lastDeclined']>['retainedAuthority'],
+): OperatorFacingShutdownRetainedAuthority {
+  const cleanupObligations: OperatorFacingShutdownObligation[] = [];
+  let unnamedCleanupObligations = 0;
+  for (const label of retainedAuthority.cleanupObligations) {
+    const obligation = operatorFacingShutdownObligation(label);
+    if (obligation === null) unnamedCleanupObligations += 1;
+    else cleanupObligations.push(obligation);
+  }
+  return {
+    ipcSocket: retainedAuthority.ipcSocket,
+    providerControlProxyInstanceIds: retainedAuthority.providerControlProxyInstanceIds,
+    cleanupObligations,
+    unnamedCleanupObligations,
+  };
+}
+
+function operatorFacingLiveShutdown(shutdown: BackendHealth['shutdown']): OperatorFacingLiveShutdown | undefined {
+  if (shutdown === undefined || 'kind' in shutdown) return shutdown;
+  return {
+    reason: shutdown.reason,
+    mode: shutdown.mode,
+    elapsedMs: shutdown.elapsedMs,
+    boundMs: shutdown.boundMs,
+    attempt: shutdown.attempt,
+    ...(shutdown.lastDeclined === undefined
+      ? {}
+      : {
+          lastDeclined: {
+            attempt: shutdown.lastDeclined.attempt,
+            reason: shutdown.lastDeclined.reason,
+            exit: shutdown.lastDeclined.exit,
+            entries: shutdown.lastDeclined.undischarged.map((entry) => operatorFacingShutdownEntry(entry)),
+            skippedEntries: operatorFacingShutdownSkippedEntries(shutdown.skippedEntries),
+            retainedAuthority: operatorFacingShutdownRetainedAuthority(shutdown.lastDeclined.retainedAuthority),
+          },
+        }),
+  };
+}
+
 function operatorFacingShutdownRemainder(
   record: DecodedShutdownRemainderRecord,
 ): OperatorFacingShutdownRemainderRecord {
@@ -495,12 +588,7 @@ function operatorFacingShutdownRemainder(
     recordedAt: record.recordedAt,
     reason: record.reason,
     mode: record.mode,
-    entries: record.entries.map((entry) => ({
-      entryNumber: entry.entryNumber,
-      obligation: operatorFacingShutdownObligation(entry.label),
-      remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
-      settlement: operatorFacingShutdownSettlement(entry.settlement),
-    })),
+    entries: record.entries.map((entry) => operatorFacingShutdownEntry(entry, entry.entryNumber)),
   };
 }
 
@@ -604,11 +692,7 @@ function readRecentShutdownRemainder(
     'record' | 'skippedEntries'
   > => ({
     record: operatorFacingShutdownRemainder(candidate),
-    skippedEntries: skippedEntries.map((entry) => ({
-      entryNumber: entry.entryNumber,
-      obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
-      owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
-    })),
+    skippedEntries: operatorFacingShutdownSkippedEntries(skippedEntries),
   });
   if (recordedAt > now) {
     return {
@@ -726,12 +810,14 @@ async function probeUnauthenticatedPing(
 
 function statusFromParsedHealth(parsed: BackendHealthParseResult): Extract<AddressedProbeStatus, { status: 'ok' }> {
   const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
-  const { namespace: _namespace, status, ...rest } = health;
+  const { namespace: _namespace, status, shutdown, ...rest } = health;
+  const normalizedShutdown = operatorFacingLiveShutdown(shutdown);
   return {
     status: 'ok',
     health: {
       ...rest,
       status: status === 'starting' ? 'ok' : status,
+      ...(normalizedShutdown === undefined ? {} : { shutdown: normalizedShutdown }),
       skippedProviderProxySetRows,
       skippedProviderProxySetTokens,
     },
