@@ -1883,7 +1883,7 @@ export function formatProviderProxySetRowSkips(
 function formatRunningStatus(health: RunningHealth): string {
   const componentLines: string[] = [];
   for (const component of health.components) {
-    componentLines.push(...formatComponentLines(component));
+    componentLines.push(...formatComponentLines(component, health.status));
   }
 
   const lines: string[] = [
@@ -2012,6 +2012,9 @@ function formatRunningStatus(health: RunningHealth): string {
     }
   }
   lines.push(...formatLiveShutdownSection(health));
+  if (health.status === 'draining') {
+    lines.push(formatDrainNextStep(health.shutdown), formatBackendOperatorCommand({ kind: 'backend-status' }));
+  }
   return lines.join('\n');
 }
 
@@ -2050,6 +2053,16 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
   return lines;
 }
 
+function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string {
+  if (shutdown === undefined) {
+    return 'Next step: inspect backend status again; the coordinator reports no bound for this drain';
+  }
+  if ('kind' in shutdown) {
+    return "Next step: inspect backend status again; this build could not read the coordinator's bound";
+  }
+  return `Next step: wait for the drain to finish, then inspect backend status again${shutdown.boundMs > 0 ? ' after the bound' : ''}`;
+}
+
 function formatShutdownRetainedAuthorityLines(authority: LiveShutdownRetainedAuthority): string[] {
   return [
     `Provider control proxy instances retained: ${authority.providerControlProxyInstanceIds.length}`,
@@ -2076,7 +2089,7 @@ function formatKernelLine(kernel: RunningHealth['kernel']): string {
   return `Kernel: ${kernel.phase} since ${new Date(kernel.readyAt).toISOString()}`;
 }
 
-function formatComponentLines(component: RuntimeComponent): string[] {
+function formatComponentLines(component: RuntimeComponent, healthStatus: RunningHealth['status']): string[] {
   const head = `  ${component.id}: ${component.phase}`;
   switch (component.phase) {
     case 'online':
@@ -2088,7 +2101,7 @@ function formatComponentLines(component: RuntimeComponent): string[] {
       if (component.reason.lastError) {
         lines.push(`    last error: ${component.reason.lastError}`);
       }
-      lines.push(`    hint: ${formatDegradedHint(component.reason)}`);
+      if (healthStatus !== 'draining') lines.push(`    hint: ${formatDegradedHint(component.reason)}`);
       return lines;
     }
     case 'offline': {
@@ -2105,7 +2118,7 @@ function formatComponentLines(component: RuntimeComponent): string[] {
       if (component.diagnostic?.retry) {
         lines.push(`    retry: ${formatOfflineRetry(component.diagnostic.retry)}`);
       }
-      lines.push(`    hint: ${formatOfflineHint(component.diagnostic?.retry)}`);
+      if (healthStatus !== 'draining') lines.push(`    hint: ${formatOfflineHint(component.diagnostic?.retry)}`);
       return lines;
     }
     default:

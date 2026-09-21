@@ -2403,6 +2403,122 @@ describe('backend status recovery quarantine propagation', () => {
   });
 });
 
+describe('backend status daemon guidance', () => {
+  type DrainState = 'projection-zero-bound' | 'projection-positive-bound' | 'unreadable' | 'absent';
+
+  const readableShutdown = {
+    reason: 'sigterm',
+    mode: 'handoff',
+    elapsedMs: 100,
+    boundMs: 0,
+    attempt: { started: 0, limit: 3 },
+  } as const satisfies NonNullable<RunningBackendHealth['shutdown']>;
+  const drainingHealth = {
+    status: 'draining',
+    kernel: { phase: 'draining', readyAt: null },
+  } as const satisfies Partial<RunningBackendHealth>;
+  const drainCases = {
+    'projection-zero-bound': runningBackendStatus({}, { ...drainingHealth, shutdown: readableShutdown }),
+    'projection-positive-bound': runningBackendStatus(
+      {},
+      { ...drainingHealth, shutdown: { ...readableShutdown, boundMs: 5_000 } },
+    ),
+    unreadable: runningBackendStatus({}, { ...drainingHealth, shutdown: { kind: 'unreadable' } }),
+    absent: runningBackendStatus({}, drainingHealth),
+  } satisfies Record<DrainState, RunningBackendStatus>;
+  const expectedDrainGuidance = {
+    'projection-zero-bound': 'Next step: wait for the drain to finish, then inspect backend status again',
+    'projection-positive-bound':
+      'Next step: wait for the drain to finish, then inspect backend status again after the bound',
+    unreadable: "Next step: inspect backend status again; this build could not read the coordinator's bound",
+    absent: 'Next step: inspect backend status again; the coordinator reports no bound for this drain',
+  } satisfies Record<DrainState, string>;
+
+  it('keeps daemon guidance singular across every daemon status and running-health state', () => {
+    const runningHealthCases = {
+      starting: [runningBackendStatus({}, { status: 'starting' })],
+      ok: [runningBackendStatus({})],
+      draining: Object.values(drainCases),
+    } satisfies Record<RunningBackendHealth['status'], readonly RunningBackendStatus[]>;
+    const daemonStatusCases = {
+      ok: Object.values(runningHealthCases).flat(),
+      unauthorized: [{ status: 'unauthorized' }],
+      no_record_no_socket: [{ status: 'no_record_no_socket' }],
+      recorded_process_absent: [{ status: 'recorded_process_absent', pid: 4242 }],
+      undecodable_record: [{ status: 'undecodable_record', reason: 'corrupt-json', path: '/record.json' }],
+      unreachable: [
+        {
+          status: 'unreachable',
+          detail: 'connection refused',
+          cause: 'refused',
+          pidLiveness: 'alive',
+          pid: 4242,
+          recordPath: '/record.json',
+        },
+      ],
+      no_record_socket_present: [{ status: 'no_record_socket_present', socketPath: '/coordinator.sock' }],
+      recent_failure: [{ status: 'recent_failure', phase: 'startup_failed', retryable: false }],
+    } satisfies Record<BackendStatusFull['status'], readonly BackendStatusFull[]>;
+
+    for (const [statusKind, statuses] of Object.entries(daemonStatusCases)) {
+      for (const status of statuses) {
+        const output = formatBackendStatus(status, { kind: 'absent' }, null);
+        expect(nextStepLines(output).length, statusKind).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it.each(Object.entries(drainCases) as [DrainState, RunningBackendStatus][])(
+    'renders the daemon guidance and backend-status command for %s',
+    (state, status) => {
+      const output = formatBackendStatus(status, { kind: 'absent' }, null);
+
+      expect(nextStepLines(output)).toEqual([expectedDrainGuidance[state]]);
+      expect(operatorArtifactLines(output)).toEqual(['command=coral-cli backend status']);
+    },
+  );
+
+  it('suppresses a draining component hint without suppressing its phase or reason', () => {
+    const status = runningBackendStatus(
+      {},
+      {
+        ...drainingHealth,
+        components: [
+          {
+            id: 'kb',
+            phase: 'offline',
+            reason: 'stopped',
+            diagnostic: { retry: 'restart-daemon' },
+          },
+        ],
+      },
+    );
+
+    const output = formatBackendStatus(status, { kind: 'absent' }, null);
+
+    expect(output).toContain('  kb: offline');
+    expect(output).toContain('    reason: stopped');
+    expect(output).not.toMatch(/^\s*hint:/mu);
+    expect(output).not.toContain('command=coral-cli backend shutdown');
+  });
+
+  it('keeps refused live-process guidance singular when routing status is absent', () => {
+    const status = {
+      status: 'unreachable',
+      detail: 'connection refused',
+      cause: 'refused',
+      pidLiveness: 'alive',
+      pid: 4242,
+      recordPath: '/record.json',
+    } as const satisfies BackendStatusFull;
+
+    const output = formatBackendStatus(status, { kind: 'absent' }, null);
+
+    expect(nextStepLines(output)).toHaveLength(1);
+    expect(nextStepLines(output)[0]).toMatch(/^Next step: retry shortly/u);
+  });
+});
+
 describe('backend status live drain section', () => {
   const readableShutdown = {
     reason: 'sigterm',
@@ -2431,10 +2547,13 @@ describe('backend status live drain section', () => {
     );
     const output = formatBackendStatus(status, { kind: 'absent' }, null);
     const drainStart = output.indexOf('Shutdown drain:');
+    const guidanceStart = output.indexOf('\nNext step:', drainStart);
 
     expect(drainStart).toBeGreaterThanOrEqual(0);
+    expect(guidanceStart).toBeGreaterThan(drainStart);
     expect(output.slice(0, drainStart)).toContain('command=coral-cli backend status');
-    expect(output.slice(drainStart)).not.toContain('command=');
+    expect(output.slice(drainStart, guidanceStart)).not.toContain('command=');
+    expect(operatorArtifactLines(output.slice(guidanceStart))).toEqual(['command=coral-cli backend status']);
   });
 
   it.each(['ok', 'draining'] as const)(
