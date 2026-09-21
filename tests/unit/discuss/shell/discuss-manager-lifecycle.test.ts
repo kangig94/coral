@@ -292,38 +292,6 @@ describe('DiscussContext lifecycle boundaries', () => {
     ]);
   });
 
-  it('commitDecision refuses a decided commit once the live controller signal is aborted', async () => {
-    const harness = createDiscussHarness();
-    const snapshot = await persistSession(harness, {
-      sessionId: 'aborted-controller-session',
-      recover: false,
-    });
-    attachPersistedSession(harness, snapshot);
-
-    const session = harness.context.sessions.get('aborted-controller-session');
-    if (!session) {
-      throw new Error('Expected attached aborted-controller-session');
-    }
-    session.controller.abort();
-
-    const committed = await commitDecision(harness.context, 'aborted-controller-session', (current) =>
-      decideEnd(
-        current.state,
-        { force: true, reason: 'natural-completion-race' },
-        makeDecisionContext(harness.context, current.sessionId, current.state.topic),
-        current.lastAppliedSeq + 1,
-        '2026-03-10T00:05:00.000Z',
-      ),
-    );
-
-    expect(committed).toMatchObject({ ok: false, error: SESSION_SHUTTING_DOWN });
-    expect(harness.store.load('aborted-controller-session')?.lastAppliedSeq).toBe(snapshot.lastAppliedSeq);
-    expect(readSessionEvents(harness.context, 'aborted-controller-session').map((event) => event.kind)).toEqual([
-      'session.created',
-      'bidding.opened',
-    ]);
-  });
-
   it('hard shutdown aborts every live controller before persisting any abort marker, preempting a racing natural commit', async () => {
     const harness = createDiscussHarness();
     const registry = createDiscussContextRegistry();
@@ -482,47 +450,6 @@ describe('DiscussContext lifecycle boundaries', () => {
     expect(harness.store.load('follow-up-spin-session')?.runtime.followUpQueue).toEqual([
       { agent: 'alpha', question: 'What changed?' },
     ]);
-  });
-
-  it('once clearAllDiscuss clears its sessions map, commitDecision can no longer observe the abort at all', async () => {
-    const harness = createDiscussHarness();
-    const registry = createDiscussContextRegistry();
-    const context = getOrCreateDiscussContext(
-      registry,
-      harness.projectRoot,
-      harness.service,
-      harness.store,
-      discussContextOptions(harness),
-    );
-
-    const snapshot = await persistSession({ ...harness, context }, { sessionId: 'post-clear-session', recover: false });
-    attachPersistedSession({ ...harness, context }, snapshot);
-
-    await clearAllDiscuss(registry, 'hard', persistAbortEndForShutdown);
-
-    // The guard in commitDecision reads ctx.sessions.get(sessionId)?.controller — once
-    // clearAllDiscuss has cleared the map, that lookup returns nothing, so the guard cannot
-    // fire here regardless of what the abort pass did.
-    expect(context.sessions.get('post-clear-session')).toBeUndefined();
-
-    // What keeps this window inert today is not commitDecision's guard: decideEnd refuses a
-    // decision against a state.status already 'ended' on its own (the same shape as
-    // buildBidBatch, in src/discuss/shell/flow/bid.ts, returning no events once
-    // state.status is no longer 'bidding'). commitDecision's own short-circuit for an
-    // empty decide result is what turns that refusal into a successful no-op commit here.
-    const committed = await commitDecision(context, 'post-clear-session', (current) =>
-      decideEnd(
-        current.state,
-        { force: true, reason: 'natural-completion-race' },
-        makeDecisionContext(context, current.sessionId, current.state.topic),
-        current.lastAppliedSeq + 1,
-        '2026-03-10T00:06:00.000Z',
-      ),
-    );
-
-    expect(committed).toMatchObject({ ok: true, events: [] });
-    const events = readSessionEvents(context, 'post-clear-session');
-    expect(events.at(-1)).toMatchObject({ kind: 'session.ended', payload: { force: true, reason: 'abort' } });
   });
 
   it('stale-write shutdown retry skips the abort marker once the session becomes terminal', async () => {

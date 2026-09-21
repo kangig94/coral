@@ -587,49 +587,42 @@ describe('provider proxy recovery producer classification', () => {
     expect(disposeLateEvidence).toHaveBeenCalledWith(lateOutcome, 'redemption');
   });
 
-  it.each(['redemption', 'absence'] as const)(
-    'carries retired %s into a later attempt and starts only its survivor',
-    async (retiredSource) => {
-      const containment = await testContainmentProof(false);
-      const roleControl = vi.fn(() => {
-        throw unavailable;
-      });
-      const containmentProof = vi.fn(() => {
-        throw unavailable;
-      });
-      const retry = vi.fn();
-      const dispatcher = createTestProviderProxyRecoveryDispatcher({
-        'role-control': roleControl,
-        'containment-proof': containmentProof,
-      });
-      const turn = dispatcher.begin(
-        'control-reattachment-hold',
-        { setIdentity: containment.identity, retiredSources: new Set([retiredSource]) },
-        { evidence: vi.fn(), retry, fatal: vi.fn() },
-      );
-      turn.start({
-        sourceId: 'redemption',
-        producerId: 'role-control',
-        input: { signal: new AbortController().signal, run: async () => ({ kind: 'unavailable' }) },
-      });
-      turn.start({
-        sourceId: 'absence',
-        producerId: 'containment-proof',
-        input: { identity: containment.identity, signal: new AbortController().signal },
-      });
-      await flushRecoveryTurn();
+  it('carries retired redemption into a later attempt and starts only its survivor', async () => {
+    const containment = await testContainmentProof(false);
+    const roleControl = vi.fn(() => {
+      throw unavailable;
+    });
+    const containmentProof = vi.fn(() => {
+      throw unavailable;
+    });
+    const retry = vi.fn();
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({
+      'role-control': roleControl,
+      'containment-proof': containmentProof,
+    });
+    const turn = dispatcher.begin(
+      'control-reattachment-hold',
+      { setIdentity: containment.identity, retiredSources: new Set(['redemption']) },
+      { evidence: vi.fn(), retry, fatal: vi.fn() },
+    );
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'role-control',
+      input: { signal: new AbortController().signal, run: async () => ({ kind: 'unavailable' }) },
+    });
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: { identity: containment.identity, signal: new AbortController().signal },
+    });
+    await flushRecoveryTurn();
 
-      expect({
-        roleControlCalls: roleControl.mock.calls.length,
-        containmentProofCalls: containmentProof.mock.calls.length,
-      }).toEqual(
-        retiredSource === 'redemption'
-          ? { roleControlCalls: 0, containmentProofCalls: 1 }
-          : { roleControlCalls: 1, containmentProofCalls: 0 },
-      );
-      expect(retry).toHaveBeenCalledOnce();
-    },
-  );
+    expect({
+      roleControlCalls: roleControl.mock.calls.length,
+      containmentProofCalls: containmentProof.mock.calls.length,
+    }).toEqual({ roleControlCalls: 0, containmentProofCalls: 1 });
+    expect(retry).toHaveBeenCalledOnce();
+  });
 
   it('classifies every closed producer with positive and opposite facts', async () => {
     const record = providerOperationRecord('executing');

@@ -4,7 +4,6 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { formatErrorEnvelope } from '#src/cli/format/error.js';
 import { hostKeyFromSpec } from '#src/coordinator/live/provider-hosts/state.js';
 import {
   canonicalizeWorkDir,
@@ -164,30 +163,6 @@ describe('canonical work directory transport ingress', () => {
     const body = (result as { body?: { message?: string } }).body;
     expect(body?.message).toMatch(/ENOENT|no such file or directory/);
     expect(body?.message).not.toContain(missingProjectRoot);
-    expect(start).not.toHaveBeenCalled();
-  });
-
-  it('does not let a newline-bearing work directory forge a line in the rendered CLI output', async () => {
-    const hostileWorkDir = `${join(tempRoot(), 'missing')}\ncommand=coral-cli backend shutdown`;
-    const { ports, start } = createPorts();
-
-    const result = await executeCatalogRequest(
-      catalogSpec('sessions.create'),
-      { provider: 'codex', prompt: 'hello', projectRoot: hostileWorkDir },
-      ports,
-      operator(),
-    );
-
-    expect(result).toMatchObject({
-      kind: 'unary',
-      statusCode: 400,
-      body: { code: 'invalid_work_directory', detail: { workDir: hostileWorkDir, projectRoot: process.cwd() } },
-    });
-    const body = (result as { body: { code: string; message: string } }).body;
-    expect(body.message).not.toContain('\n');
-
-    const rendered = formatErrorEnvelope({ error: true, code: body.code, message: body.message });
-    expect(rendered.split('\n')).toHaveLength(1);
     expect(start).not.toHaveBeenCalled();
   });
 

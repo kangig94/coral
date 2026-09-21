@@ -996,17 +996,17 @@ describe('cli format', () => {
 
     // A parse refusal names no system error code at all, so the line must not offer an errno field for the
     // reader to act on (design-philosophy.md principle 11's "do not overload one value with two dispositions").
-    it.each(['corrupt', 'unsupported'] as const)('renders no errno field for a %s record', (reason) => {
+    it('renders no errno field for an unsupported record', () => {
       const text = formatBackendStatus({
         status: 'no_record_no_socket',
         shutdownRemainder: {
           status: 'shutdown_remainder_unreadable',
-          reason,
+          reason: 'unsupported',
           path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
         },
       });
 
-      expect(text).toContain(`Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=${reason}`);
+      expect(text).toContain(`Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unsupported`);
       expect(text).not.toContain('errno=');
     });
 

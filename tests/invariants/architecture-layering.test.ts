@@ -333,19 +333,9 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
-  it('kb domain does not import transport-owned result wrappers', () => {
+  it.each(['kb', 'discuss'] as const)('%s domain does not import transport-owned result wrappers', (domain) => {
     const violations = collectViolations(
-      (source, target) => source.startsWith('src/kb/') && target === 'src/transport/tool-result.ts',
-    );
-
-    expect(violations).toEqual([]);
-  });
-
-  it('discuss domain does not import transport-owned result wrappers', () => {
-    // Transport already imports src/discuss/result.ts for DiscussRequestPort (TRANSPORT_ALLOWED);
-    // the reverse edge would make discuss<->transport a cycle in the runtime domain graph.
-    const violations = collectViolations(
-      (source, target) => source.startsWith('src/discuss/') && target === 'src/transport/tool-result.ts',
+      (source, target) => source.startsWith(`src/${domain}/`) && target === 'src/transport/tool-result.ts',
     );
 
     expect(violations).toEqual([]);

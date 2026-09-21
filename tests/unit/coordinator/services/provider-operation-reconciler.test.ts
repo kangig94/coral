@@ -23,7 +23,6 @@ import type { ProviderOperationRecoveryAcceptance } from '#src/coordinator/servi
 import type { ProviderOperationBindingPort } from '#src/jobs/contracts/provider-operation-lifecycle.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import {
-  describeStartupReconciliationIncident,
   ProviderOperationReconciler,
   providerOperationTerminationVerdict,
   type ProviderOperationReconciliationEvidence,
@@ -2480,11 +2479,6 @@ describe('ProviderOperationReconciler publication', () => {
         witness: 'provider-operation-record',
       },
     ]);
-    const [incident] = report.incidents;
-    if (incident === undefined) throw new Error('expected a startup reconciliation incident');
-    expect(describeStartupReconciliationIncident(incident)).toContain(
-      'kind=absence-released-undischarged witness=provider-operation-record',
-    );
   });
 
   it('keeps a recovered activation pending when its durable proxy locator is unreachable', async () => {

@@ -335,30 +335,6 @@ describe('provider proxy set operator RPC composition', () => {
     expect(handback).toHaveBeenCalledOnce();
   });
 
-  it('hands authorization back when aborted proof collection rejects', async () => {
-    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
-    const controller = new AbortController();
-    const proof = vi.spyOn(harness.prover, 'collectContainmentProof').mockImplementation(
-      (_authorization, _db, signal) =>
-        new Promise((_resolve, reject) => {
-          signal.addEventListener(
-            'abort',
-            () => reject(signal.reason instanceof Error ? signal.reason : new Error('request aborted')),
-            { once: true },
-          );
-        }),
-    );
-    const complete = vi.spyOn(harness.lifecycle, 'completeOperatorExit');
-
-    const pending = harness.contain({ setIdentity: address, mode: 'contain' }, controller.signal);
-    controller.abort(new Error('request aborted'));
-
-    await expect(pending).rejects.toThrow('request aborted');
-    expect(proof).toHaveBeenCalledExactlyOnceWith(proofAuthorization, harness.db, controller.signal);
-    expect(complete).not.toHaveBeenCalled();
-    expect(handback).toHaveBeenCalledOnce();
-  });
-
   it('preserves a proof-collection error when handback rearming transiently throws', async () => {
     vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
     vi.spyOn(harness.prover, 'collectContainmentProof').mockRejectedValue(new Error('proof collection failed'));

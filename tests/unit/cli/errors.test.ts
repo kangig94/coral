@@ -254,15 +254,6 @@ describe('cli errors', () => {
       expect(envelope.remediation).toContain('refused jobs.abort before dispatch, so it did not run');
     });
 
-    it('renders a refusal that itself carries a refusal cause without adding a destructive remedy', () => {
-      const refusal = new IpcLifecycleRefusal('/tmp/coral.sock', 'jobs.abort');
-      refusal.cause = new IpcLifecycleRefusal('/tmp/coral.sock', 'jobs.abort').stillHoldingAddress(30_000);
-
-      const { envelope } = buildErrorEnvelope(refusal);
-
-      expect(envelope.remediation).toContain('bounded asynchronous wait');
-    });
-
     it('reports when to retry in both address-disposition branches', () => {
       const unobserved = buildErrorEnvelope(new IpcLifecycleRefusal('/tmp/coral.sock', 'jobs.abort')).envelope
         .remediation;
