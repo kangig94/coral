@@ -16,9 +16,8 @@ same disappearance consumer. The restart path does not remember an old observati
 one.
 
 That is the named exit for the post-bound disappearance park described in
-[`representation-release-retries-forever`](./representation-release-retries-forever.md). Storing the notice
-would create durable evidence for a fact whose owner is the external world and whose freshness a later boot can
-establish directly.
+[`design-rationale`](../design-rationale.md) §12.7. Storing the notice would create durable evidence for a fact
+whose owner is the external world and whose freshness a later boot can establish directly.
 
 ## Abandonment is a decision
 

@@ -493,6 +493,48 @@ The remainder is diagnostic: it names whatever the ledger left, so a closed subj
 
 The record is one synchronous `writeAtomicSync` on the coordinator thread, from the same finalizer that then withdraws the discovery record. An earlier draft delegated it to a separate helper executable to bound a filesystem stall. The measured stall class is the explicit journal commit wait entered by `fdatasync` or directory sync; `writeAtomicDurableSyncNode` (`src/runtime/real.ts`) enters it at both calls. Dropping those durability calls does help: `writeAtomicSyncNode` still opens and renames, and the following `removeBackendInfoIfOwner` (`src/infra/backend-discovery.ts`) still reads and unlinks on the same journaled device, but those operations join the running transaction without asking the kernel to wait for its commit. The requirement the record carries is ordering — say what you left before withdrawing the address — not survival of a power cut, across which every obligation the record names has been discharged by the same cut. The writer creates the run directory before calling `writeAtomicSync`, which intentionally does not create it. A helper would add a fifth released executable through `scripts/build-server.mjs`, and `strictBundleManifestSchema` (`src/infra/bundle-manifest.ts`) is `.strict()` over a closed set of hash fields, so adding one makes an older build's reader reject the manifest — §10 violated without buying the required property. Ordering is free inline. The unbounded withdrawal that remains is recorded in [`docs/todo/discovery-withdrawal-is-unbounded-on-the-exit-path.md`](todo/discovery-withdrawal-is-unbounded-on-the-exit-path.md).
 
+### 12.6 Why discuss commit refusal is not a drain-facing error
+
+`SESSION_SHUTTING_DOWN` (`src/discuss/shell/errors.ts`) is an internal commit disposition. `commitDecision`
+(`src/discuss/shell/persistence.ts`) returns it when an already-running discuss turn reaches its write after
+`clearAllDiscuss` has aborted the live controller, and `runFollowUpTurns`
+(`src/discuss/shell/flow/followup.ts`) treats it as an exit from the in-flight loop. It is not the response to a
+new request made during a drain.
+
+That distinction is structural. `runShutdownSequence` (`src/coordinator/shutdown.ts`) enters `draining` before
+shutdown obligations run, and `operationalRouteSpecs` (`src/transport/rpc/operational-catalog.ts`) admits no
+discuss route. Both transports therefore return `lifecycleRefusalResult`
+(`src/transport/lifecycle-refusal.ts`) before a new discuss request reaches `commitDecision`. A prior change
+gave `session_shutting_down` its own remediation and HTTP/exit mapping on the premise that a new bid and a new
+status read could diverge during hard shutdown. The premise was false, so those operator-facing additions were
+removed. The internal code remains because it closes a different, reachable race; its existence is not a
+reason to recreate the wire mapping.
+
+### 12.7 Why representation release is bounded by the slot
+
+A production log contained 72,641 one-second `containment-retry` warnings over more than 28 hours, and the
+retry returned after restart. That established that a process-local delivery loop could be reconstructed from
+durable provider-operation state indefinitely. The bound therefore belongs to the representation slot, not to
+one delivery attempt: `#beginRepresentationRelease`
+(`src/coordinator/services/provider-proxy-set/index.ts`) arms one settlement deadline even when a delivery
+never settles, and expiry removes the slot as `released-undischarged`. Delivery may retry while the slot
+exists; it may not keep capacity after the bound.
+
+Disappearance and abandonment have different durable owners. A successor re-observes disappearance from the
+surviving provider-operation row and current containment evidence, so storing an old disappearance notice
+would turn an observation into stale authority. Abandonment is a decision and cannot be reconstructed that
+way; its durable control intent remains open in
+[`representation-release-notice-as-a-durable-phase`](todo/representation-release-notice-as-a-durable-phase.md).
+The rejected alternative wrote a current-writer operator-disposition row and called its reconciliation a
+successor, but the current writer never selected that row and the later reader retired the row without
+terminalizing the operation. It was accounting, not an exit.
+
+Late delivery outcomes are fenced at their one entry point. `#representationReleaseSinks`
+(`src/coordinator/services/provider-proxy-set/index.ts`) checks that the slot identity is still current before
+any evidence, retry, or fatal sink runs. The slot-identity clause is load-bearing: without it a late retry can
+arm a timer for a slot whose teardown will never clear it, and a late fatal can recreate disposition state for
+a slot already removed. Do not duplicate that check in the private sinks or remove it as redundant.
+
 ## 13. Cross-References
 
 - Current shape and ownership matrix: [`docs/architecture.md`](architecture.md)
