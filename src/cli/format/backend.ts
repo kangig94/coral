@@ -18,7 +18,7 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull, ShutdownRemainderReport } from '../../transport/http/backend/status.js';
+import type { BackendStatusFull, ShutdownRemainderReport } from '../backend-status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -718,8 +718,6 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
       return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
-    case 'shutting_down':
-      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder);
     case 'unauthorized':
       return withShutdownRemainderSection(
         [

@@ -106,7 +106,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status has a detached non-empty WAL beside an absent or empty main database.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
+      'Routing status has a detached non-empty WAL beside an absent or empty main database.\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -120,7 +120,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status contains application objects but no generation address.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
+      'Routing status contains application objects but no generation address.\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -133,7 +133,7 @@ const policyFixtures = [
       renderKey: 'other-generation',
       successorAction: 'routing-status-discard',
     },
-    rendered: `Routing status generation ${generation + 1} belongs to another address.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard`,
+    rendered: `Routing status generation ${generation + 1} belongs to another address.\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard`,
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -147,7 +147,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status has this generation address but a different durable format fingerprint.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
+      'Routing status has this generation address but a different durable format fingerprint.\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -161,7 +161,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status has this generation address but a divergent schema.\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
+      'Routing status has this generation address but a divergent schema.\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -193,7 +193,7 @@ const policyFixtures = [
       successorAction: 'routing-status-discard',
     },
     rendered:
-      'Routing status is unreadable (invalid-shape).\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard',
+      'Routing status is unreadable (invalid-shape).\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard',
     publicationSuccessor: 'routing-status discard',
   },
   {
@@ -207,7 +207,7 @@ const policyFixtures = [
       successorAction: 'retry',
     },
     rendered:
-      'Routing status could not be read (io-failed, errcode 5).\nNext step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.\ncommand=coral-cli backend status',
+      'Routing status could not be read (io-failed, errcode 5).\nRouting hold: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.\ncommand=coral-cli backend status',
     publicationSuccessor: 'retry',
   },
 ] as const satisfies readonly PolicyFixture[];

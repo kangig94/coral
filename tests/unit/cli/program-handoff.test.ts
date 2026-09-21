@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as HandoffNoticeMod from '#src/cli/handoff-notice.js';
 import type * as GenerationMutationMod from '#src/store/generation-mutation-coordination.js';
-import type * as BackendStatusMod from '#src/transport/http/backend/status.js';
+import type * as BackendStatusMod from '#src/cli/backend-status.js';
 import type * as ProgramMod from '#src/cli/program.js';
 import type * as BackendCommandMod from '#src/cli/commands/backend.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
@@ -25,7 +25,7 @@ vi.mock('#src/store/generation-mutation-coordination.js', async (importOriginal)
   return { ...actual, inspectGenerationReadiness: mockState.inspectGenerationReadiness };
 });
 
-vi.mock('#src/transport/http/backend/status.js', async (importOriginal) => {
+vi.mock('#src/cli/backend-status.js', async (importOriginal) => {
   const actual = await importOriginal<typeof BackendStatusMod>();
   return { ...actual, getBackendStatusFull: mockState.getBackendStatusFull };
 });
@@ -165,7 +165,7 @@ describe('program', () => {
       [
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
-        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
         '',
       ].join('\n'),

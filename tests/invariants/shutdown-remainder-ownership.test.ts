@@ -11,7 +11,7 @@ const OWNERSHIP_SCAN_ROOT = 'src';
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
 const SHUTDOWN_SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
 const SHUTDOWN_REMAINDER_RECORD_PATH = 'src/infra/shutdown-remainder-record.ts';
-const BACKEND_STATUS_PATH = 'src/transport/http/backend/status.ts';
+const BACKEND_STATUS_PATH = 'src/cli/backend-status.ts';
 const PROCESS_EXIT_OBLIGATION_INVENTORY = [
   'recovery coordinator teardown',
   'kb child shutdown',

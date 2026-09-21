@@ -30,6 +30,12 @@ import {
 } from './client.js';
 import { bindSocket } from './server.js';
 import {
+  discoveryMatchesExistingIncumbent,
+  identityMatchesExistingIncumbent,
+  readIdentityCheckedAuthenticatedHealth,
+  type CoordinatorHealthIdentity,
+} from './health.js';
+import {
   ipcRouteLifecycleAdmission,
   ipcRouteRefusalDisposition,
   type RouteLifecycleAdmission,
@@ -111,16 +117,6 @@ export type EnsuredIpcClient = IpcClient & {
 };
 
 type EnsuredClientAuthMode = 'boot' | 'none';
-
-type ExistingIncumbentIdentity = Readonly<{
-  instanceId: string;
-  version: string;
-  bundleHash: string;
-  flavor: 'prod' | 'dev';
-  namespace: string;
-  pid?: number;
-  incarnation?: ProcessIncarnation;
-}>;
 
 type SpawnedCoordinator = {
   readonly attemptId: string;
@@ -367,10 +363,13 @@ async function readRawCoordinatorHealth(
     return { kind: 'unanswered', cause: 'health-request-failed' };
   }
 
-  const parsed = rawCoordinatorHealthSchema.safeParse(reply);
-  return parsed.success
-    ? { kind: 'answered', health: parsed.data }
-    : { kind: 'unusable', cause: 'health-shape-rejected' };
+  const health = parseRawCoordinatorHealth(reply);
+  return health === null ? { kind: 'unusable', cause: 'health-shape-rejected' } : { kind: 'answered', health };
+}
+
+function parseRawCoordinatorHealth(value: unknown): RawCoordinatorHealth | null {
+  const parsed = rawCoordinatorHealthSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
 /** `null` is this invocation's lack of a usable reading, never proof that no coordinator is serving. */
@@ -419,7 +418,7 @@ export function mayProcessReplaceIncumbent(health: RawCoordinatorHealth | null):
   return health === null || health.status === 'draining';
 }
 
-function existingIncumbentIdentity(health: RawCoordinatorHealth): ExistingIncumbentIdentity {
+function existingIncumbentIdentity(health: RawCoordinatorHealth): CoordinatorHealthIdentity {
   return {
     instanceId: health.instanceId,
     version: health.version,
@@ -429,56 +428,6 @@ function existingIncumbentIdentity(health: RawCoordinatorHealth): ExistingIncumb
     ...(health.pid === undefined ? {} : { pid: health.pid }),
     ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
   };
-}
-
-function optionalIdentityMatches<T>(expected: T | undefined, actual: T | undefined): boolean {
-  return expected === undefined || actual === undefined || expected === actual;
-}
-
-function identityMatchesExistingIncumbent(
-  candidate: ExistingIncumbentIdentity,
-  incumbent: ExistingIncumbentIdentity,
-): boolean {
-  return (
-    candidate.instanceId === incumbent.instanceId &&
-    candidate.version === incumbent.version &&
-    candidate.bundleHash === incumbent.bundleHash &&
-    candidate.flavor === incumbent.flavor &&
-    candidate.namespace === incumbent.namespace &&
-    optionalIdentityMatches(incumbent.pid, candidate.pid) &&
-    optionalIdentityMatches(incumbent.incarnation, candidate.incarnation)
-  );
-}
-
-function discoveryMatchesExistingIncumbent(
-  info: VerifiedBackendInfo,
-  expectedSocketPath: string,
-  incumbent: ExistingIncumbentIdentity,
-): boolean {
-  return info.socketPath === expectedSocketPath && identityMatchesExistingIncumbent(info, incumbent);
-}
-
-async function readIdentityCheckedAuthenticatedHealth(
-  info: VerifiedBackendInfo,
-  expectedSocketPath: string,
-  observedHealth: RawCoordinatorHealth,
-  timePort: TimePort,
-): Promise<RawCoordinatorHealth | null> {
-  const observedIdentity = existingIncumbentIdentity(observedHealth);
-  if (!discoveryMatchesExistingIncumbent(info, expectedSocketPath, observedIdentity)) {
-    return null;
-  }
-
-  const client = createIpcClient(info.socketPath, timePort, { kind: 'boot', token: info.bootToken });
-  const authenticatedHealth = answeredHealth(await readRawCoordinatorHealth(client, 'health'));
-  if (
-    authenticatedHealth === null ||
-    !identityMatchesExistingIncumbent(authenticatedHealth, observedIdentity) ||
-    !discoveryMatchesExistingIncumbent(info, expectedSocketPath, existingIncumbentIdentity(authenticatedHealth))
-  ) {
-    return null;
-  }
-  return authenticatedHealth;
 }
 
 function childCoordinatorUnavailable(reason: string): BackendUnreachableError {
@@ -825,21 +774,27 @@ async function waitForBackendReady(
       const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
         info,
         expectedSocketPath,
-        observedHealth,
+        existingIncumbentIdentity(observedHealth),
         timePort,
+        (value) => {
+          const health = parseRawCoordinatorHealth(value);
+          return health === null ? null : { health, identity: existingIncumbentIdentity(health) };
+        },
       );
       if (
-        mayInvocationBeServedByIncumbent(authenticatedHealth, admission) &&
-        isServingStatus(authenticatedHealth.status, admission)
+        authenticatedHealth.kind === 'health' &&
+        mayInvocationBeServedByIncumbent(authenticatedHealth.health, admission) &&
+        isServingStatus(authenticatedHealth.health.status, admission)
       ) {
-        servingIncumbent = { info: mergeDiscoveryWithHealth(info, authenticatedHealth), health: authenticatedHealth };
+        const health = authenticatedHealth.health;
+        servingIncumbent = { info: mergeDiscoveryWithHealth(info, health), health };
         if (waitContext.kind !== 'current-attempt') {
           return servingIncumbent;
         }
         const lineage = resolveStartupAttemptLineage({
-          observedAttemptId: authenticatedHealth.env?.CORAL_STARTUP_ATTEMPT_ID,
+          observedAttemptId: health.env?.CORAL_STARTUP_ATTEMPT_ID,
           expectedAttemptId: waitContext.attemptId,
-          observedIdentity: authenticatedHealth,
+          observedIdentity: health,
           desiredIdentity: desired,
         });
         if (lineage.kind === 'proven-current-attempt') {
@@ -995,19 +950,24 @@ async function reuseServingIncumbent(
 ): Promise<EnsuredIpcClient | null> {
   const info = readDiscoverySnapshot(paths);
   if (info !== null) {
-    const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(info, socketPath, health, timePort);
-    if (authenticatedHealth === null) {
+    const authenticatedHealth = await readIdentityCheckedAuthenticatedHealth(
+      info,
+      socketPath,
+      existingIncumbentIdentity(health),
+      timePort,
+      (value) => {
+        const decoded = parseRawCoordinatorHealth(value);
+        return decoded === null ? null : { health: decoded, identity: existingIncumbentIdentity(decoded) };
+      },
+    );
+    if (authenticatedHealth.kind === 'unavailable') {
       return null;
     }
-    if (isServingStatus(authenticatedHealth.status, admission)) {
-      return summarizeBackend(
-        mergeDiscoveryWithHealth(info, authenticatedHealth),
-        authenticatedHealth,
-        timePort,
-        'boot',
-      );
+    const answeredHealth = authenticatedHealth.health;
+    if (isServingStatus(answeredHealth.status, admission)) {
+      return summarizeBackend(mergeDiscoveryWithHealth(info, answeredHealth), answeredHealth, timePort, 'boot');
     }
-    if (authenticatedHealth.status !== 'starting') {
+    if (answeredHealth.status !== 'starting') {
       return null;
     }
   } else if (health.status !== 'starting') {

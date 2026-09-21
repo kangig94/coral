@@ -47,7 +47,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
-import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transport/http/backend/status.js';
+import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/cli/backend-status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
@@ -443,6 +443,27 @@ describe('backend status generation readiness', () => {
     expect(stdout).toContain('reaper:   unreachable (connection refused)');
     expect(stdout.indexOf('Backend state is unknown')).toBeLessThan(stdout.indexOf('set proxy='));
     expect(process.exitCode).toBe(75);
+  });
+
+  it('reports an answered draining coordinator as healthy and skips the no-coordinator holder dial', async () => {
+    const readProviderProxySetHolderStatusDirect = vi.fn(async () => []);
+    const status: BackendStatusCommandOperations = {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () =>
+        runningBackendStatus({}, { status: 'draining', kernel: { phase: 'draining', readyAt: null } }),
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect,
+    };
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stdout).toContain('Backend draining');
+    expect(readProviderProxySetHolderStatusDirect).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(0);
   });
 
   it.each([{ status: 'no_record_no_socket' } as const, { status: 'recorded_process_absent', pid: 4242 } as const])(

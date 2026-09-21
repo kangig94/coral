@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
-import type { BackendStatusFull } from '#src/transport/http/backend/status.js';
+import type { BackendStatusFull } from '#src/cli/backend-status.js';
 import type { ShutdownResult } from '#src/transport/http/backend/shutdown.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
@@ -2203,7 +2203,6 @@ describe('cli format', () => {
           authorship: 'other-build' as const,
         },
       },
-      { status: 'shutting_down' },
       { status: 'unauthorized' },
     ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {
       const text = formatBackendStatus(status);

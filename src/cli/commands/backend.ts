@@ -101,7 +101,7 @@ import {
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   type HandoffRoutingStatusQuarantineList,
 } from '../../store/handoff-routing-status-store/index.js';
-import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
+import { getBackendStatusFull, type BackendStatusFull } from '../backend-status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
@@ -234,7 +234,6 @@ export const BACKEND_STATUS_EXIT_CODES: Readonly<Record<BackendStatusFull['statu
   ok: 0,
   no_record_no_socket: 0,
   recorded_process_absent: 0,
-  shutting_down: 0,
   unauthorized: 0,
   recent_failure: 0,
   undecodable_record: 75,
