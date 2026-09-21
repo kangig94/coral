@@ -738,7 +738,6 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveSettlement :: catch#1 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#1 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #poll :: catch#2 :: calls=[this.#observeFatal, this.#deps.onError, providerOperationErrorReason] assignments=[]',
-  'src/coordinator/services/provider-operation-reconciler.ts :: #reattemptLatchedRelease :: Promise.catch :: attempt.catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#1 :: calls=[] assignments=[driveError]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #reconcileDueSelection :: catch#2 :: calls=[this.#latchFatal, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#1 :: calls=[providerOperationErrorIsAmbiguous, this.#transition, this.#prepareRefusalRecord, providerOperationPreparePermanentRefusalSchema.parse, boundedPrepareRefusalReason, this.#recordRetry] assignments=[]',
@@ -791,9 +790,6 @@ function rejectionJustification(fingerprint: string): string {
   }
   if (fingerprint.includes(' :: stop :: ')) {
     return 'Store admission unavailability remains a typed shutdown hold with a scheduled retry.';
-  }
-  if (fingerprint.includes(' :: #reattemptLatchedRelease :: ')) {
-    return 'A re-attempted release delivery reports its own throw and cannot fail the due turn that started it.';
   }
   if (fingerprint.startsWith('src/coordinator/services/provider-operation-reconciler.ts')) {
     return 'Existing phase-specific serialization or publication boundary preserves the r17 disposition contract.';

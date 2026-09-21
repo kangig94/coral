@@ -1009,7 +1009,7 @@ export class ProviderOperationReconciler
           const disappearance = serializer.disappearance;
           switch (disappearance.delivery.kind) {
             case 'ready':
-              return this.#reattemptLatchedRelease(key, this.#deliverLatchedDisappearance(serializer, disappearance));
+              return Promise.resolve();
             case 'delivering':
               return disappearance.delivery.promise.then(() => undefined);
             case 'consumed':
@@ -1020,7 +1020,7 @@ export class ProviderOperationReconciler
           const abandonment = serializer.abandonment;
           switch (abandonment.delivery.kind) {
             case 'ready':
-              return this.#reattemptLatchedRelease(key, this.#deliverLatchedAbandonment(serializer, abandonment));
+              return Promise.resolve();
             case 'delivering':
               return abandonment.delivery.promise.then(() => undefined);
             case 'consumed':
@@ -1053,28 +1053,6 @@ export class ProviderOperationReconciler
       },
       record.operation,
     );
-  }
-
-  /**
-   * Constraint: a latched release notice whose delivery is not in flight is work with no other owner — the
-   * representation slot that dispatched it clears its retry timer when it releases at its settlement bound,
-   * so nothing outside this poll attempts it again. The attempt must not be awaited here: a due turn has to
-   * finish whether or not a delivery settles.
-   */
-  #reattemptLatchedRelease(
-    key: string,
-    attempt: Promise<DisappearanceDeliveryAttemptOutcome | RepresentationAbandonmentDeliveryAttemptOutcome>,
-  ): Promise<void> {
-    void attempt.catch((error: unknown) => {
-      // Constraint: a recovery fatal reaching this catch must seal before it is logged. Logging alone leaves
-      // the poll re-arming, which re-attempts the same latched release at the due cadence and re-declares the
-      // same fatal on every turn.
-      if (this.#observeFatal(error)) return;
-      this.#deps.onError?.(
-        `Provider operation release re-delivery failed for '${key}': ${providerOperationErrorReason(error)}`,
-      );
-    });
-    return Promise.resolve();
   }
 
   #serializerFor(key: string): OperationSerializer {

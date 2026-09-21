@@ -1,10 +1,10 @@
 # A representation release retries every second, forever
 
-**Status**: narrowed, not closed. What is gone is the *logged* loop, the unbounded hold on a representation
-slot, and the durable write on every failed re-attempt. The re-attempt itself is unbounded by design and says
-what it is waiting for through the release disposition. What survives is the classification behind it: a
-deterministic terminalization failure is still retried as if it were transient. See *What this does not
-settle*.
+**Status**: the live re-attempt is withdrawn. The slot still has the 60-second settlement bound added by
+`28115ec6`; after that bound, a failed disappearance delivery parks on the surviving provider-operation record
+until this coordinator retires and startup re-observes containment absence. Abandonment does not have that
+durable exit and remains the separate design problem recorded in
+[`representation-release-notice-as-a-durable-phase`](./representation-release-notice-as-a-durable-phase.md).
 
 ## What was seen
 
@@ -23,6 +23,11 @@ first `containment-retry` line **one second later**. The loop is therefore rebui
 provider-proxy set state on every boot, not held in memory by one unlucky instance, which is why 28 hours
 of it spanned more than one coordinator.
 
+The incident began at `2026-09-17T05:20:11Z`. This branch's first commit, `4a092867`, was authored at
+`2026-09-17T10:59:16Z`, 5 hours 39 minutes later (about 5.5 hours; its committer timestamp is later). That
+commit changed `provider-proxy-lifecycle-fatal` from hard shutdown to handoff. The timing is consistent with
+the branch removing the incident's producer before later rounds designed a consumer-side re-attempt for it.
+
 ## Why it did not stop
 
 `#scheduleRepresentationReleaseRetry` (`ProviderProxySetLifecycle`,
@@ -40,10 +45,10 @@ nothing was going to notice 28 hours of it.
 
 ## Resolution
 
-Representation delivery keeps its 1,000 ms retry cadence, and the 60,000 ms settlement window is now armed once
-against the slot when release begins rather than recomputed from each delivery outcome. The earlier shape
-consulted the window only after a delivery failed or a retry timer woke, so a delivery that never settled at all
-never reached it; the deadline now expires either way.
+Representation delivery keeps its 1,000 ms retry cadence only while the representation slot exists. The
+60,000 ms settlement window remains armed once against the slot when release begins rather than recomputed
+from each delivery outcome. The earlier shape consulted the window only after a delivery failed or a retry
+timer woke, so a delivery that never settled at all never reached it; the deadline now expires either way.
 
 Expiry releases the **slot**, which is capacity rather than an obligation: `#removeRepresentationSlot` frees a
 `MAX_COORDINATOR_PROXY_SET_SLOTS` slot, the mutation fence, the route, and the in-memory operator dispositions,
@@ -51,29 +56,32 @@ and the hold settles as `released-undischarged` — a variant of the settlement 
 field. Its one `witness` field is derived from what is still outstanding at the bound: the provider-operation
 record while an operation is pending, the handoff capsule when none is.
 
-`reconcile` (`ProviderOperationReconciler`) re-attempts a latched notice whose delivery is not in flight. That
-is the exit for the record witness: the released slot cleared its delivery retry timer, so nothing else was
-going to try again. The attempt is started and not awaited, because a due turn has to finish whether or not a
-delivery settles.
+After the slot bound, `ProviderOperationReconciler.reconcile` returns immediately for a latched `ready`
+disappearance or abandonment, matching `origin/main`. The `#reattemptLatchedRelease` helper and the fatal
+observer that existed only for that helper are gone. Failed release deliveries still do not write the
+provider-operation record: the slot's `operational-retry-owned` initial disposition already reports entry into
+the failing state, and a second accounting write would create a second failure path and pair retry counters
+with unrelated evidence.
 
-Failed release deliveries do not write the provider-operation record. The attempt's retry-safe disposition is
-already decided before any bookkeeping could run, and a held SQLite write lock can refuse both terminalization
-and an accounting write. Letting the second refusal escape converted the decided retry into an `unknown`
-consumer rejection and a fatal representation release. Catching it while also reporting it once and making
-the next attempt distinguishable would require another state bit; deleting the bookkeeping removes that axis.
+The park has a named exit for **disappearance**. `#terminalizeDisappearance` calls
+`#settleBindingOrThrow` and `#releaseStartupAndRetireBindingOrThrow` before it starts the dispatcher turn, so
+the first attempt releases its startup permit and provider-operation binding even when terminalization returns
+an operational failure. The serializer's delivery returns to `ready`, but its `inFlight` is `null`; a parked
+record creates no request and retains no recovery-registry entry or adopted PID. If no other active work
+exists, the coordinator idle predicate can therefore retire the process within its configured bound. The next
+mutating command goes through `ensure`, which starts a successor when no coordinator serves the address.
 
-The same deletion removes the cause-alternation log flood, the durable commit on every permanent failure, and
-the false host-refusal pairing of an incremented `retryCount` with preserved older `lastError` evidence. Entry
-into the failing state is already the slot's `operational-retry-owned` initial disposition, which carries the
-terminalization cause forwarded through the dispatcher. The distinct 60-second outcome is the
-`released-undischarged` transition. Individual re-attempts do not emit another event merely because their
-cause changed.
+That successor re-derives the observation from durable facts:
+`reconcileAtStartup` groups the surviving record, `recoverSetAtStartup` invokes
+`recoverProviderProxySetAtStartup`, `inheritProviderProxySet` returns `containment-disappeared` when recorded
+containment is absent, composition calls `containmentAbsent`, and the lifecycle dispatches the same
+`disappearance-consumer`. Restart does not remember an in-memory notice; it asks the world again and obtains a
+new disappearance observation.
 
-While the representation slot exists, its one-second timer preserves the common case where contention clears
-within seconds. After the slot bound, the reconciler's two-second poll re-drives the latched notice without a
-durable write. Widening `retryDelayMs` is therefore not a parameter change for this path: it is shared by every
-ordinary provider-operation retry and no longer paces released-slot delivery. Giving release a separate
-backoff would require new release-attempt state, so this correction does not add one.
+The same is not true for **abandonment**. Its terminal directive is constructed only inside
+`#consumeRepresentationAbandonment`, the latch is memory-only, and neither the provider-operation record nor
+startup inheritance records that decision. Restart forgets an abandoned representation. Its durable form is
+the subject of the adjacent TODO, not a reason to keep the withdrawn live re-attempt.
 
 The earlier resolution wrote
 `operator_exit_representation_release_retry_exhausted` into the durable operator-disposition store and named
@@ -131,29 +139,35 @@ argued reachable — but the comment asserting three independent load-bearing cl
 the one clause a test actually proves. Do not restore the stronger claim without a case for each clause
 that a test can see.
 
-**`28115ec6`'s account of why the due poll could not re-drive a stranded record is wrong, though its
-conclusion held.** It says `acquireAuthority` reaches `containmentAbsent` with no slot and throws. It never got
-that far: `reconcile` short-circuited on the latched disappearance (`case 'ready': return Promise.resolve()`)
-before any authority lookup, so there was no throw, no WARN, and no loop — a silent permanent park, which on a
-machine with nobody watching is worse than the flood. Re-minting the recovering slot on the live path was
-considered and rejected: `#occupiedSlotCount` counts every non-`capsule-foreign` slot, so a re-minted
-`recovering` slot re-occupies one of the four the bound exists to free. Consuming the notice needs no slot, so
-the re-attempt runs through the consumer instead.
+**`0a4ede46` fixed the shape of a retry after `4a092867` had already removed the probable producer.** The due
+poll does short-circuit on the latched disappearance (`case 'ready': return Promise.resolve()`) before authority
+lookup. That park is acceptable for disappearance because the first attempt has already released its launch
+and recovery ownership, coordinator idle retirement gives it a bounded process exit, and startup re-observes
+absence from durable provider-set facts. The re-attempt added by `0a4ede46`, and the helper-local fatal observer
+added by `3da55840`, are therefore withdrawn. The extracted delivery helpers remain because the direct notice
+entry points still call them.
+
+## Most probable producer
+
+The producer is traced and timing-consistent, not proven by the rotated log. On `origin/main`, a
+`provider-proxy-lifecycle-fatal` selected hard shutdown. Hard shutdown's crashed-job terminalization obligation
+calls `markJobsAsError`, which runs `runShutdownCrashTerminalization` over
+`crashedJobTerminalizationSource`. That source selects every nonterminal projected job and does not exclude jobs
+with surviving provider-operation rows; `createCrashedJobTerminalizationPolicy` likewise appends the crash
+terminal without a provider-operation fence or deleting the saga row. A later disappearance terminalization
+then appends both `job.progress.emitted` and `job.terminal.recorded`; `validateJobTerminalOrder` rejects the
+first append after the existing terminal with `job_terminal_order_violation`. Startup rebuilds the same
+disappearance observation from the surviving row, so the fixed one-second representation-release retry on
+`origin/main` repeats it after every boot. `4a092867` changed this fatal reason to handoff mode, which does not
+run hard-mode crashed-job terminalization. Those are the confirmed links; the historical log does not identify
+the exact writer of its pre-existing terminal, so attribution of this chain to that incident remains the most
+probable explanation rather than proof.
 
 ## What this does not settle
 
-`ProviderOperationTerminalizationUnavailableError` was never constructed anywhere in `src/`, so the only route
-into `disappearance_consumer_unavailable` is `ProviderOperationAtomicTerminalizationError`, which wraps every
-non-journal throw from inside the synchronous `store.commit` closure and is classified `retry-safe-unknown`. The
-dead error has been deleted, but the classification is unchanged: a deterministic throw — a schema rejection of
-the terminal payload, a bad ref — is still retried at 1 Hz, now for 60 seconds instead of forever.
-
-Splitting that classification needs a fact `terminalizeProviderOperation` cannot observe. `withImmediate`
-(`src/store/db.ts`) runs `BEGIN IMMEDIATE`, the closure, then `COMMIT`, and rolls back on any throw; from outside
-the `try` there is no way to tell a closure throw (decisive: nothing was written) from a `COMMIT` throw
-(indeterminate). Tagging it means changing `withImmediate` or `commit`. And "decisive rollback" is not the same
-as "deterministic": `SQLITE_BUSY` after the configured `busy_timeout` is decisive *and* transient, so treating
-every decisive rollback as a non-retryable refusal would make ordinary lock contention a fatal representation
-release. Both ends of that trade-off are defects, which is the signature of an axis
-(see [`review-loop-dynamics`](../review-loop-dynamics.md)); it needs a construction where the store reports which
-stage failed, not a choice between the two ends.
+The 60-second live-slot retry still classifies every non-journal terminalization throw as
+`retry-safe-unknown`, even though the one reachable deterministic member is concrete:
+`validateJobTerminalOrder` rejects an append after a terminal. The classification change is deliberately not
+part of this withdrawal. Its three observable answers and the existing `local-recovery-pending` successor are
+filed in
+[`provider-operation-terminalization-failure-classification`](./provider-operation-terminalization-failure-classification.md).

@@ -1,37 +1,53 @@
-# TODO — the release notice could be a durable phase instead of an in-memory latch
+# TODO — abandonment is a durable provider-operation control intent
 
-**Status**: open direction, not attempted. Recorded so a later round does not rediscover it without the two
-obstacles that stopped it here.
+**Status**: open direction, narrowed on 2026-09-21. Disappearance is not part of it; abandonment is.
 
-A disappearance or abandonment notice lives in memory, on `OperationSerializer.disappearance` /
-`.abandonment` inside `ProviderOperationReconciler`
-(`src/coordinator/services/provider-operation-reconciler.ts`). Around it sit two near-identical delivery state
-machines (`ready | delivering | consumed`), an unawaited kick from `reconcile`, and — since the release bound
-landed — a durable record that already carries the attempt accounting for exactly the same work.
+The earlier version proposed storing both disappearance and abandonment as a durable release phase. That put
+an observation and a decision into one mechanism. They have different owners.
 
-The direction: make the notice a durable transition of the provider-operation record, the way
-`prestart-cleanup-pending.afterRelease` already is. Terminalization then becomes a driven phase like every
-other, the due index is the only scheduler, and the latch, both delivery machines and the unawaited kick are
-deleted rather than maintained. That is the shape the last five class-ending changes on this branch took:
-remove the mechanism, do not tune it.
+## Disappearance is observed, not stored
 
-It was not chosen because two things have to be shown first, and neither could be shown end to end here.
+Containment disappearance must never be stored as a provider-operation decision. The world can answer it
+again, and startup already asks. A surviving provider-operation row reaches `reconcileAtStartup`, which groups
+the set and calls `recoverSetAtStartup`; production composition invokes `recoverProviderProxySetAtStartup`,
+whose `set-inheritance` producer calls `inheritProviderProxySet`. Recorded containment absence returns
+`containment-disappeared`; composition passes that observation to `containmentAbsent`, which dispatches the
+same disappearance consumer. The restart path does not remember an old observation. It re-derives a current
+one.
 
-**The latch's second job is an abort fence, and a revision compare-and-swap is not one.** Setting
-`serializer.disappearance` also bumps `serializer.epoch` and calls
-`serializer.activeAbort?.abort(new RepresentationDriveFencedError())`. That is what preempts a drive already
-awaiting a provider round-trip — the `fences a blocked executing attach and acknowledges disappearance only
-after terminalization` test is the case. A durable phase transition refuses a *later* write by the fenced
-drive; it does not stop the in-flight one from waiting. Something still has to abort the running drive, so the
-deletion is not purely subtractive unless that fence finds another owner.
+That is the named exit for the post-bound disappearance park described in
+[`representation-release-retries-forever`](./representation-release-retries-forever.md). Storing the notice
+would create durable evidence for a fact whose owner is the external world and whose freshness a later boot can
+establish directly.
 
-**Every record schema is `.strict()`, so a new phase or field is a generation question.** Adding a
-`release-pending` phase or a notice field to `providerOperationRecordSchema`
-(`src/store/provider-operation-record.ts`) is additive and therefore allowed under `design-philosophy`
-principle 10 — but the meta-key namespace is derived from `PROVIDER_OPERATION_RECORD_VERSION`, and a build
-that does not know the new phase must skip such a row visibly rather than fault on it. The mixed window is
-real: updating the plugin swaps the CLI while the coordinator keeps serving on the build it started with.
+## Abandonment is a decision
 
-A third thing worth measuring before committing: whether the durable phase changes what `backend status`
-shows for an operation whose release is pending, and whether that is an improvement or one more status the
-reader cannot act on (principle 12).
+Abandonment has no equivalent re-observation. `#consumeRepresentationAbandonment` constructs the literal
+`coral_representation_abandoned` terminal directive only after the in-memory notice arrives, and no durable
+field records that choice. Restart therefore forgets it.
+
+The record already has the right form. `abort` calls `#requestControlIntent`, which writes
+`controlIntent: { kind: 'stop', cause, requestedAt }` before the drive performs provider work.
+`#rekeyRefusalDirective` derives the `coordinator_rekey_refused` terminal directive from another
+`controlIntent` member during terminalization, and `#drive` drives the record's current decision. Abandonment is
+the third decision of that species: write it before representation release, derive its terminal directive at
+terminalization, and let `#drive` own progress.
+
+If implemented, that shape deletes the abandonment latch, `#deliverLatchedAbandonment`, the literal directive
+inside `#consumeRepresentationAbandonment`, and the `representation-abandonment-consumer` producer. It does not
+store disappearance and does not add a generic release phase.
+
+## The former obstacles are withdrawn
+
+The abort fence is an entry effect of delivering a new decision, not a property the decision must retain.
+`abort` already works without a separate delivery fence: it writes the control intent, then an older in-flight
+drive loses a later compare-and-swap on `revision`. Abandonment can use the same ordering. The earlier claim
+that the latch's active abort had to acquire a new durable owner was therefore not a blocker.
+
+Generation is a timing fact, not a blocker. Provider-operation record generation 3 landed in `94204799` on
+2026-09-12. As verified on 2026-09-21, `git tag --contains 94204799` returns no tag, so no released build selects
+generation 3. Changing the strict v3 shape is free until the next release; after a release selects v3, the next
+shape change requires a generation bump. This TODO should be decided before that window closes.
+
+The remaining work is the record-shape and drive design itself, plus tests that prove abandonment survives a
+coordinator restart. It is not part of the retry withdrawal.
