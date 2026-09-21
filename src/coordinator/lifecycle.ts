@@ -49,13 +49,11 @@ import {
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import type { ShutdownHoldExit, ShutdownHoldReason, ShutdownUndischarged } from '../infra/shutdown-remainder-record.js';
 import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
-  ShutdownHoldExit,
-  ShutdownHoldReason,
   ShutdownSequenceDisposition,
-  ShutdownUndischarged,
 } from './shutdown-settlement.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';

@@ -13,9 +13,9 @@ import {
   shutdownRemainderRecordPath,
   shutdownRemainderStagePath,
   type ShutdownRemainderRecord,
+  type ShutdownUndischarged,
 } from '../infra/shutdown-remainder-record.js';
 import { nowIsoString } from '../infra/time.js';
-import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 type ShutdownRemainderWriteRuntime = Readonly<{
   storage: Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;

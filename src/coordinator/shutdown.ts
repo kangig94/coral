@@ -6,6 +6,7 @@ import {
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
 import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import type { ShutdownUndischarged, UndischargedRemainder } from '../infra/shutdown-remainder-record.js';
 import { createJoinableSettlementTask, type SettlementConfirmation } from '../obligation/settlement.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { IpcListener } from '../transport/ipc/server.js';
@@ -31,8 +32,6 @@ import {
   type ShutdownRetainedAuthorityContribution,
   type ShutdownSequenceDisposition,
   type ShutdownSettlementLedger,
-  type ShutdownUndischarged,
-  type UndischargedRemainder,
 } from './shutdown-settlement.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;

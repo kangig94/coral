@@ -27,7 +27,23 @@ type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
 
 export type ShutdownRemainderSubject = DeepReadonly<z.infer<typeof shutdownRemainderSubjectSchema>>;
 
-type ShutdownRemainderEntry = DeepReadonly<z.infer<typeof shutdownRemainderEntrySchema>>;
+export type SuccessorRecoveryEvidence = DeepReadonly<z.infer<typeof successorRecoveryEvidenceSchema>>;
+
+export type UndischargedRemainder =
+  | Readonly<{ owner: 'process-exit' }>
+  | Readonly<{ owner: 'successor-recovery'; evidence: SuccessorRecoveryEvidence }>;
+
+export type ShutdownHoldReason = z.infer<typeof shutdownHoldReasonSchema>;
+
+export type ShutdownHoldExit = z.infer<typeof shutdownHoldExitSchema>;
+
+export type ShutdownRetainedAuthority = DeepReadonly<z.infer<typeof shutdownRetainedAuthoritySchema>>;
+
+export type ShutdownUndischarged = DeepReadonly<z.infer<typeof shutdownRemainderEntrySchema>>;
+
+export type ShutdownRemainderProjection = DeepReadonly<z.infer<typeof shutdownRemainderProjectionEnvelopeSchema>>;
+
+type ShutdownRemainderEntry = ShutdownUndischarged;
 
 type DecodedShutdownRemainderEntry = ShutdownRemainderEntry & Readonly<{ entryNumber: number }>;
 
@@ -97,7 +113,14 @@ const successorRecoveryEvidenceSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('startup-store-recovery') }),
   z.object({ kind: z.literal('startup-liveness-recovery') }),
 ]);
-const shutdownRemainderEntrySchema = z.object({
+export const shutdownHoldReasonSchema = z.literal('required-shutdown-step-unsettled');
+export const shutdownHoldExitSchema = z.enum(['shutdown-budget-exhaustion', 'authority-release-settlement']);
+export const shutdownRetainedAuthoritySchema = z.object({
+  ipcSocket: z.boolean(),
+  providerControlProxyInstanceIds: z.array(serializedThrownIdentifierSchema).readonly(),
+  cleanupObligations: z.array(persistedFactSchema).readonly(),
+});
+export const shutdownRemainderEntrySchema = z.object({
   label: persistedFactSchema,
   subject: shutdownRemainderSubjectSchema.optional(),
   remainder: z.discriminatedUnion('owner', [
@@ -108,6 +131,25 @@ const shutdownRemainderEntrySchema = z.object({
     }),
   ]),
   settlement: settlementSchema,
+});
+export const shutdownRemainderProjectionEnvelopeSchema = z.object({
+  reason: z.enum(SHUTDOWN_REASONS),
+  mode: z.enum(SHUTDOWN_MODES),
+  elapsedMs: z.number().finite().nonnegative(),
+  boundMs: z.number().finite().nonnegative(),
+  attempt: z.object({
+    started: z.number().int().nonnegative(),
+    limit: z.number().int().positive(),
+  }),
+  lastDeclined: z
+    .object({
+      attempt: z.number().int().positive(),
+      reason: shutdownHoldReasonSchema,
+      exit: shutdownHoldExitSchema,
+      undischarged: z.array(shutdownRemainderEntrySchema).readonly(),
+      retainedAuthority: shutdownRetainedAuthoritySchema,
+    })
+    .optional(),
 });
 const shutdownRemainderRecordEnvelopeSchema = z.object({
   instanceId: serializedThrownIdentifierSchema,

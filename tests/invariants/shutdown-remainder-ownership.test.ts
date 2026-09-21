@@ -10,6 +10,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const OWNERSHIP_SCAN_ROOT = 'src';
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
 const SHUTDOWN_SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
+const SHUTDOWN_REMAINDER_RECORD_PATH = 'src/infra/shutdown-remainder-record.ts';
 const BACKEND_STATUS_PATH = 'src/transport/http/backend/status.ts';
 const PROCESS_EXIT_OBLIGATION_INVENTORY = [
   'recovery coordinator teardown',
@@ -227,15 +228,15 @@ function ownershipShapeFileViolations(file: ts.SourceFile): string[] {
 function ownershipShapeViolations(): string[] {
   const violations: string[] = sourceFiles(OWNERSHIP_SCAN_ROOT).flatMap(ownershipShapeFileViolations);
 
-  const settlement = sourceFile(SHUTDOWN_SETTLEMENT_PATH);
-  const remainder = settlement.statements.find(
+  const remainderRecord = sourceFile(SHUTDOWN_REMAINDER_RECORD_PATH);
+  const remainder = remainderRecord.statements.find(
     (statement): statement is ts.TypeAliasDeclaration =>
       ts.isTypeAliasDeclaration(statement) && statement.name.text === 'UndischargedRemainder',
   );
   if (remainder === undefined) {
-    violations.push(`${SHUTDOWN_SETTLEMENT_PATH} must declare UndischargedRemainder`);
+    violations.push(`${SHUTDOWN_REMAINDER_RECORD_PATH} must declare UndischargedRemainder`);
   } else {
-    const declaration = remainder.type.getText(settlement);
+    const declaration = remainder.type.getText(remainderRecord);
     const armCount = ts.isUnionTypeNode(remainder.type) ? remainder.type.types.length : 1;
     if (armCount !== 2) {
       violations.push(`UndischargedRemainder must contain exactly two owner arms; found ${armCount}`);
