@@ -572,6 +572,14 @@ describe('cli main routing', () => {
                     setToken: token,
                     liveClaims: 1,
                     operatorExit: { kind: 'contain' },
+                    autonomousDisposition: {
+                      kind: 'control-or-containment',
+                      owner: 'coordinator',
+                      boundMs: 60_000,
+                      retryAction: 'recover-control-or-observe-exact-containment',
+                      refusalSuccessor: 'automatic-retry',
+                      terminalExit: 'control-reattached-or-containment-absent',
+                    },
                     holds: [
                       {
                         disposition: 'held',
@@ -592,7 +600,10 @@ describe('cli main routing', () => {
 
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
-    expect(stdout).toContain(`coral-cli backend provider-proxy-set contain ${token}`);
+    expect(stdout).toContain(
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=recover-control-or-observe-exact-containment refusalSuccessor=automatic-retry terminalExit=control-reattached-or-containment-absent',
+    );
+    expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${token}`);
     expect(stdout.split(token)).toHaveLength(2);
     expect(process.exitCode).toBeUndefined();
   });
@@ -618,6 +629,14 @@ describe('cli main routing', () => {
                     setToken: token,
                     liveClaims: 0,
                     operatorExit: { kind: 'none' },
+                    autonomousDisposition: {
+                      kind: 'publication-recovery',
+                      owner: 'coordinator',
+                      boundMs: 60_000,
+                      retryAction: 'confirm-publication-or-release-control',
+                      refusalSuccessor: 'automatic-retry',
+                      terminalExit: 'publication-confirmed-or-control-released',
+                    },
                     holds: [
                       {
                         disposition: 'held',
@@ -639,7 +658,9 @@ describe('cli main routing', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown']);
 
     expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${token}`);
-    expect(stdout).toContain('action=wait; Coral retries publication automatically');
+    expect(stdout).toContain(
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=confirm-publication-or-release-control refusalSuccessor=automatic-retry terminalExit=publication-confirmed-or-control-released',
+    );
     expect(process.exitCode).toBeUndefined();
   });
 

@@ -386,6 +386,73 @@ describe('coordinator discovery', () => {
     expect(probeCoordinator(makeDiscoveryRuntime('prod'))).toEqual({ kind: 'absent' });
   });
 
+  it('returns a typed refusal when discovery cannot be read during owner withdrawal', async () => {
+    makeHome();
+    const { removeBackendInfoIfOwner } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+    const failing = {
+      ...runtime,
+      storage: {
+        ...runtime.storage,
+        readFileSync: () => {
+          throw Object.assign(new Error('read denied\n/private/discovery-path'), { code: 'EACCES' });
+        },
+      },
+    } as DiscoveryWriterRuntime;
+
+    const result = removeBackendInfoIfOwner('instance-a', failing);
+
+    expect(result.kind).toBe('refused');
+    if (result.kind !== 'refused') throw new Error(`expected refusal, got ${result.kind}`);
+    expect(result).toMatchObject({
+      operation: 'read',
+      code: 'filesystem-operation-failed',
+      correlation: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      error: { kind: 'error', code: 'EACCES', message: 'read denied\n/private/discovery-path' },
+    });
+  });
+
+  it('returns a typed refusal when owned discovery cannot be unlinked', async () => {
+    makeHome();
+    const { removeBackendInfoIfOwner, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 4312,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'bundle-a',
+        flavor: 'prod',
+        namespace: 'ns-a',
+        startedAt: Date.now(),
+        token: 'token-a',
+        bootToken: 'boot-token-a',
+        instanceId: 'instance-a',
+      },
+      runtime,
+    );
+    const failing = {
+      ...runtime,
+      storage: {
+        ...runtime.storage,
+        unlinkSync: () => {
+          throw Object.assign(new Error('unlink denied\n/private/discovery-path'), { code: 'EACCES' });
+        },
+      },
+    } as DiscoveryWriterRuntime;
+
+    const result = removeBackendInfoIfOwner('instance-a', failing);
+
+    expect(result.kind).toBe('refused');
+    if (result.kind !== 'refused') throw new Error(`expected refusal, got ${result.kind}`);
+    expect(result).toMatchObject({
+      operation: 'unlink',
+      code: 'filesystem-operation-failed',
+      correlation: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      error: { kind: 'error', code: 'EACCES', message: 'unlink denied\n/private/discovery-path' },
+    });
+  });
+
   // The fourth outcome, and the only one that is not a variant: a file that exists and cannot be *opened* is
   // this process failing to read its own run directory, not a statement about the incumbent. `DiscoveryRead`
   // says so in prose and nothing checked it — deleting the `ENOENT` guard turns every unreadable file into

@@ -1,4 +1,4 @@
-import { dirname, normalize } from 'node:path';
+import { dirname, normalize, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type {
   DirectoryTraversability,
@@ -7,6 +7,7 @@ import type {
   StorageBigIntStat,
   StorageData,
   StorageEntryKind,
+  StoragePath,
   StoragePort,
   TimePort,
 } from '../../../src/infra/port-types.js';
@@ -17,6 +18,7 @@ const SIMULATED_OWNER_UID = BigInt(process.getuid?.() ?? 0);
 const DIRECTORY_TYPE_BITS = 0o040000n;
 const REGULAR_FILE_TYPE_BITS = 0o100000n;
 const POSIX_MODE_BITS = 0o7777;
+const RAW_STORAGE_NAME_PREFIX = '\0';
 // Measured constraint: Node 24 `node:sqlite` grows a 0-byte file to 4096 bytes at `PRAGMA journal_mode=WAL`.
 const SQLITE_WAL_MAIN_FILE_SIZE = 4096;
 
@@ -69,13 +71,49 @@ export type InMemoryRoots = {
   coralRoot?: string;
 };
 
-export function normalizePathForStorage(path: string): string {
-  const normalized = normalize(path.replace(/\\/g, '/'));
+export function normalizePathForStorage(path: StoragePath): string {
+  const value =
+    typeof path === 'string' ? (sep === '\\' ? path.replace(/\\/g, '/') : path) : storagePathBufferToKey(path);
+  const normalized = normalize(value);
   if (normalized === '.' || normalized === '') {
     return '/';
   }
   const absolute = normalized.startsWith('/') ? normalized : `/${normalized}`;
   return absolute.length > 1 && absolute.endsWith('/') ? absolute.slice(0, -1) : absolute;
+}
+
+function storageNameBuffer(name: string): Buffer {
+  return name.startsWith(RAW_STORAGE_NAME_PREFIX)
+    ? Buffer.from(name.slice(RAW_STORAGE_NAME_PREFIX.length), 'hex')
+    : Buffer.from(name);
+}
+
+function storageNameString(name: string): string {
+  return storageNameBuffer(name).toString('utf8');
+}
+
+function storagePathString(path: string): string {
+  return path.split('/').map(storageNameString).join('/');
+}
+
+function storagePathBufferToKey(path: Buffer): string {
+  const bytes = Buffer.from(path);
+  if (sep === '\\') {
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] === 0x5c) bytes[index] = 0x2f;
+    }
+  }
+  return bytes
+    .toString('latin1')
+    .split('/')
+    .map((segment) => {
+      const segmentBytes = Buffer.from(segment, 'latin1');
+      const decoded = segmentBytes.toString('utf8');
+      return Buffer.from(decoded).equals(segmentBytes)
+        ? decoded
+        : `${RAW_STORAGE_NAME_PREFIX}${segmentBytes.toString('hex')}`;
+    })
+    .join('/');
 }
 
 function parentPath(path: string): string {
@@ -281,7 +319,7 @@ export class InMemoryStorage implements StoragePort {
     return this.readdirSync(path);
   }
 
-  readFileSync(path: string, encoding: 'utf-8'): string {
+  readFileSync(path: StoragePath, encoding: 'utf-8'): string {
     const normalized = normalizePathForStorage(path);
     const file = this.fileNode(normalized);
     if (!file) {
@@ -348,7 +386,7 @@ export class InMemoryStorage implements StoragePort {
     this.touchAncestors(parent);
   }
 
-  renameSync(oldPath: string, newPath: string): void {
+  renameSync(oldPath: StoragePath, newPath: StoragePath): void {
     const from = normalizePathForStorage(oldPath);
     const to = normalizePathForStorage(newPath);
     if (from === to) {
@@ -545,33 +583,60 @@ export class InMemoryStorage implements StoragePort {
   }
 
   readdirSync(path: string): string[];
+  readdirSync(path: string, options: { encoding: 'buffer' }): Buffer[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
-  readdirSync(path: string, options?: { withFileTypes: true }): string[] | DirentLike[] {
+  readdirSync(
+    path: string,
+    options?: { withFileTypes: true } | { encoding: 'buffer' },
+  ): string[] | Buffer[] | DirentLike[] {
     const normalized = normalizePathForStorage(path);
     this.requireDirectory(normalized);
 
     const sortedNames = [...(this.childIndex.get(normalized) ?? [])].sort((left, right) => left.localeCompare(right));
 
+    if (options !== undefined && 'encoding' in options) {
+      return sortedNames.map(storageNameBuffer);
+    }
+
     if (options?.withFileTypes === true) {
       return sortedNames.map((name) => {
         const childPathValue = childPath(normalized, name);
         return {
-          name,
+          name: storageNameString(name),
           isDirectory: () => this.directories.has(childPathValue),
           isFile: () => this.files.has(childPathValue),
         };
       });
     }
 
-    return sortedNames;
+    return sortedNames.map(storageNameString);
   }
 
   readDirectoryBoundedSync(
     path: string,
     limit: number,
-  ): { readonly entries: readonly string[]; readonly overflow: boolean } {
+    options: { encoding: 'buffer' },
+  ): { readonly entries: readonly Buffer[]; readonly overflow: boolean };
+  readDirectoryBoundedSync(
+    path: string,
+    limit: number,
+  ): { readonly entries: readonly string[]; readonly overflow: boolean };
+  readDirectoryBoundedSync(
+    path: string,
+    limit: number,
+    options?: { encoding: 'buffer' },
+  ):
+    | { readonly entries: readonly Buffer[]; readonly overflow: boolean }
+    | { readonly entries: readonly string[]; readonly overflow: boolean } {
     if (!Number.isSafeInteger(limit) || limit < 0) {
       throw new TypeError('Directory entry limit must be a non-negative safe integer.');
+    }
+    if (options !== undefined) {
+      const entries = this.readdirSync(path, { encoding: 'buffer' });
+      return {
+        entries: entries.slice(0, limit),
+        overflow: entries.length > limit,
+      };
     }
     const entries = this.readdirSync(path);
     return {
@@ -580,9 +645,9 @@ export class InMemoryStorage implements StoragePort {
     };
   }
 
-  lstatSync(path: string): StorageEntryKind;
-  lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
-  lstatSync(path: string, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
+  lstatSync(path: StoragePath): StorageEntryKind;
+  lstatSync(path: StoragePath, options: { bigint: true }): StorageBigIntStat;
+  lstatSync(path: StoragePath, options?: { bigint: true }): StorageEntryKind | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
     if (options?.bigint === true) {
       return this.statSync(normalized, { bigint: true });
@@ -615,13 +680,13 @@ export class InMemoryStorage implements StoragePort {
     if (!this.files.has(normalized) && !this.directories.has(normalized)) {
       throw createErrnoError('ENOENT', normalized);
     }
-    return normalized;
+    return storagePathString(normalized);
   }
 
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  statSync(path: StoragePath): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
+  statSync(path: StoragePath, options: { bigint: true }): StorageBigIntStat;
   statSync(
-    path: string,
+    path: StoragePath,
     options?: { bigint: true },
   ): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean } | StorageBigIntStat {
     const normalized = normalizePathForStorage(path);
@@ -881,7 +946,7 @@ export class InMemoryStorage implements StoragePort {
     }
   }
 
-  unlinkSync(path: string): void {
+  unlinkSync(path: StoragePath): void {
     const normalized = normalizePathForStorage(path);
     if (!this.files.has(normalized)) {
       if (this.directories.has(normalized)) {

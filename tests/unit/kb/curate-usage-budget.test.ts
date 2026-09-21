@@ -30,7 +30,7 @@ describe('curate usage budget runtime isolation', () => {
         now: () => 1_000,
         storage: {
           readFileSync(path) {
-            observedPath = path;
+            observedPath = String(path);
             return JSON.stringify({
               claude: {
                 ts: 900,

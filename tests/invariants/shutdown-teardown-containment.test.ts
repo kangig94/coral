@@ -14,7 +14,7 @@ const SETTLEMENT_IMPORTS = new Map([
   ['createShutdownSettlementLedger', './shutdown-settlement.js'],
   ['createJoinableSettlementTask', '../obligation/settlement.js'],
 ]);
-const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'transferPending']);
+const SETTLEMENT_GATE_CONSTRUCTORS = new Set(['settled', 'delegated', 'held', 'unaccepted']);
 
 type NamedFunction = ts.FunctionDeclaration | ts.MethodDeclaration;
 
@@ -94,10 +94,10 @@ function formatViolation(functionNode: NamedFunction, node: ts.Node, detail: str
   return `${sourceFile.fileName}:${line + 1} ${functionName(functionNode)}: ${detail}`;
 }
 
-type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'transfer-pending';
+type ShutdownDispositionName = 'held' | 'settled' | 'delegated' | 'unaccepted';
 
 function isShutdownDispositionName(value: string): value is ShutdownDispositionName {
-  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'transfer-pending';
+  return value === 'held' || value === 'settled' || value === 'delegated' || value === 'unaccepted';
 }
 
 function shutdownDispositionLiteralViolations(sourceFile: ts.SourceFile): string[] {
@@ -195,11 +195,7 @@ function hasProperties(node: ts.ObjectLiteralExpression, required: readonly stri
 }
 
 function hasShutdownHeldPayload(node: ts.ObjectLiteralExpression): boolean {
-  return hasProperties(node, ['reason', 'exit', 'retryAfter', 'deferredFailures', 'retainedAuthority', 'retry']);
-}
-
-function hasShutdownDelegatedPayload(node: ts.ObjectLiteralExpression): boolean {
-  return hasProperties(node, ['owner', 'deferredFailures', 'acceptance']);
+  return hasProperties(node, ['reason', 'exit', 'retryAfter', 'undischarged', 'retainedAuthority', 'retry']);
 }
 
 function isSettlementGateConstruction(node: ts.ObjectLiteralExpression): boolean {
@@ -229,8 +225,9 @@ function shutdownDispositionConstructorViolations(sourceFile: ts.SourceFile): st
         !isSettlementGateConstruction(node) &&
         (isSettlementModule ||
           hasShutdownDispositionContext(node) ||
-          hasShutdownHeldPayload(node) ||
-          (hasShutdownDelegatedPayload(node) && !hasExplicitUnrelatedDispositionContext(node)) ||
+          (disposition === 'held' && hasShutdownHeldPayload(node)) ||
+          (disposition === 'delegated' && !hasExplicitUnrelatedDispositionContext(node)) ||
+          (disposition === 'unaccepted' && !hasExplicitUnrelatedDispositionContext(node)) ||
           (disposition === 'settled' && !hasExplicitUnrelatedDispositionContext(node)))
       ) {
         const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -406,7 +403,7 @@ function settlementConstructorDefinitionViolations(sourceFile: ts.SourceFile, ex
   );
 }
 
-function cleanupHandleLoop(terminateAll: NamedFunction): ts.ForOfStatement | null {
+function cleanupHandleLoop(childTermination: NamedFunction): ts.ForOfStatement | null {
   let match: ts.ForOfStatement | null = null;
 
   function visit(node: ts.Node): void {
@@ -421,7 +418,7 @@ function cleanupHandleLoop(terminateAll: NamedFunction): ts.ForOfStatement | nul
     ts.forEachChild(node, visit);
   }
 
-  if (terminateAll.body) visit(terminateAll.body);
+  if (childTermination.body) visit(childTermination.body);
   return match;
 }
 
@@ -442,16 +439,16 @@ function isInsideCaughtTry(node: ts.Node, loop: ts.ForOfStatement): boolean {
   return false;
 }
 
-function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
-  const terminateAll = findFunction(sourceFile, 'terminateAll');
-  const loop = cleanupHandleLoop(terminateAll);
+function childTerminationViolations(sourceFile: ts.SourceFile, functionName: string): string[] {
+  const childTermination = findFunction(sourceFile, functionName);
+  const loop = cleanupHandleLoop(childTermination);
   if (loop === null) {
-    return [formatViolation(terminateAll, terminateAll, 'missing cleanupHandles.values() termination loop')];
+    return [formatViolation(childTermination, childTermination, 'missing cleanupHandles.values() termination loop')];
   }
 
   const cleanupName = loopBindingName(loop);
   if (cleanupName === null) {
-    return [formatViolation(terminateAll, loop, 'cleanup handle loop must use an exact identifier binding')];
+    return [formatViolation(childTermination, loop, 'cleanup handle loop must use an exact identifier binding')];
   }
 
   const cleanupCalls: ts.CallExpression[] = [];
@@ -468,12 +465,14 @@ function childTerminationViolations(sourceFile: ts.SourceFile): string[] {
   visit(loop.statement);
 
   if (cleanupCalls.length === 0) {
-    return [formatViolation(terminateAll, loop, `cleanup handle ${cleanupName} is never called`)];
+    return [formatViolation(childTermination, loop, `cleanup handle ${cleanupName} is never called`)];
   }
 
   return cleanupCalls
     .filter((call) => !isInsideCaughtTry(call, loop))
-    .map((call) => formatViolation(terminateAll, call, `${cleanupName}() bypasses per-handle try/catch containment`));
+    .map((call) =>
+      formatViolation(childTermination, call, `${cleanupName}() bypasses per-handle try/catch containment`),
+    );
 }
 
 describe('shutdown teardown containment invariant', () => {
@@ -632,7 +631,7 @@ describe('shutdown teardown containment invariant', () => {
     const mutation = parseSource(
       competingPath,
       `function competingConstructor() {
-        return { disposition: 'delegated', owner: 'process-exit', deferredFailures: [], acceptance: {} } as const;
+        return { disposition: 'delegated', undischarged: [], acceptance: {} } as const;
       }`,
     );
     expect(shutdownDispositionConstructorViolations(mutation)).toEqual([
@@ -641,11 +640,11 @@ describe('shutdown teardown containment invariant', () => {
   });
 
   it('contains every cleanup call in the child-termination loop', () => {
-    expect(childTerminationViolations(readSource(ADMISSION_PATH))).toEqual([]);
+    expect(childTerminationViolations(readSource(ADMISSION_PATH), 'terminateRegisteredChildren')).toEqual([]);
   });
 
   it('rejects a bare child-cleanup mutation', () => {
-    expect(childTerminationViolations(readFixture('terminate-all-bare-cleanup'))).toEqual([
+    expect(childTerminationViolations(readFixture('terminate-all-bare-cleanup'), 'terminateAll')).toEqual([
       `${FIXTURE_ROOT}/terminate-all-bare-cleanup.ts:4 terminateAll: ` +
         'cleanup() bypasses per-handle try/catch containment',
     ]);

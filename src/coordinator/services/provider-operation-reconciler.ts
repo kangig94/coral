@@ -76,6 +76,7 @@ import type { ProviderOperationStartupRelease } from './recovery/provider-operat
 import {
   type ContainmentAbsenceAcceptance,
   type ContainmentAbsenceOperationalIncident,
+  type ProviderProxyRepresentationReleasedUndischarged,
 } from './provider-proxy-set/index.js';
 import {
   containmentDisappearanceNoticeSchema,
@@ -151,6 +152,12 @@ export type StartupReconciliationIncident =
       setIdentity: ProviderProxySetIdentity;
       disappearanceReceipt: string;
       incident: ContainmentAbsenceOperationalIncident;
+    }>
+  | Readonly<{
+      kind: 'absence-released-undischarged';
+      setIdentity: ProviderProxySetIdentity;
+      disappearanceReceipt: string;
+      witness: ProviderProxyRepresentationReleasedUndischarged['witness'];
     }>;
 
 export type StartupReconciliationReport = Readonly<{
@@ -158,6 +165,22 @@ export type StartupReconciliationReport = Readonly<{
   operationsVisited: number;
   incidents: readonly StartupReconciliationIncident[];
 }>;
+
+export function describeStartupReconciliationIncident(incident: StartupReconciliationIncident): string {
+  const set = `set=${providerProxySetReference(incident.setIdentity)}`;
+  switch (incident.kind) {
+    case 'set-retry-scheduled':
+      return `${set} kind=${incident.kind} operations=${incident.operations.map(operationKey).join(',')} nextAttemptAtMs=${incident.nextAttemptAtMs} reason=${incident.reason}`;
+    case 'operation-retry-scheduled':
+      return `${set} kind=${incident.kind} operation=${operationKey(incident.operation)} nextAttemptAtMs=${incident.nextAttemptAtMs} reason=${incident.reason}`;
+    case 'absence-retry-owned':
+      return `${set} kind=${incident.kind} stage=${incident.incident.stage} code=${incident.incident.code} nextAttemptAtMs=${incident.incident.nextAttemptAtMs} reason=${incident.incident.reason}`;
+    case 'absence-released-undischarged':
+      return `${set} kind=${incident.kind} witness=${incident.witness}`;
+    default:
+      return assertNever(incident);
+  }
+}
 
 export type ProviderOperationReconcilerStopDisposition =
   | ProviderOperationMutationAdmissionDisposition
@@ -478,6 +501,28 @@ function boundedRekeyRefusalReason(reason: string): string {
   return (diagnostic.length === 0 ? 'Coordinator ownership re-key was refused.' : diagnostic).slice(0, 4096);
 }
 
+function boundedReleaseFailureReason(incident: unknown): string {
+  const reason = providerOperationErrorReason(incident).trim();
+  return (reason.length === 0 ? 'Provider operation terminalization is temporarily unavailable.' : reason).slice(
+    0,
+    4096,
+  );
+}
+
+/**
+ * Constraint: on this record `lastError` is an input to the terminal it is still waiting for and not only a
+ * diagnostic, so an attempt that failed for another reason may not replace it.
+ * see providerHostUnserviceableLastError in src/jobs/provider-operation-terminalization.ts
+ */
+function preservesHostRefusalEvidence(record: ProviderOperationRecord): boolean {
+  return (
+    record.phase === 'prestart-cleanup-pending' &&
+    record.afterRelease.kind === 'terminal-failed' &&
+    record.afterRelease.code === 'provider_host_unserviceable' &&
+    record.lastError?.code === 'provider_host_unserviceable'
+  );
+}
+
 export class ProviderOperationReconciler
   implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
 {
@@ -609,15 +654,30 @@ export class ProviderOperationReconciler
     const recovery = await awaitStartup(this.#deps.startupSetRecovery.recoverSetAtStartup(currentWork, signal), signal);
     if (recovery.kind === 'absence-accepted') {
       const disposition = await awaitStartup(recovery.acceptance.initialDisposition, signal);
-      if (disposition.kind !== 'operational-retry-owned') return [];
-      return disposition.incidents.map(
-        (incident): StartupReconciliationIncident => ({
-          kind: 'absence-retry-owned',
-          setIdentity: work.identity,
-          disappearanceReceipt: recovery.acceptance.disappearanceReceipt,
-          incident,
-        }),
-      );
+      switch (disposition.kind) {
+        case 'completed':
+          return [];
+        case 'operational-retry-owned':
+          return disposition.incidents.map(
+            (incident): StartupReconciliationIncident => ({
+              kind: 'absence-retry-owned',
+              setIdentity: work.identity,
+              disappearanceReceipt: recovery.acceptance.disappearanceReceipt,
+              incident,
+            }),
+          );
+        case 'released-undischarged':
+          return [
+            {
+              kind: 'absence-released-undischarged',
+              setIdentity: work.identity,
+              disappearanceReceipt: recovery.acceptance.disappearanceReceipt,
+              witness: disposition.witness,
+            },
+          ];
+        default:
+          return assertNever(disposition);
+      }
     }
     if (recovery.kind === 'retry-scheduled') {
       for (const record of currentRecords) {
@@ -825,35 +885,41 @@ export class ProviderOperationReconciler
           case 'delivering':
             return disappearance.delivery.promise;
           case 'ready':
-            break;
+            return this.#deliverLatchedDisappearance(serializer, disappearance);
         }
-
-        const active = serializer.inFlight ?? Promise.resolve();
-        const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
-          const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(parsed));
-          return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
-        };
-        const promise = active.then(consume, consume);
-        disappearance.delivery = { kind: 'delivering', promise };
-        void promise.then(
-          (outcome) => {
-            if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
-            if (outcome.kind === 'operational-failure') {
-              disappearance.delivery = { kind: 'ready' };
-              return;
-            }
-            disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
-            this.wake();
-          },
-          () => {
-            if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
-            disappearance.delivery = { kind: 'ready' };
-          },
-        );
-        return promise;
       },
       notice.operation,
     );
+  }
+
+  #deliverLatchedDisappearance(
+    serializer: OperationSerializer,
+    disappearance: LatchedContainmentDisappearance,
+  ): Promise<DisappearanceDeliveryAttemptOutcome> {
+    const notice = disappearance.notice;
+    const active = serializer.inFlight ?? Promise.resolve();
+    const consume = async (): Promise<DisappearanceDeliveryAttemptOutcome> => {
+      const outcome = await this.#driveContext.exit(() => this.#consumeContainmentDisappearance(notice));
+      return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
+    };
+    const promise = active.then(consume, consume);
+    disappearance.delivery = { kind: 'delivering', promise };
+    void promise.then(
+      (outcome) => {
+        if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+        if (outcome.kind === 'operational-failure') {
+          disappearance.delivery = { kind: 'ready' };
+          return;
+        }
+        disappearance.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
+        this.wake();
+      },
+      () => {
+        if (disappearance.delivery.kind !== 'delivering' || disappearance.delivery.promise !== promise) return;
+        disappearance.delivery = { kind: 'ready' };
+      },
+    );
+    return promise;
   }
 
   representationAbandoned(
@@ -890,35 +956,41 @@ export class ProviderOperationReconciler
           case 'delivering':
             return abandonment.delivery.promise;
           case 'ready':
-            break;
+            return this.#deliverLatchedAbandonment(serializer, abandonment);
         }
-
-        const active = serializer.inFlight ?? Promise.resolve();
-        const consume = async (): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> => {
-          const outcome = await this.#driveContext.exit(() => this.#consumeRepresentationAbandonment(parsed));
-          return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
-        };
-        const promise = active.then(consume, consume);
-        abandonment.delivery = { kind: 'delivering', promise };
-        void promise.then(
-          (outcome) => {
-            if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
-            if (outcome.kind === 'operational-failure') {
-              abandonment.delivery = { kind: 'ready' };
-              return;
-            }
-            abandonment.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
-            this.wake();
-          },
-          () => {
-            if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
-            abandonment.delivery = { kind: 'ready' };
-          },
-        );
-        return promise;
       },
       notice.operation,
     );
+  }
+
+  #deliverLatchedAbandonment(
+    serializer: OperationSerializer,
+    abandonment: LatchedRepresentationAbandonment,
+  ): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> {
+    const notice = abandonment.notice;
+    const active = serializer.inFlight ?? Promise.resolve();
+    const consume = async (): Promise<RepresentationAbandonmentDeliveryAttemptOutcome> => {
+      const outcome = await this.#driveContext.exit(() => this.#consumeRepresentationAbandonment(notice));
+      return outcome.kind === 'operational-failure' ? outcome : { kind: 'accepted', acceptance: outcome };
+    };
+    const promise = active.then(consume, consume);
+    abandonment.delivery = { kind: 'delivering', promise };
+    void promise.then(
+      (outcome) => {
+        if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
+        if (outcome.kind === 'operational-failure') {
+          abandonment.delivery = { kind: 'ready' };
+          return;
+        }
+        abandonment.delivery = { kind: 'consumed', acceptance: outcome.acceptance };
+        this.wake();
+      },
+      () => {
+        if (abandonment.delivery.kind !== 'delivering' || abandonment.delivery.promise !== promise) return;
+        abandonment.delivery = { kind: 'ready' };
+      },
+    );
+    return promise;
   }
 
   reconcile(
@@ -933,21 +1005,23 @@ export class ProviderOperationReconciler
         const key = operationKey(record.operation);
         const serializer = this.#serializerFor(key);
         if (serializer.disappearance !== null) {
-          switch (serializer.disappearance.delivery.kind) {
+          const disappearance = serializer.disappearance;
+          switch (disappearance.delivery.kind) {
             case 'ready':
               return Promise.resolve();
             case 'delivering':
-              return serializer.disappearance.delivery.promise.then(() => undefined);
+              return disappearance.delivery.promise.then(() => undefined);
             case 'consumed':
               break;
           }
         }
         if (serializer.abandonment !== null) {
-          switch (serializer.abandonment.delivery.kind) {
+          const abandonment = serializer.abandonment;
+          switch (abandonment.delivery.kind) {
             case 'ready':
               return Promise.resolve();
             case 'delivering':
-              return serializer.abandonment.delivery.promise.then(() => undefined);
+              return abandonment.delivery.promise.then(() => undefined);
             case 'consumed':
               break;
           }
@@ -1854,11 +1928,11 @@ export class ProviderOperationReconciler
         { operation: record.operation, setIdentity: providerProxySetIdentityFromRecord(record) },
         {
           evidence: (value) => resolve(value as ProviderOperationTerminalizationResult),
-          retry: () =>
+          retry: ({ incident }) =>
             resolve({
               kind: 'operational-failure',
               code: 'disappearance_consumer_unavailable',
-              reason: 'Provider operation terminalization is temporarily unavailable.',
+              reason: boundedReleaseFailureReason(incident),
             }),
           fatal: reject,
           cancel: reject,
@@ -1890,11 +1964,11 @@ export class ProviderOperationReconciler
         { operation: record.operation, setIdentity: providerProxySetIdentityFromRecord(record) },
         {
           evidence: (value) => resolve(value as ProviderOperationTerminalizationResult),
-          retry: () =>
+          retry: ({ incident }) =>
             resolve({
               kind: 'operational-failure',
               code: 'representation_abandonment_consumer_unavailable',
-              reason: 'Provider operation terminalization is temporarily unavailable.',
+              reason: boundedReleaseFailureReason(incident),
             }),
           fatal: reject,
           cancel: reject,
@@ -2404,12 +2478,7 @@ export class ProviderOperationReconciler
   async #recordRetry(record: ProviderOperationRecord, error: unknown, operationControlHeld = false): Promise<void> {
     this.#assertActiveDrive();
     const now = this.#deps.time.now();
-    const preserveHostRefusal =
-      !operationControlHeld &&
-      record.phase === 'prestart-cleanup-pending' &&
-      record.afterRelease.kind === 'terminal-failed' &&
-      record.afterRelease.code === 'provider_host_unserviceable' &&
-      record.lastError?.code === 'provider_host_unserviceable';
+    const preserveHostRefusal = !operationControlHeld && preservesHostRefusalEvidence(record);
     const next = providerOperationRecordSchema.parse({
       ...record,
       revision: record.revision + 1,

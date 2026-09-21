@@ -5,22 +5,18 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  createShutdownRecoveryCommandOperations,
   registerBackendCommands,
   type BackendStatusCommandOperations,
   type DirectProviderProxySetHolderStatus,
-  type ShutdownRecoveryCommandOperations,
   type StoreResetCommandOperations,
 } from '#src/cli/commands/backend.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { releaseStoreReset } from '#src/store/operator-store-reset.js';
-import type { createIpcClient, IpcClient } from '#src/transport/ipc/client.js';
 import {
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
-  formatProviderProxySetContainResult,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
 import type { SetupErrorAuthorIdentity } from '#src/runtime/errors.js';
@@ -51,7 +47,6 @@ import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
-import { shutdownObligationSubjects } from '#src/obligation/shutdown-abandonment.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -269,226 +264,6 @@ describe('backend store-reset release failures', () => {
     expect(stderr).toContain('Store-reset release failed. [code=store_reset_release_failed]');
     expect(stderr).not.toContain('Store-reset reporting failed');
     expect(process.exitCode).toBe(70);
-  });
-});
-
-describe('backend shutdown recovery commands', () => {
-  it('dials the recorded draining coordinator directly with its boot credential', async () => {
-    const request = vi.fn(async () => ({
-      kind: 'not-offered' as const,
-      subject: 'app-server-handoff-quiesce' as const,
-    }));
-    const createClient = vi.fn<typeof createIpcClient>(() => ({ request }) as unknown as IpcClient);
-    const runtime = {
-      time: TEST_TIME,
-      storage: {
-        readFileSync: vi.fn(() =>
-          JSON.stringify({
-            pid: 4_242,
-            port: 4_242,
-            socketPath: '/run/draining.sock',
-            bundleHash: 'bundle',
-            flavor: 'prod',
-            namespace: 'namespace',
-            startedAt: 1,
-            token: 'token',
-            bootToken: 'draining-boot-token',
-            host: '127.0.0.1',
-            version: 'test',
-            instanceId: 'draining-instance',
-          }),
-        ),
-      },
-      env: { platform: () => process.platform },
-      paths: {
-        coral: {
-          coordinator: {
-            infoFile: '/run/coordinator.json',
-            runDir: '/run',
-          },
-        },
-      },
-    } as unknown as Runtime;
-    const operations = createShutdownRecoveryCommandOperations({ runtime, createClient });
-
-    await expect(operations.abandon('app-server-handoff-quiesce')).resolves.toEqual({
-      kind: 'not-offered',
-      subject: 'app-server-handoff-quiesce',
-    });
-
-    expect(createClient).toHaveBeenCalledWith('/run/draining.sock', TEST_TIME, {
-      kind: 'boot',
-      token: 'draining-boot-token',
-    });
-    expect(request).toHaveBeenCalledWith(
-      'coordinator.shutdown_obligation.abandon',
-      { subject: 'app-server-handoff-quiesce' },
-      expect.objectContaining({ timeoutMs: expect.any(Number) }),
-    );
-  });
-
-  it('renders durable abandoned-unconfirmed status after the coordinator exits', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn(),
-      status: () => ({
-        kind: 'available',
-        path: '/run/shutdown-abandonment-status.v1.json',
-        status: {
-          version: 1,
-          entries: [
-            {
-              subject: 'app-server-handoff-quiesce',
-              instanceId: 'exited-instance',
-              recordedAt: '2026-09-07T00:00:00.000Z',
-              disposition: 'abandoned-unconfirmed',
-              detail: 'App-server write completion was not observed; the write may or may not have landed.',
-              statusPath: '/run/shutdown-abandonment-status.v1.json',
-            },
-          ],
-        },
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'status']);
-
-    expect(stdout).toContain('subject=app-server-handoff-quiesce disposition=abandoned-unconfirmed');
-    expect(stdout).toContain('This is not evidence of completion or absence.');
-    expect(stderr).toBe('');
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('returns success only for an accepted durable abandonment receipt', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(async () => ({
-        kind: 'accepted',
-        receipt: {
-          subject: 'app-server-handoff-quiesce',
-          instanceId: 'held-instance',
-          recordedAt: '2026-09-07T00:00:00.000Z',
-          disposition: 'abandoned-unconfirmed',
-          detail: 'App-server write completion was not observed; the write may or may not have landed.',
-          statusPath: '/run/shutdown-abandonment-status.v1.json',
-        },
-      })),
-      status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'shutdown-recovery',
-      'abandon',
-      'app-server-handoff-quiesce',
-    ]);
-
-    expect(shutdownRecovery.abandon).toHaveBeenCalledWith('app-server-handoff-quiesce');
-    expect(stdout).toContain('Disposition: abandoned-unconfirmed');
-    expect(stdout).toContain('This is not evidence of completion or absence.');
-    expect(stderr).toBe('');
-    expect(process.exitCode).toBe(0);
-  });
-
-  it('returns a refusal exit when the held shutdown did not offer the subject', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(async (subject) => ({
-        kind: 'not-offered',
-        subject,
-      })),
-      status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'shutdown-recovery',
-      'abandon',
-      'provider-host-shutdown',
-    ]);
-
-    expect(stdout).toBe('');
-    expect(stderr).toContain('current held shutdown did not offer that exact action');
-    expect(process.exitCode).toBe(1);
-  });
-
-  it('names every accepted subject when an unknown one is given', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(),
-      status: () => ({ kind: 'absent', path: '/run/shutdown-abandonment-status.v1.json' }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await expect(
-      program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'abandon', 'not-a-held-obligation']),
-    ).rejects.toThrow('not-a-held-obligation');
-
-    for (const subject of shutdownObligationSubjects) {
-      expect(stderr).toContain(subject);
-    }
-    expect(shutdownRecovery.abandon).not.toHaveBeenCalled();
-
-    // The lifecycle-refusal remediation sends the operator to `--help` for the set, so it has to be there.
-    const helpProgram = new Command();
-    helpProgram.exitOverride();
-    registerBackendCommands(helpProgram, { storeReset, shutdownRecovery });
-    await expect(
-      helpProgram.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'abandon', '--help']),
-    ).rejects.toThrow();
-
-    for (const subject of shutdownObligationSubjects) {
-      expect(stdout).toContain(subject);
-    }
-  });
-
-  it('returns undetermined when durable status cannot be read or written', async () => {
-    const shutdownRecovery: ShutdownRecoveryCommandOperations = {
-      abandon: vi.fn<ShutdownRecoveryCommandOperations['abandon']>(async (subject) => ({
-        kind: 'status-write-refused',
-        subject,
-        detail: 'atomic durable status publication was not confirmed',
-      })),
-      status: () => ({
-        kind: 'unreadable',
-        path: '/run/shutdown-abandonment-status.v1.json',
-        detail: 'invalid JSON',
-      }),
-    };
-    const program = new Command();
-    program.exitOverride();
-    registerBackendCommands(program, { storeReset, shutdownRecovery });
-
-    await program.parseAsync(['node', 'coral-cli', 'backend', 'shutdown-recovery', 'status']);
-    expect(stderr).toContain('status is unreadable');
-    expect(process.exitCode).toBe(75);
-
-    stdout = '';
-    stderr = '';
-    process.exitCode = undefined;
-    const abandonProgram = new Command();
-    abandonProgram.exitOverride();
-    registerBackendCommands(abandonProgram, { storeReset, shutdownRecovery });
-    await abandonProgram.parseAsync([
-      'node',
-      'coral-cli',
-      'backend',
-      'shutdown-recovery',
-      'abandon',
-      'provider-host-shutdown',
-    ]);
-    expect(stderr).toContain('durable status was not confirmed');
-    expect(process.exitCode).toBe(75);
   });
 });
 
@@ -1925,7 +1700,7 @@ describe('backend status recovery quarantine propagation', () => {
 });
 
 describe('backend status provider proxy dispositions', () => {
-  it('renders every asserted set exit and shares refusal guidance with the command result', async () => {
+  it('reports automatic set dispositions without soliciting containment or abandonment', () => {
     const setIdentity = {
       buildSetId: '11111111-1111-4111-8111-111111111111',
       hostFingerprint: 'a'.repeat(64),
@@ -1957,47 +1732,93 @@ describe('backend status provider proxy dispositions', () => {
       ...base,
       diagnostics: {
         providerProxySets: [
-          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'none' }, holds: [hold] },
-          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'gated', remainingMs: 1200.2 }, holds: [hold] },
-          { setIdentity, setToken, liveClaims: 0, operatorExit: { kind: 'contain' }, holds: [hold] },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'none' },
+            autonomousDisposition: { kind: 'inactive' },
+            holds: [hold],
+          },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'gated', remainingMs: 1200.2 },
+            autonomousDisposition: {
+              kind: 'control-or-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'recover-control-or-observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'control-reattached-or-containment-absent',
+            },
+            holds: [hold],
+          },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'contain' },
+            autonomousDisposition: {
+              kind: 'exact-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'containment-absent',
+            },
+            holds: [hold],
+          },
           {
             setIdentity,
             setToken,
             liveClaims: 0,
             operatorExit: { kind: 'refused', ground: 'enforcer-unobservable' },
+            autonomousDisposition: {
+              kind: 'exact-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'containment-absent',
+            },
+            holds: [hold],
+          },
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
+            autonomousDisposition: {
+              kind: 'representation-release-fatal',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'drop-representation-slot',
+              refusalSuccessor: 'not-refusable',
+              terminalExit: 'representation-released',
+            },
             holds: [hold],
           },
         ],
       },
     });
     const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
-    const commandGuidance = formatProviderProxySetContainResult({
-      kind: 'enforcer-unobservable',
-      setIdentity,
-      enforcerObservations: [
-        { role: 'guardian', observation: 'unknown' },
-        { role: 'reaper', observation: 'absent' },
-      ],
-      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
-    })
-      .split('\n')
-      .find((line) => line.startsWith('Next step:'));
-
-    expect(rendered).toContain('action=wait for control-reattachment');
-    expect(rendered).toContain(`action=wait ~1201ms for the operator-exit gate, then contain ${setToken}`);
-    expect(rendered).toContain(`action=coral-cli backend provider-proxy-set contain ${setToken}`);
-    if (commandGuidance === undefined) throw new Error('Expected refusal guidance');
-    expect(rendered).toContain(commandGuidance);
-    const dispatched: RecordedBackendCommand[] = [];
-    const program = backendCommandProgram(dispatched);
-    await executeRenderedCommand(program, rendered, { label: 'action', includes: 'coral-cli' });
-    await executeRenderedCommand(program, rendered, { label: 'command', includes: ' contain ' });
-    await executeRenderedCommand(program, rendered, { label: 'command', includes: ' abandon ' });
-    expect(dispatched).toEqual([
-      { kind: 'provider-proxy-set-contain', token: setToken },
-      { kind: 'provider-proxy-set-contain', token: setToken },
-      { kind: 'provider-proxy-set-abandon', token: setToken },
-    ]);
+    expect(rendered).toContain('disposition=inactive waitingFor=control-reattachment');
+    // The one line printed per set is all a reader of this output gets, so a fatally settled release may not
+    // print the live release's retry action or its automatic-retry successor: nothing retries it.
+    expect(rendered).toContain(
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=drop-representation-slot refusalSuccessor=not-refusable terminalExit=representation-released',
+    );
+    expect(rendered).not.toContain('retryAction=release-representation');
+    expect(rendered).toContain(
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=recover-control-or-observe-exact-containment refusalSuccessor=automatic-retry terminalExit=control-reattached-or-containment-absent',
+    );
+    expect(rendered).toContain(
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=observe-exact-containment refusalSuccessor=automatic-retry terminalExit=containment-absent',
+    );
+    expect(rendered).not.toContain('provider-proxy-set contain');
+    expect(rendered).not.toContain('provider-proxy-set abandon');
   });
 
   it('renders retained set evidence and exits 75 when any structurally identified row was skipped', async () => {
@@ -2052,6 +1873,14 @@ describe('backend status provider proxy dispositions', () => {
             setToken: tokens.first,
             liveClaims: 0,
             operatorExit: { kind: 'contain' },
+            autonomousDisposition: {
+              kind: 'exact-containment',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'observe-exact-containment',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'containment-absent',
+            },
             holds: [
               {
                 disposition: 'awaiting-containment-absence',
@@ -2075,6 +1904,7 @@ describe('backend status provider proxy dispositions', () => {
             setToken: tokens.second,
             liveClaims: 2,
             operatorExit: { kind: 'none' },
+            autonomousDisposition: { kind: 'inactive' },
             holds: [
               {
                 disposition: 'held',
@@ -2138,7 +1968,7 @@ describe('backend status provider proxy dispositions', () => {
         '    identity buildSetId=11111111-1111-4111-8111-111111111111 proxyInstanceId=22222222-2222-4222-8222-222222222222 hostFingerprint=' +
           'a'.repeat(64),
         '    - disposition=awaiting-containment-absence subject=guardian guardian.heartbeat.v1 incident=method-not-found waitingFor=independent-containment-absence enforcers=guardian:alive,reaper:unknown',
-        `    action=coral-cli backend provider-proxy-set contain ${tokens.first}`,
+        '    disposition=automatic owner=coordinator boundMs=60000 retryAction=observe-exact-containment refusalSuccessor=automatic-retry terminalExit=containment-absent',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -2148,7 +1978,7 @@ describe('backend status provider proxy dispositions', () => {
           'b'.repeat(64),
         '    - disposition=held subject=proxy incident=control_channel_reattaching waitingFor=control-reattachment cause=invalid-unattributable-frame attempts=3 elapsedMs=1250 boundMs=23000',
         '    - disposition=operator-exit-refused incident=operator_exit_deadline_pending waitingFor=set-adoption-deadline',
-        '    action=wait for control-reattachment,set-adoption-deadline',
+        '    disposition=inactive waitingFor=control-reattachment,set-adoption-deadline',
       ].join('\n'),
     );
     expect(formatBackendStatus(status, { kind: 'absent' }, null)).toContain(
@@ -2212,6 +2042,14 @@ describe('backend status provider proxy dispositions', () => {
             setToken,
             liveClaims: 0,
             operatorExit: { kind: 'none' },
+            autonomousDisposition: {
+              kind: 'publication-recovery',
+              owner: 'coordinator',
+              boundMs: 60_000,
+              retryAction: 'confirm-publication-or-release-control',
+              refusalSuccessor: 'automatic-retry',
+              terminalExit: 'publication-confirmed-or-control-released',
+            },
             holds: [
               {
                 disposition: 'held',
@@ -2238,7 +2076,7 @@ describe('backend status provider proxy dispositions', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toContain(
-      'action=wait; Coral retries publication automatically until publication is confirmed or control is released.',
+      'disposition=automatic owner=coordinator boundMs=60000 retryAction=confirm-publication-or-release-control refusalSuccessor=automatic-retry terminalExit=publication-confirmed-or-control-released',
     );
     expect(stdout).not.toContain(`coral-cli backend provider-proxy-set contain ${setToken}`);
     expect(process.exitCode).toBe(75);

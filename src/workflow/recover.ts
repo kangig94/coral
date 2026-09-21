@@ -7,6 +7,7 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
   canonicalWorkDirWireSchema,
+  WorkDirectoryError,
   type CanonicalWorkDir,
 } from '../runtime/canonical-work-dir.js';
 import type { IdPort } from '../runtime/ports.js';
@@ -1179,7 +1180,16 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
   if (rootStatus === null || rootStatus.jobKind !== 'workflow') {
     throw new TypeError(`Workflow recovery root '${raw.job.projection.job_id}' is not a workflow job.`);
   }
-  const rootProjectRoot = canonicalizeWorkDir(rootStatus.projectRoot, process.cwd());
+  let rootProjectRoot: CanonicalWorkDir;
+  try {
+    rootProjectRoot = canonicalizeWorkDir(rootStatus.projectRoot, process.cwd());
+  } catch (error) {
+    if (!(error instanceof WorkDirectoryError)) throw error;
+    throw new Error(
+      `Workflow recovery root '${raw.job.projection.job_id}' could not resolve work directory '${error.workDir}': ${error.message}`,
+      { cause: error },
+    );
+  }
   const projection = raw.workflow === null ? null : hydrateWorkflowProjectionRow(raw.workflow);
   if (projection !== null && projection.workflowId !== rootStatus.jobId) {
     throw new TypeError(`Workflow recovery projection '${projection.workflowId}' names another root.`);

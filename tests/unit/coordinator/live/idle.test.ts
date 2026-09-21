@@ -116,8 +116,8 @@ describe('IdleTimer', () => {
     expect(onIdle).not.toHaveBeenCalled();
 
     // A broken probe must never make the daemon unkillable: drain bypasses it.
-    timer.requestDrain('test-drain');
+    timer.requestDrain('test-teardown');
 
-    expect(onIdle).toHaveBeenCalledWith('test-drain');
+    expect(onIdle).toHaveBeenCalledWith('test-teardown');
   });
 });

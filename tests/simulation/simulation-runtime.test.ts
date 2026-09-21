@@ -34,7 +34,7 @@ describe('simulation runtime', () => {
       if (!world) {
         continue;
       }
-      await world.backend.shutdown('test-cleanup');
+      await world.backend.shutdown('test-teardown');
       await world.backend.waitForShutdown();
     }
   });
@@ -259,6 +259,84 @@ describe('simulation runtime', () => {
       expect(exercise(simulatedStorage, '/tmp/sim/open-unlink')).toEqual(
         exercise(realStorage, join(realRoot, 'open-unlink')),
       );
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts the full StoragePath contract on concrete in-memory storage methods', () => {
+    const storage = new InMemoryStorage(new VirtualTime(1_000));
+    const source = '/tmp/sim/buffer-source';
+    const destination = '/tmp/sim/buffer-destination';
+    storage.writeFileSync(source, 'content');
+
+    expect(storage.readFileSync(Buffer.from(source), 'utf-8')).toBe('content');
+    expect(storage.statSync(Buffer.from(source)).isFile()).toBe(true);
+    expect(storage.statSync(Buffer.from(source), { bigint: true }).isFile()).toBe(true);
+    expect(storage.lstatSync(Buffer.from(source)).isFile()).toBe(true);
+    expect(storage.lstatSync(Buffer.from(source), { bigint: true }).isFile()).toBe(true);
+
+    storage.renameSync(Buffer.from(source), Buffer.from(destination));
+    storage.unlinkSync(Buffer.from(destination));
+    expect(storage.existsSync(destination)).toBe(false);
+  });
+
+  it('keeps invalid UTF-8 buffer paths distinct like real storage', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-raw-paths-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const exercise = (storage: StoragePort, directory: string) => {
+      const leftSource = join(directory, 'left-source');
+      const rightSource = join(directory, 'right-source');
+      const leftDestination = Buffer.concat([Buffer.from(`${directory}/`), Buffer.from([0x80]), Buffer.from('.json')]);
+      const rightDestination = Buffer.concat([Buffer.from(`${directory}/`), Buffer.from([0x81]), Buffer.from('.json')]);
+      storage.mkdirSync(directory, { recursive: true });
+      storage.writeFileSync(leftSource, 'left');
+      storage.writeFileSync(rightSource, 'right');
+      storage.renameSync(leftSource, leftDestination);
+      storage.renameSync(rightSource, rightDestination);
+      const result: Array<string | boolean> = [
+        storage.readFileSync(leftDestination, 'utf-8'),
+        storage.readFileSync(rightDestination, 'utf-8'),
+        storage.statSync(leftDestination).isFile(),
+        storage.statSync(rightDestination).isFile(),
+      ];
+      storage.renameSync(leftDestination, leftSource);
+      result.push(storage.readFileSync(leftSource, 'utf-8'));
+      storage.unlinkSync(rightDestination);
+      try {
+        storage.readFileSync(rightDestination, 'utf-8');
+        result.push('still-present');
+      } catch (error: unknown) {
+        result.push((error as NodeJS.ErrnoException).code ?? 'unknown');
+      }
+      return result;
+    };
+
+    try {
+      expect(exercise(simulatedStorage, '/tmp/sim/raw-paths')).toEqual(exercise(realStorage, realRoot));
+    } finally {
+      rmSync(realRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps a backslash byte distinct from a path separator like real storage', () => {
+    const realRoot = mkdtempSync(join(tmpdir(), 'coral-simulation-backslash-paths-'));
+    const realStorage = createRealRuntime('prod', { baseDir: realRoot }).storage;
+    const simulatedStorage: StoragePort = new InMemoryStorage(new VirtualTime(1_000));
+    const exercise = (storage: StoragePort, directory: string) => {
+      const backslashPath = Buffer.concat([Buffer.from(`${directory}/a`), Buffer.from([0x5c]), Buffer.from('b')]);
+      const nestedPath = join(directory, 'a', 'b');
+      const sourcePath = join(directory, 'backslash-source');
+      storage.mkdirSync(join(directory, 'a'), { recursive: true });
+      storage.writeFileSync(sourcePath, 'backslash');
+      storage.renameSync(sourcePath, backslashPath);
+      storage.writeFileSync(nestedPath, 'separator');
+      return [storage.readFileSync(backslashPath, 'utf-8'), storage.readFileSync(nestedPath, 'utf-8')];
+    };
+
+    try {
+      expect(exercise(simulatedStorage, '/tmp/sim/backslash-paths')).toEqual(exercise(realStorage, realRoot));
     } finally {
       rmSync(realRoot, { recursive: true, force: true });
     }
@@ -1126,7 +1204,7 @@ describe('simulation runtime', () => {
     expect(worldA.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000003');
     expect(worldB.runtime.ids.uuid()).toBe('00000000-0000-0000-0000-000000000002');
 
-    await worldA.backend.shutdown('done');
+    await worldA.backend.shutdown('test-teardown');
     await worldA.backend.waitForShutdown();
     expect(worldA.runtime.storage.existsSync(worldA.runtime.paths.coral.coordinator.infoFile)).toBe(false);
     expect(worldA.hooks.removeBackendInfoCalls.length).toBeGreaterThan(0);

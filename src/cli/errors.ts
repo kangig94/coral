@@ -13,7 +13,6 @@ import {
 } from '../runtime/errors.js';
 import { ChildPrincipalBindingError } from '../transport/ipc/child-principal-auth.js';
 import { IpcDrainRequestUnanswered, IpcLifecycleRefusal, IpcRpcError } from '../transport/ipc/client.js';
-import { shutdownObligationAbandonMethod } from '../obligation/shutdown-abandonment.js';
 
 export type StoreResetCliErrorCode =
   | 'invalid_store_reset_incident_id'
@@ -259,23 +258,13 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
   return null;
 }
 
-/**
- * A held shutdown does not end on its own, and a hook retrying on exit 75 alone would retry forever — so both
- * branches must name the operator exit that ends one, `backend shutdown-recovery abandon`. Neither branch may
- * promise a command that reports the subject that exit takes: what makes naming one safe instead is that the
- * accepted set is closed and abandon refuses a subject the held shutdown did not offer. Both branches must
- * also say the refused method did not run, because the refusal is all the caller receives about its effect.
- * A refused abandon may not be told to run abandon: a coordinator that refuses it offers no abandonment exit.
- */
 function lifecycleRefusalExit(error: IpcLifecycleRefusal): string {
   const didNotRun = `The coordinator refused ${error.method} before dispatch, so it did not run.`;
-  const abandon =
-    error.method === shutdownObligationAbandonMethod
-      ? 'That coordinator does not admit abandoning a held obligation, so `coral-cli backend status` is the remaining exit: read its recorded process there, and retry the abandon once a coordinator that admits it is serving.'
-      : 'End the held obligation with `coral-cli backend shutdown-recovery abandon <subject>`: the closed set of subjects is listed by `coral-cli backend shutdown-recovery abandon --help`, and the command refuses a subject the held shutdown did not offer, so trying one is safe. `coral-cli backend shutdown-recovery status` shows the abandonments already recorded.';
+  const retry =
+    'Shutdown continues as a bounded asynchronous wait. Retry this command after `coral-cli backend status` no longer reports that coordinator as shutting down.';
   return error.addressDisposition.kind === 'held-past-release-budget'
-    ? `${didNotRun} That coordinator will not be replaced by retrying, and \`coral-cli backend status\` will only confirm that it is still shutting down. ${abandon}`
-    : `${didNotRun} Run \`coral-cli backend status\` to see whether that coordinator is still shutting down before retrying this command. A drain that does not clear on its own will not clear by retrying either. ${abandon}`;
+    ? `${didNotRun} The CLI's ${Math.round(error.addressDisposition.budgetMs / 1000)}s bounded wait for the coordinator address to be released expired. ${retry}`
+    : `${didNotRun} ${retry}`;
 }
 
 function transportErrorEnvelope(error: unknown): CliErrorResult | null {

@@ -100,8 +100,10 @@ function lifecycleHarness(writeBackendInfoFn: (info: BackendInfo) => boolean | v
       writeBackendInfoFn,
       removeBackendInfoIfOwnerFn: vi.fn(),
       cleanupStaleJobsFn: vi.fn(),
+      readSelfIncarnationFn: () => null,
       markJobsAsErrorFn: vi.fn(),
-      terminateAllFn: vi.fn(async () => ({ kind: 'all-observed-absent' as const })),
+      settlePendingLaunchesFn: vi.fn(async () => ({ kind: 'all-pending-launches-settled' }) as const),
+      terminateRegisteredChildrenFn: vi.fn(async () => ({ kind: 'all-children-observed-absent' }) as const),
       providerHostManager: { drainForHandoff: vi.fn(), shutdown: vi.fn(async () => {}) } as never,
       handoffQuiescePorts: () => [],
       kbDaemonSupervisor,
@@ -134,7 +136,7 @@ function lifecycleHarness(writeBackendInfoFn: (info: BackendInfo) => boolean | v
 }
 
 async function disposeHarness(harness: ReturnType<typeof lifecycleHarness>): Promise<void> {
-  if (harness.runtimeState.getLifecycle() !== 'stopped') await harness.lifecycle.shutdown('test-complete');
+  if (harness.runtimeState.getLifecycle() !== 'stopped') await harness.lifecycle.shutdown('test-teardown');
   const services = harness.storeServicesRef.tryGet();
   services?.storeDb.close();
   harness.storeServicesRef.clear();

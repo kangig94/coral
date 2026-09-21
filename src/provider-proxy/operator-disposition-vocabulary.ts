@@ -60,6 +60,8 @@ export const PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS = [
   'identity-unobservable',
   'store-unreadable',
   'representation-release-fatal',
+  /** A refusal this build's vocabulary does not name; unknown must not read as no refusal at all. */
+  'unrecognized',
 ] as const;
 export type ProviderProxySetOperatorExitRefusalGround =
   (typeof PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS)[number];
@@ -73,6 +75,55 @@ export type ProviderProxySetOperatorExit =
       kind: Extract<ProviderProxySetOperatorExitKind, 'refused'>;
       ground: ProviderProxySetOperatorExitRefusalGround;
     }>;
+
+type ActiveProviderProxySetAutonomousDisposition<
+  Kind extends string,
+  RetryAction extends string,
+  TerminalExit extends string,
+  RefusalSuccessor extends string = 'automatic-retry',
+> = Readonly<{
+  kind: Kind;
+  owner: 'coordinator';
+  boundMs: number;
+  retryAction: RetryAction;
+  refusalSuccessor: RefusalSuccessor;
+  terminalExit: TerminalExit;
+}>;
+
+export type ProviderProxySetAutonomousDisposition =
+  | Readonly<{ kind: 'inactive' | 'unavailable' }>
+  | ActiveProviderProxySetAutonomousDisposition<
+      'control-or-containment',
+      'recover-control-or-observe-exact-containment',
+      'control-reattached-or-containment-absent'
+    >
+  | ActiveProviderProxySetAutonomousDisposition<'exact-containment', 'observe-exact-containment', 'containment-absent'>
+  | ActiveProviderProxySetAutonomousDisposition<
+      'representation-release',
+      'release-representation',
+      'representation-released'
+    >
+  /**
+   * A release that settled fatal keeps no delivery retry and no settlement deadline, so `release-representation`
+   * would name an action nothing performs. What is still running is the coordinator's own slot drop, which is
+   * unconditional at `boundMs` and therefore has no refusal to succeed.
+   */
+  | ActiveProviderProxySetAutonomousDisposition<
+      'representation-release-fatal',
+      'drop-representation-slot',
+      'representation-released',
+      'not-refusable'
+    >
+  | ActiveProviderProxySetAutonomousDisposition<
+      'durable-reconciliation',
+      'reconcile-durable-disposition',
+      'durable-reconciliation-terminal'
+    >
+  | ActiveProviderProxySetAutonomousDisposition<
+      'publication-recovery',
+      'confirm-publication-or-release-control',
+      'publication-confirmed-or-control-released'
+    >;
 
 export type ProviderProxySetOperatorDisposition = Readonly<{
   disposition: ProviderProxySetOperatorDispositionKind;
@@ -109,6 +160,7 @@ export type ProviderProxySetOperatorStatus = Readonly<{
   setToken: string;
   liveClaims: number;
   operatorExit: ProviderProxySetOperatorExit;
+  autonomousDisposition: ProviderProxySetAutonomousDisposition;
   holds: readonly ProviderProxySetOperatorDisposition[];
 }>;
 

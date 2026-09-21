@@ -1,16 +1,19 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createBootstrapProbeExitGate,
   createCoordinatorShutdownSignalHandler,
   handoffStartupToSelectedBuild,
   main,
 } from '#src/coordinator/bootstrap.js';
 import { StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
 import { HandoffRunError } from '#src/coordinator/handoff-routing/runner.js';
+import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '#src/coordinator/shutdown-settlement.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type { ValidatedHandoffTarget } from '#src/infra/handoff-target.js';
 import type * as HandoffRunnerMod from '#src/coordinator/handoff-routing/runner.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
+import { SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 
 const mockState = vi.hoisted(() => ({
   runHandoff: vi.fn(),
@@ -35,7 +38,7 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
     ...actual,
     processIncarnationProbeRegistrySize: () => mockState.processIncarnationProbeRegistrySize(),
     snapshotProcessIncarnationProbeSubjects: () => mockState.snapshotProcessIncarnationProbeSubjects(),
-    terminateProcessIncarnationProbes: () => mockState.terminateProcessIncarnationProbes(),
+    terminateProcessIncarnationProbes: (signal?: AbortSignal) => mockState.terminateProcessIncarnationProbes(signal),
   };
 });
 
@@ -226,60 +229,114 @@ describe('backend bootstrap store handoff', () => {
 });
 
 describe('backend bootstrap probe cleanup', () => {
-  it('renders every actionable pid and lease key when exit remains held', async () => {
-    let onStopped!: () => void;
-    mockState.createCoordinatorServer.mockImplementation((options: { onStopped(): void }) => {
-      onStopped = options.onStopped;
-      return {
-        start: async () => ({ host: '127.0.0.1', port: 43123 }),
-        shutdown: async () => undefined,
-      };
-    });
+  it('logs probe holds and preserves the maximum shutdown exit contribution', async () => {
+    let onStopped!: (exitCode: number) => void;
+    let acceptProcessExitRemainder!: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
+    mockState.createCoordinatorServer.mockImplementation(
+      (options: {
+        onStopped(exitCode: number): void;
+        acceptProcessExitRemainder(remainder: ProcessExitRemainder): ProcessExitRemainderAcceptance;
+      }) => {
+        onStopped = options.onStopped;
+        acceptProcessExitRemainder = options.acceptProcessExitRemainder;
+        return {
+          start: async () => ({ host: '127.0.0.1', port: 43123 }),
+          shutdown: async () => undefined,
+        };
+      },
+    );
     mockState.processIncarnationProbeRegistrySize.mockReturnValue(2);
     mockState.snapshotProcessIncarnationProbeSubjects.mockReturnValue([
       { pid: 5_151 },
       { key: 'coordinator-probe:job-23' },
     ]);
-    const cleanupFailure = new Error('probe termination crashed');
-    mockState.terminateProcessIncarnationProbes.mockRejectedValueOnce(cleanupFailure).mockResolvedValueOnce({
-      disposition: 'hold',
-      unsettled: [
-        {
-          child: {} as never,
-          pid: 5_151,
-          reason: 'close-unobserved',
-          exit: 'child-close',
-        },
-        {
-          child: null,
-          pid: undefined,
-          key: 'coordinator-probe:job-23',
-          reason: 'probe-unsettled',
-          exit: 'probe-settlement',
-        },
-      ],
-      untilSettled: new Promise<void>(() => undefined),
+    let settleLease!: () => void;
+    const leaseSettlement = new Promise<void>((resolve) => {
+      settleLease = resolve;
+    });
+    mockState.terminateProcessIncarnationProbes.mockImplementation((signal: AbortSignal) => {
+      return new Promise((resolve) => {
+        signal.addEventListener(
+          'abort',
+          () =>
+            resolve({
+              disposition: 'hold',
+              unsettled: [
+                {
+                  child: {} as never,
+                  pid: 5_151,
+                  reason: 'close-unobserved',
+                  exit: 'child-close',
+                },
+                {
+                  child: null,
+                  pid: undefined,
+                  key: 'coordinator-probe:job-23',
+                  reason: 'probe-unsettled',
+                  exit: 'probe-settlement',
+                },
+              ],
+              untilSettled: leaseSettlement,
+            }),
+          { once: true },
+        );
+      });
     });
     const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
     const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
     await expect(main()).resolves.toBe(0);
-    onStopped();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    vi.useFakeTimers();
+    try {
+      const remainder = { undischarged: [] };
+      const acceptance = acceptProcessExitRemainder(remainder);
+      if (acceptance.kind !== 'accepted') throw new Error('bootstrap refused its process-exit remainder');
+      acceptance.requestExit(1);
+      onStopped(0);
+      expect(mockState.terminateProcessIncarnationProbes).toHaveBeenCalledWith(expect.any(AbortSignal));
+      expect(mockState.terminateProcessIncarnationProbes.mock.calls[0]?.[0].aborted).toBe(false);
+      expect(exitProcess).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(SIGTERM_GRACE_MS);
+
+      expect(errorLog).toHaveBeenCalledWith(
+        'Coordinator exit proceeding with unsettled process-incarnation probes: ' +
+          'pid=5151 reason=close-unobserved exit=child-close; ' +
+          'key=coordinator-probe:job-23 reason=probe-unsettled exit=probe-settlement',
+      );
+      expect(exitProcess).toHaveBeenCalledWith(1);
+      expect(mockState.terminateProcessIncarnationProbes).toHaveBeenCalledOnce();
+
+      settleLease();
+      await Promise.resolve();
+      expect(mockState.terminateProcessIncarnationProbes).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('exits with the requested code when probe cleanup rejects instead of holding the process', async () => {
+    const gate = createBootstrapProbeExitGate();
+    mockState.processIncarnationProbeRegistrySize.mockReturnValue(1);
+    mockState.snapshotProcessIncarnationProbeSubjects.mockReturnValue([{ pid: 5_151 }]);
+    const cleanupFailure = new Error('probe registry unavailable');
+    mockState.terminateProcessIncarnationProbes.mockRejectedValue(cleanupFailure);
+    const errorLog = vi
+      .spyOn(backendLog, 'error')
+      .mockImplementation(() => undefined)
+      .mockClear();
+    const exitProcess = vi
+      .spyOn(process, 'exit')
+      .mockImplementation((() => undefined) as never)
+      .mockClear();
+
+    gate.requestExit(1);
+    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(1));
 
     expect(errorLog).toHaveBeenCalledWith(
-      'Coordinator process-incarnation probe cleanup failed; exit remains held; registered subjects: ' +
-        'pid=5151; key=coordinator-probe:job-23',
+      'Coordinator exit proceeding after process-incarnation probe cleanup failed; registered subjects: pid=5151',
       cleanupFailure,
     );
-    onStopped();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(errorLog).toHaveBeenCalledWith(
-      'Coordinator exit remains held by unsettled process-incarnation probes: ' +
-        'pid=5151 reason=close-unobserved exit=child-close; ' +
-        'key=coordinator-probe:job-23 reason=probe-unsettled exit=probe-settlement',
-    );
-    expect(exitProcess).not.toHaveBeenCalled();
+    expect(mockState.terminateProcessIncarnationProbes).toHaveBeenCalledOnce();
   });
 });

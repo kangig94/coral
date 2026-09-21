@@ -36,7 +36,6 @@ import {
 } from '#src/cli/commands/backend.js';
 import type { HostRef } from '#src/providers/contract.js';
 import { providerHostListRpcSpec, providerProxySetContainRpcSpec } from '#src/transport/rpc/catalog.js';
-import { shutdownObligationAbandonMethod } from '#src/obligation/shutdown-abandonment.js';
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import type {
   ProviderHostAdministrationAuthority,
@@ -633,7 +632,6 @@ describe('ipc server', () => {
         'jobs.abort',
         providerProxySetContainRpcSpec.name,
         'transport.health',
-        shutdownObligationAbandonMethod,
         providerHostListRpcSpec.name,
       ]) {
         const deniedOperationalRoute = await requestIpcMethod(

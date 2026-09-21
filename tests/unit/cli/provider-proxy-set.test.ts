@@ -458,12 +458,12 @@ describe('backend provider-proxy-set contain', () => {
     const output = await runContain({
       kind: 'representation-release-abandoned',
       setIdentity: address,
-      successor: { owner: 'operator-command', acceptance: 'accepted' },
+      successor: { owner: 'coordinator', acceptance: 'accepted' },
       effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
     });
 
     expect(output.stdout).toContain('fatal representation release was abandoned');
-    expect(output.stdout).toContain('operator command accepted the unresolved representation-release remainder');
+    expect(output.stdout).toContain('coordinator accepted the unresolved representation-release remainder');
     expect(output.stdout).toContain('fatal operation was not retried');
     expect(process.exitCode).toBe(0);
   });
@@ -649,7 +649,7 @@ describe('backend provider-proxy-set contain', () => {
       providerProxySetContainBooleanResponseSchema.safeParse({
         kind: 'representation-release-abandoned',
         setIdentity: address,
-        successor: { owner: 'operator-command', acceptance: 'accepted' },
+        successor: { owner: 'coordinator', acceptance: 'accepted' },
         effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
       }).success,
     ).toBe(false);

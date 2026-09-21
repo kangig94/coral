@@ -1387,34 +1387,36 @@ async function cleanPostReadyStoreEpochHolders(
   let deletionFailed = false;
   let lockReleaseFailed = false;
   let unobservableHolder = false;
-  const inspectedHolders = new Set<string>();
   for (const entry of entries) {
     if (signal?.aborted) return { kind: 'cancelled' };
-    if (!entry.startsWith(EPOCH_HOLDER_PREFIX) || (!entry.endsWith('.json') && !entry.endsWith('.json.tmp'))) {
+    if (!entry.startsWith(EPOCH_HOLDER_PREFIX)) {
       await yieldSweepTurn();
       continue;
     }
-    const holderEntry = entry.endsWith('.tmp') ? entry.slice(0, -'.tmp'.length) : entry;
-    if (inspectedHolders.has(holderEntry)) continue;
-    inspectedHolders.add(holderEntry);
-    const holder = await inspectStoreEpochHolderAsync(runtime, dbDir, holderEntry);
+    if (!entry.endsWith('.json')) {
+      mutations.pending = true;
+      const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, join(dbDir, entry));
+      deletionFailed ||= !removed;
+      await yieldSweepTurn();
+      continue;
+    }
+    const holder = await inspectStoreEpochHolderAsync(runtime, dbDir, entry);
     if (holder?.state === 'live') continue;
     if (holder?.state === 'unobservable' && !holder.removable) {
       unobservableHolder = true;
       continue;
     }
     try {
-      for (const path of [holder?.path, join(dbDir, `${holderEntry}.tmp`)]) {
-        if (path === undefined) continue;
+      if (holder?.path !== undefined) {
         mutations.pending = true;
-        const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, path);
+        const removed = await removeDuringPostReadySweep(runtime.storage, dbDir, holder.path);
         deletionFailed ||= !removed;
       }
     } finally {
       try {
         holder?.proof?.();
       } catch (error: unknown) {
-        auditSweepFailure(holder?.path ?? join(dbDir, holderEntry), error);
+        auditSweepFailure(holder?.path ?? join(dbDir, entry), error);
         lockReleaseFailed = true;
       }
     }

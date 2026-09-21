@@ -232,6 +232,6 @@ describe('workflow handoff (cross-domain integration)', () => {
     });
     expect(finalizeWorkflow).toHaveBeenCalledTimes(1);
 
-    await replacement.shutdown('test-cleanup');
+    await replacement.shutdown('test-teardown');
   });
 });

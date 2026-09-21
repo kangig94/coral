@@ -20,6 +20,7 @@ import {
 import type { EnforcementOutcome } from '#src/provider-proxy/enforcement.js';
 import { backendLog } from '#src/infra/backend-log.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
+import { SIGTERM_GRACE_MS } from '#src/infra/process-constants.js';
 import { CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV } from '#src/provider-proxy/orphan-deadline.js';
 import {
   buildEnforcementOutcomeHandlers,
@@ -72,8 +73,8 @@ const reaperRoleCloseHarness = vi.hoisted(() => ({
 
 const processIncarnationProbeCleanupHarness = vi.hoisted(() => ({
   enabled: false,
-  cleanup: vi.fn<() => ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>(),
-  subjects: vi.fn<() => ReturnType<typeof NodeProcessMod.snapshotProcessIncarnationProbeSubjects>>(),
+  cleanup: vi.fn<(signal?: AbortSignal) => ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>(),
+  subjects: vi.fn<() => ReturnType<typeof NodeProcessMod.snapshotProcessIncarnationProbeSubjects>>(() => []),
 }));
 
 const guardianConstructionHarness = vi.hoisted(() => ({
@@ -87,10 +88,14 @@ vi.mock('#src/infra/node-process.js', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeProcessMod>();
   return {
     ...actual,
-    terminateProcessIncarnationProbes: () =>
+    processIncarnationProbeRegistrySize: () =>
       processIncarnationProbeCleanupHarness.enabled
-        ? processIncarnationProbeCleanupHarness.cleanup()
-        : actual.terminateProcessIncarnationProbes(),
+        ? processIncarnationProbeCleanupHarness.subjects().length
+        : actual.processIncarnationProbeRegistrySize(),
+    terminateProcessIncarnationProbes: (signal?: AbortSignal) =>
+      processIncarnationProbeCleanupHarness.enabled
+        ? processIncarnationProbeCleanupHarness.cleanup(signal)
+        : actual.terminateProcessIncarnationProbes(signal),
     snapshotProcessIncarnationProbeSubjects: () =>
       processIncarnationProbeCleanupHarness.enabled
         ? processIncarnationProbeCleanupHarness.subjects()
@@ -260,7 +265,7 @@ afterEach(() => {
   reaperRoleCloseHarness.markContainmentAbsent = undefined;
   processIncarnationProbeCleanupHarness.enabled = false;
   processIncarnationProbeCleanupHarness.cleanup.mockReset();
-  processIncarnationProbeCleanupHarness.subjects.mockReset();
+  processIncarnationProbeCleanupHarness.subjects.mockReset().mockReturnValue([]);
   guardianConstructionHarness.enabled = false;
   guardianConstructionHarness.listen.mockReset();
   guardianConstructionHarness.close.mockReset();
@@ -389,6 +394,7 @@ function constructionHoldRuntime(readProcessIncarnation: (pid: number) => NodePr
   return {
     runtime: {
       ...base,
+      time: { ...base.time, sleep: async () => undefined },
       process: {
         ...base.process,
         kill,
@@ -681,7 +687,7 @@ describe('runProviderRoleMain', () => {
     expect(observed).toBe(unexpected);
   });
 
-  it('rejects a mismatched construction abandonment before accepting the exact guardian signal exit', async () => {
+  it('ends a held guardian construction after bounded retries without waiting for a signal', async () => {
     const directory = scopedTempDir('coral-guardian-construction-operator-exit-');
     const subject = { kind: 'process', pid: 2_000_000_000 } as const;
     const abandonment = {
@@ -728,28 +734,23 @@ describe('runProviderRoleMain', () => {
         retry,
       })),
     );
+    const { runtime } = constructionHoldRuntime((pid) => (pid === process.pid ? testIncarnation(1) : null));
     processIncarnationProbeCleanupHarness.enabled = true;
     processIncarnationProbeCleanupHarness.cleanup.mockResolvedValue({ disposition: 'settled' });
-    let shutdown: (() => void) | null = null;
-    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
-      if (event === 'SIGTERM') shutdown = listener as () => void;
-      return process;
-    });
     const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
-    const running = runProviderRoleMain({ role: 'guardian', capsulePath: '/unused' }, { pluginRoot: directory });
-    await vi.waitFor(() => expect(shutdown).not.toBeNull());
-    (shutdown as (() => void) | null)?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(exitProcess).not.toHaveBeenCalled();
-    (shutdown as (() => void) | null)?.();
+    const running = runProviderRoleMain(
+      { role: 'guardian', capsulePath: '/unused' },
+      { pluginRoot: directory, runtime },
+    );
 
-    await expect(running).resolves.toBe(0);
-    expect(operatorExit.abandon).toHaveBeenCalledTimes(2);
-    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
+    await expect(running).resolves.toBe(1);
+    expect(retry).toHaveBeenCalledTimes(5);
+    expect(operatorExit.abandon).not.toHaveBeenCalled();
+    expect(exitProcess).not.toHaveBeenCalled();
   });
 
-  it('publishes a guardian signal exit for an unobservable construction reaper without claiming absence', async () => {
+  it('ends an unobservable construction reaper after bounded retries without claiming absence', async () => {
     const directory = scopedTempDir('coral-guardian-construction-reaper-exit-');
     enableRoleSender(pairingCapsule('guardian', directory, { unexpected: true }), {
       exchange: vi.fn(),
@@ -761,26 +762,18 @@ describe('runProviderRoleMain', () => {
     });
     processIncarnationProbeCleanupHarness.enabled = true;
     processIncarnationProbeCleanupHarness.cleanup.mockResolvedValue({ disposition: 'settled' });
-    let shutdown: (() => void) | null = null;
-    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
-      if (event === 'SIGTERM') shutdown = listener as () => void;
-      return process;
-    });
     const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
 
     const running = runProviderRoleMain(
       { role: 'guardian', capsulePath: '/unused' },
       { pluginRoot: directory, runtime },
     );
-    await vi.waitFor(() => expect(shutdown).not.toBeNull());
-    (shutdown as (() => void) | null)?.();
-
-    await expect(running).resolves.toBe(0);
+    await expect(running).resolves.toBe(1);
     expect(kill).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
+    expect(exitProcess).not.toHaveBeenCalled();
   });
 
-  it('publishes a guardian signal exit for an unobservable construction proxy group without claiming absence', async () => {
+  it('ends an unobservable construction proxy group after bounded retries without claiming absence', async () => {
     const directory = scopedTempDir('coral-guardian-construction-proxy-exit-');
     const reaperPid = 2_000_000_000;
     const proxyPid = 2_000_000_001;
@@ -806,32 +799,16 @@ describe('runProviderRoleMain', () => {
       if (pid === reaperPid) return testIncarnation(2);
       throw new Error('proxy identity is unobservable');
     });
-    const retrySleeps: Array<() => void> = [];
-    const controlledRuntime = {
-      ...runtime,
-      time: {
-        ...runtime.time,
-        sleep: () =>
-          new Promise<void>((resolve) => {
-            retrySleeps.push(resolve);
-          }),
-      },
-    };
     processIncarnationProbeCleanupHarness.enabled = true;
     processIncarnationProbeCleanupHarness.cleanup.mockResolvedValue({ disposition: 'settled' });
-    let shutdown: (() => void) | null = null;
-    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
-      if (event === 'SIGTERM') shutdown = listener as () => void;
-      return process;
-    });
     const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
     const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
 
     const running = runProviderRoleMain(
       { role: 'guardian', capsulePath: '/unused' },
-      { pluginRoot: directory, runtime: controlledRuntime },
+      { pluginRoot: directory, runtime },
     );
-    await vi.waitFor(() => expect(shutdown).not.toBeNull());
+    await expect(running).resolves.toBe(1);
     expect(errorLog).toHaveBeenCalledWith(
       'guardian: construction failed and spawned process cleanup remains held',
       expect.objectContaining({
@@ -840,21 +817,14 @@ describe('runProviderRoleMain', () => {
         ),
       }),
     );
-    expect(retrySleeps).toHaveLength(1);
-    retrySleeps.shift()?.();
-    await vi.waitFor(() =>
-      expect(errorLog).toHaveBeenCalledWith(
-        expect.stringContaining(
-          `guardian: construction cleanup retry remains held: proxy-process-group pgid=${proxyPid} ` +
-            `pid=${proxyPid} incarnation=${testIncarnation(1)}`,
-        ),
+    expect(errorLog).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `guardian: construction cleanup remained held after 5 attempts; exiting: proxy-process-group pgid=${proxyPid} ` +
+          `pid=${proxyPid} incarnation=${testIncarnation(1)}`,
       ),
     );
-    (shutdown as (() => void) | null)?.();
-
-    await expect(running).resolves.toBe(0);
     expect(kill).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
+    expect(exitProcess).not.toHaveBeenCalled();
   });
 
   it.each<[ProviderRole, ProviderRole]>([
@@ -967,7 +937,7 @@ describe('runProviderRoleMain', () => {
     expect(exitProcess).toHaveBeenCalledWith(1);
   });
 
-  it('honours a stored exit after a held probe child closes without another shutdown signal', async () => {
+  it('exits after the probe-cleanup grace when observation helpers never settle', async () => {
     const directory = scopedTempDir('coral-proxy-role-probe-cleanup-');
     enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(
@@ -990,20 +960,103 @@ describe('runProviderRoleMain', () => {
     );
     processIncarnationProbeCleanupHarness.enabled = true;
     processIncarnationProbeCleanupHarness.subjects.mockReturnValue([{ pid: 4_242 }, { key: 'provider-probe:job-17' }]);
-    const cleanupFailure = new Error('probe termination crashed');
-    let settleCleanup!: (
-      disposition: Awaited<ReturnType<typeof NodeProcessMod.terminateProcessIncarnationProbes>>,
-    ) => void;
-    let settleChildren!: () => void;
-    const untilSettled = new Promise<void>((resolve) => {
-      settleChildren = resolve;
+    processIncarnationProbeCleanupHarness.cleanup.mockImplementation(
+      (signal) =>
+        new Promise((resolve) => {
+          signal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                disposition: 'hold',
+                unsettled: [
+                  {
+                    child: {} as never,
+                    pid: 4_242,
+                    reason: 'close-unobserved',
+                    exit: 'child-close',
+                  },
+                  {
+                    child: null,
+                    pid: undefined,
+                    key: 'provider-probe:job-17',
+                    reason: 'probe-unsettled',
+                    exit: 'probe-settlement',
+                  },
+                ],
+                untilSettled: new Promise<void>(() => undefined),
+              }),
+            { once: true },
+          );
+        }),
+    );
+
+    let shutdown: (() => void) | null = null;
+    vi.spyOn(process, 'on').mockImplementation((event, listener) => {
+      if (event === 'SIGTERM') shutdown = listener as () => void;
+      return process;
     });
-    processIncarnationProbeCleanupHarness.cleanup.mockRejectedValueOnce(cleanupFailure).mockReturnValueOnce(
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const errorLog = vi.spyOn(backendLog, 'error').mockImplementation(() => undefined);
+
+    vi.useFakeTimers();
+    try {
+      await expect(
+        runProviderRoleMain({ role: 'proxy', capsulePath: '/unused' }, { pluginRoot: directory }),
+      ).resolves.toBe(0);
+      exitProcess.mockClear();
+
+      (shutdown as (() => void) | null)?.();
+      await Promise.resolve();
+      expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledWith(expect.any(AbortSignal));
+      expect(exitProcess).not.toHaveBeenCalled();
+
+      settleSemanticShutdown();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(SIGTERM_GRACE_MS);
+
+      expect(errorLog).toHaveBeenCalledWith(
+        'proxy: exit proceeding with unsettled process-incarnation probes: ' +
+          'pid=4242 reason=close-unobserved exit=child-close; ' +
+          'key=provider-probe:job-17 reason=probe-unsettled exit=probe-settlement',
+      );
+      expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledOnce();
+      expect(exitProcess).toHaveBeenCalledOnce();
+      expect(exitProcess).toHaveBeenCalledWith(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('exits after requested probe cleanup rejects without waiting for another signal', async () => {
+    const directory = scopedTempDir('coral-proxy-role-probe-cleanup-rejection-');
+    enableRoleSender(pairingCapsule('proxy', directory, randomBytes(32).toString('hex')), {
+      exchange: vi.fn(
+        async (): Promise<ControlExchange> =>
+          controlExchangeForTest({
+            kind: 'response',
+            response: { kind: 'result', value: { state: 'paired' } },
+          }),
+      ),
+      close: vi.fn(),
+    });
+    proxyRoleCloseHarness.enabled = true;
+    proxyRoleCloseHarness.proxyListen.mockResolvedValue();
+    proxyRoleCloseHarness.proxyClose.mockResolvedValue();
+    let settleSemanticShutdown!: () => void;
+    proxyRoleCloseHarness.semanticShutdown.mockReturnValue(
       new Promise((resolve) => {
-        settleCleanup = resolve;
+        settleSemanticShutdown = resolve;
       }),
     );
-    processIncarnationProbeCleanupHarness.cleanup.mockResolvedValueOnce({ disposition: 'settled' });
+    processIncarnationProbeCleanupHarness.enabled = true;
+    processIncarnationProbeCleanupHarness.subjects.mockReturnValue([{ pid: 4_242 }]);
+    const cleanupFailure = new Error('probe termination crashed');
+    let rejectCleanup!: (error: unknown) => void;
+    processIncarnationProbeCleanupHarness.cleanup.mockReturnValue(
+      new Promise((_, reject) => {
+        rejectCleanup = reject;
+      }),
+    );
 
     let shutdown: (() => void) | null = null;
     vi.spyOn(process, 'on').mockImplementation((event, listener) => {
@@ -1019,60 +1072,16 @@ describe('runProviderRoleMain', () => {
     exitProcess.mockClear();
 
     (shutdown as (() => void) | null)?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledOnce();
-    expect(errorLog).toHaveBeenCalledWith(
-      'proxy: process-incarnation probe cleanup failed; shutdown remains held; registered subjects: ' +
-        'pid=4242; key=provider-probe:job-17',
-      cleanupFailure,
-    );
-    expect(exitProcess).not.toHaveBeenCalled();
-
-    (shutdown as (() => void) | null)?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledTimes(2);
-
-    settleCleanup({
-      disposition: 'hold',
-      unsettled: [
-        {
-          child: {} as never,
-          pid: 4_242,
-          reason: 'close-unobserved',
-          exit: 'child-close',
-        },
-        {
-          child: null,
-          pid: undefined,
-          key: 'provider-probe:job-17',
-          reason: 'probe-unsettled',
-          exit: 'probe-settlement',
-        },
-      ],
-      untilSettled,
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(errorLog).toHaveBeenCalledWith(
-      'proxy: shutdown remains held by unsettled process-incarnation probes: ' +
-        'pid=4242 reason=close-unobserved exit=child-close; ' +
-        'key=provider-probe:job-17 reason=probe-unsettled exit=probe-settlement',
-    );
-    expect(exitProcess).not.toHaveBeenCalled();
-
     settleSemanticShutdown();
     await new Promise<void>((resolve) => setImmediate(resolve));
+    rejectCleanup(cleanupFailure);
 
-    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledTimes(2);
-    expect(exitProcess).not.toHaveBeenCalled();
-
-    settleChildren();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-
-    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledTimes(3);
-    expect(exitProcess).toHaveBeenCalledOnce();
-    expect(exitProcess).toHaveBeenCalledWith(0);
+    await vi.waitFor(() => expect(exitProcess).toHaveBeenCalledWith(0));
+    expect(errorLog).toHaveBeenCalledWith(
+      'proxy: exit proceeding after process-incarnation probe cleanup failed; registered subjects: pid=4242',
+      cleanupFailure,
+    );
+    expect(processIncarnationProbeCleanupHarness.cleanup).toHaveBeenCalledOnce();
   });
 
   it('closes and exits cleanly when a reaper is signalled before any containment is recorded', async () => {
@@ -1155,7 +1164,7 @@ describe('runProviderRoleMain', () => {
     },
   );
 
-  it('reports a rejected signal teardown without finalizing containment', async () => {
+  it('closes and exits with enforcement failure when signal teardown rejects', async () => {
     const directory = scopedTempDir('coral-reaper-role-signal-rejection-');
     enableRoleSender(pairingCapsule('reaper', directory, randomBytes(32).toString('hex')), {
       exchange: vi.fn(async (): Promise<never> => {
@@ -1189,14 +1198,15 @@ describe('runProviderRoleMain', () => {
 
     expect(giveUp).toHaveBeenCalledOnce();
     expect(errorLog).toHaveBeenCalledWith(
-      'reaper: give-up on shutdown failed; containment remains held; SIGTERM or SIGINT retries teardown',
+      'reaper: give-up on shutdown failed; releasing role authority and exiting',
       failure,
     );
-    (shutdown as (() => void) | null)?.();
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(giveUp).toHaveBeenCalledTimes(2);
-    expect(reaperRoleCloseHarness.reaperClose).not.toHaveBeenCalled();
-    expect(exitProcess).not.toHaveBeenCalled();
+    expect(reaperRoleCloseHarness.reaperClose).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(reaperRoleCloseHarness.reaperClose.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it('exits 0 when signal-requested teardown confirms containment absence', async () => {
@@ -1374,17 +1384,18 @@ describe('buildEnforcementOutcomeHandlers', () => {
     expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
-  it('keeps an unattributable group as durable status through bounded backoff exhaustion', () => {
+  it('closes and exits with enforcement failure after bounded unattributable retries are exhausted', async () => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const retryUnattributable = vi.fn(() =>
       Promise.resolve({ kind: 'recorded-group-unattributable' as const, reason: 'still held' }),
     );
     const close = vi.fn(async () => undefined);
     const exitProcess = vi.fn();
+    const markExited = vi.fn();
     const handlers = buildEnforcementOutcomeHandlers({
       role: 'reaper',
       roleIdentity: { pid: 4200, incarnation: testIncarnation(4200) },
-      deadlines: { markExited: vi.fn() },
+      deadlines: { markExited },
       close,
       exitProcess,
       grantWasInstalled: () => true,
@@ -1419,18 +1430,20 @@ describe('buildEnforcementOutcomeHandlers', () => {
     deferredOutcome.callback();
 
     expect(retryUnattributable).toHaveBeenCalledTimes(4);
-    expect(handlers.enforcementHoldStatus()).toEqual({
-      kind: 'recorded-group-unattributable',
-      attempts: 5,
-      roleIdentity: { role: 'reaper', pid: 4200, incarnation: testIncarnation(4200) },
-      retry: { state: 'operator-action-required' },
-    });
+    expect(handlers.enforcementHoldStatus()).toBeNull();
     expect(scheduled).toHaveLength(0);
-    expect(close).not.toHaveBeenCalled();
-    expect(exitProcess).not.toHaveBeenCalled();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(markExited).not.toHaveBeenCalled();
+    expect(close).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
-  it('keeps retrying at a fixed cadence until an ungranted role confirms absence', async () => {
+  it('closes and exits with enforcement failure when provisional-role retries are exhausted', async () => {
     const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
     const retryUnattributable = vi.fn(() =>
       Promise.resolve({ kind: 'recorded-group-unattributable' as const, reason: 'still held' }),
@@ -1448,12 +1461,11 @@ describe('buildEnforcementOutcomeHandlers', () => {
       retryUnattributable,
       schedule: (callback, delayMs) => scheduled.push({ callback, delayMs }),
     });
-    const retryDelays: number[] = [];
-
-    for (let attempts = 1; attempts <= 7; attempts += 1) {
+    for (let attempts = 1; attempts < 5; attempts += 1) {
       handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
       const deferredOutcome = scheduled.shift();
       if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+      expect(deferredOutcome.delayMs).toBe(0);
       deferredOutcome.callback();
       expect(handlers.enforcementHoldStatus()).toMatchObject({
         attempts,
@@ -1461,26 +1473,27 @@ describe('buildEnforcementOutcomeHandlers', () => {
       });
       const scheduledRetry = scheduled.shift();
       if (scheduledRetry === undefined) throw new Error('expected a scheduled unattributable retry');
-      retryDelays.push(scheduledRetry.delayMs);
+      expect(scheduledRetry.delayMs).toBeGreaterThan(0);
       scheduledRetry.callback();
     }
 
-    expect(retryDelays.slice(-2)).toEqual([30_000, 30_000]);
-    expect(retryUnattributable).toHaveBeenCalledTimes(7);
-    expect(handlers.enforcementHoldStatus()).toMatchObject({
-      attempts: 7,
-      retry: { state: 'in-progress' },
-    });
-    expect(close).not.toHaveBeenCalled();
-    expect(exitProcess).not.toHaveBeenCalled();
+    handlers.onOutcome({ kind: 'recorded-group-unattributable', reason: 'still held' });
+    const deferredOutcome = scheduled.shift();
+    if (deferredOutcome === undefined) throw new Error('expected a deferred unattributable outcome');
+    expect(deferredOutcome.delayMs).toBe(0);
+    deferredOutcome.callback();
 
-    handlers.onOutcome({ kind: 'containment-absent', disappearanceReceipt: 'observed-absent' });
-    scheduled.shift()?.callback();
+    expect(retryUnattributable).toHaveBeenCalledTimes(4);
+    expect(handlers.enforcementHoldStatus()).toBeNull();
+    expect(scheduled).toHaveLength(0);
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(handlers.enforcementHoldStatus()).toBeNull();
     expect(close).toHaveBeenCalledOnce();
-    expect(exitProcess).toHaveBeenCalledWith(0);
+    expect(exitProcess).toHaveBeenCalledOnce();
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(close.mock.invocationCallOrder[0]).toBeLessThan(
+      exitProcess.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it('keeps an unattributable hold without operator abandonment', () => {

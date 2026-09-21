@@ -282,6 +282,12 @@ const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
   z
     .object({
+      kind: z.literal('released-undischarged'),
+      witness: z.enum(['provider-operation-record', 'provider-handoff-capsule']),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('initial-disposition-pending'),
       exit: z.literal('initial-disposition-settlement'),
     })
@@ -297,6 +303,12 @@ const providerProxySetClaimDischargeSchema = z.discriminatedUnion('kind', [
 
 const providerProxySetContainBooleanClaimDischargeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('completed') }).strict(),
+  z
+    .object({
+      kind: z.literal('released-undischarged'),
+      witness: z.enum(['provider-operation-record', 'provider-handoff-capsule']),
+    })
+    .strict(),
   z.object({ kind: z.literal('initial-disposition-retry-owned') }).strict(),
   z
     .object({
@@ -354,7 +366,7 @@ const providerProxySetContainKnownResponseSchema = z.discriminatedUnion('kind', 
     .object({
       kind: z.literal('representation-release-abandoned'),
       ...providerProxySetContainResultBase,
-      successor: z.object({ owner: z.literal('operator-command'), acceptance: z.literal('accepted') }).strict(),
+      successor: z.object({ owner: z.literal('coordinator'), acceptance: z.literal('accepted') }).strict(),
     })
     .strict(),
   z

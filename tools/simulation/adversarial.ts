@@ -27,6 +27,7 @@ import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/job
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
 import type { ProviderSession } from '../../src/sessions/entry.js';
 import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
+import type { ShutdownReason } from '../../src/infra/persisted-scalar-contracts.js';
 
 const RESULT_FILE = 'result.md';
 const LIFECYCLE_SETTLEMENT_STEP_MS = 25;
@@ -167,7 +168,7 @@ export class SimulationWorld {
     const carryOver = options?.preserveWorld === true ? this.current.backend.carryOver : undefined;
     // A restart that keeps its world is a replacement, not a crash.
     const shutdownDisposition = await this.settleLifecycleOperation(
-      this.current.backend.backend.shutdown(carryOver === undefined ? 'cycle' : 'replaced'),
+      this.current.backend.backend.shutdown(carryOver === undefined ? 'test-teardown' : 'replaced'),
     );
     if (shutdownDisposition.disposition === 'held') return shutdownDisposition;
     const settledDisposition = await this.settleLifecycleOperation(this.current.backend.backend.waitForShutdown());
@@ -196,7 +197,7 @@ export class SimulationWorld {
     return row.seq;
   }
 
-  async shutdown(reason = 'simulation-shutdown'): Promise<LifecycleShutdownDisposition> {
+  async shutdown(reason: ShutdownReason = 'test-teardown'): Promise<LifecycleShutdownDisposition> {
     this.assertUsable();
     return this.settleLifecycleOperation(this.current.backend.backend.shutdown(reason));
   }
@@ -537,7 +538,7 @@ export class SimulationWorld {
       const disposition =
         lifecycle === 'draining'
           ? await this.settleLifecycleOperation(this.current.backend.backend.waitForShutdown())
-          : await this.settleLifecycleOperation(this.current.backend.backend.shutdown('teardown'));
+          : await this.settleLifecycleOperation(this.current.backend.backend.shutdown('test-teardown'));
       if (disposition.disposition === 'held') return disposition;
       const settledDisposition = await this.settleLifecycleOperation(this.current.backend.backend.waitForShutdown());
       if (settledDisposition.disposition === 'held') return settledDisposition;

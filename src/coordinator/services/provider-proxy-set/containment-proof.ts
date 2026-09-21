@@ -85,6 +85,15 @@ export type ProviderProxySetContainmentProofCurrentness =
   | Readonly<{ kind: 'authorization-stale' }>
   | Readonly<{ kind: 'store-unreadable' }>;
 
+export type ProviderProxySetContainmentProofFenceRelease =
+  | Readonly<{ kind: 'released' | 'already-released' }>
+  | Readonly<{ kind: 'held'; error: unknown }>;
+
+export type ProviderProxySetContainmentProofFenceHandback = Readonly<{
+  rearm: Readonly<{ kind: 'completed' }> | Readonly<{ kind: 'failed'; error: unknown }>;
+  release: ProviderProxySetContainmentProofFenceRelease;
+}>;
+
 const authorizationRecords = new WeakMap<
   ProviderProxySetContainmentProofAuthorization,
   ContainmentProofAuthorizationRecord
@@ -132,9 +141,48 @@ export function authorizeProviderProxySetContainmentProof(
 /** Only the authorization that owns a fence lease may release that lease. */
 export function releaseProviderProxySetContainmentProofFence(
   owner: ProviderProxySetContainmentProofAuthorization | ProviderProxySetContainmentProof,
-): void {
+): ProviderProxySetContainmentProofFenceRelease {
   const authorization = containmentProofRecords.get(owner as ProviderProxySetContainmentProof)?.authorization ?? owner;
-  authorizationRecords.get(authorization as ProviderProxySetContainmentProofAuthorization)?.fence?.release();
+  const fence = authorizationRecords.get(authorization as ProviderProxySetContainmentProofAuthorization)?.fence;
+  if (fence === null || fence === undefined) return { kind: 'already-released' };
+  try {
+    if (!fence.isHeld()) return { kind: 'already-released' };
+  } catch (error: unknown) {
+    return { kind: 'held', error };
+  }
+  try {
+    fence.release();
+  } catch (error: unknown) {
+    try {
+      return fence.isHeld() ? { kind: 'held', error } : { kind: 'released' };
+    } catch {
+      return { kind: 'held', error };
+    }
+  }
+  try {
+    return fence.isHeld()
+      ? { kind: 'held', error: new Error('provider_proxy_set_containment_proof_fence_release_incomplete') }
+      : { kind: 'released' };
+  } catch (error: unknown) {
+    return { kind: 'held', error };
+  }
+}
+
+export function handbackProviderProxySetContainmentProofFence(
+  owner: ProviderProxySetContainmentProofAuthorization | ProviderProxySetContainmentProof,
+  rearm: () => void,
+): ProviderProxySetContainmentProofFenceHandback {
+  let rearmDisposition: ProviderProxySetContainmentProofFenceHandback['rearm'];
+  try {
+    rearm();
+    rearmDisposition = { kind: 'completed' };
+  } catch (error: unknown) {
+    rearmDisposition = { kind: 'failed', error };
+  }
+  return {
+    rearm: rearmDisposition,
+    release: releaseProviderProxySetContainmentProofFence(owner),
+  };
 }
 
 /** A post-proof mutation remains confined to the exact set and the proof's still-held lease. */

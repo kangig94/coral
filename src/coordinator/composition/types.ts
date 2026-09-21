@@ -1,6 +1,6 @@
-import type { TerminateAllDisposition } from '../live/admission.js';
+import type { SettlePendingLaunchesFn, TerminateRegisteredChildrenFn } from '../shutdown.js';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
-import type { BackendInfo } from '../../infra/backend-discovery.js';
+import type { BackendInfo, BackendInfoRemovalResult } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
 import type { HostAdmissionCollection } from '../../providers/host-admission.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
@@ -34,6 +34,7 @@ import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { ProviderScope } from '../../infra/provider-scope.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '../shutdown-settlement.js';
+import type { ShutdownReason } from '../../infra/persisted-scalar-contracts.js';
 
 type CoordinatorBootSnapshot = {
   version?: string;
@@ -72,12 +73,13 @@ export type CoordinatorCoreOptions = {
   createIdleTimer?: () => IdleTimer;
   createExecutionService?: (ctx: InvocationContext, deps: ExecutionServiceDeps) => ProjectRequestPort;
   writeBackendInfoFn?: (info: BackendInfo) => boolean | void;
-  removeBackendInfoIfOwnerFn?: (instanceId: string) => void;
+  removeBackendInfoIfOwnerFn?: (instanceId: string) => void | BackendInfoRemovalResult;
   closeServerFn?: (server: Server) => Promise<void>;
   cleanupStaleJobsFn?: (currentBundleHash: string) => void | Promise<void>;
   markJobsAsErrorFn?: (message: string) => void | Promise<void>;
   createStoreServicesFromDbFn?: (storeDb: Database) => CoordinatorStoreServices;
-  terminateAllFn?: (signal: AbortSignal) => TerminateAllDisposition | Promise<TerminateAllDisposition>;
+  settlePendingLaunchesFn?: SettlePendingLaunchesFn;
+  terminateRegisteredChildrenFn?: TerminateRegisteredChildrenFn;
   registerBuiltInProvidersFn?: RegisterBuiltInProvidersFn;
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
@@ -112,8 +114,11 @@ export type CoordinatorCoreOptions = {
    */
   getConsumerStuck: () => NonNullable<NonNullable<HealthSnapshot['diagnostics']>['consumerStuck']>;
   getTextProjectionState?: () => HealthSnapshot['textProjectionState'];
+  /** Programmatic composition seams must not become environment, argv, or transport controls. */
+  captureProviderProxyLifecycleFatal?: (handler: (error: unknown) => void) => void;
+  handoffDrainBudgetMs?: number;
   disposeLifecycleReactor?: () => void | Promise<void>;
-  onStopped?: () => void;
+  onStopped?: (exitCode: number) => void;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   onFatalShutdownError?: (error: unknown) => void;
   discussRegistry?: DiscussContextRegistry;
@@ -145,7 +150,7 @@ export type CoordinatorCoreResult = {
   getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   resolveProjectSource: (projectRoot: string) => string;
   isDrainRequested: () => boolean;
-  requestDrain: (reason: string) => void;
+  requestDrain: (reason: ShutdownReason) => void;
   getKbJobRecorder: () => KbJobRecorder;
   hooks: LifecycleHooks;
 };

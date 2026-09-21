@@ -14,6 +14,7 @@ import type { WaitStreamEvent } from '#src/jobs/wait.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import { BackendUnreachableError, TransientHttpError } from '#src/infra/http-errors.js';
+import { SHUTDOWN_REMAINDER_RECORD_NAME } from '#src/infra/shutdown-remainder-record.js';
 import { buildErrorEnvelope, UsageError } from '#src/cli/errors.js';
 import {
   documentedCoralSetupError,
@@ -918,7 +919,7 @@ describe('cli format', () => {
       kernel: { phase: 'running' as const, readyAt: Date.parse('2026-05-05T12:00:00.000Z') },
     };
 
-    it('formats a running backend status with online components', () => {
+    it('preserves the exact ordinary running status when there is no shutdown remainder', () => {
       const status = {
         status: 'ok',
         health: {
@@ -941,6 +942,93 @@ describe('cli format', () => {
           '',
           'Active jobs: 1',
           'Queue depth: 0',
+        ].join('\n'),
+      );
+    });
+
+    it('formats a shutdown remainder as a section on a healthy running status', () => {
+      const text = formatBackendStatus({
+        status: 'ok',
+        health: { ...baseHealth, components: [], queueDepth: 0 },
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'unreadable',
+          errno: 'EACCES',
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      });
+
+      expect(text).toBe(
+        [
+          'Backend ok',
+          'Version: 1.2.3',
+          'Uptime: 4m12s',
+          'Kernel: running since 2026-05-05T12:00:00.000Z',
+          'System provider scope: unconfigured',
+          '',
+          'Runtime Components:',
+          '',
+          'Active jobs: 1',
+          'Queue depth: 0',
+          'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unreadable errno=EACCES`,
+        ].join('\n'),
+      );
+    });
+
+    // A refused read whose thrown value named no system code is a different unknown from one that named
+    // EACCES, and the line must not read as the second.
+    it('names the errno as unavailable when the refused read carried no system code', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'unreadable',
+          errno: null,
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      });
+
+      expect(text).toContain(
+        `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unreadable errno=unavailable`,
+      );
+    });
+
+    // A parse refusal names no system error code at all, so the line must not offer an errno field for the
+    // reader to act on (design-philosophy.md principle 11's "do not overload one value with two dispositions").
+    it('renders no errno field for an unsupported record', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'unsupported',
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      });
+
+      expect(text).toContain(`Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unsupported`);
+      expect(text).not.toContain('errno=');
+    });
+
+    it('formats a shutdown remainder as a section on an undecodable discovery record', () => {
+      const text = formatBackendStatus({
+        status: 'undecodable_record',
+        reason: 'corrupt-json',
+        path: '/run/coral/coordinator.json',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'corrupt',
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      });
+
+      expect(text).toBe(
+        [
+          'Backend state is unknown: the coordinator discovery record could not be read (corrupt-json).',
+          'A coordinator may still be running; this is not a report that none is.',
+          'Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete /run/coral/coordinator.json and run a mutating Coral command; it attempts startup or handoff.',
+          'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=corrupt`,
         ].join('\n'),
       );
     });
@@ -1621,6 +1709,26 @@ describe('cli format', () => {
       );
     });
 
+    it('formats shutdown remainder evidence alongside a foreign peer', () => {
+      const status = {
+        status: 'unreachable',
+        cause: 'foreign_peer',
+        observed: { namespace: 'another-installation', flavor: 'dev' },
+        pid: 4242,
+        recordPath: '/run/coral/coordinator.json',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable',
+          reason: 'unsupported',
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      } satisfies BackendStatusFull;
+
+      const text = formatBackendStatus(status);
+
+      expect(text).toContain('namespace=another-installation flavor=dev');
+      expect(text).toContain(`Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=unsupported`);
+    });
+
     // `formatBackendStatus`'s `unreachable` case had no test anywhere. The load-bearing part is that the
     // "something is listening" claim is conditional: it is true only when an HTTP response was actually
     // received (`cause: 'responded'`), and must not be printed for a refusal or a request that never completed.
@@ -1729,6 +1837,159 @@ describe('cli format', () => {
           retryable: true,
         }),
       ).toContain('Retryable: yes');
+    });
+
+    it('formats a structured recent shutdown remainder as a section on top of the fallback status', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: {
+            instanceId: 'instance-1',
+            recordedAt: '2026-09-18T01:02:03.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [
+              {
+                entryNumber: 2,
+                obligation: { label: 'child termination' },
+                remainder: {
+                  owner: 'successor-recovery',
+                  evidence: {
+                    kind: 'startup-adoption',
+                    processes: [
+                      {
+                        kind: 'durable-cli-runtime',
+                        jobId: 'job-1',
+                        pid: 4_242,
+                      },
+                    ],
+                  },
+                },
+                settlement: { cause: 'timed-out', budgetMs: 5_000 },
+              },
+              {
+                entryNumber: 3,
+                obligation: { label: 'hooks.onShutdown' },
+                remainder: { owner: 'process-exit' },
+                settlement: {
+                  cause: 'rejected',
+                  error: { name: 'Error', code: 'ENOENT' },
+                },
+              },
+              {
+                entryNumber: 5,
+                obligation: { label: 'discuss store dispose' },
+                remainder: { owner: 'process-exit' },
+                settlement: { cause: 'unconfirmed' },
+              },
+            ],
+          },
+          skippedEntries: [
+            {
+              entryNumber: 1,
+              obligation: null,
+              owner: 'successor-recovery',
+            },
+            {
+              entryNumber: 4,
+              obligation: { label: 'stream response close', ordinal: 3 },
+              owner: 'process-exit',
+            },
+          ],
+        },
+      });
+
+      expect(text).toBe(
+        [
+          'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+          'Coral recorded a recent shutdown with unfinished obligations.',
+          'Instance: instance-1',
+          'Recorded at: 2026-09-18T01:02:03.000Z',
+          'Reason: sigterm',
+          'Mode: handoff',
+          'Entry 2: child termination',
+          '  Owner: successor-recovery',
+          '  Cause: timed-out',
+          '  Budget: 5000ms',
+          '  Evidence: startup-adoption',
+          '    Job: job-1',
+          '    PID: 4242',
+          'Entry 3: hooks.onShutdown',
+          '  Owner: process-exit',
+          '  Cause: rejected',
+          '  Error: Error',
+          '  Code: ENOENT',
+          'Entry 5: discuss store dispose',
+          '  Owner: process-exit',
+          '  Cause: unconfirmed',
+          'Skipped entry 1: unrecognized obligation',
+          '  Owner: successor-recovery',
+          'Skipped entry 4: stream response close 3',
+          '  Owner: process-exit',
+        ].join('\n'),
+      );
+    });
+
+    it('names the unusable record slot and the cause this build observed', () => {
+      expect(
+        formatBackendStatus({
+          status: 'recorded_process_absent',
+          pid: 4242,
+          shutdownRemainder: {
+            status: 'shutdown_remainder_unreadable',
+            reason: 'corrupt',
+            path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+          },
+        }),
+      ).toBe(
+        [
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+          'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+          `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=corrupt`,
+        ].join('\n'),
+      );
+    });
+
+    it('renders clock-skew evidence without presenting the future record as recent', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'shutdown_remainder_clock_skew',
+          record: {
+            instanceId: 'future',
+            recordedAt: '2026-09-20T00:10:00.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [],
+          },
+          skippedEntries: [],
+        },
+      });
+
+      expect(text).toContain('The shutdown remainder record is dated after this status observation.');
+      expect(text).not.toContain('Coral recorded a recent shutdown');
+      expect(text).toContain('Instance: future');
+    });
+
+    it('renders an old record as stale rather than as clock-skew evidence', () => {
+      const text = formatBackendStatus({
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'stale_shutdown_remainder',
+          record: {
+            instanceId: 'stale',
+            recordedAt: '2026-09-19T23:00:00.000Z',
+            reason: 'sigterm',
+            mode: 'handoff',
+            entries: [],
+          },
+          skippedEntries: [],
+        },
+      });
+
+      expect(text).toContain('Shutdown remainder evidence is older than the trusted recent window.');
+      expect(text).not.toContain('clock-skew');
     });
 
     it('formats an unrecognized setup-error code without printing persisted text', () => {
@@ -1847,10 +2108,6 @@ describe('cli format', () => {
       },
     );
 
-    it('formats a shutting-down backend status', () => {
-      expect(formatBackendStatus({ status: 'shutting_down' })).toBe('Backend shutting down');
-    });
-
     it('formats an unauthorized backend status with a recovery hint', () => {
       expect(formatBackendStatus({ status: 'unauthorized' })).toBe(
         [
@@ -1891,6 +2148,39 @@ describe('cli format', () => {
       { status: 'unreachable', detail: 'ETIMEDOUT', cause: 'no_response' as const },
       { status: 'no_record_socket_present', socketPath: '/run/coordinator.sock' },
       { status: 'recent_failure', phase: 'startup_failed' as const, retryable: false },
+      {
+        status: 'no_record_no_socket',
+        shutdownRemainder: {
+          status: 'recent_shutdown_remainder',
+          record: {
+            instanceId: 'instance-1',
+            recordedAt: '2026-09-18T01:02:03.000Z',
+            reason: 'sigterm',
+            mode: 'handoff' as const,
+            entries: [],
+          },
+          skippedEntries: [],
+        },
+      },
+      {
+        status: 'recorded_process_absent',
+        pid: 4242,
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable' as const,
+          reason: 'corrupt' as const,
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      },
+      {
+        status: 'recent_failure',
+        phase: 'startup_failed' as const,
+        retryable: false,
+        shutdownRemainder: {
+          status: 'shutdown_remainder_unreadable' as const,
+          reason: 'unsupported' as const,
+          path: `/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME}`,
+        },
+      },
       {
         status: 'recent_failure',
         phase: 'startup_failed' as const,

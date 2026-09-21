@@ -114,7 +114,7 @@ describe('coordinator startup ordering', () => {
         order.indexOf('providerOperationReconciler.start'),
       );
     } finally {
-      await coordinator.shutdown('test-cleanup');
+      await coordinator.shutdown('test-teardown');
       await coordinator.waitForShutdown();
     }
   });
@@ -236,7 +236,7 @@ describe('coordinator startup ordering', () => {
       waitFreshUntil.mockRestore();
       runStartup.mockRestore();
       resumeAll.mockRestore();
-      await coordinator.shutdown('test-cleanup');
+      await coordinator.shutdown('test-teardown');
       await coordinator.waitForShutdown();
     }
   });
@@ -348,7 +348,7 @@ describe('coordinator startup ordering', () => {
       runStartup.mockRestore();
       resumeAll.mockRestore();
       scanStartup.mockRestore();
-      await coordinator.shutdown('test-cleanup');
+      await coordinator.shutdown('test-teardown');
       await coordinator.waitForShutdown();
     }
   });
@@ -408,7 +408,7 @@ describe('coordinator startup ordering', () => {
       expect(order.indexOf('listenFn')).toBeLessThan(order.indexOf('kbDaemonSupervisor.start'));
       expect(kbDaemonSupervisor.warmup).toHaveBeenCalledTimes(1);
     } finally {
-      await coordinator.shutdown('test-cleanup');
+      await coordinator.shutdown('test-teardown');
       await coordinator.waitForShutdown();
     }
   });

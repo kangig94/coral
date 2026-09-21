@@ -15,10 +15,6 @@ import {
   type NonEmptyReadonlyArray,
 } from '../../coordinator/handoff-routing/runner.js';
 import {
-  readShutdownAbandonmentStatus,
-  type ShutdownAbandonmentStatusRead,
-} from '../../coordinator/shutdown-abandonment.js';
-import {
   parseHandoffRoutingInvocationId,
   type HandoffRepairOperation,
 } from '../../coordinator/handoff-routing/repair-operation.js';
@@ -38,7 +34,6 @@ import type {
   HandoffRoutingStatusQuarantineClearResult,
 } from '../../coordinator/handoff-routing/status-operator.js';
 import { resolveBuildFlavor, type BuildFlavor } from '../../infra/build-flavor.js';
-import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { readBuildFlavor } from '../../infra/bundle-manifest.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
@@ -108,18 +103,9 @@ import {
 } from '../../store/handoff-routing-status-store/index.js';
 import { getBackendStatusFull, type BackendStatusFull } from '../../transport/http/backend/status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
-import {
-  shutdownObligationAbandonMethod,
-  shutdownObligationAbandonResultSchema,
-  shutdownObligationSubjects,
-  shutdownObligationSubjectSchema,
-  type ShutdownObligationAbandonResult,
-  type ShutdownObligationSubject,
-} from '../../obligation/shutdown-abandonment.js';
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
 import {
-  createIpcClient,
   IpcDrainRequestUnanswered,
   IpcLifecycleRefusal,
   IpcRequestTimeout,
@@ -173,7 +159,7 @@ import {
   formatProviderOperationRemedy,
   formatUnreadableProviderOperationDiscard,
   formatProviderProxySetContainResult,
-  formatProviderProxySetOperatorExit,
+  formatProviderProxySetAutonomousDisposition,
   formatProviderProxySetRowSkips,
   formatShutdown,
   RECOVERY_REVISION_FINGERPRINT_PREFIX,
@@ -593,11 +579,6 @@ export interface ProviderProxySetCommandOperations {
   contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
 }
 
-export interface ShutdownRecoveryCommandOperations {
-  abandon(subject: ShutdownObligationSubject): Promise<ShutdownObligationAbandonResult>;
-  status(): ShutdownAbandonmentStatusRead;
-}
-
 export type BackendCommandOperations = Readonly<{
   storeReset?: StoreResetCommandOperations;
   kbCommit?: KbCommitCommandOperations;
@@ -607,7 +588,6 @@ export type BackendCommandOperations = Readonly<{
   recoveryQuarantine?: RecoveryQuarantineCommandOperations;
   providerHosts?: ProviderHostCommandOperations;
   providerProxySets?: ProviderProxySetCommandOperations;
-  shutdownRecovery?: ShutdownRecoveryCommandOperations;
   providerProxyRoleTermination?: ProviderProxyRoleTerminationCommandOperations;
 }>;
 
@@ -1416,98 +1396,6 @@ export function createProviderProxySetCommandOperations(
   };
 }
 
-export function createShutdownRecoveryCommandOperations(
-  options: {
-    getClient?: () => Promise<Pick<IpcClient, 'request'>>;
-    runtime?: Runtime;
-    createClient?: typeof createIpcClient;
-  } = {},
-): ShutdownRecoveryCommandOperations {
-  const runtime = options.runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
-  const createClient = options.createClient ?? createIpcClient;
-  const getClient =
-    options.getClient ??
-    (async () => {
-      const incumbent = readBackendInfo(runtime);
-      if (incumbent === null) {
-        throw new BackendUnreachableError(
-          'Shutdown recovery requires a readable coordinator discovery record; no coordinator was started or replaced.',
-        );
-      }
-      return createClient(incumbent.socketPath, runtime.time, {
-        kind: 'boot',
-        token: incumbent.bootToken,
-      });
-    });
-  return {
-    abandon: async (subject) => {
-      const client = await getClient();
-      const response = await client.request(
-        shutdownObligationAbandonMethod,
-        { subject },
-        {
-          timeoutMs: TOOL_TIMEOUT_MS,
-          ...childPrincipalAuthOptions(childPrincipalAuthFromEnv()),
-        },
-      );
-      return shutdownObligationAbandonResultSchema.parse(response);
-    },
-    status: () =>
-      readShutdownAbandonmentStatus({
-        storage: runtime.storage,
-        runDir: runtime.paths.coral.coordinator.runDir,
-      }),
-  };
-}
-
-export function formatShutdownRecoveryStatus(status: ShutdownAbandonmentStatusRead): string {
-  switch (status.kind) {
-    case 'absent':
-      return `No durable shutdown-obligation abandonment status at ${status.path}.`;
-    case 'unreadable':
-      return `Shutdown-obligation abandonment status is unreadable at ${status.path}: ${status.detail}`;
-    case 'available':
-      return [
-        `Shutdown-obligation abandonment status: ${status.path}`,
-        ...status.status.entries.map(
-          (entry) =>
-            `${entry.recordedAt} instance=${entry.instanceId} subject=${entry.subject} disposition=${entry.disposition}\n` +
-            `  ${entry.detail}\n` +
-            '  This is not evidence of completion or absence.',
-        ),
-      ].join('\n');
-  }
-}
-
-export function formatShutdownObligationAbandonResult(result: ShutdownObligationAbandonResult): string {
-  switch (result.kind) {
-    case 'accepted':
-      return [
-        `Recorded operator abandonment for ${result.receipt.subject}.`,
-        `Disposition: ${result.receipt.disposition}`,
-        result.receipt.detail,
-        `Durable status: ${result.receipt.statusPath}`,
-        'This is not evidence of completion or absence.',
-      ].join('\n');
-    case 'not-held':
-      return `Refusing to abandon ${result.subject}: no held shutdown currently owns that obligation.`;
-    case 'not-offered':
-      return `Refusing to abandon ${result.subject}: the current held shutdown did not offer that exact action.`;
-    case 'status-write-refused':
-      return `Refusing to abandon ${result.subject}: durable status was not confirmed (${result.detail}).`;
-  }
-}
-
-function parseShutdownObligationSubject(value: string): ShutdownObligationSubject {
-  const parsed = shutdownObligationSubjectSchema.safeParse(value);
-  if (parsed.success) return parsed.data;
-  // The refusal is the only place the operator learns the set, so it names every member: no other command
-  // reports which subject a held shutdown offered.
-  throw new InvalidArgumentError(
-    `Unknown shutdown obligation subject: ${value}. One of: ${shutdownObligationSubjects.join(', ')}.`,
-  );
-}
-
 export function registerBackendCommands(program: Command, operations: BackendCommandOperations = {}): void {
   const {
     storeReset = {
@@ -1525,7 +1413,6 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     recoveryQuarantine = createRecoveryQuarantineCommandOperations(),
     providerHosts = createProviderHostCommandOperations(),
     providerProxySets = createProviderProxySetCommandOperations(),
-    shutdownRecovery = createShutdownRecoveryCommandOperations(),
     providerProxyRoleTermination = createDirectProviderProxyRoleTerminationCommandOperations(),
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
@@ -1690,42 +1577,11 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       }
     });
 
-  const shutdownRecoveryCommand = backend
-    .command('shutdown-recovery')
-    .description('Inspect or explicitly abandon a currently held shutdown obligation');
-  shutdownRecoveryCommand
-    .command('status')
-    .description('Show durable shutdown-obligation abandonment status')
-    .action(() => {
-      const status = shutdownRecovery.status();
-      const output = formatShutdownRecoveryStatus(status);
-      (status.kind === 'unreadable' ? process.stderr : process.stdout).write(`${output}\n`);
-      process.exitCode = status.kind === 'unreadable' ? 75 : 0;
-    });
-  shutdownRecoveryCommand
-    .command('abandon')
-    .description('Durably abandon one exact obligation offered by the current held shutdown')
-    .argument(
-      '<subject>',
-      `One of: ${shutdownObligationSubjects.join(', ')}. A subject the held shutdown did not offer is refused.`,
-      parseShutdownObligationSubject,
-    )
-    .action(async (subject: ShutdownObligationSubject) => {
-      try {
-        const result = await shutdownRecovery.abandon(subject);
-        const accepted = result.kind === 'accepted';
-        (accepted ? process.stdout : process.stderr).write(`${formatShutdownObligationAbandonResult(result)}\n`);
-        process.exitCode = accepted ? 0 : result.kind === 'status-write-refused' ? 75 : 1;
-      } catch (error: unknown) {
-        emitError(error);
-      }
-    });
-
   const shutdownCommand = backend.command('shutdown');
   shutdownCommand.description('Gracefully shut down backend daemon').action(async () => {
     try {
       let preservedSetRead: Readonly<{
-        operatorExits: readonly string[];
+        dispositions: readonly string[];
         skippedRows: number;
         skippedIdentities: readonly string[];
       }> | null = null;
@@ -1734,7 +1590,9 @@ export function registerBackendCommands(program: Command, operations: BackendCom
         if (statusBeforeShutdown.status === 'ok') {
           const providerProxySets = statusBeforeShutdown.health.diagnostics?.providerProxySets ?? [];
           preservedSetRead = {
-            operatorExits: providerProxySets.map(formatProviderProxySetOperatorExit),
+            dispositions: providerProxySets.map(
+              (set) => `set=${set.setToken} ${formatProviderProxySetAutonomousDisposition(set)}`,
+            ),
             skippedRows: statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
             skippedIdentities: formatProviderProxySetRowSkips(
               statusBeforeShutdown.health.skippedProviderProxySetRows ?? 0,
@@ -1754,13 +1612,13 @@ export function registerBackendCommands(program: Command, operations: BackendCom
           if (preservedSetRead === null) {
             return 'Held provider proxy sets could not be inspected before shutdown; run backend status after the successor starts.';
           }
-          if (preservedSetRead.operatorExits.length === 0 && preservedSetRead.skippedRows === 0) {
+          if (preservedSetRead.dispositions.length === 0 && preservedSetRead.skippedRows === 0) {
             return 'No held provider proxy sets were reported before shutdown.';
           }
-          const lines = preservedSetRead.operatorExits.length
+          const lines = preservedSetRead.dispositions.length
             ? [
-                'Provider proxy set exits reported before shutdown:',
-                ...preservedSetRead.operatorExits.map((operatorExit) => `  ${operatorExit}`),
+                'Provider proxy set dispositions reported before shutdown:',
+                ...preservedSetRead.dispositions.map((disposition) => `  ${disposition}`),
               ]
             : [];
           if (preservedSetRead.skippedRows > 0) {

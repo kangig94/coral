@@ -20,6 +20,7 @@ import type {
   LifecycleShutdownDisposition,
   RunStartupRecoveryOrchestratorFn,
 } from '#src/coordinator/lifecycle.js';
+import type { ShutdownReason } from '#src/infra/persisted-scalar-contracts.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -61,7 +62,7 @@ export interface BootCoreOptions {
 export interface BootedCore {
   readonly core: CoordinatorCoreResult;
   readonly serverInfo: CoordinatorServerInfo;
-  shutdown(reason: string): Promise<LifecycleShutdownDisposition>;
+  shutdown(reason: ShutdownReason): Promise<LifecycleShutdownDisposition>;
 }
 
 function createHarnessStoreServices(runtime: Runtime, db: Database, namespace: string): CoordinatorStoreServices {
@@ -181,7 +182,8 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
         removeBackendInfoIfOwnerFn: () => {},
         cleanupStaleJobsFn: () => {},
         markJobsAsErrorFn: () => {},
-        terminateAllFn: async () => ({ kind: 'all-observed-absent' }),
+        settlePendingLaunchesFn: async () => ({ kind: 'all-pending-launches-settled' }),
+        terminateRegisteredChildrenFn: async () => ({ kind: 'all-children-observed-absent' }),
         registerBuiltInProvidersFn: () => {},
         ...(opts.createExecutionService === undefined ? {} : { createExecutionService: opts.createExecutionService }),
         ...(opts.providerHostManager === undefined ? {} : { providerHostManager: opts.providerHostManager }),
@@ -199,7 +201,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
     const booted: BootedCore = {
       core,
       serverInfo,
-      shutdown: async (reason: string) => {
+      shutdown: async (reason: ShutdownReason) => {
         if (core.runtimeState.getLifecycle() === 'stopped') return { disposition: 'finalized' };
         const disposition = await core.lifecycleController.shutdown(reason);
         if (disposition.disposition === 'held') return disposition;
@@ -213,7 +215,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
   async function cleanup(): Promise<LifecycleShutdownDisposition> {
     for (const booted of liveCores) {
       try {
-        const disposition = await booted.shutdown('test-cleanup');
+        const disposition = await booted.shutdown('test-teardown');
         if (disposition.disposition === 'held') return disposition;
       } catch {
         // best-effort

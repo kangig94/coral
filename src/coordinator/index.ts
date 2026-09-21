@@ -17,8 +17,14 @@ import {
 import { createCoordinatorCore } from './composition/index.js';
 import { createCoordinatorProviderHostAdmission } from './live/provider-host-admission.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
+import type { ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
-import type { CoordinatorServerInfo, LifecycleShutdownDisposition, LifecycleState } from './lifecycle.js';
+import {
+  isLifecycleShutdownTerminal,
+  type CoordinatorServerInfo,
+  type LifecycleShutdownDisposition,
+  type LifecycleState,
+} from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
 import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
@@ -76,7 +82,7 @@ export type CoordinatorServerOptions = Omit<
 export type CoordinatorServerController = {
   server: CoordinatorCoreResult['server'];
   start: () => Promise<CoordinatorServerInfo>;
-  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
+  shutdown: (reason: ShutdownReason) => Promise<LifecycleShutdownDisposition>;
   waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
   getLifecycle: () => LifecycleState;
   getIdleTimer: () => CoordinatorCoreResult['idleTimer'];
@@ -429,6 +435,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
     });
     return lifecycleReactorDisposal;
   };
+  const shutdownLifecycleReactor = coreOptions.disposeLifecycleReactor ?? disposeLifecycleReactor;
   handleKbDaemonEvent = (message: KbDaemonEventMessage): void => {
     if (message.event === 'journal') {
       if (!isAppendedEventArray(message.appended)) {
@@ -466,7 +473,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
       runtime,
       storeFormat,
       discardSessionArtifacts: (sessionId) => lifecycleReactor.discardSessionArtifacts(sessionId),
-      disposeLifecycleReactor,
+      disposeLifecycleReactor: shutdownLifecycleReactor,
       createStoreServicesFromDbFn,
       buildProviderEventHandler,
       operationRegistry,
@@ -618,18 +625,24 @@ export function createCoordinatorServer(options: CoordinatorServerOptions = {}):
   const coordinatorCore = core;
   // KB lifecycle is owned by the child proxy; the server does not build a KB runtime.
 
+  const triggerLifecycleReactorDisposal = (): void => {
+    void Promise.resolve(shutdownLifecycleReactor()).catch((error: unknown) => {
+      backendLog.warn(`Lifecycle reactor disposal after shutdown failed: ${errorMessage(error)}`);
+    });
+  };
+
   return {
     server: coordinatorCore.server,
     start: () => coordinatorCore.lifecycleController.start(),
     shutdown: async (reason) => {
       const disposition = await coordinatorCore.lifecycleController.shutdown(reason);
-      if (disposition.disposition === 'finalized') await disposeLifecycleReactor();
+      if (isLifecycleShutdownTerminal(disposition)) triggerLifecycleReactorDisposal();
       return disposition;
     },
     waitForShutdown: async () => {
       const disposition = await coordinatorCore.lifecycleController.waitForShutdown();
-      if (disposition.disposition === 'finalized') {
-        await disposeLifecycleReactor();
+      if (isLifecycleShutdownTerminal(disposition)) {
+        triggerLifecycleReactorDisposal();
         await finalizeStoreServices(coordinatorCore.storeServicesRef);
       }
       return disposition;

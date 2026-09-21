@@ -68,7 +68,8 @@ const noEffect = {
   representationAction: 'none' as const,
 };
 const proofAuthorization = {} as ProviderProxySetContainmentProofAuthorization;
-const capability = { setIdentity: address, containmentProofAuthorization: proofAuthorization } as never;
+const handback = vi.fn();
+const capability = { setIdentity: address, containmentProofAuthorization: proofAuthorization, handback } as never;
 const opaqueProof = {} as ProviderProxySetContainmentProof;
 const operator: Principal = {
   subject: 'operator',
@@ -157,6 +158,7 @@ let harness: ReturnType<typeof createHarness>;
 beforeEach(() => {
   captured.ports = null;
   captured.world = null;
+  handback.mockClear();
   harness = createHarness();
 });
 
@@ -330,6 +332,18 @@ describe('provider proxy set operator RPC composition', () => {
 
     await expect(pending).resolves.toEqual({ kind: 'authorization-stale', setIdentity: address, effect: noEffect });
     expect(complete).toHaveBeenCalledExactlyOnceWith(capability, opaqueProof, false, signal);
+    expect(handback).toHaveBeenCalledOnce();
+  });
+
+  it('preserves a proof-collection error when handback rearming transiently throws', async () => {
+    vi.spyOn(harness.lifecycle, 'authorizeOperatorExit').mockReturnValue({ kind: 'authorized', capability });
+    vi.spyOn(harness.prover, 'collectContainmentProof').mockRejectedValue(new Error('proof collection failed'));
+    handback.mockImplementationOnce(() => {
+      throw new Error('timer installation failed');
+    });
+
+    await expect(harness.contain({ setIdentity: address, mode: 'contain' })).rejects.toThrow('proof collection failed');
+    expect(handback).toHaveBeenCalledTimes(2);
   });
 
   it.each<Readonly<{ evidence: ProviderProxySetContainmentEvidence; result: ProviderProxySetOperatorExitResult }>>([

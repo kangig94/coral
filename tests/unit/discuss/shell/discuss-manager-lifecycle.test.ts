@@ -8,15 +8,26 @@ import {
   hasRunningSessions,
   listAttachedSessions,
 } from '#src/discuss/shell/live-registry.js';
-import { abortDiscussSession } from '#src/discuss/shell/operations.js';
+import { abortDiscussSession, submitManualBid } from '#src/discuss/shell/operations.js';
 import { persistAbortEndForShutdown, recoverPersistedSessionsFromStore } from '#src/discuss/shell/recovery.js';
-import { appendRuntimeEvents, readSessionEvents } from '#src/discuss/shell/persistence.js';
+import {
+  appendRuntimeEvents,
+  commitDecision,
+  isSilentCommitRefusal,
+  readSessionEvents,
+} from '#src/discuss/shell/persistence.js';
+import * as discussPersistence from '#src/discuss/shell/persistence.js';
+import { SESSION_SHUTTING_DOWN, DiscussManagerError } from '#src/discuss/shell/errors.js';
+import { runFollowUpTurns } from '#src/discuss/shell/flow/followup.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { detachSession } from '#src/discuss/shell/registry.js';
+import { decideEnd } from '#src/discuss/state-machine.js';
+import { makeDecisionContext } from '#src/discuss/shell/flow/primitives.js';
 import {
   attachPersistedSession,
   cleanupDiscussHarnesses,
   createDiscussHarness,
+  createExecutionServiceStub,
   discussContextOptions,
   persistSession,
   type DiscussHarness,
@@ -278,6 +289,166 @@ describe('DiscussContext lifecycle boundaries', () => {
     expect(readSessionEvents(context, 'handoff-session').map((event) => event.kind)).toEqual([
       'session.created',
       'bidding.opened',
+    ]);
+  });
+
+  it('hard shutdown aborts every live controller before persisting any abort marker, preempting a racing natural commit', async () => {
+    const harness = createDiscussHarness();
+    const registry = createDiscussContextRegistry();
+    const context = getOrCreateDiscussContext(
+      registry,
+      harness.projectRoot,
+      harness.service,
+      harness.store,
+      discussContextOptions(harness),
+    );
+
+    const liveSnapshot = await persistSession(
+      { ...harness, context },
+      {
+        sessionId: 'racing-session',
+        recover: false,
+      },
+    );
+    attachPersistedSession({ ...harness, context }, liveSnapshot);
+    const liveSession = context.sessions.get('racing-session');
+    if (!liveSession) {
+      throw new Error('Expected attached racing-session');
+    }
+
+    // Stands in for a `continueLoop` invocation that was already scheduled before shutdown
+    // began and only reaches its own commit once shutdown starts persisting the abort marker.
+    let racingCommitResult: Awaited<ReturnType<typeof commitDecision>> | undefined;
+    let signalAbortedWhenPersistRan: boolean | undefined;
+    const persistAbortEndAndRaceNaturalCompletion = async (
+      ctx: Parameters<typeof persistAbortEndForShutdown>[0],
+      sessionId: string,
+      session: Parameters<typeof persistAbortEndForShutdown>[2],
+    ): Promise<void> => {
+      signalAbortedWhenPersistRan = liveSession.controller.signal.aborted;
+      racingCommitResult = await commitDecision(ctx, sessionId, (current) =>
+        decideEnd(
+          current.state,
+          { force: true, reason: 'natural-completion-race' },
+          makeDecisionContext(ctx, current.sessionId, current.state.topic),
+          current.lastAppliedSeq + 1,
+          '2026-03-10T00:05:00.000Z',
+        ),
+      );
+      await persistAbortEndForShutdown(ctx, sessionId, session);
+    };
+
+    await clearAllDiscuss(registry, 'hard', persistAbortEndAndRaceNaturalCompletion);
+
+    // The abort-first pass must have already run by the time the marker persistence
+    // (and the racing commit it wraps) executes.
+    expect(signalAbortedWhenPersistRan).toBe(true);
+    expect(racingCommitResult).toMatchObject({ ok: false, error: SESSION_SHUTTING_DOWN });
+
+    const events = readSessionEvents(context, 'racing-session');
+    expect(events.at(-1)).toMatchObject({
+      kind: 'session.ended',
+      payload: { force: true, reason: 'abort' },
+    });
+  });
+
+  it('isSilentCommitRefusal recognizes exactly the two commit-refusal codes internal flows must stop quietly on', () => {
+    expect(isSilentCommitRefusal('session_not_found')).toBe(true);
+    expect(isSilentCommitRefusal(SESSION_SHUTTING_DOWN)).toBe(true);
+    expect(isSilentCommitRefusal('invalid_phase')).toBe(false);
+    expect(isSilentCommitRefusal('already_bid')).toBe(false);
+  });
+
+  it('submitManualBid tells the caller the session is shutting down, not that it does not exist', async () => {
+    const harness = createDiscussHarness();
+    const snapshot = await persistSession(harness, {
+      sessionId: 'shutdown-racing-bid-session',
+      recover: false,
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const session = harness.context.sessions.get('shutdown-racing-bid-session');
+    if (!session) {
+      throw new Error('Expected attached shutdown-racing-bid-session');
+    }
+    // Exercises commitDecision's controller-aborted guard through submitManualBid, which
+    // reads `error` directly instead of going through isSilentCommitRefusal (unlike the
+    // internal flows), so it must surface SESSION_SHUTTING_DOWN rather than session_not_found.
+    session.controller.abort();
+
+    let thrown: unknown;
+    try {
+      await submitManualBid(harness.context, 'shutdown-racing-bid-session', 'alpha', 80, 'racing a drain', harness.ctx);
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(DiscussManagerError);
+    expect((thrown as DiscussManagerError).code).toBe(SESSION_SHUTTING_DOWN);
+    // The guard fires without removing anything from the store.
+    expect(harness.store.load('shutdown-racing-bid-session')).not.toBeNull();
+  });
+
+  it('runFollowUpTurns exits once a tolerated commit refusal lands, instead of spinning forever', async () => {
+    const start = vi.fn().mockResolvedValue({
+      kind: 'provider-session' as const,
+      status: 'running' as const,
+      jobId: 'job-1',
+      sessionId: 'agent-session-1',
+    });
+    const waitStreamOnce = vi.fn().mockResolvedValue({ content: 'An answer.', continuity: null });
+    const harness = createDiscussHarness(createExecutionServiceStub({ start, waitStreamOnce }));
+    const snapshot = await persistSession(harness, {
+      sessionId: 'follow-up-spin-session',
+      recover: false,
+      buildTail: (current) => [
+        makeEvent(
+          current.sessionId,
+          harness.projectRoot,
+          current.state.topic,
+          current.lastAppliedSeq + 1,
+          'follow_up.queue.set',
+          '2026-03-10T00:02:00.000Z',
+          { queue: [{ agent: 'alpha', question: 'What changed?' }] },
+        ),
+      ],
+    });
+    attachPersistedSession(harness, snapshot);
+
+    const session = harness.context.sessions.get('follow-up-spin-session');
+    if (!session) {
+      throw new Error('Expected attached follow-up-spin-session');
+    }
+    // Stands in for clearAllDiscuss's abort-first pass racing a suspended runFollowUpTurns
+    // iteration that resumes after the abort but before the registry finishes clearing.
+    session.controller.abort();
+
+    // Bounds a regression: without the fix, a tolerated refusal falls through instead of
+    // returning, so runFollowUpTurns re-reads the same unwritten queue and calls
+    // collectFollowUpAnswer again on every iteration, launching another job each time. This
+    // spy fails the test the moment that happens a second time, instead of hanging the suite.
+    const originalCommitDecision = discussPersistence.commitDecision;
+    let commitCalls = 0;
+    const COMMIT_CALL_BOUND = 1;
+    vi.spyOn(discussPersistence, 'commitDecision').mockImplementation(async (...args) => {
+      commitCalls += 1;
+      if (commitCalls > COMMIT_CALL_BOUND) {
+        throw new Error(
+          `runFollowUpTurns issued a ${commitCalls}${
+            commitCalls === 2 ? 'nd' : 'th'
+          } commitDecision call after a tolerated refusal instead of returning`,
+        );
+      }
+      return originalCommitDecision(...args);
+    });
+
+    const result = await runFollowUpTurns(harness.context, 'follow-up-spin-session', harness.ctx);
+
+    expect(result).toEqual({ shouldResume: false });
+    expect(commitCalls).toBe(1);
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(harness.store.load('follow-up-spin-session')?.runtime.followUpQueue).toEqual([
+      { agent: 'alpha', question: 'What changed?' },
     ]);
   });
 

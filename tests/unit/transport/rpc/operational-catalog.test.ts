@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import { shutdownObligationAbandonMethod } from '#src/obligation/shutdown-abandonment.js';
 import {
   providerHostEvictRpcSpec,
   providerHostInspectRpcSpec,
@@ -31,7 +30,6 @@ describe('operational catalog IPC lifecycle admission', () => {
     providerHostListV2RpcSpec.name,
     providerHostInspectRpcSpec.name,
     providerHostEvictRpcSpec.name,
-    shutdownObligationAbandonMethod,
     'transport.health',
   ])('admits %s while the coordinator drains', (method) => {
     expect(ipcRouteLifecycleAdmission(method)).toBe('running-or-draining');
@@ -74,7 +72,7 @@ describe('operational catalog IPC refusal disposition', () => {
     expect(ipcRouteRefusalDisposition(method)).toBe('report-refusal');
   });
 
-  it.each([shutdownObligationAbandonMethod, 'transport.health', 'jobs.list', 'no.such.method'])(
+  it.each(['transport.health', 'jobs.list', 'no.such.method'])(
     'reports the refusal for %s, which no catalog dispatch admits',
     (method) => {
       expect(readIpcOperationalSpec(method)?.dispatch.kind).not.toBe('catalog');

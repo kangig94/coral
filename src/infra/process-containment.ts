@@ -3,7 +3,6 @@ import { z } from 'zod';
 import {
   incarnationMayAuthorizeSignal,
   isProcessIncarnation,
-  MAX_PROCESS_INCARNATION_LENGTH,
   probeProcessIncarnation,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
@@ -11,6 +10,7 @@ import {
 } from './node-process.js';
 import type { LiveChildAuthority } from './process-supervision.js';
 import type { MonotonicClock, MonotonicInstant } from './monotonic-clock.js';
+import { persistedProcessIncarnationSchema } from './persisted-scalar-contracts.js';
 import {
   CONTAINMENT_DISAPPEARANCE_CONFIRM_MS,
   CONTAINMENT_PROCESS_CONTROL_CALL_MAX_MS,
@@ -33,7 +33,7 @@ export type RecordedProcessIdentity = Readonly<{
 export const recordedProcessIdentitySchema: z.ZodType<RecordedProcessIdentity> = z
   .object({
     pid: z.number().int().positive().safe(),
-    incarnation: z.string().min(1).max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>,
+    incarnation: persistedProcessIncarnationSchema,
   })
   .strict()
   .readonly();

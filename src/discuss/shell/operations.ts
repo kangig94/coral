@@ -15,7 +15,7 @@ import * as discussLoop from './loop.js';
 import { type AgentConfig, type DiscussConfig, type DiscussContext, type LiveDiscussSession } from './types.js';
 import { ABORT_REASON, DiscussManagerError, unwrapResult } from './errors.js';
 import { attachSession, detachSession, getSession } from './registry.js';
-import { afterCommit, commitDecision } from './persistence.js';
+import { afterCommit, commitDecision, isSilentCommitRefusal } from './persistence.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { collectBids } from './flow/bid.js';
 import { makeDecisionContext } from './flow/primitives.js';
@@ -59,7 +59,10 @@ export async function startDiscussSession(
   invocationCtx: InvocationContext,
 ): Promise<LiveDiscussSession> {
   if (!hasProviderScope(invocationCtx)) {
-    throw new DiscussManagerError('provider_scope_missing');
+    throw new DiscussManagerError('provider_scope_missing', {
+      message:
+        'This discussion has no provider scope. Start it again from a launch-capable client with the profiles used by its agents.',
+    });
   }
   const decodedScope = ctx.providerRegistry.decodeCompleteScope(
     invocationCtx.providerScope,
@@ -200,7 +203,7 @@ export async function abortDiscussSession(ctx: DiscussContext, sessionId: string
       nowIsoString(ctx.runtime.time),
     ),
   );
-  if (!committed.ok && committed.error !== 'session_not_found') {
+  if (!committed.ok && !isSilentCommitRefusal(committed.error)) {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 

@@ -5,7 +5,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { DiscussStaleWriteError } from './session-store.js';
 import { type DiscussContext } from './types.js';
-import { ABORT_REASON, DiscussManagerError } from './errors.js';
+import { ABORT_REASON, DiscussManagerError, SESSION_SHUTTING_DOWN } from './errors.js';
 import { compactLiveWatchBuffer, getSubscriberCursorMap, watchBufferCursor } from './live-registry.js';
 
 function syncLiveSnapshot(ctx: DiscussContext, sessionId: string): void {
@@ -33,6 +33,10 @@ type CommitFailure = {
 };
 
 export type CommitResult = CommitSuccess | CommitFailure;
+
+export function isSilentCommitRefusal(error: string): boolean {
+  return error === 'session_not_found' || error === SESSION_SHUTTING_DOWN;
+}
 
 export function loadAttachedOrPersistedSnapshot(
   ctx: DiscussContext,
@@ -116,6 +120,10 @@ export async function commitDecision(
         snapshot: current,
         events: [],
       };
+    }
+
+    if (ctx.sessions.get(sessionId)?.controller.signal.aborted === true) {
+      return { ok: false, error: SESSION_SHUTTING_DOWN, detail: { session: sessionId } };
     }
 
     try {

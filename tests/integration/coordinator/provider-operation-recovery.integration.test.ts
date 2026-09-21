@@ -232,8 +232,10 @@ describe('provider-operation startup recovery ownership', () => {
         writeBackendInfoFn: vi.fn(),
         removeBackendInfoIfOwnerFn: vi.fn(),
         cleanupStaleJobsFn: vi.fn(),
+        readSelfIncarnationFn: () => null,
         markJobsAsErrorFn: vi.fn(),
-        terminateAllFn: vi.fn(async () => ({ kind: 'all-observed-absent' as const })),
+        settlePendingLaunchesFn: vi.fn(async () => ({ kind: 'all-pending-launches-settled' }) as const),
+        terminateRegisteredChildrenFn: vi.fn(async () => ({ kind: 'all-children-observed-absent' }) as const),
         providerHostManager: { drainForHandoff: vi.fn(), shutdown: vi.fn(async () => {}) } as never,
         handoffQuiescePorts: () => [],
         createKbHealthComponentFn: () => ({
@@ -285,7 +287,7 @@ describe('provider-operation startup recovery ownership', () => {
         acceptedRecoveryAttempts: recoverQueuedJob.mock.calls.length,
       }).toEqual({ sagaPhase: null, acceptedRecoveryAttempts: 1 });
     } finally {
-      await lifecycle.shutdown('test-complete');
+      await lifecycle.shutdown('test-teardown');
     }
   });
 });

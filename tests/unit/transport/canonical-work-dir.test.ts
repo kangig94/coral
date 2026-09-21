@@ -157,11 +157,12 @@ describe('canonical work directory transport ingress', () => {
       statusCode: 400,
       body: {
         code: 'invalid_work_directory',
-        message: expect.stringContaining(missingProjectRoot),
         detail: { workDir: missingProjectRoot, projectRoot: process.cwd() },
       },
     });
-    expect((result as { body?: { message?: string } }).body?.message).toMatch(/ENOENT|no such file or directory/);
+    const body = (result as { body?: { message?: string } }).body;
+    expect(body?.message).toMatch(/ENOENT|no such file or directory/);
+    expect(body?.message).not.toContain(missingProjectRoot);
     expect(start).not.toHaveBeenCalled();
   });
 

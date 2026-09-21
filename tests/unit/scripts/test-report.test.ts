@@ -204,18 +204,6 @@ describe('test-report', () => {
       expect(verdict.unjudged).toEqual([]);
     });
 
-    // The report carries one duration per case however many attempts it took, so this is the whole of
-    // what judging a retried case can mean: no attempt is subtracted and no average is taken.
-    it('should judge a retried case on the one duration its report carries', () => {
-      const durations = durationsOf([
-        fileResult('/repo/tests/unit/a.test.ts', { startTime: 0, endTime: 31_000 }, [
-          { fullName: 'a > passed on its third attempt', duration: 30_000, timeout: 15_000 },
-        ]),
-      ]);
-
-      expect(judged(durations.cases, 1.5).withoutHeadroom.map((entry) => entry.durationMs)).toEqual([30_000]);
-    });
-
     it('should judge nothing when the run measured no cases', () => {
       expect(judged([], 1.5)).toEqual({ withoutHeadroom: [], unjudged: [], unbounded: [] });
     });

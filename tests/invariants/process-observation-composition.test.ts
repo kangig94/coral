@@ -112,17 +112,17 @@ const COMPOSITION_DEBTS = new Map<string, CompositionDebt>([
     ),
   ],
   [
-    'src/coordinator/live/admission.ts#LaunchCoordinator.terminateAll.startAttempt.then:0',
+    'src/coordinator/live/admission.ts#LaunchCoordinator.terminateRegisteredChildren.startAttempt.then:0',
     debt(
       'the fulfillment callback stores the completed cleanup disposition in LaunchCoordinator cleanup-attempt ownership',
-      'LaunchCoordinator.terminateAll consumes the stored cleanup disposition',
+      'LaunchCoordinator.terminateRegisteredChildren consumes the stored cleanup disposition',
     ),
   ],
   [
-    'src/coordinator/live/admission.ts#LaunchCoordinator.terminateAll.startAttempt.then:1',
+    'src/coordinator/live/admission.ts#LaunchCoordinator.terminateRegisteredChildren.startAttempt.then:1',
     debt(
       'the rejection callback stores the completed cleanup failure in LaunchCoordinator cleanup-attempt ownership',
-      'LaunchCoordinator.terminateAll consumes the stored cleanup failure',
+      'LaunchCoordinator.terminateRegisteredChildren consumes the stored cleanup failure',
     ),
   ],
   [

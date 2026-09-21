@@ -1569,15 +1569,15 @@ describe('ProviderOperationReconciler publication', () => {
     }
     expect(targetRecoveries).toBe(1);
     await vi.waitFor(() => expect(readProviderOperation(harness.db, target.operation)).toBeNull());
-    harness.advance(26);
-    const replacements = readProviderOperationDueSelections(harness.db, 126, 32);
+    harness.advance(51);
+    const replacements = readProviderOperationDueSelections(harness.db, 151, 32);
     unsubscribe();
 
     expect(replacements).toHaveLength(32);
     for (const replacement of replacements) {
       const canonical = readProviderOperation(harness.db, replacement.record.operation);
       expect(replacement.record).toEqual(canonical);
-      expect(replacement.record).toMatchObject({ revision: 1, retryNotBeforeMs: 125 });
+      expect(replacement.record).toMatchObject({ revision: 1, retryCount: 1, retryNotBeforeMs: 125 });
     }
     expect(harness.fatalErrors).toEqual([]);
   });
@@ -1735,7 +1735,10 @@ describe('ProviderOperationReconciler publication', () => {
       }),
     ).resolves.toMatchObject({ kind: 'operational-failure' });
     await nextEventLoopTurn();
-    const dueSelection = readProviderOperationDueSelections(harness.db, 100, 1)[0];
+    // The failed attempt accounts itself on the record, so the due row it leaves is selected only once its
+    // own retry backoff has passed.
+    harness.advance(51);
+    const dueSelection = readProviderOperationDueSelections(harness.db, 151, 1)[0];
     if (dueSelection === undefined) throw new Error('expected one selected due row');
     harness.db.exec(`
       CREATE TEMP TRIGGER fail_due_turn_repair
@@ -1749,7 +1752,7 @@ describe('ProviderOperationReconciler publication', () => {
     harness.reconciler.start();
     expect(timers.size).toBe(1);
     harness.reconciler.wake();
-    await vi.waitFor(() => expect(warnings.length + harness.fatalErrors.length).toBe(1));
+    await vi.waitFor(() => expect(harness.fatalErrors).toHaveLength(1));
     harness.reconciler.wake();
     await nextEventLoopTurn();
 
@@ -1963,6 +1966,29 @@ describe('ProviderOperationReconciler publication', () => {
       terminalizeCalls: terminalizeCalls.mock.calls.length,
       phase: readProviderOperation(harness.db, recovered.operation)?.phase ?? 'missing',
     }).toEqual({ retryError: null, terminalizeCalls: 2, phase: 'missing' });
+  });
+
+  it('does not count a failed release as another host-refusal retry', async () => {
+    const harness = createHarness();
+    vi.spyOn(harness.terminalization, 'terminalize').mockImplementation((terminalRecord) => {
+      throw new ProviderOperationAtomicTerminalizationError(terminalRecord.operation, new Error('database is locked'));
+    });
+    const blocked = providerOperationRecordSchema.parse({
+      ...providerOperationRecord('prestart-cleanup-pending'),
+      afterRelease: hostUnserviceableDirective,
+      lastError: hostUnserviceableLastError,
+    });
+    insertProviderOperation(harness.db, blocked);
+
+    await expect(
+      harness.reconciler.containmentDisappeared({
+        operation: blocked.operation,
+        setIdentity: providerProxySetIdentityFromRecord(blocked),
+        disappearanceReceipt: 'blocked-host-absence-receipt',
+      }),
+    ).resolves.toMatchObject({ kind: 'operational-failure' });
+
+    expect(readProviderOperation(harness.db, blocked.operation)).toEqual(blocked);
   });
 
   it('rejects a conflicting disappearance receipt after delivery failure', async () => {
@@ -2396,6 +2422,63 @@ describe('ProviderOperationReconciler publication', () => {
     expect(readProviderOperation(harness.db, recovered.operation)).toBeNull();
     expect(harness.registry.activate).not.toHaveBeenCalled();
     expect(harness.appended).toEqual([]);
+  });
+
+  // An undischarged release is not a clean reconciliation: startup must not report recovery complete while
+  // the obligation it admitted to is still outstanding.
+  it('reports an undischarged representation release as a startup incident', async () => {
+    const harness = createHarness();
+    const recovered = providerOperationRecord('executing');
+    insertProviderOperation(harness.db, recovered);
+    const reconciler = new ProviderOperationReconciler({
+      getProgressStore: () => harness.progressStore,
+      authorityFor: () => null,
+      startupSetRecovery: {
+        recoverSetAtStartup: async () => ({
+          kind: 'absence-accepted',
+          acceptance: {
+            kind: 'accepted',
+            disappearanceReceipt: 'undischarged-startup-receipt',
+            initialDispositionState: 'resolved',
+            initialDisposition: Promise.resolve({
+              kind: 'released-undischarged',
+              witness: 'provider-operation-record',
+            }),
+          },
+        }),
+      },
+      registry: { activate: vi.fn(), attach: vi.fn(), settled: vi.fn(), stop: vi.fn() },
+      binding: harness.startupOwnership.binding,
+      releaseStartupOwnership: harness.startupOwnership.releaseStartupOwnership,
+      materializePrepare: () => MATERIALIZED_PREPARED,
+      recoverLocalJob: async (record) => providerRecoveryAccepted(record.operation.jobId),
+      completeLocalRecovery: () => undefined,
+      terminalization: harness.terminalization,
+      recoveryDispatcher: harness.recoveryDispatcher,
+      backendNamespace: 'tests',
+      onFatal: (error) => {
+        throw error;
+      },
+      time: {
+        now: () => 100,
+        setTimeout: () => ({ unref: () => undefined }),
+        clearTimeout: () => undefined,
+      },
+    });
+
+    const report = await reconciler.reconcileAtStartup(
+      harness.startupOwnership.ownershipFor([recovered]),
+      new AbortController().signal,
+    );
+
+    expect(report.incidents).toEqual([
+      {
+        kind: 'absence-released-undischarged',
+        setIdentity: providerProxySetIdentityFromRecord(recovered),
+        disappearanceReceipt: 'undischarged-startup-receipt',
+        witness: 'provider-operation-record',
+      },
+    ]);
   });
 
   it('keeps a recovered activation pending when its durable proxy locator is unreachable', async () => {

@@ -253,7 +253,12 @@ describe('Discuss faults and retry recovery', () => {
       }),
       harness.ctx,
     );
-    expect(snapshot?.state.current_bids).toEqual({ alpha: 58, user: null });
+    // The job-completion bookkeeping (attempt count, outcome) lands via appendRuntimeEvents,
+    // which this abort does not gate. The bid batch itself commits through commitDecision,
+    // which now refuses once the live controller is aborted — the abort raised from inside
+    // waitStreamOnce above lands before collectBids reaches that commit, so the recovered
+    // score is discarded rather than applied to an already-aborting session.
+    expect(snapshot?.state.current_bids).toEqual({ alpha: null, user: null });
     expect(snapshot?.runtime.agentRuns.alpha.currentAttempt).toBe(2);
     expect(snapshot?.runtime.agentRuns.alpha.lastAttemptOutcome).toBe('completed');
   });

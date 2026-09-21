@@ -686,6 +686,10 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #attemptExecutingAttachment :: catch#1 :: calls=[readProviderOperation, this.#deps.getProgressStore().getDb, this.#deps.getProgressStore, this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: Promise.then(rejected) :: pending.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: #awaitAuthority :: catch#1 :: calls=[reject, errorMessage] assignments=[]',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedAbandonment :: Promise.then(rejected) :: active.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedAbandonment :: Promise.then(rejected) :: promise.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedDisappearance :: Promise.then(rejected) :: active.then',
+  'src/coordinator/services/provider-operation-reconciler.ts :: #deliverLatchedDisappearance :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveActivationResolution :: catch#1 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveActivationResolution :: catch#2 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: #driveActivationResolution :: catch#3 :: calls=[this.#recordRetry] assignments=[]',
@@ -709,12 +713,8 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-operation-reconciler.ts :: #recoverPrepare :: catch#2 :: calls=[this.#recordRetry] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: awaitStartup :: Promise.then(rejected) :: operation.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: begin :: catch#1 :: calls=[this.#failPublication, providerOperationErrorReason] assignments=[]',
-  'src/coordinator/services/provider-operation-reconciler.ts :: containmentDisappeared :: Promise.then(rejected) :: active.then',
-  'src/coordinator/services/provider-operation-reconciler.ts :: containmentDisappeared :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: onControlEstablished :: Promise.catch :: this.#reconcileActiveForAuthority(authority).catch',
   'src/coordinator/services/provider-operation-reconciler.ts :: reconcile :: Promise.catch :: this.#driveContext .run(context, () => this.#drive(record, preferredAuthority, context.signal)) .catch',
-  'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: active.then',
-  'src/coordinator/services/provider-operation-reconciler.ts :: representationAbandoned :: Promise.then(rejected) :: promise.then',
   'src/coordinator/services/provider-operation-reconciler.ts :: requestStop :: catch#1 :: calls=[this.#deps.onError, providerOperationErrorReason] assignments=[]',
   'src/coordinator/services/provider-operation-reconciler.ts :: stop :: catch#1 :: calls=[this.#deps.time.setTimeout, timer.unref] assignments=[]',
   'src/coordinator/services/provider-proxy-recovery-policy.ts :: errorCode :: catch#1 :: calls=[] assignments=[]',
@@ -728,7 +728,7 @@ const EXPECTED_REJECTION_NODE_INVENTORY = [
   'src/coordinator/services/provider-proxy-set/index.ts :: #containmentAbsent :: Promise.catch :: authority .initiateControlClose() .catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: oldAuthority.initiateControlClose().catch',
   'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: Promise.catch :: promoted.initiateControlClose().catch',
-  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.attemptAbort]',
+  'src/coordinator/services/provider-proxy-set/index.ts :: #promoteControlReattachment :: catch#1 :: calls=[this.#isCurrentControlReattachment, this.#deps.onError, singleLineErrorSummary, this.#scheduleControlReattachmentRetry] assignments=[window.cancelAttempt, window.attemptAbort]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recordOperatorExitRefusal :: catch#1 :: calls=[singleLineErrorSummary, this.#operatorDispositions.set] assignments=[]',
   'src/coordinator/services/provider-proxy-set/index.ts :: #recoverExactCapsule :: Promise.then(rejected) :: this.#trackDestructiveAttempt( slot, this.#reapRecordedContainment(slot.identity, proof, reapAbort.signal, () => undefined), ).then',
   'src/coordinator/services/provider-proxy-set/index.ts :: #releasePartialRedemption :: Promise.catch :: refusal.guardianAuthority.initiateControlClose().catch',
@@ -1312,7 +1312,6 @@ describe('provider proxy recovery policy construction', () => {
       visit(file);
       return matches;
     });
-
     expect(
       {
         boundaryInventory: boundaryInventory(references),

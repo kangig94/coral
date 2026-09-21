@@ -63,7 +63,8 @@ describe('durable transport', () => {
     rmSync(tmpRoot, { recursive: true, force: true });
     delete process.env.CORAL_MAX_WORKERS;
     delete process.env.CORAL_DISCUSS_MAX_WORKERS;
-    await coordinator.terminateAll();
+    await coordinator.settlePendingLaunches();
+    await coordinator.terminateRegisteredChildren();
     vi.restoreAllMocks();
   });
 
@@ -200,7 +201,7 @@ describe('durable transport', () => {
     expect(data?.observedBytes).toBeGreaterThan(PROVIDER_SERVER_MAX_JSONL_LINE_BYTES);
   });
 
-  it('terminateAll drains queued launches but does not kill provider servers', async () => {
+  it('staged launch termination drains queued launches but does not kill provider servers', async () => {
     const handle = await coordinator.spawnProviderServer(
       {
         provider: 'codex',
@@ -214,7 +215,8 @@ describe('durable transport', () => {
     );
     if ('kind' in handle) throw new Error('Expected a contained provider server handle.');
 
-    await coordinator.terminateAll();
+    await coordinator.settlePendingLaunches();
+    await coordinator.terminateRegisteredChildren();
 
     await expect(handle.rpc.request('ping', { value: 'still-live' })).resolves.toEqual({
       pong: 'still-live',

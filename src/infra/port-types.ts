@@ -39,6 +39,8 @@ export interface DirentLike {
 
 export type StorageData = string | Uint8Array;
 
+export type StoragePath = string | Buffer;
+
 export type SqliteValue = null | number | bigint | string | Uint8Array;
 
 export interface SqliteStatementPort {
@@ -83,7 +85,7 @@ export type DirectoryTraversability = 'traversable' | 'denied' | 'unobserved';
 
 export interface StorageWholeFilePort {
   readFile(path: string, encoding: 'utf-8'): Promise<string>;
-  readFileSync(path: string, encoding: 'utf-8'): string;
+  readFileSync(path: StoragePath, encoding: 'utf-8'): string;
 }
 
 export interface StorageMutationPort {
@@ -92,7 +94,7 @@ export interface StorageMutationPort {
     data: StorageData,
     options?: { encoding?: BufferEncoding; mode?: number; flag?: string },
   ): void;
-  renameSync(oldPath: string, newPath: string): void;
+  renameSync(oldPath: StoragePath, newPath: StoragePath): void;
   linkSync(existingPath: string, newPath: string): void;
   mkdirSync(path: string, options?: { recursive?: boolean; mode?: number }): void;
   rmSync(path: string, options?: { recursive?: boolean; force?: boolean }): void;
@@ -106,7 +108,7 @@ export interface StorageMutationPort {
     options: { canonicalPath: string; maxRetries?: number },
   ): { ok: boolean; retries: number; orphanPath?: string };
   rmdirSync(path: string): void;
-  unlinkSync(path: string): void;
+  unlinkSync(path: StoragePath): void;
   tryExclusiveWriteSync(
     path: string,
     data: StorageData,
@@ -127,16 +129,22 @@ export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
   observeDirectoryTraversabilitySync(path: string): DirectoryTraversability;
   readdir(path: string): Promise<string[]>;
   readdirSync(path: string): string[];
+  readdirSync(path: string, options: { encoding: 'buffer' }): Buffer[];
   readdirSync(path: string, options: { withFileTypes: true }): DirentLike[];
   readDirectoryBoundedSync(
     path: string,
     limit: number,
+    options: { encoding: 'buffer' },
+  ): { readonly entries: readonly Buffer[]; readonly overflow: boolean };
+  readDirectoryBoundedSync(
+    path: string,
+    limit: number,
   ): { readonly entries: readonly string[]; readonly overflow: boolean };
-  statSync(path: string): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
-  statSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  statSync(path: StoragePath): { size: number; mtimeMs: number; isDirectory(): boolean; isFile(): boolean };
+  statSync(path: StoragePath, options: { bigint: true }): StorageBigIntStat;
   fstatSync(fd: number, options: { bigint: true }): StorageBigIntStat;
-  lstatSync(path: string): StorageEntryKind;
-  lstatSync(path: string, options: { bigint: true }): StorageBigIntStat;
+  lstatSync(path: StoragePath): StorageEntryKind;
+  lstatSync(path: StoragePath, options: { bigint: true }): StorageBigIntStat;
   lstat(path: string): Promise<StorageAsyncEntry>;
   realpathSync(path: string): string;
   existsSync(path: string): boolean;

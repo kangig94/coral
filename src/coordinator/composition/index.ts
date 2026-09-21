@@ -195,6 +195,8 @@ function providerProxySetContainBooleanClaimDischarge(
       return { kind: 'initial-disposition-retry-owned' };
     case 'operational-retry-owned':
       return { kind: discharge.kind, incidents: discharge.incidents };
+    case 'released-undischarged':
+      return discharge;
     default:
       return assertNever(discharge);
   }
@@ -872,6 +874,13 @@ export function createCoordinatorCore(
   const eventStreamSubscriptions = new WeakMap<EventStreamHandlers, () => void>();
   let readIpcOpenSockets = () => 0;
   let lifecycleController: LifecycleController | null = null;
+  const onProviderProxyLifecycleFatal = (error: unknown): void => {
+    world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
+    void lifecycleController
+      ?.shutdown('provider-proxy-lifecycle-fatal', { kind: 'provider-proxy-lifecycle-fatal', error })
+      .catch(() => undefined);
+  };
+  options.captureProviderProxyLifecycleFatal?.(onProviderProxyLifecycleFatal);
   const services = createExecutionServices({
     world,
     runtime,
@@ -879,10 +888,7 @@ export function createCoordinatorCore(
     backendNamespace: world.namespace,
     settlementRefusalRecorder,
     createExecutionService: defaults.createExecutionService,
-    onProviderProxyLifecycleFatal: (error) => {
-      world.log(`Fatal provider proxy lifecycle error: ${formatError(error)}\n`);
-      void lifecycleController?.shutdown('provider-proxy-lifecycle-fatal').catch(() => undefined);
-    },
+    onProviderProxyLifecycleFatal,
   });
   adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
   releaseUnreadableProviderOperationStartupOwnership = services.releaseUnreadableProviderOperationStartupOwnership;
@@ -1216,7 +1222,7 @@ export function createCoordinatorCore(
           return {
             kind: 'representation-release-abandoned',
             setIdentity: request.setIdentity,
-            successor: { owner: 'operator-command', acceptance: 'accepted' },
+            successor: { owner: 'coordinator', acceptance: 'accepted' },
             effect: {
               signalsSent: [],
               containmentAbsent: false,
@@ -1246,14 +1252,22 @@ export function createCoordinatorCore(
         effect: { signalsSent: [], containmentAbsent: false, representationAction: 'none' },
       };
     }
-    const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
-      authorization.capability.containmentProofAuthorization,
-      getProgressStore().getDb(),
-      signal ?? new AbortController().signal,
-    );
-    return contract === 'boolean'
-      ? lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
-      : lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
+    try {
+      const proof = await world.providerProxySetContainmentProver.collectContainmentProof(
+        authorization.capability.containmentProofAuthorization,
+        getProgressStore().getDb(),
+        signal ?? new AbortController().signal,
+      );
+      return contract === 'boolean'
+        ? await lifecycle.completeBooleanOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal)
+        : await lifecycle.completeOperatorExit(authorization.capability, proof, abandonWithoutAbsence, signal);
+    } finally {
+      try {
+        authorization.capability.handback();
+      } catch {
+        authorization.capability.handback();
+      }
+    }
   };
 
   const rpcPorts: RpcPorts = {
@@ -1398,12 +1412,16 @@ export function createCoordinatorCore(
    * daemon, with no path back. So `null` is retried, and only success is kept.
    */
   let rememberedSelfIncarnation: ProcessIncarnation | null = null;
-  const readSelfIncarnation = (): ProcessIncarnation | undefined => {
-    rememberedSelfIncarnation ??= runtime.process.readProcessIncarnation(
-      world.backendPid,
-      runtime.env.platform() as NodeJS.Platform,
-    );
-    return rememberedSelfIncarnation ?? undefined;
+  const readSelfIncarnation = (): ProcessIncarnation | null => {
+    try {
+      rememberedSelfIncarnation ??= runtime.process.readProcessIncarnation(
+        world.backendPid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+    } catch {
+      return null;
+    }
+    return rememberedSelfIncarnation;
   };
 
   const httpHandlerDeps: HttpHandlerPorts = {
@@ -1453,7 +1471,6 @@ export function createCoordinatorCore(
         const components = runtimeState.components.list().map((entry) => ({ ...entry, id: entry.id as string }));
         const kbDaemon = kbDaemonSupervisor.read();
         const systemProviderScope = world.systemProviderScope;
-
         let activeJobs = 0;
         let carrierLivenessByJobId = new Map<string, 'live' | 'absent' | 'unknown'>();
         let carrierDiagnostics: NonNullable<NonNullable<HealthSnapshot['diagnostics']>['carriers']>;
@@ -1604,7 +1621,7 @@ export function createCoordinatorCore(
           namespace: identity.namespace,
           instanceId: identity.instanceId,
           pid: world.backendPid,
-          ...(incarnation !== undefined ? { incarnation } : {}),
+          ...(incarnation !== null ? { incarnation } : {}),
           uptimeMs: identity.now() - runtimeState.getStartedAt(),
           active: world.launchCoordinator.active,
           activeJobs,
@@ -1756,8 +1773,10 @@ export function createCoordinatorCore(
     writeBackendInfoFn: defaults.writeBackendInfoFn,
     removeBackendInfoIfOwnerFn: defaults.removeBackendInfoIfOwnerFn,
     cleanupStaleJobsFn: defaults.cleanupStaleJobsFn,
+    readSelfIncarnationFn: readSelfIncarnation,
     markJobsAsErrorFn: defaults.markJobsAsErrorFn,
-    terminateAllFn: defaults.terminateAllFn,
+    settlePendingLaunchesFn: defaults.settlePendingLaunchesFn,
+    terminateRegisteredChildrenFn: defaults.terminateRegisteredChildrenFn,
     providerHostManager: world.providerHostManager,
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
@@ -1783,6 +1802,7 @@ export function createCoordinatorCore(
     listenFn: defaults.listenFn,
     ipcServer,
     closeIpcServerFn: closeIpcServer,
+    handoffDrainBudgetMs: options.handoffDrainBudgetMs,
     listenIpcFn:
       options.listenIpcFn ??
       ((listener, additionalCompatibilitySocketPaths = [], publishedCompatibilitySocketAddresses = []) =>
@@ -1805,8 +1825,6 @@ export function createCoordinatorCore(
   ipcServer.onShutdownRequest = (reason) => {
     void resolvedLifecycleController.shutdown(reason).catch(() => {});
   };
-  ipcServer.onShutdownObligationAbandonment = (request) =>
-    resolvedLifecycleController.abandonShutdownObligation(request);
   ipcServer.onShutdownRecoveryAccepted = () => {
     resolvedLifecycleController.requestShutdownRetry();
   };

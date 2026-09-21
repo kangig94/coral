@@ -5,13 +5,13 @@ import { backendLog } from '../infra/backend-log.js';
 import type { StrictBundleIdentityResult } from '../infra/bundle-manifest.js';
 import { createMonotonicClock, type MonotonicClock } from '../infra/monotonic-clock.js';
 import {
+  processIncarnationProbeRegistrySize,
   snapshotProcessIncarnationProbeSubjects,
   terminateProcessIncarnationProbes,
   type AsyncRecordedProcessObserver,
   type ProcessIncarnation,
-  type ProcessIncarnationProbeHold,
-  type ProcessIncarnationProbeSubject,
 } from '../infra/node-process.js';
+import { SIGTERM_GRACE_MS } from '../infra/process-constants.js';
 import { providerProxyBootstrapCapsulePath, providerReaperBootstrapCapsulePath } from '../infra/path/index.js';
 import {
   reapRecordedContainment,
@@ -20,11 +20,6 @@ import {
   type RecordedProcessIdentity,
 } from '../infra/process-containment.js';
 import { gracefulKillByPid, type GracefulKillByPidOutcome } from '../infra/process-supervision.js';
-import {
-  SettlementGate,
-  type HeldSettlementDisposition,
-  type SettledSettlementDisposition,
-} from '../obligation/settlement.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
 import {
@@ -558,48 +553,6 @@ function isGuardianConstructionCleanupSettled(error: unknown): boolean {
   );
 }
 
-function acceptGuardianConstructionOperatorExit(
-  disposition: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }>,
-): boolean {
-  const subjectMatches = (obligation: GuardianConstructionCleanupObligation, subject: unknown): boolean => {
-    if (typeof subject !== 'object' || subject === null || !('kind' in subject)) return false;
-    if (obligation.kind === 'failed-role-spawn') {
-      if (obligation.subject.kind !== subject.kind) return false;
-      return obligation.subject.kind === 'process'
-        ? 'pid' in subject && obligation.subject.pid === subject.pid
-        : 'processGroupId' in subject && obligation.subject.processGroupId === subject.processGroupId;
-    }
-    if (obligation.kind !== subject.kind || !('identity' in subject)) return false;
-    const identity = subject.identity;
-    if (typeof identity !== 'object' || identity === null || !('pid' in identity) || !('incarnation' in identity)) {
-      return false;
-    }
-    if (obligation.identity.pid !== identity.pid || obligation.identity.incarnation !== identity.incarnation) {
-      return false;
-    }
-    return obligation.kind === 'reaper-process'
-      ? true
-      : 'processGroupId' in identity && obligation.identity.processGroupId === identity.processGroupId;
-  };
-  if (!disposition.pending.every((obligation) => subjectMatches(obligation, obligation.operatorExit.subject))) {
-    return false;
-  }
-  const abandonments = disposition.pending.map(({ operatorExit }) => operatorExit.abandon());
-  return disposition.pending.every((obligation, index) => {
-    const abandonment = abandonments[index];
-    if (
-      abandonment === undefined ||
-      abandonment.kind !== 'operator-abandoned' ||
-      abandonment.processAbsenceProven !== false ||
-      abandonment.successor.owner !== 'operator-command' ||
-      abandonment.successor.acceptance !== 'accepted'
-    ) {
-      return false;
-    }
-    return subjectMatches(obligation, abandonment.subject);
-  });
-}
-
 export type RoleEnforcementOutcomeHandlers = Readonly<{
   onOutcome(outcome: EnforcementOutcome): void;
   onProgressViolation(observedWakeLatencyMs: number): void;
@@ -625,15 +578,15 @@ function unattributableRetryDelayMs(attempts: number): number {
 }
 
 /**
- * Outcomes without confirmed absence must keep the role alive unless explicit operator authority abandons the hold.
- * Only confirmed absence may mark the deadline model exited. Close-and-exit must remain deferred so an
- * in-flight control response can reach its caller before the role closes its sockets.
+ * Only confirmed absence may mark the deadline model exited. Roles release their authority after bounded retries
+ * so acquisition cleanup or the durable set owner can recover.
+ * Close-and-exit must remain deferred so an in-flight control response can reach its caller before the role closes.
  */
 export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
   options: RoleEnforcementOutcomeOptions<Scope>,
 ): RoleEnforcementOutcomeHandlers {
   let enforcementHoldStatus: RoleEnforcementHoldStatus | null = null;
-  let unattributableAbandoned = false;
+  let exitStarted = false;
 
   const closeAndExit = (exitCode: number): void => {
     void options
@@ -644,7 +597,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
 
   const handleOutcome = (outcome: EnforcementOutcome): void => {
     if (outcome.kind !== 'containment-absent') {
-      if (unattributableAbandoned) return;
+      if (exitStarted) return;
       if (outcome.kind === 'reap-failed') {
         backendLog.error(`${options.role}: containment reap failed`, outcome.reason);
       }
@@ -653,13 +606,13 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
           ? ({ kind: outcome.kind, reason: 'process-containment-reap-failed' } as const)
           : ({ kind: outcome.kind } as const);
       const attempts = (enforcementHoldStatus?.attempts ?? 0) + 1;
-      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS && options.grantWasInstalled()) {
-        enforcementHoldStatus = enforcementHoldStatusSchema.parse({
-          ...reportedOutcome,
-          attempts,
-          roleIdentity: { role: options.role, ...options.roleIdentity },
-          retry: { state: 'operator-action-required' },
-        });
+      if (attempts >= ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
+        exitStarted = true;
+        enforcementHoldStatus = null;
+        backendLog.error(
+          `${options.role}: containment remained unconfirmed after ${attempts} attempts; releasing role authority and exiting`,
+        );
+        closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
         return;
       }
       const delayMs = unattributableRetryDelayMs(attempts);
@@ -671,7 +624,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
       });
       options.schedule(() => {
         if (
-          unattributableAbandoned ||
+          exitStarted ||
           enforcementHoldStatus?.attempts !== attempts ||
           enforcementHoldStatus.retry.state !== 'scheduled'
         ) {
@@ -705,7 +658,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
     },
     enforcementHoldStatus: () => enforcementHoldStatus,
     abandonUnattributable: () => {
-      if (enforcementHoldStatus === null || unattributableAbandoned) return false;
+      if (enforcementHoldStatus === null || exitStarted) return false;
       if (enforcementHoldStatus.kind !== 'recorded-group-unattributable') {
         throw new ProxyControlProtocolError(
           'invalid_state',
@@ -718,7 +671,7 @@ export function buildEnforcementOutcomeHandlers<Scope extends symbol>(
           `This ${options.role} cannot abandon its unattributable hold while a retry is in-progress and may already have sent a process signal. Retry the abandonment after the containment retry settles.`,
         );
       }
-      unattributableAbandoned = true;
+      exitStarted = true;
       enforcementHoldStatus = null;
       options.schedule(() => closeAndExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE), 0);
       return true;
@@ -1309,41 +1262,6 @@ export async function startProviderProxyRole(
 
 export type ProviderRoleMainOptions = Readonly<{ pluginRoot: string; runtime?: Runtime }>;
 
-type RoleProbeSettlementDisposition = SettledSettlementDisposition | RoleProbeHeldSettlementDisposition;
-
-interface RoleProbeHeldSettlementDisposition extends HeldSettlementDisposition<
-  'process-incarnation-probes-unsettled',
-  'process-incarnation-probe-settlement',
-  never,
-  readonly ProcessIncarnationProbeHold[],
-  RoleProbeSettlementDisposition
-> {
-  retry(): Promise<RoleProbeSettlementDisposition>;
-}
-
-const roleProbeSettlementGate = new SettlementGate<
-  never,
-  'process-incarnation-probes-unsettled',
-  'process-incarnation-probe-settlement',
-  never,
-  readonly ProcessIncarnationProbeHold[],
-  never,
-  RoleProbeSettlementDisposition
->();
-
-async function settleRoleShutdownProbes(): Promise<RoleProbeSettlementDisposition> {
-  const disposition = await terminateProcessIncarnationProbes();
-  if (disposition.disposition === 'settled') return roleProbeSettlementGate.settled();
-  return roleProbeSettlementGate.held({
-    reason: 'process-incarnation-probes-unsettled',
-    exit: 'process-incarnation-probe-settlement',
-    retryAfter: disposition.untilSettled,
-    deferredFailures: [],
-    retainedAuthority: disposition.unsettled,
-    retry: settleRoleShutdownProbes,
-  });
-}
-
 function createRoleShutdownProbeGate(
   role: 'guardian' | 'reaper' | 'proxy',
   exitProcess: (code: number) => void,
@@ -1353,56 +1271,55 @@ function createRoleShutdownProbeGate(
   let exited = false;
   let disposed = false;
 
-  const cleanupFailed = (error: unknown, cleanupSubjects: readonly ProcessIncarnationProbeSubject[]): void => {
-    const subjects = cleanupSubjects
-      .map((subject) => ('key' in subject ? `key=${subject.key}` : `pid=${subject.pid}`))
-      .join('; ');
-    if (disposed) return;
-    cleanupInFlight = false;
-    backendLog.error(
-      `${role}: process-incarnation probe cleanup failed; shutdown remains held; registered subjects: ${subjects || 'none'}`,
-      error,
-    );
-  };
-
-  const acceptDisposition = (disposition: RoleProbeSettlementDisposition): void => {
-    if (disposed) return;
-    if (disposition.disposition === 'held') {
-      const holds = disposition.retainedAuthority
-        .map((hold) =>
-          'key' in hold
-            ? `key=${hold.key} reason=${hold.reason} exit=${hold.exit}`
-            : `pid=${hold.pid ?? 'unavailable'} reason=${hold.reason} exit=${hold.exit}`,
-        )
-        .join('; ');
-      backendLog.error(`${role}: shutdown remains held by unsettled process-incarnation probes: ${holds}`);
-      void disposition.retryAfter.then(
-        () => {
-          const cleanupSubjects = snapshotProcessIncarnationProbeSubjects();
-          void disposition.retry().then(acceptDisposition, (error: unknown) => cleanupFailed(error, cleanupSubjects));
-        },
-        (error: unknown) => cleanupFailed(error, snapshotProcessIncarnationProbeSubjects()),
-      );
-      return;
-    }
-    cleanupInFlight = false;
-    if (requestedExitCode !== null) {
-      exited = true;
-      exitProcess(requestedExitCode);
-    }
-  };
-
   const requestCleanup = (): void => {
     if (cleanupInFlight || exited || disposed) return;
     cleanupInFlight = true;
     const cleanupSubjects = snapshotProcessIncarnationProbeSubjects();
-    void settleRoleShutdownProbes().then(acceptDisposition, (error: unknown) => cleanupFailed(error, cleanupSubjects));
+    const cleanupAbort = new AbortController();
+    const cleanupDeadline = setTimeout(() => cleanupAbort.abort(), SIGTERM_GRACE_MS);
+    void terminateProcessIncarnationProbes(cleanupAbort.signal)
+      .then(
+        (disposition) => {
+          if (disposition.disposition !== 'hold') return;
+          const holds = disposition.unsettled
+            .map((hold) =>
+              'key' in hold
+                ? `key=${hold.key} reason=${hold.reason} exit=${hold.exit}`
+                : `pid=${hold.pid ?? 'unavailable'} reason=${hold.reason} exit=${hold.exit}`,
+            )
+            .join('; ');
+          backendLog.error(`${role}: exit proceeding with unsettled process-incarnation probes: ${holds}`);
+        },
+        (error: unknown) => {
+          const subjects = cleanupSubjects
+            .map((subject) => ('key' in subject ? `key=${subject.key}` : `pid=${subject.pid}`))
+            .join('; ');
+          backendLog.error(
+            `${role}: exit proceeding after process-incarnation probe cleanup failed; registered subjects: ${subjects || 'none'}`,
+            error,
+          );
+        },
+      )
+      .then(() => {
+        clearTimeout(cleanupDeadline);
+        if (disposed) return;
+        cleanupInFlight = false;
+        if (requestedExitCode !== null) {
+          exited = true;
+          exitProcess(requestedExitCode);
+        }
+      });
   };
 
   return {
     requestCleanup,
     requestExit: (code): void => {
       requestedExitCode ??= code;
+      if (processIncarnationProbeRegistrySize() === 0 && requestedExitCode !== null) {
+        exited = true;
+        exitProcess(requestedExitCode);
+        return;
+      }
       requestCleanup();
     },
     dispose: (): void => {
@@ -1463,45 +1380,30 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
       if (error instanceof GuardianConstructionCleanupHeldError) {
         backendLog.error('guardian: construction failed and spawned process cleanup remains held', error);
         let disposition: GuardianConstructionCleanupDisposition = error.hold;
-        let operatorExitAccepted = false;
-        let releaseOperatorSignal!: () => void;
-        const operatorSignal = new Promise<void>((resolve) => {
-          releaseOperatorSignal = resolve;
-        });
-        const abandonConstruction = (): void => {
-          if (operatorExitAccepted) return;
-          if (disposition.kind !== 'holding' || !acceptGuardianConstructionOperatorExit(disposition)) return;
-          operatorExitAccepted = true;
-          releaseOperatorSignal();
-        };
-        process.on('SIGTERM', abandonConstruction);
-        process.on('SIGINT', abandonConstruction);
-        try {
-          while (disposition.kind === 'holding' && !operatorExitAccepted) {
-            await Promise.race([runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS), operatorSignal]);
-            if (operatorExitAccepted) break;
-            const heldBeforeRetry: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> = disposition;
-            try {
-              disposition = await heldBeforeRetry.retry();
-              if (disposition.kind === 'holding') {
-                backendLog.error(
-                  `guardian: construction cleanup retry remains held: ${guardianConstructionCleanupHoldDetail(disposition)}`,
-                );
-              }
-            } catch (retryError: unknown) {
+        let attempts = 1;
+        while (disposition.kind === 'holding' && attempts < ROLE_UNATTRIBUTABLE_REAP_MAX_ATTEMPTS) {
+          await runtime.time.sleep(ROLE_UNATTRIBUTABLE_REAP_BASE_DELAY_MS);
+          const heldBeforeRetry: Extract<GuardianConstructionCleanupDisposition, { kind: 'holding' }> = disposition;
+          attempts += 1;
+          try {
+            disposition = await heldBeforeRetry.retry();
+            if (disposition.kind === 'holding') {
               backendLog.error(
-                `guardian: construction cleanup retry failed; shutdown remains held: ${guardianConstructionCleanupHoldDetail(heldBeforeRetry)}`,
-                retryError,
+                `guardian: construction cleanup retry remains held: ${guardianConstructionCleanupHoldDetail(disposition)}`,
               );
             }
+          } catch (retryError: unknown) {
+            backendLog.error(
+              `guardian: construction cleanup retry failed: ${guardianConstructionCleanupHoldDetail(heldBeforeRetry)}`,
+              retryError,
+            );
           }
-        } finally {
-          process.removeListener('SIGTERM', abandonConstruction);
-          process.removeListener('SIGINT', abandonConstruction);
         }
-        if (operatorExitAccepted) {
-          constructionExitCode = 0;
-          probeGate.requestExit(0);
+        if (disposition.kind === 'holding') {
+          constructionExitCode = ROLE_ENFORCEMENT_FAILURE_EXIT_CODE;
+          backendLog.error(
+            `guardian: construction cleanup remained held after ${attempts} attempts; exiting: ${guardianConstructionCleanupHoldDetail(disposition)}`,
+          );
         }
       } else {
         if (!isGuardianConstructionCleanupSettled(error)) {
@@ -1529,13 +1431,13 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     }
   }
 
-  let proxyShutdownStarted = false;
+  let shutdownStarted = false;
 
   const shutdown = (): void => {
     probeGate.requestCleanup();
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     if (handle.role === 'proxy') {
-      if (proxyShutdownStarted) return;
-      proxyShutdownStarted = true;
       void handle.close().then(
         () => probeGate.requestExit(0),
         (error: unknown) => {
@@ -1546,14 +1448,13 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
       return;
     }
     const role = handle.role;
-    void handle
-      .giveUp()
-      .catch((error: unknown) =>
-        backendLog.error(
-          `${role}: give-up on shutdown failed; containment remains held; SIGTERM or SIGINT retries teardown`,
-          error,
-        ),
-      );
+    void handle.giveUp().catch(async (error: unknown) => {
+      backendLog.error(`${role}: give-up on shutdown failed; releasing role authority and exiting`, error);
+      await handle
+        .close()
+        .catch((closeError: unknown) => backendLog.error(`${role}: close after failed give-up failed`, closeError));
+      probeGate.requestExit(ROLE_ENFORCEMENT_FAILURE_EXIT_CODE);
+    });
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

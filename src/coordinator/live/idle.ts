@@ -1,5 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimePort } from '../../infra/port-types.js';
+import type { ShutdownReason } from '../../infra/persisted-scalar-contracts.js';
 import { parsePositiveInt } from './worker-limits.js';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;
@@ -16,9 +17,9 @@ export class IdleTimer {
   private lastActiveAt: number;
   private interval: ReturnType<TimePort['setInterval']> | null = null;
   private idleTriggered = false;
-  private drainReason: string | null = null;
+  private drainReason: ShutdownReason | null = null;
   private checkIdle: (() => boolean) | null = null;
-  private onIdle: ((reason: string) => void) | null = null;
+  private onIdle: ((reason: ShutdownReason) => void) | null = null;
   private probeFailing = false;
 
   constructor(options: { time: TimePort; timeoutMs?: number }) {
@@ -48,12 +49,12 @@ export class IdleTimer {
     return this.drainReason !== null;
   }
 
-  requestDrain(reason: string): void {
+  requestDrain(reason: ShutdownReason): void {
     this.drainReason = reason;
     this.tryDrain();
   }
 
-  startWatching(checkIdle: () => boolean, onIdle: (reason: string) => void): void {
+  startWatching(checkIdle: () => boolean, onIdle: (reason: ShutdownReason) => void): void {
     this.stopWatching();
     this.idleTriggered = false;
     this.probeFailing = false;

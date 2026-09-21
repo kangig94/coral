@@ -496,7 +496,7 @@ async function executeStep(
       }
 
       case 'shutdown': {
-        const disposition = await world.shutdown(step.reason);
+        const disposition = await world.shutdown(step.reason ?? 'test-teardown');
         if (disposition.disposition === 'held') {
           return buildStepResult(world, step, stepIndex, startedAt, {
             ok: false,
@@ -505,7 +505,7 @@ async function executeStep(
         }
         return buildStepResult(world, step, stepIndex, startedAt, {
           ok: true,
-          actual: { reason: step.reason ?? 'simulation-shutdown' },
+          actual: { reason: step.reason ?? 'test-teardown' },
         });
       }
 

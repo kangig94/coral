@@ -194,10 +194,6 @@ describe('provider-host RPC authorization', () => {
       'provider_host_stale',
       'Rerun `coral-cli backend provider-host list` and act only on a currently listed reference.',
     ],
-    [
-      'provider_host_owner_torn_down',
-      'Run `coral-cli backend status`. If the coordinator is draining, its successor re-establishes control; retry the original command once the successor serves. If the drain is held on the control release, end it with `coral-cli backend shutdown-recovery abandon provider-control-and-ipc-authority-release`. If it is not draining, `coral-cli backend status` reports the released set under its own token; resolve it with `coral-cli backend provider-proxy-set contain <set-token>` or `coral-cli backend provider-proxy-set abandon <set-token>`, or retry the original command once succession completes.',
-    ],
   ] as const)('returns actionable remediation for %s', async (code, remediation) => {
     const inspect = vi.fn(async () => {
       throw Object.assign(new Error(code), { code });
@@ -209,6 +205,49 @@ describe('provider-host RPC authorization', () => {
     ).resolves.toMatchObject({
       kind: 'unary',
       body: { code, remediation },
+    });
+  });
+
+  it('reports a released provider-host owner without soliciting a destructive set decision', async () => {
+    const inspect = vi.fn(async () => {
+      throw Object.assign(new Error('provider_host_owner_torn_down'), { code: 'provider_host_owner_torn_down' });
+    });
+    const ports = { providerHosts: { list: vi.fn(), inspect, evict: vi.fn() } } as unknown as HttpHandlerPorts;
+
+    const result = await executeCatalogRequest(
+      providerHostInspectRpcSpec,
+      { workDir: '.', projectRoot: process.cwd() },
+      ports,
+      operator,
+    );
+
+    expect(result).toMatchObject({
+      kind: 'unary',
+      body: {
+        code: 'provider_host_owner_torn_down',
+        remediation:
+          "Run `coral-cli backend status` to observe the released set's automatic disposition and timing. The bounded drain ends by itself; otherwise Coral retries control recovery or exact containment observation. Retry the original command after status no longer reports this released owner.",
+      },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('provider-proxy-set contain') },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('provider-proxy-set abandon') },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('take the action') },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('succession') },
+    });
+    expect(result).not.toMatchObject({
+      kind: 'unary',
+      body: { remediation: expect.stringContaining('no automatic deadline') },
     });
   });
 
@@ -396,7 +435,7 @@ describe('provider-host RPC authorization', () => {
     });
   });
 
-  it('names the work directory, never a placeholder, when a selector resolves on no owner that answered', async () => {
+  it('names only a placeholder, never the work directory, when a selector resolves on no owner that answered', async () => {
     const inspect = vi.fn(async () => {
       throw Object.assign(new Error('provider_host_owner_torn_down'), {
         code: 'provider_host_owner_torn_down',
@@ -418,14 +457,20 @@ describe('provider-host RPC authorization', () => {
       statusCode: 503,
       body: {
         code: 'provider_host_owner_torn_down',
-        message: `This coordinator has released administration control of provider-proxy:set-a and can no longer ask it, so it cannot say whether any host for work directory ${process.cwd()} exists on it.`,
+        message:
+          'This coordinator has released administration control of provider-proxy:set-a and can no longer ask it, so it cannot say whether the selected provider host exists on it.',
         remediation: expect.stringContaining(
-          'Run `coral-cli backend provider-host list`; if the host you want is listed, use its exact reference with `inspect`/`evict` — an exact reference on an owner that answered is served now. Run `coral-cli backend status`.',
+          "Run `coral-cli backend status` to observe the released set's automatic disposition and timing.",
         ),
         detail: { ownerIds: ['provider-proxy:set-a'], hostRefs: [], workDir: process.cwd() },
       },
     });
-    expect(JSON.stringify(answered)).not.toContain('<ref>');
+    if (answered.kind !== 'unary') throw new Error('expected a unary provider-host refusal');
+    const rendered = JSON.stringify(answered);
+    expect(rendered).not.toContain('<ref>');
+    expect(rendered).not.toContain('provider-host evict');
+    expect(rendered).not.toContain('provider-proxy-set contain');
+    expect(rendered).not.toContain('provider-proxy-set abandon');
   });
 
   it('carries the owners a draining coordinator can no longer observe through the v2 inventory response', async () => {

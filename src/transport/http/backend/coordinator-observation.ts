@@ -51,12 +51,8 @@ export type CoordinatorObservation =
   /**
    * A record names a pid that decisively no longer exists. This establishes absence only for the process that
    * record names; a stale record does not exclude a different unpublished coordinator.
-   *
-   * It carries both halves of the dead coordinator's identity because absence is where they are needed:
-   * `status` reads a startup diagnostic to explain the absence, and a diagnostic is only this coordinator's if
-   * it names this pid *and* was recorded no earlier than this run began.
    */
-  | Readonly<{ kind: 'process-absent'; pid: number; startedAt: number }>;
+  | Readonly<{ kind: 'process-absent'; pid: number; startedAt: number; instanceId?: string }>;
 
 export function observeCoordinator(
   runtime: DiscoveryRuntime & {
@@ -75,15 +71,17 @@ export function observeCoordinator(
       : { kind: 'no-record' };
   }
 
-  // The decoded record rather than `readBackendInfo`: that helper also answers `null` when `version` or
-  // `instanceId` is absent, and neither command reads either — between them they use `startedAt`, `pid`,
-  // `host`, `port`, `namespace`, `flavor` and `bootToken`, all of which the record itself carries.
   const record = read.record;
   // Only an observed absence is an absence. `unknown` keeps the record and lets the caller try, which is the
   // safe direction for both of them.
   const liveness = observeProcessLiveness(record.pid);
   if (liveness === 'absent') {
-    return { kind: 'process-absent', pid: record.pid, startedAt: record.startedAt };
+    return {
+      kind: 'process-absent',
+      pid: record.pid,
+      startedAt: record.startedAt,
+      ...(record.instanceId === undefined ? {} : { instanceId: record.instanceId }),
+    };
   }
   return {
     kind: 'addressed',

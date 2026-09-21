@@ -80,6 +80,7 @@ const TRANSPORT_ALLOWED = new Set([
   'src/sessions/command-schemas.ts',
   'src/discuss/command-schemas.ts',
   'src/discuss/read-contract.ts',
+  'src/discuss/result.ts',
   'src/workflow/input.ts',
   'src/kb/result.ts',
   'src/kb/tool-contracts.ts',
@@ -332,9 +333,9 @@ describe('architecture layering invariants', () => {
     expect(violations).toEqual([]);
   });
 
-  it('kb domain does not import transport-owned result wrappers', () => {
+  it.each(['kb', 'discuss'] as const)('%s domain does not import transport-owned result wrappers', (domain) => {
     const violations = collectViolations(
-      (source, target) => source.startsWith('src/kb/') && target === 'src/transport/tool-result.ts',
+      (source, target) => source.startsWith(`src/${domain}/`) && target === 'src/transport/tool-result.ts',
     );
 
     expect(violations).toEqual([]);

@@ -40,7 +40,10 @@ import {
   providerProxyControlSessionOwner,
   type ProviderProxyAcquisitionSessionHandedOver,
 } from '#src/coordinator/live/provider-proxy/control-session.js';
-import { ProviderProxyRoleControlRemoteError } from '#src/coordinator/live/provider-proxy/role-control.js';
+import {
+  ProviderProxyRoleControlRemoteError,
+  ProviderProxyRoleControlUnavailableError,
+} from '#src/coordinator/live/provider-proxy/role-control.js';
 import type { ContainmentCommitOutcome } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { ProviderProxyGuardianRedemptionAuthority } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import {
@@ -58,6 +61,7 @@ import {
   createProviderProxySetContainmentProver,
   inspectProviderProxySetContainmentProof,
   providerProxySetContainmentEvidenceFor,
+  releaseProviderProxySetContainmentProofFence,
   verifyProviderProxySetContainmentProofCurrent,
   type ProviderProxySetContainmentProof,
   type ProviderProxySetContainmentProofAuthorization,
@@ -69,6 +73,7 @@ import {
   type CapsuleRetirementAttemptOutcome,
   type ProviderProxySetLifecycleDeps,
   type ProviderProxySetLifecycleProgressViolation,
+  type ProviderProxySetOperatorExitAuthorization,
   type ProviderProxySetOperatorExitCapability,
 } from '#src/coordinator/services/provider-proxy-set/index.js';
 import {
@@ -82,6 +87,7 @@ import {
   type ProviderProxySetRecordedContainmentReaper,
 } from '#src/coordinator/services/provider-proxy-set/recorded-containment-reaper.js';
 import type {
+  ContainmentDisappearanceNotice,
   DisappearanceDeliveryAttemptOutcome,
   ProviderContainmentDisappearanceConsumer,
 } from '#src/coordinator/services/provider-containment-disappearance.js';
@@ -787,8 +793,10 @@ async function authorizedOperatorExitForProof(
   Readonly<{
     capability: ProviderProxySetOperatorExitCapability;
     lifecycle: ProviderProxySetLifecycle;
+    mutationAdmission: ProviderOperationMutationAdmission;
     mutationFence: ProviderOperationMutationSetFence;
     stopAndReap: DurableProviderProxyOperationAuthority['stopAndReap'];
+    clock: ManualClock;
   }>
 > {
   const claims = new ProviderProxySetClaimMirror();
@@ -838,7 +846,7 @@ async function authorizedOperatorExitForProof(
     throw new Error(`expected authorization, received ${authorization.kind}`);
   }
   if (mutationFence === null) throw new Error('operator exit did not acquire a mutation fence');
-  return { capability: authorization.capability, lifecycle, mutationFence, stopAndReap };
+  return { capability: authorization.capability, lifecycle, mutationAdmission, mutationFence, stopAndReap, clock };
 }
 
 function capsuleFor(
@@ -1598,6 +1606,56 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle).toHaveBeenCalledWith(
       'warn',
       expect.stringContaining(`key=${key}; reconciliation and retirement will not be performed`),
+    );
+  });
+
+  // A refusal ground this build's vocabulary dropped still decodes, and reading it as no refusal at all is
+  // the third answer collapsing into one of the binaries.
+  it('reads a durable refusal reason it cannot name as a refusal, not as no refusal', () => {
+    const identity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
+    const subjectKey = JSON.stringify(['guardian', 'guardian.heartbeat.v1']);
+    const key = durableProviderProxySetOperatorDispositionKey(identity, PREDECESSOR_INCARNATION, subjectKey);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    storage.mkdirSync(DURABLE_DISPOSITION_RUN_DIR, { recursive: true });
+    storage.writeFileSync(
+      `${DURABLE_DISPOSITION_RUN_DIR}/provider-proxy-set-operator-dispositions.v${PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_GENERATION}.json`,
+      JSON.stringify({
+        entries: {
+          [key]: {
+            generation: PROVIDER_PROXY_SET_OPERATOR_DISPOSITION_GENERATION,
+            scope: 'set',
+            key,
+            writerIncarnation: PREDECESSOR_INCARNATION,
+            setIdentity: identity,
+            subjectKey,
+            disposition: {
+              disposition: 'operator-exit-refused',
+              incidentReason: 'operator_exit_representation_release_retry_exhausted',
+              waitingFor: 'operator-abandonment',
+            },
+            status: { kind: 'current-writer', recordedAtMs: 0 },
+          },
+        },
+      }),
+    );
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore: new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR),
+      writerIncarnation: PREDECESSOR_INCARNATION,
+    });
+
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: providerProxySetAddress(identity),
+        operatorExit: { kind: 'refused', ground: 'unrecognized' },
+      }),
     );
   });
 
@@ -3652,6 +3710,271 @@ describe('ProviderProxySetLifecycle', () => {
     );
   });
 
+  it.each(['redemption', 'absence'] as const)(
+    'arms one hold retry after both live sources settle with %s first',
+    async (firstSource) => {
+      const record = providerOperationRecord('executing');
+      const claims = new ProviderProxySetClaimMirror();
+      claims.initialize([record]);
+      const faults = createProviderProxyAuthorityFaultLatch();
+      const clock = new ManualClock();
+      const redemption = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['redeemControl']>>>();
+      const absence = deferred<ProviderProxySetContainmentEvidence>();
+      const redeemControl = vi.fn(() => redemption.promise);
+      const proveContainmentAbsent = vi.fn(() => absence.promise);
+      const authority = fakeAuthority({ record, faults, redeemControl });
+      const lifecycle = lifecycleFor({
+        claims,
+        controlEstablished: ignoreControlEstablished,
+        disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+        time: clock,
+        proveContainmentAbsent,
+      });
+      lifecycle.initializeClaimSlots();
+      lifecycle.completeStartupDiscovery();
+      lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+      latchAuthorityFault(authority, {
+        kind: 'heartbeat-failed',
+        role: 'proxy',
+        method: 'control.heartbeat.v1',
+        terminalReason: 'local-failure',
+        error: 'cannot encode heartbeat',
+      });
+      clock.elapse(60_000);
+      clock.runDue();
+
+      const unavailable = new ProviderProxyRoleControlUnavailableError({
+        kind: 'role-control-unavailable',
+        role: 'guardian',
+        stage: 'open',
+        method: 'guardian.handoff-redeem.v1',
+        origin: 'timeout',
+        controlCode: 'control_call_failed',
+      });
+      const unavailableRedemption = {
+        kind: 'unavailable' as const,
+        incident: unavailable.incident,
+        error: unavailable,
+      };
+      if (firstSource === 'redemption') redemption.resolve(unavailableRedemption);
+      else absence.resolve(enforcersUnobservable);
+      await drainMicrotasks();
+
+      expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+
+      if (firstSource === 'redemption') absence.resolve(enforcersUnobservable);
+      else redemption.resolve(unavailableRedemption);
+      await drainMicrotasks();
+
+      expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+    },
+  );
+
+  it('keeps the absence fence held through a redemption fatal and still reaps the absence proof', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const mutationAdmission = new ProviderOperationMutationAdmission();
+    const redemption = deferred<Awaited<ReturnType<DurableProviderProxyOperationAuthority['redeemControl']>>>();
+    const absence = deferred<ProviderProxySetContainmentEvidence>();
+    const absenceFences: ProviderOperationMutationSetFence[] = [];
+    const heldAtReap: boolean[] = [];
+    const onFatal = vi.fn();
+    const disappearanceConsumer = vi.fn(async (notice: ContainmentDisappearanceNotice) => ({
+      kind: 'accepted' as const,
+      acceptance: {
+        kind: 'accepted' as const,
+        operation: notice.operation,
+        disposition: 'terminalization-committed' as const,
+      },
+    }));
+    const recoveryDispatcher = createTestProviderProxyRecoveryDispatcher(
+      {
+        'containment-proof': async ({ identity }) => {
+          const mutationFence = mutationAdmission.closeSet(identity);
+          absenceFences.push(mutationFence);
+          return sealedContainmentProof(
+            identity,
+            authorizeProviderProxySetContainmentProof(identity, {
+              mutationFence,
+              closeAdmission: async () => undefined,
+            }),
+            await absence.promise,
+          );
+        },
+        'disappearance-consumer': ({ notice }) => disappearanceConsumer(notice),
+      },
+      onFatal,
+    );
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => {
+      heldAtReap.push(...absenceFences.map((fence) => fence.isHeld()));
+      return { kind: 'containment-absent', disappearanceReceipt: 'fixture-containment-absence' };
+    });
+    const authority = fakeAuthority({ record, faults, redeemControl: vi.fn(() => redemption.promise) });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: disappearanceConsumer },
+      recoveryDispatcher,
+      reapRecordedContainment,
+      onFatal,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, {
+      kind: 'heartbeat-failed',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      terminalReason: 'local-failure',
+      error: 'cannot encode heartbeat',
+    });
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    redemption.resolve(null as never);
+    await drainMicrotasks();
+
+    expect({
+      fatals: onFatal.mock.calls.length,
+      absenceFencesHeld: absenceFences.map((fence) => fence.isHeld()),
+      reaps: reapRecordedContainment.mock.calls.length,
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+    }).toEqual({ fatals: 1, absenceFencesHeld: [true], reaps: 0, activeTimers: 0 });
+
+    absence.resolve(containmentEvidence('fixture-containment-absence'));
+    await drainMicrotasks();
+
+    expect({
+      heldAtReap,
+      reaps: reapRecordedContainment.mock.calls.length,
+      disappearances: disappearanceConsumer.mock.calls.length,
+      fatals: onFatal.mock.calls.length,
+    }).toEqual({ heldAtReap: [true], reaps: 1, disappearances: 1, fatals: 1 });
+  });
+
+  it('clears a pending hold retry before re-arming it', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const retryRequests: Array<() => void> = [];
+    const recoveryDispatcher: ProviderProxyRecoveryDispatcher = {
+      begin: (_seam, _context, sinks) => {
+        retryRequests.push(() =>
+          sinks.retry({ producerId: 'role-control', incident: { kind: 'role-control-unavailable' } }),
+        );
+        return { start: () => undefined, cancel: () => undefined };
+      },
+    };
+    const authority = fakeAuthority({ record, faults });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      recoveryDispatcher,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    latchAuthorityFault(authority, {
+      kind: 'heartbeat-failed',
+      role: 'proxy',
+      method: 'control.heartbeat.v1',
+      terminalReason: 'local-failure',
+      error: 'cannot encode heartbeat',
+    });
+    clock.elapse(60_000);
+    clock.runDue();
+
+    const [retry] = retryRequests;
+    if (retry === undefined) throw new Error('hold attempt did not expose its retry sink');
+    retry();
+    const [firstRetryTimer] = clock.timers.filter((timer) => timer.active);
+    if (firstRetryTimer === undefined) throw new Error('hold retry was not armed');
+
+    retry();
+
+    expect(firstRetryTimer.active).toBe(false);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+  });
+
+  it('begins no hold turn once both reattachment sources are retired', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const onFatal = vi.fn();
+    const redeemControl = vi.fn(async () => null as never);
+    const proveContainment = vi.fn(async () => ({ kind: 'not-a-containment-proof' }) as never);
+    const dispatcher = createTestProviderProxyRecoveryDispatcher({ 'containment-proof': proveContainment }, onFatal);
+    const begin = vi.fn<ProviderProxyRecoveryDispatcher['begin']>((...args) => dispatcher.begin(...args));
+    const authority = fakeAuthority({ record, faults, redeemControl, adoptionWindowMs: 2_000 });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      recoveryDispatcher: { begin },
+      onFatal,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'guardian',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+    });
+    await drainMicrotasks();
+
+    expect(onFatal).toHaveBeenCalledTimes(2);
+    expect(begin.mock.calls.map(([seam]) => seam)).toEqual(['control-reattachment']);
+
+    for (let ticks = 0; ticks < 4 && lifecycle.snapshot().states[0] !== 'reattachment-hold'; ticks += 1) {
+      clock.elapse(1_000);
+      clock.runDue();
+      await drainMicrotasks();
+    }
+    expect(lifecycle.snapshot().states).toEqual(['reattachment-hold']);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect({
+      states: lifecycle.snapshot().states,
+      seams: begin.mock.calls.map(([seam]) => seam),
+      redemptions: redeemControl.mock.calls.length,
+      containmentProofs: proveContainment.mock.calls.length,
+      activeTimers: clock.timers.filter((timer) => timer.active).length,
+      fatals: onFatal.mock.calls.length,
+    }).toEqual({
+      states: ['reattachment-hold'],
+      seams: ['control-reattachment'],
+      redemptions: 1,
+      containmentProofs: 1,
+      activeTimers: 0,
+      fatals: 2,
+    });
+  });
+
   it.each([60_000, 600_000])(
     'does not charge a %i ms late wake to a control reattachment before containment',
     async (lateWakeMs) => {
@@ -4026,13 +4349,14 @@ describe('ProviderProxySetLifecycle', () => {
     claims.initialize([record]);
     const faults = createProviderProxyAuthorityFaultLatch();
     const clock = new ManualClock();
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
     const authority = fakeAuthority({ record, faults, adoptionWindowMs: 2_000 });
     const lifecycle = lifecycleFor({
       claims,
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
-      proveContainmentAbsent: noContainmentProof,
+      proveContainmentAbsent,
     });
     lifecycle.initializeClaimSlots();
     lifecycle.completeStartupDiscovery();
@@ -4111,8 +4435,20 @@ describe('ProviderProxySetLifecycle', () => {
       expect.objectContaining({
         setIdentity: address,
         operatorExit: { kind: 'refused', ground: 'enforcer-alive' },
+        autonomousDisposition: expect.objectContaining({
+          kind: 'exact-containment',
+          owner: 'coordinator',
+          retryAction: 'observe-exact-containment',
+          refusalSuccessor: 'automatic-retry',
+          terminalExit: 'containment-absent',
+        }),
       }),
     );
+    const observationsAfterRefusal = proveContainmentAbsent.mock.calls.length;
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent.mock.calls.length).toBe(observationsAfterRefusal + 1);
 
     const unobservableAuthorization = lifecycle.authorizeOperatorExit(address);
     if (unobservableAuthorization.kind !== 'authorized') {
@@ -4624,6 +4960,12 @@ describe('ProviderProxySetLifecycle', () => {
         ]),
       }),
     );
+    // A reason this build itself wrote must reach the refusal taxonomy as the ground the call already
+    // answered with. Falling to `unrecognized` would report the reason as one this build does not name and
+    // discard the next step that ground carries.
+    expect(harness.lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({ setIdentity, operatorExit: { kind: 'refused', ground: 'store-unreadable' } }),
+    );
   });
 
   it.each([
@@ -5002,16 +5344,18 @@ describe('ProviderProxySetLifecycle', () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
     const clock = new ManualClock();
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
     const authority = fakeAuthority({ record });
+    const superseding: { authorization: ProviderProxySetOperatorExitAuthorization | null } = {
+      authorization: null,
+    };
     const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(
       async (_identity, _proof, _signal, onSignal, assertSignalAuthorized) => {
         assertSignalAuthorized?.();
         onSignal('SIGTERM');
-        const supersedingAuthorization = lifecycle.authorizeOperatorExit(
-          providerProxySetAddress(authority.setIdentity),
-        );
-        if (supersedingAuthorization.kind !== 'authorized') {
-          throw new Error(`expected superseding authorization, received ${supersedingAuthorization.kind}`);
+        superseding.authorization = lifecycle.authorizeOperatorExit(providerProxySetAddress(authority.setIdentity));
+        if (superseding.authorization.kind !== 'authorized') {
+          throw new Error(`expected superseding authorization, received ${superseding.authorization.kind}`);
         }
         assertSignalAuthorized?.();
         return { kind: 'containment-absent', disappearanceReceipt: 'must-not-complete' };
@@ -5022,7 +5366,7 @@ describe('ProviderProxySetLifecycle', () => {
       controlEstablished: ignoreControlEstablished,
       disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
       time: clock,
-      proveContainmentAbsent: noContainmentProof,
+      proveContainmentAbsent,
       reapRecordedContainment,
     });
     lifecycle.initializeClaimSlots();
@@ -5036,6 +5380,7 @@ describe('ProviderProxySetLifecycle', () => {
     if (authorization.kind !== 'authorized') {
       throw new Error(`expected authorization, received ${authorization.kind}`);
     }
+    proveContainmentAbsent.mockClear();
 
     await expect(
       lifecycle.completeOperatorExit(
@@ -5050,6 +5395,159 @@ describe('ProviderProxySetLifecycle', () => {
     });
     expect(reapRecordedContainment).toHaveBeenCalledOnce();
     expect(lifecycle.snapshot().states).toEqual(['containment-wait']);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).not.toHaveBeenCalled();
+
+    const supersedingAuthorization = superseding.authorization;
+    if (supersedingAuthorization === null || supersedingAuthorization.kind !== 'authorized') {
+      throw new Error('superseding authorization did not retain ownership');
+    }
+    supersedingAuthorization.capability.handback();
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).toHaveBeenCalledOnce();
+  });
+
+  it('restarts automatic containment after aborted proof collection hands authorization back', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const proveContainmentAbsent = vi.fn(noContainmentProof);
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: clock,
+      proveContainmentAbsent,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+    const address = providerProxySetAddress(authority.setIdentity);
+
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
+    const authorization = lifecycle.authorizeOperatorExit(address);
+    if (authorization.kind !== 'authorized') {
+      throw new Error(`expected authorization, received ${authorization.kind}`);
+    }
+    proveContainmentAbsent.mockClear();
+    const controller = new AbortController();
+    const proofCollection = new Promise<never>((_resolve, reject) => {
+      controller.signal.addEventListener(
+        'abort',
+        () =>
+          reject(
+            controller.signal.reason instanceof Error
+              ? controller.signal.reason
+              : new Error('proof collection aborted'),
+          ),
+        { once: true },
+      );
+    });
+    const pending = (async () => {
+      try {
+        await proofCollection;
+      } finally {
+        authorization.capability.handback();
+      }
+    })();
+
+    controller.abort(new Error('proof collection aborted'));
+    await expect(pending).rejects.toThrow('proof collection aborted');
+    authorization.capability.handback();
+    expect(proveContainmentAbsent).not.toHaveBeenCalled();
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(proveContainmentAbsent).toHaveBeenCalledOnce();
+  });
+
+  it('releases the mutation fence and permits a repeated handback when timer installation throws', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, clock, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(clock, 'setTimeout').mockImplementationOnce(() => {
+      throw new Error('timer installation failed');
+    });
+
+    expect(() => capability.handback()).toThrow('timer installation failed');
+    expect(mutationFence.isHeld()).toBe(false);
+    expect(() => capability.handback()).not.toThrow();
+    expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
+  });
+
+  it('retries a handback whose mutation-fence release throws before taking effect', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, clock, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(mutationFence, 'release').mockImplementationOnce(() => {
+      throw new Error('release failed');
+    });
+
+    expect(() => capability.handback()).toThrow('release failed');
+    expect(mutationFence.isHeld()).toBe(true);
+    expect(() => capability.handback()).not.toThrow();
+    expect(mutationFence.isHeld()).toBe(false);
+    expect(clock.timers.filter(({ active }) => active)).toHaveLength(1);
+  });
+
+  it('keeps a persistently failing mutation-fence release owned and unsettled', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, mutationFence } = await authorizedOperatorExitForProof(record, reapRecordedContainment);
+    vi.spyOn(mutationFence, 'release').mockImplementation(() => {
+      throw new Error('release unavailable');
+    });
+
+    expect(() => capability.handback()).toThrow('release unavailable');
+    expect(() => capability.handback()).toThrow('release unavailable');
+    expect(mutationFence.isHeld()).toBe(true);
+  });
+
+  it('lets mutation-admission shutdown finish after a failed handback release is retried', async () => {
+    const record = providerOperationRecord('executing');
+    const reapRecordedContainment = vi.fn<ProviderProxySetRecordedContainmentReaper>(async () => ({
+      kind: 'containment-absent',
+      disappearanceReceipt: 'unused',
+    }));
+    const { capability, mutationAdmission, mutationFence } = await authorizedOperatorExitForProof(
+      record,
+      reapRecordedContainment,
+    );
+    vi.spyOn(mutationFence, 'release').mockImplementationOnce(() => {
+      throw new Error('release failed');
+    });
+
+    expect(() => capability.handback()).toThrow('release failed');
+    const shutdown = mutationAdmission.close();
+    expect(shutdown).toEqual(
+      expect.objectContaining({
+        kind: 'holding',
+        pendingMutations: ['provider-operation-mutation-set-fence'],
+      }),
+    );
+    if (shutdown.kind !== 'holding') throw new Error('mutation admission did not retain the failed release');
+
+    capability.handback();
+    await expect(shutdown.retryAfter).resolves.toBeUndefined();
+    await expect(mutationAdmission.released()).resolves.toBeUndefined();
   });
 
   it('returns a pending claim disposition when exact-absence delivery has not settled', async () => {
@@ -5266,7 +5764,7 @@ describe('ProviderProxySetLifecycle', () => {
             ? {
                 kind: 'representation-release-abandoned',
                 setIdentity: address,
-                successor: { owner: 'operator-command', acceptance: 'accepted' },
+                successor: { owner: 'coordinator', acceptance: 'accepted' },
                 effect: { ...releaseStartedEffect, representationAction: 'fatal-release-abandoned' },
               }
             : {
@@ -5307,8 +5805,8 @@ describe('ProviderProxySetLifecycle', () => {
         expect.objectContaining({
           disposition: expect.objectContaining({
             kind: 'fatal-successor-pending',
-            exit: 'provider-proxy-set-operator-abandonment',
-            successor: expect.objectContaining({ owner: 'operator-command', acceptance: 'pending' }),
+            exit: 'provider-proxy-set-autonomous-release',
+            successor: expect.objectContaining({ owner: 'coordinator', terminalExit: 'representation-released' }),
           }),
         }),
       ]);
@@ -6321,6 +6819,336 @@ describe('ProviderProxySetLifecycle', () => {
     expect(lifecycle.representationReleaseHolds()).toEqual([]);
   });
 
+  it('releases the representation slot at the settlement bound when no delivery ever settles', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const operatorDispositionStore = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const containmentDisappeared = vi.fn(() => delivery.promise);
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+
+    const acceptance = lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'never-settles');
+    await drainMicrotasks();
+    const [hold] = lifecycle.representationReleaseHolds();
+    if (hold === undefined) throw new Error('expected representation release hold');
+
+    clock.elapse(59_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(lifecycle.representationReleaseHolds()).toHaveLength(1);
+
+    clock.elapse(1_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    const undischarged = {
+      kind: 'released-undischarged',
+      witness: 'provider-operation-record',
+    };
+    await expect(hold.settlement).resolves.toEqual(undischarged);
+    await expect(acceptance.initialDisposition).resolves.toEqual(undischarged);
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(containmentDisappeared).toHaveBeenCalledTimes(1);
+    expect(lifecycle.snapshot().operatorSets).toEqual([]);
+    expect(operatorDispositionStore.read().records).toEqual([]);
+    expect(clock.timers.filter((timer) => timer.active)).toEqual([]);
+  });
+
+  it('refuses late delivery evidence for a representation slot released undischarged', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const containmentDisappeared = vi.fn(() => delivery.promise);
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const authority = fakeAuthority({ record, stopAndReap: async () => ({ disappearanceReceipt: 'exact-absence' }) });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/late-evidence.handoff.v3.json');
+    latchAuthorityFault(authority, terminalAuthorityFault());
+
+    lifecycle.containmentAbsent(authority.setIdentity, 'late-evidence');
+    await drainMicrotasks();
+    const [hold] = lifecycle.representationReleaseHolds();
+    if (hold === undefined) throw new Error('expected representation release hold');
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(lifecycle.snapshot().represented).toBe(0);
+
+    delivery.resolve({
+      kind: 'accepted',
+      acceptance: { kind: 'accepted', operation: record.operation, disposition: 'settlement-deleted' },
+    });
+    await drainMicrotasks();
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    await expect(hold.settlement).resolves.toEqual({
+      kind: 'released-undischarged',
+      witness: 'provider-operation-record',
+    });
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(lifecycle.snapshot().represented).toBe(0);
+    expect(retireCapsule).not.toHaveBeenCalled();
+  });
+
+  it('frees capacity, route and containment fence when it releases a representation slot undischarged', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const mutationAdmission = new ProviderOperationMutationAdmission();
+    const authority = fakeAuthority({ record });
+    const releasedRoutes: string[] = [];
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: () => delivery.promise },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      reapRecordedContainment: async (_identity, _proof, _signal, onSignal) => {
+        onSignal('SIGTERM');
+        return { kind: 'containment-absent', disappearanceReceipt: 'operator-observed-absence' };
+      },
+      fenceProviderOperationMutations: (identity) => mutationAdmission.closeSet(identity),
+      onSlotReleased: (routeKey) => releasedRoutes.push(routeKey),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    const admission = lifecycle.beginFreshAcquisition('undischarged-route');
+    if (admission.kind !== 'accepted') throw new Error(`expected fresh admission, received ${admission.kind}`);
+    lifecycle.acquisitionSucceeded(admission.slotId, authority, TEST_PUBLICATION_RECEIPT);
+    claims.applyMutation({ kind: 'upserted', record });
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    elapseOperatorExitObservations(clock, lifecycle, 30_000);
+    const address = providerProxySetAddress(authority.setIdentity);
+    const authorization = lifecycle.authorizeOperatorExit(address);
+    if (authorization.kind !== 'authorized') throw new Error(`expected authorization, received ${authorization.kind}`);
+    const proof = await operatorContainmentProof(
+      authorization.capability,
+      containmentEvidence('operator-observed-absence'),
+    );
+
+    await expect(lifecycle.completeOperatorExit(authorization.capability, proof, false)).resolves.toEqual(
+      expect.objectContaining({ kind: 'contained', setIdentity: address }),
+    );
+    expect(lifecycle.routeFor('undischarged-route')).toBeNull();
+    await expect(mutationAdmission.run('fenced-probe', () => 'ran', authority.setIdentity)).rejects.toThrow(
+      'Provider operation mutation admission is closed for this proxy set.',
+    );
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    expect(releasedRoutes).toEqual(['undischarged-route']);
+    expect(releaseProviderProxySetContainmentProofFence(proof)).toEqual({ kind: 'already-released' });
+    await expect(mutationAdmission.run('unfenced-probe', () => 'ran', authority.setIdentity)).resolves.toBe('ran');
+    expect(lifecycle.snapshot().represented).toBe(0);
+    expect(lifecycle.beginFreshAcquisition('successor-route')).toEqual(expect.objectContaining({ kind: 'accepted' }));
+  });
+
+  it('leaves the surviving provider-operation record drivable by the successor it names', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: () => delivery.promise },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'driver-reachable');
+    await drainMicrotasks();
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(lifecycle.snapshot().represented).toBe(0);
+
+    // The named driver, followed literally: the record the release never deleted still publishes its claim, so
+    // a coordinator start gives the set a recovering slot and re-enters representation release against it.
+    const successorClaims = new ProviderProxySetClaimMirror();
+    successorClaims.initialize([record]);
+    const successorClock = new ManualClock();
+    const successorDelivery = vi.fn(async () => ({
+      kind: 'accepted' as const,
+      acceptance: {
+        kind: 'accepted' as const,
+        operation: record.operation,
+        disposition: 'settlement-deleted' as const,
+      },
+    }));
+    const successor = lifecycleFor({
+      claims: successorClaims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: successorDelivery },
+      time: successorClock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    successor.initializeClaimSlots();
+    successor.completeStartupDiscovery();
+
+    const acceptance = successor.containmentAbsent(providerProxySetIdentityFromRecord(record), 'successor-receipt');
+    await expect(acceptance.initialDisposition).resolves.toEqual({ kind: 'completed' });
+    expect(successorDelivery).toHaveBeenCalledTimes(1);
+    expect(successor.representationReleaseHolds()).toEqual([]);
+  });
+
+  // The witness is derived, not asserted: with no claim there is no provider-operation record to name, and
+  // what survives the bound is the capsule the retirement turn never finished unlinking.
+  it('names the capsule as witness when no operation was ever pending at the bound', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const clock = new ManualClock();
+    const retireCapsule = vi.fn(() => new Promise<never>(() => undefined));
+    const containmentDisappeared = vi.fn(() => Promise.reject(new Error('no operation should be delivered')));
+    const authority = fakeAuthority({ record });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT, '/capsules/zero-claims.handoff.v3.json');
+    latchAuthorityFault(authority, terminalAuthorityFault());
+
+    const acceptance = lifecycle.containmentAbsent(authority.setIdentity, 'zero-claims');
+    await drainMicrotasks();
+    const [hold] = lifecycle.representationReleaseHolds();
+    if (hold === undefined) throw new Error('expected representation release hold');
+    expect(hold.pendingOperations).toEqual([]);
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+
+    const undischarged = { kind: 'released-undischarged', witness: 'provider-handoff-capsule' };
+    await expect(hold.settlement).resolves.toEqual(undischarged);
+    await expect(acceptance.initialDisposition).resolves.toEqual(undischarged);
+    expect(containmentDisappeared).not.toHaveBeenCalled();
+    expect(retireCapsule).toHaveBeenCalledWith('/capsules/zero-claims.handoff.v3.json');
+  });
+
+  // `currentDelivery` is the one place a delivery outcome is checked against its slot, and for a release past
+  // its settlement bound slot identity is the only clause that refuses: that release records no terminal
+  // settlement and clears no pending operation. Without it the retry sink arms a 1,000 ms timer on a slot
+  // `#clearRepresentationReleaseTimers` will never run against again.
+  it('refuses a delivery retry whose representation slot was already released undischarged', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: () => delivery.promise },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'late-retry');
+    await drainMicrotasks();
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+
+    delivery.resolve({
+      kind: 'operational-failure',
+      code: 'disappearance_consumer_unavailable',
+      reason: 'store repair pending',
+    });
+    await drainMicrotasks();
+
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(clock.timers.filter((timer) => timer.active)).toEqual([]);
+  });
+
+  // The same clause on the fatal sink: without it the sink writes a durable operator-exit-refused row for an
+  // identity whose slot is gone, resurrecting the record `#removeRepresentationSlot` had just deleted.
+  it('refuses a fatal delivery whose representation slot was already released undischarged', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const clock = new ManualClock();
+    const storage = new InMemoryStorage(clock);
+    const operatorDispositionStore = new ProviderProxySetOperatorDispositionStore(storage, DURABLE_DISPOSITION_RUN_DIR);
+    const fatals: ProviderProxySetLifecycleFatalError[] = [];
+    const delivery = deferred<DisappearanceDeliveryAttemptOutcome>();
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: () => delivery.promise },
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+      operatorDispositionStore,
+      onFatal: (error) => fatals.push(error),
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.containmentAbsent(providerProxySetIdentityFromRecord(record), 'late-fatal');
+    await drainMicrotasks();
+
+    clock.elapse(60_000);
+    clock.runDue();
+    await drainMicrotasks();
+    expect(operatorDispositionStore.read().records).toEqual([]);
+
+    delivery.resolve({
+      kind: 'accepted',
+      acceptance: {
+        kind: 'accepted',
+        operation: { ...record.operation, operationId: randomUUID() },
+        disposition: 'record-absent',
+      },
+    });
+    await drainMicrotasks();
+
+    expect(fatals).toHaveLength(1);
+    expect(operatorDispositionStore.read().records).toEqual([]);
+    expect(lifecycle.snapshot().operatorSets).toEqual([]);
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
+    expect(clock.timers.filter((timer) => timer.active)).toEqual([]);
+  });
+
   it('dispatches post-start disappearance corruption through the global fatal route', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
@@ -6373,7 +7201,7 @@ describe('ProviderProxySetLifecycle', () => {
       dispatcherGlobalFatalCalls: 1,
       sameFatal: true,
       representedPendingRows: 1,
-      activeRetryTimers: 0,
+      activeRetryTimers: 1,
       laterDeliveryCalls: 0,
     });
   });
@@ -6528,11 +7356,11 @@ describe('ProviderProxySetLifecycle', () => {
         },
       ],
       representedPendingRows: 1,
-      activeRetryTimers: 0,
+      activeRetryTimers: 1,
     });
   });
 
-  it('settles a late disappearance fatal to an actionable operator successor without retrying it', async () => {
+  it('automatically releases a late disappearance fatal after a refused legacy command', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([record]);
@@ -6583,6 +7411,21 @@ describe('ProviderProxySetLifecycle', () => {
       kind: 'operational-retry-owned',
       exit: 'provider-proxy-set-release-retry',
     });
+    // While the release is live the disposition names the delivery retry and the settlement deadline that
+    // will expire it.
+    expect(lifecycle.snapshot().operatorSets).toContainEqual(
+      expect.objectContaining({
+        setIdentity: providerProxySetAddress(authority.setIdentity),
+        autonomousDisposition: {
+          kind: 'representation-release',
+          owner: 'coordinator',
+          boundMs: 60_000,
+          retryAction: 'release-representation',
+          refusalSuccessor: 'automatic-retry',
+          terminalExit: 'representation-released',
+        },
+      }),
+    );
 
     clock.elapse(1_000);
     clock.runDue();
@@ -6593,15 +7436,12 @@ describe('ProviderProxySetLifecycle', () => {
     if (fatalHold === undefined) throw new Error('expected fatal representation release hold');
     expect(fatalHold.disposition).toEqual({
       kind: 'fatal-successor-pending',
-      exit: 'provider-proxy-set-operator-abandonment',
+      exit: 'provider-proxy-set-autonomous-release',
       error: globalFatals[0],
       successor: {
-        owner: 'operator-command',
-        acceptance: 'pending',
-        inspectCommand: 'coral-cli backend status',
-        actionCommand: `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(
-          providerProxySetAddress(authority.setIdentity),
-        )}`,
+        owner: 'coordinator',
+        boundMs: 60_000,
+        terminalExit: 'representation-released',
       },
       operatorDispositionRecording: { kind: 'recorded' },
     });
@@ -6611,11 +7451,29 @@ describe('ProviderProxySetLifecycle', () => {
       successor: fatalHold.disposition.kind === 'fatal-successor-pending' ? fatalHold.disposition.successor : undefined,
       operatorDispositionRecording: { kind: 'recorded' },
     });
-    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+    // A fatally settled release keeps no delivery retry and no settlement deadline; the successor names the
+    // automatic slot drop that is still running, and nothing advertises a retry cadence for it.
+    expect(fatalHold.disposition.kind === 'fatal-successor-pending' ? fatalHold.disposition.successor : null).toEqual({
+      owner: 'coordinator',
+      boundMs: 60_000,
+      terminalExit: 'representation-released',
+    });
+    // The reported disposition changes with it: the only thing still running is the unconditional slot drop,
+    // so naming `release-representation` here would advertise a delivery retry that cannot happen, and naming
+    // `automatic-retry` would advertise a successor for a refusal the slot drop cannot produce.
     expect(lifecycle.snapshot().operatorSets).toContainEqual(
       expect.objectContaining({
         setIdentity: providerProxySetAddress(authority.setIdentity),
         operatorExit: { kind: 'refused', ground: 'representation-release-fatal' },
+        autonomousDisposition: {
+          kind: 'representation-release-fatal',
+          owner: 'coordinator',
+          boundMs: 60_000,
+          retryAction: 'drop-representation-slot',
+          refusalSuccessor: 'not-refusable',
+          terminalExit: 'representation-released',
+        },
       }),
     );
 
@@ -6623,7 +7481,7 @@ describe('ProviderProxySetLifecycle', () => {
     clock.runDue();
     await drainMicrotasks();
     expect(deliveryAttempts).toBe(2);
-    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
 
     const address = providerProxySetAddress(authority.setIdentity);
     const beforeBooleanAuthorization = lifecycle.snapshot();
@@ -6635,18 +7493,20 @@ describe('ProviderProxySetLifecycle', () => {
       lifecycle.completeOperatorExit(
         authorization.capability,
         await operatorContainmentProof(authorization.capability, enforcersUnobservable),
-        true,
+        false,
       ),
     ).resolves.toEqual({
-      kind: 'representation-release-abandoned',
+      kind: 'representation-release-abandonment-required',
       setIdentity: address,
-      successor: { owner: 'operator-command', acceptance: 'accepted' },
-      effect: { signalsSent: [], containmentAbsent: false, representationAction: 'fatal-release-abandoned' },
+      effect: noOperatorExitEffect,
     });
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
+    clock.elapse(60_000);
+    clock.runDue();
     expect(lifecycle.representationReleaseHolds()).toEqual([]);
   });
 
-  it('settles a late capsule-retirement fatal to an operator successor without retrying it', async () => {
+  it('settles a late capsule-retirement fatal to an automatic bounded successor', async () => {
     const claims = new ProviderProxySetClaimMirror();
     claims.initialize([]);
     const clock = new ManualClock();
@@ -6692,15 +7552,12 @@ describe('ProviderProxySetLifecycle', () => {
     if (fatalHold === undefined) throw new Error('expected fatal representation release hold');
     expect(fatalHold.disposition).toEqual({
       kind: 'fatal-successor-pending',
-      exit: 'provider-proxy-set-operator-abandonment',
+      exit: 'provider-proxy-set-autonomous-release',
       error: globalFatals[0],
       successor: {
-        owner: 'operator-command',
-        acceptance: 'pending',
-        inspectCommand: 'coral-cli backend status',
-        actionCommand: `coral-cli backend provider-proxy-set abandon ${encodeProviderProxySetAddress(
-          providerProxySetAddress(authority.setIdentity),
-        )}`,
+        owner: 'coordinator',
+        boundMs: 60_000,
+        terminalExit: 'representation-released',
       },
       operatorDispositionRecording: { kind: 'recorded' },
     });
@@ -6710,14 +7567,17 @@ describe('ProviderProxySetLifecycle', () => {
       successor: fatalHold.disposition.kind === 'fatal-successor-pending' ? fatalHold.disposition.successor : undefined,
       operatorDispositionRecording: { kind: 'recorded' },
     });
-    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
 
     clock.elapse(1_000);
     clock.runDue();
     await drainMicrotasks();
     expect(retireCapsule).toHaveBeenCalledTimes(2);
-    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(0);
+    expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
     expect(lifecycle.representationReleaseHolds()).toHaveLength(1);
+    clock.elapse(59_000);
+    clock.runDue();
+    expect(lifecycle.representationReleaseHolds()).toEqual([]);
   });
 
   it('retains absence and its capsule until every captured operation acknowledges durable disposition', async () => {

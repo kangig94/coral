@@ -36,6 +36,7 @@ import { readDurableCliContainmentStatus, writeDurableCliProcessRuntimeMeta } fr
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { encodeHistoricalDurableCliProcessRuntimeMeta } from '#tests/helpers/historical-durable-cli-runtime-meta.js';
 import type {
+  LifecycleController,
   LifecycleShutdownDisposition,
   RecoverPersistedDiscussFn,
   RunStartupRecoveryFn,
@@ -59,7 +60,7 @@ import { createFailedWorkflowDescendantReleaser } from '#src/coordinator/service
 import type { AtomicFailedWorkflowDescendantReleaser } from '#src/workflow/recover.js';
 import type { WorkflowPlan } from '#src/workflow/plan.js';
 import { awaitRecoveryCursorBarrier } from '#src/coordinator/index.js';
-import type { TerminateAllDisposition } from '#src/coordinator/live/admission.js';
+import type { SettlePendingLaunchesFn, TerminateRegisteredChildrenFn } from '#src/coordinator/shutdown.js';
 
 let runtime: ReturnType<typeof createRealRuntime>;
 
@@ -744,7 +745,8 @@ function createLifecycleHarness(
     writeBackendInfoFn?: () => void;
     cleanupStaleJobsFn?: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
     markJobsAsErrorFn?: (message: string, signal: AbortSignal) => void | Promise<void>;
-    terminateAllFn?: (signal: AbortSignal) => TerminateAllDisposition | Promise<TerminateAllDisposition>;
+    settlePendingLaunchesFn?: SettlePendingLaunchesFn;
+    terminateRegisteredChildrenFn?: TerminateRegisteredChildrenFn;
     registerRuntimeComponentFn?: (component: RuntimeComponent) => void;
     interruptedAppServerReason?: 'restart' | 'handoff';
     runtime?: ReturnType<typeof createRealRuntime>;
@@ -835,8 +837,11 @@ function createLifecycleHarness(
       writeBackendInfoFn: options.writeBackendInfoFn ?? (() => {}),
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: options.cleanupStaleJobsFn ?? (() => {}),
+      readSelfIncarnationFn: () => null,
       markJobsAsErrorFn: options.markJobsAsErrorFn ?? (() => {}),
-      terminateAllFn: options.terminateAllFn ?? (() => ({ kind: 'all-observed-absent' })),
+      settlePendingLaunchesFn: options.settlePendingLaunchesFn ?? (() => ({ kind: 'all-pending-launches-settled' })),
+      terminateRegisteredChildrenFn:
+        options.terminateRegisteredChildrenFn ?? (() => ({ kind: 'all-children-observed-absent' })),
       kbDaemonSupervisor,
       handoffQuiescePorts: () => [],
       createKbHealthComponentFn: () => createKbDaemonHealthComponent(kbDaemonSupervisor),
@@ -940,13 +945,12 @@ function createActualRecoveryService(
   );
 }
 
-async function stopLifecycleController(controller: {
-  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
-  waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
-}): Promise<LifecycleShutdownDisposition | null> {
+async function stopLifecycleController(
+  controller: Pick<LifecycleController, 'shutdown' | 'waitForShutdown'>,
+): Promise<LifecycleShutdownDisposition | null> {
   let disposition: LifecycleShutdownDisposition | null = null;
   try {
-    disposition = await controller.shutdown('test');
+    disposition = await controller.shutdown('test-teardown');
   } catch {
     /* best effort */
   }
@@ -959,19 +963,19 @@ async function stopLifecycleController(controller: {
     }
   }
 
-  if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+  if (disposition.disposition === 'held') {
     try {
       await vi.waitFor(
         async () => {
           disposition = await controller.waitForShutdown();
-          if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+          if (disposition.disposition === 'held') {
             throw new Error('automatic cleanup is still scheduled');
           }
         },
         { timeout: 5_000 },
       );
     } catch (error: unknown) {
-      throw new Error('Automatic lifecycle cleanup did not reach finalized or waiting-for-operator within 5s.', {
+      throw new Error('Automatic lifecycle cleanup did not reach a terminal disposition within 5s.', {
         cause: error,
       });
     }
@@ -980,7 +984,7 @@ async function stopLifecycleController(controller: {
   if (disposition.disposition === 'held') {
     const { automaticRetry, retainedOwnership } = disposition.recovery;
     throw new Error(
-      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}; operatorActions=${JSON.stringify(retainedOwnership.operatorActions)}`,
+      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}`,
     );
   }
   return disposition;
@@ -1086,6 +1090,71 @@ describe('lifecycle recovery', () => {
       expect(runtimeState.getLaunchFenceActive()).toBe(false);
     } finally {
       await stopLifecycleController(controller);
+    }
+  });
+
+  // A report the caller discards makes a startup incident unobservable: the reconciler named an obligation it
+  // did not discharge, and nothing downstream reads it.
+  it('logs every incident the provider-operation startup reconciliation reports', async () => {
+    const modules = await loadModules();
+    const { backendLog } = await import('#src/infra/backend-log.js');
+    const warn = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+    const pluginRoot = createPluginRoot('plugin-startup-incident');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+    });
+    const setIdentity = {
+      buildSetId: '00000000-0000-4000-8000-0000000000aa',
+      hostFingerprint: 'b'.repeat(64),
+      proxyInstanceId: '00000000-0000-4000-8000-0000000000bb',
+    };
+    const { controller } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      runStartupRecoveryFn: vi.fn(async (_inputs: StartupRecoveryInputs) => []),
+      reconcileProviderOperationsAtStartup: vi.fn(async () => ({
+        setsVisited: 1,
+        operationsVisited: 1,
+        incidents: [
+          {
+            kind: 'absence-released-undischarged',
+            setIdentity,
+            disappearanceReceipt: 'undischarged-receipt',
+            witness: 'provider-operation-record',
+          },
+        ],
+      })),
+      startProviderOperationReconciler: vi.fn(),
+      startupRecoveryBarrierPublisher: { publish: vi.fn() },
+      cleanupStaleJobsFn: vi.fn(),
+      discussion: {
+        getDiscussStoreForSource: vi.fn(),
+        knownDiscussSources: () => new Set(),
+        getDiscussContext: vi.fn(),
+        recoverPersistedDiscussFn: vi.fn(async () => []),
+        hooks: {
+          onShutdown: vi.fn(async () => {}),
+          onIdleCheck: () => false,
+          onRecoveryComplete: vi.fn(async () => {}),
+        },
+      },
+    });
+
+    try {
+      await controller.start();
+      expect(
+        warn.mock.calls
+          .map(([message]) => message)
+          .filter((message) => message.includes('startup reconciliation left an obligation open')),
+      ).toEqual([expect.stringContaining('kind=absence-released-undischarged witness=provider-operation-record')]);
+    } finally {
+      await stopLifecycleController(controller);
+      warn.mockRestore();
     }
   });
 
@@ -1842,14 +1911,12 @@ describe('lifecycle recovery', () => {
       eventBus,
       runStartupRecoveryFn: async () => [],
       markJobsAsErrorFn,
-      terminateAllFn: () =>
+      terminateRegisteredChildrenFn: () =>
         containmentAbsent
-          ? { kind: 'all-observed-absent' }
+          ? { kind: 'all-children-observed-absent' }
           : {
-              kind: 'unresolved-at-deadline',
+              kind: 'children-unresolved-at-deadline',
               processes: [{ kind: 'target-alive', pid: 4_242, stage: 'after-sigkill' }],
-              pendingLaunches: 0,
-              retainedLaunches: [],
               cleanupHandles: 1,
               retainedProcesses: [],
               cleanupFailures: 0,
@@ -1859,17 +1926,12 @@ describe('lifecycle recovery', () => {
 
     try {
       await controller.start();
-      await expect(controller.shutdown('test')).resolves.toMatchObject({
-        disposition: 'held',
-        recovery: {
-          retainedOwnership: {
-            cleanupObligations: expect.arrayContaining([
-              'child termination',
-              'crashed job terminalization',
-              'provider control and IPC authority release',
-            ]),
-          },
-        },
+      await expect(controller.shutdown('test-teardown')).resolves.toMatchObject({
+        disposition: 'finalized-with-losses',
+        undischarged: expect.arrayContaining([
+          expect.objectContaining({ label: 'child termination' }),
+          expect.objectContaining({ label: 'crashed job terminalization' }),
+        ]),
       });
 
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
@@ -1960,7 +2022,7 @@ describe('lifecycle recovery', () => {
     try {
       await controller.start();
       expect(runtimeState.getLifecycle()).toBe('running');
-      await controller.shutdown('test');
+      await controller.shutdown('test-teardown');
       expect(progressStore.readStatus(faultJobId)?.phase).toBe('launching');
       expect(progressStore.readStatus(foreignFaultJobId)?.phase).toBe('launching');
       expect(progressStore.readStatus(siblingJobId)).toMatchObject({

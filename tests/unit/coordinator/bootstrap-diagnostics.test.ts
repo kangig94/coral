@@ -82,7 +82,7 @@ describe('serializeBootstrapError', () => {
   it('preserves a nested Error cause chain', () => {
     const error = new Error('coordinator startup failed', {
       cause: new Error('runtime initialization failed', {
-        cause: new Error('database is locked'),
+        cause: Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }),
       }),
     });
 
@@ -94,9 +94,24 @@ describe('serializeBootstrapError', () => {
         message: 'runtime initialization failed',
         cause: {
           kind: 'error',
+          code: 'SQLITE_BUSY',
           message: 'database is locked',
         },
       },
+    });
+  });
+
+  it('canonicalizes error names and codes before writing identifier facts', () => {
+    const error = Object.assign(new Error('private failure'), {
+      name: 'Please delete ~/.coral',
+      code: 'bad\ncode',
+    });
+
+    expect(serializeBootstrapError(error)).toMatchObject({
+      kind: 'error',
+      name: 'Please_delete_.coral',
+      code: 'bad_code',
+      message: 'private failure',
     });
   });
 

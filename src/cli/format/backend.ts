@@ -18,7 +18,7 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull } from '../../transport/http/backend/status.js';
+import type { BackendStatusFull, ShutdownRemainderReport } from '../../transport/http/backend/status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -210,7 +210,10 @@ function recoveryRecordRemedyMatchesEntry(
   );
 }
 
-type ProviderProxySetOperatorRefusalGround = Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'];
+type ProviderProxySetOperatorRefusalGround = Extract<
+  Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'],
+  (ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse)['kind']
+>;
 
 function formatProviderProxySetOperatorRefusalGuidance(
   ground: ProviderProxySetOperatorRefusalGround,
@@ -251,11 +254,6 @@ function formatProviderProxySetOperatorRefusalGuidance(
           command: { kind: 'list' },
         }),
       ].join('\n');
-    case 'representation-release-fatal':
-      return [
-        'Next step: run the abandon command below; this accepts the unresolved representation release without retrying its fatal operation.',
-        abandon,
-      ].join('\n');
     default:
       return assertNever(ground);
   }
@@ -274,6 +272,10 @@ function formatProviderProxySetClaimDischarge(
       return `Claim discharge has not reached an initial disposition; Coral still represents the set until ${discharge.exit}.`;
     case 'initial-disposition-retry-owned':
       return 'Claim discharge has not reached an initial disposition; the coordinator still owns retry and still represents the set.';
+    case 'released-undischarged':
+      return discharge.witness === 'provider-operation-record'
+        ? 'Claim discharge did not complete within the representation-release settlement bound; Coral released the set representation, and the provider-operation records it left behind are retried by the coordinator that is still running.'
+        : 'Claim discharge did not complete within the representation-release settlement bound; Coral released the set representation, and the handoff capsule it left behind is reclaimed at the next coordinator start.';
     case 'operational-retry-owned':
       return 'exit' in discharge
         ? `Claim discharge is retry-owned for ${discharge.incidents.length} incident(s) with exit=${discharge.exit}; Coral still represents the set until every successor accepts and capsule retirement completes.`
@@ -303,7 +305,7 @@ export function formatProviderProxySetContainResult(
         ? 'Coral started evidence-backed representation release'
         : result.effect.representationAction === 'abandonment-release-started'
           ? 'Coral started operator-abandonment representation release'
-          : 'the operator accepted the fatal representation-release remainder',
+          : 'the coordinator accepted the fatal representation-release remainder',
   ].join('; ');
   switch (result.kind) {
     case 'contained':
@@ -339,7 +341,7 @@ export function formatProviderProxySetContainResult(
     case 'representation-release-abandoned':
       return [
         `Provider proxy set ${token}'s fatal representation release was abandoned.`,
-        'Observed: the operator command accepted the unresolved representation-release remainder.',
+        `Observed: the ${result.successor.owner} accepted the unresolved representation-release remainder.`,
         'Not observed: successful delivery or capsule retirement; the fatal operation was not retried.',
         `Effect: ${effect}.`,
         'Next step: inspect backend status.',
@@ -689,29 +691,43 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
+function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
+  const section = formatShutdownRemainderReport(shutdownRemainder);
+  return section.length === 0 ? base : [base, section].join('\n');
+}
+
 function formatDaemonStatus(result: BackendStatusFull): string {
   switch (result.status) {
     case 'ok':
-      return formatRunningStatus(result.health);
+      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder);
     case 'no_record_no_socket':
-      return 'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.';
+      return withShutdownRemainderSection(
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+        result.shutdownRemainder,
+      );
     case 'recorded_process_absent':
-      return `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`;
+      return withShutdownRemainderSection(
+        `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+        result.shutdownRemainder,
+      );
     case 'undecodable_record':
-      return formatUndecodableRecordStatus(result);
+      return withShutdownRemainderSection(formatUndecodableRecordStatus(result), result.shutdownRemainder);
     case 'unreachable':
-      return formatUnreachableStatus(result);
+      return withShutdownRemainderSection(formatUnreachableStatus(result), result.shutdownRemainder);
     case 'no_record_socket_present':
-      return formatNoRecordSocketPresentStatus(result);
+      return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
-      return formatRecentFailureStatus(result);
+      return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
     case 'shutting_down':
-      return 'Backend shutting down';
+      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder);
     case 'unauthorized':
-      return [
-        'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
-        formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
-      ].join('\n');
+      return withShutdownRemainderSection(
+        [
+          'Backend unauthorized. The discovery record and daemon token disagree. Run the shutdown command below, then retry a mutating Coral command; it attempts startup or handoff with a fresh token.',
+          formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+        ].join('\n'),
+        result.shutdownRemainder,
+      );
     default:
       return assertNever(result);
   }
@@ -1227,6 +1243,121 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
   return [...lines, ...formatSetupErrorLines(result.setupError)].join('\n');
 }
 
+function formatShutdownRemainderReport(report: ShutdownRemainderReport | undefined): string {
+  const lines =
+    report?.status === 'recent_shutdown_remainder' ||
+    report?.status === 'stale_shutdown_remainder' ||
+    report?.status === 'shutdown_remainder_clock_skew'
+      ? formatShutdownRemainderRecord(report)
+      : [];
+  if (report?.status === 'stale_shutdown_remainder') {
+    lines.unshift('Shutdown remainder evidence is older than the trusted recent window.');
+  }
+  if (report?.status === 'shutdown_remainder_clock_skew') {
+    lines.unshift('The shutdown remainder record is dated after this status observation.');
+  }
+  if (report?.status === 'shutdown_remainder_unreadable') {
+    const errno = report.reason === 'unreadable' ? ` errno=${report.errno ?? 'unavailable'}` : '';
+    lines.push(
+      'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
+      `Unusable: path=${report.path} cause=${report.reason}${errno}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+function formatShutdownRemainderRecord(
+  result: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' | 'stale_shutdown_remainder' | 'shutdown_remainder_clock_skew' }
+  >,
+): string[] {
+  const lines = [
+    result.status === 'recent_shutdown_remainder'
+      ? 'Coral recorded a recent shutdown with unfinished obligations.'
+      : result.status === 'stale_shutdown_remainder'
+        ? 'Coral recorded an older shutdown with unfinished obligations.'
+        : 'Coral recorded a shutdown with unfinished obligations and an untrusted timestamp.',
+    `Instance: ${result.record.instanceId}`,
+    `Recorded at: ${result.record.recordedAt}`,
+    `Reason: ${result.record.reason}`,
+    `Mode: ${result.record.mode}`,
+  ];
+  for (const entry of result.record.entries) {
+    lines.push(
+      `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+      `  Owner: ${entry.remainder.owner}`,
+      ...formatShutdownSettlementLines(entry.settlement),
+      ...formatShutdownRemainderEvidenceLines(entry.remainder),
+    );
+  }
+  lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
+  return lines;
+}
+
+function formatShutdownObligation(
+  obligation: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['obligation'],
+): string {
+  if (obligation === null) return 'unrecognized obligation';
+  switch (obligation.label) {
+    case 'stream response close':
+      return `${obligation.label} ${obligation.ordinal}`;
+    case 'provider proxy lifecycle fatal incident':
+      return `${obligation.label}${obligation.occurrence === 1 ? '' : ` ${obligation.occurrence}`}`;
+    default:
+      return obligation.label;
+  }
+}
+
+function formatShutdownSettlementLines(
+  settlement: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['settlement'],
+): string[] {
+  const lines = [`  Cause: ${settlement.cause}`];
+  switch (settlement.cause) {
+    case 'rejected':
+    case 'aborted':
+      return [
+        ...lines,
+        `  Error: ${settlement.error.name ?? 'unavailable'}`,
+        ...(settlement.error.code === undefined ? [] : [`  Code: ${settlement.error.code}`]),
+      ];
+    case 'timed-out':
+      return [...lines, `  Budget: ${settlement.budgetMs}ms`];
+    case 'budget-exhausted':
+    case 'unconfirmed':
+      return lines;
+  }
+}
+
+function formatShutdownRemainderEvidenceLines(
+  remainder: Extract<
+    ShutdownRemainderReport,
+    { status: 'recent_shutdown_remainder' }
+  >['record']['entries'][number]['remainder'],
+): string[] {
+  if (remainder.owner === 'process-exit') return [];
+  if (remainder.evidence.kind !== 'startup-adoption') return [`  Evidence: ${remainder.evidence.kind}`];
+  return [
+    '  Evidence: startup-adoption',
+    ...remainder.evidence.processes.flatMap((process) => [`    Job: ${process.jobId}`, `    PID: ${process.pid}`]),
+  ];
+}
+
+function formatSkippedShutdownRemainderEntries(
+  entries: Extract<ShutdownRemainderReport, { status: 'recent_shutdown_remainder' }>['skippedEntries'],
+): string[] {
+  return entries.flatMap((entry) => [
+    `Skipped entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+    `  Owner: ${entry.owner ?? 'unavailable'}`,
+  ]);
+}
+
 export function formatShutdown(result: ShutdownResult): string {
   if (result.ok) {
     return result.alreadyDraining ? 'Backend shutdown already in progress' : 'Backend shutdown initiated';
@@ -1685,26 +1816,22 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
   }
 }
 
-export function formatProviderProxySetOperatorExit(set: ProviderProxySetStatus): string {
-  switch (set.operatorExit.kind) {
-    case 'contain':
-      return formatBackendOperatorCommand({ kind: 'provider-proxy-set-contain', token: set.setToken }, 'action');
-    case 'abandon':
-      return formatBackendOperatorCommand({ kind: 'provider-proxy-set-abandon', token: set.setToken }, 'action');
-    case 'gated':
-      return (
-        `action=wait ~${Math.ceil(set.operatorExit.remainingMs)}ms for the operator-exit gate, ` +
-        `then contain ${set.setToken}`
-      );
-    case 'refused':
-      return formatProviderProxySetOperatorRefusalGuidance(set.operatorExit.ground, set.setToken);
-    case 'none':
-      if (set.holds.some(({ waitingFor }) => waitingFor === 'publication-confirmation-or-control-release')) {
-        return 'action=wait; Coral retries publication automatically until publication is confirmed or control is released.';
-      }
-      return `action=wait for ${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
+export function formatProviderProxySetAutonomousDisposition(set: ProviderProxySetStatus): string {
+  const disposition = set.autonomousDisposition;
+  switch (disposition.kind) {
+    case 'inactive':
+      return `disposition=inactive waitingFor=${[...new Set(set.holds.map(({ waitingFor }) => waitingFor))].join(',')}`;
+    case 'unavailable':
+      return 'disposition=unavailable';
+    case 'representation-release':
+    case 'representation-release-fatal':
+    case 'control-or-containment':
+    case 'exact-containment':
+    case 'durable-reconciliation':
+    case 'publication-recovery':
+      return `disposition=automatic owner=${disposition.owner} boundMs=${Math.ceil(disposition.boundMs)} retryAction=${disposition.retryAction} refusalSuccessor=${disposition.refusalSuccessor} terminalExit=${disposition.terminalExit}`;
     default:
-      return assertNever(set.operatorExit);
+      return assertNever(disposition);
   }
 }
 
@@ -1850,7 +1977,7 @@ function formatRunningStatus(health: RunningHealth): string {
           `    - disposition=${incident.disposition}${subject.length === 0 ? '' : ` subject=${subject}`} incident=${incident.incidentReason} waitingFor=${incident.waitingFor}${reattachment}${incident.enforcerObservations === undefined ? '' : ` enforcers=${incident.enforcerObservations.map(({ role, observation }) => `${role}:${observation}`).join(',')}`}${durable}`,
         );
       }
-      lines.push(`    ${formatProviderProxySetOperatorExit(set)}`);
+      lines.push(`    ${formatProviderProxySetAutonomousDisposition(set)}`);
     }
     if (skippedProviderProxySetRows > 0) {
       lines.push(

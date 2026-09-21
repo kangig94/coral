@@ -9,7 +9,7 @@ type CreateReplacementBackendOwnershipCheckerContext = {
   readBackendInfo: (runtime: DiscoveryRuntime) => { instanceId: string } | null;
   runtime: Runtime;
   runtimeState: { getLifecycle(): string };
-  idleTimer: { isDraining: boolean; requestDrain(reason: string): void };
+  idleTimer: { isDraining: boolean; requestDrain(reason: 'replaced'): void };
   pluginRoot: string;
   instanceId: string;
 };

@@ -28,7 +28,7 @@ import { testProjectPrincipal } from '#tests/helpers/principal.js';
 import { createBoundIpcLifecycleDeps } from '#tests/helpers/bound-ipc-lifecycle.js';
 import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js';
 import type { WorkflowFinalizationIntent } from '#src/workflow/finalization.js';
-import type { LifecycleShutdownDisposition } from '#src/coordinator/lifecycle.js';
+import type { LifecycleController, LifecycleShutdownDisposition } from '#src/coordinator/lifecycle.js';
 import {
   readDurableCliContainmentStatus,
   readDurableCliProcessRuntimeEvidence,
@@ -397,13 +397,12 @@ function stubRecoverableWorkflow(
   });
 }
 
-async function stopLifecycleController(controller: {
-  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
-  waitForShutdown: () => Promise<LifecycleShutdownDisposition>;
-}): Promise<LifecycleShutdownDisposition | null> {
+async function stopLifecycleController(
+  controller: Pick<LifecycleController, 'shutdown' | 'waitForShutdown'>,
+): Promise<LifecycleShutdownDisposition | null> {
   let disposition: LifecycleShutdownDisposition | null = null;
   try {
-    disposition = await controller.shutdown('test-cleanup');
+    disposition = await controller.shutdown('test-teardown');
   } catch {
     /* best effort */
   }
@@ -416,19 +415,19 @@ async function stopLifecycleController(controller: {
     }
   }
 
-  if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+  if (disposition.disposition === 'held') {
     try {
       await vi.waitFor(
         async () => {
           disposition = await controller.waitForShutdown();
-          if (disposition.disposition === 'held' && disposition.recovery.automaticRetry.status === 'scheduled') {
+          if (disposition.disposition === 'held') {
             throw new Error('automatic cleanup is still scheduled');
           }
         },
         { timeout: 5_000 },
       );
     } catch (error: unknown) {
-      throw new Error('Automatic lifecycle cleanup did not reach finalized or waiting-for-operator within 5s.', {
+      throw new Error('Automatic lifecycle cleanup did not reach a terminal disposition within 5s.', {
         cause: error,
       });
     }
@@ -437,7 +436,7 @@ async function stopLifecycleController(controller: {
   if (disposition.disposition === 'held') {
     const { automaticRetry, retainedOwnership } = disposition.recovery;
     throw new Error(
-      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}; operatorActions=${JSON.stringify(retainedOwnership.operatorActions)}`,
+      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}`,
     );
   }
   return disposition;
@@ -518,8 +517,10 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       writeBackendInfoFn,
       removeBackendInfoIfOwnerFn: () => {},
       cleanupStaleJobsFn: () => {},
+      readSelfIncarnationFn: () => null,
       markJobsAsErrorFn: () => {},
-      terminateAllFn: () => ({ kind: 'all-observed-absent' }),
+      settlePendingLaunchesFn: () => ({ kind: 'all-pending-launches-settled' }),
+      terminateRegisteredChildrenFn: () => ({ kind: 'all-children-observed-absent' }),
       providerHostManager: createFakeProviderHostManager() as never,
       kbDaemonSupervisor,
       handoffQuiescePorts: () => [],
@@ -622,7 +623,7 @@ describe('recovery coordinator shutdown', () => {
       projectRoot,
       serviceOverrides: {
         adoptRunningJob: vi.fn(() => {
-          void controller.shutdown('test-mid-recovery');
+          void controller.shutdown('test-teardown');
           return { adopted: true, cleanup: cleanupSpy };
         }),
       },
@@ -684,7 +685,7 @@ describe('recovery coordinator shutdown', () => {
     const startup = harness.controller.start().catch((error: unknown) => error);
     await vi.waitFor(() => expect(harness.fakeService.captureProviderRecoveryAuthority).toHaveBeenCalledTimes(1));
 
-    await harness.controller.shutdown('handoff');
+    await harness.controller.shutdown('test-teardown');
     releaseCapture({ ok: false, failure: { reason: 'subject-mismatch', provider: 'codex' } });
 
     expect(((await startup) as Error).name).toBe('AbortError');
@@ -728,7 +729,7 @@ describe('recovery coordinator shutdown', () => {
       },
       recoverPersistedDiscussImpl: async () => {
         expect(recoveryPollHandle).not.toBeNull();
-        void controller.shutdown('test-after-poller-live');
+        void controller.shutdown('test-teardown');
         return [];
       },
     });
@@ -1105,7 +1106,7 @@ describe('recovery coordinator shutdown', () => {
     virtualRuntime.time.tick(501);
     await vi.waitFor(() => expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1));
 
-    await harness.controller.shutdown('handoff');
+    await harness.controller.shutdown('test-teardown');
     expect(providerSignal).not.toBeNull();
     expect((providerSignal as unknown as AbortSignal).aborted).toBe(true);
   });
@@ -1162,7 +1163,7 @@ describe('recovery coordinator shutdown', () => {
     await vi.waitFor(() => expect(harness.fakeService.finalizeInterruptedDurableJob).toHaveBeenCalledTimes(1));
 
     let shutdownSettled = false;
-    const shutdown = harness.controller.shutdown('handoff').finally(() => {
+    const shutdown = harness.controller.shutdown('test-teardown').finally(() => {
       shutdownSettled = true;
     });
     await Promise.resolve();
@@ -1208,7 +1209,7 @@ describe('recovery coordinator shutdown', () => {
     await vi.waitFor(() => expect(harness.fakeService.finalizeInterruptedAppServerJob).toHaveBeenCalledTimes(1));
 
     let shutdownSettled = false;
-    const shutdown = harness.controller.shutdown('handoff').finally(() => {
+    const shutdown = harness.controller.shutdown('test-teardown').finally(() => {
       shutdownSettled = true;
     });
     await Promise.resolve();

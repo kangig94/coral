@@ -1,7 +1,8 @@
 import type { Server, ServerResponse } from 'node:http';
 import { backendLog } from '../infra/backend-log.js';
-import { readBackendInfo, type BackendInfo } from '../infra/backend-discovery.js';
-import { formatError } from '../infra/error-format.js';
+import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
+import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
+import { sha256Hex } from '../infra/hash.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
 import type { IdleTimer } from './live/idle.js';
@@ -26,9 +27,11 @@ import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
-import type {
-  ProviderOperationReconcilerStopDisposition,
-  StartupReconciliationReport,
+import type { ProcessIncarnation } from '../infra/node-process.js';
+import {
+  describeStartupReconciliationIncident,
+  type ProviderOperationReconcilerStopDisposition,
+  type StartupReconciliationReport,
 } from './services/provider-operation-reconciler.js';
 import type { RuntimeComponent } from './runtime-components/contract.js';
 import type { RuntimeComponentRegistry } from './runtime-components/registry.js';
@@ -36,20 +39,24 @@ import { createRecoveryComponent } from './runtime-components/recovery-component
 import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
+  shutdownIncidentUndischarged,
+  shutdownModeFromReason,
   type LifecycleWiringState,
-  type ShutdownMode,
+  type SettlePendingLaunchesFn,
+  type ShutdownIncidentOccurrence,
+  type ShutdownIncident,
+  type TerminateRegisteredChildrenFn,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
+import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
-  ShutdownDeferredFailure,
   ShutdownHoldExit,
   ShutdownHoldReason,
-  ShutdownOperatorAction,
   ShutdownSequenceDisposition,
+  ShutdownUndischarged,
 } from './shutdown-settlement.js';
-import type { TerminateAllDisposition } from './live/admission.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
 import {
@@ -110,12 +117,7 @@ import {
 } from '../jobs/crashed-job-terminalization-recovery-source.js';
 import { staleJobCleanupSource, type RawStaleJobCleanupRow } from '../jobs/stale-job-cleanup-recovery-source.js';
 import { runShutdownCrashTerminalization } from './shutdown-recovery.js';
-import { recordShutdownObligationAbandonment } from './shutdown-abandonment.js';
-import type {
-  ShutdownObligationAbandonRequest,
-  ShutdownObligationAbandonResult,
-  ShutdownObligationSubject,
-} from '../obligation/shutdown-abandonment.js';
+import { recordShutdownRemainder } from './shutdown-remainder.js';
 import { runStartupStaleArtifactPrune } from './startup-recovery.js';
 import type { ProviderOperationStartupOwnership, RunJobsStartupFn } from '../jobs/startup.js';
 
@@ -391,6 +393,10 @@ function bestEffortLifecycleLog(log: (message: string) => void, message: string)
   } catch {
     // Recovery reporting cannot change an authoritative item disposition.
   }
+}
+
+function lifecycleDiagnosticFields(diagnostic: SerializedThrown): string {
+  return `errno=${diagnostic.code ?? 'unavailable'} errorName=${diagnostic.kind === 'error' ? diagnostic.name : 'unavailable'}`;
 }
 
 function bestEffortLifecycleWarning(message: string): void {
@@ -790,10 +796,12 @@ export type LifecycleDeps = {
   readonly knownDiscussSources: () => Set<string>;
   readonly getDiscussContext: (ctx: InvocationContext) => DiscussContext;
   readonly writeBackendInfoFn: (info: BackendInfo) => boolean | void;
-  readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void;
+  readonly removeBackendInfoIfOwnerFn: (instanceId: string) => void | BackendInfoRemovalResult;
   readonly cleanupStaleJobsFn: (currentBundleHash: string, signal: AbortSignal) => void | Promise<void>;
+  readonly readSelfIncarnationFn: () => ProcessIncarnation | null;
   readonly markJobsAsErrorFn: (message: string, signal: AbortSignal) => void | Promise<void>;
-  readonly terminateAllFn: (signal: AbortSignal) => TerminateAllDisposition | Promise<TerminateAllDisposition>;
+  readonly settlePendingLaunchesFn: SettlePendingLaunchesFn;
+  readonly terminateRegisteredChildrenFn: TerminateRegisteredChildrenFn;
   readonly providerHostManager: Pick<ProviderHostManager, 'drainForHandoff' | 'shutdown'>;
   /**
    * The live guardian/reaper/proxy sets, absent whenever the composition layer had no real acquisition path
@@ -803,6 +811,7 @@ export type LifecycleDeps = {
   readonly providerProxyAuthority?: ProviderProxyAuthorityRegistry;
   readonly kbDaemonSupervisor?: KbDaemonSupervisor;
   readonly handoffQuiescePorts: () => readonly HandoffQuiescePort[];
+  readonly handoffDrainBudgetMs?: number;
   readonly disposeLifecycleReactor?: () => void | Promise<void>;
   readonly createKbHealthComponentFn: CreateKbHealthComponentFn;
   readonly registerBuiltInProvidersFn: RegisterBuiltInProvidersFn;
@@ -817,21 +826,18 @@ export type LifecycleDeps = {
     additionalCompatibilitySocketPaths?: readonly string[],
     publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
-  readonly onStopped?: () => void;
+  readonly onStopped?: (exitCode: number) => void;
   readonly acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   readonly onFatalShutdownError?: (error: unknown) => void;
 };
 
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
-  shutdown(reason: string): Promise<LifecycleShutdownDisposition>;
-  abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult;
+  shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition>;
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
 };
-
-const SHUTDOWN_AUTOMATIC_RETRY_LIMIT = 3;
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
 type LifecycleShutdownHoldReason = ShutdownHoldReason;
@@ -839,50 +845,49 @@ type LifecycleShutdownHoldReason = ShutdownHoldReason;
 type LifecycleShutdownRecovery = Readonly<{
   kind: 'retry-shutdown';
   exit: ShutdownHoldExit;
-  owner: Readonly<
-    | { kind: 'lifecycle-finalization-continuation'; instanceId: string }
-    | { kind: 'lifecycle-shutdown-hold'; instanceId: string }
-  >;
-  automaticRetry:
-    | Readonly<{ status: 'scheduled'; attemptsStarted: number; attemptLimit: number }>
-    | Readonly<{ status: 'waiting-for-operator'; attemptsStarted: number; attemptLimit: number }>;
+  owner: Readonly<{ kind: 'lifecycle-finalization-continuation'; instanceId: string }>;
+  automaticRetry: Readonly<{ status: 'scheduled'; attemptsStarted: number; attemptLimit: number }>;
   retainedOwnership: Readonly<{
     kind: 'coordinator-exclusive-authority';
     backendInfo: Readonly<{ kind: 'backend-info'; instanceId: string }>;
     ipcSocket: boolean;
     providerControlProxyInstanceIds: readonly string[];
     cleanupObligations: readonly string[];
-    operatorActions: readonly ShutdownOperatorAction[];
   }>;
   retry(): Promise<LifecycleShutdownDisposition>;
 }>;
 
 export type LifecycleShutdownDisposition =
   | Readonly<{ disposition: 'finalized' }>
+  | Readonly<{ disposition: 'finalized-with-losses'; undischarged: readonly ShutdownUndischarged[] }>
   | Readonly<{
       disposition: 'held';
       reason: LifecycleShutdownHoldReason;
       recovery: LifecycleShutdownRecovery;
-    }>
-  | Readonly<{
-      disposition: 'transfer-pending';
-      owner: 'process-exit';
-      reason: LifecycleShutdownHoldReason;
-      deferredFailures: readonly ShutdownDeferredFailure[];
-      acceptance: Extract<ProcessExitRemainderAcceptance, { kind: 'accepted' }>;
-      boundaryFailure: ShutdownDeferredFailure;
-      recovery: LifecycleShutdownRecovery;
     }>;
+
+export type LifecycleShutdownTerminalDisposition = Extract<
+  LifecycleShutdownDisposition,
+  { disposition: 'finalized' | 'finalized-with-losses' }
+>;
+
+export function isLifecycleShutdownTerminal(
+  disposition: LifecycleShutdownDisposition,
+): disposition is LifecycleShutdownTerminalDisposition {
+  return disposition.disposition === 'finalized' || disposition.disposition === 'finalized-with-losses';
+}
 
 type LifecycleControlState = LifecycleWiringState & {
   shutdownPromise: Promise<LifecycleShutdownDisposition> | null;
   shutdownContinuations: Set<Promise<void>>;
   shutdownContinuationAbort: AbortController | null;
-  shutdownAutomaticRetryAttempts: number;
+  shutdownHardConsequencesAbort: AbortController | null;
+  shutdownReason: ShutdownReason | null;
+  shutdownIncidents: ShutdownIncidentOccurrence[];
+  shutdownIncidentCount: number;
   shutdownRetryAfter: Promise<void> | null;
-  shutdownRetry: (() => Promise<ShutdownSequenceDisposition>) | null;
+  shutdownRetry: Readonly<{ retry: () => Promise<ShutdownSequenceDisposition> }> | null;
   lastShutdownDisposition: LifecycleShutdownDisposition | null;
-  operatorAbandonedShutdownObligations: Set<ShutdownObligationSubject>;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
   providerOperationMutationAdmission: ProviderOperationMutationAdmission | null;
@@ -895,8 +900,17 @@ type LifecycleStartupContext = {
   state: LifecycleControlState;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   ownershipChecker: ReturnType<typeof createReplacementBackendOwnershipChecker>;
-  shutdown: (reason: string) => Promise<LifecycleShutdownDisposition>;
+  shutdown: (reason: ShutdownReason) => Promise<LifecycleShutdownDisposition>;
 };
+
+/**
+ * `setImmediate` runs after the current poll phase completes, so a health check already accepted on the
+ * kernel-ready listener gets to send its response before Era II's synchronous work runs; a microtask
+ * (`Promise.resolve()`, `queueMicrotask`) does not span that phase boundary and would not yield here.
+ */
+export async function yieldPastKernelReadyResponse(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
 
 async function runLifecycleStartup({
   deps,
@@ -1165,6 +1179,7 @@ async function runLifecycleStartup({
     };
 
     // ===== Era II (recovery) =====
+    await yieldPastKernelReadyResponse();
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();
@@ -1172,7 +1187,15 @@ async function runLifecycleStartup({
       providerOperationStartupSnapshot,
     );
     signal.throwIfAborted();
-    await reconcileProviderOperationsAtStartup?.(providerOperationStartupOwnership, signal);
+    const providerOperationStartupReport = await reconcileProviderOperationsAtStartup?.(
+      providerOperationStartupOwnership,
+      signal,
+    );
+    for (const incident of providerOperationStartupReport?.incidents ?? []) {
+      backendLog.warn(
+        `Provider operation startup reconciliation left an obligation open: ${describeStartupReconciliationIncident(incident)}`,
+      );
+    }
     signal.throwIfAborted();
     // Per-job isolation: corrupt sessions should not abort recovery.
     // `bound.runStartupRecovery` registers journal cursors then awaits
@@ -1276,7 +1299,13 @@ async function runLifecycleStartup({
       throw error;
     }
     if (mutationAdmissionDisposition?.kind === 'holding') {
-      await mutationAdmissionDisposition.retryAfter;
+      // `retryAfter` settles only when every pending mutation returns and every closed-set fence lease is
+      // released by its holder — neither is bounded by anything this cleanup owns, so awaiting it here would
+      // sit ahead of the socket close and discovery withdrawal this cleanup still owes. What this cleanup did
+      // not observe settle stays visible instead of being swallowed.
+      backendLog.error(
+        `Provider operation mutation admission did not confirm drained during startup-failure cleanup (pending: ${mutationAdmissionDisposition.pendingMutations.join(', ')})`,
+      );
     }
     if (error instanceof IncumbentMatchesError) {
       // Translate to the existing bootstrap-recognized "redundant contender"
@@ -1290,13 +1319,17 @@ async function runLifecycleStartup({
     state.ownershipCheckerTeardown?.();
     state.ownershipCheckerTeardown = null;
     try {
-      let disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
-      while (disposal?.kind === 'holding') {
-        await disposal.retryAfter;
-        disposal = await disposal.retry();
+      // No retry: a `holding` result's `retryAfter` waits on the child's `close` event, which a grandchild
+      // holding its stdio pipes open can keep from ever firing — that wait must not sit ahead of the socket
+      // close and discovery withdrawal this cleanup still owes.
+      const disposal = await kbDaemonSupervisor?.dispose('coordinator startup failed');
+      if (disposal?.kind === 'holding') {
+        backendLog.error(
+          `KB daemon disposal did not confirm absence during startup-failure cleanup (${disposal.reason})`,
+        );
       }
-    } catch {
-      // best effort
+    } catch (error: unknown) {
+      backendLog.error(`KB daemon disposal during startup-failure cleanup failed (${formatError(error)})`);
     }
     try {
       await closeServerFn(server);
@@ -1310,7 +1343,12 @@ async function runLifecycleStartup({
         // best effort
       }
     }
-    removeBackendInfoIfOwnerFn(instanceId);
+    const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
+    if (withdrawal !== undefined && withdrawal.kind === 'refused') {
+      backendLog.error(
+        `backend discovery withdrawal refused during startup-failure cleanup operation=${withdrawal.operation} code=${withdrawal.code} ${lifecycleDiagnosticFields(withdrawal.error)} correlation=${withdrawal.correlation}`,
+      );
+    }
 
     if (error instanceof HandoffEscalationError) {
       backendLog.error('Handoff escalation failed', error);
@@ -1328,6 +1366,7 @@ export function createLifecycle(
   const {
     identity,
     runtime,
+    backendPid,
     runtimeState,
     idleTimer,
     storeServicesRef,
@@ -1336,10 +1375,12 @@ export function createLifecycle(
     server,
     removeBackendInfoIfOwnerFn,
     markJobsAsErrorFn,
-    terminateAllFn,
+    settlePendingLaunchesFn,
+    terminateRegisteredChildrenFn,
     providerHostManager,
     providerProxyAuthority,
     stopProviderOperationReconciler,
+    readSelfIncarnationFn,
     kbDaemonSupervisor,
     disposeLifecycleReactor = () => {},
     hooks,
@@ -1357,11 +1398,13 @@ export function createLifecycle(
     shutdownPromise: null,
     shutdownContinuations: new Set(),
     shutdownContinuationAbort: null,
-    shutdownAutomaticRetryAttempts: 0,
+    shutdownHardConsequencesAbort: null,
+    shutdownReason: null,
+    shutdownIncidents: [],
+    shutdownIncidentCount: 0,
     shutdownRetryAfter: null,
     shutdownRetry: null,
     lastShutdownDisposition: null,
-    operatorAbandonedShutdownObligations: new Set(),
     started: false,
     ownershipCheckerTeardown: null,
     recoveryCoordinator: null,
@@ -1387,8 +1430,19 @@ export function createLifecycle(
     return { projectRoot, pluginRoot, coralEnv: {}, principal };
   }
 
-  async function shutdown(reason: string): Promise<LifecycleShutdownDisposition> {
+  async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
+    state.shutdownReason ??= reason;
+    if (reason === 'provider-proxy-lifecycle-fatal' || incident !== undefined) {
+      state.shutdownReason = 'provider-proxy-lifecycle-fatal';
+      state.shutdownHardConsequencesAbort?.abort();
+    }
+    if (incident !== undefined) {
+      state.shutdownIncidentCount += 1;
+      state.shutdownIncidents.push({ incident, occurrence: state.shutdownIncidentCount });
+    }
     if (state.shutdownPromise) return state.shutdownPromise;
+    const currentShutdownReason = (): ShutdownReason => state.shutdownReason ?? reason;
+    const takeShutdownIncidents = (): readonly ShutdownIncidentOccurrence[] => state.shutdownIncidents.splice(0);
     state.lastShutdownDisposition = null;
 
     // Calling `abort()` with no reason sets `signal.reason` to the platform
@@ -1400,59 +1454,130 @@ export function createLifecycle(
     state.startupAbort?.abort();
 
     const finalizeStoppedLifecycle = (
-      onFinalized: (() => void) | undefined = onStopped,
-    ): LifecycleShutdownDisposition => {
+      terminal: LifecycleShutdownTerminalDisposition,
+      onFinalized: ((exitCode: number) => void) | undefined = onStopped,
+    ): LifecycleShutdownTerminalDisposition => {
       runtimeState.setLifecycle('stopped');
-      removeBackendInfoIfOwnerFn(instanceId);
-      onFinalized?.();
-      return { disposition: 'finalized' };
+      const terminalReason = currentShutdownReason();
+      const losses: ShutdownUndischarged[] = [
+        ...(terminal.disposition === 'finalized' ? [] : terminal.undischarged),
+        ...takeShutdownIncidents().map(shutdownIncidentUndischarged),
+      ];
+      const publish = (): void => {
+        try {
+          const publication = recordShutdownRemainder(
+            {
+              storage: runtime.storage,
+              time: runtime.time,
+              runDir: runtime.paths.coral.coordinator.runDir,
+              writer: {
+                pid: backendPid,
+                incarnation: readSelfIncarnationFn(),
+              },
+            },
+            {
+              instanceId,
+              reason: terminalReason,
+              mode: shutdownModeFromReason(terminalReason),
+              undischarged: losses,
+            },
+          );
+          switch (publication.kind) {
+            case 'published':
+              return;
+            case 'refused':
+              bestEffortLifecycleLog(
+                log,
+                `shutdown remainder write refused operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
+              );
+              return;
+            case 'verification-unavailable':
+              bestEffortLifecycleLog(
+                log,
+                `shutdown remainder publication verification unavailable operation=${publication.operation} code=${publication.code} ${lifecycleDiagnosticFields(publication.diagnostic)} correlation=${publication.correlation}\n`,
+              );
+              return;
+          }
+        } catch (error: unknown) {
+          const diagnostic = serializeThrown(error);
+          const correlation = sha256Hex(`publish\0unexpected-exception\0${JSON.stringify(diagnostic)}`);
+          bestEffortLifecycleLog(
+            log,
+            `shutdown remainder write refused operation=publish code=unexpected-exception ${lifecycleDiagnosticFields(diagnostic)} correlation=${correlation}\n`,
+          );
+        }
+      };
+      const withdraw = (): Readonly<{
+        operation: 'read' | 'decode' | 'unlink' | 'callback';
+        code: 'filesystem-operation-failed' | 'corrupt-json' | 'shape-rejected' | 'unexpected-exception';
+        correlation: string;
+        error: SerializedThrown;
+      }> | null => {
+        try {
+          const withdrawal = removeBackendInfoIfOwnerFn(instanceId);
+          return withdrawal !== undefined && withdrawal.kind === 'refused' ? withdrawal : null;
+        } catch (error: unknown) {
+          const serialized = serializeThrown(error);
+          return {
+            operation: 'callback',
+            code: 'unexpected-exception',
+            correlation: sha256Hex(`callback\0unexpected-exception\0${JSON.stringify(serialized)}`),
+            error: serialized,
+          };
+        }
+      };
+
+      try {
+        // Constraint: the store holds the latest remainder, not the latest loss. Publishing only when this
+        // shutdown lost something leaves a record this build cannot read with no writer that will replace it,
+        // and a clean shutdown is itself the answer that supersedes it.
+        publish();
+        const refusal = withdraw();
+        if (refusal !== null) {
+          bestEffortLifecycleLog(
+            log,
+            `backend discovery withdrawal refused operation=${refusal.operation} code=${refusal.code} ${lifecycleDiagnosticFields(refusal.error)} correlation=${refusal.correlation}\n`,
+          );
+          losses.push({
+            label: 'backend discovery withdrawal',
+            remainder: { owner: 'process-exit' },
+            settlement: { cause: 'rejected', error: refusal.error },
+          });
+          publish();
+        }
+        return losses.length === 0
+          ? { disposition: 'finalized' }
+          : { disposition: 'finalized-with-losses', undischarged: losses };
+      } finally {
+        onFinalized?.(losses.length === 0 ? 0 : 1);
+      }
     };
     const acceptShutdownDisposition = (disposition: ShutdownSequenceDisposition): LifecycleShutdownDisposition => {
-      if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
+      if (disposition.disposition === 'held') {
         state.shutdownRetryAfter = disposition.retryAfter;
-        state.shutdownRetry = disposition.retry;
-        const automaticRetry =
-          state.shutdownAutomaticRetryAttempts < SHUTDOWN_AUTOMATIC_RETRY_LIMIT
-            ? {
-                status: 'scheduled' as const,
-                attemptsStarted: state.shutdownAutomaticRetryAttempts,
-                attemptLimit: SHUTDOWN_AUTOMATIC_RETRY_LIMIT,
-              }
-            : {
-                status: 'waiting-for-operator' as const,
-                attemptsStarted: state.shutdownAutomaticRetryAttempts,
-                attemptLimit: SHUTDOWN_AUTOMATIC_RETRY_LIMIT,
-              };
+        state.shutdownRetry = { retry: disposition.retry };
         const recovery: LifecycleShutdownRecovery = {
           kind: 'retry-shutdown',
           exit: disposition.exit,
           owner: {
-            kind:
-              automaticRetry.status === 'scheduled' ? 'lifecycle-finalization-continuation' : 'lifecycle-shutdown-hold',
+            kind: 'lifecycle-finalization-continuation',
             instanceId,
           },
-          automaticRetry,
+          automaticRetry: {
+            status: 'scheduled',
+            attemptsStarted: disposition.attemptsStarted,
+            attemptLimit: disposition.attemptLimit,
+          },
           retainedOwnership: {
             kind: 'coordinator-exclusive-authority',
             backendInfo: { kind: 'backend-info', instanceId },
             ipcSocket: disposition.retainedAuthority.ipcSocket,
             providerControlProxyInstanceIds: disposition.retainedAuthority.providerControlProxyInstanceIds,
             cleanupObligations: disposition.retainedAuthority.cleanupObligations,
-            operatorActions: disposition.retainedAuthority.operatorActions,
           },
-          retry: () => shutdown(reason),
+          retry: () => shutdown(currentShutdownReason()),
         };
-        return disposition.disposition === 'held'
-          ? { disposition: 'held', reason: disposition.reason, recovery }
-          : {
-              disposition: 'transfer-pending',
-              owner: disposition.owner,
-              reason: disposition.reason,
-              deferredFailures: disposition.deferredFailures,
-              acceptance: disposition.acceptance,
-              boundaryFailure: disposition.boundaryFailure,
-              recovery,
-            };
+        return { disposition: 'held', reason: disposition.reason, recovery };
       }
       state.shutdownRetryAfter = null;
       state.shutdownRetry = null;
@@ -1460,14 +1585,26 @@ export function createLifecycle(
       state.shutdownContinuationAbort = null;
       switch (disposition.disposition) {
         case 'settled':
-          return finalizeStoppedLifecycle();
+          return finalizeStoppedLifecycle({ disposition: 'finalized' });
         case 'delegated':
-          return finalizeStoppedLifecycle(disposition.acceptance.requestExit);
+          return finalizeStoppedLifecycle(
+            { disposition: 'finalized-with-losses', undischarged: disposition.undischarged },
+            disposition.acceptance.requestExit,
+          );
+        case 'unaccepted':
+          return finalizeStoppedLifecycle({
+            disposition: 'finalized-with-losses',
+            undischarged: disposition.undischarged,
+          });
       }
     };
     const attempt = (async (): Promise<LifecycleShutdownDisposition> => {
-      if (runtimeState.getLifecycle() === 'stopped') return { disposition: 'finalized' };
-      if (state.shutdownRetry !== null) return state.shutdownRetry().then(acceptShutdownDisposition);
+      if (runtimeState.getLifecycle() === 'stopped') {
+        return { disposition: 'finalized' };
+      }
+      if (state.shutdownRetry !== null) return state.shutdownRetry.retry().then(acceptShutdownDisposition);
+      const hardConsequencesAbort = new AbortController();
+      state.shutdownHardConsequencesAbort = hardConsequencesAbort;
       const stopProviderOperationMutations = (): ProviderOperationReconcilerStopDisposition => {
         const lifecycleDisposition = state.providerOperationMutationAdmission?.close() ?? {
           kind: 'drained' as const,
@@ -1475,39 +1612,49 @@ export function createLifecycle(
         const reconcilerDisposition = stopProviderOperationReconciler?.() ?? { kind: 'drained' as const };
         return lifecycleDisposition.kind === 'holding' ? lifecycleDisposition : reconcilerDisposition;
       };
-      return acceptShutdownDisposition(
-        await runShutdownSequence({
-          reason,
-          state,
-          teardownRecoveryCoordinator: async () => {
-            await state.recoveryCoordinator?.teardown();
-          },
-          runtimeState,
-          idleTimer,
-          closeServerFn,
-          waitForInflightDrain,
-          server,
-          closeIpcServerFn,
-          ipcServer,
-          streamResponses,
-          runtime,
-          markJobsAsErrorFn,
-          providerHostManager,
-          providerProxyAuthority,
-          stopProviderOperationReconciler: stopProviderOperationMutations,
-          kbDaemonSupervisor,
-          storeServicesRef,
-          terminateAllFn,
-          handoffQuiescePorts: deps.handoffQuiescePorts,
-          disposeLifecycleReactor,
-          hooks,
-          discussStores,
-          stopStoreEpochSweepFn: deps.stopStoreEpochSweepFn,
-          log,
-          isShutdownObligationAbandoned: (subject) => state.operatorAbandonedShutdownObligations.has(subject),
-          ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
-        }),
-      );
+      try {
+        return acceptShutdownDisposition(
+          await runShutdownSequence({
+            reason: currentShutdownReason(),
+            currentReason: currentShutdownReason,
+            takeIncidents: takeShutdownIncidents,
+            hardConsequencesAbort: hardConsequencesAbort.signal,
+            state,
+            teardownRecoveryCoordinator: async () => {
+              await state.recoveryCoordinator?.teardown();
+            },
+            runtimeState,
+            idleTimer,
+            closeServerFn,
+            waitForInflightDrain,
+            server,
+            closeIpcServerFn,
+            ipcServer,
+            streamResponses,
+            runtime,
+            markJobsAsErrorFn,
+            providerHostManager,
+            providerProxyAuthority,
+            stopProviderOperationReconciler: stopProviderOperationMutations,
+            kbDaemonSupervisor,
+            storeServicesRef,
+            settlePendingLaunchesFn,
+            terminateRegisteredChildrenFn,
+            handoffQuiescePorts: deps.handoffQuiescePorts,
+            handoffDrainBudgetMs: deps.handoffDrainBudgetMs,
+            disposeLifecycleReactor,
+            hooks,
+            discussStores,
+            stopStoreEpochSweepFn: deps.stopStoreEpochSweepFn,
+            log,
+            ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
+          }),
+        );
+      } finally {
+        if (state.shutdownHardConsequencesAbort === hardConsequencesAbort) {
+          state.shutdownHardConsequencesAbort = null;
+        }
+      }
     })().catch((error) => {
       onFatalShutdownError?.(error);
       throw error;
@@ -1515,24 +1662,28 @@ export function createLifecycle(
     const trackedAttempt = attempt.then(
       (disposition) => {
         state.lastShutdownDisposition = disposition;
-        if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
+        if (!isLifecycleShutdownTerminal(disposition)) {
           state.shutdownPromise = null;
-          if (
-            state.shutdownContinuations.size === 0 &&
-            state.shutdownAutomaticRetryAttempts < SHUTDOWN_AUTOMATIC_RETRY_LIMIT
-          ) {
+          const { attemptsStarted, attemptLimit } = disposition.recovery.automaticRetry;
+          if (state.shutdownContinuations.size === 0 && attemptsStarted < attemptLimit) {
             const continuationAbort = new AbortController();
             state.shutdownContinuationAbort = continuationAbort;
             const cancelled = new Promise<void>((resolve) => {
               continuationAbort.signal.addEventListener('abort', () => resolve(), { once: true });
             });
             const continuation = (async () => {
-              while (state.shutdownAutomaticRetryAttempts < SHUTDOWN_AUTOMATIC_RETRY_LIMIT) {
+              // The loop's own attempt count must come from the disposition the ledger just returned, not a
+              // continuation-local counter — a count kept here can diverge from the ledger's forced-terminal
+              // attempt and strand the loop on a hold with nothing left to schedule a retry.
+              let pending: LifecycleShutdownDisposition = disposition;
+              while (
+                !isLifecycleShutdownTerminal(pending) &&
+                pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
+              ) {
                 await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
                 if (continuationAbort.signal.aborted) return;
-                state.shutdownAutomaticRetryAttempts += 1;
-                const retried = await shutdown(reason);
-                if (retried.disposition === 'finalized') return;
+                pending = await shutdown(currentShutdownReason());
+                if (isLifecycleShutdownTerminal(pending)) return;
               }
             })()
               .catch((error: unknown) => {
@@ -1578,15 +1729,18 @@ export function createLifecycle(
   function requestShutdownRetry(): void {
     const currentAttempt = state.shutdownPromise;
     if (currentAttempt === null) {
-      void shutdown('operator-recovery').catch((error: unknown) => {
+      const retryReason = state.shutdownReason;
+      if (state.shutdownRetry === null || retryReason === null) return;
+      void shutdown(retryReason).catch((error: unknown) => {
         log(`operator recovery shutdown retry failed (${formatError(error)})\n`);
       });
       return;
     }
     void currentAttempt
       .then((disposition) => {
-        if (disposition.disposition === 'held' || disposition.disposition === 'transfer-pending') {
-          return shutdown('operator-recovery');
+        const retryReason = state.shutdownReason;
+        if (!isLifecycleShutdownTerminal(disposition) && state.shutdownRetry !== null && retryReason !== null) {
+          return shutdown(retryReason);
         }
       })
       .catch((error: unknown) => {
@@ -1594,45 +1748,9 @@ export function createLifecycle(
       });
   }
 
-  function abandonmentDetail(subject: ShutdownObligationSubject): string {
-    return subject === 'app-server-handoff-quiesce'
-      ? 'App-server write completion was not observed; the write may or may not have landed.'
-      : `${subject} completion was not observed; the obligation may still be active.`;
-  }
-
-  function abandonShutdownObligation(request: ShutdownObligationAbandonRequest): ShutdownObligationAbandonResult {
-    const disposition = state.lastShutdownDisposition;
-    if (disposition === null || disposition.disposition === 'finalized') {
-      return { kind: 'not-held', subject: request.subject };
-    }
-    const offered = disposition.recovery.retainedOwnership.operatorActions.some(
-      (action) => action.kind === 'shutdown-obligation-abandonment' && action.subject === request.subject,
-    );
-    if (!offered) return { kind: 'not-offered', subject: request.subject };
-
-    const recorded = recordShutdownObligationAbandonment(
-      {
-        storage: runtime.storage,
-        time: runtime.time,
-        runDir: runtime.paths.coral.coordinator.runDir,
-      },
-      {
-        subject: request.subject,
-        instanceId,
-        detail: abandonmentDetail(request.subject),
-      },
-    );
-    if (recorded.kind === 'refused') {
-      return { kind: 'status-write-refused', subject: request.subject, detail: recorded.detail };
-    }
-    state.operatorAbandonedShutdownObligations.add(request.subject);
-    return { kind: 'accepted', receipt: recorded.receipt };
-  }
-
   return {
     start,
     shutdown,
-    abandonShutdownObligation,
     requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;

@@ -62,18 +62,6 @@ describe('provider-host operator documentation', () => {
     );
   });
 
-  it('names every exit the release can be ended through, including the one a work directory is left with', () => {
-    expect(catalogEntry('provider_host_owner_torn_down')).toContain('coral-cli backend status');
-    expect(cliErrors).toContain(
-      'coral-cli backend shutdown-recovery abandon provider-control-and-ipc-authority-release',
-    );
-    expect(cliErrors).toContain('coral-cli backend provider-proxy-set contain <set-token>');
-    expect(cliErrors).toContain('coral-cli backend provider-proxy-set abandon <set-token>');
-    expect(cliErrors).toContain(
-      'for a work directory the rendered remediation therefore starts with `coral-cli backend provider-host list`',
-    );
-  });
-
   it('documents both inventory-unavailable and identity-integrity causes', () => {
     expect(catalogEntry('provider_host_inventory_unavailable')).toContain(
       "selected owner's exact inspect/evict call failed after owner selection",

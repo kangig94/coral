@@ -16,7 +16,7 @@ import {
 } from '../runtime-build.js';
 import { type DiscussContext } from '../types.js';
 import { DiscussManagerError, unwrapResult } from '../errors.js';
-import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
+import { commitDecision, isSilentCommitRefusal, loadAttachedOrPersistedSnapshot } from '../persistence.js';
 import {
   type EpochEvaluation,
   type SubflowResult,
@@ -230,7 +230,7 @@ export async function handleEpochTransition(
       ts,
     );
   });
-  if (!committed.ok && committed.error !== 'session_not_found') {
+  if (!committed.ok && !isSilentCommitRefusal(committed.error)) {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 
@@ -259,7 +259,7 @@ export async function runFollowUpTurns(
           ctxTs(ctx),
         ),
       );
-      if (!ended.ok && ended.error !== 'session_not_found') {
+      if (!ended.ok && !isSilentCommitRefusal(ended.error)) {
         throw new DiscussManagerError(ended.error, ended.detail);
       }
       return { shouldResume: ended.ok };
@@ -295,8 +295,15 @@ export async function runFollowUpTurns(
           ),
         ),
     }));
-    if (!committed.ok && committed.error !== 'session_not_found') {
-      throw new DiscussManagerError(committed.error, committed.detail);
+    if (!committed.ok) {
+      // A tolerated refusal (session gone, or its controller stopped for a shutdown/handoff
+      // drain) must exit this loop rather than fall through to the top: the snapshot and
+      // queue it would re-read are unchanged, so falling through re-issues the same
+      // collectFollowUpAnswer job launches every iteration with no progress possible.
+      if (!isSilentCommitRefusal(committed.error)) {
+        throw new DiscussManagerError(committed.error, committed.detail);
+      }
+      return { shouldResume: false };
     }
   }
 }

@@ -2,7 +2,6 @@ import type { TimePort } from '../../infra/port-types.js';
 import {
   ProviderOperationAtomicTerminalizationError,
   ProviderOperationTerminalMetadataError,
-  ProviderOperationTerminalizationUnavailableError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
 import type { HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
@@ -240,6 +239,7 @@ export type ProviderProxyRecoveryExactContext = Readonly<{
   operation?: OperationIdentity;
   setIdentity?: ProviderProxySetIdentity;
   capsule?: HandoffCapsuleV3;
+  retiredSources?: Set<string>;
 }>;
 
 export type ProviderProxyRecoverySource<ProducerId extends ProviderProxyRecoveryProducerId> = Readonly<{
@@ -480,9 +480,6 @@ function classifyRejection(
     return unavailable(producerId, foreignCapsuleRetirementRejection(error));
   }
   if (producerId === 'disappearance-terminalization') {
-    if (error instanceof ProviderOperationTerminalizationUnavailableError) {
-      return unavailable(producerId, error.incident);
-    }
     if (error instanceof ProviderOperationAtomicTerminalizationError) {
       return retrySafeTerminalizationUnknown(error);
     }
@@ -575,12 +572,24 @@ export function createProviderProxyRecoveryDispatcher(
   return {
     begin(seam, context, sinks) {
       let retired = false;
-      const aborters = new Set<(reason: unknown) => void>();
+      const aborters = new Map<string, (reason: unknown) => void>();
+      const retiredSources = context.retiredSources ?? new Set<string>();
+      const retiredSourceFatals = new Map<string, ProviderProxySetLifecycleFatalError>();
       const exactSources = new Map<string, Observation>();
       const reattachmentSources = new Map<string, Observation>();
-      const disposeCachedEvidence = (transferred?: Readonly<{ sourceId: string; value: unknown }>): void => {
+      const abortAll = (reason: unknown): void => {
+        for (const abort of aborters.values()) abort(reason);
+      };
+      const disposeCachedEvidence = ({
+        transferred,
+        sourceScope,
+      }: Readonly<{
+        transferred?: Readonly<{ sourceId: string; value: unknown }>;
+        sourceScope?: string;
+      }> = {}): void => {
         for (const sources of [exactSources, reattachmentSources]) {
           for (const [sourceId, observation] of sources) {
+            if (sourceScope !== undefined && sourceId !== sourceScope) continue;
             if (
               observation.kind === 'evidence' &&
               (transferred === undefined ||
@@ -589,19 +598,34 @@ export function createProviderProxyRecoveryDispatcher(
             ) {
               sinks.disposeLateEvidence?.(observation.value, sourceId);
             }
+            sources.delete(sourceId);
           }
-          sources.clear();
         }
       };
 
-      const retireFatal = (observation: Extract<Observation, { kind: 'corrupt' | 'refused' | 'unknown' }>): void => {
-        if (retired) return;
-        retired = true;
+      function retireFatal(
+        sourceId: string,
+        observation: Extract<Observation, { kind: 'corrupt' | 'refused' | 'unknown' }>,
+      ): void {
+        if (retired || retiredSources.has(sourceId)) return;
         const error = fatalError(seam, context, observation);
-        for (const abort of aborters) abort(error);
+        if (seam === 'control-reattachment' || seam === 'control-reattachment-hold') {
+          retiredSources.add(sourceId);
+          retiredSourceFatals.set(sourceId, error);
+          aborters.get(sourceId)?.(error);
+          disposeCachedEvidence({ sourceScope: sourceId });
+          try {
+            effects.fatal(sinks, error);
+          } finally {
+            reduceControlReattachment();
+          }
+          return;
+        }
+        retired = true;
+        abortAll(error);
         disposeCachedEvidence();
         effects.fatal(sinks, error);
-      };
+      }
 
       const reduceExactCapsule = (): void => {
         if (retired || exactSources.size < 2) return;
@@ -614,6 +638,7 @@ export function createProviderProxyRecoveryDispatcher(
           containmentProofRequiresReap(absence.value)
         ) {
           retireFatal(
+            'redemption',
             corrupt('capsule-redemption', new Error('provider_proxy_capsule_recovery_evidence_conflict')) as Extract<
               Observation,
               { kind: 'corrupt' }
@@ -623,12 +648,12 @@ export function createProviderProxyRecoveryDispatcher(
         }
         retired = true;
         if (redemption.kind === 'evidence') {
-          disposeCachedEvidence({ sourceId: 'redemption', value: redemption.value });
+          disposeCachedEvidence({ transferred: { sourceId: 'redemption', value: redemption.value } });
           sinks.evidence(redemption.value, 'redemption');
           return;
         }
         if (absence.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
-          disposeCachedEvidence({ sourceId: 'absence', value: absence.value });
+          disposeCachedEvidence({ transferred: { sourceId: 'absence', value: absence.value } });
           sinks.evidence(absence.value, 'absence');
           return;
         }
@@ -644,12 +669,12 @@ export function createProviderProxyRecoveryDispatcher(
         if (retired) return;
         retired = true;
         const reason = new Error(`provider_proxy_control_reattachment_decided:${sourceId}`);
-        for (const abort of aborters) abort(reason);
-        disposeCachedEvidence({ sourceId, value });
+        abortAll(reason);
+        disposeCachedEvidence({ transferred: { sourceId, value } });
         sinks.evidence(value, sourceId);
       };
 
-      const reduceControlReattachment = (): void => {
+      function reduceControlReattachment(): void {
         if (retired) return;
         const absence = reattachmentSources.get('absence');
         if (absence?.kind === 'evidence' && containmentProofRequiresReap(absence.value)) {
@@ -657,11 +682,13 @@ export function createProviderProxyRecoveryDispatcher(
           return;
         }
         const redemption = reattachmentSources.get('redemption');
-        if (redemption === undefined) return;
-        if (redemption.kind === 'evidence') {
+        if (redemption === undefined && !retiredSources.has('redemption')) return;
+        let redemptionUnavailable: Extract<Observation, { kind: 'unavailable' }> | undefined;
+        if (redemption?.kind === 'evidence') {
           const value = redemption.value;
           if (typeof value !== 'object' || value === null || !('kind' in value)) {
             retireFatal(
+              'redemption',
               unknown('role-control', new Error('provider_proxy_control_redemption_contract_violation')) as Extract<
                 Observation,
                 { kind: 'unknown' }
@@ -676,6 +703,7 @@ export function createProviderProxyRecoveryDispatcher(
           }
           if (outcome.kind !== 'unavailable') {
             retireFatal(
+              'redemption',
               unknown('role-control', new Error('provider_proxy_control_redemption_contract_violation')) as Extract<
                 Observation,
                 { kind: 'unknown' }
@@ -683,29 +711,40 @@ export function createProviderProxyRecoveryDispatcher(
             );
             return;
           }
-          if (absence === undefined) return;
+          redemptionUnavailable = unavailable('role-control', outcome.incident) as Extract<
+            Observation,
+            { kind: 'unavailable' }
+          >;
+        }
+        const redemptionSettled = redemption !== undefined || retiredSources.has('redemption');
+        const absenceSettled = absence !== undefined || retiredSources.has('absence');
+        if (!redemptionSettled || !absenceSettled) return;
+        if (retiredSources.has('redemption') && retiredSources.has('absence')) {
           retired = true;
-          for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
-          disposeCachedEvidence();
-          effects.retry(sinks, { producerId: 'role-control', incident: outcome.incident });
           return;
         }
-        if (redemption.kind === 'unavailable' && absence !== undefined) {
-          retired = true;
-          for (const abort of aborters) abort(new Error('provider_proxy_control_reattachment_retry'));
-          disposeCachedEvidence();
-          effects.retry(sinks, { producerId: redemption.producerId, incident: redemption.incident });
-        }
-      };
+        const unavailableObservation =
+          redemptionUnavailable ??
+          (redemption?.kind === 'unavailable' ? redemption : absence?.kind === 'unavailable' ? absence : undefined);
+        const sourceFatal = retiredSourceFatals.get('redemption') ?? retiredSourceFatals.get('absence');
+        const reason = new Error('provider_proxy_control_reattachment_retry');
+        retired = true;
+        abortAll(reason);
+        disposeCachedEvidence();
+        effects.retry(sinks, {
+          producerId: unavailableObservation?.producerId ?? sourceFatal?.producerId ?? 'role-control',
+          incident: unavailableObservation?.incident ?? sourceFatal ?? reason,
+        });
+      }
 
       const submit = (sourceId: string, observation: Observation): void => {
-        if (retired) {
+        if (retired || retiredSources.has(sourceId)) {
           if (observation.kind === 'evidence') sinks.disposeLateEvidence?.(observation.value, sourceId);
           return;
         }
         if (observation.kind === 'forwarded-fatal') {
           retired = true;
-          for (const abort of aborters) abort(observation.error);
+          abortAll(observation.error);
           disposeCachedEvidence();
           sinks.fatal(observation.error);
           return;
@@ -728,7 +767,7 @@ export function createProviderProxyRecoveryDispatcher(
             });
             return;
           }
-          retireFatal(observation);
+          retireFatal(sourceId, observation);
           return;
         }
         if (seam === 'exact-capsule-recovery') {
@@ -747,10 +786,7 @@ export function createProviderProxyRecoveryDispatcher(
           } else {
             effects.retry(sinks, {
               producerId: observation.producerId,
-              incident:
-                observation.kind === 'unavailable'
-                  ? observation.incident
-                  : { kind: observation.kind, proof: observation.proof },
+              incident: observation.kind === 'unavailable' ? observation.incident : observation.error,
             });
           }
           return;
@@ -760,19 +796,18 @@ export function createProviderProxyRecoveryDispatcher(
           sinks.evidence(observation.value, sourceId);
           return;
         }
+        // Constraint: a retry-safe uncertainty is reported by the error that proved it retry-safe. Replacing it
+        // with a label drops the cause, which is the only thing separating one retry-safe failure from another.
         effects.retry(sinks, {
           producerId: observation.producerId,
-          incident:
-            observation.kind === 'unavailable'
-              ? observation.incident
-              : { kind: observation.kind, proof: observation.proof },
+          incident: observation.kind === 'unavailable' ? observation.incident : observation.error,
         });
       };
 
       return {
         start(source) {
-          if (retired) return;
-          if (source.abort !== undefined) aborters.add(source.abort);
+          if (retired || retiredSources.has(source.sourceId)) return;
+          if (source.abort !== undefined) aborters.set(source.sourceId, source.abort);
           let produced: unknown;
           try {
             produced = invokeProducer(options.producers, source);
@@ -789,7 +824,7 @@ export function createProviderProxyRecoveryDispatcher(
         cancel(reason) {
           if (retired) return;
           retired = true;
-          for (const abort of aborters) abort(reason);
+          abortAll(reason);
           disposeCachedEvidence();
           sinks.cancel?.(reason);
         },

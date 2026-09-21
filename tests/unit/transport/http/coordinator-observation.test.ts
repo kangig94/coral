@@ -92,17 +92,20 @@ describe('observeCoordinator', () => {
     });
   });
 
-  // Both halves of the dead coordinator's identity, because `status` scopes a startup diagnostic by both: a
-  // pid is reused, so a pid alone admits an older run's diagnostic as this one's explanation. Dropping
-  // `startedAt` from this variant re-opened that while the comment at the call site still claimed it was shut.
-  it('reports a decisively gone process as an absence, naming the pid and when it started', () => {
-    mockState.read = { kind: 'record', record: record({ pid: 4242, startedAt: 1_700_000_000_000 }) };
+  // `getBackendStatusFull` may accept durable evidence only for this exact coordinator; omitting any recorded
+  // identity field lets a different run explain this one's absence.
+  it('reports a decisively gone process with its complete recorded identity', () => {
+    mockState.read = {
+      kind: 'record',
+      record: record({ pid: 4242, startedAt: 1_700_000_000_000, instanceId: 'dead-coordinator' }),
+    };
     mockState.liveness = 'absent';
 
     expect(observeCoordinator(runtime())).toEqual({
       kind: 'process-absent',
       pid: 4242,
       startedAt: 1_700_000_000_000,
+      instanceId: 'dead-coordinator',
     });
   });
 

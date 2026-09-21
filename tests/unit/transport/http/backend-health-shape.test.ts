@@ -57,6 +57,14 @@ const PROVIDER_PROXY_SET = {
   }),
   liveClaims: 0,
   operatorExit: { kind: 'contain' },
+  autonomousDisposition: {
+    kind: 'control-or-containment',
+    owner: 'coordinator',
+    boundMs: 60_000,
+    retryAction: 'recover-control-or-observe-exact-containment',
+    refusalSuccessor: 'automatic-retry',
+    terminalExit: 'control-reattached-or-containment-absent',
+  },
   holds: [PROVIDER_PROXY_SET_HOLD],
 } as const;
 
@@ -873,6 +881,39 @@ describe('/health typed shape (AC10a)', () => {
       skippedProviderProxySetRows: 1,
       skippedProviderProxySetTokens: [PROVIDER_PROXY_SET.setToken],
     });
+  });
+
+  // The fatally settled release is the one disposition whose refusal successor is not automatic retry, so the
+  // parser must admit it on its own terms and must not admit `not-refusable` on any other kind.
+  it('accepts the fatally settled representation release and refuses its successor elsewhere', () => {
+    const settledFatal = {
+      kind: 'representation-release-fatal',
+      owner: 'coordinator',
+      boundMs: 60_000,
+      retryAction: 'drop-representation-slot',
+      refusalSuccessor: 'not-refusable',
+      terminalExit: 'representation-released',
+    } as const;
+    const parseWith = (autonomousDisposition: unknown) =>
+      parseBackendHealth({
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, autonomousDisposition }] },
+      });
+
+    expect(parseWith(settledFatal)).toEqual({
+      health: {
+        ...HEALTHY_BASE,
+        diagnostics: { providerProxySets: [{ ...PROVIDER_PROXY_SET, autonomousDisposition: settledFatal }] },
+      },
+      skippedProviderProxySetRows: 0,
+      skippedProviderProxySetTokens: [],
+    });
+    expect(parseWith({ ...settledFatal, retryAction: 'release-representation' })).toMatchObject({
+      skippedProviderProxySetRows: 1,
+    });
+    expect(parseWith({ ...PROVIDER_PROXY_SET.autonomousDisposition, refusalSuccessor: 'not-refusable' })).toMatchObject(
+      { skippedProviderProxySetRows: 1 },
+    );
   });
 
   it('skips malformed provider proxy set rows but still rejects a non-array collection', () => {

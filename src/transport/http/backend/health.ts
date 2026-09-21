@@ -12,6 +12,7 @@ import {
   PROVIDER_PROXY_SET_OPERATOR_EXIT_KINDS,
   PROVIDER_PROXY_SET_OPERATOR_EXIT_REFUSAL_GROUNDS,
   type ProviderProxySetOperatorDisposition,
+  type ProviderProxySetAutonomousDisposition,
   type ProviderProxySetDurableDispositionSkipStatus,
   type ProviderProxySetOperatorExit,
   type ProviderProxySetOperatorExitKind,
@@ -157,7 +158,6 @@ export type ProviderProxySetRowSkip = Readonly<{
   }> | null;
 }>;
 
-/** A decoded health payload plus any provider-proxy rows omitted because this build cannot interpret them. */
 export type BackendHealthParseResult = Readonly<{
   health: BackendHealth;
   skippedProviderProxySetRows: number;
@@ -273,6 +273,60 @@ function parseProviderProxySetOperatorExit(value: unknown): ProviderProxySetOper
         : null;
     default:
       return assertNever(kind);
+  }
+}
+
+function parseProviderProxySetAutonomousDisposition(value: unknown): ProviderProxySetAutonomousDisposition | null {
+  if (value === undefined) return { kind: 'unavailable' };
+  if (!isRecord(value) || typeof value.kind !== 'string') return null;
+  if (value.kind === 'inactive' || value.kind === 'unavailable') return { kind: value.kind };
+  if (value.owner !== 'coordinator' || !isNonNegativeFiniteNumber(value.boundMs)) return null;
+  if (value.refusalSuccessor !== 'automatic-retry') {
+    return value.kind === 'representation-release-fatal' &&
+      value.refusalSuccessor === 'not-refusable' &&
+      value.retryAction === 'drop-representation-slot' &&
+      value.terminalExit === 'representation-released'
+      ? {
+          kind: value.kind,
+          owner: 'coordinator',
+          boundMs: value.boundMs,
+          retryAction: value.retryAction,
+          refusalSuccessor: value.refusalSuccessor,
+          terminalExit: value.terminalExit,
+        }
+      : null;
+  }
+  const common = {
+    owner: 'coordinator' as const,
+    boundMs: value.boundMs,
+    refusalSuccessor: 'automatic-retry' as const,
+  };
+  switch (value.kind) {
+    case 'control-or-containment':
+      return value.retryAction === 'recover-control-or-observe-exact-containment' &&
+        value.terminalExit === 'control-reattached-or-containment-absent'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'exact-containment':
+      return value.retryAction === 'observe-exact-containment' && value.terminalExit === 'containment-absent'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'representation-release':
+      return value.retryAction === 'release-representation' && value.terminalExit === 'representation-released'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'durable-reconciliation':
+      return value.retryAction === 'reconcile-durable-disposition' &&
+        value.terminalExit === 'durable-reconciliation-terminal'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    case 'publication-recovery':
+      return value.retryAction === 'confirm-publication-or-release-control' &&
+        value.terminalExit === 'publication-confirmed-or-control-released'
+        ? { kind: value.kind, ...common, retryAction: value.retryAction, terminalExit: value.terminalExit }
+        : null;
+    default:
+      return null;
   }
 }
 
@@ -431,8 +485,9 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       continue;
     }
     const operatorExit = parseProviderProxySetOperatorExit(entry.operatorExit);
+    const autonomousDisposition = parseProviderProxySetAutonomousDisposition(entry.autonomousDisposition);
     const holds = entry.holds.map(parseProviderProxySetHold);
-    if (operatorExit === null || holds.some((hold) => hold === null)) {
+    if (operatorExit === null || autonomousDisposition === null || holds.some((hold) => hold === null)) {
       skippedRows.push({ reason: 'unsupported-row', setToken, setIdentity });
       skippedSetTokens.push(setToken);
       continue;
@@ -442,6 +497,7 @@ function parseProviderProxySets(value: unknown): ProviderProxySetsParseResult | 
       setToken,
       liveClaims: entry.liveClaims,
       operatorExit,
+      autonomousDisposition,
       holds: holds as ProviderProxySet['holds'],
     });
   }
@@ -724,8 +780,8 @@ function isSystemProviderScope(value: unknown): value is NonNullable<BackendHeal
 }
 
 export function parseBackendHealth(value: unknown): BackendHealthParseResult | null {
+  if (!isRecord(value)) return null;
   if (
-    !isRecord(value) ||
     (value.status !== 'starting' && value.status !== 'ok' && value.status !== 'draining') ||
     !isKernel(value.kernel) ||
     typeof value.version !== 'string' ||

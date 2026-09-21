@@ -1,7 +1,15 @@
 # Work and design records
 
-Open entries record something deliberately **not** done and why. Implemented, closed, or dormant entries
-remain indexed as design records when their constraints or decisions still matter.
+An entry records work that is **not implemented** and why — a gap, or a design worked out but not built.
+
+The test for keeping an entry is implementation, not a label:
+
+- **Implemented — delete it.** The code is the record. Reasoning that outlives the entry moves to
+  `docs/design-rationale.md` or to a principle in `.claude/rules/design-philosophy.md` first.
+- **A design not yet built — keep it.** The work is still owed, so the entry is still the record of it.
+- **Partly implemented — rewrite it down to what is left.** Delete the half that shipped, including the
+  symptom that opened it, and keep only the part still owed, stated as what it is now rather than as
+  history. An entry whose text is mostly what was already done is an implemented entry with a tail.
 
 Grouped by the concept whose absence produced the members — not by which command or file they touch.
 Two entries that look alike often need opposite fixes, and two that look unrelated often close together.
@@ -146,6 +154,19 @@ session, and a mixed window called "permitted by design" — so its corrections 
 
 ---
 
+## Store-epoch mutation edges
+
+| | |
+| --- | --- |
+| [`partially-erased-store-epoch-reaping-residue.md`](./partially-erased-store-epoch-reaping-residue.md) | A `.reaping-<uuid>` directory whose lock is already gone but whose other entries remain cannot be reclaimed by the safe empty-directory `rmdir`; recursive deletion needs a new ownership proof. |
+| [`store-epoch-minting-under-sustained-external-interference.md`](./store-epoch-minting-under-sustained-external-interference.md) | The repaired writer/reclaimer race relies on one reclaimer snapshot. A hostile co-tenant or concurrent manual sweeps can still starve minting; closing that requires a fence that exists before the writer's first artifact. |
+| [`write-atomic-durable-sync-result-overloads-two-dispositions.md`](./write-atomic-durable-sync-result-overloads-two-dispositions.md) | `writeAtomicDurableSyncNode` returns one `false` for a lost private-artifact race and for a post-rename directory-sync failure. Replace the boolean with dispositions without turning unproven durability into a retry. |
+
+These do not close together. The first needs ownership for residue whose lock is gone; the second needs
+pre-artifact exclusion against a reclaimer; the third changes the storage-port result every caller consumes.
+
+---
+
 ## The CLI has no machine channel
 
 |                                                                  |                                                                                                                                                                                                                                                                                                   |
@@ -175,7 +196,7 @@ landing does not unblock it — that was the record direction.
 
 |                                                                                  |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) | The KB daemon has no enforcer outside its own process.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| [`kb-daemon-independent-containment.md`](./kb-daemon-independent-containment.md) | The KB daemon's terminal window works only while its own event loop turns, parent escalation dies with the coordinator, and detached descendants have no recorded containment. Give the daemon and the children it launches one independently enforced lifetime, then prove it with a process-level test. |
 | [`darwin-signal-authority.md`](./darwin-signal-authority.md)                     | **Signal authority is closed; platform support remains constrained.** A Darwin process incarnation cannot authorize a signal. Live-child authority permits teardown while the child remains uncollected; recovered containment retains a non-success disposition, and provider-host admission is Linux-only because a launch can require teardown before child authority is available. Supporting either fail-closed case requires a stronger macOS identity source or another accepted owner. |
 | [`coordinator-process-disposition.md`](./coordinator-process-disposition.md)     | **A quarantine that releases the job's only owner is not better than terminalizing it** — which is why the repairable-binding quarantine was reverted rather than kept. Recovery commits its disposition before process-local cleanup, and that cleanup drops the `RecoveryRegistry` entry unconditionally, so a quarantined job with a live carrier has no owner and `jobs abort` cannot reach it. Custody must transfer by verified receipt before ownership is released, and process absence must become a completion obligation ahead of terminal and claim-release facts.                                                                                                                                        |
 | [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md)         | Every self-termination path Coral has is scheduled by the process it is meant to end. The 6h idle drain is tidiness for a healthy daemon, not a liveness backstop — reading it as one is what produced this entry.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -190,6 +211,32 @@ parent that can accept custody; a wedged coordinator is the top of the tree, so 
 process-lifetime guarantee whose whole premise is that the closer may already be dead; the other
 requires closing synchronously and then draining what acquired before the close. A shared primitive
 would have to satisfy both, and their requirements are opposites.
+
+---
+
+## What a shutdown leaves behind
+
+Added 2026-09-17 from PR #363, which made a drain end by itself: the coordinator releases what it holds and
+exits, and everything it leaves is owned by a durable successor or named as lost in one record. The
+entries are what that change could see from where it stood and deliberately did not do. They share the
+premise — nobody is watching, so the process's own exit is the only exit — and not a fix. The remaining work
+separates exit-path stalls, cross-successor recurrence, live held-state visibility, wire refusals, terminal
+classification, test isolation, durable abandonment, and work admitted after a session abort.
+
+|                                                                                                                              |                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`discovery-withdrawal-is-unbounded-on-the-exit-path.md`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md)           | **A stated exception with no home until now.** The synchronous finalizer's last act is a `readFileSync` and an `unlinkSync` on the discovery record, uninterruptible from inside the process. A helper process was designed and rejected because the unguarded withdrawal one line later shares the journal. The decision underneath is whether the record is withdrawn by its writer or expired by its next reader, as the socket already is.               |
+| [`reproducible-fatal-successor-loop.md`](./reproducible-fatal-successor-loop.md)                                             | **Inherited and bounded, cheaper than it was.** A guardian answering out of contract produces the same fatal in every successor that redeems its capsule, until the enforcers observe the holder absent and reap the set. Under hard mode each iteration also reaped every healthy set; under handoff it costs the bad set and one CLI invocation. Ending it earlier means retiring on evidence the fatal says cannot be interpreted.                       |
+| [`shutdown-remainder-has-no-reader.md`](./shutdown-remainder-has-no-reader.md)                                               | **Track B of #357 plus one generic hold gap.** Project a live held boundary's existing reason and exit through health without inventing `transfer-pending`; separately, make the settlement ledger's fallback retry keep the process alive or require every boundary to supply a guarded `retryAfter`. |
+| [`a-lifecycle-refusal-rides-a-success-envelope.md`](./a-lifecycle-refusal-rides-a-success-envelope.md) | **Older than the branch that named it.** A request refused for a draining lifecycle is answered as a JSON-RPC success whose body carries the refusal; only a client that tests the body sees it. `main` did this at two sites, and the drain branch gave it one home and a tolerant matcher rather than changing it. Moving to an error envelope is a decision every released CLI meets. |
+| [`provider-operation-terminalization-failure-classification.md`](./provider-operation-terminalization-failure-classification.md) | **Filed, not implemented here.** The existing terminalization catch can preserve three observable answers: journal corruption, a store refusal carrying `errcode`, and a terminal this build's own validators reject. `withImmediate` already exposes entry lock refusal because `BEGIN IMMEDIATE` is outside its `try`; `validateJobTerminalOrder` is the reachable deterministic member, and `local-recovery-pending` is its already-named successor. |
+| [`hook-unit-tests-reach-the-real-coral-home.md`](./hook-unit-tests-reach-the-real-coral-home.md) | **`npm test` is not side-effect-free here.** `runHook` copies `process.env` and deletes six variables but not `HOME`, so hook fixtures spawn backends against the developer's own `~/.coral`; 108 of their `MODULE_NOT_FOUND` crashes were found in the live coordinator's log. The crashes are harmless — the spawn that does not crash is the hazard. |
+| [`representation-release-notice-as-a-durable-phase.md`](./representation-release-notice-as-a-durable-phase.md) | **Narrowed to abandonment.** Disappearance is an observation startup already re-derives and must not be stored. Abandonment is a decision and belongs as a third `controlIntent`, written before release and derived at terminalization like abort and rekey refusal; that shape deletes the abandonment latch, consumer literal, delivery helper, and recovery producer. The abort-fence obstacle is withdrawn, and generation 3 is still unreleased as of 2026-09-21, so changing v3 before the next release needs no bump. |
+| [`agent-attempts-ignore-the-session-abort.md`](./agent-attempts-ignore-the-session-abort.md) | **Bounded by the same round's fix, which is why it is an entry.** `executeAgentAttempt` never reads the live controller's signal — the module contains no `aborted` at all — and an abort does not remove the snapshot its guards test, so a drain still buys one job launch per session whose result `commitDecision` then refuses. Where the check belongs is the decision: the function takes a session id, not a controller, and its existing snapshot guard already answers a different disposition through the same value. |
+
+The first shares its cause with `wedged-coordinator-self-drain` and ships after that entry picks a half. The
+second is adjacent to both capsule-retirement entries — the same question of what may retire a capsule when no
+observation decides — and is now observable through the no-daemon reader.
 
 ---
 
@@ -243,6 +290,7 @@ covered, and what it costs is the effort of the next person to change it safely.
 |                                                                                    |                                                                                                                                                                                                                                                                                                                                                              |
 | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`status-prints-history-it-should-not-carry.md`](./status-prints-history-it-should-not-carry.md) | `backend status` collapses routing history past a render threshold instead of not carrying it. The classification is now the domain's, but the threshold is a number the output shape changes at; the form without one moves history to an inspection verb. Carries a second member: a capacity-eviction tombstone is a hold that prints its own command, so the ceiling wants a bulk `resolve`, never a narrower render. |
+| [`provider-operation-last-error-overloads-two-dispositions.md`](./provider-operation-last-error-overloads-two-dispositions.md) | **One field holds a diagnostic and a terminal's input.** `providerHostUnserviceableLastError` encodes the host ref and remediation as prefixed JSON inside `lastError.message`, and `terminalizeProviderOperation` parses them back out. Every writer of a failed attempt has to carry the same preservation guard, and nothing in the field's type says why. The fix is a home of its own on the record — additive, but a generation question because the schema is `.strict()`. |
 | [`hand-rolled-timeout-latches.md`](./hand-rolled-timeout-latches.md)               | **One shape written three ways, and the latch is where it went wrong once already.** `runPreflightWithTimeout`, `withDiscussLaunchTimeout` and `raceTimeout` each settle from two callbacks behind a `settled` boolean where `Promise.race` with a `finally` would say it structurally. Carries a second member: the Claude settings scan does four things in one loop, and the read-error precedence that matters is hidden in a `??=`. |
 
 ---
@@ -291,6 +339,7 @@ guard stayed where it was.
 | [`source-import-converter-cohesion.md`](./source-import-converter-cohesion.md) | **Startable now.** Five concerns at one layer in a 1058-line file; four converter classes are the documented subdivision trigger. A local fix improved its functions and grew the file — that is the datum.  |
 | [`invariant-path-literals-go-stale-silently.md`](./invariant-path-literals-go-stale-silently.md) | **Startable now; reproduced.** An equality-matched store path survived the store's move, matched no import edge, and left the layering invariant green; an injected forbidden import proved the guard was a no-op. The open choice is shared path-existence checks, local component-prefix rules, or graph-derived targets. This is about a literal inside a scan, not the scan-root gap in the next row. |
 | [`invariant-scans-stop-at-src.md`](./invariant-scans-stop-at-src.md)           | **Startable now.** One of two scans extended to `clients/hooks/` and found nothing; the other needs its detector taught a second idiom first. Measurement already done: three files, one alternate spelling. |
+| [`shutdown-remainder-tests-pin-the-whole-status.md`](./shutdown-remainder-tests-pin-the-whole-status.md) | **The transport-suite sweep remains.** Narrow each full-result `toEqual` whose test name claims one shutdown-remainder property; keep intentional full-union shape freezes explicit. |
 
 ---
 
@@ -302,7 +351,7 @@ a file nobody reads.
 
 |                                                                            |                                                                                                                                                                                                                                                                                                                                          |
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`comment-sweep-bug-ledger.md`](./comment-sweep-bug-ledger.md)             | **Open and accumulating.** Defects the comment-rot sweep found in code it walked for other reasons, recorded rather than fixed so a comment-only diff stays reviewable. A flat list of unrelated findings across fourteen sectors, most documentation-only or latent. An entry someone acts on is struck; one that needs its own argument graduates to a conforming entry. |
+| [`comment-sweep-bug-ledger.md`](./comment-sweep-bug-ledger.md)             | **Ten findings remain.** The implemented and disproven members were removed. What remains spans ambiguous file-identity names, one sessions-layering breach, swallowed artifact invariants, unresolvable spec labels, duplicated health and IPC error shapes, duplicated curate cleanup, an unbuilt community-summary job path, incomplete discuss parity coverage, and dead simulation sub-tick state. |
 
 ---
 

@@ -156,6 +156,18 @@ export async function clearAllDiscuss(
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const signal = options.signal;
+  // Abort every live session's controller in one synchronous pass before any of the
+  // async persistence work below runs: a `continueLoop` commit racing this shutdown can
+  // only observe the aborted signal (via commitDecision's own guard) if this pass has
+  // already run, so it must not be interleaved with an await.
+  for (const context of registry.contexts.values()) {
+    for (const session of context.sessions.values()) {
+      if (!session.controller.signal.aborted) {
+        session.controller.abort();
+      }
+    }
+  }
+
   for (const context of registry.contexts.values()) {
     if (signal !== undefined) {
       throwIfAborted(signal, 'discuss_shutdown_context');
@@ -177,9 +189,6 @@ export async function clearAllDiscuss(
         if (signal !== undefined) {
           throwIfAborted(signal, 'discuss_shutdown_persist');
         }
-      }
-      if (!session.controller.signal.aborted) {
-        session.controller.abort();
       }
     }
     context.sessions.clear();

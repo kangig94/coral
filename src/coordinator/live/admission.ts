@@ -122,13 +122,20 @@ export class DuplicateLaunchReservationError extends Error {
   }
 }
 
-export type TerminateAllDisposition =
-  | Readonly<{ kind: 'all-observed-absent' }>
+export type PendingLaunchSettlementDisposition =
+  | Readonly<{ kind: 'all-pending-launches-settled' }>
   | Readonly<{
-      kind: 'unresolved-at-deadline';
-      processes: readonly Exclude<DurableProcessCleanupOutcome, { kind: 'observed-absent' }>[];
+      kind: 'pending-launches-unresolved-at-deadline';
       pendingLaunches: number;
       retainedLaunches: readonly PendingDurableLaunchIdentity[];
+      owner: 'launch-coordinator';
+    }>;
+
+export type ChildTerminationDisposition =
+  | Readonly<{ kind: 'all-children-observed-absent' }>
+  | Readonly<{
+      kind: 'children-unresolved-at-deadline';
+      processes: readonly Exclude<DurableProcessCleanupOutcome, { kind: 'observed-absent' }>[];
       cleanupHandles: number;
       retainedProcesses: readonly DurableProcessRetention[];
       cleanupFailures: number;
@@ -762,9 +769,43 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return this.operationBindings.delete(key);
   }
 
-  async terminateAll(signal?: AbortSignal): Promise<TerminateAllDisposition> {
+  async settlePendingLaunches(signal?: AbortSignal): Promise<PendingLaunchSettlementDisposition> {
     this.shutdownRequested = true;
     this.drainQueuedLaunches(QUEUE_DRAINED_MESSAGE);
+    const pendingLaunches = [...this.pendingDurableLaunches];
+    if (pendingLaunches.length === 0) return { kind: 'all-pending-launches-settled' };
+
+    const aborted = Symbol('aborted');
+    let resolveAborted: ((value: typeof aborted) => void) | null = null;
+    const abort =
+      signal === undefined
+        ? null
+        : new Promise<typeof aborted>((resolve) => {
+            resolveAborted = resolve;
+          });
+    const onAbort = (): void => resolveAborted?.(aborted);
+    if (signal?.aborted === true) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+
+    try {
+      const settlements = Promise.all(pendingLaunches.map((launch) => launch.settled));
+      const joined = abort === null ? await settlements : await Promise.race([settlements, abort]);
+      if (joined !== aborted) return { kind: 'all-pending-launches-settled' };
+
+      const retainedLaunches = pendingLaunches.filter((launch) => this.pendingDurableLaunches.has(launch));
+      if (retainedLaunches.length === 0) return { kind: 'all-pending-launches-settled' };
+      return {
+        kind: 'pending-launches-unresolved-at-deadline',
+        pendingLaunches: retainedLaunches.length,
+        retainedLaunches: retainedLaunches.map((launch) => launch.retainedIdentity()),
+        owner: 'launch-coordinator',
+      };
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
+    }
+  }
+
+  async terminateRegisteredChildren(signal?: AbortSignal): Promise<ChildTerminationDisposition> {
     const failures = new Map<DurableProcessCleanup, unknown>();
     const unsettled = new Map<
       DurableProcessCleanup,
@@ -781,14 +822,12 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const onAbort = (): void => resolveAborted?.(aborted);
     if (signal?.aborted === true) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
-    const dispositionAtDeadline = (): TerminateAllDisposition =>
-      this.pendingDurableLaunches.size === 0 && this.cleanupHandles.size === 0
-        ? { kind: 'all-observed-absent' }
+    const dispositionAtDeadline = (): ChildTerminationDisposition =>
+      this.cleanupHandles.size === 0
+        ? { kind: 'all-children-observed-absent' }
         : {
-            kind: 'unresolved-at-deadline',
+            kind: 'children-unresolved-at-deadline',
             processes: [...unsettled.values()],
-            pendingLaunches: this.pendingDurableLaunches.size,
-            retainedLaunches: [...this.pendingDurableLaunches].map((launch) => launch.retainedIdentity()),
             cleanupHandles: this.cleanupHandles.size,
             retainedProcesses: [...new Set(this.cleanupHandles.values())].flatMap((cleanup) => {
               const retention = this.cleanupRetentions.get(cleanup);
@@ -842,14 +881,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     };
 
     try {
-      while (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
-        if (this.pendingDurableLaunches.size > 0) {
-          const pendingSettlements = Promise.all([...this.pendingDurableLaunches].map((launch) => launch.settled));
-          const joined = abort === null ? await pendingSettlements : await Promise.race([pendingSettlements, abort]);
-          if (joined === aborted) return dispositionAtDeadline();
-          continue;
-        }
-
+      while (this.cleanupHandles.size > 0) {
         const attempts: Array<{ cleanup: DurableProcessCleanup; task: Promise<DurableProcessCleanupOutcome> }> = [];
         const seen = new Set<DurableProcessCleanup>();
         for (const cleanup of this.cleanupHandles.values()) {
@@ -876,14 +908,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
           void consumeOutcome(attempt.cleanup, attempt.task, outcome);
         }
 
-        if (this.pendingDurableLaunches.size > 0 || this.cleanupHandles.size > 0) {
+        if (this.cleanupHandles.size > 0) {
           const retryDelay = this.runtime.time.sleep(TERMINATION_RETRY_INTERVAL_MS).then(() => undefined);
           const retry = abort === null ? await retryDelay : await Promise.race([retryDelay, abort]);
           if (retry === aborted) return dispositionAtDeadline();
         }
       }
 
-      return { kind: 'all-observed-absent' };
+      return { kind: 'all-children-observed-absent' };
     } finally {
       signal?.removeEventListener('abort', onAbort);
     }

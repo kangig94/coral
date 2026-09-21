@@ -6,7 +6,7 @@ import { errorMessage } from '../../../infra/error-format.js';
 import { PURPOSE_SYNTHESIS, runFacilitatorTurn } from '../runtime-build.js';
 import { type DiscussContext } from '../types.js';
 import { DiscussManagerError } from '../errors.js';
-import { commitDecision, loadAttachedOrPersistedSnapshot } from '../persistence.js';
+import { commitDecision, isSilentCommitRefusal, loadAttachedOrPersistedSnapshot } from '../persistence.js';
 import { detachSession } from '../registry.js';
 import { writeDiscussRecord } from '../../transcript-export.js';
 import {
@@ -83,7 +83,7 @@ async function commitFallbackSynthesis(ctx: DiscussContext, sessionId: string, d
       ctxTs(ctx),
     ),
   );
-  if (!committed.ok && committed.error !== 'session_not_found') {
+  if (!committed.ok && !isSilentCommitRefusal(committed.error)) {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
   if (!committed.ok) {
@@ -143,7 +143,7 @@ export async function handleSynthesis(
         ctxTs(ctx),
       ),
     );
-    if (!committed.ok && committed.error !== 'session_not_found') {
+    if (!committed.ok && !isSilentCommitRefusal(committed.error)) {
       throw new DiscussManagerError(committed.error, committed.detail);
     }
     if (committed.ok) {

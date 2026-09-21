@@ -6,7 +6,7 @@ import type { InvocationContext } from '../../runtime/invocation-context.js';
 import { hasActiveBidWork, hasPendingAutoBidders, isManualParticipant } from './runtime-build.js';
 import { type DiscussContext } from './types.js';
 import { DiscussManagerError } from './errors.js';
-import { commitDecision } from './persistence.js';
+import { commitDecision, isSilentCommitRefusal } from './persistence.js';
 import { collectBids } from './flow/bid.js';
 import { collectSpeech } from './flow/speech.js';
 import { handleEpochTransition, runFollowUpTurns } from './flow/followup.js';
@@ -60,7 +60,7 @@ async function handleBidRoundClose(
   if (resolved.error === 'quorum_not_met') {
     return collectBids(ctx, sessionId, invocationCtx);
   }
-  if (resolved.error === 'session_not_found') {
+  if (isSilentCommitRefusal(resolved.error)) {
     return { shouldResume: false };
   }
   throw new DiscussManagerError(resolved.error, resolved.detail);
@@ -82,7 +82,7 @@ async function forceEndAfterLoopFailure(ctx: DiscussContext, sessionId: string, 
       nowIsoString(ctx.runtime.time),
     ),
   );
-  if (!committed.ok && committed.error !== 'session_not_found') {
+  if (!committed.ok && !isSilentCommitRefusal(committed.error)) {
     throw new DiscussManagerError(committed.error, committed.detail);
   }
 }

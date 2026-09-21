@@ -34,6 +34,7 @@ import { readDiscussEventLog } from '#src/discuss/read-queries.js';
 import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 import { decideSessionCreate } from '#src/discuss/state-machine.js';
 import { createDiscussContextRegistry } from '#src/discuss/shell/live-registry.js';
+import * as discussLoop from '#src/discuss/shell/loop.js';
 import { JobStore } from '#src/jobs/store.js';
 import type { LaunchPool } from '#src/jobs/contracts/admission.js';
 import { jobsRegistry } from '#src/jobs/events.js';
@@ -480,7 +481,7 @@ describe('execution backend server', () => {
   afterEach(async () => {
     if (controller && controller.getLifecycle() !== 'stopped') {
       try {
-        await controller.shutdown('test');
+        await controller.shutdown('test-teardown');
       } catch {
         /* best effort */
       }
@@ -1837,7 +1838,7 @@ describe('execution backend server', () => {
         owner: 'provider-host-manager',
         settlement: hold.settled,
       }));
-      await backend.controller.shutdown('test');
+      await backend.controller.shutdown('test-teardown');
       await backend.controller.waitForShutdown();
     }
   });
@@ -6011,17 +6012,20 @@ describe('execution backend server', () => {
   describe('shutdown policy', () => {
     it('handoff shutdown preserves children and does not mark jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
-      const terminateAllFn = vi.fn(() => ({ kind: 'all-observed-absent' as const }));
+      const settlePendingLaunchesFn = vi.fn(() => ({ kind: 'all-pending-launches-settled' }) as const);
+      const terminateRegisteredChildrenFn = vi.fn(() => ({ kind: 'all-children-observed-absent' }) as const);
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
-        terminateAllFn,
+        settlePendingLaunchesFn,
+        terminateRegisteredChildrenFn,
       });
 
       await backend.controller.shutdown('replaced');
       await backend.controller.waitForShutdown();
 
-      expect(terminateAllFn).not.toHaveBeenCalled();
+      expect(settlePendingLaunchesFn).not.toHaveBeenCalled();
+      expect(terminateRegisteredChildrenFn).not.toHaveBeenCalled();
       expect(markJobsAsErrorFn).not.toHaveBeenCalled();
     });
 
@@ -6122,8 +6126,10 @@ describe('execution backend server', () => {
           writeBackendInfoFn: vi.fn(),
           removeBackendInfoIfOwnerFn: () => {},
           cleanupStaleJobsFn: () => {},
+          readSelfIncarnationFn: () => null,
           markJobsAsErrorFn: vi.fn(),
-          terminateAllFn: vi.fn(() => ({ kind: 'all-observed-absent' as const })),
+          settlePendingLaunchesFn: vi.fn(() => ({ kind: 'all-pending-launches-settled' }) as const),
+          terminateRegisteredChildrenFn: vi.fn(() => ({ kind: 'all-children-observed-absent' }) as const),
           providerHostManager: providerHostManager as never,
           kbDaemonSupervisor,
           handoffQuiescePorts: () => [fakeService as never],
@@ -6159,23 +6165,29 @@ describe('execution backend server', () => {
 
     it('hard shutdown completes after child absence is confirmed and marks jobs as error', async () => {
       const markJobsAsErrorFn = vi.fn();
-      const terminateAllFn = vi.fn(async () => ({ kind: 'all-observed-absent' as const }));
+      const settlePendingLaunchesFn = vi.fn(async () => ({ kind: 'all-pending-launches-settled' }) as const);
+      const terminateRegisteredChildrenFn = vi.fn(async () => ({ kind: 'all-children-observed-absent' }) as const);
       const providerHostManager = createFakeProviderHostManager();
 
       const backend = await startBackendServer({
         markJobsAsErrorFn,
-        terminateAllFn,
+        settlePendingLaunchesFn,
+        terminateRegisteredChildrenFn,
         providerHostManager: providerHostManager as never,
       });
 
       await backend.controller.shutdown('sigint');
       await backend.controller.waitForShutdown();
 
-      expect(terminateAllFn).toHaveBeenCalledTimes(1);
+      expect(settlePendingLaunchesFn).toHaveBeenCalledOnce();
+      expect(terminateRegisteredChildrenFn).toHaveBeenCalledOnce();
+      expect(settlePendingLaunchesFn.mock.invocationCallOrder.at(0) ?? Number.POSITIVE_INFINITY).toBeLessThan(
+        terminateRegisteredChildrenFn.mock.invocationCallOrder.at(0) ?? Number.POSITIVE_INFINITY,
+      );
       expect(markJobsAsErrorFn).toHaveBeenCalledTimes(1);
       expect(providerHostManager.shutdown).toHaveBeenCalledTimes(1);
       const hostShutdownOrder = providerHostManager.shutdown.mock.invocationCallOrder.at(0);
-      const childKillOrder = terminateAllFn.mock.invocationCallOrder.at(0);
+      const childKillOrder = terminateRegisteredChildrenFn.mock.invocationCallOrder.at(0);
       const terminalizationOrder = markJobsAsErrorFn.mock.invocationCallOrder.at(0);
       expect(hostShutdownOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(childKillOrder ?? Number.POSITIVE_INFINITY);
       expect(childKillOrder ?? Number.POSITIVE_INFINITY).toBeLessThan(terminalizationOrder ?? Number.POSITIVE_INFINITY);
@@ -6280,6 +6292,16 @@ describe('execution backend server', () => {
         }),
       });
 
+      // Must stay unresolved until after the forced-abort assertions below: `resumeLoop`'s
+      // own continuation is an unsynchronised real timer, and releasing it earlier lets
+      // startup-candidate's natural completion race the forced shutdown for the same
+      // session's decision commit.
+      const naturalCompletionGate = createDeferred();
+      const originalResumeLoop = discussLoop.resumeLoop;
+      vi.spyOn(discussLoop, 'resumeLoop').mockImplementation((ctx, sessionId, invocationCtx) => {
+        void naturalCompletionGate.promise.then(() => originalResumeLoop(ctx, sessionId, invocationCtx));
+      });
+
       controller = serverModule.createCoordinatorServer({
         bootSnapshot: {
           instanceId: 'execution-backend-instance-1',
@@ -6323,6 +6345,7 @@ describe('execution backend server', () => {
       expect(terminalHistoryEvents.at(-1)?.kind).toBe('session.synthesized');
       expect(startupRegistry.contexts.size).toBe(0);
 
+      naturalCompletionGate.resolve();
       releaseStartup.resolve();
       const startResult = await startPromise;
       // The KB daemon starts after `running` and does not gate start()'s return
@@ -6338,7 +6361,7 @@ describe('execution backend server', () => {
         ...context.sessions.keys(),
       ]);
       expect(restartedSessions).not.toContain('startup-candidate');
-      await restarted.controller.shutdown('test');
+      await restarted.controller.shutdown('test-teardown');
       await restarted.controller.waitForShutdown();
     });
   });
@@ -6571,7 +6594,7 @@ describe('execution backend server', () => {
         },
       });
       expect(createSessionManager(projectRoot).get('codex', session.sessionId)?.activeJobId).toBeUndefined();
-      await backend.controller.shutdown('test');
+      await backend.controller.shutdown('test-teardown');
       await backend.controller.waitForShutdown();
     });
 
@@ -6661,7 +6684,7 @@ describe('execution backend server', () => {
 
       const recoveredSession = createSessionManager(projectRoot).get('codex', session.sessionId);
       expect(recoveredSession?.activeJobId).toBeUndefined();
-      await backend.controller.shutdown('test');
+      await backend.controller.shutdown('test-teardown');
       await backend.controller.waitForShutdown();
     });
   });

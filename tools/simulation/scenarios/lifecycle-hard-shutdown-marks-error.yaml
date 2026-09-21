@@ -27,7 +27,7 @@ steps:
     stepMs: 5
     maxSteps: 5
   - type: shutdown
-    reason: crash
+    reason: simulation-shutdown
   - type: expect
     phase: error
     runtimeRecorded: true

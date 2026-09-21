@@ -469,7 +469,73 @@ The pattern is:
 
 This mirrors the larger architecture: authorities stay distinct, canonical homes stay singular, and composition happens at explicit seams instead of through convenient ambiguity.
 
-## 12. Cross-References
+## 12. Shutdown Without an Operator
+
+[`design-philosophy`](../.claude/rules/design-philosophy.md) §12 states the constraint: nobody is on the machine where the failure happens, so a state that waits for a person is a hang. The mechanics of the shutdown ledger, the two remainder owners, and the remainder record are in [`docs/architecture.md`](architecture.md) ("Shutdown settlement and what the process leaves"). This section records why they have that shape, because each was argued against a plausible alternative and the alternatives will be proposed again.
+
+### 12.1 Why a provider-proxy lifecycle fatal takes handoff
+
+The shutdown mode is not a property of _why_ the coordinator exits but of _whether this coordinator may execute destruction on its own judgement_. Hard mode's exclusive acts in `buildHardShutdownConsequences` (`src/coordinator/shutdown.ts`) — reaping every live set, terminating every child, marking crashed jobs — are judgements. A dispatcher fatal, raised through `retireFatal` (`src/coordinator/services/provider-proxy-recovery-policy.ts`) into `onProviderProxyLifecycleFatal` (`src/coordinator/composition/index.ts`), means _this coordinator received corrupt, refused, or unknown evidence_; it is precisely the state in which that judgement is void. Taking hard mode there asked the void judgement to destroy every healthy set and reap the bad one through the very guardian whose answer it could not interpret. Handoff is mechanically "release and exit" — the only act that needs no judgement — so it is inevitable rather than merely defensible. This precedence applies to the active single flight, not only to the call that starts it: the lifecycle records the fatal reason and incident before returning the existing promise, aborts any hard consequence already in flight, and the sequence switches its remaining mode-specific work to handoff. The same retained reason and incidents survive boundary retries, so an automatic retry cannot resurrect the earlier hard reason or omit the fatal obligation.
+
+### 12.2 Why holding authority is the blocker, not the safe default
+
+Refusing to exit until every obligation is proved discharged looks conservative. It is the opposite, because after exit every obligation already has an owner that does not need a successor coordinator to arrive: a proxy set has its guardian's and reaper's armed enforcers — `consumeHolderObservation` in `createArmedEnforcer` (`src/provider-proxy/enforcement.ts`) observes the holder, renews on `alive`, and on `absent` tears down through `reapRecordedContainment`; a durably published child has the runtime record `publishWrapperSpawned` (`src/coordinator/live/durable-transport.ts`) committed and `runStartupRecovery`'s adoption path, while its already-running wrapper finalizer enforces containment until that successor arrives; a provider operation has its saga row through `ProviderOperationReconciler` (`src/coordinator/services/provider-operation-reconciler.ts`). Custody by an enforcer is evidence, not a third remainder owner. Every one of those mechanisms is gated on this process being _gone_. The enforcer renews while its holder is alive, so a coordinator that holds authority because it cannot prove discharge is the thing preventing discharge; the bound socket makes `waitForSocketRelease` (`src/transport/ipc/ensure.ts`) throw instead of spawning a successor, so the one party that could redeem the set is kept away. Releasing and exiting loses what a `kill -9` would have lost anyway, and loses less than holding, because holding also loses every cleanup that would have succeeded. The record is what makes the release honest: it says which obligations exited unproved.
+
+### 12.3 Why there is no wake surface, no race over generations, and no hold watchdog
+
+Three mechanisms were designed before the hold model was understood and were deliberately not built: a generation-bearing surface that wakes held sets, a `Promise.race` over hold generations so a waiter never sees its promise replaced, and a watchdog on hold attempts. All three serve a waiter, and after 12.1 and the ledger change **no waiter exists**: the only hold producer is the authority-release boundary's own declined prepare or commit (`buildAuthorityReleaseBoundary.hold` in `src/coordinator/shutdown.ts`, reached through `declinedTransfer` in `src/obligation/settlement.ts`), and no ordinary obligation can hold — every one is `process-exit` or `successor-recovery` and every pass reaches the boundary. The only generation that matters is the reattachment window's own attempt token, which exports no promise, so "a waiter never sees its promise replaced" holds trivially. Building the wake surface anyway would have been an abstraction for a population of zero, and the watchdog would have been a second bound on a hold the ledger already bounds at `BOUNDARY_TRANSFER_ATTEMPT_LIMIT` (`src/obligation/settlement.ts`).
+
+### 12.4 Why the remainder record is keyed by `label` and lives at a new address
+
+The remainder is diagnostic: it names whatever the ledger left, so a closed subject enum would need extending for every obligation the ledger ever gains. The ledger's own `label` is the identity it already carries for every obligation, so the record is keyed by it. Its versioned filename follows the `HANDOFF_CAPSULE_FILENAME` precedent (`src/provider-proxy/handoff-capsule-discovery.ts`): a generation admitted by address, invisible to any reader whose selector predates it, so the mixed-window answer for an older CLI is "nothing". The version constant is the single owner of that address — `SHUTDOWN_REMAINDER_RECORD_NAME` is derived from it rather than written out a second time, which is §10's rule that the generation needs one owner beside the schema. This is [`design-philosophy`](../.claude/rules/design-philosophy.md) §10's rule that a shape which cannot stay additive is a new generation at a new address.
+
+### 12.5 Why the remainder record is written inline, with no helper process
+
+The record is one synchronous `writeAtomicSync` on the coordinator thread, from the same finalizer that then withdraws the discovery record. An earlier draft delegated it to a separate helper executable to bound a filesystem stall. The measured stall class is the explicit journal commit wait entered by `fdatasync` or directory sync; `writeAtomicDurableSyncNode` (`src/runtime/real.ts`) enters it at both calls. Dropping those durability calls does help: `writeAtomicSyncNode` still opens and renames, and the following `removeBackendInfoIfOwner` (`src/infra/backend-discovery.ts`) still reads and unlinks on the same journaled device, but those operations join the running transaction without asking the kernel to wait for its commit. The requirement the record carries is ordering — say what you left before withdrawing the address — not survival of a power cut, across which every obligation the record names has been discharged by the same cut. The writer creates the run directory before calling `writeAtomicSync`, which intentionally does not create it. A helper would add a fifth released executable through `scripts/build-server.mjs`, and `strictBundleManifestSchema` (`src/infra/bundle-manifest.ts`) is `.strict()` over a closed set of hash fields, so adding one makes an older build's reader reject the manifest — §10 violated without buying the required property. Ordering is free inline. The unbounded withdrawal that remains is recorded in [`docs/todo/discovery-withdrawal-is-unbounded-on-the-exit-path.md`](todo/discovery-withdrawal-is-unbounded-on-the-exit-path.md).
+
+### 12.6 Why discuss commit refusal is not a drain-facing error
+
+`SESSION_SHUTTING_DOWN` (`src/discuss/shell/errors.ts`) is an internal commit disposition. `commitDecision`
+(`src/discuss/shell/persistence.ts`) returns it when an already-running discuss turn reaches its write after
+`clearAllDiscuss` has aborted the live controller, and `runFollowUpTurns`
+(`src/discuss/shell/flow/followup.ts`) treats it as an exit from the in-flight loop. It is not the response to a
+new request made during a drain.
+
+That distinction is structural. `runShutdownSequence` (`src/coordinator/shutdown.ts`) enters `draining` before
+shutdown obligations run, and `operationalRouteSpecs` (`src/transport/rpc/operational-catalog.ts`) admits no
+discuss route. Both transports therefore return `lifecycleRefusalResult`
+(`src/transport/lifecycle-refusal.ts`) before a new discuss request reaches `commitDecision`. A prior change
+gave `session_shutting_down` its own remediation and HTTP/exit mapping on the premise that a new bid and a new
+status read could diverge during hard shutdown. The premise was false, so those operator-facing additions were
+removed. The internal code remains because it closes a different, reachable race; its existence is not a
+reason to recreate the wire mapping.
+
+### 12.7 Why representation release is bounded by the slot
+
+A production log contained 72,641 one-second `containment-retry` warnings over more than 28 hours, and the
+retry returned after restart. That established that a process-local delivery loop could be reconstructed from
+durable provider-operation state indefinitely. The bound therefore belongs to the representation slot, not to
+one delivery attempt: `#beginRepresentationRelease`
+(`src/coordinator/services/provider-proxy-set/index.ts`) arms one settlement deadline even when a delivery
+never settles, and expiry removes the slot as `released-undischarged`. Delivery may retry while the slot
+exists; it may not keep capacity after the bound.
+
+Disappearance and abandonment have different durable owners. A successor re-observes disappearance from the
+surviving provider-operation row and current containment evidence, so storing an old disappearance notice
+would turn an observation into stale authority. Abandonment is a decision and cannot be reconstructed that
+way; its durable control intent remains open in
+[`representation-release-notice-as-a-durable-phase`](todo/representation-release-notice-as-a-durable-phase.md).
+The rejected alternative wrote a current-writer operator-disposition row and called its reconciliation a
+successor, but the current writer never selected that row and the later reader retired the row without
+terminalizing the operation. It was accounting, not an exit.
+
+Late delivery outcomes are fenced at their one entry point. `#representationReleaseSinks`
+(`src/coordinator/services/provider-proxy-set/index.ts`) checks that the slot identity is still current before
+any evidence, retry, or fatal sink runs. The slot-identity clause is load-bearing: without it a late retry can
+arm a timer for a slot whose teardown will never clear it, and a late fatal can recreate disposition state for
+a slot already removed. Do not duplicate that check in the private sinks or remove it as redundant.
+
+## 13. Cross-References
 
 - Current shape and ownership matrix: [`docs/architecture.md`](architecture.md)
 - Module map: [`docs/core-modules.md`](core-modules.md)

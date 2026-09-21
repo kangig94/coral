@@ -157,7 +157,7 @@ describe('server discuss API', () => {
 
     if (controller.getLifecycle() !== 'stopped') {
       try {
-        await controller.shutdown('test');
+        await controller.shutdown('test-teardown');
       } catch {
         /* best effort */
       }

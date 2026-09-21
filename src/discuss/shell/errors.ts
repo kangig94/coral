@@ -2,6 +2,8 @@ import type { Result } from '../session-types.js';
 
 export const ABORT_REASON = 'abort';
 
+export const SESSION_SHUTTING_DOWN = 'session_shutting_down';
+
 export class DiscussManagerError extends Error {
   readonly code: string;
   readonly detail?: Record<string, unknown>;
