@@ -39,6 +39,7 @@ function storageWith(
     refuseFinalRename?: boolean;
     refuseReadFor?: string;
     readErrorCode?: string;
+    readError?: Error;
     refuseLstatFor?: string;
     lstatErrorCode?: string;
     replaceStageBeforeFinalRenameWith?: string;
@@ -51,6 +52,7 @@ function storageWith(
     readFileSync: vi.fn((rawPath: StoragePath) => {
       const path = String(rawPath);
       if (path === options.refuseReadFor) {
+        if (options.readError !== undefined) throw options.readError;
         throw Object.assign(new Error('read refused'), { code: options.readErrorCode ?? 'EIO' });
       }
       const value = files.get(path);
@@ -533,6 +535,29 @@ describe('shutdown remainder file classification', () => {
 
   it('names no errno when the refused read carried no system error code', () => {
     const storage = storageWith({}, { refuseReadFor: RECORD_PATH, readErrorCode: 'NOT_AN_ERRNO' });
+
+    expect(classify(storage)).toEqual({ kind: 'unreadable', errno: null });
+  });
+
+  it.each([
+    {
+      label: 'code',
+      error: Object.defineProperty(new Error('read refused'), 'code', {
+        get: () => {
+          throw new Error('hostile code accessor');
+        },
+      }),
+    },
+    {
+      label: 'cause',
+      error: Object.defineProperty(new Error('read refused'), 'cause', {
+        get: () => {
+          throw new Error('hostile cause accessor');
+        },
+      }),
+    },
+  ])('contains a hostile $label accessor on a refused read', ({ error }) => {
+    const storage = storageWith({}, { refuseReadFor: RECORD_PATH, readError: error });
 
     expect(classify(storage)).toEqual({ kind: 'unreadable', errno: null });
   });

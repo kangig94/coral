@@ -516,15 +516,6 @@ export type ContainmentAbsenceOperationalIncident =
     }> &
       ContainmentAbsenceOperationalIncidentDetail);
 
-/**
- * An in-memory representation slot is capacity, not an obligation: releasing it frees a slot the real owner
- * needs, while the obligation stays with whatever outlives the slot. `witness` is derived from what is
- * actually outstanding rather than asserted, because the two artifacts are reclaimed by different paths — an
- * undelivered operation stays on its provider-operation record, which the reconciler's own due poll
- * re-attempts delivery against, while a capsule whose retirement never completed is reclaimed only by
- * capsule discovery at the next coordinator start. Naming either one where the other is outstanding points
- * the reader at a reclaimer with nothing to reclaim.
- */
 export type ProviderProxyRepresentationReleasedUndischarged = Readonly<{
   kind: 'released-undischarged';
   witness: 'provider-operation-record' | 'provider-handoff-capsule';

@@ -96,11 +96,25 @@ type SerializeCause<Cause> = (error: unknown, causeDepth: number) => Cause;
  * operator as the detail of a sentence about their coordinator.
  */
 export function thrownErrnoCode(error: unknown): string | undefined {
-  return errnoCode(error instanceof Error ? error.cause : undefined) ?? errnoCode(error);
+  let cause: unknown;
+  if (error instanceof Error) {
+    try {
+      cause = Reflect.get(error, 'cause');
+    } catch {
+      cause = undefined;
+    }
+  }
+  return errnoCode(cause) ?? errnoCode(error);
 }
 
 function errnoCode(value: unknown): string | undefined {
-  return isRecord(value) && typeof value.code === 'string' ? value.code : undefined;
+  if (!isRecord(value)) return undefined;
+  try {
+    const code = Reflect.get(value, 'code');
+    return typeof code === 'string' ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function canonicalThrownIdentifier(value: string, fallback: string): string {

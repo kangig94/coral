@@ -34,7 +34,6 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import {
   acquireProviderOperationMutationAdmission,
   compareAndSwapProviderOperation,
-  completeExecutingProviderOperationAttachment,
   insertProviderOperation,
   readProviderOperation,
   readProviderOperationDueSelections,
@@ -61,7 +60,7 @@ import {
   terminalizeProviderOperation,
   type ProviderOperationTerminalizationPort,
 } from '#src/jobs/provider-operation-terminalization.js';
-import { newRawDatabase } from '#tests/helpers/test-db.js';
+import { newRawDatabase, totalChanges } from '#tests/helpers/test-db.js';
 import {
   createTestProviderProxyContainmentProofProducer,
   createTestProviderProxyRecoveryDispatcher,
@@ -1550,7 +1549,7 @@ describe('ProviderOperationReconciler publication', () => {
         predecessors.some(
           (predecessor) => predecessor.operation.operationId === mutation.record.operation.operationId,
         ) &&
-        mutation.record.retryNotBeforeMs === 150
+        mutation.record.retryNotBeforeMs === 125
       ) {
         yielded.push(mutation.record);
       }
@@ -1579,9 +1578,7 @@ describe('ProviderOperationReconciler publication', () => {
     for (const replacement of replacements) {
       const canonical = readProviderOperation(harness.db, replacement.record.operation);
       expect(replacement.record).toEqual(canonical);
-      // A due turn awaits a delivery already in flight, so the failed attempt accounts itself on the record
-      // before the turn is repaired, and the repair finds the row already advanced to the attempt's backoff.
-      expect(replacement.record).toMatchObject({ revision: 1, retryCount: 2, retryNotBeforeMs: 150 });
+      expect(replacement.record).toMatchObject({ revision: 1, retryCount: 1, retryNotBeforeMs: 125 });
     }
     expect(harness.fatalErrors).toEqual([]);
   });
@@ -1756,15 +1753,13 @@ describe('ProviderOperationReconciler publication', () => {
     harness.reconciler.start();
     expect(timers.size).toBe(1);
     harness.reconciler.wake();
-    await vi.waitFor(() => expect(warnings.length + harness.fatalErrors.length).toBe(2));
+    await vi.waitFor(() => expect(harness.fatalErrors).toHaveLength(1));
     harness.reconciler.wake();
     await nextEventLoopTurn();
 
-    // One warning, from the first attempt that recorded this cause. Every later attempt meets the same cause
-    // on the record and reports nothing, which is what keeps a permanently failing release off the log.
     expect({ fatalCount: harness.fatalErrors.length, warnings, activeTimers: timers.size }).toEqual({
       fatalCount: 1,
-      warnings: [expect.stringContaining('failed with a new cause and is re-attempted on each due turn')],
+      warnings: [],
       activeTimers: 0,
     });
     expect(harness.fatalErrors[0]).toMatchObject({
@@ -2008,65 +2003,18 @@ describe('ProviderOperationReconciler publication', () => {
     expect(terminalizeCalls).toHaveBeenCalledTimes(2);
   });
 
-  // The slot that dispatched a release clears its delivery retry timer when it releases at its bound, so the
-  // record is the only surviving witness. An attempt it is not told about is an attempt no reader can see,
-  // and the wrapper's own message is a constant: `lastError` has to name what the store actually refused
-  // with (design-philosophy.md principle 11).
-  it.each([
-    ['a containment disappearance', 'disappearance_consumer_unavailable'],
-    ['a representation abandonment', 'representation_abandonment_consumer_unavailable'],
-  ] as const)('records %s release attempt that failed, naming its real cause', async (_notice, code) => {
+  it('does not restore a per-attempt warning when release causes alternate', async () => {
     const errors: string[] = [];
     const harness = createHarness({ onError: (message) => errors.push(message) });
+    const causes = [
+      new Error('database is locked'),
+      new Error('terminal payload was rejected'),
+      new Error('database is locked'),
+      new Error('terminal payload was rejected'),
+    ];
+    let attempt = 0;
     vi.spyOn(harness.terminalization, 'terminalize').mockImplementation((terminalRecord) => {
-      throw new ProviderOperationAtomicTerminalizationError(
-        terminalRecord.operation,
-        Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }),
-      );
-    });
-    const recovered = providerOperationRecord('executing');
-    insertProviderOperation(harness.db, recovered);
-    const setIdentity = providerProxySetIdentityFromRecord(recovered);
-
-    await expect(
-      code === 'disappearance_consumer_unavailable'
-        ? harness.reconciler.containmentDisappeared({
-            operation: recovered.operation,
-            setIdentity,
-            disappearanceReceipt: 'witness-absence-receipt',
-          })
-        : harness.reconciler.representationAbandoned({ operation: recovered.operation, setIdentity }),
-    ).resolves.toEqual({
-      kind: 'operational-failure',
-      code,
-      reason: expect.stringContaining('database is locked'),
-    });
-
-    expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
-      phase: 'executing',
-      revision: recovered.revision + 1,
-      retryCount: 1,
-      retryNotBeforeMs: 125,
-      lastError: { observedAtMs: 100, code, message: expect.stringContaining('database is locked') },
-    });
-    // The record now carries the due work the released slot no longer owns, and its own backoff is what
-    // paces the re-attempt: selectable at the deadline it wrote, and not before it.
-    expect({
-      beforeBackoff: readProviderOperationDueSelections(harness.db, 124, 1),
-      atBackoff: readProviderOperationDueSelections(harness.db, 125, 1).length,
-    }).toEqual({ beforeBackoff: [], atBackoff: 1 });
-    expect(errors).toEqual([expect.stringContaining(`code=${code}`)]);
-  });
-
-  // A permanently failing release is re-attempted forever by design, so a line per attempt is the
-  // twenty-eight-hour flood this whole entry exists to close. The durable record holds both sides of the
-  // comparison, so a restart re-derives what has already been reported rather than re-announcing it.
-  it('reports a release failure once per change of cause, never once per attempt', async () => {
-    const errors: string[] = [];
-    const harness = createHarness({ onError: (message) => errors.push(message) });
-    let cause = new Error('database is locked');
-    vi.spyOn(harness.terminalization, 'terminalize').mockImplementation((terminalRecord) => {
-      throw new ProviderOperationAtomicTerminalizationError(terminalRecord.operation, cause);
+      throw new ProviderOperationAtomicTerminalizationError(terminalRecord.operation, causes[attempt++]);
     });
     const recovered = providerOperationRecord('executing');
     insertProviderOperation(harness.db, recovered);
@@ -2088,83 +2036,46 @@ describe('ProviderOperationReconciler publication', () => {
     });
     await reattempt();
     await reattempt();
-    expect({
-      lines: errors.length,
-      retryCount: readProviderOperation(harness.db, recovered.operation)?.retryCount,
-    }).toEqual({ lines: 1, retryCount: 3 });
-
-    cause = new Error('terminal payload was rejected');
     await reattempt();
 
-    expect(errors).toEqual([
-      expect.stringContaining('database is locked'),
-      expect.stringContaining('terminal payload was rejected'),
-    ]);
+    expect({ attempts: attempt, errors, record: readProviderOperation(harness.db, recovered.operation) }).toEqual({
+      attempts: 4,
+      errors: [],
+      record: recovered,
+    });
   });
 
-  // A due turn does not await the re-attempt it starts, and the terminalization producer may answer with a
-  // promise, so the turn's own repair write lands between the record the attempt read and the write that
-  // accounts for it. Dropping the attempt on that refusal loses the accounting on the path every re-attempt
-  // after the first one runs on.
-  it('re-applies its attempt accounting against a due-turn repair that raced it', async () => {
-    const pendingRejections: Array<() => void> = [];
-    let attempts = 0;
-    const harness = createHarness({
-      disappearanceTerminalization: ({ record }) => {
-        attempts += 1;
-        const failure = new ProviderOperationAtomicTerminalizationError(
-          record.operation,
-          new Error('database is locked'),
-        );
-        if (attempts === 1) throw failure;
-        return new Promise((_resolve, reject) => {
-          pendingRejections.push(() => reject(failure));
-        });
-      },
+  it('does not durably rewrite a permanently failing release', async () => {
+    const harness = createHarness();
+    vi.spyOn(harness.terminalization, 'terminalize').mockImplementation((terminalRecord) => {
+      throw new ProviderOperationAtomicTerminalizationError(terminalRecord.operation, new Error('database is locked'));
     });
     const recovered = providerOperationRecord('executing');
     insertProviderOperation(harness.db, recovered);
+    const changesBeforeAttempts = totalChanges(harness.db);
 
     await expect(
       harness.reconciler.containmentDisappeared({
         operation: recovered.operation,
         setIdentity: providerProxySetIdentityFromRecord(recovered),
-        disappearanceReceipt: 'raced-repair-receipt',
+        disappearanceReceipt: 'permanent-release-failure',
       }),
     ).resolves.toMatchObject({ kind: 'operational-failure' });
-    expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
-      revision: 1,
-      retryCount: 1,
-      retryNotBeforeMs: 125,
+    for (let attempt = 1; attempt < 100; attempt += 1) {
+      await harness.reconciler.reconcile(recovered);
+      await nextEventLoopTurn();
+    }
+
+    expect({
+      changes: totalChanges(harness.db) - changesBeforeAttempts,
+      record: readProviderOperation(harness.db, recovered.operation),
+    }).toEqual({
+      changes: 0,
+      record: recovered,
     });
-
-    harness.advance(50);
-    harness.reconciler.start();
-    harness.reconciler.wake();
-    await vi.waitFor(() => expect(pendingRejections).toHaveLength(1));
-    await vi.waitFor(() =>
-      expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
-        revision: 2,
-        retryCount: 1,
-        retryNotBeforeMs: 175,
-      }),
-    );
-
-    pendingRejections[0]?.();
-
-    await vi.waitFor(() =>
-      expect(readProviderOperation(harness.db, recovered.operation)).toMatchObject({
-        revision: 3,
-        retryCount: 2,
-        retryNotBeforeMs: 200,
-      }),
-    );
   });
 
-  // `providerHostUnserviceableLastError` smuggles the host ref and its remediation through `lastError.message`,
-  // and the pending terminal reads them back. An attempt that failed for an unrelated reason must not erase
-  // the evidence its own terminal needs.
-  it('preserves the host refusal evidence its own terminal reads back when a release attempt fails', async () => {
+  it('does not count a failed release as another host-refusal retry', async () => {
     const harness = createHarness();
     vi.spyOn(harness.terminalization, 'terminalize').mockImplementation((terminalRecord) => {
       throw new ProviderOperationAtomicTerminalizationError(terminalRecord.operation, new Error('database is locked'));
@@ -2184,41 +2095,7 @@ describe('ProviderOperationReconciler publication', () => {
       }),
     ).resolves.toMatchObject({ kind: 'operational-failure' });
 
-    expect(readProviderOperation(harness.db, blocked.operation)).toMatchObject({
-      retryCount: blocked.retryCount + 1,
-      lastError: hostUnserviceableLastError,
-    });
-  });
-
-  // `sameRetryOwnership` is the compare-and-swap token an executing attachment completes against, and a
-  // failed release attempt replaces exactly the three fields it names. The completion a fenced drive could
-  // still issue is therefore refused rather than clearing the attempt the record just recorded.
-  it('refuses an attachment completion holding the retry ownership a failed release attempt replaced', async () => {
-    const harness = createHarness();
-    vi.spyOn(harness.terminalization, 'terminalize').mockImplementation((terminalRecord) => {
-      throw new ProviderOperationAtomicTerminalizationError(terminalRecord.operation, new Error('database is locked'));
-    });
-    const recovered = providerOperationRecord('executing');
-    insertProviderOperation(harness.db, recovered);
-    const staleOwnership = {
-      retryCount: recovered.retryCount,
-      retryNotBeforeMs: recovered.retryNotBeforeMs,
-      lastError: recovered.lastError,
-    };
-
-    await expect(
-      harness.reconciler.containmentDisappeared({
-        operation: recovered.operation,
-        setIdentity: providerProxySetIdentityFromRecord(recovered),
-        disappearanceReceipt: 'raced-attachment-receipt',
-      }),
-    ).resolves.toMatchObject({ kind: 'operational-failure' });
-    const witnessed = readProviderOperation(harness.db, recovered.operation);
-
-    expect(
-      completeExecutingProviderOperationAttachment(harness.db, recovered.operation, staleOwnership, 100),
-    ).toMatchObject({ kind: 'retry-superseded' });
-    expect(readProviderOperation(harness.db, recovered.operation)).toEqual(witnessed);
+    expect(readProviderOperation(harness.db, blocked.operation)).toEqual(blocked);
   });
 
   // The re-attempt runs outside the poll's own try/catch, so the fatal it can raise reaches no other observer.
@@ -2268,10 +2145,7 @@ describe('ProviderOperationReconciler publication', () => {
     await harness.reconciler.reconcile(stranded);
     await vi.waitFor(() => expect(cleared).toContain(pollTimer));
 
-    // The first attempt's cause is recorded and reported once; the fatal the second attempt raised is not
-    // reported at all, because reporting it without sealing is what re-arms the poll.
-    expect(errors).toEqual([expect.stringContaining('failed with a new cause and is re-attempted on each due turn')]);
-    expect(errors.join('\n')).not.toContain('release re-delivery failed');
+    expect(errors).toEqual([]);
     expect(harness.dispatcherFatalErrors).toHaveLength(1);
     // A sealed reconciler refuses to poll, so nothing re-reaches the same fatal.
     harness.reconciler.wake();

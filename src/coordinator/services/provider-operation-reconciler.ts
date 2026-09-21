@@ -524,14 +524,6 @@ function preservesHostRefusalEvidence(record: ProviderOperationRecord): boolean 
   );
 }
 
-function sameFailureCause(
-  left: ProviderOperationRecord['lastError'],
-  right: ProviderOperationRecord['lastError'],
-): boolean {
-  if (left === null || right === null) return left === right;
-  return left.code === right.code && left.message === right.message;
-}
-
 export class ProviderOperationReconciler
   implements ProviderContainmentDisappearanceConsumer, ProviderRepresentationAbandonmentConsumer
 {
@@ -1878,20 +1870,14 @@ export class ProviderOperationReconciler
                 };
         const directive = this.#rekeyRefusalDirective(record) ?? fallback;
         const terminalized = await this.#terminalizeDisappearance(record, directive);
-        if (terminalized.kind === 'operational-failure') {
-          this.#recordReleaseAttempt(record, terminalized);
-          return terminalized;
-        }
+        if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
         this.#completeTerminalized(record);
         return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
       }
       if (record.phase === 'prestart-cleanup-pending' && record.afterRelease.kind !== 'local-authorized') {
         const terminalized = await this.#terminalizeDisappearance(record, record.afterRelease);
-        if (terminalized.kind === 'operational-failure') {
-          this.#recordReleaseAttempt(record, terminalized);
-          return terminalized;
-        }
+        if (terminalized.kind === 'operational-failure') return terminalized;
         if (terminalized.kind === 'conflict') continue;
         this.#completeTerminalized(record);
         return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
@@ -1943,10 +1929,7 @@ export class ProviderOperationReconciler
         return { kind: 'accepted', operation: notice.operation, disposition: 'local-recovery-committed' };
       }
       const terminalized = await this.#terminalizeAbandonment(record, this.#rekeyRefusalDirective(record) ?? directive);
-      if (terminalized.kind === 'operational-failure') {
-        this.#recordReleaseAttempt(record, terminalized);
-        return terminalized;
-      }
+      if (terminalized.kind === 'operational-failure') return terminalized;
       if (terminalized.kind === 'conflict') continue;
       this.#completeTerminalized(record);
       return { kind: 'accepted', operation: notice.operation, disposition: 'terminalization-committed' };
@@ -2513,44 +2496,6 @@ export class ProviderOperationReconciler
             reason: directive.reason,
           },
     );
-  }
-
-  /**
-   * The record is the surviving witness of a release whose slot is gone; an attempt it is not told about is
-   * an attempt no reader can see.
-   *
-   * Constraint: a due-turn repair can advance this record between the read that produced `record` and this
-   * write, so the compare-and-swap outcome is consumed as a decision and re-applied against whatever won —
-   * never as a single shot whose refusal is indistinguishable from success.
-   */
-  #recordReleaseAttempt(record: ProviderOperationRecord, failure: Readonly<{ code: string; reason: string }>): void {
-    const now = this.#deps.time.now();
-    let expected: ProviderOperationRecord | null = record;
-    while (expected !== null) {
-      const lastError = preservesHostRefusalEvidence(expected)
-        ? expected.lastError
-        : { observedAtMs: now, code: failure.code, message: failure.reason };
-      const next = providerOperationRecordSchema.parse({
-        ...expected,
-        revision: expected.revision + 1,
-        retryCount: expected.retryCount + 1,
-        retryNotBeforeMs: now + retryDelayMs(expected.retryCount),
-        lastError,
-      });
-      const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), expected, next);
-      if (result.kind === 'conflict') {
-        expected = result.current;
-        continue;
-      }
-      // Constraint: one line per change of cause, never one per attempt. The durable record is both sides of
-      // this comparison, so a restart re-derives it instead of re-announcing what it already recorded.
-      if (!sameFailureCause(expected.lastError, lastError)) {
-        this.#deps.onError?.(
-          `Provider operation release for '${operationKey(expected.operation)}' failed with a new cause and is re-attempted on each due turn: code=${failure.code} reason=${failure.reason}`,
-        );
-      }
-      return;
-    }
   }
 
   async #recordRetry(record: ProviderOperationRecord, error: unknown, operationControlHeld = false): Promise<void> {

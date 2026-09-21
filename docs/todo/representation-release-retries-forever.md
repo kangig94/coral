@@ -1,9 +1,10 @@
 # A representation release retries every second, forever
 
-**Status**: narrowed, not closed. What is gone is the *logged* loop and the unbounded hold on a
-representation slot; the re-attempt itself is unbounded by design and now says what it is waiting for. What
-survives is the classification behind it: a deterministic terminalization failure is still retried as if it
-were transient. See *What this does not settle*.
+**Status**: narrowed, not closed. What is gone is the *logged* loop, the unbounded hold on a representation
+slot, and the durable write on every failed re-attempt. The re-attempt itself is unbounded by design and says
+what it is waiting for through the release disposition. What survives is the classification behind it: a
+deterministic terminalization failure is still retried as if it were transient. See *What this does not
+settle*.
 
 ## What was seen
 
@@ -55,35 +56,24 @@ is the exit for the record witness: the released slot cleared its delivery retry
 going to try again. The attempt is started and not awaited, because a due turn has to finish whether or not a
 delivery settles.
 
-Nothing durable is written *at expiry* — but every failed re-attempt after it writes to the record that
-already exists. The consumer transitions it exactly as `#recordRetry` transitions every other failed attempt
-in that reconciler: `revision + 1`, `retryCount + 1`, `retryNotBeforeMs = now + retryDelayMs(retryCount)`, and
-`lastError` set to the cause the store actually refused with, under `#recordRetry`'s own host-refusal guard so
-a `prestart-cleanup-pending` terminal does not lose the evidence it reads back out of `lastError.message`.
-Before this, the record named as the surviving witness was never told it had witnessed anything: the notice
-was re-attempted every due turn, unawaited and unlogged, and `retryCount`, `lastError` and `retryNotBeforeMs`
-stayed frozen at whatever the last drive left.
+Failed release deliveries do not write the provider-operation record. The attempt's retry-safe disposition is
+already decided before any bookkeeping could run, and a held SQLite write lock can refuse both terminalization
+and an accounting write. Letting the second refusal escape converted the decided retry into an `unknown`
+consumer rejection and a fatal representation release. Catching it while also reporting it once and making
+the next attempt distinguishable would require another state bit; deleting the bookkeeping removes that axis.
 
-Two hops had to stop discarding the cause for that to be worth writing. `#terminalizeDisappearance`'s sink
-took no argument and dropped the dispatcher's `retry` incident, and the dispatcher forwarded a
-`retry-safe-unknown` observation as `{ kind, proof }` rather than as the error. So
-`ProviderOperationAtomicTerminalizationError` and its cause — the only fact separating a schema rejection from
-`SQLITE_BUSY` — reached nothing, and `lastError.message` would have read "temporarily unavailable" forever.
-The incident is now the error itself, and that error names its own cause in its message.
+The same deletion removes the cause-alternation log flood, the durable commit on every permanent failure, and
+the false host-refusal pairing of an incremented `retryCount` with preserved older `lastError` evidence. Entry
+into the failing state is already the slot's `operational-retry-owned` initial disposition, which carries the
+terminalization cause forwarded through the dispatcher. The distinct 60-second outcome is the
+`released-undischarged` transition. Individual re-attempts do not emit another event merely because their
+cause changed.
 
-Reporting is one line per *change* of cause, derived by comparing the record's stored `lastError` against the
-one about to replace it. That is the "already reported" bit without a bit: it lives in durable state, so it
-survives a restart correctly and never re-fires for the same cause. One line per attempt is the
-twenty-eight-hour flood this entry exists to close.
-
-Pacing falls out of the same write. With `retryNotBeforeMs` in the future,
-`finishProviderOperationDueSelection` answers `already-advanced` and the `#attachments` gate skips. The
-backoff was never the missing piece: `retryDelayMs` tops out at 1,600 ms against a 2,000 ms due poll, and an
-`executing` record with `lastError === null` has no due entry at all (`providerOperationHasDueWork`), so the
-re-attempt reached it through the `#attachments` loop rather than the due index. The shared absence was
-attempt accounting, not pacing. The compare-and-swap is consumed as a decision and re-applied against whatever
-won, because the due turn that started an unawaited attempt repairs its own row while that attempt is still
-running.
+While the representation slot exists, its one-second timer preserves the common case where contention clears
+within seconds. After the slot bound, the reconciler's two-second poll re-drives the latched notice without a
+durable write. Widening `retryDelayMs` is therefore not a parameter change for this path: it is shared by every
+ordinary provider-operation retry and no longer paces released-slot delivery. Giving release a separate
+backoff would require new release-attempt state, so this correction does not add one.
 
 The earlier resolution wrote
 `operator_exit_representation_release_retry_exhausted` into the durable operator-disposition store and named
@@ -94,10 +84,18 @@ rows, so the writing process never reconciles its own row; and the successor tha
 **operation**. The CLI's "no command is required: durable representation-release reconciliation owns the
 remainder" was therefore false. The row, the refusal ground, the durable-write retry, and that CLI line are gone.
 
-## Three corrections to this branch's commit messages
+## Corrections to this branch's resolution
 
-All are false sentences in published history, recorded here because a reader meets this file and not a commit
-body, and because one of them reads as a licence to delete a guard.
+The first is the round-100 correction to the mechanism itself. The remainder are false sentences in published
+history, recorded here because a reader meets this file and not a commit body, and because one of them reads
+as a licence to delete a guard.
+
+**Per-attempt accounting was not a status surface; it was a second failure path.** The row already witnesses
+the outstanding operation, while the release disposition reports that delivery is failing. Writing the
+delivery attempt into `revision`, `retryCount`, `retryNotBeforeMs`, and `lastError` made a lock refusal fatal,
+logged alternating causes forever, committed forever, and paired host-refusal evidence with a count about a
+different subject. `#recordReleaseAttempt` and its cause-comparison helper are deleted. The row now changes
+only when provider-operation reconciliation changes it, not when release delivery fails around it.
 
 **`28115ec6` says "the `currentDelivery` guard is not what defends a released slot". It is.**
 `#releaseUndischargedRepresentation` sets no `terminalSettlement` and clears no `pendingOperations`, so of
