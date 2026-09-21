@@ -40,6 +40,8 @@ export type ShutdownHoldExit = z.infer<typeof shutdownHoldExitSchema>;
 
 export type ShutdownRetainedAuthority = DeepReadonly<z.infer<typeof shutdownRetainedAuthoritySchema>>;
 
+export type ShutdownAutomaticRetry = DeepReadonly<z.infer<typeof shutdownAutomaticRetrySchema>>;
+
 export type ShutdownUndischarged = DeepReadonly<z.infer<typeof shutdownRemainderEntrySchema>>;
 
 export type ShutdownRemainderProjection = DeepReadonly<z.infer<typeof shutdownRemainderProjectionEnvelopeSchema>>;
@@ -124,6 +126,20 @@ export const shutdownRemainderEntrySchema = z.object({
   ]),
   settlement: settlementSchema,
 });
+const shutdownAutomaticRetrySchema = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('scheduled'),
+    attemptsStarted: z.number().int().nonnegative(),
+    attemptLimit: z.number().int().positive(),
+  }),
+  z.object({
+    status: z.literal('failed'),
+    holdEndsWhen: z.object({
+      kind: z.literal('coordinator-process-exits'),
+      pid: z.number().int().positive(),
+    }),
+  }),
+]);
 export const shutdownRemainderProjectionEnvelopeSchema = z
   .object({
     reason: z.enum(SHUTDOWN_REASONS),
@@ -134,6 +150,7 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
       started: z.number().int().nonnegative(),
       limit: z.number().int().positive(),
     }),
+    automaticRetry: shutdownAutomaticRetrySchema.optional(),
     lastDeclined: z
       .object({
         attempt: z.number().int().positive(),
@@ -160,6 +177,13 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ['lastDeclined', 'attempt'],
         message: 'declined attempt was not started',
+      });
+    }
+    if (projection.lastDeclined !== undefined && projection.lastDeclined.attempt >= projection.attempt.limit) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['lastDeclined', 'attempt'],
+        message: 'declined attempt reached the terminal attempt limit',
       });
     }
   });

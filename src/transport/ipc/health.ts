@@ -1,7 +1,7 @@
 import type { CoordinatorDiscoveryRecord } from '../../infra/backend-discovery.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
 import type { TimePort } from '../../infra/port-types.js';
-import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
+import { HEALTH_TIMEOUT_MS } from '../health.js';
 import { createIpcClient } from './client.js';
 
 export type CoordinatorHealthIdentity = Readonly<{

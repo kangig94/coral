@@ -15,7 +15,7 @@ import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { CoordinatorPaths } from '../../infra/path/index.js';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '../../infra/path/index.js';
-import { HEALTH_TIMEOUT_MS } from '../http/sse.js';
+import { HEALTH_TIMEOUT_MS } from '../health.js';
 import { BackendUnreachableError } from '../../infra/http-errors.js';
 import { isNoEntryError } from '../../infra/fs-errors.js';
 import { isRecord } from '../../infra/json.js';

@@ -2641,6 +2641,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
     async () => [],
   );
   return {
+    authority,
     controller,
     finalizationOrder,
     harness,
@@ -3288,6 +3289,42 @@ describe('required provider-proxy shutdown steps', () => {
       `backend discovery withdrawal refused operation=read code=filesystem-operation-failed errno=EACCES errorName=Error correlation=${'c'.repeat(64)}\n`,
     );
     expect(logLines.join('')).not.toContain('discovery read denied');
+  });
+
+  it('reports a failed lifecycle continuation with process exit as the remaining hold exit', async () => {
+    const { authority, controller, harness, logLines } = buildBoundaryExhaustionHarness('continuation-failure');
+
+    const initial = controller.shutdown('replaced');
+    await flush(64);
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS);
+    await flush(64);
+    await initial;
+
+    vi.spyOn(authority, 'liveSets').mockImplementation(() => {
+      throw new Error('retry observation failed');
+    });
+    harness.time.tick(50);
+    await flush(64);
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS / 2);
+    await flush(64);
+
+    const failed = await controller.waitForShutdown();
+    expect(failed).toMatchObject({
+      disposition: 'held',
+      recovery: {
+        automaticRetry: {
+          status: 'failed',
+          holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
+        },
+      },
+    });
+    expect(controller.observeShutdown()).toMatchObject({
+      automaticRetry: {
+        status: 'failed',
+        holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
+      },
+    });
+    expect(logLines).toContainEqual(expect.stringContaining('retry observation failed'));
   });
 
   it("a sigint landing between attempts records the ledger's original reason", async () => {

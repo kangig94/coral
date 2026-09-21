@@ -374,6 +374,7 @@ describe('health live shutdown observation', () => {
     const firstHeld = readShutdownHealth();
     expect(firstHeld).toMatchObject({
       attempt: { started: 1, limit: 3 },
+      automaticRetry: { status: 'scheduled', attemptsStarted: 1, attemptLimit: 3 },
       lastDeclined: {
         attempt: 1,
         reason: 'required-shutdown-step-unsettled',
@@ -396,6 +397,7 @@ describe('health live shutdown observation', () => {
     await flush(64);
     expect(readShutdownHealth()).toMatchObject({
       attempt: { started: 2, limit: 3 },
+      automaticRetry: { status: 'scheduled', attemptsStarted: 2, attemptLimit: 3 },
       lastDeclined: { attempt: 2 },
     });
     const previousBoundMs = readShutdownHealth()?.boundMs;

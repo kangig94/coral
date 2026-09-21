@@ -1,7 +1,8 @@
 import { observeCoordinator } from './coordinator-observation.js';
 import { readBuildFlavor } from '../../../infra/bundle-manifest.js';
 import { createRealRuntime } from '../../../runtime/real.js';
-import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
+import { parseJsonResponse } from '../sse.js';
+import { HEALTH_TIMEOUT_MS } from '../../health.js';
 import { errorMessage, thrownErrnoCode } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
 import { isLifecycleRefusalResult } from '../../lifecycle-refusal.js';

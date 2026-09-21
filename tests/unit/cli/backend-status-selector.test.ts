@@ -1786,6 +1786,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
             elapsedMs: 12_000,
             boundMs: 0,
             attempt: { started: 3, limit: 3 },
+            automaticRetry: {
+              status: 'failed',
+              holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
+            },
             lastDeclined: {
               attempt: 2,
               reason: 'required-shutdown-step-unsettled',
@@ -1824,9 +1828,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(liveSection).toContain(
       'Current drain work schedule: 0ms remaining (may be revised when a hold is observed)',
     );
-    expect(liveSection).toContain(
-      'the current drain-work schedule has elapsed, but that does not guarantee the drain has finished',
-    );
+    expect(liveSection).toContain('Automatic retry: failed; no automatic retry remains');
+    expect(liveSection).toContain('Hold ends when: coordinator process 4242 exits');
+    expect(liveSection).toContain('Next step: force coordinator process 4242 to exit externally');
+    expect(liveSection).not.toContain('command=coral-cli backend status');
     expect(liveSection).not.toContain('Bound to drain terminal');
     expect(liveSection).toContain('Current attempt: 3/3');
     expect(liveSection).toContain('Attempt 2/3 declined: required-shutdown-step-unsettled');

@@ -151,6 +151,14 @@ describe('/health typed shape (AC10a)', () => {
         lastDeclined: { ...SHUTDOWN_PROJECTION.lastDeclined, attempt: 2 },
       },
     },
+    {
+      invariant: 'the attempt limit cannot have produced a declined attempt',
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        attempt: { started: 3, limit: 3 },
+        lastDeclined: { ...SHUTDOWN_PROJECTION.lastDeclined, attempt: 3 },
+      },
+    },
   ])('degrades a semantically impossible shutdown projection when $invariant', ({ shutdown }) => {
     const parsed = parseBackendHealth({
       ...HEALTHY_BASE,

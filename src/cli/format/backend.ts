@@ -682,7 +682,9 @@ export function formatBackendStatus(
   liveHandoffResult: LiveHandoffResult | null,
 ): string {
   const sections = [formatDaemonStatus(daemonStatus)];
-  const routingStatusText = formatHandoffRoutingStatus(routingStatus);
+  const routingCommandAvailability =
+    daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining' ? 'blocked-by-live-drain' : 'available';
+  const routingStatusText = formatHandoffRoutingStatus(routingStatus, routingCommandAvailability);
   if (routingStatusText !== null) sections.push(routingStatusText);
   if (liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
     const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
@@ -766,10 +768,37 @@ function formatSelectedRoutingDisposition(disposition: SelectedHandoffDispositio
   }
 }
 
+type RoutingCommandAvailability = 'available' | 'blocked-by-live-drain';
+
+function formatRoutingHoldAction(
+  availability: RoutingCommandAvailability,
+  availableInstruction: string,
+  deferredInstruction: string,
+  command: BackendOperatorCommand,
+): string[] {
+  if (availability === 'available') {
+    return [availableInstruction, formatBackendOperatorCommand(command)];
+  }
+  return [
+    deferredInstruction,
+    "The live drain's guidance above governs the next action, so this routing section does not print another command.",
+  ];
+}
+
+function formatRoutingDiscardHoldAction(availability: RoutingCommandAvailability): string[] {
+  return formatRoutingHoldAction(
+    availability,
+    'Routing hold: run the discard command below.',
+    'Routing hold: discard remains required if this routing status survives the live drain.',
+    { kind: 'routing-status-discard' },
+  );
+}
+
 function formatRoutingOwnerLiveness(
   invocationId: string,
   disposition: SelectedHandoffDisposition,
   liveness: OwnerLiveness,
+  commandAvailability: RoutingCommandAvailability,
 ): string {
   const selectionEvidence = `Selected routing: ${formatSelectedRoutingDisposition(disposition)}.`;
   switch (liveness.kind) {
@@ -779,22 +808,34 @@ function formatRoutingOwnerLiveness(
       return [
         `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
         selectionEvidence,
-        'Routing hold: run the resolution command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: false }),
+        ...formatRoutingHoldAction(
+          commandAvailability,
+          'Routing hold: run the resolution command below.',
+          'Routing hold: resolution remains required if this invocation survives the live drain.',
+          { kind: 'routing-status-resolve', invocationId, forceUnobservable: false },
+        ),
       ].join('\n');
     case 'unobservable':
       return liveness.cause === 'deadline-expired'
         ? [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Routing hold: inspect backend status again; an expired sweep cannot authorize resolution.',
-            formatBackendOperatorCommand({ kind: 'backend-status' }),
+            ...formatRoutingHoldAction(
+              commandAvailability,
+              'Routing hold: inspect backend status again; an expired sweep cannot authorize resolution.',
+              'Routing hold: owner observation expired; inspect again through the live drain guidance below.',
+              { kind: 'backend-status' },
+            ),
           ].join('\n')
         : [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Routing hold: verify the owner externally, then run the forced resolution command below to abandon it.',
-            formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: true }),
+            ...formatRoutingHoldAction(
+              commandAvailability,
+              'Routing hold: verify the owner externally, then run the forced resolution command below to abandon it.',
+              'Routing hold: external owner verification and forced resolution remain required if this invocation survives the live drain.',
+              { kind: 'routing-status-resolve', invocationId, forceUnobservable: true },
+            ),
           ].join('\n');
     default:
       return assertNever(liveness);
@@ -852,13 +893,17 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
 
 const ROUTING_INVOCATION_RENDER_LIMIT = 20;
 
-function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
+function formatRoutingInvocationStatus(
+  status: HandoffRoutingInvocationStatus,
+  commandAvailability: RoutingCommandAvailability,
+): string {
   switch (status.kind) {
     case 'unresolved':
       return formatRoutingOwnerLiveness(
         status.selection.invocationId,
         status.selection.disposition,
         status.ownerLiveness,
+        commandAvailability,
       );
     case 'terminal':
       return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
@@ -871,12 +916,16 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
           return [
             `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).`,
             `Selected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.`,
-            'Routing hold: run the resolution command below to acknowledge the retained capacity eviction.',
-            formatBackendOperatorCommand({
-              kind: 'routing-status-resolve',
-              invocationId: status.tombstone.invocationId,
-              forceUnobservable: false,
-            }),
+            ...formatRoutingHoldAction(
+              commandAvailability,
+              'Routing hold: run the resolution command below to acknowledge the retained capacity eviction.',
+              'Routing hold: resolution acknowledgement remains required if this capacity eviction survives the live drain.',
+              {
+                kind: 'routing-status-resolve',
+                invocationId: status.tombstone.invocationId,
+                forceUnobservable: false,
+              },
+            ),
           ].join('\n');
         }
         case 'completed-pair-compaction':
@@ -899,7 +948,10 @@ function formatRetirementHistoryTruncated(history: RetirementHistoryTruncated): 
   return `Routing retirement history: ${history.expiredIdentityCount} exact invocation identities expired (${causes}); observed selection sequence range ${history.minSelectionSequence}-${history.maxSelectionSequence}, selected ${history.earliestSelectedAt} through ${history.latestSelectedAt}.`;
 }
 
-export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResult): string | null {
+export function formatHandoffRoutingStatus(
+  result: HandoffRoutingStatusReadResult,
+  commandAvailability: RoutingCommandAvailability = 'available',
+): string | null {
   const renderKey = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.kind].renderKey;
   switch (renderKey) {
     case 'no-journal':
@@ -911,54 +963,52 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
     case 'detached-wal':
       return [
         'Routing status has a detached non-empty WAL beside an absent or empty main database.',
-        'Routing hold: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'no-generation':
       return [
         'Routing status contains application objects but no generation address.',
-        'Routing hold: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'other-generation':
       if (result.kind !== 'foreign-generation') throw new Error('Foreign-generation render policy is invalid.');
       return [
         `Routing status generation ${result.generation} belongs to another address.`,
-        'Routing hold: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'other-format':
       return [
         'Routing status has this generation address but a different durable format fingerprint.',
-        'Routing hold: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'divergent-schema':
       return [
         'Routing status has this generation address but a divergent schema.',
-        'Routing hold: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'damaged':
       if (result.kind !== 'unreadable') throw new Error('Unreadable render policy is invalid.');
       return [
         `Routing status is unreadable (${result.reason}).`,
-        'Routing hold: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'could-not-observe':
       if (result.kind !== 'undeterminable') throw new Error('Undeterminable render policy is invalid.');
       return [
         `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
-        'Routing hold: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
-        formatBackendOperatorCommand({ kind: 'backend-status' }),
+        ...formatRoutingHoldAction(
+          commandAvailability,
+          'Routing hold: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+          'Routing hold: this read did not establish a discardable classification; inspect again through the live drain guidance below and repair the reported storage condition if it persists.',
+          { kind: 'backend-status' },
+        ),
       ].join('\n');
     case 'content-dependent': {
       if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
       // A hold may not be withheld, so the cap may only ever drop `history`.
       const holds = result.statuses.filter((status) => handoffRoutingInvocationClassification(status) === 'hold');
       const rendered = result.statuses.length <= ROUTING_INVOCATION_RENDER_LIMIT ? result.statuses : holds;
-      const sections = rendered.map(formatRoutingInvocationStatus);
+      const sections = rendered.map((status) => formatRoutingInvocationStatus(status, commandAvailability));
       const collapsed = result.statuses.length - rendered.length;
       if (collapsed > 0) sections.push(`Routing invocations already history, needing no action: ${collapsed}.`);
       const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
@@ -2013,7 +2063,14 @@ function formatRunningStatus(health: RunningHealth): string {
   }
   lines.push(...formatLiveShutdownSection(health));
   if (health.status === 'draining') {
-    lines.push(formatDrainNextStep(health.shutdown), formatBackendOperatorCommand({ kind: 'backend-status' }));
+    lines.push(formatDrainNextStep(health.shutdown));
+    if (
+      health.shutdown === undefined ||
+      'kind' in health.shutdown ||
+      health.shutdown.automaticRetry?.status !== 'failed'
+    ) {
+      lines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
+    }
   }
   return lines.join('\n');
 }
@@ -2042,6 +2099,17 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
     `Current drain work schedule: ${shutdown.boundMs}ms remaining (may be revised when a hold is observed)`,
     `Current attempt: ${shutdown.attempt.started}/${shutdown.attempt.limit}`,
   );
+  if (shutdown.automaticRetry?.status === 'scheduled') {
+    lines.push(
+      `Automatic retry: scheduled after attempt ${shutdown.automaticRetry.attemptsStarted}/${shutdown.automaticRetry.attemptLimit}`,
+    );
+  }
+  if (shutdown.automaticRetry?.status === 'failed') {
+    lines.push(
+      'Automatic retry: failed; no automatic retry remains',
+      `Hold ends when: coordinator process ${shutdown.automaticRetry.holdEndsWhen.pid} exits`,
+    );
+  }
   if (shutdown.lastDeclined !== undefined) {
     lines.push(
       `Attempt ${shutdown.lastDeclined.attempt}/${shutdown.attempt.limit} declined: ${shutdown.lastDeclined.reason}`,
@@ -2059,6 +2127,9 @@ function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string {
   }
   if ('kind' in shutdown) {
     return "Next step: inspect backend status again; this build could not read the coordinator's bound";
+  }
+  if (shutdown.automaticRetry?.status === 'failed') {
+    return `Next step: force coordinator process ${shutdown.automaticRetry.holdEndsWhen.pid} to exit externally; the lifecycle continuation failed and no automatic retry remains`;
   }
   return shutdown.boundMs > 0
     ? 'Next step: inspect backend status again after the current drain-work checkpoint; this moving schedule does not guarantee the drain has finished'

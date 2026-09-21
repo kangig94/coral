@@ -49,6 +49,7 @@ import {
 } from './shutdown.js';
 import { shutdownModeFromReason, type ShutdownMode, type ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type {
+  ShutdownAutomaticRetry,
   ShutdownHoldExit,
   ShutdownHoldReason,
   ShutdownRemainderProjection,
@@ -849,7 +850,7 @@ type LifecycleShutdownRecovery = Readonly<{
   kind: 'retry-shutdown';
   exit: ShutdownHoldExit;
   owner: Readonly<{ kind: 'lifecycle-finalization-continuation'; instanceId: string }>;
-  automaticRetry: Readonly<{ status: 'scheduled'; attemptsStarted: number; attemptLimit: number }>;
+  automaticRetry: ShutdownAutomaticRetry;
   retainedOwnership: Readonly<{
     kind: 'coordinator-exclusive-authority';
     backendInfo: Readonly<{ kind: 'backend-info'; instanceId: string }>;
@@ -1673,20 +1674,25 @@ export function createLifecycle(
         state.lastShutdownDisposition = disposition;
         if (!isLifecycleShutdownTerminal(disposition)) {
           state.shutdownPromise = null;
-          const { attemptsStarted, attemptLimit } = disposition.recovery.automaticRetry;
-          if (state.shutdownContinuations.size === 0 && attemptsStarted < attemptLimit) {
+          const automaticRetry = disposition.recovery.automaticRetry;
+          if (
+            automaticRetry.status === 'scheduled' &&
+            state.shutdownContinuations.size === 0 &&
+            automaticRetry.attemptsStarted < automaticRetry.attemptLimit
+          ) {
             const continuationAbort = new AbortController();
             state.shutdownContinuationAbort = continuationAbort;
             const cancelled = new Promise<void>((resolve) => {
               continuationAbort.signal.addEventListener('abort', () => resolve(), { once: true });
             });
+            let pending: LifecycleShutdownDisposition = disposition;
             const continuation = (async () => {
               // The loop's own attempt count must come from the disposition the ledger just returned, not a
               // continuation-local counter — a count kept here can diverge from the ledger's forced-terminal
               // attempt and strand the loop on a hold with nothing left to schedule a retry.
-              let pending: LifecycleShutdownDisposition = disposition;
               while (
                 !isLifecycleShutdownTerminal(pending) &&
+                pending.recovery.automaticRetry.status === 'scheduled' &&
                 pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
               ) {
                 await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
@@ -1696,6 +1702,18 @@ export function createLifecycle(
               }
             })()
               .catch((error: unknown) => {
+                if (!isLifecycleShutdownTerminal(pending)) {
+                  state.lastShutdownDisposition = {
+                    ...pending,
+                    recovery: {
+                      ...pending.recovery,
+                      automaticRetry: {
+                        status: 'failed',
+                        holdEndsWhen: { kind: 'coordinator-process-exits', pid: backendPid },
+                      },
+                    },
+                  };
+                }
                 log(`lifecycle finalization continuation failed (${formatError(error)})\n`);
               })
               .finally(() => {
@@ -1761,10 +1779,16 @@ export function createLifecycle(
     const reader = state.shutdownObservationReader;
     const reason = state.shutdownReason;
     if (reader === null || reason === null) return undefined;
+    const lastDisposition = state.lastShutdownDisposition;
+    const automaticRetry =
+      lastDisposition !== null && !isLifecycleShutdownTerminal(lastDisposition)
+        ? lastDisposition.recovery.automaticRetry
+        : undefined;
     return {
       reason,
       mode: shutdownModeFromReason(reason),
       ...reader(),
+      ...(automaticRetry === undefined ? {} : { automaticRetry }),
     };
   }
 

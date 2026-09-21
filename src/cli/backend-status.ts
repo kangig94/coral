@@ -13,7 +13,8 @@ import {
 } from '../runtime/errors.js';
 import { createRealRuntime } from '../runtime/real.js';
 import type { Runtime } from '../runtime/ports.js';
-import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../transport/http/sse.js';
+import { parseJsonResponse } from '../transport/http/sse.js';
+import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import {
   isBackendPing,
   parseBackendHealth,
@@ -279,6 +280,7 @@ type OperatorFacingLiveShutdown =
       elapsedMs: number;
       boundMs: number;
       attempt: ShutdownRemainderProjection['attempt'];
+      automaticRetry?: ShutdownRemainderProjection['automaticRetry'];
       lastDeclined?: Readonly<
         Pick<NonNullable<ShutdownRemainderProjection['lastDeclined']>, 'attempt' | 'reason' | 'exit'> &
           OperatorFacingShutdownEntryView & {
@@ -565,6 +567,7 @@ function operatorFacingLiveShutdown(shutdown: BackendHealth['shutdown']): Operat
     elapsedMs: shutdown.elapsedMs,
     boundMs: shutdown.boundMs,
     attempt: shutdown.attempt,
+    ...(shutdown.automaticRetry === undefined ? {} : { automaticRetry: shutdown.automaticRetry }),
     ...(shutdown.lastDeclined === undefined
       ? {}
       : {
