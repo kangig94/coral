@@ -525,6 +525,15 @@ describe('health local carrier observation', () => {
         jobId: '00000000-0000-4000-8000-000000001100',
         operationId: '00000000-0000-4000-8000-000000002100',
       });
+
+      const shutdown = core.lifecycleController.shutdown('replaced');
+      const draining = parseBackendHealth(readHealth());
+      if (draining === null) throw new Error('The produced draining health report did not pass the transport decoder.');
+      const formatted = formatBackendStatus(statusFromParsedHealth(draining), { kind: 'absent' }, null);
+      expect(formatted).toContain('cause=settled-unbound-status-persist-failed');
+      expect(formatted).not.toContain('Then inspect the job and backend status.');
+      expect(formatted).not.toContain('Run the complete clear remedy below.');
+      await shutdown;
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -933,6 +942,10 @@ describe('health local carrier observation', () => {
     const drainingFormatted = formatBackendStatus(statusFromParsedHealth(draining), { kind: 'absent' }, null);
     expect(drainingFormatted).toContain(`record=${survivingRecordKey} job=${surviving.operation.jobId}`);
     expect(drainingFormatted).toContain(`reason=${refusal.reason}`);
+    expect(drainingFormatted).not.toContain('follow the complete recovery remedy below.');
+    expect(drainingFormatted).not.toContain('Run the complete clear remedy below.');
+    expect(drainingFormatted).not.toContain('Then inspect the job and backend status.');
+    expect(drainingFormatted).not.toMatch(/^\s*hold=/gmu);
     expect(drainingFormatted.match(/^\s*[^=\s]+=coral-cli\s.*$/gmu)).toEqual(['command=coral-cli backend status']);
     await shutdown;
   });

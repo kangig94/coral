@@ -1871,7 +1871,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(liveSection).toContain(
       'Current drain work schedule: 0ms remaining (may be revised when a hold is observed)',
     );
-    expect(liveSection).toContain('Automatic retry: failed; fatal coordinator exit has already been requested');
+    expect(liveSection).toContain('Automatic retry: failed');
+    expect(liveSection).not.toContain('fatal coordinator exit has already been requested');
     expect(liveSection).not.toContain('Hold ends when:');
     expect(liveSection).not.toContain('Next step:');
     expect(liveSection).not.toContain('4242');

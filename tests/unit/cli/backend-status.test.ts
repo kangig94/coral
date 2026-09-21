@@ -2571,7 +2571,26 @@ describe('backend status daemon guidance', () => {
 
       expect(output, name).toContain(diagnostic.evidence);
       expect(operatorArtifactLines(output), name).toEqual(['command=coral-cli backend status']);
+      expect(output, name).not.toMatch(/complete (?:recovery|clear) remedy|Then inspect|^\s*hold=/mu);
     }
+  });
+
+  it('does not compose live-handoff remediation for a failed drain', () => {
+    const output = formatBackendStatus(
+      drainCases['failed-automatic-retry'],
+      { kind: 'absent' },
+      liveHandoffResult({
+        kind: 'run-current',
+        reason: {
+          kind: 'routing',
+          basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
+        },
+      }),
+    );
+
+    expect(output).not.toContain('Handoff:');
+    expect(output).not.toContain('Handoff hold:');
+    expect(operatorArtifactLines(output)).toEqual([]);
   });
 
   it.each(Object.entries(drainCases) as [DrainState, RunningBackendStatus][])(
@@ -2661,6 +2680,7 @@ describe('backend status live drain section', () => {
     expect(guidanceStart).toBeGreaterThan(drainStart);
     expect(output.slice(0, drainStart)).toContain('skipped candidate reason=invalid-token');
     expect(output.slice(0, drainStart)).not.toContain('command=');
+    expect(output.slice(0, drainStart)).not.toContain('Inspect backend status from a build that understands the row.');
     expect(output.slice(drainStart, guidanceStart)).not.toContain('command=');
     expect(operatorArtifactLines(output.slice(guidanceStart))).toEqual(['command=coral-cli backend status']);
   });

@@ -682,11 +682,11 @@ export function formatBackendStatus(
   liveHandoffResult: LiveHandoffResult | null,
 ): string {
   const sections = [formatDaemonStatus(daemonStatus)];
-  const routingCommandAvailability =
-    daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining' ? 'blocked-by-live-drain' : 'available';
+  const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
+  const routingCommandAvailability = draining ? 'blocked-by-live-drain' : 'available';
   const routingStatusText = formatHandoffRoutingStatus(routingStatus, routingCommandAvailability);
   if (routingStatusText !== null) sections.push(routingStatusText);
-  if (liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
+  if (!draining && liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
     const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
     if (liveHandoffText !== null) sections.push(liveHandoffText);
   }
@@ -1931,6 +1931,7 @@ export function formatProviderProxySetRowSkips(
 }
 
 function formatRunningStatus(health: RunningHealth): string {
+  const draining = health.status === 'draining';
   const componentLines: string[] = [];
   for (const component of health.components) {
     componentLines.push(...formatComponentLines(component, health.status));
@@ -1981,8 +1982,8 @@ function formatRunningStatus(health: RunningHealth): string {
         `  record=${refusal.recordKey} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} observedAtMs=${refusal.observedAtMs}`,
         `    triggerRecord=${refusal.triggerRecordKey} rowDisposition=${refusal.rowDisposition} releasedLaunchPermits=${refusal.releasedLaunchPermits}`,
         `    reason=${refusal.reason}`,
-        `    ${formatProviderOperationAdoptionRefusalNextStep(refusal, 'Diagnostic hold')}`,
       );
+      if (!draining) lines.push(`    ${formatProviderOperationAdoptionRefusalNextStep(refusal, 'Diagnostic hold')}`);
     }
   }
   const launchReclamations = health.diagnostics?.launchReclamations ?? [];
@@ -2004,8 +2005,8 @@ function formatRunningStatus(health: RunningHealth): string {
       lines.push(
         `  job=${failure.jobId}${operation} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
         `    error=${failure.error}`,
-        formatSettlementRefusalRecordingFailureNextStep(failure),
       );
+      if (!draining) lines.push(formatSettlementRefusalRecordingFailureNextStep(failure));
     }
   }
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
@@ -2050,33 +2051,32 @@ function formatRunningStatus(health: RunningHealth): string {
         ).map((skip) => `    ${skip}`),
       );
       lines.push(
-        '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.',
-        `    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`,
+        draining
+          ? '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it.'
+          : '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.',
       );
+      if (!draining) lines.push(`    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`);
     }
     for (const skipped of durableDispositionSkips) {
       lines.push(
         `  Durable provider proxy disposition this build could not read: key=${skipped.key}${skipped.setToken === null ? '' : ` set=${skipped.setToken}`}.`,
-        `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`,
+        draining
+          ? `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record.`
+          : `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`,
       );
     }
   }
   lines.push(...formatLiveShutdownSection(health));
-  if (health.status === 'draining') {
-    const drainAvailableLines = lines
-      .join('\n')
-      .split('\n')
-      .filter((line) => !/^\s*[^=\s]+=coral-cli\s/u.test(line));
+  if (draining) {
     const nextStep = formatDrainNextStep(health.shutdown);
-    if (nextStep !== null) drainAvailableLines.push(nextStep);
+    if (nextStep !== null) lines.push(nextStep);
     if (
       health.shutdown === undefined ||
       'kind' in health.shutdown ||
       health.shutdown.automaticRetry?.status !== 'failed'
     ) {
-      drainAvailableLines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
+      lines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
     }
-    return drainAvailableLines.join('\n');
   }
   return lines.join('\n');
 }
@@ -2111,7 +2111,7 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
     );
   }
   if (shutdown.automaticRetry?.status === 'failed') {
-    lines.push('Automatic retry: failed; fatal coordinator exit has already been requested');
+    lines.push('Automatic retry: failed');
   }
   if (shutdown.lastDeclined !== undefined) {
     lines.push(

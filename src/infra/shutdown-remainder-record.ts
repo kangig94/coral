@@ -12,7 +12,13 @@ import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
 import { durableCliRuntimePublicationEvidenceSchema } from './durable-cli-runtime-evidence.js';
-import { shutdownModeFromReason, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
+import {
+  shutdownModeFromReason,
+  SHUTDOWN_MODES,
+  SHUTDOWN_REASONS,
+  type ShutdownMode,
+  type ShutdownReason,
+} from './persisted-scalar-contracts.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
@@ -150,6 +156,14 @@ const shutdownRemainderObservationSchema = z.object({
   }),
   lastDeclined: shutdownLastDeclinedSchema.optional(),
 });
+function refineShutdownReasonMode(
+  value: Readonly<{ reason: ShutdownReason; mode: ShutdownMode }>,
+  context: z.RefinementCtx,
+): void {
+  if (value.mode !== shutdownModeFromReason(value.reason)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: 'mode does not match reason' });
+  }
+}
 const shutdownRemainderProjectionBaseSchema = shutdownRemainderObservationSchema.extend({
   reason: z.enum(SHUTDOWN_REASONS),
   mode: z.enum(SHUTDOWN_MODES),
@@ -170,9 +184,7 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
     }),
   ])
   .superRefine((projection, context) => {
-    if (projection.mode !== shutdownModeFromReason(projection.reason)) {
-      context.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: 'mode does not match reason' });
-    }
+    refineShutdownReasonMode(projection, context);
     if (projection.attempt.started > projection.attempt.limit) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -229,13 +241,15 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
       });
     }
   });
-const shutdownRemainderRecordEnvelopeSchema = z.object({
-  instanceId: serializedThrownIdentifierSchema,
-  recordedAt: z.string().datetime(),
-  reason: z.enum(SHUTDOWN_REASONS),
-  mode: z.enum(SHUTDOWN_MODES),
-  entries: z.array(z.unknown()).readonly(),
-});
+const shutdownRemainderRecordEnvelopeSchema = z
+  .object({
+    instanceId: serializedThrownIdentifierSchema,
+    recordedAt: z.string().datetime(),
+    reason: z.enum(SHUTDOWN_REASONS),
+    mode: z.enum(SHUTDOWN_MODES),
+    entries: z.array(z.unknown()).readonly(),
+  })
+  .superRefine(refineShutdownReasonMode);
 
 export function decodeShutdownRemainderRecord(value: unknown):
   | Readonly<{

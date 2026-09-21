@@ -1485,7 +1485,6 @@ export function createLifecycle(
             {
               instanceId,
               reason: terminalReason,
-              mode: shutdownModeFromReason(terminalReason),
               undischarged: losses,
             },
           );

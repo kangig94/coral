@@ -3,7 +3,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createBootstrapProbeExitGate, createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
+import { createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/lifecycle.js';
@@ -3321,17 +3321,8 @@ describe('required provider-proxy shutdown steps', () => {
     expect(logLines.join('')).not.toContain('discovery read denied');
   });
 
-  it('reports a failed lifecycle continuation after requesting fatal coordinator exit', async () => {
-    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
-    const exitGate = createBootstrapProbeExitGate();
-    const fatalErrors: unknown[] = [];
-    const { authority, controller, harness, logLines } = buildBoundaryExhaustionHarness(
-      'continuation-failure',
-      (error) => {
-        fatalErrors.push(error);
-        exitGate.requestExit(1);
-      },
-    );
+  it('reports a failed lifecycle continuation without claiming an optional fatal exit', async () => {
+    const { authority, controller, harness, logLines } = buildBoundaryExhaustionHarness('continuation-failure');
 
     const initial = controller.shutdown('replaced');
     await flush(64);
@@ -3339,7 +3330,7 @@ describe('required provider-proxy shutdown steps', () => {
     await flush(64);
     await initial;
 
-    vi.spyOn(authority, 'liveSets').mockImplementation(() => {
+    const failedRetryObservation = vi.spyOn(authority, 'liveSets').mockImplementation(() => {
       throw new Error('retry observation failed');
     });
     harness.time.tick(50);
@@ -3363,17 +3354,25 @@ describe('required provider-proxy shutdown steps', () => {
       },
     });
     expect(observed?.automaticRetry).toEqual({ status: 'failed' });
-    expect(exitProcess).toHaveBeenCalledWith(1);
-    expect(fatalErrors).toEqual([expect.objectContaining({ message: 'retry observation failed' })]);
 
     if (observed === undefined) throw new Error('Expected a live shutdown observation.');
     const output = formatProducedShutdown(observed);
-    expect(output).toContain('Automatic retry: failed; fatal coordinator exit has already been requested');
+    expect(output).toContain('Automatic retry: failed');
+    expect(output).not.toContain('fatal coordinator exit has already been requested');
     expect(output).not.toContain('Next step:');
     expect(output).not.toContain('force coordinator process');
     expect(output).not.toContain('4242');
     expect(logLines).toContainEqual(expect.stringContaining('retry observation failed'));
-    exitProcess.mockRestore();
+
+    failedRetryObservation.mockRestore();
+    controller.requestShutdownRetry();
+    const retrying = controller.observeShutdown();
+    expect(retrying).toMatchObject({ attempt: { started: 3, limit: 3 } });
+    expect(retrying).not.toHaveProperty('automaticRetry');
+    if (retrying === undefined) throw new Error('Expected the accepted recovery to start a new shutdown attempt.');
+    const retryingOutput = formatProducedShutdown(retrying);
+    expect(retryingOutput).toContain('Current attempt: 3/3');
+    expect(retryingOutput).not.toContain("This build could not read the coordinator's drain report.");
   });
 
   it("a sigint landing between attempts records the ledger's original reason", async () => {
