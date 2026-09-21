@@ -45,7 +45,7 @@ export function discoveryRecordIdentity(record: CoordinatorDiscoveryRecord): Coo
 }
 
 function optionalIdentityMatches<T>(expected: T | undefined, actual: T | undefined): boolean {
-  return expected === undefined || actual === undefined || expected === actual;
+  return expected === undefined || expected === actual;
 }
 
 export function identityMatchesExistingIncumbent(

@@ -2063,7 +2063,8 @@ function formatRunningStatus(health: RunningHealth): string {
   }
   lines.push(...formatLiveShutdownSection(health));
   if (health.status === 'draining') {
-    lines.push(formatDrainNextStep(health.shutdown));
+    const nextStep = formatDrainNextStep(health.shutdown);
+    if (nextStep !== null) lines.push(nextStep);
     if (
       health.shutdown === undefined ||
       'kind' in health.shutdown ||
@@ -2105,10 +2106,7 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
     );
   }
   if (shutdown.automaticRetry?.status === 'failed') {
-    lines.push(
-      'Automatic retry: failed; no automatic retry remains',
-      `Hold ends when: coordinator process ${shutdown.automaticRetry.holdEndsWhen.pid} exits`,
-    );
+    lines.push('Automatic retry: failed; fatal coordinator exit has already been requested');
   }
   if (shutdown.lastDeclined !== undefined) {
     lines.push(
@@ -2121,7 +2119,7 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
   return lines;
 }
 
-function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string {
+function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string | null {
   if (shutdown === undefined) {
     return 'Next step: inspect backend status again; the coordinator reports no bound for this drain';
   }
@@ -2129,7 +2127,7 @@ function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string {
     return "Next step: inspect backend status again; this build could not read the coordinator's bound";
   }
   if (shutdown.automaticRetry?.status === 'failed') {
-    return `Next step: force coordinator process ${shutdown.automaticRetry.holdEndsWhen.pid} to exit externally; the lifecycle continuation failed and no automatic retry remains`;
+    return null;
   }
   return shutdown.boundMs > 0
     ? 'Next step: inspect backend status again after the current drain-work checkpoint; this moving schedule does not guarantee the drain has finished'

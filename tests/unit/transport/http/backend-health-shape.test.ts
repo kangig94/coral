@@ -27,6 +27,7 @@ const HEALTHY_BASE: BackendHealth = {
   flavor: 'prod',
   instanceId: 'instance-1',
   namespace: 'test-ns',
+  pid: 4_242,
   uptimeMs: 1000,
   active: 0,
   activeJobs: 0,
@@ -159,6 +160,25 @@ describe('/health typed shape (AC10a)', () => {
         lastDeclined: { ...SHUTDOWN_PROJECTION.lastDeclined, attempt: 3 },
       },
     },
+    {
+      invariant: 'scheduled retry counters match the ledger projection',
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        automaticRetry: { status: 'scheduled', attemptsStarted: 99, attemptLimit: 1 },
+      },
+    },
+    {
+      invariant: 'a failed retry follows the current declined attempt',
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        attempt: { started: 0, limit: 3 },
+        automaticRetry: {
+          status: 'failed',
+          holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
+        },
+        lastDeclined: undefined,
+      },
+    },
   ])('degrades a semantically impossible shutdown projection when $invariant', ({ shutdown }) => {
     const parsed = parseBackendHealth({
       ...HEALTHY_BASE,
@@ -224,6 +244,15 @@ describe('/health typed shape (AC10a)', () => {
 
   it('accepts a healthy shape with one online component and no diagnostics', () => {
     expect(isBackendHealth(HEALTHY_BASE)).toBe(true);
+  });
+
+  it.each([
+    ['a missing pid', { ...HEALTHY_BASE, pid: undefined }],
+    ['a nonnumeric pid', { ...HEALTHY_BASE, pid: '4242' }],
+    ['a nonpositive pid', { ...HEALTHY_BASE, pid: 0 }],
+    ['a malformed incarnation', { ...HEALTHY_BASE, incarnation: '' }],
+  ])('rejects process identity with %s', (_case, health) => {
+    expect(parseBackendHealth(health)).toBeNull();
   });
 
   it('accepts an empty components array', () => {

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import type { CoordinatorHealthIdentity } from '#src/transport/ipc/health.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const mockState = vi.hoisted(() => ({
   createIpcClient: vi.fn(),
@@ -105,6 +106,25 @@ describe('readIdentityCheckedAuthenticatedHealth', () => {
       })),
     ).resolves.toEqual({ kind: 'unavailable', cause: 'identity-mismatch' });
     expect(mockState.createIpcClient).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['pid', identity({ pid: undefined }), identity()],
+    ['incarnation', identity({ incarnation: undefined }), identity({ incarnation: testIncarnation('expected') })],
+  ] as const)('rejects an authenticated answer missing the expected %s', async (_field, candidate, expected) => {
+    mockState.health.mockResolvedValue({});
+
+    const { readIdentityCheckedAuthenticatedHealth } = await import('#src/transport/ipc/health.js');
+
+    await expect(
+      readIdentityCheckedAuthenticatedHealth(
+        discovery({ incarnation: expected.incarnation }),
+        '/tmp/coral.sock',
+        expected,
+        timePort,
+        () => ({ health: {}, identity: candidate }),
+      ),
+    ).resolves.toEqual({ kind: 'unavailable', cause: 'identity-mismatch' });
   });
 
   it('returns neutral unavailability when authenticated transport fails', async () => {

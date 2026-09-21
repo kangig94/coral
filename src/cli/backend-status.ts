@@ -842,6 +842,8 @@ function decodeBackendHealth(value: unknown): Readonly<{
       bundleHash: health.bundleHash,
       flavor: health.flavor,
       namespace: health.namespace,
+      pid: health.pid,
+      ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
     },
   };
 }

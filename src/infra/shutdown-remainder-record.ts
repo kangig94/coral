@@ -134,10 +134,6 @@ const shutdownAutomaticRetrySchema = z.discriminatedUnion('status', [
   }),
   z.object({
     status: z.literal('failed'),
-    holdEndsWhen: z.object({
-      kind: z.literal('coordinator-process-exits'),
-      pid: z.number().int().positive(),
-    }),
   }),
 ]);
 export const shutdownRemainderProjectionEnvelopeSchema = z
@@ -184,6 +180,32 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ['lastDeclined', 'attempt'],
         message: 'declined attempt reached the terminal attempt limit',
+      });
+    }
+    if (projection.automaticRetry?.status === 'scheduled') {
+      if (projection.automaticRetry.attemptsStarted !== projection.attempt.started) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['automaticRetry', 'attemptsStarted'],
+          message: 'automatic retry attempts do not match the shutdown attempt',
+        });
+      }
+      if (projection.automaticRetry.attemptLimit !== projection.attempt.limit) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['automaticRetry', 'attemptLimit'],
+          message: 'automatic retry limit does not match the shutdown attempt limit',
+        });
+      }
+    }
+    if (
+      projection.automaticRetry?.status === 'failed' &&
+      projection.lastDeclined?.attempt !== projection.attempt.started
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['automaticRetry', 'status'],
+        message: 'failed automatic retry does not follow the current declined attempt',
       });
     }
   });

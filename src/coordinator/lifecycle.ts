@@ -1707,10 +1707,7 @@ export function createLifecycle(
                     ...pending,
                     recovery: {
                       ...pending.recovery,
-                      automaticRetry: {
-                        status: 'failed',
-                        holdEndsWhen: { kind: 'coordinator-process-exits', pid: backendPid },
-                      },
+                      automaticRetry: { status: 'failed' },
                     },
                   };
                 }

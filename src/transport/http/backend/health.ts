@@ -122,6 +122,8 @@ export interface BackendHealth {
   flavor: 'prod' | 'dev';
   instanceId: string;
   namespace: string;
+  pid: number;
+  incarnation?: ProcessIncarnation;
   uptimeMs: number;
   active: number;
   /** Build namespace is provenance, not ownership scope. */
@@ -849,6 +851,10 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     (value.flavor !== 'prod' && value.flavor !== 'dev') ||
     typeof value.instanceId !== 'string' ||
     !isBackendNamespaceToken(value.namespace) ||
+    typeof value.pid !== 'number' ||
+    !Number.isInteger(value.pid) ||
+    value.pid <= 0 ||
+    (value.incarnation !== undefined && !isProcessIncarnation(value.incarnation)) ||
     !Number.isFinite(value.uptimeMs) ||
     !Number.isInteger(value.active) ||
     !Number.isInteger(value.activeJobs) ||

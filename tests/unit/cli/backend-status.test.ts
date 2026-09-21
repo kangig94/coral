@@ -2427,7 +2427,6 @@ describe('backend status daemon guidance', () => {
     attempt: { started: 2, limit: 3 },
     automaticRetry: {
       status: 'failed',
-      holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
     },
     lastDeclined: {
       attempt: 1,
@@ -2458,11 +2457,10 @@ describe('backend status daemon guidance', () => {
       'Next step: inspect backend status again now; the current drain-work schedule has elapsed, but that does not guarantee the drain has finished',
     'projection-positive-bound':
       'Next step: inspect backend status again after the current drain-work checkpoint; this moving schedule does not guarantee the drain has finished',
-    'failed-automatic-retry':
-      'Next step: force coordinator process 4242 to exit externally; the lifecycle continuation failed and no automatic retry remains',
+    'failed-automatic-retry': null,
     unreadable: "Next step: inspect backend status again; this build could not read the coordinator's bound",
     absent: 'Next step: inspect backend status again; the coordinator reports no bound for this drain',
-  } satisfies Record<DrainState, string>;
+  } satisfies Record<DrainState, string | null>;
   const expectedDrainCommands = {
     'projection-zero-bound': ['command=coral-cli backend status'],
     'projection-positive-bound': ['command=coral-cli backend status'],
@@ -2489,7 +2487,9 @@ describe('backend status daemon guidance', () => {
     (state, status) => {
       const output = formatBackendStatus(status, { kind: 'absent' }, null);
 
-      expect(nextStepLines(output)).toEqual([expectedDrainGuidance[state]]);
+      expect(nextStepLines(output)).toEqual(
+        expectedDrainGuidance[state] === null ? [] : [expectedDrainGuidance[state]],
+      );
       expect(operatorArtifactLines(output)).toEqual(expectedDrainCommands[state]);
     },
   );
@@ -2646,6 +2646,7 @@ describe('backend status provider proxy dispositions', () => {
       flavor: 'prod',
       namespace: 'test-ns',
       instanceId: 'instance-1',
+      pid: 4_242,
       uptimeMs: 1_000,
       active: 0,
       activeJobs: 0,
@@ -2954,6 +2955,7 @@ describe('backend status provider proxy dispositions', () => {
       flavor: 'prod',
       namespace: 'test-ns',
       instanceId: 'instance-1',
+      pid: 4_242,
       uptimeMs: 1_000,
       active: 0,
       activeJobs: 0,

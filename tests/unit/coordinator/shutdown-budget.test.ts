@@ -3,7 +3,8 @@ import type { Server, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
+import { createBootstrapProbeExitGate, createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
 import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/lifecycle.js';
 import {
   HANDOFF_DRAIN_TIMEOUT_MS,
@@ -2533,7 +2534,7 @@ async function shutdownFailureDetail(ctx: Parameters<typeof runShutdownSequence>
   return failureDetail(disposition);
 }
 
-function buildBoundaryExhaustionHarness(instanceId: string) {
+function buildBoundaryExhaustionHarness(instanceId: string, onFatalShutdownError?: (error: unknown) => void) {
   const finalizationOrder: string[] = [];
   const initiateControlClose = vi.fn(() => {
     finalizationOrder.push('boundary');
@@ -2637,6 +2638,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         remainder,
         requestExit: onStopped,
       }),
+      ...(onFatalShutdownError === undefined ? {} : { onFatalShutdownError }),
     } as never,
     async () => [],
   );
@@ -3291,8 +3293,17 @@ describe('required provider-proxy shutdown steps', () => {
     expect(logLines.join('')).not.toContain('discovery read denied');
   });
 
-  it('reports a failed lifecycle continuation with process exit as the remaining hold exit', async () => {
-    const { authority, controller, harness, logLines } = buildBoundaryExhaustionHarness('continuation-failure');
+  it('reports a failed lifecycle continuation after requesting fatal coordinator exit', async () => {
+    const exitProcess = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    const exitGate = createBootstrapProbeExitGate();
+    const fatalErrors: unknown[] = [];
+    const { authority, controller, harness, logLines } = buildBoundaryExhaustionHarness(
+      'continuation-failure',
+      (error) => {
+        fatalErrors.push(error);
+        exitGate.requestExit(1);
+      },
+    );
 
     const initial = controller.shutdown('replaced');
     await flush(64);
@@ -3312,19 +3323,47 @@ describe('required provider-proxy shutdown steps', () => {
     expect(failed).toMatchObject({
       disposition: 'held',
       recovery: {
-        automaticRetry: {
-          status: 'failed',
-          holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
-        },
+        automaticRetry: { status: 'failed' },
       },
     });
-    expect(controller.observeShutdown()).toMatchObject({
+    if (failed.disposition !== 'held') throw new Error('Expected the retry failure to retain the held drain.');
+    expect(failed.recovery.automaticRetry).toEqual({ status: 'failed' });
+    const observed = controller.observeShutdown();
+    expect(observed).toMatchObject({
       automaticRetry: {
         status: 'failed',
-        holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
       },
     });
+    expect(observed?.automaticRetry).toEqual({ status: 'failed' });
+    expect(exitProcess).toHaveBeenCalledWith(1);
+    expect(fatalErrors).toEqual([expect.objectContaining({ message: 'retry observation failed' })]);
+
+    if (observed === undefined) throw new Error('Expected a live shutdown observation.');
+    const output = formatBackendStatus(
+      {
+        status: 'ok',
+        health: {
+          status: 'draining',
+          kernel: { phase: 'draining', readyAt: null },
+          version: 'test',
+          uptimeMs: 0,
+          components: [],
+          activeJobs: 0,
+          queueDepth: 0,
+          shutdown: { ...observed, lastDeclined: undefined, skippedEntries: [] },
+          skippedProviderProxySetRows: 0,
+          skippedProviderProxySetTokens: [],
+        },
+      } as never,
+      { kind: 'absent' },
+      null,
+    );
+    expect(output).toContain('Automatic retry: failed; fatal coordinator exit has already been requested');
+    expect(output).not.toContain('Next step:');
+    expect(output).not.toContain('force coordinator process');
+    expect(output).not.toContain('4242');
     expect(logLines).toContainEqual(expect.stringContaining('retry observation failed'));
+    exitProcess.mockRestore();
   });
 
   it("a sigint landing between attempts records the ledger's original reason", async () => {

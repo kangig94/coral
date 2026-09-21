@@ -11,6 +11,7 @@ import type { CoordinatorObservation } from '#src/transport/http/backend/coordin
 import { reserveRefusedPort } from '../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import {} from '#src/infra/shutdown-remainder-record.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -39,6 +40,8 @@ const mockState = vi.hoisted(() => ({
     kind: 'unavailable',
     cause: 'transport-failure',
   } as IpcHealthMod.AuthenticatedHealthObservation<BackendHealthParseResult>,
+  ipcReply: null as unknown,
+  ipcDecodedIdentity: null as unknown,
   ipcDialCount: 0,
 }));
 
@@ -90,6 +93,10 @@ vi.mock('#src/transport/ipc/health.js', async (importOriginal) => {
         record: { socketPath: string },
         expectedSocketPath: string,
         expectedIdentity: unknown,
+        _timePort: unknown,
+        decode: (
+          value: unknown,
+        ) => Readonly<{ health: BackendHealthParseResult; identity: IpcHealthMod.CoordinatorHealthIdentity }> | null,
       ): Promise<IpcHealthMod.AuthenticatedHealthObservation<BackendHealthParseResult>> => {
         if (expectedIdentity === null) {
           return { kind: 'unavailable', cause: 'discovery-identity-incomplete' };
@@ -98,6 +105,12 @@ vi.mock('#src/transport/ipc/health.js', async (importOriginal) => {
           return { kind: 'unavailable', cause: 'socket-mismatch' };
         }
         mockState.ipcDialCount += 1;
+        if (mockState.ipcReply !== null) {
+          const decoded = decode(mockState.ipcReply);
+          if (decoded === null) return { kind: 'unavailable', cause: 'health-shape-rejected' };
+          mockState.ipcDecodedIdentity = decoded.identity;
+          return { kind: 'health', health: decoded.health };
+        }
         return mockState.ipcObservation;
       },
     ),
@@ -174,6 +187,8 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.strictIdentityProven = true;
     mockState.now = NOW;
     mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+    mockState.ipcReply = null;
+    mockState.ipcDecodedIdentity = null;
     mockState.ipcDialCount = 0;
   });
 
@@ -182,6 +197,32 @@ describe('getBackendStatusFull record disposition', () => {
   // runs next.
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('preserves the authenticated IPC process identity decoded from detailed health', async () => {
+    const incarnation = testIncarnation('coordinator');
+    mockState.observed = {
+      kind: 'addressed',
+      coordinator: backendInfo({ incarnation }),
+      pidLiveness: 'alive',
+    };
+    stubProbes(new Response('{}', { status: 502 }));
+    mockState.ipcReply = JSON.parse(detailed('draining', { pid: 12_345, incarnation }));
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: { status: 'draining' },
+    });
+    expect(mockState.ipcDecodedIdentity).toEqual({
+      instanceId: 'test-instance',
+      version: '0.0.0',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-namespace',
+      pid: 12_345,
+      incarnation,
+    });
   });
 
   it('reports no_record_no_socket when neither discovery evidence nor a socket exists', async () => {
@@ -1204,6 +1245,8 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.strictIdentityProven = true;
     mockState.now = NOW;
     mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+    mockState.ipcReply = null;
+    mockState.ipcDecodedIdentity = null;
     mockState.ipcDialCount = 0;
   });
 
@@ -1368,6 +1411,7 @@ function detailed(status: 'starting' | 'ok' | 'draining', extra: Readonly<Record
     flavor: 'prod',
     instanceId: 'test-instance',
     namespace: 'test-namespace',
+    pid: 12_345,
     uptimeMs: 1_000,
     active: 0,
     activeJobs: 0,
@@ -1407,6 +1451,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.strictIdentityProven = true;
     mockState.now = NOW;
     mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+    mockState.ipcReply = null;
+    mockState.ipcDecodedIdentity = null;
     mockState.ipcDialCount = 0;
   });
 
@@ -1785,11 +1831,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
             mode: 'handoff',
             elapsedMs: 12_000,
             boundMs: 0,
-            attempt: { started: 3, limit: 3 },
-            automaticRetry: {
-              status: 'failed',
-              holdEndsWhen: { kind: 'coordinator-process-exits', pid: 4_242 },
-            },
+            attempt: { started: 2, limit: 3 },
+            automaticRetry: { status: 'failed' },
             lastDeclined: {
               attempt: 2,
               reason: 'required-shutdown-step-unsettled',
@@ -1828,12 +1871,13 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(liveSection).toContain(
       'Current drain work schedule: 0ms remaining (may be revised when a hold is observed)',
     );
-    expect(liveSection).toContain('Automatic retry: failed; no automatic retry remains');
-    expect(liveSection).toContain('Hold ends when: coordinator process 4242 exits');
-    expect(liveSection).toContain('Next step: force coordinator process 4242 to exit externally');
+    expect(liveSection).toContain('Automatic retry: failed; fatal coordinator exit has already been requested');
+    expect(liveSection).not.toContain('Hold ends when:');
+    expect(liveSection).not.toContain('Next step:');
+    expect(liveSection).not.toContain('4242');
     expect(liveSection).not.toContain('command=coral-cli backend status');
     expect(liveSection).not.toContain('Bound to drain terminal');
-    expect(liveSection).toContain('Current attempt: 3/3');
+    expect(liveSection).toContain('Current attempt: 2/3');
     expect(liveSection).toContain('Attempt 2/3 declined: required-shutdown-step-unsettled');
     expect(liveSection.toLowerCase()).not.toContain('recorded');
     expect(liveSection).toContain('Provider control proxy instances retained: 1');
