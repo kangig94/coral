@@ -157,6 +157,19 @@ function runningBackendStatus(
   return { status: 'ok', health: { ...BASE_RUNNING_HEALTH, ...health, diagnostics } };
 }
 
+const READABLE_DRAIN_SHUTDOWN = {
+  reason: 'sigterm',
+  mode: 'handoff',
+  elapsedMs: 100,
+  boundMs: 0,
+  attempt: { started: 0, limit: 3 },
+} as const satisfies NonNullable<RunningBackendHealth['shutdown']>;
+
+const DRAINING_HEALTH = {
+  status: 'draining',
+  kernel: { phase: 'draining', readyAt: null },
+} as const satisfies Partial<RunningBackendHealth>;
+
 function nextStepLines(output: string): string[] {
   return output
     .split('\n')
@@ -2105,6 +2118,14 @@ describe('backend status subordinate guidance', () => {
         );
         expect(nextStepLines(output), kind).toEqual([]);
         expect(output, kind).toContain('Diagnostic hold');
+
+        const drainingOutput = formatBackendStatus(
+          runningBackendStatus({ providerOperationAdoptionRefusals: [adoptionRefusal(remedy)] }, DRAINING_HEALTH),
+          { kind: 'absent' },
+          null,
+        );
+        expect(drainingOutput, kind).toContain('reason=adoption refused');
+        expect(operatorArtifactLines(drainingOutput), kind).toEqual(['command=coral-cli backend status']);
       }
     }
   });
@@ -2163,6 +2184,14 @@ describe('backend status subordinate guidance', () => {
       expect(nextStepLines(output), cause).toEqual([]);
       expect(output, cause).toMatch(/^\s*hold=/mu);
       expect(output, cause).not.toContain('nextStep=');
+
+      const drainingOutput = formatBackendStatus(
+        runningBackendStatus({ settlementRefusalRecordingFailures: [failure] }, DRAINING_HEALTH),
+        { kind: 'absent' },
+        null,
+      );
+      expect(drainingOutput, cause).toContain(`cause=${cause}`);
+      expect(operatorArtifactLines(drainingOutput), cause).toEqual(['command=coral-cli backend status']);
     }
   });
 
@@ -2264,6 +2293,13 @@ describe('backend status subordinate guidance', () => {
     for (const [name, status] of Object.entries(cases)) {
       const output = formatBackendStatus(status, { kind: 'absent' }, null);
       expect(nextStepLines(output), name).toEqual([]);
+
+      const drainingOutput = formatBackendStatus(
+        { ...status, health: { ...status.health, ...DRAINING_HEALTH } },
+        { kind: 'absent' },
+        null,
+      );
+      expect(operatorArtifactLines(drainingOutput), name).toEqual(['command=coral-cli backend status']);
     }
   });
 
@@ -2308,6 +2344,14 @@ describe('backend status subordinate guidance', () => {
           null,
         );
         expect(nextStepLines(output), phase).toEqual([]);
+
+        const drainingOutput = formatBackendStatus(
+          runningBackendStatus({}, { ...DRAINING_HEALTH, components: [component] }),
+          { kind: 'absent' },
+          null,
+        );
+        expect(drainingOutput, phase).toContain(`  ${component.id}: ${component.phase}`);
+        expect(operatorArtifactLines(drainingOutput), phase).toEqual(['command=coral-cli backend status']);
       }
     }
   });
@@ -2411,17 +2455,8 @@ describe('backend status daemon guidance', () => {
     | 'unreadable'
     | 'absent';
 
-  const readableShutdown = {
-    reason: 'sigterm',
-    mode: 'handoff',
-    elapsedMs: 100,
-    boundMs: 0,
-    attempt: { started: 0, limit: 3 },
-  } as const satisfies NonNullable<RunningBackendHealth['shutdown']>;
-  const drainingHealth = {
-    status: 'draining',
-    kernel: { phase: 'draining', readyAt: null },
-  } as const satisfies Partial<RunningBackendHealth>;
+  const readableShutdown = READABLE_DRAIN_SHUTDOWN;
+  const drainingHealth = DRAINING_HEALTH;
   const failedAutomaticRetry = {
     ...readableShutdown,
     attempt: { started: 2, limit: 3 },
@@ -2479,6 +2514,63 @@ describe('backend status daemon guidance', () => {
 
       expect(operatorArtifactLines(output).length, state).toBeLessThanOrEqual(1);
       expect(output, state).toContain('Routing hold:');
+    }
+  });
+
+  it('keeps diagnostic evidence but removes commands unavailable to the draining coordinator', () => {
+    const diagnostics = {
+      'recovery-quarantine-clear': {
+        value: {
+          providerOperationAdoptionRefusals: [
+            {
+              triggerRecordKey: 'trigger-record',
+              rowDisposition: 'discarded',
+              releasedLaunchPermits: 0,
+              recordKey: 'surviving-record',
+              jobId: 'job-1',
+              operationId: 'operation-1',
+              proxyInstanceId: 'proxy-1',
+              buildSetId: 'build-set-1',
+              reason: 'adoption refused',
+              remedy: {
+                kind: 'recovery-quarantine-clear',
+                command: {
+                  kind: 'clear',
+                  boundary: 'provider-operation-unreadable',
+                  key: 'surviving-record',
+                  revision: 'fingerprint:sha256:' + 'b'.repeat(64),
+                },
+              },
+              observedAtMs: 123,
+            },
+          ],
+        },
+        evidence: 'reason=adoption refused',
+      },
+      'settlement-refusal': {
+        value: {
+          settlementRefusalRecordingFailures: [
+            {
+              jobId: 'job-1',
+              cause: 'terminal-persist-failed',
+              error: 'persist failed',
+              observedAtMs: 123,
+            },
+          ],
+        },
+        evidence: 'error=persist failed',
+      },
+    } satisfies Record<string, { value: RunningDiagnostics; evidence: string }>;
+
+    for (const [name, diagnostic] of Object.entries(diagnostics)) {
+      const output = formatBackendStatus(
+        runningBackendStatus(diagnostic.value, { ...drainingHealth, shutdown: readableShutdown }),
+        { kind: 'absent' },
+        null,
+      );
+
+      expect(output, name).toContain(diagnostic.evidence);
+      expect(operatorArtifactLines(output), name).toEqual(['command=coral-cli backend status']);
     }
   });
 
@@ -2548,7 +2640,7 @@ describe('backend status live drain section', () => {
     ['projection', readableShutdown],
     ['unreadable', { kind: 'unreadable' } as const],
     ['absent', undefined],
-  ] as const)('keeps diagnostic commands outside the %s drain region', (_state, shutdown) => {
+  ] as const)('keeps diagnostic evidence but no diagnostic commands for a %s drain', (_state, shutdown) => {
     const status = runningBackendStatus(
       {
         providerProxySetRowSkips: [{ reason: 'invalid-token', setToken: 'invalid-token', setIdentity: null }],
@@ -2567,7 +2659,8 @@ describe('backend status live drain section', () => {
 
     expect(drainStart).toBeGreaterThanOrEqual(0);
     expect(guidanceStart).toBeGreaterThan(drainStart);
-    expect(output.slice(0, drainStart)).toContain('command=coral-cli backend status');
+    expect(output.slice(0, drainStart)).toContain('skipped candidate reason=invalid-token');
+    expect(output.slice(0, drainStart)).not.toContain('command=');
     expect(output.slice(drainStart, guidanceStart)).not.toContain('command=');
     expect(operatorArtifactLines(output.slice(guidanceStart))).toEqual(['command=coral-cli backend status']);
   });

@@ -40,9 +40,11 @@ export type ShutdownHoldExit = z.infer<typeof shutdownHoldExitSchema>;
 
 export type ShutdownRetainedAuthority = DeepReadonly<z.infer<typeof shutdownRetainedAuthoritySchema>>;
 
-export type ShutdownAutomaticRetry = DeepReadonly<z.infer<typeof shutdownAutomaticRetrySchema>>;
+export type ShutdownAutomaticRetry = NonNullable<ShutdownRemainderProjection['automaticRetry']>;
 
 export type ShutdownUndischarged = DeepReadonly<z.infer<typeof shutdownRemainderEntrySchema>>;
+
+export type ShutdownRemainderObservation = DeepReadonly<z.infer<typeof shutdownRemainderObservationSchema>>;
 
 export type ShutdownRemainderProjection = DeepReadonly<z.infer<typeof shutdownRemainderProjectionEnvelopeSchema>>;
 
@@ -126,37 +128,47 @@ export const shutdownRemainderEntrySchema = z.object({
   ]),
   settlement: settlementSchema,
 });
-const shutdownAutomaticRetrySchema = z.discriminatedUnion('status', [
-  z.object({
-    status: z.literal('scheduled'),
-    attemptsStarted: z.number().int().nonnegative(),
-    attemptLimit: z.number().int().positive(),
+const scheduledShutdownAutomaticRetrySchema = z.object({
+  status: z.literal('scheduled'),
+  attemptsStarted: z.number().int().nonnegative(),
+  attemptLimit: z.number().int().positive(),
+});
+const failedShutdownAutomaticRetrySchema = z.object({ status: z.literal('failed') });
+const shutdownLastDeclinedSchema = z.object({
+  attempt: z.number().int().positive(),
+  reason: shutdownHoldReasonSchema,
+  exit: shutdownHoldExitSchema,
+  undischarged: z.array(shutdownRemainderEntrySchema).readonly(),
+  retainedAuthority: shutdownRetainedAuthoritySchema,
+});
+const shutdownRemainderObservationSchema = z.object({
+  elapsedMs: z.number().finite().nonnegative(),
+  boundMs: z.number().finite().nonnegative(),
+  attempt: z.object({
+    started: z.number().int().nonnegative(),
+    limit: z.number().int().positive(),
   }),
-  z.object({
-    status: z.literal('failed'),
-  }),
-]);
+  lastDeclined: shutdownLastDeclinedSchema.optional(),
+});
+const shutdownRemainderProjectionBaseSchema = shutdownRemainderObservationSchema.extend({
+  reason: z.enum(SHUTDOWN_REASONS),
+  mode: z.enum(SHUTDOWN_MODES),
+});
 export const shutdownRemainderProjectionEnvelopeSchema = z
-  .object({
-    reason: z.enum(SHUTDOWN_REASONS),
-    mode: z.enum(SHUTDOWN_MODES),
-    elapsedMs: z.number().finite().nonnegative(),
-    boundMs: z.number().finite().nonnegative(),
-    attempt: z.object({
-      started: z.number().int().nonnegative(),
-      limit: z.number().int().positive(),
+  .union([
+    shutdownRemainderProjectionBaseSchema.extend({
+      automaticRetry: z.undefined().optional(),
+      lastDeclined: shutdownLastDeclinedSchema.optional(),
     }),
-    automaticRetry: shutdownAutomaticRetrySchema.optional(),
-    lastDeclined: z
-      .object({
-        attempt: z.number().int().positive(),
-        reason: shutdownHoldReasonSchema,
-        exit: shutdownHoldExitSchema,
-        undischarged: z.array(shutdownRemainderEntrySchema).readonly(),
-        retainedAuthority: shutdownRetainedAuthoritySchema,
-      })
-      .optional(),
-  })
+    shutdownRemainderProjectionBaseSchema.extend({
+      automaticRetry: scheduledShutdownAutomaticRetrySchema,
+      lastDeclined: shutdownLastDeclinedSchema,
+    }),
+    shutdownRemainderProjectionBaseSchema.extend({
+      automaticRetry: failedShutdownAutomaticRetrySchema,
+      lastDeclined: shutdownLastDeclinedSchema,
+    }),
+  ])
   .superRefine((projection, context) => {
     if (projection.mode !== shutdownModeFromReason(projection.reason)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: 'mode does not match reason' });
@@ -182,7 +194,7 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
         message: 'declined attempt reached the terminal attempt limit',
       });
     }
-    if (projection.automaticRetry?.status === 'scheduled') {
+    if (projection.automaticRetry?.status === 'scheduled' && projection.lastDeclined !== undefined) {
       if (projection.automaticRetry.attemptsStarted !== projection.attempt.started) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -197,15 +209,23 @@ export const shutdownRemainderProjectionEnvelopeSchema = z
           message: 'automatic retry limit does not match the shutdown attempt limit',
         });
       }
+      if (projection.lastDeclined.attempt !== projection.attempt.started) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['lastDeclined', 'attempt'],
+          message: 'scheduled automatic retry does not follow the current declined attempt',
+        });
+      }
     }
     if (
       projection.automaticRetry?.status === 'failed' &&
-      projection.lastDeclined?.attempt !== projection.attempt.started
+      projection.lastDeclined !== undefined &&
+      projection.lastDeclined.attempt + 1 !== projection.attempt.started
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['automaticRetry', 'status'],
-        message: 'failed automatic retry does not follow the current declined attempt',
+        message: 'failed automatic retry does not follow the preceding declined attempt',
       });
     }
   });

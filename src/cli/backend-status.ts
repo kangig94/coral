@@ -811,7 +811,9 @@ async function probeUnauthenticatedPing(
   return { result: unreachable(`health responded ${response.status}`) };
 }
 
-function statusFromParsedHealth(parsed: BackendHealthParseResult): Extract<AddressedProbeStatus, { status: 'ok' }> {
+export function statusFromParsedHealth(
+  parsed: BackendHealthParseResult,
+): Extract<AddressedProbeStatus, { status: 'ok' }> {
   const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
   const { namespace: _namespace, status, shutdown, ...rest } = health;
   const normalizedShutdown = operatorFacingLiveShutdown(shutdown);

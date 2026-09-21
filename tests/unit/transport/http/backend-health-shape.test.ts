@@ -112,6 +112,10 @@ describe('/health typed shape (AC10a)', () => {
     expectTypeOf<
       Exclude<NonNullable<BackendHealth['shutdown']>, { kind: 'unreadable' }>
     >().toMatchTypeOf<ShutdownRemainderProjection>();
+    type ScheduledProjection = Extract<ShutdownRemainderProjection, { automaticRetry: { status: 'scheduled' } }>;
+    expectTypeOf<ScheduledProjection['lastDeclined']>().toEqualTypeOf<
+      NonNullable<ShutdownRemainderProjection['lastDeclined']>
+    >();
   });
 
   it('accepts an older payload without a shutdown projection', () => {
@@ -168,7 +172,16 @@ describe('/health typed shape (AC10a)', () => {
       },
     },
     {
-      invariant: 'a failed retry follows the current declined attempt',
+      invariant: 'a scheduled retry follows a declined attempt',
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        attempt: { started: 0, limit: 3 },
+        automaticRetry: { status: 'scheduled', attemptsStarted: 0, attemptLimit: 3 },
+        lastDeclined: undefined,
+      },
+    },
+    {
+      invariant: 'a failed retry follows the preceding declined attempt',
       shutdown: {
         ...SHUTDOWN_PROJECTION,
         attempt: { started: 0, limit: 3 },

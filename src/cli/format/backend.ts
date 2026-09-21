@@ -2063,15 +2063,20 @@ function formatRunningStatus(health: RunningHealth): string {
   }
   lines.push(...formatLiveShutdownSection(health));
   if (health.status === 'draining') {
+    const drainAvailableLines = lines
+      .join('\n')
+      .split('\n')
+      .filter((line) => !/^\s*[^=\s]+=coral-cli\s/u.test(line));
     const nextStep = formatDrainNextStep(health.shutdown);
-    if (nextStep !== null) lines.push(nextStep);
+    if (nextStep !== null) drainAvailableLines.push(nextStep);
     if (
       health.shutdown === undefined ||
       'kind' in health.shutdown ||
       health.shutdown.automaticRetry?.status !== 'failed'
     ) {
-      lines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
+      drainAvailableLines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
     }
+    return drainAvailableLines.join('\n');
   }
   return lines.join('\n');
 }

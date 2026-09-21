@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createBootstrapProbeExitGate, createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
 import { formatBackendStatus } from '#src/cli/format/backend.js';
+import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/lifecycle.js';
 import {
   HANDOFF_DRAIN_TIMEOUT_MS,
@@ -27,6 +28,8 @@ import type {
 } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { DurableProcessRetention } from '#src/coordinator/live/durable-transport.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
+import { parseBackendHealth } from '#src/transport/http/backend/health.js';
+import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { BackendInfoRemovalResult } from '#src/infra/backend-discovery.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -34,6 +37,31 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 
 type CallLog = string[];
+
+function formatProducedShutdown(shutdown: NonNullable<HealthSnapshot['shutdown']>): string {
+  const parsed = parseBackendHealth({
+    status: 'draining',
+    kernel: { phase: 'draining', readyAt: null },
+    version: 'test',
+    bundleHash: 'test-bundle',
+    flavor: 'prod',
+    namespace: 'test',
+    instanceId: 'test-instance',
+    pid: process.pid,
+    uptimeMs: 0,
+    active: 0,
+    activeJobs: 0,
+    liveDiscuss: 0,
+    queueDepth: 0,
+    inflightRequests: 0,
+    textProjectionState: 'idle',
+    env: {},
+    components: [],
+    shutdown,
+  } satisfies HealthSnapshot);
+  if (parsed === null) throw new Error('Expected the produced health snapshot to pass the transport decoder.');
+  return formatBackendStatus(statusFromParsedHealth(parsed), { kind: 'absent' }, null);
+}
 
 interface Harness {
   time: VirtualTime;
@@ -3339,25 +3367,7 @@ describe('required provider-proxy shutdown steps', () => {
     expect(fatalErrors).toEqual([expect.objectContaining({ message: 'retry observation failed' })]);
 
     if (observed === undefined) throw new Error('Expected a live shutdown observation.');
-    const output = formatBackendStatus(
-      {
-        status: 'ok',
-        health: {
-          status: 'draining',
-          kernel: { phase: 'draining', readyAt: null },
-          version: 'test',
-          uptimeMs: 0,
-          components: [],
-          activeJobs: 0,
-          queueDepth: 0,
-          shutdown: { ...observed, lastDeclined: undefined, skippedEntries: [] },
-          skippedProviderProxySetRows: 0,
-          skippedProviderProxySetTokens: [],
-        },
-      } as never,
-      { kind: 'absent' },
-      null,
-    );
+    const output = formatProducedShutdown(observed);
     expect(output).toContain('Automatic retry: failed; fatal coordinator exit has already been requested');
     expect(output).not.toContain('Next step:');
     expect(output).not.toContain('force coordinator process');

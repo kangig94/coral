@@ -1834,7 +1834,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
             attempt: { started: 2, limit: 3 },
             automaticRetry: { status: 'failed' },
             lastDeclined: {
-              attempt: 2,
+              attempt: 1,
               reason: 'required-shutdown-step-unsettled',
               exit: 'authority-release-settlement',
               undischarged: [entry, skippedEntry],
@@ -1878,7 +1878,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(liveSection).not.toContain('command=coral-cli backend status');
     expect(liveSection).not.toContain('Bound to drain terminal');
     expect(liveSection).toContain('Current attempt: 2/3');
-    expect(liveSection).toContain('Attempt 2/3 declined: required-shutdown-step-unsettled');
+    expect(liveSection).toContain('Attempt 1/3 declined: required-shutdown-step-unsettled');
     expect(liveSection.toLowerCase()).not.toContain('recorded');
     expect(liveSection).toContain('Provider control proxy instances retained: 1');
     expect(liveSection).toContain('Provider proxy instance: 22222222-2222-4222-8222-222222222222');

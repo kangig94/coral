@@ -10,6 +10,7 @@ import type * as ExecutionServicesMod from '#src/coordinator/composition/executi
 import type * as CarrierObserverMod from '#src/coordinator/live/carrier-observer.js';
 import type * as NodeProcessMod from '#src/infra/node-process.js';
 import type { ProviderOperationStartupOwnershipReleaseDisposition } from '#src/recovery/unreadable-provider-operation.js';
+import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import { formatBackendStatus, formatUnreadableProviderOperationDiscard } from '#src/cli/format/backend.js';
 import { registerBackendCommands } from '#src/cli/commands/backend.js';
@@ -409,6 +410,13 @@ describe('health live shutdown observation', () => {
       attempt: { started: 3, limit: 3 },
       lastDeclined: { attempt: 2 },
     });
+    const decodedRetryInFlight = parseBackendHealth(readHealth());
+    expect(decodedRetryInFlight?.health.shutdown).toMatchObject({
+      attempt: { started: 3, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(retryInFlight).not.toHaveProperty('automaticRetry');
+    expect(decodedRetryInFlight?.health.shutdown).not.toEqual({ kind: 'unreadable' });
     expect(retryInFlight).not.toHaveProperty('state');
     expect(retryInFlight?.boundMs).toBeLessThan(previousBoundMs ?? Number.POSITIVE_INFINITY);
 
@@ -918,6 +926,15 @@ describe('health local carrier observation', () => {
     expect(formatted).toContain(`reason=${refusal.reason}`);
     expect(formatted).toContain('Coral retries the remote settlement path automatically');
     expect(formatted).not.toContain('external repair');
+
+    const shutdown = core.lifecycleController.shutdown('replaced');
+    const draining = parseBackendHealth(readHealth());
+    if (draining === null) throw new Error('The produced draining health report did not pass the transport decoder.');
+    const drainingFormatted = formatBackendStatus(statusFromParsedHealth(draining), { kind: 'absent' }, null);
+    expect(drainingFormatted).toContain(`record=${survivingRecordKey} job=${surviving.operation.jobId}`);
+    expect(drainingFormatted).toContain(`reason=${refusal.reason}`);
+    expect(drainingFormatted.match(/^\s*[^=\s]+=coral-cli\s.*$/gmu)).toEqual(['command=coral-cli backend status']);
+    await shutdown;
   });
 
   it('preserves the provider-operation row and launch capacity while startup recovery owns the fence', async () => {

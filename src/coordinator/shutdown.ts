@@ -7,7 +7,7 @@ import {
 } from '../infra/node-process.js';
 import { shutdownModeFromReason, type ShutdownMode, type ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type {
-  ShutdownRemainderProjection,
+  ShutdownRemainderObservation,
   ShutdownUndischarged,
   UndischargedRemainder,
 } from '../infra/shutdown-remainder-record.js';
@@ -76,7 +76,7 @@ type RunShutdownSequenceContext = {
   reason: ShutdownReason;
   incident?: ShutdownIncident;
   currentReason?: () => ShutdownReason;
-  registerShutdownObservationReader?: (reader: () => Omit<ShutdownRemainderProjection, 'reason' | 'mode'>) => void;
+  registerShutdownObservationReader?: (reader: () => ShutdownRemainderObservation) => void;
   takeIncidents?: () => readonly ShutdownIncidentOccurrence[];
   hardConsequencesAbort?: AbortSignal;
   state: LifecycleWiringState;
