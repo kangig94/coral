@@ -2508,14 +2508,15 @@ describe('backend status daemon guidance', () => {
     expectTypeOf<RunningBackendHealth['status']>().toEqualTypeOf<'ok' | 'draining'>();
   });
 
-  it('keeps live-drain executable guidance singular when routing also holds', () => {
-    for (const [state, status] of Object.entries(drainCases)) {
+  it.each(Object.entries(drainCases) as [DrainState, RunningBackendStatus][])(
+    'keeps live-drain executable guidance exact for %s when routing also holds',
+    (state, status) => {
       const output = formatBackendStatus(status, { kind: 'detached-wal' }, null);
 
-      expect(operatorArtifactLines(output).length, state).toBeLessThanOrEqual(1);
-      expect(output, state).toContain('Routing hold:');
-    }
-  });
+      expect(operatorArtifactLines(output)).toEqual(expectedDrainCommands[state]);
+      expect(output).toContain('Routing hold:');
+    },
+  );
 
   it('keeps diagnostic evidence but removes commands unavailable to the draining coordinator', () => {
     const diagnostics = {

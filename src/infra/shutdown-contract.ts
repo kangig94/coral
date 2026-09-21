@@ -118,90 +118,111 @@ const shutdownRemainderProjectionBaseSchema = shutdownRemainderObservationSchema
   mode: z.enum(SHUTDOWN_MODES),
 });
 
-export const shutdownRemainderProjectionEnvelopeSchema = z
-  .union([
-    shutdownRemainderProjectionBaseSchema.extend({
-      automaticRetry: z.undefined().optional(),
-      lastDeclined: shutdownLastDeclinedSchema.optional(),
-    }),
-    shutdownRemainderProjectionBaseSchema.extend({
-      automaticRetry: scheduledShutdownAutomaticRetrySchema,
-      lastDeclined: shutdownLastDeclinedSchema,
-    }),
-    shutdownRemainderProjectionBaseSchema.extend({
-      automaticRetry: failedShutdownAutomaticRetrySchema,
-      lastDeclined: shutdownLastDeclinedSchema,
-    }),
-  ])
-  .superRefine((projection, context) => {
+const shutdownRemainderProjectionEnvelopeUnionSchema = z.union([
+  shutdownRemainderProjectionBaseSchema.extend({
+    automaticRetry: z.undefined().optional(),
+    lastDeclined: shutdownLastDeclinedSchema.optional(),
+  }),
+  shutdownRemainderProjectionBaseSchema.extend({
+    automaticRetry: scheduledShutdownAutomaticRetrySchema,
+    lastDeclined: shutdownLastDeclinedSchema,
+  }),
+  shutdownRemainderProjectionBaseSchema.extend({
+    automaticRetry: failedShutdownAutomaticRetrySchema,
+    lastDeclined: shutdownLastDeclinedSchema,
+  }),
+]);
+
+type ShutdownRemainderProjectionCandidate = z.infer<typeof shutdownRemainderProjectionEnvelopeUnionSchema>;
+
+function validateShutdownAttemptProgression(
+  projection: ShutdownRemainderProjectionCandidate,
+  context: z.RefinementCtx,
+): void {
+  if (projection.attempt.started > projection.attempt.limit) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['attempt', 'started'],
+      message: 'started attempts exceed the attempt limit',
+    });
+  }
+  if (projection.lastDeclined !== undefined && projection.lastDeclined.attempt > projection.attempt.started) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['lastDeclined', 'attempt'],
+      message: 'declined attempt was not started',
+    });
+  }
+  if (projection.lastDeclined !== undefined && projection.lastDeclined.attempt >= projection.attempt.limit) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['lastDeclined', 'attempt'],
+      message: 'declined attempt reached the terminal attempt limit',
+    });
+  }
+  if (
+    projection.automaticRetry === undefined &&
+    projection.lastDeclined !== undefined &&
+    projection.lastDeclined.attempt === projection.attempt.started
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['lastDeclined', 'attempt'],
+      message: 'current declined attempt has no automatic retry disposition',
+    });
+  }
+}
+
+function validateScheduledShutdownRetry(
+  projection: ShutdownRemainderProjectionCandidate,
+  context: z.RefinementCtx,
+): void {
+  if (projection.automaticRetry?.status !== 'scheduled' || projection.lastDeclined === undefined) return;
+  if (projection.automaticRetry.attemptsStarted !== projection.attempt.started) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['automaticRetry', 'attemptsStarted'],
+      message: 'automatic retry attempts do not match the shutdown attempt',
+    });
+  }
+  if (projection.automaticRetry.attemptLimit !== projection.attempt.limit) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['automaticRetry', 'attemptLimit'],
+      message: 'automatic retry limit does not match the shutdown attempt limit',
+    });
+  }
+  if (projection.lastDeclined.attempt !== projection.attempt.started) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['lastDeclined', 'attempt'],
+      message: 'scheduled automatic retry does not follow the current declined attempt',
+    });
+  }
+}
+
+function validateFailedShutdownRetry(projection: ShutdownRemainderProjectionCandidate, context: z.RefinementCtx): void {
+  if (
+    projection.automaticRetry?.status === 'failed' &&
+    projection.lastDeclined !== undefined &&
+    projection.lastDeclined.attempt + 1 !== projection.attempt.started
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['automaticRetry', 'status'],
+      message: 'failed automatic retry does not follow the preceding declined attempt',
+    });
+  }
+}
+
+export const shutdownRemainderProjectionEnvelopeSchema = shutdownRemainderProjectionEnvelopeUnionSchema.superRefine(
+  (projection, context) => {
     refineShutdownReasonMode(projection, context);
-    if (projection.attempt.started > projection.attempt.limit) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['attempt', 'started'],
-        message: 'started attempts exceed the attempt limit',
-      });
-    }
-    if (projection.lastDeclined !== undefined && projection.lastDeclined.attempt > projection.attempt.started) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['lastDeclined', 'attempt'],
-        message: 'declined attempt was not started',
-      });
-    }
-    if (projection.lastDeclined !== undefined && projection.lastDeclined.attempt >= projection.attempt.limit) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['lastDeclined', 'attempt'],
-        message: 'declined attempt reached the terminal attempt limit',
-      });
-    }
-    if (
-      projection.automaticRetry === undefined &&
-      projection.lastDeclined !== undefined &&
-      projection.lastDeclined.attempt === projection.attempt.started
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['lastDeclined', 'attempt'],
-        message: 'current declined attempt has no automatic retry disposition',
-      });
-    }
-    if (projection.automaticRetry?.status === 'scheduled' && projection.lastDeclined !== undefined) {
-      if (projection.automaticRetry.attemptsStarted !== projection.attempt.started) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['automaticRetry', 'attemptsStarted'],
-          message: 'automatic retry attempts do not match the shutdown attempt',
-        });
-      }
-      if (projection.automaticRetry.attemptLimit !== projection.attempt.limit) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['automaticRetry', 'attemptLimit'],
-          message: 'automatic retry limit does not match the shutdown attempt limit',
-        });
-      }
-      if (projection.lastDeclined.attempt !== projection.attempt.started) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['lastDeclined', 'attempt'],
-          message: 'scheduled automatic retry does not follow the current declined attempt',
-        });
-      }
-    }
-    if (
-      projection.automaticRetry?.status === 'failed' &&
-      projection.lastDeclined !== undefined &&
-      projection.lastDeclined.attempt + 1 !== projection.attempt.started
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['automaticRetry', 'status'],
-        message: 'failed automatic retry does not follow the preceding declined attempt',
-      });
-    }
-  });
+    validateShutdownAttemptProgression(projection, context);
+    validateScheduledShutdownRetry(projection, context);
+    validateFailedShutdownRetry(projection, context);
+  },
+);
 
 export type ShutdownRemainderSubject = DeepReadonly<z.infer<typeof shutdownRemainderSubjectSchema>>;
 export type SuccessorRecoveryEvidence = DeepReadonly<z.infer<typeof successorRecoveryEvidenceSchema>>;

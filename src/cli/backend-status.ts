@@ -878,13 +878,11 @@ async function probeDetailedHealth(
   return unreachable(`detailed health responded ${response.status}`);
 }
 
-async function probeAddressedCoordinatorStatus(
-  runtime: Pick<Runtime, 'paths' | 'storage' | 'time'>,
+async function probeAddressedCoordinatorOverHttp(
+  runtime: Pick<Runtime, 'paths'>,
   observed: Extract<CoordinatorObservation, { kind: 'addressed' }>,
-  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
-): Promise<BackendStatusFull> {
+): Promise<AddressedProbeStatus> {
   const info = observed.coordinator;
-
   // A decoded peer mismatch must retain the peer identity, regardless of the recorded pid's liveness.
   const notOurCoordinator = (observedIdentity: {
     namespace: string;
@@ -905,22 +903,19 @@ async function probeAddressedCoordinatorStatus(
     cause: 'responded',
   });
 
-  let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
     if (ping.status === 'draining') {
       try {
-        result = await probeDetailedHealth(info, notOurCoordinator, unreachable);
+        return await probeDetailedHealth(info, notOurCoordinator, unreachable);
       } catch {
         const confirmation = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-        result =
-          confirmation.instanceId === ping.instanceId && confirmation.status === 'draining'
-            ? unreachable('health ping observed draining but detailed health did not answer')
-            : (confirmation.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable)));
+        return confirmation.instanceId === ping.instanceId && confirmation.status === 'draining'
+          ? unreachable('health ping observed draining but detailed health did not answer')
+          : (confirmation.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable)));
       }
-    } else {
-      result = ping.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
     }
+    return ping.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
@@ -929,7 +924,7 @@ async function probeAddressedCoordinatorStatus(
     // claim.
     const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
-      result = {
+      return {
         status: 'unreachable',
         detail: code,
         cause: 'refused',
@@ -937,11 +932,18 @@ async function probeAddressedCoordinatorStatus(
         pid: info.pid,
         recordPath: runtime.paths.coral.coordinator.infoFile,
       };
-    } else {
-      result = { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
     }
+    return { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
   }
+}
 
+async function probeAddressedCoordinatorStatus(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'time'>,
+  observed: Extract<CoordinatorObservation, { kind: 'addressed' }>,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
+): Promise<BackendStatusFull> {
+  const info = observed.coordinator;
+  let result = await probeAddressedCoordinatorOverHttp(runtime, observed);
   if (result.status !== 'ok') {
     const ipc = await readIdentityCheckedAuthenticatedHealth(
       info,

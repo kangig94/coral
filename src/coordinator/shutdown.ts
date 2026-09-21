@@ -5,12 +5,14 @@ import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
-import type {
-  ShutdownRemainderObservation,
-  ShutdownUndischarged,
-  UndischargedRemainder,
+import {
+  shutdownModeFromReason,
+  type ShutdownRemainderObservation,
+  type ShutdownUndischarged,
+  type ShutdownMode,
+  type ShutdownReason,
+  type UndischargedRemainder,
 } from '../infra/shutdown-contract.js';
-import { shutdownModeFromReason, type ShutdownMode, type ShutdownReason } from '../infra/shutdown-contract.js';
 import { createJoinableSettlementTask, type SettlementConfirmation } from '../obligation/settlement.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { IpcListener } from '../transport/ipc/server.js';

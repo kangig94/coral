@@ -902,6 +902,32 @@ type LifecycleControlState = LifecycleWiringState & {
   startupAbort: AbortController | null;
 };
 
+function projectLifecycleShutdownObservation(state: LifecycleControlState): ShutdownRemainderProjection | undefined {
+  const reader = state.shutdownObservationReader;
+  const reason = state.shutdownReason;
+  if (reader === null || reason === null) return undefined;
+  const observation = reader();
+  const lastDisposition = state.lastShutdownDisposition;
+  const automaticRetry =
+    lastDisposition !== null && !isLifecycleShutdownTerminal(lastDisposition)
+      ? lastDisposition.recovery.automaticRetry
+      : undefined;
+  const currentAutomaticRetry =
+    automaticRetry?.status === 'scheduled' &&
+    (automaticRetry.attemptsStarted !== observation.attempt.started ||
+      automaticRetry.attemptLimit !== observation.attempt.limit ||
+      observation.lastDeclined?.attempt !== observation.attempt.started)
+      ? undefined
+      : automaticRetry;
+  const projection = {
+    reason,
+    mode: shutdownModeFromReason(reason),
+    ...observation,
+  };
+  if (currentAutomaticRetry === undefined || observation.lastDeclined === undefined) return projection;
+  return { ...projection, lastDeclined: observation.lastDeclined, automaticRetry: currentAutomaticRetry };
+}
+
 type LifecycleStartupContext = {
   deps: LifecycleDeps;
   runStartupRecovery: RunStartupRecoveryOrchestratorFn;
@@ -1774,36 +1800,10 @@ export function createLifecycle(
       });
   }
 
-  function observeShutdown(): ShutdownRemainderProjection | undefined {
-    const reader = state.shutdownObservationReader;
-    const reason = state.shutdownReason;
-    if (reader === null || reason === null) return undefined;
-    const observation = reader();
-    const lastDisposition = state.lastShutdownDisposition;
-    const automaticRetry =
-      lastDisposition !== null && !isLifecycleShutdownTerminal(lastDisposition)
-        ? lastDisposition.recovery.automaticRetry
-        : undefined;
-    const currentAutomaticRetry =
-      automaticRetry?.status === 'scheduled' &&
-      (automaticRetry.attemptsStarted !== observation.attempt.started ||
-        automaticRetry.attemptLimit !== observation.attempt.limit ||
-        observation.lastDeclined?.attempt !== observation.attempt.started)
-        ? undefined
-        : automaticRetry;
-    const projection = {
-      reason,
-      mode: shutdownModeFromReason(reason),
-      ...observation,
-    };
-    if (currentAutomaticRetry === undefined || observation.lastDeclined === undefined) return projection;
-    return { ...projection, lastDeclined: observation.lastDeclined, automaticRetry: currentAutomaticRetry };
-  }
-
   return {
     start,
     shutdown,
-    observeShutdown,
+    observeShutdown: () => projectLifecycleShutdownObservation(state),
     requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;

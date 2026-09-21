@@ -676,15 +676,25 @@ const SHUTDOWN_RETRY_NEXT_STEP = [
 const SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP =
   'Next step: retry shortly in case a coordinator is still publishing its discovery record. If this persists, verify that no other Coral coordinator process is running before treating the backend as stopped.';
 
+type RoutingCommandAvailability = 'available' | 'deferred-to-live-drain' | 'blocked-by-failed-automatic-retry';
+
+type LiveShutdownGuidance = Readonly<{
+  lines: string[];
+  routingCommandAvailability: RoutingCommandAvailability;
+}>;
+
 export function formatBackendStatus(
   daemonStatus: BackendStatusFull,
   routingStatus: HandoffRoutingStatusReadResult,
   liveHandoffResult: LiveHandoffResult | null,
 ): string {
-  const sections = [formatDaemonStatus(daemonStatus)];
+  const liveShutdownGuidance =
+    daemonStatus.status === 'ok'
+      ? formatLiveShutdownGuidance(daemonStatus.health)
+      : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
+  const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
   const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
-  const routingCommandAvailability = draining ? 'blocked-by-live-drain' : 'available';
-  const routingStatusText = formatHandoffRoutingStatus(routingStatus, routingCommandAvailability);
+  const routingStatusText = formatHandoffRoutingStatus(routingStatus, liveShutdownGuidance.routingCommandAvailability);
   if (routingStatusText !== null) sections.push(routingStatusText);
   if (!draining && liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
     const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
@@ -698,10 +708,13 @@ function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownR
   return section.length === 0 ? base : [base, section].join('\n');
 }
 
-function formatDaemonStatus(result: BackendStatusFull): string {
+function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: readonly string[]): string {
   switch (result.status) {
     case 'ok':
-      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatRunningStatus(result.health, liveShutdownGuidance),
+        result.shutdownRemainder,
+      );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
@@ -768,8 +781,6 @@ function formatSelectedRoutingDisposition(disposition: SelectedHandoffDispositio
   }
 }
 
-type RoutingCommandAvailability = 'available' | 'blocked-by-live-drain';
-
 function formatRoutingHoldAction(
   availability: RoutingCommandAvailability,
   availableInstruction: string,
@@ -778,6 +789,12 @@ function formatRoutingHoldAction(
 ): string[] {
   if (availability === 'available') {
     return [availableInstruction, formatBackendOperatorCommand(command)];
+  }
+  if (availability === 'blocked-by-failed-automatic-retry') {
+    return [
+      deferredInstruction,
+      'The failed automatic retry has already requested fatal coordinator exit, so this routing section does not print a command.',
+    ];
   }
   return [
     deferredInstruction,
@@ -1930,7 +1947,7 @@ export function formatProviderProxySetRowSkips(
   return lines;
 }
 
-function formatRunningStatus(health: RunningHealth): string {
+function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readonly string[]): string {
   const draining = health.status === 'draining';
   const componentLines: string[] = [];
   for (const component of health.components) {
@@ -2066,19 +2083,26 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
-  lines.push(...formatLiveShutdownSection(health));
-  if (draining) {
-    const nextStep = formatDrainNextStep(health.shutdown);
-    if (nextStep !== null) lines.push(nextStep);
-    if (
-      health.shutdown === undefined ||
-      'kind' in health.shutdown ||
-      health.shutdown.automaticRetry?.status !== 'failed'
-    ) {
-      lines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
-    }
-  }
+  lines.push(...liveShutdownGuidance);
   return lines.join('\n');
+}
+
+function formatLiveShutdownGuidance(health: RunningHealth): LiveShutdownGuidance {
+  if (health.status !== 'draining') return { lines: [], routingCommandAvailability: 'available' };
+
+  const lines = formatLiveShutdownSection(health);
+  if (
+    health.shutdown !== undefined &&
+    !('kind' in health.shutdown) &&
+    health.shutdown.automaticRetry?.status === 'failed'
+  ) {
+    return { lines, routingCommandAvailability: 'blocked-by-failed-automatic-retry' };
+  }
+
+  const nextStep = formatDrainNextStep(health.shutdown);
+  if (nextStep !== null) lines.push(nextStep);
+  lines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
+  return { lines, routingCommandAvailability: 'deferred-to-live-drain' };
 }
 
 function formatLiveShutdownSection(health: RunningHealth): string[] {
