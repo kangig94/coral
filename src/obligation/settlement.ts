@@ -74,6 +74,19 @@ export type SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acce
       SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>
     >;
 
+export type SettlementLedgerSnapshot<Reason, Exit, Failure, RetainedAuthority> = Readonly<{
+  elapsedMs: number;
+  boundMs: number;
+  attempt: Readonly<{ started: number; limit: number }>;
+  lastDeclined?: Readonly<{
+    attempt: number;
+    reason: Reason;
+    exit: Exit;
+    undischarged: readonly Failure[];
+    retainedAuthority: RetainedAuthority;
+  }>;
+}>;
+
 export class SettlementGate<
   Reason,
   Exit,
@@ -306,6 +319,7 @@ export class SettlementLedger<
     SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
     number
   >();
+  private latestBoundaryTransferAttemptsStarted = 0;
   private readonly options: SettlementLedgerOptions<
     Remainder,
     RetainedAuthorityContribution,
@@ -314,7 +328,15 @@ export class SettlementLedger<
     Failure,
     FailureContext
   >;
+  private readonly startedMonotonicMs: bigint;
+  private readonly initialDeadlineMonotonicMs: bigint;
   private deadlineMonotonicMs: bigint;
+  private terminalDeadlineMonotonicMs: bigint;
+  private retrySlotDeadlines: readonly bigint[] | null = null;
+  private terminalReachedMonotonicMs: bigint | null = null;
+  private lastDeclined:
+    | NonNullable<SettlementLedgerSnapshot<Reason, Exit, Failure, RetainedAuthority>['lastDeclined']>
+    | undefined;
   private remainderAcceptance: RemainderAcceptanceState<Acceptance, Failure> = { kind: 'unattempted' };
 
   constructor(
@@ -328,18 +350,63 @@ export class SettlementLedger<
     >,
   ) {
     this.options = options;
-    this.deadlineMonotonicMs = options.time.monotonicNow() + BigInt(options.budgetMs);
+    this.startedMonotonicMs = options.time.monotonicNow();
+    this.initialDeadlineMonotonicMs = this.startedMonotonicMs + BigInt(options.budgetMs);
+    this.deadlineMonotonicMs = this.initialDeadlineMonotonicMs;
+    this.terminalDeadlineMonotonicMs =
+      this.initialDeadlineMonotonicMs + BigInt((BOUNDARY_TRANSFER_ATTEMPT_LIMIT - 1) * this.boundaryRetryBudgetMs());
   }
 
   private register(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): void {
     if (!this.entries.has(obligation)) this.entries.set(obligation, { kind: 'pending' });
   }
 
-  private remainingBudget = (): number =>
-    Math.max(0, Number(this.deadlineMonotonicMs - this.options.time.monotonicNow()));
+  private remainingBudgetUntil(deadlineMonotonicMs: bigint): number {
+    return Math.max(0, Number(deadlineMonotonicMs - this.options.time.monotonicNow()));
+  }
+
+  private remainingBudget = (): number => this.remainingBudgetUntil(this.deadlineMonotonicMs);
 
   remainingBudgetMs(): number {
     return this.remainingBudget();
+  }
+
+  snapshot(): SettlementLedgerSnapshot<Reason, Exit, Failure, RetainedAuthority> {
+    const now = this.terminalReachedMonotonicMs ?? this.options.time.monotonicNow();
+    return {
+      elapsedMs: Math.max(0, Number(now - this.startedMonotonicMs)),
+      boundMs:
+        this.terminalReachedMonotonicMs === null ? Math.max(0, Number(this.terminalDeadlineMonotonicMs - now)) : 0,
+      attempt: {
+        started: this.latestBoundaryTransferAttemptsStarted,
+        limit: BOUNDARY_TRANSFER_ATTEMPT_LIMIT,
+      },
+      ...(this.lastDeclined === undefined ? {} : { lastDeclined: this.lastDeclined }),
+    };
+  }
+
+  private boundaryRetryBudgetMs(): number {
+    return Math.max(1, Math.floor(this.options.budgetMs / 2));
+  }
+
+  private createRetrySchedule(): void {
+    if (this.retrySlotDeadlines !== null) return;
+    const firstHeldAt = this.options.time.monotonicNow();
+    const retryBudgetMs = this.boundaryRetryBudgetMs();
+    this.retrySlotDeadlines = Array.from(
+      { length: BOUNDARY_TRANSFER_ATTEMPT_LIMIT - 1 },
+      (_, index) => firstHeldAt + BigInt((index + 1) * retryBudgetMs),
+    );
+    const terminalDeadline = this.retrySlotDeadlines[this.retrySlotDeadlines.length - 1];
+    if (terminalDeadline !== undefined) this.terminalDeadlineMonotonicMs = terminalDeadline;
+  }
+
+  private waitForRetrySlot(boundaryRetryAfter: Promise<void> | undefined, attemptsStarted: number): Promise<void> {
+    const slotDeadline = this.retrySlotDeadlines?.[attemptsStarted - 1];
+    if (slotDeadline === undefined) throw new Error('boundary hold has no remaining retry slot');
+    const remainingToSlot = Number(slotDeadline - this.options.time.monotonicNow());
+    const slot = remainingToSlot <= 0 ? Promise.resolve() : this.options.time.sleep(remainingToSlot);
+    return Promise.race([boundaryRetryAfter ?? this.options.time.sleep(this.options.pollMs), slot]);
   }
 
   isDischarged(obligation: SettlementObligation<Remainder, RetainedAuthorityContribution, FailureContext>): boolean {
@@ -426,16 +493,13 @@ export class SettlementLedger<
 
   private async prepareBoundary(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    budgetMs: number | null,
+    attemptDeadlineMonotonicMs: bigint,
   ): Promise<BoundaryPreparationAttempt> {
-    if (budgetMs !== null) {
-      this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
-    }
     const state = this.boundaryAttempts.get(boundary) ?? { kind: 'idle' };
     if (state.kind === 'prepared' || state.kind === 'committing') {
       return { kind: 'prepared', settlement: { kind: 'discharged' }, token: state.token };
     }
-    if (this.remainingBudget() <= 0) {
+    if (this.remainingBudgetUntil(attemptDeadlineMonotonicMs) <= 0) {
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
@@ -449,7 +513,7 @@ export class SettlementLedger<
       boundary.label,
       attempt,
       (preparation) => (preparation.confirmed ? { confirmed: true } : { confirmed: false, detail: preparation.detail }),
-      this.remainingBudget,
+      () => this.remainingBudgetUntil(attemptDeadlineMonotonicMs),
       this.options.time,
       this.options.log,
     );
@@ -470,12 +534,9 @@ export class SettlementLedger<
   private async commitBoundary(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
     token: object,
-    budgetMs: number | null,
+    attemptDeadlineMonotonicMs: bigint,
   ): Promise<Settlement> {
-    if (budgetMs !== null) {
-      this.deadlineMonotonicMs = this.options.time.monotonicNow() + BigInt(budgetMs);
-    }
-    if (this.remainingBudget() <= 0) {
+    if (this.remainingBudgetUntil(attemptDeadlineMonotonicMs) <= 0) {
       const settlement = {
         kind: 'declined',
         cause: 'budget-exhausted',
@@ -494,7 +555,7 @@ export class SettlementLedger<
       boundary.label,
       attempt,
       (confirmation) => confirmation,
-      this.remainingBudget,
+      () => this.remainingBudgetUntil(attemptDeadlineMonotonicMs),
       this.options.time,
       this.options.log,
     );
@@ -556,17 +617,20 @@ export class SettlementLedger<
 
   private async attemptBoundaryTransfer(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
-    budgetMs: number | null,
+    attemptDeadlineMonotonicMs: bigint,
   ): Promise<SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    this.boundaryTransferAttemptsStarted.set(boundary, (this.boundaryTransferAttemptsStarted.get(boundary) ?? 0) + 1);
+    this.deadlineMonotonicMs = attemptDeadlineMonotonicMs;
+    const attemptsStarted = (this.boundaryTransferAttemptsStarted.get(boundary) ?? 0) + 1;
+    this.boundaryTransferAttemptsStarted.set(boundary, attemptsStarted);
+    this.latestBoundaryTransferAttemptsStarted = attemptsStarted;
     this.remainderAcceptance = { kind: 'unattempted' };
 
-    const preparation = await this.prepareBoundary(boundary, budgetMs);
+    const preparation = await this.prepareBoundary(boundary, attemptDeadlineMonotonicMs);
     if (preparation.kind === 'declined') {
       return this.resolve(boundary, { kind: 'held', boundaryFailure: preparation.settlement });
     }
 
-    const commit = await this.commitBoundary(boundary, preparation.token, budgetMs);
+    const commit = await this.commitBoundary(boundary, preparation.token, attemptDeadlineMonotonicMs);
     return commit.kind === 'discharged'
       ? this.resolve(boundary, { kind: 'terminal', boundaryFailure: null })
       : this.declinedTransfer(boundary, commit);
@@ -582,7 +646,10 @@ export class SettlementLedger<
   private retryBoundaryTransfer(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
   ): Promise<SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    return this.attemptBoundaryTransfer(boundary, Math.max(1, Math.floor(this.options.budgetMs / 2)));
+    const attemptsStarted = this.boundaryTransferAttemptsStarted.get(boundary) ?? 0;
+    const retryDeadline = this.retrySlotDeadlines?.[attemptsStarted - 1];
+    if (retryDeadline === undefined) throw new Error('boundary retry has no scheduled slot');
+    return this.attemptBoundaryTransfer(boundary, retryDeadline);
   }
 
   private createHeldDisposition(
@@ -595,14 +662,25 @@ export class SettlementLedger<
     RetainedAuthority,
     SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>
   > {
+    this.createRetrySchedule();
     const hold = boundary.hold(resolution.boundaryFailure);
+    const attemptsStarted = this.boundaryTransferAttemptsStarted.get(boundary) ?? 0;
+    const undischarged = this.namedLosses(boundary, resolution.boundaryFailure);
+    const retainedAuthority = this.retainedAuthority(boundary);
+    this.lastDeclined = {
+      attempt: attemptsStarted,
+      reason: hold.reason,
+      exit: hold.exit,
+      undischarged,
+      retainedAuthority,
+    };
     return this.dispositions.held({
       reason: hold.reason,
       exit: hold.exit,
-      retryAfter: hold.retryAfter ?? this.options.time.sleep(this.options.pollMs),
-      undischarged: this.namedLosses(boundary, resolution.boundaryFailure),
-      retainedAuthority: this.retainedAuthority(boundary),
-      attemptsStarted: this.boundaryTransferAttemptsStarted.get(boundary) ?? 0,
+      retryAfter: this.waitForRetrySlot(hold.retryAfter, attemptsStarted),
+      undischarged,
+      retainedAuthority,
+      attemptsStarted,
       attemptLimit: BOUNDARY_TRANSFER_ATTEMPT_LIMIT,
       retry: () => this.retryBoundaryTransfer(boundary),
     });
@@ -620,6 +698,7 @@ export class SettlementLedger<
       case 'held':
         return this.createHeldDisposition(boundary, resolution);
       case 'terminal': {
+        this.terminalReachedMonotonicMs ??= this.options.time.monotonicNow();
         const offered = this.namedLosses(boundary, resolution.boundaryFailure);
         if (offered.length === 0) return this.dispositions.settled();
         this.verifyRemainderAcceptance(offered);
@@ -635,6 +714,6 @@ export class SettlementLedger<
   gate(
     boundary: SettlementAuthorityReleaseBoundary<RetainedAuthorityContribution, Reason, Exit>,
   ): Promise<SettlementDisposition<Reason, Exit, Failure, RetainedAuthority, Acceptance>> {
-    return this.attemptBoundaryTransfer(boundary, null);
+    return this.attemptBoundaryTransfer(boundary, this.initialDeadlineMonotonicMs);
   }
 }

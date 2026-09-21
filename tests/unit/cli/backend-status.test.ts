@@ -17,6 +17,7 @@ import {
   formatBackendStatus,
   formatHandoffContinuationReason,
   formatHandoffRoutingStatus,
+  formatUnreadableProviderOperationDiscard,
 } from '#src/cli/format/backend.js';
 import { formatHandoffPublicationIncident } from '#src/cli/format/handoff-publication.js';
 import type { SetupErrorAuthorIdentity } from '#src/runtime/errors.js';
@@ -31,9 +32,13 @@ import {
   handoffRoutingStatusStoreSchema,
   MAX_COMPLETED_HANDOFF_ROUTING_PAIRS,
   MAX_RETIREMENT_TOMBSTONES,
+  type HandoffRoutingInvocationStatus,
   type HandoffRoutingStatusReadResult,
+  type OwnerLiveness,
+  type RetirementHistoryTruncated,
+  type RetirementTombstone,
 } from '#src/coordinator/handoff-routing/status.js';
-import { incumbentIdentitySummarySchema } from '#src/coordinator/handoff-routing/policy.js';
+import { incumbentIdentitySummarySchema, type HandoffRoutingBasis } from '#src/coordinator/handoff-routing/policy.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
@@ -46,7 +51,7 @@ import { statusFromStartupDiagnostic, type BackendStatusFull } from '#src/transp
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import { executeRenderedCommand } from '#tests/helpers/rendered-command.js';
+import { executeRenderedCommand, operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 
 const TEST_TIME = { now: () => Date.parse('2026-08-03T00:00:00.000Z') };
 const HANDOFF_ROUTING_STATUS_GENERATION = handoffRoutingStatusGeneration(handoffRoutingStatusStoreSchema());
@@ -118,6 +123,43 @@ function runningStatusFromHealthPayload(payload: unknown): Extract<BackendStatus
       skippedProviderProxySetTokens: parsed.skippedProviderProxySetTokens,
     },
   };
+}
+
+type RunningBackendStatus = Extract<BackendStatusFull, { status: 'ok' }>;
+type RunningBackendHealth = RunningBackendStatus['health'];
+type RunningDiagnostics = NonNullable<RunningBackendHealth['diagnostics']>;
+
+const BASE_RUNNING_HEALTH = {
+  status: 'ok',
+  kernel: { phase: 'running', readyAt: Date.parse('2026-08-03T00:00:00.000Z') },
+  version: '0.10.9',
+  bundleHash: 'bundle-hash',
+  flavor: 'prod',
+  instanceId: 'instance-1',
+  namespace: 'test-ns',
+  uptimeMs: 1_000,
+  active: 0,
+  activeJobs: 0,
+  inflightRequests: 0,
+  queueDepth: 0,
+  textProjectionState: 'idle',
+  components: [],
+  skippedProviderProxySetRows: 0,
+  skippedProviderProxySetTokens: [],
+} as const satisfies RunningBackendHealth;
+
+function runningBackendStatus(
+  diagnostics: RunningDiagnostics,
+  health: Partial<RunningBackendHealth> = {},
+): RunningBackendStatus {
+  return { status: 'ok', health: { ...BASE_RUNNING_HEALTH, ...health, diagnostics } };
+}
+
+function nextStepLines(output: string): string[] {
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^next ?step\b/iu.test(line) || line.startsWith('nextStep='));
 }
 
 const storeReset: StoreResetCommandOperations = {
@@ -274,7 +316,7 @@ describe('backend status generation readiness', () => {
   ])('names discard as the successor for a durable routing-status hold', async (status, summary) => {
     const rendered = formatHandoffRoutingStatus(status) ?? '';
     expect(rendered).toBe(
-      `${summary}\nNext step: run the discard command below.\ncommand=coral-cli backend routing-status discard`,
+      `${summary}\nRouting hold: run the discard command below.\ncommand=coral-cli backend routing-status discard`,
     );
     const dispatched: RecordedBackendCommand[] = [];
     await executeRenderedCommand(backendCommandProgram(dispatched), rendered, { label: 'command' });
@@ -286,7 +328,7 @@ describe('backend status generation readiness', () => {
     expect(rendered).toBe(
       [
         'Routing status could not be read (io-failed, errcode 5).',
-        'Next step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+        'Routing hold: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
         'command=coral-cli backend status',
       ].join('\n'),
     );
@@ -548,7 +590,7 @@ describe('backend status live handoff disposition', () => {
       [
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
         'Handoff: continuing current build — the CLI and running backend are both version 0.10.9 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
         '',
       ].join('\n'),
@@ -1062,7 +1104,7 @@ describe('backend routing status', () => {
     expect(rendered.split('\n')).toEqual([
       'Routing invocation unresolved-invocation: unresolved; its recorded owner is absent.',
       'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
-      'Next step: run the resolution command below.',
+      'Routing hold: run the resolution command below.',
       'command=coral-cli backend routing-status resolve --invocation unresolved-invocation',
       'Routing invocation terminal-invocation: terminal; delegated to 0.10.9, which exited 7.',
       'Routing invocation retired-invocation: retired (completed-pair-compaction). No action is needed.',
@@ -1124,14 +1166,14 @@ describe('backend routing status', () => {
       retirementCause: 'selection-evicted-at-capacity',
       terminalExisted: false,
       expected:
-        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run the resolution command below to acknowledge the retained capacity eviction.\ncommand=coral-cli backend routing-status resolve --invocation retired-invocation',
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: no).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nRouting hold: run the resolution command below to acknowledge the retained capacity eviction.\ncommand=coral-cli backend routing-status resolve --invocation retired-invocation',
     },
     {
       name: 'capacity eviction with a terminal',
       retirementCause: 'selection-evicted-at-capacity',
       terminalExisted: true,
       expected:
-        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nNext step: run the resolution command below to acknowledge the retained capacity eviction.\ncommand=coral-cli backend routing-status resolve --invocation retired-invocation',
+        'Routing invocation retired-invocation: retired (selection-evicted-at-capacity; terminal recorded: yes).\nSelected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).\nRouting hold: run the resolution command below to acknowledge the retained capacity eviction.\ncommand=coral-cli backend routing-status resolve --invocation retired-invocation',
     },
     {
       name: 'absent-owner resolution',
@@ -1451,7 +1493,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
-        'Next step: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+        'Handoff hold: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
         'command=coral-cli backend shutdown',
       ].join('\n'),
       expectedCommand: { kind: 'shutdown' },
@@ -1464,7 +1506,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its coordinator record could not be read.',
-        'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
+        'Handoff hold: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
       ].join('\n'),
     },
     {
@@ -1475,7 +1517,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health request did not complete.',
-        'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
+        'Handoff hold: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
       ].join('\n'),
     },
     {
@@ -1486,7 +1528,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator is shutting down.',
-        'Next step: wait for backend shutdown to finish, then retry.',
+        'Handoff hold: wait for backend shutdown to finish, then retry.',
       ].join('\n'),
     },
     {
@@ -1497,7 +1539,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — this CLI does not match its bundle manifest.',
-        'Next step: repair or reinstall this Coral bundle, then retry.',
+        'Handoff hold: repair or reinstall this Coral bundle, then retry.',
       ].join('\n'),
     },
     {
@@ -1516,7 +1558,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — incumbent 2.1.0 did not report a complete bundle identity.',
-        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
       ].join('\n'),
       expectedCommand: { kind: 'shutdown' },
@@ -1544,7 +1586,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the CLI and running backend are both version 2.1.0 but come from different builds, so guarded operations will not proceed.',
-        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
       ].join('\n'),
       expectedCommand: { kind: 'shutdown' },
@@ -1564,7 +1606,7 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent handoff target at /opt/coral-old is invalid because its bundle directory is unavailable.',
-        'Next step: repair or reinstall the Coral installation at /opt/coral-old, then retry.',
+        'Handoff hold: repair or reinstall the Coral installation at /opt/coral-old, then retry.',
       ].join('\n'),
     },
     {
@@ -1572,7 +1614,7 @@ describe('handoff continuation remediation', () => {
       reason: { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
       expected: [
         'Handoff: continuing current build — delegation was abandoned because stdout did not finish draining.',
-        "Next step: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
+        "Handoff hold: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
       ].join('\n'),
     },
   ];
@@ -1606,6 +1648,645 @@ describe('handoff continuation remediation', () => {
     expect(RAW_ENUM_TOKENS.filter((token) => rendered.includes(token))).toEqual([]);
     expect(rendered).not.toMatch(/\brelaunch(?:es|ing)?\b/iu);
     expect(rendered).not.toContain('Backend not running');
+  });
+});
+
+describe('backend status subordinate guidance', () => {
+  type CurrentRoutingStatus = Extract<HandoffRoutingStatusReadResult, { kind: 'current' }>;
+  type UnresolvedInvocation = Extract<HandoffRoutingInvocationStatus, { kind: 'unresolved' }>;
+  type TerminalInvocation = Extract<HandoffRoutingInvocationStatus, { kind: 'terminal' }>;
+
+  const noGuidanceDaemonStatus = { status: 'no_record_no_socket' } satisfies BackendStatusFull;
+  const emptyRetirementHistory = {
+    kind: 'retirement-history-truncated',
+    expiredIdentityCount: 0,
+    causes: {
+      'selection-evicted-at-capacity': 0,
+      'completed-pair-compaction': 0,
+      'operator-resolved': 0,
+    },
+    minSelectionSequence: null,
+    maxSelectionSequence: null,
+    earliestSelectedAt: null,
+    latestSelectedAt: null,
+  } satisfies RetirementHistoryTruncated;
+
+  const routingSelection = (invocationId: string): UnresolvedInvocation['selection'] => ({
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    sequence: 1,
+    eventId: 'selection-event',
+    invocationId,
+    observedAt: '2026-08-03T00:00:00.000Z',
+    eventKind: 'routing-selected',
+    phase: 'selection',
+    owner: { pid: 101, incarnation: testIncarnation(101) },
+    disposition: {
+      kind: 'continue-current',
+      basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+    },
+  });
+
+  const routingTerminal = (invocationId: string): TerminalInvocation['terminal'] =>
+    handoffRoutingRecordSchemaRegistry.terminal.parse({
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      sequence: 2,
+      eventId: 'terminal-event',
+      invocationId,
+      observedAt: '2026-08-03T00:00:01.000Z',
+      eventKind: 'continuation-finalized',
+      phase: 'terminal',
+      selection: { kind: 'with-selection-sequence', selectionSequence: 1 },
+      disposition: { kind: 'delegated-success', version: '0.10.9' },
+    });
+
+  const retirementInvocation = (
+    retirementCause: RetirementTombstone['retirementCause'],
+    terminalExisted: boolean,
+    resolutionReason?: NonNullable<RetirementTombstone['resolutionReason']>,
+  ): Extract<HandoffRoutingInvocationStatus, { kind: 'retired' }> => ({
+    kind: 'retired',
+    tombstone: handoffRoutingRecordSchemaRegistry.retirement.parse({
+      generation: HANDOFF_ROUTING_STATUS_GENERATION,
+      sequence: 3,
+      eventId: 'retirement-event',
+      invocationId: 'retired-invocation',
+      observedAt: '2026-08-03T00:00:02.000Z',
+      eventKind: 'retirement-tombstone',
+      phase: 'retirement',
+      selectionSequence: 1,
+      selectedAt: '2026-08-03T00:00:00.000Z',
+      owner: { pid: 101, incarnation: testIncarnation(101) },
+      selectedDisposition: {
+        kind: 'continue-current',
+        basis: { kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' },
+      },
+      retirementCause,
+      terminalExisted,
+      ...(resolutionReason === undefined ? {} : { resolutionReason }),
+    }),
+  });
+
+  const currentRoutingStatus = (
+    statuses: readonly HandoffRoutingInvocationStatus[],
+    retirementHistoryTruncated: RetirementHistoryTruncated = emptyRetirementHistory,
+  ): CurrentRoutingStatus => ({
+    kind: 'current',
+    generation: HANDOFF_ROUTING_STATUS_GENERATION,
+    statuses,
+    retirementHistoryTruncated,
+  });
+
+  it('keeps the routing-status classification matrix below the daemon guidance namespace', () => {
+    const cases = {
+      absent: { kind: 'absent' },
+      vacant: { kind: 'vacant' },
+      uninitialized: { kind: 'uninitialized' },
+      'detached-wal': { kind: 'detached-wal' },
+      'generation-missing': { kind: 'generation-missing' },
+      'foreign-generation': { kind: 'foreign-generation', generation: 2 },
+      'format-mismatch': { kind: 'format-mismatch' },
+      'schema-divergent': { kind: 'schema-divergent' },
+      unreadable: { kind: 'unreadable', reason: 'invalid-json' },
+      undeterminable: { kind: 'undeterminable', cause: 'io-failed', errcode: 5 },
+      current: currentRoutingStatus([]),
+    } satisfies Record<HandoffRoutingStatusReadResult['kind'], HandoffRoutingStatusReadResult>;
+    const expectedCommands = {
+      absent: [],
+      vacant: [],
+      uninitialized: [],
+      'detached-wal': ['command=coral-cli backend routing-status discard'],
+      'generation-missing': ['command=coral-cli backend routing-status discard'],
+      'foreign-generation': ['command=coral-cli backend routing-status discard'],
+      'format-mismatch': ['command=coral-cli backend routing-status discard'],
+      'schema-divergent': ['command=coral-cli backend routing-status discard'],
+      unreadable: ['command=coral-cli backend routing-status discard'],
+      undeterminable: ['command=coral-cli backend status'],
+      current: [],
+    } satisfies Record<HandoffRoutingStatusReadResult['kind'], readonly string[]>;
+
+    for (const [name, routingStatus] of Object.entries(cases)) {
+      const output = formatBackendStatus(noGuidanceDaemonStatus, routingStatus, null);
+      expect(nextStepLines(output), name).toEqual([]);
+      expect(operatorArtifactLines(output), name).toEqual(expectedCommands[name as keyof typeof expectedCommands]);
+      if (expectedCommands[name as keyof typeof expectedCommands].length > 0) {
+        expect(output, name).toContain('Routing hold:');
+      }
+    }
+  });
+
+  it('covers every routing invocation kind through the composed formatter', () => {
+    const cases = {
+      unresolved: {
+        kind: 'unresolved',
+        selection: routingSelection('unresolved-invocation'),
+        ownerLiveness: { kind: 'alive' },
+      },
+      terminal: {
+        kind: 'terminal',
+        selection: null,
+        terminal: routingTerminal('terminal-invocation'),
+      },
+      retired: retirementInvocation('completed-pair-compaction', true),
+    } satisfies Record<HandoffRoutingInvocationStatus['kind'], HandoffRoutingInvocationStatus>;
+
+    for (const [name, status] of Object.entries(cases)) {
+      const output = formatBackendStatus(noGuidanceDaemonStatus, currentRoutingStatus([status]), null);
+      expect(nextStepLines(output), name).toEqual([]);
+    }
+  });
+
+  it('covers every owner-liveness branch, including every unobservable cause', () => {
+    type UnobservableCause = Extract<OwnerLiveness, { kind: 'unobservable' }>['cause'];
+    type OwnerLivenessCase = Exclude<OwnerLiveness['kind'], 'unobservable'> | UnobservableCause;
+    const cases = {
+      alive: { kind: 'alive' },
+      absent: { kind: 'absent' },
+      'incarnation-unavailable': { kind: 'unobservable', cause: 'incarnation-unavailable' },
+      'probe-not-available': { kind: 'unobservable', cause: 'probe-not-available' },
+      'probe-failed': { kind: 'unobservable', cause: 'probe-failed' },
+      'deadline-expired': { kind: 'unobservable', cause: 'deadline-expired' },
+    } satisfies Record<OwnerLivenessCase, OwnerLiveness>;
+    const expectedCommands = {
+      alive: [],
+      absent: ['command=coral-cli backend routing-status resolve --invocation owner-liveness-invocation'],
+      'incarnation-unavailable': [
+        'command=coral-cli backend routing-status resolve --invocation owner-liveness-invocation --force-unobservable',
+      ],
+      'probe-not-available': [
+        'command=coral-cli backend routing-status resolve --invocation owner-liveness-invocation --force-unobservable',
+      ],
+      'probe-failed': [
+        'command=coral-cli backend routing-status resolve --invocation owner-liveness-invocation --force-unobservable',
+      ],
+      'deadline-expired': ['command=coral-cli backend status'],
+    } satisfies Record<OwnerLivenessCase, readonly string[]>;
+
+    for (const [name, ownerLiveness] of Object.entries(cases)) {
+      const status = {
+        kind: 'unresolved',
+        selection: routingSelection('owner-liveness-invocation'),
+        ownerLiveness,
+      } satisfies HandoffRoutingInvocationStatus;
+      const output = formatBackendStatus(noGuidanceDaemonStatus, currentRoutingStatus([status]), null);
+      expect(nextStepLines(output), name).toEqual([]);
+      expect(operatorArtifactLines(output), name).toEqual(expectedCommands[name as OwnerLivenessCase]);
+      if (ownerLiveness.kind !== 'alive') expect(output, name).toContain('Routing hold:');
+    }
+  });
+
+  it('covers every retirement branch and both capacity-eviction histories', () => {
+    type RetirementCause = RetirementTombstone['retirementCause'];
+    type ResolutionReason = NonNullable<RetirementTombstone['resolutionReason']>;
+    const capacityEvictions = {
+      'without-terminal': retirementInvocation('selection-evicted-at-capacity', false),
+      'with-terminal': retirementInvocation('selection-evicted-at-capacity', true),
+    } as const;
+    const operatorResolutions = {
+      'owner-absent': retirementInvocation('operator-resolved', false, 'owner-absent'),
+      'operator-abandoned-unobservable': retirementInvocation(
+        'operator-resolved',
+        false,
+        'operator-abandoned-unobservable',
+      ),
+    } satisfies Record<ResolutionReason, Extract<HandoffRoutingInvocationStatus, { kind: 'retired' }>>;
+    const cases = {
+      'selection-evicted-at-capacity': Object.values(capacityEvictions),
+      'completed-pair-compaction': [retirementInvocation('completed-pair-compaction', true)],
+      'operator-resolved': Object.values(operatorResolutions),
+    } satisfies Record<RetirementCause, readonly Extract<HandoffRoutingInvocationStatus, { kind: 'retired' }>[]>;
+
+    for (const [cause, statuses] of Object.entries(cases)) {
+      for (const status of statuses) {
+        const output = formatBackendStatus(noGuidanceDaemonStatus, currentRoutingStatus([status]), null);
+        expect(nextStepLines(output), cause).toEqual([]);
+        if (cause === 'selection-evicted-at-capacity') {
+          expect(output).toContain('Routing hold: run the resolution command below');
+          expect(operatorArtifactLines(output)).toEqual([
+            'command=coral-cli backend routing-status resolve --invocation retired-invocation',
+          ]);
+        }
+      }
+    }
+
+    const historyCases = {
+      empty: emptyRetirementHistory,
+      'capacity-eviction': {
+        kind: 'retirement-history-truncated',
+        expiredIdentityCount: 1,
+        causes: {
+          'selection-evicted-at-capacity': 1,
+          'completed-pair-compaction': 0,
+          'operator-resolved': 0,
+        },
+        minSelectionSequence: 1,
+        maxSelectionSequence: 1,
+        earliestSelectedAt: '2026-08-03T00:00:00.000Z',
+        latestSelectedAt: '2026-08-03T00:00:00.000Z',
+      },
+    } satisfies Record<'empty' | 'capacity-eviction', RetirementHistoryTruncated>;
+    for (const [name, history] of Object.entries(historyCases)) {
+      const output = formatBackendStatus(noGuidanceDaemonStatus, currentRoutingStatus([], history), null);
+      expect(nextStepLines(output), name).toEqual([]);
+    }
+  });
+
+  it('covers every live handoff basis and each nested cause, comparison, and failure', () => {
+    type UnresolvedCause = Extract<HandoffRoutingBasis, { kind: 'incumbent-unresolved' }>['cause'];
+    type UnusableCause = Extract<HandoffRoutingBasis, { kind: 'incumbent-unusable' }>['cause'];
+    type IdentityFailure = Extract<HandoffRoutingBasis, { kind: 'invoking-identity-unavailable' }>['failure'];
+    type BuildComparison = Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>['comparison'];
+    type InvalidTargetFailure = Extract<
+      HandoffRoutingBasis,
+      { kind: 'invalid-incumbent-target' }
+    >['evidence']['failure'];
+    const invoking = {
+      version: '2.1.0',
+      buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+      bundleHash: 'invoking-bundle',
+      flavor: 'prod',
+    } as const;
+    const incumbent = {
+      version: '2.0.0',
+      buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+      bundleHash: 'incumbent-bundle',
+      flavor: 'prod',
+    } as const;
+    const unresolved = {
+      'unreadable-record': { kind: 'incumbent-unresolved', cause: 'unreadable-record' },
+      'health-request-failed': { kind: 'incumbent-unresolved', cause: 'health-request-failed' },
+      'health-shape-rejected': { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
+    } satisfies Record<UnresolvedCause, HandoffRoutingBasis>;
+    const unusable = {
+      draining: { kind: 'incumbent-unusable', cause: 'draining' },
+      'identity-mismatch': { kind: 'incumbent-unusable', cause: 'identity-mismatch' },
+    } satisfies Record<UnusableCause, HandoffRoutingBasis>;
+    const identityFailures = {
+      embedded_identity_unavailable: {
+        kind: 'invoking-identity-unavailable',
+        failure: 'embedded_identity_unavailable',
+      },
+      adjacent_manifest_unavailable: {
+        kind: 'invoking-identity-unavailable',
+        failure: 'adjacent_manifest_unavailable',
+      },
+      adjacent_manifest_invalid: {
+        kind: 'invoking-identity-unavailable',
+        failure: 'adjacent_manifest_invalid',
+      },
+      adjacent_manifest_mismatch: {
+        kind: 'invoking-identity-unavailable',
+        failure: 'adjacent_manifest_mismatch',
+      },
+    } satisfies Record<IdentityFailure, HandoffRoutingBasis>;
+    const comparisons = {
+      'same-version': {
+        kind: 'invoking-build-not-older',
+        comparison: 'same-version',
+        invoking,
+        incumbent: { ...incumbent, version: invoking.version },
+      },
+      'newer-version': {
+        kind: 'invoking-build-not-older',
+        comparison: 'newer-version',
+        invoking,
+        incumbent,
+      },
+    } satisfies Record<BuildComparison, HandoffRoutingBasis>;
+    const invalidTargets = {
+      'bundle-dir-not-canonical': 'bundle-dir-not-canonical',
+      'bundle-dir-unavailable': 'bundle-dir-unavailable',
+      'expected-manifest-invalid': 'expected-manifest-invalid',
+      'adjacent-manifest-unavailable': 'adjacent-manifest-unavailable',
+      'adjacent-manifest-invalid': 'adjacent-manifest-invalid',
+      'adjacent-manifest-mismatch': 'adjacent-manifest-mismatch',
+      'adjacent-bundle-mismatch': 'adjacent-bundle-mismatch',
+    } satisfies Record<InvalidTargetFailure, InvalidTargetFailure>;
+    const invalidTargetBases = Object.fromEntries(
+      Object.values(invalidTargets).map((failure) => [
+        failure,
+        {
+          kind: 'invalid-incumbent-target',
+          evidence: { bundleDir: '/opt/coral-old', expectedManifest: null, failure },
+        } satisfies HandoffRoutingBasis,
+      ]),
+    ) as Record<InvalidTargetFailure, HandoffRoutingBasis>;
+    const cases = {
+      'incumbent-absent': [{ kind: 'incumbent-absent' }],
+      'incumbent-unresolved': Object.values(unresolved),
+      'incumbent-unusable': Object.values(unusable),
+      'invoking-identity-unavailable': Object.values(identityFailures),
+      'incumbent-identity-unavailable': [
+        {
+          kind: 'incumbent-identity-unavailable',
+          incumbent: incumbentIdentitySummarySchema.parse({
+            version: '2.0.0',
+            bundleHash: 'f'.repeat(16),
+            flavor: 'prod',
+            instanceId: 'incumbent-1',
+          }),
+        },
+      ],
+      'same-build-set': [{ kind: 'same-build-set', buildSetId: '123e4567-e89b-42d3-a456-426614174000' }],
+      'invoking-build-not-older': Object.values(comparisons),
+      'invalid-incumbent-target': Object.values(invalidTargetBases),
+    } satisfies Record<HandoffRoutingBasis['kind'], readonly HandoffRoutingBasis[]>;
+    const informationalKinds = new Set<HandoffRoutingBasis['kind']>(['incumbent-absent', 'same-build-set']);
+
+    for (const [kind, bases] of Object.entries(cases)) {
+      for (const basis of bases) {
+        const output = formatBackendStatus(
+          noGuidanceDaemonStatus,
+          { kind: 'absent' },
+          liveHandoffResult({ kind: 'run-current', reason: { kind: 'routing', basis } }),
+        );
+        expect(nextStepLines(output), kind).toEqual([]);
+        if (!informationalKinds.has(basis.kind)) expect(output, kind).toContain('Handoff hold:');
+      }
+    }
+  });
+
+  it('covers every live handoff continuation kind through the composed formatter', () => {
+    const cases = {
+      routing: {
+        kind: 'routing',
+        basis: { kind: 'incumbent-unresolved', cause: 'health-shape-rejected' },
+      },
+      'handoff-not-applicable': { kind: 'handoff-not-applicable', reason: 'display-only' },
+      'handoff-abandoned': { kind: 'handoff-abandoned', reason: 'stdout-drain-incomplete' },
+    } satisfies Record<HandoffContinuationReason['kind'], HandoffContinuationReason>;
+
+    for (const [name, reason] of Object.entries(cases)) {
+      const output = formatBackendStatus(
+        noGuidanceDaemonStatus,
+        { kind: 'absent' },
+        liveHandoffResult({ kind: 'run-current', reason }),
+      );
+      expect(nextStepLines(output), name).toEqual([]);
+    }
+  });
+
+  type AdoptionRefusal = NonNullable<RunningDiagnostics['providerOperationAdoptionRefusals']>[number];
+  type AdoptionRemedy = AdoptionRefusal['remedy'];
+
+  const adoptionRemedies = {
+    'restart-coordinator': [{ kind: 'restart-coordinator' }],
+    'remote-settlement': [{ kind: 'remote-settlement' }],
+    'recovery-quarantine-discard': [
+      { kind: 'recovery-quarantine-discard', command: { kind: 'list' } },
+      {
+        kind: 'recovery-quarantine-discard',
+        command: {
+          kind: 'discard-provider-operation',
+          key: 'surviving-record',
+          revision: 'fingerprint:sha256:' + 'a'.repeat(64),
+          allowReadable: true,
+        },
+      },
+    ],
+    'recovery-quarantine-clear': [
+      { kind: 'recovery-quarantine-clear', command: { kind: 'list' } },
+      {
+        kind: 'recovery-quarantine-clear',
+        command: {
+          kind: 'clear',
+          boundary: 'provider-operation-unreadable',
+          key: 'surviving-record',
+          revision: 'fingerprint:sha256:' + 'b'.repeat(64),
+        },
+      },
+    ],
+    'external-repair': [{ kind: 'external-repair' }],
+  } satisfies Record<AdoptionRemedy['kind'], readonly AdoptionRemedy[]>;
+
+  const adoptionRefusal = (remedy: AdoptionRemedy): AdoptionRefusal => ({
+    triggerRecordKey: 'trigger-record',
+    rowDisposition: 'discarded',
+    releasedLaunchPermits: 0,
+    recordKey: 'surviving-record',
+    jobId: 'job-1',
+    operationId: 'operation-1',
+    proxyInstanceId: 'proxy-1',
+    buildSetId: 'build-set-1',
+    reason: 'adoption refused',
+    remedy,
+    observedAtMs: 123,
+  });
+
+  it('uses the diagnostic lead label for every provider-operation adoption remedy', () => {
+    for (const [kind, remedies] of Object.entries(adoptionRemedies)) {
+      for (const remedy of remedies) {
+        const output = formatBackendStatus(
+          runningBackendStatus({ providerOperationAdoptionRefusals: [adoptionRefusal(remedy)] }),
+          { kind: 'absent' },
+          null,
+        );
+        expect(nextStepLines(output), kind).toEqual([]);
+        expect(output, kind).toContain('Diagnostic hold');
+      }
+    }
+  });
+
+  it('keeps Next step at the recovery-quarantine discard call site', () => {
+    const output = formatUnreadableProviderOperationDiscard({
+      kind: 'adoption-refused',
+      key: 'trigger-record',
+      revision: 'a'.repeat(64),
+      rowDisposition: 'discarded',
+      releasedLaunchPermits: 0,
+      refusals: [adoptionRefusal({ kind: 'restart-coordinator' })],
+    });
+
+    expect(nextStepLines(output)).toEqual([
+      'Next step: for record=surviving-record, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Then inspect the job and backend status.',
+    ]);
+  });
+
+  it('uses hold= for every settlement-refusal recording cause', () => {
+    type SettlementFailure = NonNullable<RunningDiagnostics['settlementRefusalRecordingFailures']>[number];
+    const cases = {
+      'terminal-persist-failed': {
+        jobId: 'job-1',
+        cause: 'terminal-persist-failed',
+        error: 'persist failed',
+        observedAtMs: 123,
+      },
+      'claim-release-failed': {
+        jobId: 'job-1',
+        cause: 'claim-release-failed',
+        error: 'release failed',
+        observedAtMs: 123,
+      },
+      'claim-already-reassigned': {
+        jobId: 'job-1',
+        cause: 'claim-already-reassigned',
+        error: 'claim reassigned',
+        observedAtMs: 123,
+      },
+      'settled-unbound-status-persist-failed': {
+        jobId: 'job-1',
+        operationId: 'operation-1',
+        cause: 'settled-unbound-status-persist-failed',
+        error: 'status persist failed',
+        observedAtMs: 123,
+      },
+    } satisfies Record<SettlementFailure['cause'], SettlementFailure>;
+
+    for (const [cause, failure] of Object.entries(cases)) {
+      const output = formatBackendStatus(
+        runningBackendStatus({ settlementRefusalRecordingFailures: [failure] }),
+        { kind: 'absent' },
+        null,
+      );
+      expect(nextStepLines(output), cause).toEqual([]);
+      expect(output, cause).toMatch(/^\s*hold=/mu);
+      expect(output, cause).not.toContain('nextStep=');
+    }
+  });
+
+  it('covers every running-health diagnostics family through the composed formatter', () => {
+    const setIdentity = {
+      buildSetId: '11111111-1111-4111-8111-111111111111',
+      hostFingerprint: 'a'.repeat(64),
+      proxyInstanceId: '22222222-2222-4222-8222-222222222222',
+    };
+    const setToken = encodeProviderProxySetAddress(setIdentity);
+    const cases = {
+      launchPermits: runningBackendStatus({
+        launchPermits: [
+          {
+            reservationId: 'reservation-1',
+            jobId: 'job-1',
+            pool: 'default',
+            provider: 'codex',
+            holder: { kind: 'local-execution' },
+            executionOwner: { kind: 'provider-session', id: 'session-1' },
+            heldForMs: 100,
+          },
+        ],
+      }),
+      settlementRefusalRecordingFailures: runningBackendStatus({
+        settlementRefusalRecordingFailures: [
+          {
+            jobId: 'job-1',
+            cause: 'terminal-persist-failed',
+            error: 'persist failed',
+            observedAtMs: 123,
+          },
+        ],
+      }),
+      launchReleaseDispositions: runningBackendStatus({
+        launchReleaseDispositions: [
+          {
+            reservationId: 'reservation-1',
+            jobId: 'job-1',
+            pool: 'default',
+            provider: 'codex',
+            attemptedHolder: { kind: 'local-execution' },
+            disposition: { kind: 'already-released', pool: 'default' },
+            observedAtMs: 123,
+          },
+        ],
+      }),
+      providerOperationAdoptionRefusals: runningBackendStatus({
+        providerOperationAdoptionRefusals: [adoptionRefusal({ kind: 'restart-coordinator' })],
+      }),
+      launchReclamations: runningBackendStatus({
+        launchReclamations: [
+          {
+            reservationId: 'reservation-1',
+            jobId: 'job-1',
+            pool: 'default',
+            provider: 'codex',
+            holder: { kind: 'local-execution' },
+            heldForMs: 100,
+            evidence: { kind: 'job-absent' },
+            reclaimedAtMs: 123,
+          },
+        ],
+      }),
+      carriers: runningBackendStatus({
+        carriers: { coverage: 'complete', liveJobs: 0, unknownJobs: 0, recoveryDefectJobs: 0 },
+      }),
+      mutationBlocked: runningBackendStatus({
+        mutationBlocked: { owner: 'job-1', ageMs: 100, signaledAtMs: 123 },
+      }),
+      consumerStuck: runningBackendStatus({
+        consumerStuck: [{ id: 'consumer-1', elapsedSinceStopMs: 100 }],
+      }),
+      providerProxySets: runningBackendStatus({
+        providerProxySets: [
+          {
+            setIdentity,
+            setToken,
+            liveClaims: 0,
+            operatorExit: { kind: 'none' },
+            autonomousDisposition: { kind: 'unavailable' },
+            holds: [],
+          },
+        ],
+      }),
+      providerProxySetRowSkips: runningBackendStatus(
+        {
+          providerProxySetRowSkips: [{ reason: 'invalid-token', setToken: 'invalid-token', setIdentity: null }],
+        },
+        { skippedProviderProxySetRows: 1, skippedProviderProxySetTokens: ['invalid-token'] },
+      ),
+      providerProxyDispositionSkips: runningBackendStatus({
+        providerProxyDispositionSkips: [
+          { key: 'durable-key', setToken: null, unavailableAction: 'reconciliation-and-retirement' },
+        ],
+      }),
+    } satisfies Record<keyof RunningDiagnostics, RunningBackendStatus>;
+
+    for (const [name, status] of Object.entries(cases)) {
+      const output = formatBackendStatus(status, { kind: 'absent' }, null);
+      expect(nextStepLines(output), name).toEqual([]);
+    }
+  });
+
+  it('covers every running component diagnostic branch through the composed formatter', () => {
+    type RuntimeComponent = RunningBackendHealth['components'][number];
+    type DegradedReason = Extract<RuntimeComponent, { phase: 'degraded' }>['reason'];
+    type OfflineRetry = NonNullable<Extract<RuntimeComponent, { phase: 'offline' }>['diagnostic']>['retry'];
+    const degraded = {
+      'curate-publish': {
+        id: 'curate',
+        phase: 'degraded',
+        reason: { kind: 'curate-publish', consecutiveFailures: 2, lastError: 'publish failed' },
+      },
+      'recovery-quarantine': {
+        id: 'recovery',
+        phase: 'degraded',
+        reason: { kind: 'recovery-quarantine', count: 1, lastError: 'quarantined' },
+      },
+    } satisfies Record<DegradedReason['kind'], RuntimeComponent>;
+    const offline = {
+      unspecified: { id: 'kb', phase: 'offline', reason: 'stopped' },
+      'restart-daemon': {
+        id: 'kb',
+        phase: 'offline',
+        reason: 'stopped',
+        diagnostic: { retry: 'restart-daemon' },
+      },
+      none: { id: 'kb', phase: 'offline', reason: 'failed', diagnostic: { retry: 'none' } },
+    } satisfies Record<'unspecified' | NonNullable<OfflineRetry>, RuntimeComponent>;
+    const cases = {
+      initializing: [{ id: 'kb', phase: 'initializing', attempt: 1 }],
+      online: [{ id: 'kb', phase: 'online' }],
+      degraded: Object.values(degraded),
+      offline: Object.values(offline),
+    } satisfies Record<RuntimeComponent['phase'], readonly RuntimeComponent[]>;
+
+    for (const [phase, components] of Object.entries(cases)) {
+      for (const component of components) {
+        const output = formatBackendStatus(
+          runningBackendStatus({}, { components: [component] }),
+          { kind: 'absent' },
+          null,
+        );
+        expect(nextStepLines(output), phase).toEqual([]);
+      }
+    }
   });
 });
 

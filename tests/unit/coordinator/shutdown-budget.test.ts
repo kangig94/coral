@@ -1757,6 +1757,196 @@ describe('runShutdownSequence drain budget', () => {
 });
 
 describe('settlement ledger exit gate', () => {
+  it('reports one monotonic terminal bound through the initial attempt and both retry slots', async () => {
+    const time = new VirtualTime();
+    const commit = vi.fn<ShutdownAuthorityReleaseBoundary['commit']>(() => new Promise<never>(() => {}));
+    const retainedAuthority = vi.fn(() => ({ ipcSocket: true }));
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: async () => ({ confirmed: true, token: {} }),
+      commit,
+      retainedAuthority,
+      hold: () => ({ reason: 'required-shutdown-step-unsettled', exit: 'shutdown-budget-exhaustion' }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 30_000, time, log: () => {}, pollMs: 50 });
+
+    const bounds = [ledger.snapshot().boundMs];
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 0,
+      boundMs: 60_000,
+      attempt: { started: 0, limit: 3 },
+    });
+
+    const initialAttempt = ledger.gate(boundary);
+    await flush();
+    time.tick(30_000);
+    await flush();
+    const first = requireHeld(await initialAttempt);
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 30_000,
+      boundMs: 30_000,
+      attempt: { started: 1, limit: 3 },
+      lastDeclined: { attempt: 1 },
+    });
+    expect(retainedAuthority).toHaveBeenCalledOnce();
+
+    const firstRetry = first.retry();
+    await flush();
+    time.tick(7_500);
+    await flush();
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 37_500,
+      boundMs: 22_500,
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 1 },
+    });
+    time.tick(7_500);
+    await flush();
+    const second = requireHeld(await firstRetry);
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 45_000,
+      boundMs: 15_000,
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(retainedAuthority).toHaveBeenCalledTimes(2);
+
+    const secondRetry = second.retry();
+    await flush();
+    time.tick(7_500);
+    await flush();
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 52_500,
+      boundMs: 7_500,
+      attempt: { started: 3, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    time.tick(7_500);
+    await flush();
+    requireUnaccepted(await secondRetry);
+    bounds.push(ledger.snapshot().boundMs);
+
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 60_000,
+      boundMs: 0,
+      attempt: { started: 3, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(bounds).toEqual([60_000, 30_000, 22_500, 15_000, 7_500, 0]);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(retainedAuthority).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one retry slot between delayed preparation and a pending commit', async () => {
+    const time = new VirtualTime();
+    let preparations = 0;
+    const prepare = vi.fn<ShutdownAuthorityReleaseBoundary['prepare']>(async () => {
+      preparations += 1;
+      if (preparations > 1) await time.sleep(5_000);
+      return { confirmed: true, token: {} };
+    });
+    let commits = 0;
+    const commit = vi.fn<ShutdownAuthorityReleaseBoundary['commit']>(async () => {
+      commits += 1;
+      if (commits === 1) return { confirmed: false, detail: 'retry commit required' };
+      return new Promise<never>(() => {});
+    });
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare,
+      commit,
+      retainedAuthority: () => ({ ipcSocket: true }),
+      hold: () => ({
+        reason: 'required-shutdown-step-unsettled',
+        exit: 'shutdown-budget-exhaustion',
+        retryAfter: Promise.resolve(),
+      }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 30_000, time, log: () => {}, pollMs: 50 });
+
+    const first = requireHeld(await ledger.gate(boundary));
+    const retry = first.retry();
+    let retryCompleted = false;
+    void retry.then(() => {
+      retryCompleted = true;
+    });
+    await flush();
+    time.tick(5_000);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(2);
+    time.tick(9_999);
+    await flush();
+    expect(ledger.snapshot().boundMs).toBe(15_001);
+    time.tick(1);
+    await flush();
+    expect(retryCompleted).toBe(true);
+    const second = requireHeld(await retry);
+
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 15_000,
+      boundMs: 15_000,
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(heldFailureDetail(second)).toContain('exceeded 10000ms');
+  });
+
+  it.each([
+    { label: 'boundary retry signal', pollMs: 50, boundaryRetryMs: 50_000 },
+    { label: 'ledger poll fallback', pollMs: 50_000, boundaryRetryMs: null },
+  ])('caps a long $label at the fixed slot and consumes an already-expired following slot', async (testCase) => {
+    const time = new VirtualTime();
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: async () => ({ confirmed: true, token: {} }),
+      commit: async () => ({ confirmed: false, detail: 'authority release pending' }),
+      retainedAuthority: () => ({ ipcSocket: true }),
+      hold: () => ({
+        reason: 'required-shutdown-step-unsettled',
+        exit: 'shutdown-budget-exhaustion',
+        ...(testCase.boundaryRetryMs === null ? {} : { retryAfter: time.sleep(testCase.boundaryRetryMs) }),
+      }),
+    };
+    const ledger = createShutdownSettlementLedger({
+      budgetMs: 30_000,
+      time,
+      log: () => {},
+      pollMs: testCase.pollMs,
+    });
+
+    const first = requireHeld(await ledger.gate(boundary));
+    let firstSlotReached = false;
+    void first.retryAfter.then(() => {
+      firstSlotReached = true;
+    });
+    time.tick(14_999);
+    await flush();
+    expect(firstSlotReached).toBe(false);
+    time.tick(1);
+    await flush();
+    expect(firstSlotReached).toBe(true);
+
+    time.tick(15_000);
+    const second = requireHeld(await first.retry());
+    let expiredSlotConsumed = false;
+    void second.retryAfter.then(() => {
+      expiredSlotConsumed = true;
+    });
+    await flush();
+    expect(expiredSlotConsumed).toBe(true);
+    requireUnaccepted(await second.retry());
+
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 30_000,
+      boundMs: 0,
+      attempt: { started: 3, limit: 3 },
+    });
+  });
+
   it('does not rerun a timed-out non-abort-aware obligation', async () => {
     const time = new VirtualTime();
     let settleTask!: (confirmation: { confirmed: true }) => void;

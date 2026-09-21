@@ -513,7 +513,7 @@ export function formatHandoffContinuationReason(reason: HandoffContinuationReaso
     case 'handoff-abandoned':
       return [
         'Handoff: continuing current build — delegation was abandoned because stdout did not finish draining.',
-        "Next step: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
+        "Handoff hold: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
       ].join('\n');
     default:
       return assertNever(reason);
@@ -528,24 +528,24 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
       return basis.cause === 'health-shape-rejected'
         ? [
             `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-            'Next step: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+            'Handoff hold: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
             formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
           ].join('\n')
         : [
             `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-            'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
+            'Handoff hold: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
           ].join('\n');
     case 'incumbent-unusable':
       return formatUnusableIncumbent(basis);
     case 'invoking-identity-unavailable':
       return [
         `Handoff: continuing current build — ${formatInvokingIdentityFailure(basis.failure)}.`,
-        'Next step: repair or reinstall this Coral bundle, then retry.',
+        'Handoff hold: repair or reinstall this Coral bundle, then retry.',
       ].join('\n');
     case 'incumbent-identity-unavailable':
       return [
         `Handoff: continuing current build — incumbent ${basis.incumbent.version} did not report a complete bundle identity.`,
-        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
         formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     case 'same-build-set':
@@ -563,7 +563,7 @@ function formatInvokingBuildNotOlder(
   basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
 ): string {
   const nextStep = [
-    'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+    'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
     formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
   ].join('\n');
   switch (basis.comparison) {
@@ -603,12 +603,12 @@ function formatUnusableIncumbent(basis: Extract<HandoffRoutingBasis, { kind: 'in
     case 'draining':
       return [
         'Handoff: continuing current build — the incumbent coordinator is shutting down.',
-        'Next step: wait for backend shutdown to finish, then retry.',
+        'Handoff hold: wait for backend shutdown to finish, then retry.',
       ].join('\n');
     case 'identity-mismatch':
       return [
         'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
-        'Next step: run the shutdown command below, wait for shutdown to finish, then retry.',
+        'Handoff hold: run the shutdown command below, wait for shutdown to finish, then retry.',
         formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     default:
@@ -640,7 +640,7 @@ function formatInvalidIncumbentTarget(
     basis.evidence.expectedManifest === null ? 'the incumbent' : `incumbent ${basis.evidence.expectedManifest.version}`;
   return [
     `Handoff: continuing current build — ${incumbent} handoff target at ${basis.evidence.bundleDir} is invalid because ${formatInvalidTargetFailure(basis.evidence.failure)}.`,
-    `Next step: repair or reinstall the Coral installation at ${basis.evidence.bundleDir}, then retry.`,
+    `Handoff hold: repair or reinstall the Coral installation at ${basis.evidence.bundleDir}, then retry.`,
   ].join('\n');
 }
 
@@ -781,7 +781,7 @@ function formatRoutingOwnerLiveness(
       return [
         `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
         selectionEvidence,
-        'Next step: run the resolution command below.',
+        'Routing hold: run the resolution command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: false }),
       ].join('\n');
     case 'unobservable':
@@ -789,13 +789,13 @@ function formatRoutingOwnerLiveness(
         ? [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Next step: inspect backend status again; an expired sweep cannot authorize resolution.',
+            'Routing hold: inspect backend status again; an expired sweep cannot authorize resolution.',
             formatBackendOperatorCommand({ kind: 'backend-status' }),
           ].join('\n')
         : [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Next step: verify the owner externally, then run the forced resolution command below to abandon it.',
+            'Routing hold: verify the owner externally, then run the forced resolution command below to abandon it.',
             formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: true }),
           ].join('\n');
     default:
@@ -873,7 +873,7 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
           return [
             `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).`,
             `Selected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.`,
-            'Next step: run the resolution command below to acknowledge the retained capacity eviction.',
+            'Routing hold: run the resolution command below to acknowledge the retained capacity eviction.',
             formatBackendOperatorCommand({
               kind: 'routing-status-resolve',
               invocationId: status.tombstone.invocationId,
@@ -913,46 +913,46 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
     case 'detached-wal':
       return [
         'Routing status has a detached non-empty WAL beside an absent or empty main database.',
-        'Next step: run the discard command below.',
+        'Routing hold: run the discard command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'no-generation':
       return [
         'Routing status contains application objects but no generation address.',
-        'Next step: run the discard command below.',
+        'Routing hold: run the discard command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'other-generation':
       if (result.kind !== 'foreign-generation') throw new Error('Foreign-generation render policy is invalid.');
       return [
         `Routing status generation ${result.generation} belongs to another address.`,
-        'Next step: run the discard command below.',
+        'Routing hold: run the discard command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'other-format':
       return [
         'Routing status has this generation address but a different durable format fingerprint.',
-        'Next step: run the discard command below.',
+        'Routing hold: run the discard command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'divergent-schema':
       return [
         'Routing status has this generation address but a divergent schema.',
-        'Next step: run the discard command below.',
+        'Routing hold: run the discard command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'damaged':
       if (result.kind !== 'unreadable') throw new Error('Unreadable render policy is invalid.');
       return [
         `Routing status is unreadable (${result.reason}).`,
-        'Next step: run the discard command below.',
+        'Routing hold: run the discard command below.',
         formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
       ].join('\n');
     case 'could-not-observe':
       if (result.kind !== 'undeterminable') throw new Error('Undeterminable render policy is invalid.');
       return [
         `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
-        'Next step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+        'Routing hold: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
         formatBackendOperatorCommand({ kind: 'backend-status' }),
       ].join('\n');
     case 'content-dependent': {
@@ -1593,7 +1593,7 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
           (refusal) =>
             `Refusal: record=${encodeRecoveryQuarantineKey(refusal.recordKey)} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} reason=${refusal.reason}`,
         ),
-        ...result.refusals.map((refusal) => formatProviderOperationAdoptionRefusalNextStep(refusal)),
+        ...result.refusals.map((refusal) => formatProviderOperationAdoptionRefusalNextStep(refusal, 'Next step')),
       ].join('\n');
     case 'absent':
       return [
@@ -1742,25 +1742,26 @@ function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evid
 
 function formatProviderOperationAdoptionRefusalNextStep(
   refusal: Pick<ProviderOperationAdoptionRefusalStatus, 'jobId' | 'recordKey' | 'remedy'>,
+  leadLabel: 'Diagnostic hold' | 'Next step',
 ): string {
   const inspect = formatBackendOperatorCommand({ kind: 'jobs-detail', jobId: refusal.jobId });
   const status = formatBackendOperatorCommand({ kind: 'backend-status' });
   switch (refusal.remedy.kind) {
     case 'restart-coordinator':
       return [
-        `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Then inspect the job and backend status.`,
+        `${leadLabel}: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Then inspect the job and backend status.`,
         inspect,
         status,
       ].join('\n');
     case 'remote-settlement':
       return [
-        `Next step: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Then inspect the job and backend status.`,
+        `${leadLabel}: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Then inspect the job and backend status.`,
         inspect,
         status,
       ].join('\n');
     case 'recovery-quarantine-discard': {
       return [
-        `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
+        `${leadLabel} for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
         formatRecoveryRecordRemedy(refusal.remedy),
         'Then inspect the job and backend status.',
         inspect,
@@ -1769,7 +1770,7 @@ function formatProviderOperationAdoptionRefusalNextStep(
     }
     case 'recovery-quarantine-clear':
       return [
-        `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
+        `${leadLabel} for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
         formatProviderOperationRemedy(refusal.remedy),
         'Then inspect the job and backend status.',
         inspect,
@@ -1777,7 +1778,7 @@ function formatProviderOperationAdoptionRefusalNextStep(
       ].join('\n');
     case 'external-repair':
       return [
-        `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then inspect the job and backend status.`,
+        `${leadLabel}: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then inspect the job and backend status.`,
         inspect,
         status,
       ].join('\n');
@@ -1790,25 +1791,25 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
   switch (failure.cause) {
     case 'terminal-persist-failed':
       return [
-        '    nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
+        '    hold=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
     case 'claim-release-failed':
       return [
-        '    nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
+        '    hold=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
     case 'claim-already-reassigned':
       return [
-        '    nextStep=no automatic retry applies because the session claim belongs to another job. Inspect the job, verify the current session owner externally, then inspect backend status.',
+        '    hold=no automatic retry applies because the session claim belongs to another job. Inspect the job, verify the current session owner externally, then inspect backend status.',
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
     case 'settled-unbound-status-persist-failed':
       return [
-        `    nextStep=Coral retries this settlement-status write automatically. Inspect backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`,
+        `    hold=Coral retries this settlement-status write automatically. Inspect backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`,
         `    ${status}`,
       ].join('\n');
     default:
@@ -1922,7 +1923,7 @@ function formatRunningStatus(health: RunningHealth): string {
         `  record=${refusal.recordKey} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} observedAtMs=${refusal.observedAtMs}`,
         `    triggerRecord=${refusal.triggerRecordKey} rowDisposition=${refusal.rowDisposition} releasedLaunchPermits=${refusal.releasedLaunchPermits}`,
         `    reason=${refusal.reason}`,
-        `    ${formatProviderOperationAdoptionRefusalNextStep(refusal)}`,
+        `    ${formatProviderOperationAdoptionRefusalNextStep(refusal, 'Diagnostic hold')}`,
       );
     }
   }
