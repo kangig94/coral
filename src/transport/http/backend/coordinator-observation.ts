@@ -71,8 +71,6 @@ export function observeCoordinator(
       : { kind: 'no-record' };
   }
 
-  // `readBackendInfo` may discard legacy records without `version` or `instanceId`; `shutdownBackend` must still
-  // observe them, while `getBackendStatusFull` must retain `instanceId` to scope durable remainder evidence.
   const record = read.record;
   // Only an observed absence is an absence. `unknown` keeps the record and lets the caller try, which is the
   // safe direction for both of them.

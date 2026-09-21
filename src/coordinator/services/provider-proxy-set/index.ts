@@ -4476,22 +4476,18 @@ export class ProviderProxySetLifecycle {
         disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
-    if (!window.retiredSources.has('redemption')) {
-      turn.start({
-        sourceId: 'redemption',
-        producerId: 'role-control',
-        input: { signal: redemptionAbort.signal, run: (signal) => authority.redeemControl(signal) },
-        abort: (reason) => redemptionAbort.abort(reason),
-      });
-    }
-    if (!window.retiredSources.has('absence')) {
-      turn.start({
-        sourceId: 'absence',
-        producerId: 'containment-proof',
-        input: { identity: slot.identity, signal: absenceAbort.signal },
-        abort: (reason) => absenceAbort.abort(reason),
-      });
-    }
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'role-control',
+      input: { signal: redemptionAbort.signal, run: (signal) => authority.redeemControl(signal) },
+      abort: (reason) => redemptionAbort.abort(reason),
+    });
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: { identity: slot.identity, signal: absenceAbort.signal },
+      abort: (reason) => absenceAbort.abort(reason),
+    });
   }
 
   #isCurrentControlReattachment(slot: EstablishedSlot, window: ControlReattachmentWindow, token: number): boolean {
@@ -4815,22 +4811,18 @@ export class ProviderProxySetLifecycle {
         disposeLateEvidence: (value, sourceId) => this.#releaseLateReattachmentEvidence(value, sourceId),
       },
     );
-    if (!window.retiredSources.has('redemption')) {
-      turn.start({
-        sourceId: 'redemption',
-        producerId: 'role-control',
-        input: { signal: redemptionAbort.signal, run: (signal) => authority.redeemControl(signal) },
-        abort: (reason) => redemptionAbort.abort(reason),
-      });
-    }
-    if (!window.retiredSources.has('absence')) {
-      turn.start({
-        sourceId: 'absence',
-        producerId: 'containment-proof',
-        input: { identity: slot.identity, signal: absenceAbort.signal },
-        abort: (reason) => absenceAbort.abort(reason),
-      });
-    }
+    turn.start({
+      sourceId: 'redemption',
+      producerId: 'role-control',
+      input: { signal: redemptionAbort.signal, run: (signal) => authority.redeemControl(signal) },
+      abort: (reason) => redemptionAbort.abort(reason),
+    });
+    turn.start({
+      sourceId: 'absence',
+      producerId: 'containment-proof',
+      input: { identity: slot.identity, signal: absenceAbort.signal },
+      abort: (reason) => absenceAbort.abort(reason),
+    });
   }
 
   #scheduleReattachmentHoldRetry(slot: EstablishedSlot, window: ControlReattachmentWindow): void {

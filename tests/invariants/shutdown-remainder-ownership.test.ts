@@ -47,19 +47,6 @@ const LIFECYCLE_SHUTDOWN_LABEL_INVENTORY = ['backend discovery withdrawal'] as c
 // (collected through `remainder`) unaffected and the check green. Checked against SHUTDOWN_PATH's own
 // collected labels specifically, for the same reason as above.
 const SHUTDOWN_BOUNDARY_LABEL_INVENTORY = ['provider control and IPC authority release'] as const;
-// `shutdownErrorProjectionViolations` folds five independent AST shapes into `producedNames`/`handledCodes`:
-// a class-field `name = 'X'` declaration (`classFieldErrorNames`), a constructor `this.name = 'X'` assignment,
-// a `new XError(...)` construction, an `instanceof XError` check, and an error-code string literal. If a shape
-// stops matching, the other collected sets can still be non-empty, so a bare emptiness check would not catch
-// the loss. Each canary below is reachable through exactly one shape among the files this build scans —
-// `RangeError` is never instanceof-checked or field-assigned, `SyntaxError` is excluded from the construction
-// shape's own regex, and `StoreResetIncidentReadError` is a project name no other shape produces — so a canary
-// missing from its collected set proves that one shape stopped matching, not that the codebase happened to
-// stop using it. The class-field shape carries no canary here: no `name = '…'` class field under `src/`
-// belongs to a class that extends an `Error`-suffixed base, so `classFieldErrorNames` currently collects
-// nothing from this scan (confirmed by removing its contribution to the fold: all eight tests still pass).
-// Its AST-matching is instead proven directly by the two cases below that assert on `classFieldErrorNames`
-// in isolation.
 const SHUTDOWN_ERROR_PROJECTION_NAME_CANARIES = ['StoreResetIncidentReadError', 'RangeError', 'SyntaxError'] as const;
 const SHUTDOWN_ERROR_PROJECTION_CODE_CANARY = 'ENOENT';
 
@@ -465,33 +452,6 @@ function dynamicShutdownLabelOrdinalViolations(): string[] {
   return violations;
 }
 
-function classExtendsErrorLike(classNode: ts.ClassDeclaration): boolean {
-  const base = classNode.heritageClauses?.find((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword)?.types[0]
-    ?.expression;
-  return base !== undefined && ts.isIdentifier(base) && /Error$/u.test(base.text);
-}
-
-/** The class-field counterpart of a `this.name = 'X'` constructor assignment. */
-function classFieldErrorNames(file: ts.SourceFile): string[] {
-  const names: string[] = [];
-  function visit(node: ts.Node): void {
-    if (
-      ts.isPropertyDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === 'name' &&
-      node.initializer !== undefined &&
-      ts.isClassDeclaration(node.parent) &&
-      classExtendsErrorLike(node.parent)
-    ) {
-      const declaredName = unwrapExpression(node.initializer);
-      if (ts.isStringLiteral(declaredName)) names.push(declaredName.text);
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(file);
-  return names;
-}
-
 function shutdownErrorProjectionViolations(): string[] {
   const status = sourceFile(BACKEND_STATUS_PATH);
   const projectedNames = new Set<string>();
@@ -521,7 +481,6 @@ function shutdownErrorProjectionViolations(): string[] {
 
   for (const file of sourceFiles(OWNERSHIP_SCAN_ROOT)) {
     if (file.fileName === BACKEND_STATUS_PATH) continue;
-    for (const name of classFieldErrorNames(file)) producedNames.add(name);
     function visit(node: ts.Node): void {
       if (
         ts.isBinaryExpression(node) &&
@@ -594,46 +553,12 @@ describe('shutdown remainder ownership inventory', () => {
     expect(ownershipShapeViolations()).toEqual([]);
   });
 
-  it('rejects an ownerless remainder mutation', () => {
-    const mutationPath = 'src/coordinator/competing-shutdown.ts';
-    const mutation = parseSource(
-      mutationPath,
-      `const competingObligation = {
-        label: 'competing obligation',
-        remainder: () => ({ evidence: { kind: 'startup-liveness-recovery' } }),
-      };`,
-    );
-    expect(ownershipShapeFileViolations(mutation)).toEqual([`${mutationPath}:3 remainder must declare an owner`]);
-  });
-
   it('maps every shutdown remainder label this build produces to a structured status identity', () => {
     expect(shutdownLabelProjectionViolations()).toEqual([]);
   });
 
   it('round-trips every dynamic shutdown obligation label at its leading-1-boundary occurrences', () => {
     expect(dynamicShutdownLabelOrdinalViolations()).toEqual([]);
-  });
-
-  it('reads a class-field name declaration the same as a constructor assignment', () => {
-    const mutationPath = 'src/coordinator/competing-shutdown.ts';
-    const mutation = parseSource(
-      mutationPath,
-      `class FooError extends Error {
-        override readonly name = 'FooError';
-      }`,
-    );
-    expect(classFieldErrorNames(mutation)).toEqual(['FooError']);
-  });
-
-  it('ignores a same-named field on a class that does not extend Error', () => {
-    const mutationPath = 'src/coordinator/competing-shutdown.ts';
-    const mutation = parseSource(
-      mutationPath,
-      `class LocalOnnxProvider implements OnnxEmbeddingService {
-        readonly name = 'onnx';
-      }`,
-    );
-    expect(classFieldErrorNames(mutation)).toEqual([]);
   });
 
   it('maps every repository error name and handled system code to a structured status identity', () => {

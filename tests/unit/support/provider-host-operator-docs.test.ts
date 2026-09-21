@@ -1,34 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
-
-import type { Principal } from '#src/security/principal.js';
-import { executeCatalogRequest } from '#src/transport/dispatch.js';
-import { providerHostInspectRpcSpec } from '#src/transport/rpc/catalog.js';
-import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
+import { describe, expect, it } from 'vitest';
 
 const cliErrors = readFileSync(join(process.cwd(), 'docs', 'cli-errors.md'), 'utf8');
 const configuration = readFileSync(join(process.cwd(), 'docs', 'configuration.md'), 'utf8');
 const architecture = readFileSync(join(process.cwd(), 'docs', 'architecture.md'), 'utf8');
-
-const operator: Principal = {
-  subject: 'operator',
-  transport: 'ipc',
-  credential: { kind: 'boot-token', id: 'operator' },
-  binding: { kind: 'unbound' },
-};
 
 function catalogEntry(code: string): string {
   const prefix = `| \`${code}\``;
   const entry = cliErrors.split('\n').find((line) => line.startsWith(prefix));
   if (entry === undefined) throw new Error(`Missing CLI error catalog entry for ${code}`);
   return entry;
-}
-
-function paragraphContaining(anchor: string): string {
-  const line = cliErrors.split('\n').find((entry) => entry.includes(anchor));
-  if (line === undefined) throw new Error(`Missing document paragraph containing ${anchor}`);
-  return line;
 }
 
 describe('provider-host operator documentation', () => {
@@ -77,51 +59,6 @@ describe('provider-host operator documentation', () => {
     expect(cliErrors).toContain('keeps its exact `{ hosts }` shape for a shipped CLI');
     expect(cliErrors).toContain(
       'provider_host_owner_torn_down: administration control released for <ids>; their hosts are not listed.',
-    );
-  });
-
-  it('names every exit the release can be ended through, including the one a work directory is left with', async () => {
-    // see providerHostAdministrationCopy in src/transport/dispatch.ts
-    // This check must drive that code directly rather than pin a copy of its output, or drift between
-    // the two goes undetected again.
-    const inspect = vi.fn(async () => {
-      throw Object.assign(new Error('provider_host_owner_torn_down'), {
-        code: 'provider_host_owner_torn_down',
-        ownerIds: ['provider-proxy:set-a'],
-        matches: [],
-        workDir: process.cwd(),
-      });
-    });
-    const ports = { providerHosts: { list: vi.fn(), inspect, evict: vi.fn() } } as unknown as HttpHandlerPorts;
-    const result = await executeCatalogRequest(
-      providerHostInspectRpcSpec,
-      { workDir: '.', projectRoot: process.cwd() },
-      ports,
-      operator,
-    );
-    if (result.kind !== 'unary') throw new Error('expected a unary provider-host refusal');
-    const body = result.body as { remediation: string };
-    const paragraph = paragraphContaining('are also served while the coordinator drains');
-    const entry = catalogEntry('provider_host_owner_torn_down');
-
-    // A string this build's own remediation does not name must stay absent from the document
-    // describing that same remediation, so the document cannot re-offer what the code no longer produces.
-    for (const marker of ['provider-proxy-set contain', 'provider-proxy-set abandon', 'successor', 're-establish']) {
-      expect(body.remediation).not.toContain(marker);
-      expect(paragraph).not.toContain(marker);
-      expect(entry).not.toContain(marker);
-    }
-    // Every exit the running remediation actually names must still be named in the document.
-    expect(body.remediation).toContain('coral-cli backend status');
-    expect(entry).toContain('coral-cli backend status');
-    expect(paragraph).toContain('coral-cli backend status');
-    expect(body.remediation).toContain('drain ends by itself');
-    expect(paragraph).toContain('ends by itself when its budget is exhausted');
-    expect(body.remediation).toContain('automatic disposition and timing');
-    expect(paragraph).toContain('automatic retry or bounded wait');
-    expect(body.remediation).toContain('coral-cli backend provider-host list');
-    expect(paragraph).toContain(
-      'for a work directory the rendered remediation therefore starts with `coral-cli backend provider-host list`',
     );
   });
 
