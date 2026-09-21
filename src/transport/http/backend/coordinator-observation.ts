@@ -51,9 +51,6 @@ export type CoordinatorObservation =
   /**
    * A record names a pid that decisively no longer exists. This establishes absence only for the process that
    * record names; a stale record does not exclude a different unpublished coordinator.
-   *
-   * It carries every available part of the dead coordinator's identity because absence is where they are
-   * needed: `getBackendStatusFull` must not attribute another instance's durable evidence to this process.
    */
   | Readonly<{ kind: 'process-absent'; pid: number; startedAt: number; instanceId?: string }>;
 

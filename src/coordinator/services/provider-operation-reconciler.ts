@@ -166,7 +166,6 @@ export type StartupReconciliationReport = Readonly<{
   incidents: readonly StartupReconciliationIncident[];
 }>;
 
-/** Startup reconciliation cannot report itself complete while an incident stands; this is how one reads. */
 export function describeStartupReconciliationIncident(incident: StartupReconciliationIncident): string {
   const set = `set=${providerProxySetReference(incident.setIdentity)}`;
   switch (incident.kind) {

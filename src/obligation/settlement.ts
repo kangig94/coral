@@ -57,7 +57,6 @@ export interface HeldSettlementDisposition<Reason, Exit, Failure, RetainedAuthor
   readonly retryAfter: Promise<void>;
   readonly undischarged: readonly Failure[];
   readonly retainedAuthority: RetainedAuthority;
-  /** The ledger's own boundary-transfer attempt count and forced-terminal limit, for a caller that reports it. */
   readonly attemptsStarted: number;
   readonly attemptLimit: number;
   readonly retry: () => Promise<Disposition>;

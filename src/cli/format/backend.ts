@@ -210,11 +210,6 @@ function recoveryRecordRemedyMatchesEntry(
   );
 }
 
-/**
- * The refusal grounds a contain or abandon response can actually carry. It is derived from both vocabularies
- * rather than listed, so a ground the response schema cannot produce has no arm here, and a refusal kind the
- * schema gains has no arm until one is written.
- */
 type ProviderProxySetOperatorRefusalGround = Extract<
   Extract<ProviderProxySetOperatorExit, { kind: 'refused' }>['ground'],
   (ProviderProxySetContainResponse | ProviderProxySetContainBooleanResponse)['kind']

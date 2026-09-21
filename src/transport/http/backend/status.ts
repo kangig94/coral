@@ -1,4 +1,4 @@
-import { observeCoordinator } from './coordinator-observation.js';
+import { observeCoordinator, type CoordinatorObservation } from './coordinator-observation.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
 import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../../../infra/error-format.js';
@@ -12,6 +12,7 @@ import {
   type SetupErrorAuthorIdentity,
 } from '../../../runtime/errors.js';
 import { createRealRuntime } from '../../../runtime/real.js';
+import type { Runtime } from '../../../runtime/ports.js';
 import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
 import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
 import { TransientHttpError } from '../../../infra/http-errors.js';
@@ -278,10 +279,6 @@ export type ShutdownRemainderReport =
       record: OperatorFacingShutdownRemainderRecord;
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }>
-  /**
-   * No decoded record means no recorded writer, so these members are never scoped to the running instance.
-   * `errno` belongs to the refused read alone: a parse refusal has no system error code to be missing.
-   */
   | Readonly<{
       status: 'shutdown_remainder_unreadable';
       reason: 'unreadable';
@@ -415,9 +412,6 @@ export function operatorFacingShutdownObligation(label: string): OperatorFacingS
   if (label === 'provider proxy lifecycle fatal incident') {
     return { label, occurrence: 1 };
   }
-  // The producer never appends a numeral for occurrence 1 (`shutdownIncidentUndischarged`), so a bare "1" suffix
-  // here is malformed rather than a second occurrence; `[1-9][0-9]*` (not `[2-9][0-9]*`) is required because the
-  // excluded first digit rejected every occurrence with a leading 1 — 10-19, 100-199, and so on.
   const incident = /^provider proxy lifecycle fatal incident ([1-9][0-9]*)$/u.exec(label);
   if (incident !== null) {
     const occurrence = positiveSafeInteger(incident[1] ?? '');
@@ -673,9 +667,6 @@ function statusWithRecentCoordinatorEvidence(
     coordinator === undefined
       ? { kind: 'unscoped' }
       : { kind: 'coordinator', instanceId: coordinator.instanceId, startedAt: coordinator.startedAt };
-  // A startup diagnostic is proof about this build's own instance regardless of who now answers the recorded
-  // address, and it carries the same optional `shutdownRemainder` field as every other fallback member, so it
-  // always runs through the remainder lookup below rather than returning early.
   if (diagnostic !== null) {
     return statusWithShutdownRemainder(storage, runDir, now, diagnostic, remainderScope);
   }
@@ -692,10 +683,6 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope);
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
   return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
-}
-
-function shuttingDownStatus(): Extract<BackendStatusFull, { status: 'shutting_down' }> {
-  return { status: 'shutting_down' };
 }
 
 type PingProbeObservation = Readonly<{
@@ -723,7 +710,7 @@ async function probeUnauthenticatedPing(
       return { result: notOurCoordinator({ namespace: body.namespace, flavor: body.flavor }) };
     }
     return {
-      result: body.status === 'draining' ? shuttingDownStatus() : null,
+      result: body.status === 'draining' ? { status: 'shutting_down' } : null,
       instanceId: body.instanceId,
     };
   }
@@ -754,7 +741,7 @@ async function probeDetailedHealth(
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
     if (health.status === 'draining') {
-      return shuttingDownStatus();
+      return { status: 'shutting_down' };
     }
     const { namespace: _namespace, status: _status, ...rest } = health;
     return {
@@ -774,63 +761,11 @@ async function probeDetailedHealth(
   return unreachable(`detailed health responded ${response.status}`);
 }
 
-export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
-  const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
-  const observed = observeCoordinator({
-    storage: runtime.storage,
-    env: runtime.env,
-    paths: runtime.paths,
-  });
-  // Only a strictly proven bundle identity may claim authorship of a diagnostic: a hash read back without that
-  // proof is not evidence, because a build that wrote nothing can read the same unproven value.
-  const provenSelfIdentity = (): SetupErrorAuthorIdentity | null => {
-    const strict = resolveStrictBundleIdentity();
-    return strict.ok ? { bundleHash: strict.manifest.bundleHash, namespace: pluginRootNamespace(pluginRoot) } : null;
-  };
-
-  switch (observed.kind) {
-    case 'unreadable-record':
-      return statusWithShutdownRemainder(
-        runtime.storage,
-        runtime.paths.coral.coordinator.runDir,
-        runtime.time.now(),
-        { status: 'undecodable_record', reason: observed.reason, path: observed.path },
-        { kind: 'unscoped' },
-      );
-    case 'no-record':
-      return statusWithRecentCoordinatorEvidence(
-        runtime.storage,
-        runtime.paths.coral.coordinator.startupDiagnosticFile,
-        runtime.paths.coral.coordinator.runDir,
-        runtime.time.now(),
-        provenSelfIdentity,
-        { status: 'no_record_no_socket' },
-      );
-    case 'no-record-socket-present':
-      // Without a recorded instance id, narrowing would fabricate identity, so the lookup is directory-scoped.
-      return statusWithRecentCoordinatorEvidence(
-        runtime.storage,
-        runtime.paths.coral.coordinator.startupDiagnosticFile,
-        runtime.paths.coral.coordinator.runDir,
-        runtime.time.now(),
-        provenSelfIdentity,
-        { status: 'no_record_socket_present', socketPath: observed.socketPath },
-      );
-    case 'process-absent':
-      // Startup diagnostics require both `startedAt` and `pid`; shutdown remainders require the recorded
-      // `instanceId`. Missing identity must never widen either lookup to directory-wide evidence.
-      return statusWithRecentCoordinatorEvidence(
-        runtime.storage,
-        runtime.paths.coral.coordinator.startupDiagnosticFile,
-        runtime.paths.coral.coordinator.runDir,
-        runtime.time.now(),
-        provenSelfIdentity,
-        { status: 'recorded_process_absent', pid: observed.pid },
-        observed,
-      );
-    case 'addressed':
-      break;
-  }
+async function probeAddressedCoordinatorStatus(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'time'>,
+  observed: Extract<CoordinatorObservation, { kind: 'addressed' }>,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
+): Promise<BackendStatusFull> {
   const info = observed.coordinator;
 
   // A decoded peer mismatch must retain the peer identity, regardless of the recorded pid's liveness.
@@ -889,16 +824,7 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
       result = { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
     }
   }
-  if (result.status === 'shutting_down') {
-    return statusWithShutdownRemainder(
-      runtime.storage,
-      runtime.paths.coral.coordinator.runDir,
-      runtime.time.now(),
-      result,
-      { kind: 'unscoped' },
-    );
-  }
-  if (result.status === 'ok') {
+  if (result.status === 'shutting_down' || result.status === 'ok') {
     return statusWithShutdownRemainder(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,
@@ -916,4 +842,63 @@ export async function getBackendStatusFull(pluginRoot: string): Promise<BackendS
     result,
     info,
   );
+}
+
+export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {
+  const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
+  const observed = observeCoordinator({
+    storage: runtime.storage,
+    env: runtime.env,
+    paths: runtime.paths,
+  });
+  // Only a strictly proven bundle identity may claim authorship of a diagnostic: a hash read back without that
+  // proof is not evidence, because a build that wrote nothing can read the same unproven value.
+  const provenSelfIdentity = (): SetupErrorAuthorIdentity | null => {
+    const strict = resolveStrictBundleIdentity();
+    return strict.ok ? { bundleHash: strict.manifest.bundleHash, namespace: pluginRootNamespace(pluginRoot) } : null;
+  };
+
+  switch (observed.kind) {
+    case 'unreadable-record':
+      return statusWithShutdownRemainder(
+        runtime.storage,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        { status: 'undecodable_record', reason: observed.reason, path: observed.path },
+        { kind: 'unscoped' },
+      );
+    case 'no-record':
+      return statusWithRecentCoordinatorEvidence(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'no_record_no_socket' },
+      );
+    case 'no-record-socket-present':
+      // Without a recorded instance id, narrowing would fabricate identity, so the lookup is directory-scoped.
+      return statusWithRecentCoordinatorEvidence(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'no_record_socket_present', socketPath: observed.socketPath },
+      );
+    case 'process-absent':
+      // Startup diagnostics require both `startedAt` and `pid`; shutdown remainders require the recorded
+      // `instanceId`. Missing identity must never widen either lookup to directory-wide evidence.
+      return statusWithRecentCoordinatorEvidence(
+        runtime.storage,
+        runtime.paths.coral.coordinator.startupDiagnosticFile,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        provenSelfIdentity,
+        { status: 'recorded_process_absent', pid: observed.pid },
+        observed,
+      );
+    case 'addressed':
+      return probeAddressedCoordinatorStatus(runtime, observed, provenSelfIdentity);
+  }
 }

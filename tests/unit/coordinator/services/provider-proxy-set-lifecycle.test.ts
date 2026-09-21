@@ -3910,6 +3910,56 @@ describe('ProviderProxySetLifecycle', () => {
     expect(clock.timers.filter((timer) => timer.active)).toHaveLength(1);
   });
 
+  it('invokes only the surviving producer after a reattachment source retires', () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const faults = createProviderProxyAuthorityFaultLatch();
+    const clock = new ManualClock();
+    const producerInvocations: string[] = [];
+    let turnNumber = 0;
+    const recoveryDispatcher: ProviderProxyRecoveryDispatcher = {
+      begin: (_seam, context, sinks) => {
+        turnNumber += 1;
+        return {
+          start: (source) => {
+            producerInvocations.push(source.producerId);
+            if (turnNumber === 1 && source.sourceId === 'absence') {
+              context.retiredSources?.add('absence');
+              sinks.retry({ producerId: 'containment-proof', incident: new Error('absence source retired') });
+            }
+          },
+          cancel: () => undefined,
+        };
+      },
+    };
+    const authority = fakeAuthority({ record, faults, adoptionWindowMs: 2_000 });
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      recoveryDispatcher,
+      time: clock,
+      proveContainmentAbsent: noContainmentProof,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.completeStartupDiscovery();
+    lifecycle.registerInheritedSet(authority, TEST_PUBLICATION_RECEIPT);
+
+    faults.reportIncident({
+      kind: 'control-channel-fault',
+      role: 'guardian',
+      cause: 'closed',
+      error: new ControlClientError('control_client_closed', 'guardian closed', 'closed'),
+    });
+    expect(producerInvocations).toEqual(['role-control', 'containment-proof']);
+
+    clock.elapse(1_000);
+    clock.runDue();
+
+    expect(producerInvocations).toEqual(['role-control', 'containment-proof', 'role-control']);
+  });
+
   it('begins no hold turn once both reattachment sources are retired', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();

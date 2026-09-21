@@ -21,6 +21,7 @@ const roots: string[] = [];
 
 afterEach(() => {
   vi.mocked(createCoordinatorCore).mockReset();
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -67,12 +68,15 @@ function buildServerOptions(disposeLifecycleReactor: () => Promise<void>): Coord
   };
 }
 
-type RaceOutcome<T> = Readonly<{ kind: 'resolved'; value: T }> | Readonly<{ kind: 'timed-out' }>;
+type RaceOutcome<T> = Readonly<{ kind: 'resolved'; value: T }> | Readonly<{ kind: 'microtask-budget-exhausted' }>;
 
-function raceAgainstTimeout<T>(promise: Promise<T>, ms: number): Promise<RaceOutcome<T>> {
+function raceAgainstMicrotaskBudget<T>(promise: Promise<T>): Promise<RaceOutcome<T>> {
   return Promise.race([
     promise.then((value): RaceOutcome<T> => ({ kind: 'resolved', value })),
-    new Promise<RaceOutcome<T>>((resolve) => setTimeout(() => resolve({ kind: 'timed-out' }), ms)),
+    (async (): Promise<RaceOutcome<T>> => {
+      for (let turn = 0; turn < 100; turn += 1) await Promise.resolve();
+      return { kind: 'microtask-budget-exhausted' };
+    })(),
   ]);
 }
 
@@ -82,7 +86,7 @@ describe('coordinator controller lifecycle reactor disposal', () => {
     vi.mocked(createCoordinatorCore).mockReturnValue(fakeCoordinatorCore(async () => ({ disposition: 'finalized' })));
 
     const controller = createCoordinatorServer(buildServerOptions(disposeLifecycleReactor));
-    const outcome = await raceAgainstTimeout(controller.shutdown('test-teardown'), 500);
+    const outcome = await raceAgainstMicrotaskBudget(controller.shutdown('test-teardown'));
 
     expect(outcome).toEqual({ kind: 'resolved', value: { disposition: 'finalized' } });
     // The abort/kickoff must still fire (it is the only trigger when the settlement ledger itself
@@ -97,7 +101,7 @@ describe('coordinator controller lifecycle reactor disposal', () => {
     );
 
     const controller = createCoordinatorServer(buildServerOptions(disposeLifecycleReactor));
-    const outcome = await raceAgainstTimeout(controller.waitForShutdown(), 500);
+    const outcome = await raceAgainstMicrotaskBudget(controller.waitForShutdown());
 
     expect(outcome).toEqual({
       kind: 'resolved',

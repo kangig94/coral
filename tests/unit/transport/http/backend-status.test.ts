@@ -1261,12 +1261,6 @@ function shutdownRemainder(
   });
 }
 
-/**
- * Every key path reachable from a projected value, `[]` marking array descent — the runtime counterpart of
- * `ProjectionLeafPaths` in `tests/types/shutdown-remainder-status.test-d.ts`. Object-spread bypasses
- * TypeScript's excess-property check, so only walking the constructed value, never its declared type, can
- * prove no extra field reached it.
- */
 function collectLeafPaths(value: unknown, prefix: string, paths: Set<string>): void {
   if (Array.isArray(value)) {
     for (const item of value) collectLeafPaths(item, `${prefix}[]`, paths);

@@ -683,8 +683,6 @@ export function createProviderProxyRecoveryDispatcher(
         }
         const redemption = reattachmentSources.get('redemption');
         if (redemption === undefined && !retiredSources.has('redemption')) return;
-        // An evidence-wrapped outcome carries its own incident under `outcome.kind`, distinct from the
-        // Observation wrapper's own kind (always 'evidence' here) tested below.
         let redemptionUnavailable: Extract<Observation, { kind: 'unavailable' }> | undefined;
         if (redemption?.kind === 'evidence') {
           const value = redemption.value;

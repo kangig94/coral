@@ -3212,8 +3212,7 @@ export class ProviderProxySetLifecycle {
       for (const operation of slot.pendingOperations.values()) this.#deliverRepresentationRelease(slot, operation);
     }
     // The bound is on how long this coordinator keeps the slot, never on a delivery: a delivery that never
-    // settles must still expire it, so it is armed once here rather than recomputed from a delivery outcome.
-    // A slot this pass already released, or already settled fatal, owns its own removal and must not be armed.
+    // settles must still expire it.
     if (this.#slots.get(slot.key) !== slot || slot.terminalSettlement !== null) return;
     slot.settlementDeadlineTimer = this.#deps.time.setTimeout(() => {
       slot.settlementDeadlineTimer = null;
@@ -5808,8 +5807,6 @@ export class ProviderProxySetLifecycle {
     slot: ReleaseDeliveryPendingSlot,
     operation: OperationIdentity,
   ): ProviderProxyRecoveryTurnSinks {
-    // Constraint: a release past its settlement bound records no terminal settlement and clears no pending
-    // operation, so slot identity is the only clause that refuses a delivery outcome arriving after it.
     const currentDelivery = (): boolean =>
       this.#slots.get(slot.key) === slot &&
       slot.terminalSettlement === null &&
@@ -5925,7 +5922,11 @@ export class ProviderProxySetLifecycle {
     const disposition: ProviderProxyRepresentationReleaseFatalSettlement = {
       kind: 'fatal-successor-pending',
       error,
-      successor: this.#representationReleaseSuccessor(),
+      successor: {
+        owner: 'coordinator',
+        boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS,
+        terminalExit: 'representation-released',
+      },
       operatorDispositionRecording: recording,
     };
     slot.terminalSettlement = disposition;
@@ -5940,12 +5941,6 @@ export class ProviderProxySetLifecycle {
     return disposition;
   }
 
-  /**
-   * The settlement bound expires against the slot, never against the obligation: this frees capacity, the
-   * fence and the route while the provider-operation record keeps carrying the undelivered release. Nothing
-   * durable is written here — a second record would be a second thing to reconcile, and the record that
-   * already exists is the witness.
-   */
   #releaseUndischargedRepresentation(slot: ReleaseDeliveryPendingSlot): void {
     if (this.#slots.get(slot.key) !== slot) return;
     const pendingOperations = [...slot.pendingOperations.values()].map(operationKey);
@@ -5966,10 +5961,6 @@ export class ProviderProxySetLifecycle {
         `set=${providerProxySetReference(slot.identity)} operations=${pendingOperations.join(',') || 'none'} ` +
         `capsule=${slot.capsulePath ?? 'none'} witness=${disposition.witness}`,
     );
-  }
-
-  #representationReleaseSuccessor(): ProviderProxyRepresentationReleaseSuccessor {
-    return { owner: 'coordinator', boundMs: AUTONOMOUS_DISPOSITION_RETRY_MS, terminalExit: 'representation-released' };
   }
 
   #scheduleTerminalRepresentationRelease(slot: ReleaseDeliveryPendingSlot): void {

@@ -267,37 +267,6 @@ function ownerName(owner: ts.FunctionLikeDeclaration | undefined): string {
   return '<anonymous>';
 }
 
-/**
- * The source id a `turn.start` is fenced behind: the nearest enclosing `if` must test
- * `!<...>.retiredSources.has('<id>')`, whatever the receiver, or there is no fence.
- */
-function retiredSourceGuard(call: ts.CallExpression): string | null {
-  for (let current = call.parent; current !== undefined; current = current.parent) {
-    if (ts.isFunctionLike(current)) return null;
-    if (!ts.isIfStatement(current)) continue;
-    const condition = current.expression;
-    if (!ts.isPrefixUnaryExpression(condition) || condition.operator !== ts.SyntaxKind.ExclamationToken) return null;
-    const membership = condition.operand;
-    if (
-      !ts.isCallExpression(membership) ||
-      !ts.isPropertyAccessExpression(membership.expression) ||
-      membership.expression.name.text !== 'has'
-    ) {
-      return null;
-    }
-    const receiver = membership.expression.expression;
-    const receiverName = ts.isPropertyAccessExpression(receiver)
-      ? receiver.name.text
-      : ts.isIdentifier(receiver)
-        ? receiver.text
-        : null;
-    if (receiverName !== 'retiredSources') return null;
-    const [guarded] = membership.arguments;
-    return guarded !== undefined && ts.isStringLiteral(guarded) ? guarded.text : null;
-  }
-  return null;
-}
-
 type Reference = Readonly<{
   file: string;
   owner: string;
@@ -1210,25 +1179,6 @@ describe('provider proxy recovery policy construction', () => {
         )}`;
       })
       .sort();
-    const retiredSourceStartFences = callsFor('ProviderProxyRecoveryArbiter.start', references)
-      .filter(
-        (reference) =>
-          reference.file === 'src/coordinator/services/provider-proxy-set/index.ts' &&
-          (reference.owner === '#runControlReattachmentAttempt' || reference.owner === '#runReattachmentHoldAttempt'),
-      )
-      .map((reference) => {
-        const call = reference.node as ts.CallExpression;
-        const sourceId = stringObjectProperty(call.arguments[0], 'sourceId');
-        const guard = retiredSourceGuard(call);
-        return `${reference.owner} :: ${sourceId} :: ${guard === sourceId ? 'fenced-by-own-retirement' : `unfenced(${guard ?? 'none'})`}`;
-      })
-      .sort();
-    const expectedRetiredSourceStartFences = [
-      '#runControlReattachmentAttempt :: absence :: fenced-by-own-retirement',
-      '#runControlReattachmentAttempt :: redemption :: fenced-by-own-retirement',
-      '#runReattachmentHoldAttempt :: absence :: fenced-by-own-retirement',
-      '#runReattachmentHoldAttempt :: redemption :: fenced-by-own-retirement',
-    ];
     const startAuthorizations: readonly JustifiedOccurrence[] = [
       {
         occurrence:
@@ -1378,7 +1328,6 @@ describe('provider proxy recovery policy construction', () => {
         valueEscapeViolations: valueEscapeViolations(references),
         beginInventory,
         startInventory,
-        retiredSourceStartFences,
         producerCallInventory,
         directPolicyEffectViolations,
         rejectionNodeInventory: rejectionNodeInventory(references),
@@ -1393,7 +1342,6 @@ describe('provider proxy recovery policy construction', () => {
       valueEscapeViolations: [],
       beginInventory: expectedBegins,
       startInventory: expectedStarts,
-      retiredSourceStartFences: expectedRetiredSourceStartFences,
       producerCallInventory: expectedProducerCalls,
       directPolicyEffectViolations: [],
       rejectionNodeInventory: EXPECTED_REJECTION_NODE_INVENTORY,

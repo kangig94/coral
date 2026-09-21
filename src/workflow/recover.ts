@@ -1185,10 +1185,6 @@ function hydrateWorkflowRecovery(raw: RawWorkflowRecoveryEnvelope, ctx: StoreRea
     rootProjectRoot = canonicalizeWorkDir(rootStatus.projectRoot, process.cwd());
   } catch (error) {
     if (!(error instanceof WorkDirectoryError)) throw error;
-    // A workflow-recovery hydrate fault reaches only the recovery_quarantine row for this subject, whose
-    // error_message renders through JSON.stringify (formatRecoveryQuarantineList in
-    // src/cli/format/backend.ts), escaping a newline onto one line — so unlike WorkDirectoryError.message,
-    // this rethrown message may name workDir.
     throw new Error(
       `Workflow recovery root '${raw.job.projection.job_id}' could not resolve work directory '${error.workDir}': ${error.message}`,
       { cause: error },
