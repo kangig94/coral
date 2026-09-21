@@ -2111,7 +2111,10 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
     );
   }
   if (shutdown.automaticRetry?.status === 'failed') {
-    lines.push('Automatic retry: failed');
+    lines.push(
+      'Automatic retry: failed',
+      'The fatal coordinator exit has already been requested; process exit ends this hold.',
+    );
   }
   if (shutdown.lastDeclined !== undefined) {
     lines.push(

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { writeDiscoveryRecord, type CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import type { TimePort } from '#src/infra/port-types.js';
 import type { CoordinatorHealthIdentity } from '#src/transport/ipc/health.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -75,6 +75,44 @@ describe('readIdentityCheckedAuthenticatedHealth', () => {
     expect(mockState.health).toHaveBeenCalledWith({ timeoutMs: 3_000 });
     expect(mockState.ping).not.toHaveBeenCalled();
     expect(decode).toHaveBeenCalledWith(reply);
+  });
+
+  it('accepts later health incarnation when the production discovery writer could not publish one', async () => {
+    let published = '';
+    expect(
+      writeDiscoveryRecord(discovery(), {
+        storage: {
+          mkdirSync: vi.fn(),
+          writeAtomicSync: vi.fn((_path: string, data: string) => {
+            published = data;
+            return true;
+          }),
+          chmodSync: vi.fn(),
+        },
+        env: { platform: () => 'linux' },
+        paths: { coral: { coordinator: { infoFile: '/run/coral/backend.json' } } },
+        process: { readProcessIncarnation: () => null },
+      } as never),
+    ).toBe(true);
+    const record = JSON.parse(published) as CoordinatorDiscoveryRecord;
+    expect(record).not.toHaveProperty('incarnation');
+
+    const observedIncarnation = testIncarnation('later-health-probe');
+    mockState.health.mockResolvedValue({});
+    const { readIdentityCheckedAuthenticatedHealth } = await import('#src/transport/ipc/health.js');
+
+    await expect(
+      readIdentityCheckedAuthenticatedHealth(
+        record,
+        record.socketPath,
+        identity({ incarnation: observedIncarnation }),
+        timePort,
+        () => ({
+          health: { status: 'ok' },
+          identity: identity({ incarnation: observedIncarnation }),
+        }),
+      ),
+    ).resolves.toEqual({ kind: 'health', health: { status: 'ok' } });
   });
 
   it.each([

@@ -512,7 +512,7 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
 }
 
 export function createCoordinatorCore(
-  options: CoordinatorCoreOptions,
+  options: CoordinatorCoreOptions & Readonly<{ onFatalShutdownError: (error: unknown) => void }>,
   runStartupRecovery: RunStartupRecoveryOrchestratorFn,
 ): CoordinatorCoreResult {
   const runtime = options.runtime;

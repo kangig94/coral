@@ -70,6 +70,7 @@ function buildStartupFailureHarness(dispose: () => Promise<KbDaemonDisposalSettl
     server: {},
     closeServerFn,
     listenFn: async () => ({ host: '127.0.0.1', port: 0 }),
+    onFatalShutdownError: vi.fn(),
     // Truthy `ipcServer` with no `listenIpcFn` skips the handoff-bind path on the way in, while still
     // reaching the `ipcServer && closeIpcServerFn` cleanup branch on the way out through the catch block.
     ipcServer: {},

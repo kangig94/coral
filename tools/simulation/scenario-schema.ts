@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { providerTerminalOutcomeSchema } from '../../src/providers/contract.js';
-import { SHUTDOWN_REASONS, type ShutdownReason } from '../../src/infra/persisted-scalar-contracts.js';
+import { SHUTDOWN_REASONS, type ShutdownReason } from '../../src/infra/shutdown-contract.js';
 
 const scenarioErrorSchema = z.union([
   z.string(),

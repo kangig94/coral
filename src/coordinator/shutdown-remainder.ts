@@ -7,14 +7,13 @@ import {
 } from '../infra/error-format.js';
 import { sha256Hex } from '../infra/hash.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
-import { shutdownModeFromReason, type ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type { StoragePort, TimePort } from '../infra/port-types.js';
 import {
   shutdownRemainderRecordPath,
   shutdownRemainderStagePath,
   type ShutdownRemainderRecord,
-  type ShutdownUndischarged,
 } from '../infra/shutdown-remainder-record.js';
+import { shutdownModeFromReason, type ShutdownReason, type ShutdownUndischarged } from '../infra/shutdown-contract.js';
 import { nowIsoString } from '../infra/time.js';
 
 type ShutdownRemainderWriteRuntime = Readonly<{

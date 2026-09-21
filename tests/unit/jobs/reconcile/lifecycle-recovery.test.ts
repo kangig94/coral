@@ -856,6 +856,7 @@ function createLifecycleHarness(
         } as never),
       closeServerFn: async () => {},
       listenFn: async () => ({ port: 4100, host: '127.0.0.1' }),
+      onFatalShutdownError: vi.fn(),
     },
     async (inputs, runJobsStartup) => {
       if (options.runStartupRecoveryFn !== undefined) {

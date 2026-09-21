@@ -7,7 +7,7 @@ import type {
   ShutdownRetainedAuthority,
   ShutdownUndischarged,
   UndischargedRemainder,
-} from '../infra/shutdown-remainder-record.js';
+} from '../infra/shutdown-contract.js';
 import {
   SettlementLedger,
   type Settlement,

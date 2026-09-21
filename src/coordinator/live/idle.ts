@@ -1,6 +1,6 @@
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimePort } from '../../infra/port-types.js';
-import type { ShutdownReason } from '../../infra/persisted-scalar-contracts.js';
+import type { ShutdownReason } from '../../infra/shutdown-contract.js';
 import { parsePositiveInt } from './worker-limits.js';
 
 const DEFAULT_IDLE_TIMEOUT_MS = 21_600_000;

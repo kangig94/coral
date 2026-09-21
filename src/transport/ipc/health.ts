@@ -48,6 +48,13 @@ function optionalIdentityMatches<T>(expected: T | undefined, actual: T | undefin
   return expected === undefined || expected === actual;
 }
 
+function publishedIdentityMatchesObservation(
+  published: CoordinatorHealthIdentity,
+  observed: CoordinatorHealthIdentity,
+): boolean {
+  return identityMatchesExistingIncumbent(observed, published);
+}
+
 export function identityMatchesExistingIncumbent(
   candidate: CoordinatorHealthIdentity,
   incumbent: CoordinatorHealthIdentity,
@@ -72,7 +79,7 @@ export function discoveryMatchesExistingIncumbent(
   return (
     record.socketPath === expectedSocketPath &&
     identity !== null &&
-    identityMatchesExistingIncumbent(identity, incumbent)
+    publishedIdentityMatchesObservation(identity, incumbent)
   );
 }
 
@@ -90,7 +97,7 @@ export async function readIdentityCheckedAuthenticatedHealth<THealth>(
   if (record.socketPath !== expectedSocketPath) {
     return { kind: 'unavailable', cause: 'socket-mismatch' };
   }
-  if (!identityMatchesExistingIncumbent(discoveryIdentity, expectedIdentity)) {
+  if (!publishedIdentityMatchesObservation(discoveryIdentity, expectedIdentity)) {
     return { kind: 'unavailable', cause: 'identity-mismatch' };
   }
 

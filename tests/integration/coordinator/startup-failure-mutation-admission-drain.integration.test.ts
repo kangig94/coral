@@ -150,6 +150,7 @@ describe('coordinator lifecycle startup-failure cleanup — provider operation m
         },
         closeServerFn,
         listenFn: vi.fn(async () => ({ port: 0, host: '127.0.0.1' })),
+        onFatalShutdownError: vi.fn(),
         ipcServer: {} as never,
         closeIpcServerFn,
         listenIpcFn: vi.fn(

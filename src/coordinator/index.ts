@@ -17,7 +17,7 @@ import {
 import { createCoordinatorCore } from './composition/index.js';
 import { createCoordinatorProviderHostAdmission } from './live/provider-host-admission.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './composition/types.js';
-import type { ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import type { ShutdownReason } from '../infra/shutdown-contract.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
 import {
   isLifecycleShutdownTerminal,
@@ -77,6 +77,7 @@ export type CoordinatorServerOptions = Omit<
   runtime?: Runtime;
   runtimeObserver?: RuntimeObserver;
   kbDaemonSupervisor?: KbDaemonSupervisor;
+  onFatalShutdownError: (error: unknown) => void;
 };
 
 export type CoordinatorServerController = {
@@ -213,7 +214,7 @@ export async function finalizeStoreServices(ref: StoreServicesRef): Promise<void
   ref.clear();
 }
 
-export function createCoordinatorServer(options: CoordinatorServerOptions = {}): CoordinatorServerController {
+export function createCoordinatorServer(options: CoordinatorServerOptions): CoordinatorServerController {
   const {
     runtime: providedRuntime,
     runtimeObserver: providedRuntimeObserver,

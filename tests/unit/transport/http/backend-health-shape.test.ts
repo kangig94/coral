@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { parseBackendHealth, type BackendHealth } from '#src/transport/http/backend/health.js';
-import type { ShutdownRemainderProjection } from '#src/infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderProjection } from '#src/infra/shutdown-contract.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import type {
   AssertDispositionCausesCoverIncident,
@@ -88,7 +88,7 @@ const SHUTDOWN_PROJECTION = {
   mode: 'handoff',
   elapsedMs: 750,
   boundMs: 9_250,
-  attempt: { started: 1, limit: 3 },
+  attempt: { started: 2, limit: 3 },
   lastDeclined: {
     attempt: 1,
     reason: 'required-shutdown-step-unsettled',
@@ -163,6 +163,10 @@ describe('/health typed shape (AC10a)', () => {
         attempt: { started: 3, limit: 3 },
         lastDeclined: { ...SHUTDOWN_PROJECTION.lastDeclined, attempt: 3 },
       },
+    },
+    {
+      invariant: 'a current declined attempt has an automatic retry disposition',
+      shutdown: { ...SHUTDOWN_PROJECTION, attempt: { started: 1, limit: 3 } },
     },
     {
       invariant: 'scheduled retry counters match the ledger projection',

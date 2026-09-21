@@ -47,15 +47,17 @@ import {
   type TerminateRegisteredChildrenFn,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
-import { shutdownModeFromReason, type ShutdownMode, type ShutdownReason } from '../infra/persisted-scalar-contracts.js';
-import type {
-  ShutdownAutomaticRetry,
-  ShutdownHoldExit,
-  ShutdownHoldReason,
-  ShutdownRemainderObservation,
-  ShutdownRemainderProjection,
-  ShutdownUndischarged,
-} from '../infra/shutdown-remainder-record.js';
+import {
+  shutdownModeFromReason,
+  type ShutdownAutomaticRetry,
+  type ShutdownHoldExit,
+  type ShutdownHoldReason,
+  type ShutdownMode,
+  type ShutdownReason,
+  type ShutdownRemainderObservation,
+  type ShutdownRemainderProjection,
+  type ShutdownUndischarged,
+} from '../infra/shutdown-contract.js';
 import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
@@ -832,7 +834,7 @@ export type LifecycleDeps = {
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: (exitCode: number) => void;
   readonly acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
-  readonly onFatalShutdownError?: (error: unknown) => void;
+  readonly onFatalShutdownError: (error: unknown) => void;
 };
 
 export type LifecycleController = {
@@ -1666,7 +1668,7 @@ export function createLifecycle(
         }
       }
     })().catch((error) => {
-      onFatalShutdownError?.(error);
+      onFatalShutdownError(error);
       throw error;
     });
     const trackedAttempt = attempt.then(

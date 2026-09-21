@@ -26,10 +26,9 @@ import {
   classifyShutdownRemainderFile,
   shutdownRemainderRecordPath,
   type DecodedShutdownRemainderRecord,
-  type ShutdownRemainderProjection,
   type ShutdownRemainderRecord,
-  type ShutdownUndischarged,
 } from '../infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderProjection, ShutdownUndischarged } from '../infra/shutdown-contract.js';
 import {
   discoveryRecordIdentity,
   readIdentityCheckedAuthenticatedHealth,

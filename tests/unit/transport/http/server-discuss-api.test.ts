@@ -185,6 +185,7 @@ describe('server discuss API', () => {
       const effectiveRuntime = runtime ? { ...runtime, time: realTimePort() } : undefined;
       const core = createCoordinatorCore(
         {
+          onFatalShutdownError: vi.fn(),
           storeFormat: currentCoralStoreFormat(),
           runtime: effectiveRuntime as Runtime,
           resolveProjectSourceFn,
@@ -270,6 +271,7 @@ describe('server discuss API', () => {
     }
 
     controller = createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
       runtime: runtime ? { ...runtime, time: realTimePort() } : undefined,
       resolveProjectSourceFn,
       bootSnapshot: {

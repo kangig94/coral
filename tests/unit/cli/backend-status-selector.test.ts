@@ -10,7 +10,6 @@ import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
 import { reserveRefusedPort } from '../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import {} from '#src/infra/shutdown-remainder-record.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const NOW = 1_700_000_000_000;
@@ -1872,7 +1871,9 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       'Current drain work schedule: 0ms remaining (may be revised when a hold is observed)',
     );
     expect(liveSection).toContain('Automatic retry: failed');
-    expect(liveSection).not.toContain('fatal coordinator exit has already been requested');
+    expect(liveSection).toContain(
+      'The fatal coordinator exit has already been requested; process exit ends this hold.',
+    );
     expect(liveSection).not.toContain('Hold ends when:');
     expect(liveSection).not.toContain('Next step:');
     expect(liveSection).not.toContain('4242');
@@ -1903,7 +1904,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
             mode: 'handoff',
             elapsedMs: 1,
             boundMs: 1,
-            attempt: { started: 1, limit: 3 },
+            attempt: { started: 2, limit: 3 },
             lastDeclined: {
               attempt: 1,
               reason: 'required-shutdown-step-unsettled',

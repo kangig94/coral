@@ -6,7 +6,7 @@ import {
   shutdownRemainderProjectionEnvelopeSchema,
   type ShutdownRemainderProjection,
   type ShutdownUndischarged,
-} from '../../../infra/shutdown-remainder-record.js';
+} from '../../../infra/shutdown-contract.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';

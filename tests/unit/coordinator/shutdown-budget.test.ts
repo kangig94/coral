@@ -361,6 +361,7 @@ function buildRemainderWriteRefusalHarness(
       closeIpcServerFn: harness.ctx.closeIpcServerFn,
       disposeLifecycleReactor: harness.ctx.disposeLifecycleReactor,
       onStopped,
+      onFatalShutdownError: vi.fn(),
     } as never,
     async () => [],
   );
@@ -2562,7 +2563,7 @@ async function shutdownFailureDetail(ctx: Parameters<typeof runShutdownSequence>
   return failureDetail(disposition);
 }
 
-function buildBoundaryExhaustionHarness(instanceId: string, onFatalShutdownError?: (error: unknown) => void) {
+function buildBoundaryExhaustionHarness(instanceId: string) {
   const finalizationOrder: string[] = [];
   const initiateControlClose = vi.fn(() => {
     finalizationOrder.push('boundary');
@@ -2602,6 +2603,7 @@ function buildBoundaryExhaustionHarness(instanceId: string, onFatalShutdownError
     finalizationOrder.push(`exit:${exitCode}`);
   });
   const logLines: string[] = [];
+  const requestFatalExit = vi.fn();
   const controller = createLifecycle(
     {
       identity: {
@@ -2666,7 +2668,7 @@ function buildBoundaryExhaustionHarness(instanceId: string, onFatalShutdownError
         remainder,
         requestExit: onStopped,
       }),
-      ...(onFatalShutdownError === undefined ? {} : { onFatalShutdownError }),
+      onFatalShutdownError: requestFatalExit,
     } as never,
     async () => [],
   );
@@ -2679,6 +2681,7 @@ function buildBoundaryExhaustionHarness(instanceId: string, onFatalShutdownError
     lifecycle: () => lifecycle,
     logLines,
     onStopped,
+    requestFatalExit,
     remainderDocuments,
   };
 }
@@ -3321,8 +3324,9 @@ describe('required provider-proxy shutdown steps', () => {
     expect(logLines.join('')).not.toContain('discovery read denied');
   });
 
-  it('reports a failed lifecycle continuation without claiming an optional fatal exit', async () => {
-    const { authority, controller, harness, logLines } = buildBoundaryExhaustionHarness('continuation-failure');
+  it('requests fatal exit when a lifecycle continuation fails and reports what ends the hold', async () => {
+    const { authority, controller, harness, logLines, requestFatalExit } =
+      buildBoundaryExhaustionHarness('continuation-failure');
 
     const initial = controller.shutdown('replaced');
     await flush(64);
@@ -3354,11 +3358,13 @@ describe('required provider-proxy shutdown steps', () => {
       },
     });
     expect(observed?.automaticRetry).toEqual({ status: 'failed' });
+    expect(requestFatalExit).toHaveBeenCalledOnce();
+    expect(requestFatalExit).toHaveBeenCalledWith(expect.objectContaining({ message: 'retry observation failed' }));
 
     if (observed === undefined) throw new Error('Expected a live shutdown observation.');
     const output = formatProducedShutdown(observed);
     expect(output).toContain('Automatic retry: failed');
-    expect(output).not.toContain('fatal coordinator exit has already been requested');
+    expect(output).toContain('The fatal coordinator exit has already been requested; process exit ends this hold.');
     expect(output).not.toContain('Next step:');
     expect(output).not.toContain('force coordinator process');
     expect(output).not.toContain('4242');

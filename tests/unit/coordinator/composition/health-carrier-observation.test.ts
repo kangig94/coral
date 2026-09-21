@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
-import type { ShutdownRemainderProjection } from '#src/infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderProjection } from '#src/infra/shutdown-contract.js';
 import type * as HttpHandlerMod from '#src/transport/http/handler.js';
 import type * as CompositionWorldMod from '#src/coordinator/composition/world.js';
 import type * as ExecutionServicesMod from '#src/coordinator/composition/execution-services.js';
@@ -239,6 +239,7 @@ function createCore(
 ) {
   const core = createCoordinatorCore(
     {
+      onFatalShutdownError: vi.fn(),
       runtime,
       storeFormat: currentCoralStoreFormat(),
       pluginRoot: process.cwd(),

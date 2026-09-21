@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import type { TimePort } from '../infra/port-types.js';
-import type { ShutdownRemainderProjection } from '../infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderProjection } from '../infra/shutdown-contract.js';
 import type { JobPhase } from '../jobs/phase.js';
 import type { JobTerminal } from '../jobs/records.js';
 import type { JobCreatedEvent } from '../jobs/contracts/event-stream.js';

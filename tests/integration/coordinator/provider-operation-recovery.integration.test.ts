@@ -253,6 +253,7 @@ describe('provider-operation startup recovery ownership', () => {
         },
         closeServerFn: vi.fn(async () => {}),
         listenFn: vi.fn(async () => ({ port: 0, host: '127.0.0.1' })),
+        onFatalShutdownError: vi.fn(),
         ipcServer: {} as never,
         closeIpcServerFn: vi.fn(async () => {}),
         listenIpcFn: vi.fn(

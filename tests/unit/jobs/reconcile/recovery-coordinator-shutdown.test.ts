@@ -538,6 +538,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       },
       closeServerFn: async () => {},
       listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
+      onFatalShutdownError: vi.fn(),
     },
     async (
       { identity, runtime, progressStore, providerRegistry, getRecoveryService, createInvocationContext, signal },

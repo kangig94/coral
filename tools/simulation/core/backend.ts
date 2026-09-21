@@ -538,6 +538,7 @@ export type SimulationHookLog = {
   removeBackendInfoCalls: Array<{ pluginRoot: string; instanceId: string }>;
   kbDaemonStartCalls: Array<{ pluginRoot: string }>;
   kbDaemonWarmupCalls: Array<{ pluginRoot: string }>;
+  fatalExitRequests: unknown[];
   recoverPersistedDiscussCalls: number;
 };
 
@@ -639,6 +640,7 @@ export function createSimulationBackend(
     removeBackendInfoCalls: [],
     kbDaemonStartCalls: [],
     kbDaemonWarmupCalls: [],
+    fatalExitRequests: [],
     recoverPersistedDiscussCalls: 0,
   };
 
@@ -773,6 +775,7 @@ export function createSimulationBackend(
         });
       },
       kbDaemonSupervisor,
+      onFatalShutdownError: (error) => hooks.fatalExitRequests.push(error),
       registerBuiltInProvidersFn: () => {},
       recoverPersistedDiscussFn: async (deps) => {
         hooks.recoverPersistedDiscussCalls += 1;
