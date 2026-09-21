@@ -84,7 +84,7 @@ const SHUTDOWN_ENTRY = {
 
 const SHUTDOWN_PROJECTION = {
   reason: 'sigterm',
-  mode: 'hard',
+  mode: 'handoff',
   elapsedMs: 750,
   boundMs: 9_250,
   attempt: { started: 1, limit: 3 },
@@ -132,6 +132,35 @@ describe('/health typed shape (AC10a)', () => {
       kernel: { phase: 'draining' },
       diagnostics: { mutationBlocked: { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 } },
     });
+  });
+
+  it.each([
+    {
+      invariant: 'reason and mode agree',
+      shutdown: { ...SHUTDOWN_PROJECTION, mode: 'hard' },
+    },
+    {
+      invariant: 'started attempts do not exceed the limit',
+      shutdown: { ...SHUTDOWN_PROJECTION, attempt: { started: 4, limit: 3 } },
+    },
+    {
+      invariant: 'the last declined attempt was already started',
+      shutdown: {
+        ...SHUTDOWN_PROJECTION,
+        attempt: { started: 1, limit: 3 },
+        lastDeclined: { ...SHUTDOWN_PROJECTION.lastDeclined, attempt: 2 },
+      },
+    },
+  ])('degrades a semantically impossible shutdown projection when $invariant', ({ shutdown }) => {
+    const parsed = parseBackendHealth({
+      ...HEALTHY_BASE,
+      status: 'draining',
+      kernel: { phase: 'draining', readyAt: HEALTHY_BASE.kernel.readyAt },
+      shutdown,
+    });
+
+    expect(parsed?.health.shutdown).toEqual({ kind: 'unreadable' });
+    expect(parsed?.health.status).toBe('draining');
   });
 
   it('keeps readable shutdown entries and names an unsupported entry by its original slot', () => {

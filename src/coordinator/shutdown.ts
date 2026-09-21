@@ -1,11 +1,11 @@
 import type { Server, ServerResponse } from 'node:http';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
-import { assertNever, formatError, serializeThrown } from '../infra/error-format.js';
+import { formatError, serializeThrown } from '../infra/error-format.js';
 import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
-import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import { shutdownModeFromReason, type ShutdownMode, type ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type {
   ShutdownRemainderProjection,
   ShutdownUndischarged,
@@ -51,21 +51,6 @@ export type ShutdownIncidentOccurrence = Readonly<{
   incident: ShutdownIncident;
   occurrence: number;
 }>;
-
-export function shutdownModeFromReason(reason: ShutdownReason): ShutdownMode {
-  switch (reason) {
-    case 'replaced':
-    case 'sigterm':
-    case 'provider-proxy-lifecycle-fatal':
-      return 'handoff';
-    case 'sigint':
-    case 'idle':
-    case 'test-teardown':
-      return 'hard';
-    default:
-      return assertNever(reason);
-  }
-}
 
 export function shutdownIncidentUndischarged({
   incident,

@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
 
 import {
   registerBackendCommands,
@@ -2427,16 +2427,20 @@ describe('backend status daemon guidance', () => {
     absent: runningBackendStatus({}, drainingHealth),
   } satisfies Record<DrainState, RunningBackendStatus>;
   const expectedDrainGuidance = {
-    'projection-zero-bound': 'Next step: wait for the drain to finish, then inspect backend status again',
+    'projection-zero-bound':
+      'Next step: inspect backend status again now; the current drain-work schedule has elapsed, but that does not guarantee the drain has finished',
     'projection-positive-bound':
-      'Next step: wait for the drain to finish, then inspect backend status again after the bound',
+      'Next step: inspect backend status again after the current drain-work checkpoint; this moving schedule does not guarantee the drain has finished',
     unreadable: "Next step: inspect backend status again; this build could not read the coordinator's bound",
     absent: 'Next step: inspect backend status again; the coordinator reports no bound for this drain',
   } satisfies Record<DrainState, string>;
 
+  it('narrows selected running health to statuses the selector can return', () => {
+    expectTypeOf<RunningBackendHealth['status']>().toEqualTypeOf<'ok' | 'draining'>();
+  });
+
   it('keeps daemon guidance singular across every daemon status and running-health state', () => {
     const runningHealthCases = {
-      starting: [runningBackendStatus({}, { status: 'starting' })],
       ok: [runningBackendStatus({})],
       draining: Object.values(drainCases),
     } satisfies Record<RunningBackendHealth['status'], readonly RunningBackendStatus[]>;

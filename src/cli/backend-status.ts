@@ -288,7 +288,7 @@ type OperatorFacingLiveShutdown =
     }>;
 
 type BackendStatus = {
-  status: BackendHealth['status'];
+  status: Exclude<BackendHealth['status'], 'starting'>;
   version: string;
   bundleHash: string;
   instanceId: string;
@@ -936,7 +936,7 @@ async function probeAddressedCoordinatorStatus(
     }
   }
 
-  if (result.status === 'unreachable' && result.cause !== 'foreign_peer') {
+  if (result.status !== 'ok') {
     const ipc = await readIdentityCheckedAuthenticatedHealth(
       info,
       runtime.paths.coral.coordinator.socketPath,

@@ -1757,6 +1757,29 @@ describe('runShutdownSequence drain budget', () => {
 });
 
 describe('settlement ledger exit gate', () => {
+  it('reports the current retry schedule when a late initial timeout revises it', async () => {
+    const time = new VirtualTime();
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: async () => ({ confirmed: true, token: {} }),
+      commit: () => new Promise<never>(() => {}),
+      retainedAuthority: () => ({ ipcSocket: true }),
+      hold: () => ({ reason: 'required-shutdown-step-unsettled', exit: 'shutdown-budget-exhaustion' }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 30_000, time, log: () => {}, pollMs: 50 });
+
+    const initialAttempt = ledger.gate(boundary);
+    await flush();
+    expect(ledger.snapshot()).toMatchObject({ elapsedMs: 0, boundMs: 60_000 });
+
+    time.tick(40_000);
+    expect(ledger.snapshot()).toMatchObject({ elapsedMs: 40_000, boundMs: 20_000 });
+    await flush();
+    requireHeld(await initialAttempt);
+
+    expect(ledger.snapshot()).toMatchObject({ elapsedMs: 40_000, boundMs: 30_000 });
+  });
+
   it('reports one monotonic terminal bound through the initial attempt and both retry slots', async () => {
     const time = new VirtualTime();
     const commit = vi.fn<ShutdownAuthorityReleaseBoundary['commit']>(() => new Promise<never>(() => {}));

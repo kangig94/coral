@@ -1551,8 +1551,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       name: 'unauthorized HTTP and draining IPC',
       arrangeHttp: () => stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 401 })),
       ipc: () => ipcHealth('draining'),
-      expected: { status: 'unauthorized' },
-      dials: 0,
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
     },
     {
       name: 'foreign HTTP peer and draining IPC',
@@ -1561,8 +1561,8 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         stubProbes(new Response(ping('ok'), { status: 200 }), new Response(JSON.stringify(foreign), { status: 200 }));
       },
       ipc: () => ipcHealth('draining'),
-      expected: { status: 'unreachable', cause: 'foreign_peer' },
-      dials: 0,
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
     },
     {
       name: 'discovery without instanceId',
@@ -1821,7 +1821,13 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const liveSection = rendered.slice(liveStart, durableStart);
     const durableSection = rendered.slice(durableStart);
     expect(sharedLines(liveSection)).toEqual(sharedLines(durableSection));
-    expect(liveSection).toContain('Bound to drain terminal: 0ms');
+    expect(liveSection).toContain(
+      'Current drain work schedule: 0ms remaining (may be revised when a hold is observed)',
+    );
+    expect(liveSection).toContain(
+      'the current drain-work schedule has elapsed, but that does not guarantee the drain has finished',
+    );
+    expect(liveSection).not.toContain('Bound to drain terminal');
     expect(liveSection).toContain('Current attempt: 3/3');
     expect(liveSection).toContain('Attempt 2/3 declined: required-shutdown-step-unsettled');
     expect(liveSection.toLowerCase()).not.toContain('recorded');

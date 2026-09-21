@@ -3,6 +3,7 @@ import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
+import type { DurableCliRuntimePublicationEvidence } from '../../infra/durable-cli-runtime-evidence.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
 import type { AbortHoldDisposition, AbortHoldOwner, AbortNextStep } from '../../jobs/contracts/abort-registry.js';
@@ -75,13 +76,6 @@ function pendingWrapperTerminationOutcomeDetail(
       return `${outcome.kind}:${outcome.stage}`;
   }
 }
-
-export type DurableCliRuntimePublicationEvidence = Readonly<{
-  kind: 'durable-cli-runtime';
-  jobId: string;
-  pid: number;
-  leaderIncarnation: ProcessIncarnation;
-}>;
 
 export type DurableProcessPublication =
   | Readonly<{

@@ -11,7 +11,8 @@ import {
 import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
-import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
+import { durableCliRuntimePublicationEvidenceSchema } from './durable-cli-runtime-evidence.js';
+import { shutdownModeFromReason, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
@@ -99,16 +100,7 @@ const shutdownRemainderSubjectSchema = z.object({ kind: z.literal('discuss-store
 const successorRecoveryEvidenceSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('startup-adoption'),
-    processes: z
-      .array(
-        z.object({
-          kind: z.literal('durable-cli-runtime'),
-          jobId: serializedThrownIdentifierSchema,
-          pid: z.number().int().positive(),
-          leaderIncarnation: persistedProcessIncarnationSchema,
-        }),
-      )
-      .readonly(),
+    processes: z.array(durableCliRuntimePublicationEvidenceSchema).readonly(),
   }),
   z.object({ kind: z.literal('startup-store-recovery') }),
   z.object({ kind: z.literal('startup-liveness-recovery') }),
@@ -132,25 +124,45 @@ export const shutdownRemainderEntrySchema = z.object({
   ]),
   settlement: settlementSchema,
 });
-export const shutdownRemainderProjectionEnvelopeSchema = z.object({
-  reason: z.enum(SHUTDOWN_REASONS),
-  mode: z.enum(SHUTDOWN_MODES),
-  elapsedMs: z.number().finite().nonnegative(),
-  boundMs: z.number().finite().nonnegative(),
-  attempt: z.object({
-    started: z.number().int().nonnegative(),
-    limit: z.number().int().positive(),
-  }),
-  lastDeclined: z
-    .object({
-      attempt: z.number().int().positive(),
-      reason: shutdownHoldReasonSchema,
-      exit: shutdownHoldExitSchema,
-      undischarged: z.array(shutdownRemainderEntrySchema).readonly(),
-      retainedAuthority: shutdownRetainedAuthoritySchema,
-    })
-    .optional(),
-});
+export const shutdownRemainderProjectionEnvelopeSchema = z
+  .object({
+    reason: z.enum(SHUTDOWN_REASONS),
+    mode: z.enum(SHUTDOWN_MODES),
+    elapsedMs: z.number().finite().nonnegative(),
+    boundMs: z.number().finite().nonnegative(),
+    attempt: z.object({
+      started: z.number().int().nonnegative(),
+      limit: z.number().int().positive(),
+    }),
+    lastDeclined: z
+      .object({
+        attempt: z.number().int().positive(),
+        reason: shutdownHoldReasonSchema,
+        exit: shutdownHoldExitSchema,
+        undischarged: z.array(shutdownRemainderEntrySchema).readonly(),
+        retainedAuthority: shutdownRetainedAuthoritySchema,
+      })
+      .optional(),
+  })
+  .superRefine((projection, context) => {
+    if (projection.mode !== shutdownModeFromReason(projection.reason)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: 'mode does not match reason' });
+    }
+    if (projection.attempt.started > projection.attempt.limit) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attempt', 'started'],
+        message: 'started attempts exceed the attempt limit',
+      });
+    }
+    if (projection.lastDeclined !== undefined && projection.lastDeclined.attempt > projection.attempt.started) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['lastDeclined', 'attempt'],
+        message: 'declined attempt was not started',
+      });
+    }
+  });
 const shutdownRemainderRecordEnvelopeSchema = z.object({
   instanceId: serializedThrownIdentifierSchema,
   recordedAt: z.string().datetime(),

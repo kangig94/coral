@@ -23,3 +23,16 @@ export type ShutdownReason = (typeof SHUTDOWN_REASONS)[number];
 export const SHUTDOWN_MODES = ['handoff', 'hard'] as const;
 
 export type ShutdownMode = (typeof SHUTDOWN_MODES)[number];
+
+const SHUTDOWN_MODE_BY_REASON: Readonly<Record<ShutdownReason, ShutdownMode>> = {
+  replaced: 'handoff',
+  sigterm: 'handoff',
+  'provider-proxy-lifecycle-fatal': 'handoff',
+  sigint: 'hard',
+  idle: 'hard',
+  'test-teardown': 'hard',
+};
+
+export function shutdownModeFromReason(reason: ShutdownReason): ShutdownMode {
+  return SHUTDOWN_MODE_BY_REASON[reason];
+}

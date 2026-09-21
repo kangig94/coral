@@ -2039,7 +2039,7 @@ function formatLiveShutdownSection(health: RunningHealth): string[] {
     `Reason: ${shutdown.reason}`,
     `Mode: ${shutdown.mode}`,
     `Elapsed: ${shutdown.elapsedMs}ms`,
-    `Bound to drain terminal: ${shutdown.boundMs}ms`,
+    `Current drain work schedule: ${shutdown.boundMs}ms remaining (may be revised when a hold is observed)`,
     `Current attempt: ${shutdown.attempt.started}/${shutdown.attempt.limit}`,
   );
   if (shutdown.lastDeclined !== undefined) {
@@ -2060,7 +2060,9 @@ function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string {
   if ('kind' in shutdown) {
     return "Next step: inspect backend status again; this build could not read the coordinator's bound";
   }
-  return `Next step: wait for the drain to finish, then inspect backend status again${shutdown.boundMs > 0 ? ' after the bound' : ''}`;
+  return shutdown.boundMs > 0
+    ? 'Next step: inspect backend status again after the current drain-work checkpoint; this moving schedule does not guarantee the drain has finished'
+    : 'Next step: inspect backend status again now; the current drain-work schedule has elapsed, but that does not guarantee the drain has finished';
 }
 
 function formatShutdownRetainedAuthorityLines(authority: LiveShutdownRetainedAuthority): string[] {

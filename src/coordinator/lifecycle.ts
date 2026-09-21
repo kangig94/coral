@@ -40,7 +40,6 @@ import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
   shutdownIncidentUndischarged,
-  shutdownModeFromReason,
   type LifecycleWiringState,
   type SettlePendingLaunchesFn,
   type ShutdownIncidentOccurrence,
@@ -48,7 +47,7 @@ import {
   type TerminateRegisteredChildrenFn,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
-import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import { shutdownModeFromReason, type ShutdownMode, type ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type {
   ShutdownHoldExit,
   ShutdownHoldReason,
