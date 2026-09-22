@@ -126,7 +126,7 @@ complete identity must cost hand-written Zod readability is therefore false; the
 used by `src/store/current-format.ts` and `src/providers/registry.ts`.
 
 `HandoffRoutingStoreClassification` and `readHandoffRoutingStoreSnapshotWithObservation`
-(`src/store/handoff-routing-status-store.ts`) define the closed eleven-arm observation shared by reads and
+(`src/store/handoff-routing-status-store/artifact.ts`) define the closed eleven-arm observation shared by reads and
 publication policy: `absent`, `vacant`, `uninitialized`, `detached-wal`, `generation-missing`,
 `foreign-generation`, `format-mismatch`, `schema-divergent`, `current`, `unreadable`, and `undeterminable`.
 `readHandoffRoutingStatus` (`src/coordinator/handoff-routing/status.ts`) may project that observation, but read
