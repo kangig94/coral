@@ -468,7 +468,7 @@ describe('ipc server', () => {
     }
   });
 
-  it('dispatches catalog-backed unary methods over the socket', async () => {
+  it('dispatches catalog-backed unary methods over the socket and holds the drain gate for each', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports);
     const socketPath = makeSocketPath();
@@ -490,6 +490,8 @@ describe('ipc server', () => {
           },
         ],
       });
+      expect(ports.admin.beginRequest).toHaveBeenCalledTimes(1);
+      expect(ports.admin.endRequest).toHaveBeenCalledTimes(1);
     } finally {
       await closeIpcServer(listener);
     }

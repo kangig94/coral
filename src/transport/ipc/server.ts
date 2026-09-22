@@ -835,7 +835,7 @@ async function dispatchFrame(
     await finishUnaryResponse(validationErrorResponse(request.id, parsed.error));
     return;
   }
-  startRequest();
+  if (entry.spec.kind === 'unary') startRequest();
 
   let subscriptionController: AbortController | null = null;
   const abortDispatchOnClose = (): void => {

@@ -1363,13 +1363,14 @@ export function createHttpHandler(
       return;
     }
 
-    deps.admin.beginRequest();
-    runOnResponseDone(res, () => {
-      deps.admin.endRequest();
-    });
-
     const catalogMatch = matchRoute(coordinatorRoutes, req.method, parsedUrl.pathname);
     if (catalogMatch) {
+      if (catalogMatch.route.spec.kind === 'unary') {
+        deps.admin.beginRequest();
+        runOnResponseDone(res, () => {
+          deps.admin.endRequest();
+        });
+      }
       await catalogMatch.route.handle(req, res, parsedUrl, catalogMatch.pathParams);
       return;
     }

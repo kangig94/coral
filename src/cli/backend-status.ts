@@ -289,7 +289,7 @@ type OperatorFacingLiveShutdown =
     }>;
 
 type BackendStatus = {
-  status: Exclude<BackendHealth['status'], 'starting'>;
+  status: BackendHealth['status'];
   version: string;
   bundleHash: string;
   instanceId: string;
@@ -814,13 +814,12 @@ export function statusFromParsedHealth(
   parsed: BackendHealthParseResult,
 ): Extract<AddressedProbeStatus, { status: 'ok' }> {
   const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
-  const { namespace: _namespace, status, shutdown, ...rest } = health;
+  const { namespace: _namespace, shutdown, ...rest } = health;
   const normalizedShutdown = operatorFacingLiveShutdown(shutdown);
   return {
     status: 'ok',
     health: {
       ...rest,
-      status: status === 'starting' ? 'ok' : status,
       ...(normalizedShutdown === undefined ? {} : { shutdown: normalizedShutdown }),
       skippedProviderProxySetRows,
       skippedProviderProxySetTokens,
