@@ -68,15 +68,11 @@ export function formatWaitQueued(event: WaitQueuedEvent, label?: string): string
   return formatTimedMessage(event.timing.elapsedMs, body, label);
 }
 
-/**
- * Rule for the continuation line in both branches below: it appears exactly when the caller must act, and
- * never when this process keeps waiting on its own — see followJobs in src/cli/follow.ts.
- */
 export function formatWaitTerminal(
   event: WaitTerminalEvent,
   cursor: string | null,
   inline: boolean,
-  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean; exitCode?: number } = {},
+  options: { describeCauseRef?: CauseRefDescriber; verbose?: boolean } = {},
 ): string {
   const header = [
     terminalOutcomeHeader(event.jobId, event.result, options.describeCauseRef),
@@ -84,8 +80,7 @@ export function formatWaitTerminal(
   ]
     .filter((segment): segment is string => segment !== undefined)
     .join(' · ');
-  const willReconnectAutomatically = event.remainingJobIds.length > 0 && options.exitCode === 0;
-  const continuation = willReconnectAutomatically ? undefined : formatWaitContinuation(event.remainingJobIds);
+  const continuation = formatWaitContinuation(event.remainingJobIds);
   if (!inline) {
     return joinLines([header, `Result path: ${event.resultPath}`, continuation]);
   }

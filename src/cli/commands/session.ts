@@ -232,8 +232,8 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
     .option('--verbose', 'Show detailed usage breakdown on terminal events')
     .addHelpText(
       'after',
-      '\nExits 75 if jobs are still pending when the wait window closes (not 0); rerun with the printed ' +
-        '--cursor to keep waiting on the same jobs.\n',
+      '\nExits 75 when requested work remains (not 0).\n' +
+        'Run the continuation or remediation command printed in the output.\n',
     )
     .action(async (jobIdArgs: string[], opts: WaitJobsOptions) => {
       await runWaitJobs(parseJobIds(jobIdArgs.join(' ')), opts, waitJobsCommand);

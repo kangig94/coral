@@ -508,30 +508,15 @@ describe('cli follow', () => {
     expect(stdout).toContain('Job job-1 completed');
   });
 
-  it('reconnects silently on a successful terminal event with jobs remaining, printing no continuation line', async () => {
+  it('returns transient after a successful terminal event and names the jobs still running', async () => {
     const { followJobs } = await loadFollowModule();
-    // `seq` is a global journal cursor, not per-job — the second event must advance past the first or the
-    // render cursor treats it as already-seen and suppresses it.
     const firstTerminal = makeTerminalEvent({}, { jobId: 'job-1', seq: 1, remainingJobIds: ['job-2'] });
-    const secondTerminal = makeTerminalEvent({}, { jobId: 'job-2', seq: 2, remainingJobIds: [] });
-
-    const connect = vi
-      .fn()
-      .mockImplementationOnce(async () => ({
-        kind: 'subscription' as const,
-        subscription: makeSubscription(async function* () {
-          yield firstTerminal;
-        }),
-      }))
-      .mockImplementationOnce(async ({ jobIds }: { jobIds: readonly string[] }) => {
-        expect(jobIds).toEqual(['job-2']);
-        return {
-          kind: 'subscription' as const,
-          subscription: makeSubscription(async function* () {
-            yield secondTerminal;
-          }),
-        };
-      });
+    const connect = vi.fn().mockResolvedValueOnce({
+      kind: 'subscription' as const,
+      subscription: makeSubscription(async function* () {
+        yield firstTerminal;
+      }),
+    });
 
     const exitCode = await followJobs({
       start: { kind: 'jobs', jobIds: ['job-1', 'job-2'] },
@@ -543,11 +528,10 @@ describe('cli follow', () => {
       connect,
     });
 
-    expect(exitCode).toBe(0);
-    expect(connect).toHaveBeenCalledTimes(2);
+    expect(exitCode).toBe(75);
+    expect(connect).toHaveBeenCalledTimes(1);
     expect(stdout).toContain('Job job-1 completed');
-    expect(stdout).toContain('Job job-2 completed');
-    expect(stdout).not.toContain('to continue waiting');
+    expect(stdout).toContain('Run coral-cli wait jobs job-2 to continue waiting.');
   });
 
   it('reports which jobs are still live on an early non-zero exit, in both embed and non-embed output', async () => {
@@ -1185,22 +1169,14 @@ describe('cli follow', () => {
       process.env.HOME = fixture.home;
       process.env.TMPDIR = fixture.home;
       const { followJobs } = await loadFollowModuleFresh();
-      const connect = vi
-        .fn()
-        .mockResolvedValueOnce({
-          kind: 'subscription' as const,
-          subscription: makeSubscription(async function* () {
-            yield { ...makeProgressEvent('Architect running'), jobId: architectJobId };
-            yield makeTerminalEvent({}, { jobId: architectJobId, seq: 2, remainingJobIds: [criticJobId] });
-          }),
-        })
-        .mockResolvedValueOnce({
-          kind: 'subscription' as const,
-          subscription: makeSubscription(async function* () {
-            yield { ...makeProgressEvent('Critic running'), jobId: criticJobId, seq: 3 };
-            yield makeTerminalEvent({}, { jobId: criticJobId, seq: 4, remainingJobIds: [] });
-          }),
-        });
+      const connect = vi.fn().mockResolvedValueOnce({
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          yield { ...makeProgressEvent('Architect running'), jobId: architectJobId };
+          yield { ...makeProgressEvent('Critic running'), jobId: criticJobId, seq: 2 };
+          yield makeTerminalEvent({}, { jobId: architectJobId, seq: 3, remainingJobIds: [criticJobId] });
+        }),
+      });
 
       await expect(
         followJobs({
@@ -1212,12 +1188,13 @@ describe('cli follow', () => {
           abortJobs: vi.fn(),
           connect,
         }),
-      ).resolves.toBe(0);
+      ).resolves.toBe(75);
 
+      expect(connect).toHaveBeenCalledTimes(1);
       expect(stdout).toContain('j0 · slot 0:0 (g0) - Architect running');
       expect(stdout).toContain('j1 · slot 0:1 (g0) - Critic running');
       expect(stdout).toContain(`Job ${architectJobId} (slot 0:0 (g0)) completed`);
-      expect(stdout).toContain(`Job ${criticJobId} (slot 0:1 (g0)) completed`);
+      expect(stdout).toContain(`Run coral-cli wait jobs ${criticJobId} to continue waiting.`);
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;
@@ -1253,22 +1230,14 @@ describe('cli follow', () => {
       process.env.HOME = fixture.home;
       process.env.TMPDIR = fixture.home;
       const { followJobs } = await loadFollowModuleFresh();
-      const connect = vi
-        .fn()
-        .mockResolvedValueOnce({
-          kind: 'subscription' as const,
-          subscription: makeSubscription(async function* () {
-            yield { ...makeProgressEvent('First workflow running'), jobId: firstJobId };
-            yield { ...makeProgressEvent('Second workflow running'), jobId: secondJobId, seq: 2 };
-            yield makeTerminalEvent({}, { jobId: firstJobId, seq: 3, remainingJobIds: [secondJobId] });
-          }),
-        })
-        .mockResolvedValueOnce({
-          kind: 'subscription' as const,
-          subscription: makeSubscription(async function* () {
-            yield makeTerminalEvent({}, { jobId: secondJobId, seq: 4, remainingJobIds: [] });
-          }),
-        });
+      const connect = vi.fn().mockResolvedValueOnce({
+        kind: 'subscription' as const,
+        subscription: makeSubscription(async function* () {
+          yield { ...makeProgressEvent('First workflow running'), jobId: firstJobId };
+          yield { ...makeProgressEvent('Second workflow running'), jobId: secondJobId, seq: 2 };
+          yield makeTerminalEvent({}, { jobId: firstJobId, seq: 3, remainingJobIds: [secondJobId] });
+        }),
+      });
 
       await expect(
         followJobs({
@@ -1280,10 +1249,13 @@ describe('cli follow', () => {
           abortJobs: vi.fn(),
           connect,
         }),
-      ).resolves.toBe(0);
+      ).resolves.toBe(75);
 
+      expect(connect).toHaveBeenCalledTimes(1);
       expect(stdout).toContain('j0 · slot 0:0 (g0) - First workflow running');
       expect(stdout).toContain('j1 · slot 0:0 (g0) - Second workflow running');
+      expect(stdout).toContain(`Job ${firstJobId} (slot 0:0 (g0)) completed`);
+      expect(stdout).toContain(`Run coral-cli wait jobs ${secondJobId} to continue waiting.`);
     } finally {
       if (originalHome === undefined) delete process.env.HOME;
       else process.env.HOME = originalHome;

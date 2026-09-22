@@ -2834,15 +2834,16 @@ describe('cli format', () => {
       );
     });
 
-    it('formats an inline terminal event with a content preview, omitting the continuation on a zero exit', () => {
-      // `waitTerminalEvent` has a job remaining, but a `completed` outcome exits 0 — `followJobs` reconnects
-      // by itself, so the continuation line (a no-op instruction here) stays suppressed even inline.
-      expect(formatWaitTerminal(waitTerminalEvent, null, true, { exitCode: 0 })).toBe(
-        'Job job-1 completed\n' + 'Result path: /tmp/result.md\n' + 'Workflow summary',
+    it('formats an inline terminal event with a content preview and continuation', () => {
+      expect(formatWaitTerminal(waitTerminalEvent, null, true)).toBe(
+        'Job job-1 completed\n' +
+          'Result path: /tmp/result.md\n' +
+          'Workflow summary\n' +
+          'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
 
-    it('formats provider_exit with a zero code, omitting the continuation on a zero exit', () => {
+    it('formats provider_exit with a zero code and continuation', () => {
       const event = {
         ...waitTerminalEvent,
         result: {
@@ -2852,18 +2853,10 @@ describe('cli format', () => {
         },
       } satisfies Extract<WaitStreamEvent, { type: 'terminal' }>;
 
-      expect(formatWaitTerminal(event, null, true, { exitCode: 0 })).toBe(
-        'Job job-1 provider exited 0\n' + 'Result path: /tmp/result.md\n' + 'Exited with code 0',
-      );
-    });
-
-    it('includes the continuation inline too when a non-zero exit leaves jobs still live', () => {
-      // The mirror image: a non-zero exit returns control to the caller immediately even with siblings
-      // still running, so — unlike the zero-exit case above — the inline branch must report them.
-      expect(formatWaitTerminal(waitTerminalEvent, null, true, { exitCode: 1 })).toBe(
-        'Job job-1 completed\n' +
+      expect(formatWaitTerminal(event, null, true)).toBe(
+        'Job job-1 provider exited 0\n' +
           'Result path: /tmp/result.md\n' +
-          'Workflow summary\n' +
+          'Exited with code 0\n' +
           'Run coral-cli wait jobs job-2 to continue waiting.',
       );
     });
