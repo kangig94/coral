@@ -295,11 +295,8 @@ predates the drain-reporting change. None is a regression; each is a behaviour c
 | [`launch-disposition-flattened-below-the-boundary.md`](./launch-disposition-flattened-below-the-boundary.md)                 | **Four independent members; the first needs no new type at all, and the last two are why the first two exist.** `executeAgentAttempt` already distinguishes a launch that never started (`consumedAttempt: false`) from a failure after a job ran, and nothing in `src/` reads the field — so discuss expels required participants, appends a `speech.timed_out` transcript entry that later prompts render, and commits a launch diagnostic as `follow_up.answered`, all for a participant nobody ran. The second: every workflow launch failure becomes `wrapper_crashed`, so the same non-answer exits 75 under `codex` and 1 under `workflow`. |
 | [`starting-coordinator-has-no-exit-contribution.md`](./starting-coordinator-has-no-exit-contribution.md) | **Three inner states collapse into one exit code.** `BACKEND_STATUS_EXIT_CODES` is keyed by the outer probe status, so an answered-but-not-ready coordinator exits 0 exactly like a ready one. Start after the owner decides what that caller should do instead — retry, wait, or proceed. |
 
-| [`abort-acknowledged-while-the-drain-drops-its-stop.md`](./abort-acknowledged-while-the-drain-drops-its-stop.md) | **The reconciler knows it cannot record the stop, and the abort still says `aborted`.** `requestStop` returns `void` when mutation admission has closed, so a drain-time `jobs.abort` is acknowledged while no stop intent exists and the job runs on under the successor. The successor, for its part, answers `Not found` for a job it adopted. The entry designs a first stage that refuses before any effect and routes to the successor, and lists what remains after it. |
-
 The starting-status entry shares this section's loss of a typed disposition, not an implementation path with
-launch handling. It can ship independently once its exit-contribution decision is made. The abort entry is
-the same loss one layer lower: the decision exists inside the reconciler and is discarded by its own `void`.
+launch handling. It can ship independently once its exit-contribution decision is made.
 
 ---
 
