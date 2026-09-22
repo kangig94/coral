@@ -47,6 +47,10 @@ import { canonicalizeWorkDir } from '#src/runtime/canonical-work-dir.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { createHandoffCoresHarness } from '#tests/integration/coordinator/handoff-cores-harness.js';
+import { createDeferred } from '#tools/testing/deferred.js';
+import { IdleTimer } from '#src/coordinator/live/idle.js';
+import { createRealTimePort } from '#src/infra/time.js';
+import { domainSuccess } from '#src/transport/tool-result.js';
 
 const tempDirs: string[] = [];
 
@@ -468,7 +472,7 @@ describe('ipc server', () => {
     }
   });
 
-  it('dispatches catalog-backed unary methods over the socket', async () => {
+  it('dispatches catalog-backed unary methods over the socket and holds the drain gate for each', async () => {
     const ports = createPorts();
     const listener = createIpcServer(ports);
     const socketPath = makeSocketPath();
@@ -490,7 +494,51 @@ describe('ipc server', () => {
           },
         ],
       });
+      expect(ports.admin.beginRequest).toHaveBeenCalledTimes(1);
+      expect(ports.admin.endRequest).toHaveBeenCalledTimes(1);
     } finally {
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('holds an explicit drain until an IPC unary request settles', async () => {
+    const entered = createDeferred();
+    const release = createDeferred();
+    const ports = createPorts();
+    const idleTimer = new IdleTimer({ time: createRealTimePort() });
+    const onIdle = vi.fn();
+    ports.admin.beginRequest = () => idleTimer.beginRequest();
+    ports.admin.endRequest = () => idleTimer.endRequest();
+    ports.kb.readSearch = vi.fn(async () => {
+      entered.resolve();
+      await release.promise;
+      return domainSuccess({ results: [] });
+    });
+    idleTimer.startWatching(() => false, onIdle);
+
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const request = requestIpcMethod(
+      socketPath,
+      'kb.entries.search',
+      { q: 'held' },
+      { auth: { kind: 'boot', token: 'boot-token' } },
+    );
+
+    try {
+      await entered.promise;
+      idleTimer.requestDrain('test-teardown');
+
+      expect(onIdle).not.toHaveBeenCalled();
+
+      release.resolve();
+      await expect(request).resolves.toEqual({ results: [] });
+      expect(onIdle).toHaveBeenCalledExactlyOnceWith('test-teardown');
+    } finally {
+      release.resolve();
+      await request.catch(() => undefined);
+      idleTimer.stopWatching();
       await closeIpcServer(listener);
     }
   });

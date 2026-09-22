@@ -120,4 +120,23 @@ describe('IdleTimer', () => {
 
     expect(onIdle).toHaveBeenCalledWith('test-teardown');
   });
+
+  it('should not passively retire while a request is still in flight', () => {
+    const harness = createTimeHarness();
+    const timer = new IdleTimer({ time: harness.time, timeoutMs: 0 });
+    const onIdle = vi.fn<(reason: string) => void>();
+
+    timer.startWatching(() => true, onIdle);
+    timer.beginRequest();
+    harness.advance(1);
+    harness.tick();
+
+    expect(onIdle).not.toHaveBeenCalled();
+
+    timer.endRequest();
+    harness.advance(1);
+    harness.tick();
+
+    expect(onIdle).toHaveBeenCalledWith('idle');
+  });
 });

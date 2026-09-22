@@ -85,6 +85,7 @@ import { ZodError, ZodIssueCode } from 'zod';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import type { KbRequestPort } from '#src/transport/rpc/ports.js';
+import { IdleTimer } from '#src/coordinator/live/idle.js';
 
 // The plugin root is clients/ (where bridge/manifest lives); the backend under
 // test derives its namespace from that root via __PLUGIN_ROOT__ (see vitest/setup.ts).
@@ -2459,6 +2460,45 @@ describe('execution backend server', () => {
     }
 
     afterEach(() => {});
+
+    it('holds an explicit drain until an HTTP unary response settles', async () => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const { deps } = createHttpHandlerDeps();
+      const idleTimer = new IdleTimer({ time: runtime.time });
+      const onIdle = vi.fn();
+      deps.admin.beginRequest = () => idleTimer.beginRequest();
+      deps.admin.endRequest = () => idleTimer.endRequest();
+      deps.kb.readSearch = vi.fn(async () => {
+        entered.resolve();
+        await release.promise;
+        return domainSuccess({ results: [] });
+      });
+      idleTimer.startWatching(() => false, onIdle);
+
+      const started = await startHttpHandlerServer(deps);
+      const request = fetch(`${started.baseUrl}/kb/entries?q=held`, {
+        headers: { 'X-Coral-Backend-Token': 'test-token' },
+      });
+
+      try {
+        await entered.promise;
+        idleTimer.requestDrain('test-teardown');
+
+        expect(onIdle).not.toHaveBeenCalled();
+
+        release.resolve();
+        const response = await request;
+        expect(response.status).toBe(200);
+        await expect(response.json()).resolves.toEqual({ results: [] });
+        expect(onIdle).toHaveBeenCalledExactlyOnceWith('test-teardown');
+      } finally {
+        release.resolve();
+        await request.catch(() => undefined);
+        idleTimer.stopWatching();
+        await _closeHttpServer(started.server);
+      }
+    });
 
     it('cleans up passive SSE subscriptions when an event write hits backpressure', async () => {
       type TestServerResponseWrite = (this: ServerResponse, ...args: unknown[]) => boolean;

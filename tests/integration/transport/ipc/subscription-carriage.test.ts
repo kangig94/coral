@@ -11,6 +11,7 @@ import type { HttpHandlerPorts } from '#src/transport/server-ports.js';
 import type { WaitStreamRequest } from '#src/jobs/wait.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import { closeIpcServer, createIpcServer, listenIpcServer } from '#src/transport/ipc/server.js';
+import { IdleTimer } from '#src/coordinator/live/idle.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
 
 const tempDirs: string[] = [];
@@ -237,6 +238,8 @@ describe('subscription carriage', () => {
         cursor: expectedCursor,
       });
       expect(Object.getOwnPropertyDescriptor(requests[0], 'abortSignal')?.value).toBeInstanceOf(AbortSignal);
+      expect(ports.admin.beginRequest).not.toHaveBeenCalled();
+      expect(ports.admin.endRequest).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);
     }
@@ -273,6 +276,66 @@ describe('subscription carriage', () => {
       expect(listener.sockets.size).toBe(1);
       const serverSocket = Array.from(listener.sockets)[0];
       expect(serverSocket?.listenerCount('data')).toBe(0);
+
+      release();
+      await subscription.close();
+    } finally {
+      release();
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('lets an explicit drain start while a subscription is still streaming', async () => {
+    const requests: WaitStreamRequest[] = [];
+    const base = createPorts(requests);
+    const idleTimer = new IdleTimer({
+      time: {
+        now: () => 0,
+        setInterval: () => ({ unref: () => {} }) as never,
+        clearInterval: () => {},
+      } as never,
+      timeoutMs: 1_000_000,
+    });
+    const ports: HttpHandlerPorts = {
+      ...base,
+      admin: {
+        ...base.admin,
+        beginRequest: () => idleTimer.beginRequest(),
+        endRequest: () => idleTimer.endRequest(),
+      },
+    };
+    let release = () => {};
+    const holdStreamOpen = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    ports.jobs.waitStream = vi.fn(async function* (request: WaitStreamRequest) {
+      requests.push(request);
+      yield makeWaitEvents()[0];
+      await holdStreamOpen;
+    });
+
+    const socketPath = makeSocketPath();
+    const listener = createIpcServer(ports);
+
+    await listenIpcServer(listener, socketPath);
+    try {
+      const subscription = await createIpcClient(socketPath, undefined, {
+        kind: 'boot',
+        token: 'test-boot-token',
+      }).subscribe<ReturnType<typeof makeWaitEvents>[number]>('jobs.wait', {
+        jobIds: ['job-1'],
+        projectRoot: PROJECT_ROOT,
+        timeoutSeconds: 30,
+      });
+
+      expect(listener.sockets.size).toBe(1);
+      expect(idleTimer.inflightRequests).toBe(0);
+
+      const onIdle = vi.fn<(reason: string) => void>();
+      idleTimer.startWatching(() => false, onIdle);
+      idleTimer.requestDrain('test-teardown');
+
+      expect(onIdle).toHaveBeenCalledWith('test-teardown');
 
       release();
       await subscription.close();
@@ -340,6 +403,8 @@ describe('subscription carriage', () => {
         cursor: expectedCursor,
       });
       expect(Object.getOwnPropertyDescriptor(requests[1], 'abortSignal')?.value).toBeInstanceOf(AbortSignal);
+      expect(ports.admin.beginRequest).not.toHaveBeenCalled();
+      expect(ports.admin.endRequest).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);
     }

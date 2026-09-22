@@ -1773,7 +1773,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(mockState.ipcDialCount).toBe(0);
   });
 
-  it('keeps a detailed starting answer rendered as Backend ok', async () => {
+  it('renders a detailed starting answer as Backend starting', async () => {
     stubProbes(
       new Response(ping('starting'), { status: 200 }),
       new Response(detailed('starting', { kernel: { phase: 'starting', readyAt: null } }), { status: 200 }),
@@ -1783,9 +1783,9 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     const { formatBackendStatus } = await import('#src/cli/format/backend.js');
     const result = await getBackendStatusFull('/plugin-root');
 
-    expect(result).toMatchObject({ status: 'ok', health: { status: 'ok' } });
-    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain('Backend ok');
-    expect(formatBackendStatus(result, { kind: 'absent' }, null)).not.toContain('Backend starting');
+    expect(result).toMatchObject({ status: 'ok', health: { status: 'starting' } });
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain('Backend starting');
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).not.toContain('Backend ok');
   });
 
   it('normalizes live and durable shutdown entries into byte-identical observable lines', async () => {
