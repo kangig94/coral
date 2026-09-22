@@ -35,6 +35,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/discuss/shell/recovery.ts#discussionResumeContinuationSchema',
   'src/expansion/manifest/schema.ts#persistedDeclarativeEngineManifestSchema',
   'src/infra/backend-discovery.ts#coordinatorDiscoveryRecordSchema',
+  'src/infra/durable-cli-runtime-evidence.ts#durableCliRuntimePublicationEvidenceSchema',
   'src/infra/error-format.ts#serializedThrownSchema',
   'src/infra/plugin-registry.ts#installedPluginsFileSchema',
   'src/infra/persisted-scalar-contracts.ts#persistedNonEmptyStringSchema',
@@ -42,7 +43,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/infra/process-containment.ts#recordedProcessIdentitySchema',
   'src/infra/provider-binding-envelope.ts#providerBindingEnvelopeSchema',
   'src/infra/provider-scope.ts#providerScopeSchema',
-  'src/infra/shutdown-remainder-record.ts#shutdownRemainderEntrySchema',
+  'src/infra/shutdown-contract.ts#shutdownRemainderEntrySchema',
   'src/infra/shutdown-remainder-record.ts#shutdownRemainderRecordEnvelopeSchema',
   'src/jobs/discussion-run.ts#discussionRunDescriptorSchema',
   'src/jobs/outcome.ts#externalErrorSchema',
@@ -656,6 +657,23 @@ function componentRegistrationViolations(components: ReadonlySet<SchemaKey>): st
 }
 
 describe('durable schema independence invariant', () => {
+  it('owns durable CLI runtime publication evidence in one transport-neutral schema', () => {
+    const units = readSourceTree('src');
+    const declarationOwners = units
+      .filter((unit) => /z\.literal\(['"]durable-cli-runtime['"]\)/u.test(unit.source.text))
+      .map((unit) => unit.path);
+    const livePublication = units.find((unit) => unit.path === 'src/coordinator/live/durable-transport.ts');
+    const shutdownContract = units.find((unit) => unit.path === 'src/infra/shutdown-contract.ts');
+
+    expect(declarationOwners).toEqual(['src/infra/durable-cli-runtime-evidence.ts']);
+    expect(livePublication?.source.text).toContain(
+      "import type { DurableCliRuntimePublicationEvidence } from '../../infra/durable-cli-runtime-evidence.js'",
+    );
+    expect(shutdownContract?.source.text).toContain(
+      'processes: z.array(durableCliRuntimePublicationEvidenceSchema).readonly()',
+    );
+  });
+
   // One parse of every production source is the floor here: measured 2.0s alone and 5.4s under the full
   // unit suite (10-core Apple M-series, 2026-09-17). CI run 35189468102 (ubuntu-latest 4 vCPU, Node 26)
   // measured this case at 9.1s against 7.1s under the same suite locally on the code it ran; the sibling

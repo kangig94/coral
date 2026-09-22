@@ -38,7 +38,7 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const CANONICAL_FILE = 'src/infra/error-format.ts';
 const HOME_PATTERNS = ['thrownErrnoCode', 'errnoCode'];
 const KNOWN_CONSUMERS = [
-  'src/transport/http/backend/status.ts',
+  'src/cli/backend-status.ts',
   'src/transport/http/backend/shutdown.ts',
   'src/engines/kiwi/artifact.ts',
 ];

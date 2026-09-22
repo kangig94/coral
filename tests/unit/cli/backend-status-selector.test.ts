@@ -3,12 +3,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
-import type { BackendStatusFull, ShutdownRemainderReport } from '#src/transport/http/backend/status.js';
+import type { BackendStatusFull, ShutdownRemainderReport } from '#src/cli/backend-status.js';
+import { parseBackendHealth, type BackendHealthParseResult } from '#src/transport/http/backend/health.js';
+import type * as IpcHealthMod from '#src/transport/ipc/health.js';
 import type { StrictBundleIdentityResult } from '#src/infra/bundle-manifest.js';
 import type { CoordinatorObservation } from '#src/transport/http/backend/coordinator-observation.js';
-import { reserveRefusedPort } from '../../../fixtures/refused-port.js';
+import { reserveRefusedPort } from '../../fixtures/refused-port.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
-import {} from '#src/infra/shutdown-remainder-record.js';
+import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -33,6 +35,13 @@ const mockState = vi.hoisted(() => ({
   /** Whether this build can prove its own bundle identity; `false` makes every record's authorship unprovable. */
   strictIdentityProven: true,
   now: 1_700_000_000_000,
+  ipcObservation: {
+    kind: 'unavailable',
+    cause: 'transport-failure',
+  } as IpcHealthMod.AuthenticatedHealthObservation<BackendHealthParseResult>,
+  ipcReply: null as unknown,
+  ipcDecodedIdentity: null as unknown,
+  ipcDialCount: 0,
 }));
 
 const REMAINDER_PATH = '/run/coral/shutdown-remainder.v1.json';
@@ -74,6 +83,39 @@ vi.mock('#src/infra/plugin-identity.js', () => ({
   pluginRootNamespace: vi.fn(() => 'self-namespace'),
 }));
 
+vi.mock('#src/transport/ipc/health.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof IpcHealthMod>();
+  return {
+    ...actual,
+    readIdentityCheckedAuthenticatedHealth: vi.fn(
+      async (
+        record: { socketPath: string },
+        expectedSocketPath: string,
+        expectedIdentity: unknown,
+        _timePort: unknown,
+        decode: (
+          value: unknown,
+        ) => Readonly<{ health: BackendHealthParseResult; identity: IpcHealthMod.CoordinatorHealthIdentity }> | null,
+      ): Promise<IpcHealthMod.AuthenticatedHealthObservation<BackendHealthParseResult>> => {
+        if (expectedIdentity === null) {
+          return { kind: 'unavailable', cause: 'discovery-identity-incomplete' };
+        }
+        if (record.socketPath !== expectedSocketPath) {
+          return { kind: 'unavailable', cause: 'socket-mismatch' };
+        }
+        mockState.ipcDialCount += 1;
+        if (mockState.ipcReply !== null) {
+          const decoded = decode(mockState.ipcReply);
+          if (decoded === null) return { kind: 'unavailable', cause: 'health-shape-rejected' };
+          mockState.ipcDecodedIdentity = decoded.identity;
+          return { kind: 'health', health: decoded.health };
+        }
+        return mockState.ipcObservation;
+      },
+    ),
+  };
+});
+
 vi.mock('#src/runtime/real.js', () => ({
   createRealRuntime: vi.fn(() => ({
     storage: {
@@ -110,6 +152,7 @@ vi.mock('#src/runtime/real.js', () => ({
           runDir: '/run/coral',
           startupDiagnosticFile: '/tmp/coral-startup.json',
           infoFile: '/run/coral/coordinator.json',
+          socketPath: '/tmp/coral.sock',
         },
       },
     },
@@ -142,6 +185,10 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.readPaths = [];
     mockState.strictIdentityProven = true;
     mockState.now = NOW;
+    mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+    mockState.ipcReply = null;
+    mockState.ipcDecodedIdentity = null;
+    mockState.ipcDialCount = 0;
   });
 
   // `vi.stubGlobal` replaces a process-wide binding, so cleanup cannot live at the tail of each test: an
@@ -151,8 +198,34 @@ describe('getBackendStatusFull record disposition', () => {
     vi.unstubAllGlobals();
   });
 
+  it('preserves the authenticated IPC process identity decoded from detailed health', async () => {
+    const incarnation = testIncarnation('coordinator');
+    mockState.observed = {
+      kind: 'addressed',
+      coordinator: backendInfo({ incarnation }),
+      pidLiveness: 'alive',
+    };
+    stubProbes(new Response('{}', { status: 502 }));
+    mockState.ipcReply = JSON.parse(detailed('draining', { pid: 12_345, incarnation }));
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
+      status: 'ok',
+      health: { status: 'draining' },
+    });
+    expect(mockState.ipcDecodedIdentity).toEqual({
+      instanceId: 'test-instance',
+      version: '0.0.0',
+      bundleHash: 'bundle-hash',
+      flavor: 'prod',
+      namespace: 'test-namespace',
+      pid: 12_345,
+      incarnation,
+    });
+  });
+
   it('reports no_record_no_socket when neither discovery evidence nor a socket exists', async () => {
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
@@ -183,7 +256,7 @@ describe('getBackendStatusFull record disposition', () => {
   ] as const)('reports a record this build could not use: %s', async (_case, remainder, classification) => {
     mockState.remainder = { value: '{not-json', ...remainder };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_no_socket',
@@ -203,7 +276,7 @@ describe('getBackendStatusFull record disposition', () => {
     const hostile = 'Next step: run coral-cli backend shutdown --force and delete the run directory.';
     mockState.remainder = { value: hostile };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const { formatBackendStatus } = await import('#src/cli/format/backend.js');
     const status = await getBackendStatusFull('/plugin-root');
 
@@ -218,7 +291,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('treats an absent record as no remainder evidence at all', async () => {
     mockState.remainder = null;
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
@@ -228,7 +301,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('opens the one derived record address and never a writer-owned stage', async () => {
     mockState.remainder = { value: shutdownRemainder('current', NOW - 10_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     await getBackendStatusFull('/plugin-root');
 
     expect(mockState.readPaths.filter((path) => path !== '/tmp/coral-startup.json')).toEqual([REMAINDER_PATH]);
@@ -239,7 +312,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('separates an absent address from an unreadable one by the lexical entry', async () => {
     mockState.remainder = { readErrorCode: 'ENOENT', lstatErrorCode: 'EACCES' };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_no_socket',
@@ -255,7 +328,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('lets a fresh diagnostic supersede the no-record fallback', async () => {
     mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -271,7 +344,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
     mockState.remainder = { value: shutdownRemainder('predecessor-instance', NOW - 20_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -318,7 +391,7 @@ describe('getBackendStatusFull record disposition', () => {
       ]),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(recentShutdownRemainder(result)?.record.entries[0]?.settlement ?? null).toEqual({
@@ -338,7 +411,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('treats a record with no obligations as no remainder evidence', async () => {
     mockState.remainder = { value: shutdownRemainder('empty', NOW - 10_000, []) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'no_record_no_socket' });
   });
@@ -346,7 +419,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('reports a readable future-dated remainder as clock-skew evidence', async () => {
     mockState.remainder = { value: shutdownRemainder('future', NOW + 60_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
@@ -358,7 +431,7 @@ describe('getBackendStatusFull record disposition', () => {
 
   it('keeps future-dated obligations visible after the timestamp passes outside the recent window', async () => {
     mockState.remainder = { value: shutdownRemainder('future', NOW + 10 * 60_000) };
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       shutdownRemainder: {
@@ -416,7 +489,7 @@ describe('getBackendStatusFull record disposition', () => {
       ]),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
     const remainder = recentShutdownRemainder(result);
 
@@ -458,7 +531,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('projects exactly the declared key paths of an unusable-record report', async () => {
     mockState.remainder = { value: '{not-json' };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
     const report = 'shutdownRemainder' in result ? result.shutdownRemainder : undefined;
 
@@ -482,7 +555,7 @@ describe('getBackendStatusFull record disposition', () => {
       ),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(recentShutdownRemainder(result)?.record.entries ?? []).toEqual(
@@ -507,7 +580,7 @@ describe('getBackendStatusFull record disposition', () => {
       ]),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
@@ -535,7 +608,7 @@ describe('getBackendStatusFull record disposition', () => {
       ]),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
@@ -576,7 +649,7 @@ describe('getBackendStatusFull record disposition', () => {
       ]),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(recentShutdownRemainder(result)?.record.entries[0]?.settlement ?? null).toEqual({
@@ -603,7 +676,7 @@ describe('getBackendStatusFull record disposition', () => {
       ]),
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
@@ -622,7 +695,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('does not let the recent-record window suppress unfinished obligations', async () => {
     mockState.remainder = { value: shutdownRemainder('stale', NOW - 300_001) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_no_socket',
@@ -642,7 +715,7 @@ describe('getBackendStatusFull record disposition', () => {
       context: { version: '0.11.0', flavor: 'prod' },
     });
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
@@ -669,7 +742,7 @@ describe('getBackendStatusFull record disposition', () => {
       { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
@@ -696,7 +769,7 @@ describe('getBackendStatusFull record disposition', () => {
       { bundleHash: 'fedcba9876543210', namespace: 'other-namespace' },
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
@@ -721,7 +794,7 @@ describe('getBackendStatusFull record disposition', () => {
       { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
@@ -744,7 +817,7 @@ describe('getBackendStatusFull record disposition', () => {
       { bundleHash: SELF_BUNDLE_HASH, namespace: SELF_NAMESPACE },
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toMatchObject({
@@ -762,7 +835,7 @@ describe('getBackendStatusFull record disposition', () => {
       remediation: 'future remediation',
     });
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -773,7 +846,7 @@ describe('getBackendStatusFull record disposition', () => {
   it('reports no_record_socket_present when the coordinator socket exists without a record', async () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'no_record_socket_present',
@@ -789,7 +862,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
     mockState.remainder = { value: shutdownRemainder('recent', NOW - 10_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'no_record_socket_present',
@@ -805,7 +878,7 @@ describe('getBackendStatusFull record disposition', () => {
     mockState.observed = { kind: 'no-record-socket-present', socketPath: '/tmp/coral.sock' };
     mockState.diagnostic = startupDiagnostic(NOW - 10_000, 4242);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -822,7 +895,7 @@ describe('getBackendStatusFull record disposition', () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 500 }));
     vi.stubGlobal('fetch', fetchMock);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     // What this change establishes: the daemon is asked at all. Before it, `readBackendInfo` answered `null`
@@ -842,7 +915,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response('{}', { status: 500 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
@@ -863,7 +936,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -885,7 +958,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(untrustedPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toEqual({
@@ -909,7 +982,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignFlavorPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -929,7 +1002,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -950,7 +1023,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -975,7 +1048,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -999,7 +1072,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1028,7 +1101,7 @@ describe('getBackendStatusFull record disposition', () => {
       vi.fn(async () => new Response(JSON.stringify(foreignPing), { status: 200 })),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1049,7 +1122,7 @@ describe('getBackendStatusFull record disposition', () => {
       ),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
@@ -1065,7 +1138,7 @@ describe('getBackendStatusFull record disposition', () => {
       // The record-derived view is still populated here, so a consumer reading only that would fall through to
       // the liveness check and manufacture an absence.
 
-      const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+      const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
       await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
         status: 'undecodable_record',
@@ -1170,12 +1243,16 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.readPaths = [];
     mockState.strictIdentityProven = true;
     mockState.now = NOW;
+    mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+    mockState.ipcReply = null;
+    mockState.ipcDecodedIdentity = null;
+    mockState.ipcDialCount = 0;
   });
 
   it('reports a diagnostic recorded during this run', async () => {
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -1191,7 +1268,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID);
     mockState.remainder = { value: shutdownRemainder(INSTANCE_ID, NOW - 20_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recent_failure',
@@ -1207,7 +1284,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID + 1);
     mockState.remainder = { value: shutdownRemainder(INSTANCE_ID, NOW - 20_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'recorded_process_absent',
@@ -1225,7 +1302,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   it('reports an unusable remainder even under an exact coordinator scope', async () => {
     mockState.remainder = { value: '{not-json' };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
@@ -1244,7 +1321,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     // first, so the timestamp guard is never exercised.
     mockState.remainder = { value: shutdownRemainder(INSTANCE_ID, STARTED_AT - 10_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
@@ -1256,7 +1333,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT };
     mockState.remainder = { value: shutdownRemainder('other-coordinator', NOW - 10_000) };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
@@ -1271,7 +1348,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     mockState.observed = { kind: 'process-absent', pid: PID, startedAt: STARTED_AT };
     mockState.remainder = { readErrorCode: 'EACCES' };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
@@ -1290,7 +1367,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
     // explanation for a coordinator that exited cleanly minutes later.
     mockState.diagnostic = startupDiagnostic(STARTED_AT - 10_000, PID);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
@@ -1301,7 +1378,7 @@ describe('getBackendStatusFull scopes a startup diagnostic to the coordinator th
   it('ignores one recorded during this run by a different pid', async () => {
     mockState.diagnostic = startupDiagnostic(STARTED_AT + 10_000, PID + 1);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'recorded_process_absent',
@@ -1333,6 +1410,7 @@ function detailed(status: 'starting' | 'ok' | 'draining', extra: Readonly<Record
     flavor: 'prod',
     instanceId: 'test-instance',
     namespace: 'test-namespace',
+    pid: 12_345,
     uptimeMs: 1_000,
     active: 0,
     activeJobs: 0,
@@ -1352,6 +1430,15 @@ function stubProbes(...responses: readonly Response[]): ReturnType<typeof vi.fn>
   return mock;
 }
 
+function ipcHealth(
+  status: 'starting' | 'ok' | 'draining',
+  extra: Readonly<Record<string, unknown>> = {},
+): IpcHealthMod.AuthenticatedHealthObservation<BackendHealthParseResult> {
+  const parsed = parseBackendHealth(JSON.parse(detailed(status, extra)));
+  if (parsed === null) throw new Error('The IPC health fixture must be readable.');
+  return { kind: 'health', health: parsed };
+}
+
 // `backend status` is the operator's primary diagnostic, and this branch exists to stop it collapsing
 // "stopped", "draining", "not ours" and "could not reach" into one another.
 describe('getBackendStatusFull maps each answer to the word that describes it', () => {
@@ -1362,6 +1449,10 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.readPaths = [];
     mockState.strictIdentityProven = true;
     mockState.now = NOW;
+    mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+    mockState.ipcReply = null;
+    mockState.ipcDecodedIdentity = null;
+    mockState.ipcDialCount = 0;
   });
 
   // Unlike the first `describe` in this file, none of the tests below restored `fetch` on their own —
@@ -1371,13 +1462,201 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    {
+      name: 'refused HTTP with unknown pid liveness and draining IPC',
+      arrangeHttp: () => {
+        mockState.observed = { kind: 'addressed', coordinator: backendInfo(), pidLiveness: 'unknown' };
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            throw Object.assign(new TypeError('fetch failed'), {
+              cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+            });
+          }),
+        );
+      },
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
+    },
+    {
+      name: 'unanswered HTTP and draining IPC',
+      arrangeHttp: () =>
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            throw new Error('request timed out');
+          }),
+        ),
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
+    },
+    {
+      name: 'responded HTTP and draining IPC',
+      arrangeHttp: () => stubProbes(new Response('{}', { status: 502 })),
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
+    },
+    {
+      name: 'confirmed draining ping and draining IPC',
+      arrangeHttp: () => {
+        const responses = [
+          new Response(ping('draining'), { status: 200 }),
+          new Response(ping('draining'), { status: 200 }),
+        ];
+        const fetchMock = vi.fn(async () => {
+          if (fetchMock.mock.calls.length === 2) throw new TypeError('fetch failed');
+          return responses.shift() ?? new Response('{}', { status: 500 });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+      },
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
+    },
+    {
+      name: 'responded HTTP and draining IPC with an unreadable shutdown projection',
+      arrangeHttp: () => stubProbes(new Response('{}', { status: 502 })),
+      ipc: () => ipcHealth('draining', { shutdown: { version: 99 } }),
+      expected: { status: 'ok', health: { status: 'draining', shutdown: { kind: 'unreadable' } } },
+      dials: 1,
+    },
+    {
+      name: 'responded HTTP and ok IPC',
+      arrangeHttp: () => stubProbes(new Response('{}', { status: 502 })),
+      ipc: () => ipcHealth('ok'),
+      expected: {
+        status: 'unreachable',
+        cause: 'responded',
+        detail: 'health responded 502 without a verified Coral health body',
+      },
+      dials: 1,
+    },
+    {
+      name: 'responded HTTP and starting IPC',
+      arrangeHttp: () => stubProbes(new Response('{}', { status: 502 })),
+      ipc: () => ipcHealth('starting'),
+      expected: {
+        status: 'unreachable',
+        cause: 'responded',
+        detail: 'health responded 502 without a verified Coral health body',
+      },
+      dials: 1,
+    },
+    {
+      name: 'responded HTTP and IPC authentication refusal',
+      arrangeHttp: () => stubProbes(new Response('{}', { status: 502 })),
+      ipc: () => ({ kind: 'unavailable', cause: 'transport-failure' }) as const,
+      expected: {
+        status: 'unreachable',
+        cause: 'responded',
+        detail: 'health responded 502 without a verified Coral health body',
+      },
+      dials: 1,
+    },
+    {
+      name: 'unanswered HTTP and IPC transport failure',
+      arrangeHttp: () =>
+        vi.stubGlobal(
+          'fetch',
+          vi.fn(async () => {
+            throw new Error('request timed out');
+          }),
+        ),
+      ipc: () => ({ kind: 'unavailable', cause: 'transport-failure' }) as const,
+      expected: { status: 'unreachable', cause: 'no_response', detail: 'request timed out' },
+      dials: 1,
+    },
+    {
+      name: 'unauthorized HTTP and draining IPC',
+      arrangeHttp: () => stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 401 })),
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
+    },
+    {
+      name: 'foreign HTTP peer and draining IPC',
+      arrangeHttp: () => {
+        const foreign = { ...JSON.parse(detailed('ok')), namespace: 'foreign' };
+        stubProbes(new Response(ping('ok'), { status: 200 }), new Response(JSON.stringify(foreign), { status: 200 }));
+      },
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'ok', health: { status: 'draining' } },
+      dials: 1,
+    },
+    {
+      name: 'discovery without instanceId',
+      arrangeHttp: () => {
+        mockState.observed = {
+          kind: 'addressed',
+          coordinator: { ...backendInfo(), instanceId: undefined },
+          pidLiveness: 'alive',
+        };
+        stubProbes(new Response('{}', { status: 502 }));
+      },
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'unreachable', cause: 'responded' },
+      dials: 0,
+    },
+    {
+      name: 'discovery without version',
+      arrangeHttp: () => {
+        mockState.observed = {
+          kind: 'addressed',
+          coordinator: { ...backendInfo(), version: undefined },
+          pidLiveness: 'alive',
+        };
+        stubProbes(new Response('{}', { status: 502 }));
+      },
+      ipc: () => ipcHealth('draining'),
+      expected: { status: 'unreachable', cause: 'responded' },
+      dials: 0,
+    },
+  ] as const)('applies the HTTP to IPC decision matrix: $name', async ({ arrangeHttp, ipc, expected, dials }) => {
+    arrangeHttp();
+    mockState.ipcObservation = ipc();
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject(expected);
+    expect(mockState.ipcDialCount).toBe(dials);
+  });
+
+  it('keeps the neither-transport result and wording byte-for-byte', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('request timed out');
+      }),
+    );
+    mockState.ipcObservation = { kind: 'unavailable', cause: 'transport-failure' };
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toEqual({ status: 'unreachable', detail: 'request timed out', cause: 'no_response' });
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toBe(
+      [
+        'Backend state is unknown: the coordinator did not give a usable answer (request timed out).',
+        'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.',
+        'Next step: retry, and check the coordinator logs if it persists.',
+      ].join('\n'),
+    );
+    expect(mockState.ipcDialCount).toBe(1);
+  });
+
   it('accepts a replacement between the ping and the first detailed response', async () => {
     stubProbes(
       new Response(ping('ok'), { status: 200 }),
       new Response(detailed('ok', { instanceId: 'newer-instance' }), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'ok',
@@ -1389,7 +1668,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.remainder = { value: shutdownRemainder('test-instance', NOW - 10_000) };
     const fetchMock = stubProbes(new Response(ping('draining'), { status: 200 }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
@@ -1402,7 +1681,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('falls back to a draining ping only after the same instance confirms it still owns the address', async () => {
+  it('reports a confirmed draining ping as responded when detailed HTTP and retained IPC do not answer', async () => {
     const responses = [
       new Response(ping('draining'), { status: 200 }),
       new Response(ping('draining'), { status: 200 }),
@@ -1413,18 +1692,21 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
-      status: 'shutting_down',
+      status: 'unreachable',
+      cause: 'responded',
+      detail: 'health ping observed draining but detailed health did not answer',
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(mockState.ipcDialCount).toBe(1);
   });
 
   it('returns unauthorized when a replacement rejects the draining coordinator boot token', async () => {
     stubProbes(new Response(ping('draining'), { status: 200 }), new Response('{}', { status: 401 }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({ status: 'unauthorized' });
   });
@@ -1436,7 +1718,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(JSON.stringify(foreignDetailed), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1450,7 +1732,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   it.each([[502], [503], [504]])('reports an unverified %s ping as unreachable', async (status) => {
     stubProbes(new Response('{}', { status }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1463,7 +1745,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.remainder = { value: shutdownRemainder('predecessor', NOW - 10_000) };
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response(detailed('ok'), { status: 200 }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result.status).toBe('ok');
@@ -1474,6 +1756,194 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
         record: { instanceId: 'predecessor' },
       },
     });
+  });
+
+  it('reports a detailed draining answer through the running member and renderer', async () => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(detailed('draining', { kernel: { phase: 'draining', readyAt: null } }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({ status: 'ok', health: { status: 'draining' } });
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain('Backend draining');
+    expect(mockState.ipcDialCount).toBe(0);
+  });
+
+  it('keeps a detailed starting answer rendered as Backend ok', async () => {
+    stubProbes(
+      new Response(ping('starting'), { status: 200 }),
+      new Response(detailed('starting', { kernel: { phase: 'starting', readyAt: null } }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(result).toMatchObject({ status: 'ok', health: { status: 'ok' } });
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain('Backend ok');
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).not.toContain('Backend starting');
+  });
+
+  it('normalizes live and durable shutdown entries into byte-identical observable lines', async () => {
+    const entry = shutdownRemainderEntry('hooks.onShutdown', 'process-exit', 'rejected');
+    const skippedEntry = {
+      label: 'stream response close 2',
+      remainder: { owner: 'successor-recovery' },
+      settlement: { cause: 'timed-out', budgetMs: 0 },
+    };
+    mockState.remainder = {
+      value: shutdownRemainder('test-instance', NOW - 10_000, [entry, skippedEntry]),
+    };
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          kernel: { phase: 'draining', readyAt: null },
+          shutdown: {
+            reason: 'sigterm',
+            mode: 'handoff',
+            elapsedMs: 12_000,
+            boundMs: 0,
+            attempt: { started: 2, limit: 3 },
+            automaticRetry: { status: 'failed' },
+            lastDeclined: {
+              attempt: 1,
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'authority-release-settlement',
+              undischarged: [entry, skippedEntry],
+              retainedAuthority: {
+                ipcSocket: true,
+                providerControlProxyInstanceIds: ['22222222-2222-4222-8222-222222222222'],
+                cleanupObligations: ['child termination', 'cleanup pid=4242', 'closing host exit=1'],
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+    const rendered = formatBackendStatus(result, { kind: 'absent' }, null);
+    const liveStart = rendered.indexOf('Shutdown drain:');
+    const durableStart = rendered.indexOf('Coral recorded a recent shutdown with unfinished obligations.');
+    const sharedLines = (section: string): string[] =>
+      section
+        .split('\n')
+        .filter((line) =>
+          /^(?: {2}(?:Obligation|Owner|Cause|Error|Code|Budget|Evidence):| {4}(?:Job|PID):|Skipped entry )/u.test(line),
+        );
+
+    expect(liveStart).toBeGreaterThanOrEqual(0);
+    expect(durableStart).toBeGreaterThan(liveStart);
+    const liveSection = rendered.slice(liveStart, durableStart);
+    const durableSection = rendered.slice(durableStart);
+    expect(sharedLines(liveSection)).toEqual(sharedLines(durableSection));
+    expect(liveSection).toContain(
+      'Current drain work schedule: 0ms remaining (may be revised when a hold is observed)',
+    );
+    expect(liveSection).toContain('Automatic retry: failed');
+    expect(liveSection).toContain(
+      'The fatal coordinator exit has already been requested; process exit ends this hold.',
+    );
+    expect(liveSection).not.toContain('Hold ends when:');
+    expect(liveSection).not.toContain('Next step:');
+    expect(liveSection).not.toContain('4242');
+    expect(liveSection).not.toContain('command=coral-cli backend status');
+    expect(liveSection).not.toContain('Bound to drain terminal');
+    expect(liveSection).toContain('Current attempt: 2/3');
+    expect(liveSection).toContain('Attempt 1/3 declined: required-shutdown-step-unsettled');
+    expect(liveSection.toLowerCase()).not.toContain('recorded');
+    expect(liveSection).toContain('Provider control proxy instances retained: 1');
+    expect(liveSection).toContain('Provider proxy instance: 22222222-2222-4222-8222-222222222222');
+    expect(liveSection).toContain('Provider cleanup obligation: child termination');
+    expect(liveSection).toContain('2 provider cleanup obligations this build does not name');
+    expect(liveSection).not.toContain('cleanup pid=4242');
+    expect(liveSection).not.toContain('closing host exit=1');
+    expect(liveSection).toContain('IPC socket retained: yes');
+  });
+
+  it.each([
+    [true, 'yes'],
+    [false, 'no'],
+  ] as const)('renders retained IPC authority directly when ipcSocket=%s', async (ipcSocket, renderedValue) => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          shutdown: {
+            reason: 'sigterm',
+            mode: 'handoff',
+            elapsedMs: 1,
+            boundMs: 1,
+            attempt: { started: 2, limit: 3 },
+            lastDeclined: {
+              attempt: 1,
+              reason: 'required-shutdown-step-unsettled',
+              exit: 'authority-release-settlement',
+              undischarged: [],
+              retainedAuthority: {
+                ipcSocket,
+                providerControlProxyInstanceIds: [],
+                cleanupObligations: [],
+              },
+            },
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+
+    expect(formatBackendStatus(result, { kind: 'absent' }, null)).toContain(`IPC socket retained: ${renderedValue}`);
+  });
+
+  it('renders an unreadable live drain report without losing the draining health', async () => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(detailed('draining', { shutdown: { reason: 'future-reason' } }), { status: 200 }),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+    const rendered = formatBackendStatus(result, { kind: 'absent' }, null);
+
+    expect(result).toMatchObject({ status: 'ok', health: { status: 'draining', shutdown: { kind: 'unreadable' } } });
+    expect(rendered).toContain("Shutdown drain:\nThis build could not read the coordinator's drain report.");
+  });
+
+  it('renders a v0.10.9 draining health with no shutdown field as an unbounded absent schedule', async () => {
+    stubProbes(
+      new Response(ping('draining'), { status: 200 }),
+      new Response(
+        detailed('draining', {
+          version: '0.10.9',
+          kernel: { phase: 'running', readyAt: null },
+          inflightRequests: 4,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
+    const { formatBackendStatus } = await import('#src/cli/format/backend.js');
+    const result = await getBackendStatusFull('/plugin-root');
+    const rendered = formatBackendStatus(result, { kind: 'absent' }, null);
+
+    expect(rendered).toContain('The coordinator reports no drain schedule and no bound for this wait.');
+    expect(rendered).toContain('Kernel phase: running');
+    expect(rendered).toContain('Inflight requests: 4');
+    expect(rendered).not.toContain('Current attempt:');
   });
 
   it('keeps a detailed answer usable while carrying the count of provider proxy set rows it skipped', async () => {
@@ -1515,7 +1985,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(JSON.stringify(forwardShapedDetailed), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'ok',
@@ -1530,7 +2000,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   it.each([[502], [503], [504]])('reports an unverified %s detailed answer as unreachable', async (status) => {
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1542,7 +2012,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
   it('reports a 429 as unreachable, because the transient set is 502/503/504 and nothing else', async () => {
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 429 }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({ status: 'unreachable' });
   });
@@ -1551,7 +2021,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
     mockState.remainder = { value: shutdownRemainder('test-instance', NOW - 10_000) };
     stubProbes(new Response(ping('ok'), { status: 200 }), new Response('{}', { status: 401 }));
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unauthorized',
@@ -1566,7 +2036,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(JSON.stringify(foreignDetailed), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1587,7 +2057,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(JSON.stringify(untrustedDetailed), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     const result = await getBackendStatusFull('/plugin-root');
 
     expect(result).toEqual({
@@ -1605,7 +2075,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(JSON.stringify(foreignFlavorDetailed), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1624,7 +2094,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       new Response(JSON.stringify({ status: 'ok' }), { status: 200 }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
@@ -1645,7 +2115,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
@@ -1671,7 +2141,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',
@@ -1696,7 +2166,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       }),
     );
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toMatchObject({
       status: 'unreachable',
@@ -1723,7 +2193,7 @@ describe('getBackendStatusFull maps each answer to the word that describes it', 
       pidLiveness: 'alive',
     };
 
-    const { getBackendStatusFull } = await import('#src/transport/http/backend/status.js');
+    const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
 
     await expect(getBackendStatusFull('/plugin-root')).resolves.toEqual({
       status: 'unreachable',

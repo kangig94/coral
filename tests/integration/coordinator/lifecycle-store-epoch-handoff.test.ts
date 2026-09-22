@@ -122,6 +122,7 @@ function lifecycleHarness(writeBackendInfoFn: (info: BackendInfo) => boolean | v
       },
       closeServerFn: vi.fn(async () => {}),
       listenFn: vi.fn(async () => ({ port: 0, host: '127.0.0.1' })),
+      onFatalShutdownError: vi.fn(),
     },
     async () => [],
   );

@@ -144,6 +144,7 @@ function createProductionProviderHostPorts(record: ProviderHostInventoryRecord) 
   capturedComposition.ports = null;
   createCoordinatorCore(
     {
+      onFatalShutdownError: vi.fn(),
       runtime: createRealRuntime('prod'),
       storeFormat: currentCoralStoreFormat(),
       pluginRoot: process.cwd(),

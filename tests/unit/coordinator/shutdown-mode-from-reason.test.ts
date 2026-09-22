@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { shutdownModeFromReason } from '#src/coordinator/shutdown.js';
-import { SHUTDOWN_REASONS, type ShutdownReason } from '#src/infra/persisted-scalar-contracts.js';
+import { shutdownModeFromReason, SHUTDOWN_REASONS, type ShutdownReason } from '#src/infra/shutdown-contract.js';
 
 describe('shutdownModeFromReason', () => {
   const expectedModes: Readonly<Record<ShutdownReason, 'handoff' | 'hard'>> = {

@@ -40,7 +40,6 @@ import {
   SHUTDOWN_POLL_MS,
   runShutdownSequence,
   shutdownIncidentUndischarged,
-  shutdownModeFromReason,
   type LifecycleWiringState,
   type SettlePendingLaunchesFn,
   type ShutdownIncidentOccurrence,
@@ -48,14 +47,21 @@ import {
   type TerminateRegisteredChildrenFn,
   HANDOFF_DRAIN_TIMEOUT_MS,
 } from './shutdown.js';
-import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import {
+  shutdownModeFromReason,
+  type ShutdownAutomaticRetry,
+  type ShutdownHoldExit,
+  type ShutdownHoldReason,
+  type ShutdownMode,
+  type ShutdownReason,
+  type ShutdownRemainderObservation,
+  type ShutdownRemainderProjection,
+  type ShutdownUndischarged,
+} from '../infra/shutdown-contract.js';
 import type {
   ProcessExitRemainder,
   ProcessExitRemainderAcceptance,
-  ShutdownHoldExit,
-  ShutdownHoldReason,
   ShutdownSequenceDisposition,
-  ShutdownUndischarged,
 } from './shutdown-settlement.js';
 import type { HandoffQuiescePort } from './execution-service.js';
 import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-reason.js';
@@ -828,12 +834,13 @@ export type LifecycleDeps = {
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: (exitCode: number) => void;
   readonly acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
-  readonly onFatalShutdownError?: (error: unknown) => void;
+  readonly onFatalShutdownError: (error: unknown) => void;
 };
 
 export type LifecycleController = {
   start(): Promise<CoordinatorServerInfo>;
   shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition>;
+  observeShutdown(): ShutdownRemainderProjection | undefined;
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
@@ -846,7 +853,7 @@ type LifecycleShutdownRecovery = Readonly<{
   kind: 'retry-shutdown';
   exit: ShutdownHoldExit;
   owner: Readonly<{ kind: 'lifecycle-finalization-continuation'; instanceId: string }>;
-  automaticRetry: Readonly<{ status: 'scheduled'; attemptsStarted: number; attemptLimit: number }>;
+  automaticRetry: ShutdownAutomaticRetry;
   retainedOwnership: Readonly<{
     kind: 'coordinator-exclusive-authority';
     backendInfo: Readonly<{ kind: 'backend-info'; instanceId: string }>;
@@ -887,12 +894,39 @@ type LifecycleControlState = LifecycleWiringState & {
   shutdownIncidentCount: number;
   shutdownRetryAfter: Promise<void> | null;
   shutdownRetry: Readonly<{ retry: () => Promise<ShutdownSequenceDisposition> }> | null;
+  shutdownObservationReader: (() => ShutdownRemainderObservation) | null;
   lastShutdownDisposition: LifecycleShutdownDisposition | null;
   started: boolean;
   recoveryCoordinator: RecoveryCoordinator | null;
   providerOperationMutationAdmission: ProviderOperationMutationAdmission | null;
   startupAbort: AbortController | null;
 };
+
+function projectLifecycleShutdownObservation(state: LifecycleControlState): ShutdownRemainderProjection | undefined {
+  const reader = state.shutdownObservationReader;
+  const reason = state.shutdownReason;
+  if (reader === null || reason === null) return undefined;
+  const observation = reader();
+  const lastDisposition = state.lastShutdownDisposition;
+  const automaticRetry =
+    lastDisposition !== null && !isLifecycleShutdownTerminal(lastDisposition)
+      ? lastDisposition.recovery.automaticRetry
+      : undefined;
+  const currentAutomaticRetry =
+    automaticRetry?.status === 'scheduled' &&
+    (automaticRetry.attemptsStarted !== observation.attempt.started ||
+      automaticRetry.attemptLimit !== observation.attempt.limit ||
+      observation.lastDeclined?.attempt !== observation.attempt.started)
+      ? undefined
+      : automaticRetry;
+  const projection = {
+    reason,
+    mode: shutdownModeFromReason(reason),
+    ...observation,
+  };
+  if (currentAutomaticRetry === undefined || observation.lastDeclined === undefined) return projection;
+  return { ...projection, lastDeclined: observation.lastDeclined, automaticRetry: currentAutomaticRetry };
+}
 
 type LifecycleStartupContext = {
   deps: LifecycleDeps;
@@ -1404,6 +1438,7 @@ export function createLifecycle(
     shutdownIncidentCount: 0,
     shutdownRetryAfter: null,
     shutdownRetry: null,
+    shutdownObservationReader: null,
     lastShutdownDisposition: null,
     started: false,
     ownershipCheckerTeardown: null,
@@ -1478,7 +1513,6 @@ export function createLifecycle(
             {
               instanceId,
               reason: terminalReason,
-              mode: shutdownModeFromReason(terminalReason),
               undischarged: losses,
             },
           );
@@ -1581,6 +1615,7 @@ export function createLifecycle(
       }
       state.shutdownRetryAfter = null;
       state.shutdownRetry = null;
+      state.shutdownObservationReader = null;
       state.shutdownContinuationAbort?.abort();
       state.shutdownContinuationAbort = null;
       switch (disposition.disposition) {
@@ -1617,6 +1652,9 @@ export function createLifecycle(
           await runShutdownSequence({
             reason: currentShutdownReason(),
             currentReason: currentShutdownReason,
+            registerShutdownObservationReader: (reader) => {
+              state.shutdownObservationReader = reader;
+            },
             takeIncidents: takeShutdownIncidents,
             hardConsequencesAbort: hardConsequencesAbort.signal,
             state,
@@ -1656,7 +1694,7 @@ export function createLifecycle(
         }
       }
     })().catch((error) => {
-      onFatalShutdownError?.(error);
+      onFatalShutdownError(error);
       throw error;
     });
     const trackedAttempt = attempt.then(
@@ -1664,20 +1702,25 @@ export function createLifecycle(
         state.lastShutdownDisposition = disposition;
         if (!isLifecycleShutdownTerminal(disposition)) {
           state.shutdownPromise = null;
-          const { attemptsStarted, attemptLimit } = disposition.recovery.automaticRetry;
-          if (state.shutdownContinuations.size === 0 && attemptsStarted < attemptLimit) {
+          const automaticRetry = disposition.recovery.automaticRetry;
+          if (
+            automaticRetry.status === 'scheduled' &&
+            state.shutdownContinuations.size === 0 &&
+            automaticRetry.attemptsStarted < automaticRetry.attemptLimit
+          ) {
             const continuationAbort = new AbortController();
             state.shutdownContinuationAbort = continuationAbort;
             const cancelled = new Promise<void>((resolve) => {
               continuationAbort.signal.addEventListener('abort', () => resolve(), { once: true });
             });
+            let pending: LifecycleShutdownDisposition = disposition;
             const continuation = (async () => {
               // The loop's own attempt count must come from the disposition the ledger just returned, not a
               // continuation-local counter — a count kept here can diverge from the ledger's forced-terminal
               // attempt and strand the loop on a hold with nothing left to schedule a retry.
-              let pending: LifecycleShutdownDisposition = disposition;
               while (
                 !isLifecycleShutdownTerminal(pending) &&
+                pending.recovery.automaticRetry.status === 'scheduled' &&
                 pending.recovery.automaticRetry.attemptsStarted < pending.recovery.automaticRetry.attemptLimit
               ) {
                 await Promise.race([state.shutdownRetryAfter ?? Promise.resolve(), cancelled]);
@@ -1687,6 +1730,15 @@ export function createLifecycle(
               }
             })()
               .catch((error: unknown) => {
+                if (!isLifecycleShutdownTerminal(pending)) {
+                  state.lastShutdownDisposition = {
+                    ...pending,
+                    recovery: {
+                      ...pending.recovery,
+                      automaticRetry: { status: 'failed' },
+                    },
+                  };
+                }
                 log(`lifecycle finalization continuation failed (${formatError(error)})\n`);
               })
               .finally(() => {
@@ -1751,6 +1803,7 @@ export function createLifecycle(
   return {
     start,
     shutdown,
+    observeShutdown: () => projectLifecycleShutdownObservation(state),
     requestShutdownRetry,
     waitForShutdown: () => {
       if (state.shutdownPromise !== null) return state.shutdownPromise;

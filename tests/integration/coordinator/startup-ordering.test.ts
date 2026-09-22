@@ -80,6 +80,7 @@ describe('coordinator startup ordering', () => {
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
 
     const coordinator = createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
       runtime,
       pluginRoot,
       kbDaemonSupervisor,
@@ -182,6 +183,7 @@ describe('coordinator startup ordering', () => {
     });
 
     const coordinator = createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
       runtime,
       pluginRoot,
       kbDaemonSupervisor,
@@ -332,6 +334,7 @@ describe('coordinator startup ordering', () => {
     });
     const kbDaemonSupervisor = createMockKbDaemonSupervisor();
     const coordinator = createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
       runtime,
       pluginRoot,
       kbDaemonSupervisor,
@@ -387,6 +390,7 @@ describe('coordinator startup ordering', () => {
       });
 
     const coordinator = createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
       runtime,
       pluginRoot,
       kbDaemonSupervisor,

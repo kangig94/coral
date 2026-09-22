@@ -4,14 +4,21 @@ import { z } from 'zod';
 import {
   isSystemErrorCode,
   serializedThrownIdentifierSchema,
-  serializedThrownSchema,
   thrownErrnoCode,
   type SystemErrorCode,
 } from './error-format.js';
 import { sha256Hex } from './hash.js';
 import { isRecord } from './json.js';
 import type { ProcessIncarnation } from './node-process.js';
-import { persistedProcessIncarnationSchema, SHUTDOWN_MODES, SHUTDOWN_REASONS } from './persisted-scalar-contracts.js';
+import {
+  SHUTDOWN_MODES,
+  SHUTDOWN_REASONS,
+  shutdownReasonModeMatches,
+  type ShutdownMode,
+  type ShutdownReason,
+  shutdownRemainderEntrySchema,
+  type ShutdownUndischarged,
+} from './shutdown-contract.js';
 import type { StoragePort } from './port-types.js';
 
 export const SHUTDOWN_REMAINDER_RECORD_VERSION = 1;
@@ -25,9 +32,7 @@ type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
       ? { readonly [Key in keyof Value]: DeepReadonly<Value[Key]> }
       : Value;
 
-export type ShutdownRemainderSubject = DeepReadonly<z.infer<typeof shutdownRemainderSubjectSchema>>;
-
-type ShutdownRemainderEntry = DeepReadonly<z.infer<typeof shutdownRemainderEntrySchema>>;
+type ShutdownRemainderEntry = ShutdownUndischarged;
 
 type DecodedShutdownRemainderEntry = ShutdownRemainderEntry & Readonly<{ entryNumber: number }>;
 
@@ -49,9 +54,6 @@ export function shutdownRemainderRecordPath(runDir: string): string {
   return join(runDir, SHUTDOWN_REMAINDER_RECORD_NAME);
 }
 
-const PERSISTED_SINGLE_LINE_PATTERN = /^[^\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]+$/u;
-const persistedFactSchema = z.string().min(1).max(256).regex(PERSISTED_SINGLE_LINE_PATTERN);
-
 export function shutdownRemainderStagePath(
   runDir: string,
   writer: Readonly<{ pid: number; incarnation: ProcessIncarnation | null }>,
@@ -62,7 +64,7 @@ export function shutdownRemainderStagePath(
 }
 
 function readPersistedFact(value: unknown): string | null {
-  const parsed = persistedFactSchema.safeParse(value);
+  const parsed = shutdownRemainderEntrySchema.shape.label.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
 
@@ -71,51 +73,23 @@ function readPersistedIdentifier(value: unknown): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-// Constraint: default stripping accepts additive durable keys without preserving unvalidated data for later use.
-const settlementSchema = z.discriminatedUnion('cause', [
-  z.object({ cause: z.literal('rejected'), error: serializedThrownSchema }),
-  z.object({ cause: z.literal('aborted'), error: serializedThrownSchema }),
-  z.object({ cause: z.literal('timed-out'), budgetMs: z.number().int().positive() }),
-  z.object({ cause: z.literal('budget-exhausted') }),
-  z.object({ cause: z.literal('unconfirmed'), detail: z.string() }),
-]);
-const shutdownRemainderSubjectSchema = z.object({ kind: z.literal('discuss-store'), source: z.string() });
-const successorRecoveryEvidenceSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('startup-adoption'),
-    processes: z
-      .array(
-        z.object({
-          kind: z.literal('durable-cli-runtime'),
-          jobId: serializedThrownIdentifierSchema,
-          pid: z.number().int().positive(),
-          leaderIncarnation: persistedProcessIncarnationSchema,
-        }),
-      )
-      .readonly(),
-  }),
-  z.object({ kind: z.literal('startup-store-recovery') }),
-  z.object({ kind: z.literal('startup-liveness-recovery') }),
-]);
-const shutdownRemainderEntrySchema = z.object({
-  label: persistedFactSchema,
-  subject: shutdownRemainderSubjectSchema.optional(),
-  remainder: z.discriminatedUnion('owner', [
-    z.object({ owner: z.literal('process-exit') }),
-    z.object({
-      owner: z.literal('successor-recovery'),
-      evidence: successorRecoveryEvidenceSchema,
-    }),
-  ]),
-  settlement: settlementSchema,
-});
-const shutdownRemainderRecordEnvelopeSchema = z.object({
-  instanceId: serializedThrownIdentifierSchema,
-  recordedAt: z.string().datetime(),
-  reason: z.enum(SHUTDOWN_REASONS),
-  mode: z.enum(SHUTDOWN_MODES),
-  entries: z.array(z.unknown()).readonly(),
-});
+function refineShutdownReasonMode(
+  value: Readonly<{ reason: ShutdownReason; mode: ShutdownMode }>,
+  context: z.RefinementCtx,
+): void {
+  if (!shutdownReasonModeMatches(value.reason, value.mode)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['mode'], message: 'mode does not match reason' });
+  }
+}
+const shutdownRemainderRecordEnvelopeSchema = z
+  .object({
+    instanceId: serializedThrownIdentifierSchema,
+    recordedAt: z.string().datetime(),
+    reason: z.enum(SHUTDOWN_REASONS),
+    mode: z.enum(SHUTDOWN_MODES),
+    entries: z.array(z.unknown()).readonly(),
+  })
+  .superRefine(refineShutdownReasonMode);
 
 export function decodeShutdownRemainderRecord(value: unknown):
   | Readonly<{

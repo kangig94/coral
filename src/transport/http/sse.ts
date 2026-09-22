@@ -1,4 +1,3 @@
-export const HEALTH_TIMEOUT_MS = 3_000;
 export const TOOL_TIMEOUT_MS = 300_000;
 
 export type SseEventBlock = {

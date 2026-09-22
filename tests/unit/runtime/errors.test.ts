@@ -18,7 +18,7 @@ import {
   type OperatorFacingCoralSetupError,
   type SetupErrorAuthorIdentity,
 } from '#src/runtime/errors.js';
-import { statusFromStartupDiagnostic } from '#src/transport/http/backend/status.js';
+import { statusFromStartupDiagnostic } from '#src/cli/backend-status.js';
 
 const SELF_IDENTITY: SetupErrorAuthorIdentity = { bundleHash: '0123456789abcdef', namespace: 'self-namespace' };
 const OTHER_IDENTITY: SetupErrorAuthorIdentity = { bundleHash: 'fedcba9876543210', namespace: 'other-namespace' };

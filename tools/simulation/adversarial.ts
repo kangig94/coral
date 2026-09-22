@@ -27,7 +27,7 @@ import type { JobEvent, JobRuntime, JobStatus, JobTerminal } from '../../src/job
 import type { DurableCliRuntimeRecord, DurableProcessExit } from '../../src/runtime/durable-runtime.js';
 import type { ProviderSession } from '../../src/sessions/entry.js';
 import { providerLookupPortFromCatalog } from '../../src/providers/catalog.js';
-import type { ShutdownReason } from '../../src/infra/persisted-scalar-contracts.js';
+import type { ShutdownReason } from '../../src/infra/shutdown-contract.js';
 
 const RESULT_FILE = 'result.md';
 const LIFECYCLE_SETTLEMENT_STEP_MS = 25;
@@ -97,6 +97,7 @@ function cloneHookLog(hooks: SimulationHookLog): SimulationHookLog {
     removeBackendInfoCalls: hooks.removeBackendInfoCalls.map((entry) => ({ ...entry })),
     kbDaemonStartCalls: hooks.kbDaemonStartCalls.map((entry) => ({ ...entry })),
     kbDaemonWarmupCalls: hooks.kbDaemonWarmupCalls.map((entry) => ({ ...entry })),
+    fatalExitRequests: [...hooks.fatalExitRequests],
     recoverPersistedDiscussCalls: hooks.recoverPersistedDiscussCalls,
   };
 }

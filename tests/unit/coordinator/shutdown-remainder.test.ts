@@ -149,7 +149,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'provider-proxy-lifecycle-fatal',
-        mode: 'handoff',
         undischarged: [
           {
             label: 'pending durable launch settlement',
@@ -206,7 +205,6 @@ describe('shutdown remainder writer', () => {
         recordShutdownRemainder(writeRuntime(storage), {
           instanceId,
           reason: 'sigterm',
-          mode: 'handoff',
           undischarged: [KNOWN_LOSS],
         }),
       ).toThrow(/instanceId/u);
@@ -223,7 +221,7 @@ describe('shutdown remainder writer', () => {
       expect(() =>
         recordShutdownRemainder(
           { ...writeRuntime(storage), writer: { pid, incarnation: null } },
-          { instanceId: 'current-instance', reason: 'sigterm', mode: 'handoff', undischarged: [KNOWN_LOSS] },
+          { instanceId: 'current-instance', reason: 'sigterm', undischarged: [KNOWN_LOSS] },
         ),
       ).toThrow(/pid/u);
       expect(storage.writeAtomicSync).not.toHaveBeenCalled();
@@ -238,7 +236,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toEqual({ kind: 'published' });
@@ -255,7 +252,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toMatchObject({
@@ -275,7 +271,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toMatchObject({
@@ -296,7 +291,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toMatchObject({
@@ -316,7 +310,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toEqual({ kind: 'published' });
@@ -330,7 +323,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toMatchObject({
@@ -352,7 +344,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [KNOWN_LOSS],
       }),
     ).toMatchObject({
@@ -394,7 +385,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged,
       }),
     ).toEqual({ kind: 'published' });
@@ -420,7 +410,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'sigterm',
-        mode: 'handoff',
         undischarged: [
           {
             label: 'discuss store dispose',
@@ -483,7 +472,6 @@ describe('shutdown remainder writer', () => {
       recordShutdownRemainder(writeRuntime(storage), {
         instanceId: 'current-instance',
         reason: 'test-teardown',
-        mode: 'hard',
         undischarged,
       }),
     ).toEqual({ kind: 'published' });
@@ -577,6 +565,7 @@ describe('shutdown remainder file classification', () => {
     ['instance id', { instanceId: 'forged\ninstance' }],
     ['reason', { reason: 'forged\nreason' }],
     ['mode', { mode: 'unknown-mode' }],
+    ['mode for its reason', { reason: 'sigterm', mode: 'hard' }],
     ['recorded timestamp', { recordedAt: 'not-a-timestamp' }],
     ['entries', { entries: 'not-an-array' }],
   ])('refuses a record whose known %s field is invalid instead of tolerating it', (_field, override) => {

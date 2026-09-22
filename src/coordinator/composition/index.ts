@@ -512,7 +512,7 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
 }
 
 export function createCoordinatorCore(
-  options: CoordinatorCoreOptions,
+  options: CoordinatorCoreOptions & Readonly<{ onFatalShutdownError: (error: unknown) => void }>,
   runStartupRecovery: RunStartupRecoveryOrchestratorFn,
 ): CoordinatorCoreResult {
   const runtime = options.runtime;
@@ -1452,6 +1452,7 @@ export function createCoordinatorCore(
         delete env.CORAL_SYSTEM_PROVIDER_SCOPE;
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
+        const shutdownObservation = lifecycleController?.observeShutdown();
         // Coarse `status` field for clients that validate the strict
         // `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
         // lifecycle read `kernel.phase`.
@@ -1632,6 +1633,7 @@ export function createCoordinatorCore(
           resources: readResourceSnapshot(runtime.storage, readIpcOpenSockets(), streamResponses.size),
           components,
           kbDaemon,
+          ...(shutdownObservation === undefined ? {} : { shutdown: shutdownObservation }),
           ...(hasDiagnostics ? { diagnostics } : {}),
           env,
           ...(systemProviderScope === undefined

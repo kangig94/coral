@@ -18,7 +18,7 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull, ShutdownRemainderReport } from '../../transport/http/backend/status.js';
+import type { BackendStatusFull, OperatorFacingShutdownEntryView, ShutdownRemainderReport } from '../backend-status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -513,7 +513,7 @@ export function formatHandoffContinuationReason(reason: HandoffContinuationReaso
     case 'handoff-abandoned':
       return [
         'Handoff: continuing current build — delegation was abandoned because stdout did not finish draining.',
-        "Next step: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
+        "Handoff hold: retry; if stdout still does not drain, preserve the output and inspect the invoking process's stdout consumer.",
       ].join('\n');
     default:
       return assertNever(reason);
@@ -528,24 +528,24 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
       return basis.cause === 'health-shape-rejected'
         ? [
             `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-            'Next step: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+            'Handoff hold: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
             formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
           ].join('\n')
         : [
             `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-            'Next step: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
+            'Handoff hold: follow the daemon-status remediation above; do not proceed while the backend status command exits 75.',
           ].join('\n');
     case 'incumbent-unusable':
       return formatUnusableIncumbent(basis);
     case 'invoking-identity-unavailable':
       return [
         `Handoff: continuing current build — ${formatInvokingIdentityFailure(basis.failure)}.`,
-        'Next step: repair or reinstall this Coral bundle, then retry.',
+        'Handoff hold: repair or reinstall this Coral bundle, then retry.',
       ].join('\n');
     case 'incumbent-identity-unavailable':
       return [
         `Handoff: continuing current build — incumbent ${basis.incumbent.version} did not report a complete bundle identity.`,
-        'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
         formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     case 'same-build-set':
@@ -563,7 +563,7 @@ function formatInvokingBuildNotOlder(
   basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
 ): string {
   const nextStep = [
-    'Next step: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+    'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
     formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
   ].join('\n');
   switch (basis.comparison) {
@@ -603,12 +603,12 @@ function formatUnusableIncumbent(basis: Extract<HandoffRoutingBasis, { kind: 'in
     case 'draining':
       return [
         'Handoff: continuing current build — the incumbent coordinator is shutting down.',
-        'Next step: wait for backend shutdown to finish, then retry.',
+        'Handoff hold: wait for backend shutdown to finish, then retry.',
       ].join('\n');
     case 'identity-mismatch':
       return [
         'Handoff: continuing current build — the authenticated coordinator identity does not match its discovery record.',
-        'Next step: run the shutdown command below, wait for shutdown to finish, then retry.',
+        'Handoff hold: run the shutdown command below, wait for shutdown to finish, then retry.',
         formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
       ].join('\n');
     default:
@@ -640,7 +640,7 @@ function formatInvalidIncumbentTarget(
     basis.evidence.expectedManifest === null ? 'the incumbent' : `incumbent ${basis.evidence.expectedManifest.version}`;
   return [
     `Handoff: continuing current build — ${incumbent} handoff target at ${basis.evidence.bundleDir} is invalid because ${formatInvalidTargetFailure(basis.evidence.failure)}.`,
-    `Next step: repair or reinstall the Coral installation at ${basis.evidence.bundleDir}, then retry.`,
+    `Handoff hold: repair or reinstall the Coral installation at ${basis.evidence.bundleDir}, then retry.`,
   ].join('\n');
 }
 
@@ -676,15 +676,27 @@ const SHUTDOWN_RETRY_NEXT_STEP = [
 const SHUTDOWN_UNPUBLISHED_COORDINATOR_NEXT_STEP =
   'Next step: retry shortly in case a coordinator is still publishing its discovery record. If this persists, verify that no other Coral coordinator process is running before treating the backend as stopped.';
 
+type RoutingCommandAvailability = 'available' | 'deferred-to-live-drain' | 'blocked-by-failed-automatic-retry';
+
+type LiveShutdownGuidance = Readonly<{
+  lines: string[];
+  routingCommandAvailability: RoutingCommandAvailability;
+}>;
+
 export function formatBackendStatus(
   daemonStatus: BackendStatusFull,
   routingStatus: HandoffRoutingStatusReadResult,
   liveHandoffResult: LiveHandoffResult | null,
 ): string {
-  const sections = [formatDaemonStatus(daemonStatus)];
-  const routingStatusText = formatHandoffRoutingStatus(routingStatus);
+  const liveShutdownGuidance =
+    daemonStatus.status === 'ok'
+      ? formatLiveShutdownGuidance(daemonStatus.health)
+      : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
+  const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
+  const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
+  const routingStatusText = formatHandoffRoutingStatus(routingStatus, liveShutdownGuidance.routingCommandAvailability);
   if (routingStatusText !== null) sections.push(routingStatusText);
-  if (liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
+  if (!draining && liveHandoffResultObligation(liveHandoffResult).severity === 'warning') {
     const liveHandoffText = formatLiveHandoffResult(liveHandoffResult);
     if (liveHandoffText !== null) sections.push(liveHandoffText);
   }
@@ -696,10 +708,13 @@ function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownR
   return section.length === 0 ? base : [base, section].join('\n');
 }
 
-function formatDaemonStatus(result: BackendStatusFull): string {
+function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: readonly string[]): string {
   switch (result.status) {
     case 'ok':
-      return withShutdownRemainderSection(formatRunningStatus(result.health), result.shutdownRemainder);
+      return withShutdownRemainderSection(
+        formatRunningStatus(result.health, liveShutdownGuidance),
+        result.shutdownRemainder,
+      );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
         'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
@@ -718,8 +733,6 @@ function formatDaemonStatus(result: BackendStatusFull): string {
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
       return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
-    case 'shutting_down':
-      return withShutdownRemainderSection('Backend shutting down', result.shutdownRemainder);
     case 'unauthorized':
       return withShutdownRemainderSection(
         [
@@ -768,10 +781,41 @@ function formatSelectedRoutingDisposition(disposition: SelectedHandoffDispositio
   }
 }
 
+function formatRoutingHoldAction(
+  availability: RoutingCommandAvailability,
+  availableInstruction: string,
+  deferredInstruction: string,
+  command: BackendOperatorCommand,
+): string[] {
+  if (availability === 'available') {
+    return [availableInstruction, formatBackendOperatorCommand(command)];
+  }
+  if (availability === 'blocked-by-failed-automatic-retry') {
+    return [
+      deferredInstruction,
+      'The failed automatic retry has already requested fatal coordinator exit, so this routing section does not print a command.',
+    ];
+  }
+  return [
+    deferredInstruction,
+    "The live drain's guidance above governs the next action, so this routing section does not print another command.",
+  ];
+}
+
+function formatRoutingDiscardHoldAction(availability: RoutingCommandAvailability): string[] {
+  return formatRoutingHoldAction(
+    availability,
+    'Routing hold: run the discard command below.',
+    'Routing hold: discard remains required if this routing status survives the live drain.',
+    { kind: 'routing-status-discard' },
+  );
+}
+
 function formatRoutingOwnerLiveness(
   invocationId: string,
   disposition: SelectedHandoffDisposition,
   liveness: OwnerLiveness,
+  commandAvailability: RoutingCommandAvailability,
 ): string {
   const selectionEvidence = `Selected routing: ${formatSelectedRoutingDisposition(disposition)}.`;
   switch (liveness.kind) {
@@ -781,22 +825,34 @@ function formatRoutingOwnerLiveness(
       return [
         `Routing invocation ${invocationId}: unresolved; its recorded owner is absent.`,
         selectionEvidence,
-        'Next step: run the resolution command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: false }),
+        ...formatRoutingHoldAction(
+          commandAvailability,
+          'Routing hold: run the resolution command below.',
+          'Routing hold: resolution remains required if this invocation survives the live drain.',
+          { kind: 'routing-status-resolve', invocationId, forceUnobservable: false },
+        ),
       ].join('\n');
     case 'unobservable':
       return liveness.cause === 'deadline-expired'
         ? [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Next step: inspect backend status again; an expired sweep cannot authorize resolution.',
-            formatBackendOperatorCommand({ kind: 'backend-status' }),
+            ...formatRoutingHoldAction(
+              commandAvailability,
+              'Routing hold: inspect backend status again; an expired sweep cannot authorize resolution.',
+              'Routing hold: owner observation expired; inspect again through the live drain guidance below.',
+              { kind: 'backend-status' },
+            ),
           ].join('\n')
         : [
             `Routing invocation ${invocationId}: unresolved; owner observation was unobservable (${liveness.cause}).`,
             selectionEvidence,
-            'Next step: verify the owner externally, then run the forced resolution command below to abandon it.',
-            formatBackendOperatorCommand({ kind: 'routing-status-resolve', invocationId, forceUnobservable: true }),
+            ...formatRoutingHoldAction(
+              commandAvailability,
+              'Routing hold: verify the owner externally, then run the forced resolution command below to abandon it.',
+              'Routing hold: external owner verification and forced resolution remain required if this invocation survives the live drain.',
+              { kind: 'routing-status-resolve', invocationId, forceUnobservable: true },
+            ),
           ].join('\n');
     default:
       return assertNever(liveness);
@@ -854,13 +910,17 @@ function formatStoredTerminalDisposition(disposition: StoredTerminalDisposition)
 
 const ROUTING_INVOCATION_RENDER_LIMIT = 20;
 
-function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): string {
+function formatRoutingInvocationStatus(
+  status: HandoffRoutingInvocationStatus,
+  commandAvailability: RoutingCommandAvailability,
+): string {
   switch (status.kind) {
     case 'unresolved':
       return formatRoutingOwnerLiveness(
         status.selection.invocationId,
         status.selection.disposition,
         status.ownerLiveness,
+        commandAvailability,
       );
     case 'terminal':
       return `Routing invocation ${status.terminal.invocationId}: terminal; ${formatStoredTerminalDisposition(status.terminal.disposition)}.`;
@@ -873,12 +933,16 @@ function formatRoutingInvocationStatus(status: HandoffRoutingInvocationStatus): 
           return [
             `Routing invocation ${status.tombstone.invocationId}: retired (selection-evicted-at-capacity; ${terminalEvidence}).`,
             `Selected routing: ${formatSelectedRoutingDisposition(status.tombstone.selectedDisposition)}.`,
-            'Next step: run the resolution command below to acknowledge the retained capacity eviction.',
-            formatBackendOperatorCommand({
-              kind: 'routing-status-resolve',
-              invocationId: status.tombstone.invocationId,
-              forceUnobservable: false,
-            }),
+            ...formatRoutingHoldAction(
+              commandAvailability,
+              'Routing hold: run the resolution command below to acknowledge the retained capacity eviction.',
+              'Routing hold: resolution acknowledgement remains required if this capacity eviction survives the live drain.',
+              {
+                kind: 'routing-status-resolve',
+                invocationId: status.tombstone.invocationId,
+                forceUnobservable: false,
+              },
+            ),
           ].join('\n');
         }
         case 'completed-pair-compaction':
@@ -901,7 +965,10 @@ function formatRetirementHistoryTruncated(history: RetirementHistoryTruncated): 
   return `Routing retirement history: ${history.expiredIdentityCount} exact invocation identities expired (${causes}); observed selection sequence range ${history.minSelectionSequence}-${history.maxSelectionSequence}, selected ${history.earliestSelectedAt} through ${history.latestSelectedAt}.`;
 }
 
-export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResult): string | null {
+export function formatHandoffRoutingStatus(
+  result: HandoffRoutingStatusReadResult,
+  commandAvailability: RoutingCommandAvailability = 'available',
+): string | null {
   const renderKey = HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY[result.kind].renderKey;
   switch (renderKey) {
     case 'no-journal':
@@ -913,54 +980,52 @@ export function formatHandoffRoutingStatus(result: HandoffRoutingStatusReadResul
     case 'detached-wal':
       return [
         'Routing status has a detached non-empty WAL beside an absent or empty main database.',
-        'Next step: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'no-generation':
       return [
         'Routing status contains application objects but no generation address.',
-        'Next step: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'other-generation':
       if (result.kind !== 'foreign-generation') throw new Error('Foreign-generation render policy is invalid.');
       return [
         `Routing status generation ${result.generation} belongs to another address.`,
-        'Next step: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'other-format':
       return [
         'Routing status has this generation address but a different durable format fingerprint.',
-        'Next step: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'divergent-schema':
       return [
         'Routing status has this generation address but a divergent schema.',
-        'Next step: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'damaged':
       if (result.kind !== 'unreadable') throw new Error('Unreadable render policy is invalid.');
       return [
         `Routing status is unreadable (${result.reason}).`,
-        'Next step: run the discard command below.',
-        formatBackendOperatorCommand({ kind: 'routing-status-discard' }),
+        ...formatRoutingDiscardHoldAction(commandAvailability),
       ].join('\n');
     case 'could-not-observe':
       if (result.kind !== 'undeterminable') throw new Error('Undeterminable render policy is invalid.');
       return [
         `Routing status could not be read (${result.cause}, errcode ${result.errcode}).`,
-        'Next step: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
-        formatBackendOperatorCommand({ kind: 'backend-status' }),
+        ...formatRoutingHoldAction(
+          commandAvailability,
+          'Routing hold: inspect backend status again without discarding. If this persists, repair the reported storage condition; discard is not permitted because this read did not establish a discardable classification.',
+          'Routing hold: this read did not establish a discardable classification; inspect again through the live drain guidance below and repair the reported storage condition if it persists.',
+          { kind: 'backend-status' },
+        ),
       ].join('\n');
     case 'content-dependent': {
       if (result.kind !== 'current') throw new Error('Current render policy is invalid.');
       // A hold may not be withheld, so the cap may only ever drop `history`.
       const holds = result.statuses.filter((status) => handoffRoutingInvocationClassification(status) === 'hold');
       const rendered = result.statuses.length <= ROUTING_INVOCATION_RENDER_LIMIT ? result.statuses : holds;
-      const sections = rendered.map(formatRoutingInvocationStatus);
+      const sections = rendered.map((status) => formatRoutingInvocationStatus(status, commandAvailability));
       const collapsed = result.statuses.length - rendered.length;
       if (collapsed > 0) sections.push(`Routing invocations already history, needing no action: ${collapsed}.`);
       const truncatedHistory = formatRetirementHistoryTruncated(result.retirementHistoryTruncated);
@@ -1283,15 +1348,22 @@ function formatShutdownRemainderRecord(
     `Reason: ${result.record.reason}`,
     `Mode: ${result.record.mode}`,
   ];
-  for (const entry of result.record.entries) {
+  lines.push(...formatShutdownEntryView({ entries: result.record.entries, skippedEntries: result.skippedEntries }));
+  return lines;
+}
+
+function formatShutdownEntryView(view: OperatorFacingShutdownEntryView): string[] {
+  const lines: string[] = [];
+  for (const entry of view.entries) {
+    if (entry.entryNumber !== undefined) lines.push(`Entry ${entry.entryNumber}:`);
     lines.push(
-      `Entry ${entry.entryNumber}: ${formatShutdownObligation(entry.obligation)}`,
+      `  Obligation: ${formatShutdownObligation(entry.obligation)}`,
       `  Owner: ${entry.remainder.owner}`,
       ...formatShutdownSettlementLines(entry.settlement),
       ...formatShutdownRemainderEvidenceLines(entry.remainder),
     );
   }
-  lines.push(...formatSkippedShutdownRemainderEntries(result.skippedEntries));
+  lines.push(...formatSkippedShutdownRemainderEntries(view.skippedEntries));
   return lines;
 }
 
@@ -1593,7 +1665,7 @@ export function formatUnreadableProviderOperationDiscard(result: UnreadableProvi
           (refusal) =>
             `Refusal: record=${encodeRecoveryQuarantineKey(refusal.recordKey)} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} reason=${refusal.reason}`,
         ),
-        ...result.refusals.map((refusal) => formatProviderOperationAdoptionRefusalNextStep(refusal)),
+        ...result.refusals.map((refusal) => formatProviderOperationAdoptionRefusalNextStep(refusal, 'Next step')),
       ].join('\n');
     case 'absent':
       return [
@@ -1664,6 +1736,9 @@ function formatRecoveryRevisionValue(revision: string | null): string {
 }
 
 type RunningHealth = Extract<BackendStatusFull, { status: 'ok' }>['health'];
+type LiveShutdown = NonNullable<RunningHealth['shutdown']>;
+type LiveShutdownProjection = Exclude<LiveShutdown, { kind: 'unreadable' }>;
+type LiveShutdownRetainedAuthority = NonNullable<LiveShutdownProjection['lastDeclined']>['retainedAuthority'];
 type RuntimeComponent = BackendHealth['components'][number];
 type DegradedReason = Extract<RuntimeComponent, { phase: 'degraded' }>['reason'];
 type ProviderProxySetStatus = NonNullable<NonNullable<BackendHealth['diagnostics']>['providerProxySets']>[number];
@@ -1742,25 +1817,26 @@ function formatLaunchReclamationEvidence(evidence: LaunchReclamationStatus['evid
 
 function formatProviderOperationAdoptionRefusalNextStep(
   refusal: Pick<ProviderOperationAdoptionRefusalStatus, 'jobId' | 'recordKey' | 'remedy'>,
+  leadLabel: 'Diagnostic hold' | 'Next step',
 ): string {
   const inspect = formatBackendOperatorCommand({ kind: 'jobs-detail', jobId: refusal.jobId });
   const status = formatBackendOperatorCommand({ kind: 'backend-status' });
   switch (refusal.remedy.kind) {
     case 'restart-coordinator':
       return [
-        `Next step: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Then inspect the job and backend status.`,
+        `${leadLabel}: for record=${refusal.recordKey}, restart or repair the canonical coordinator externally; Coral retries adoption during startup. Then inspect the job and backend status.`,
         inspect,
         status,
       ].join('\n');
     case 'remote-settlement':
       return [
-        `Next step: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Then inspect the job and backend status.`,
+        `${leadLabel}: for record=${refusal.recordKey}, Coral retries the remote settlement path automatically. Then inspect the job and backend status.`,
         inspect,
         status,
       ].join('\n');
     case 'recovery-quarantine-discard': {
       return [
-        `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
+        `${leadLabel} for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
         formatRecoveryRecordRemedy(refusal.remedy),
         'Then inspect the job and backend status.',
         inspect,
@@ -1769,7 +1845,7 @@ function formatProviderOperationAdoptionRefusalNextStep(
     }
     case 'recovery-quarantine-clear':
       return [
-        `Next step for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
+        `${leadLabel} for record=${refusal.recordKey}: follow the complete recovery remedy below.`,
         formatProviderOperationRemedy(refusal.remedy),
         'Then inspect the job and backend status.',
         inspect,
@@ -1777,7 +1853,7 @@ function formatProviderOperationAdoptionRefusalNextStep(
       ].join('\n');
     case 'external-repair':
       return [
-        `Next step: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then inspect the job and backend status.`,
+        `${leadLabel}: for record=${refusal.recordKey}, external repair of the reported provider-operation ownership path is required; no Coral command can repair it. Restart the coordinator after repair, then inspect the job and backend status.`,
         inspect,
         status,
       ].join('\n');
@@ -1790,25 +1866,25 @@ function formatSettlementRefusalRecordingFailureNextStep(failure: SettlementRefu
   switch (failure.cause) {
     case 'terminal-persist-failed':
       return [
-        '    nextStep=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
+        '    hold=repair the job store externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
     case 'claim-release-failed':
       return [
-        '    nextStep=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
+        '    hold=repair session persistence externally; Coral cannot retry because the recovery record was not persisted. Then inspect the job and backend status.',
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
     case 'claim-already-reassigned':
       return [
-        '    nextStep=no automatic retry applies because the session claim belongs to another job. Inspect the job, verify the current session owner externally, then inspect backend status.',
+        '    hold=no automatic retry applies because the session claim belongs to another job. Inspect the job, verify the current session owner externally, then inspect backend status.',
         `    ${inspect}`,
         `    ${status}`,
       ].join('\n');
     case 'settled-unbound-status-persist-failed':
       return [
-        `    nextStep=Coral retries this settlement-status write automatically. Inspect backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`,
+        `    hold=Coral retries this settlement-status write automatically. Inspect backend status to confirm that job=${failure.jobId} operation=${failure.operationId} is no longer listed.`,
         `    ${status}`,
       ].join('\n');
     default:
@@ -1871,10 +1947,10 @@ export function formatProviderProxySetRowSkips(
   return lines;
 }
 
-function formatRunningStatus(health: RunningHealth): string {
+function formatRunningOverviewLines(health: RunningHealth): string[] {
   const componentLines: string[] = [];
   for (const component of health.components) {
-    componentLines.push(...formatComponentLines(component));
+    componentLines.push(...formatComponentLines(component, health.status));
   }
 
   const lines: string[] = [
@@ -1892,7 +1968,11 @@ function formatRunningStatus(health: RunningHealth): string {
   if (typeof health.queueDepth === 'number') {
     lines.push(`Queue depth: ${health.queueDepth}`);
   }
-  const launchPermits = health.diagnostics?.launchPermits ?? [];
+  return lines;
+}
+
+function formatLaunchPermitLines(launchPermits: readonly LaunchPermitStatus[]): string[] {
+  const lines: string[] = [];
   if (launchPermits.length > 0) {
     lines.push('', 'Launch permits:');
     for (const permit of launchPermits) {
@@ -1903,7 +1983,13 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
-  const launchReleaseDispositions = health.diagnostics?.launchReleaseDispositions ?? [];
+  return lines;
+}
+
+function formatLaunchReleaseDispositionLines(
+  launchReleaseDispositions: readonly LaunchReleaseDispositionStatus[],
+): string[] {
+  const lines: string[] = [];
   if (launchReleaseDispositions.length > 0) {
     lines.push('', 'Launch release dispositions:');
     for (const release of launchReleaseDispositions) {
@@ -1914,7 +2000,14 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
-  const providerOperationAdoptionRefusals = health.diagnostics?.providerOperationAdoptionRefusals ?? [];
+  return lines;
+}
+
+function formatProviderOperationAdoptionRefusalLines(
+  providerOperationAdoptionRefusals: readonly ProviderOperationAdoptionRefusalStatus[],
+  showOperatorCommands: boolean,
+): string[] {
+  const lines: string[] = [];
   if (providerOperationAdoptionRefusals.length > 0) {
     lines.push('', 'Provider-operation adoption refusals:');
     for (const refusal of providerOperationAdoptionRefusals) {
@@ -1922,11 +2015,17 @@ function formatRunningStatus(health: RunningHealth): string {
         `  record=${refusal.recordKey} job=${refusal.jobId} operation=${refusal.operationId} proxy=${refusal.proxyInstanceId} buildSet=${refusal.buildSetId} observedAtMs=${refusal.observedAtMs}`,
         `    triggerRecord=${refusal.triggerRecordKey} rowDisposition=${refusal.rowDisposition} releasedLaunchPermits=${refusal.releasedLaunchPermits}`,
         `    reason=${refusal.reason}`,
-        `    ${formatProviderOperationAdoptionRefusalNextStep(refusal)}`,
       );
+      if (showOperatorCommands) {
+        lines.push(`    ${formatProviderOperationAdoptionRefusalNextStep(refusal, 'Diagnostic hold')}`);
+      }
     }
   }
-  const launchReclamations = health.diagnostics?.launchReclamations ?? [];
+  return lines;
+}
+
+function formatLaunchReclamationLines(launchReclamations: readonly LaunchReclamationStatus[]): string[] {
+  const lines: string[] = [];
   if (launchReclamations.length > 0) {
     lines.push('', 'Automatic launch reclamations:');
     for (const reclamation of launchReclamations) {
@@ -1937,7 +2036,14 @@ function formatRunningStatus(health: RunningHealth): string {
       );
     }
   }
-  const settlementFailures = health.diagnostics?.settlementRefusalRecordingFailures ?? [];
+  return lines;
+}
+
+function formatSettlementRefusalRecordingFailureLines(
+  settlementFailures: readonly SettlementRefusalRecordingFailureStatus[],
+  showOperatorCommands: boolean,
+): string[] {
+  const lines: string[] = [];
   if (settlementFailures.length > 0) {
     lines.push('', 'Settlement refusal recording failures:');
     for (const failure of settlementFailures) {
@@ -1945,10 +2051,15 @@ function formatRunningStatus(health: RunningHealth): string {
       lines.push(
         `  job=${failure.jobId}${operation} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
         `    error=${failure.error}`,
-        formatSettlementRefusalRecordingFailureNextStep(failure),
       );
+      if (showOperatorCommands) lines.push(formatSettlementRefusalRecordingFailureNextStep(failure));
     }
   }
+  return lines;
+}
+
+function formatProviderProxySetLines(health: RunningHealth, showOperatorCommands: boolean): string[] {
+  const lines: string[] = [];
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
   const durableDispositionSkips = health.diagnostics?.providerProxyDispositionSkips ?? [];
   const skippedProviderProxySetRows = health.skippedProviderProxySetRows;
@@ -1991,18 +2102,137 @@ function formatRunningStatus(health: RunningHealth): string {
         ).map((skip) => `    ${skip}`),
       );
       lines.push(
-        '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.',
-        `    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`,
+        showOperatorCommands
+          ? '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.'
+          : '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it.',
       );
+      if (showOperatorCommands) lines.push(`    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`);
     }
     for (const skipped of durableDispositionSkips) {
       lines.push(
         `  Durable provider proxy disposition this build could not read: key=${skipped.key}${skipped.setToken === null ? '' : ` set=${skipped.setToken}`}.`,
-        `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`,
+        showOperatorCommands
+          ? `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`
+          : `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record.`,
       );
     }
   }
-  return lines.join('\n');
+  return lines;
+}
+
+function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readonly string[]): string {
+  const showOperatorCommands = health.status !== 'draining';
+  return [
+    ...formatRunningOverviewLines(health),
+    ...formatLaunchPermitLines(health.diagnostics?.launchPermits ?? []),
+    ...formatLaunchReleaseDispositionLines(health.diagnostics?.launchReleaseDispositions ?? []),
+    ...formatProviderOperationAdoptionRefusalLines(
+      health.diagnostics?.providerOperationAdoptionRefusals ?? [],
+      showOperatorCommands,
+    ),
+    ...formatLaunchReclamationLines(health.diagnostics?.launchReclamations ?? []),
+    ...formatSettlementRefusalRecordingFailureLines(
+      health.diagnostics?.settlementRefusalRecordingFailures ?? [],
+      showOperatorCommands,
+    ),
+    ...formatProviderProxySetLines(health, showOperatorCommands),
+    ...liveShutdownGuidance,
+  ].join('\n');
+}
+
+function formatLiveShutdownGuidance(health: RunningHealth): LiveShutdownGuidance {
+  if (health.status !== 'draining') return { lines: [], routingCommandAvailability: 'available' };
+
+  const lines = formatLiveShutdownSection(health);
+  if (
+    health.shutdown !== undefined &&
+    !('kind' in health.shutdown) &&
+    health.shutdown.automaticRetry?.status === 'failed'
+  ) {
+    return { lines, routingCommandAvailability: 'blocked-by-failed-automatic-retry' };
+  }
+
+  const nextStep = formatDrainNextStep(health.shutdown);
+  if (nextStep !== null) lines.push(nextStep);
+  lines.push(formatBackendOperatorCommand({ kind: 'backend-status' }));
+  return { lines, routingCommandAvailability: 'deferred-to-live-drain' };
+}
+
+function formatLiveShutdownSection(health: RunningHealth): string[] {
+  if (health.status !== 'draining') return [];
+
+  const lines = ['', 'Shutdown drain:'];
+  if (health.shutdown === undefined) {
+    return [
+      ...lines,
+      'The coordinator reports no drain schedule and no bound for this wait.',
+      `Kernel phase: ${health.kernel.phase}`,
+      `Inflight requests: ${health.inflightRequests}`,
+    ];
+  }
+  if ('kind' in health.shutdown) {
+    return [...lines, "This build could not read the coordinator's drain report."];
+  }
+
+  const shutdown = health.shutdown;
+  lines.push(
+    `Reason: ${shutdown.reason}`,
+    `Mode: ${shutdown.mode}`,
+    `Elapsed: ${shutdown.elapsedMs}ms`,
+    `Current drain work schedule: ${shutdown.boundMs}ms remaining (may be revised when a hold is observed)`,
+    `Current attempt: ${shutdown.attempt.started}/${shutdown.attempt.limit}`,
+  );
+  if (shutdown.automaticRetry?.status === 'scheduled') {
+    lines.push(
+      `Automatic retry: scheduled after attempt ${shutdown.automaticRetry.attemptsStarted}/${shutdown.automaticRetry.attemptLimit}`,
+    );
+  }
+  if (shutdown.automaticRetry?.status === 'failed') {
+    lines.push(
+      'Automatic retry: failed',
+      'The fatal coordinator exit has already been requested; process exit ends this hold.',
+    );
+  }
+  if (shutdown.lastDeclined !== undefined) {
+    lines.push(
+      `Attempt ${shutdown.lastDeclined.attempt}/${shutdown.attempt.limit} declined: ${shutdown.lastDeclined.reason}`,
+      `Declined exit: ${shutdown.lastDeclined.exit}`,
+      ...formatShutdownEntryView(shutdown.lastDeclined),
+      ...formatShutdownRetainedAuthorityLines(shutdown.lastDeclined.retainedAuthority),
+    );
+  }
+  return lines;
+}
+
+function formatDrainNextStep(shutdown: RunningHealth['shutdown']): string | null {
+  if (shutdown === undefined) {
+    return 'Next step: inspect backend status again; the coordinator reports no bound for this drain';
+  }
+  if ('kind' in shutdown) {
+    return "Next step: inspect backend status again; this build could not read the coordinator's bound";
+  }
+  if (shutdown.automaticRetry?.status === 'failed') {
+    return null;
+  }
+  return shutdown.boundMs > 0
+    ? 'Next step: inspect backend status again after the current drain-work checkpoint; this moving schedule does not guarantee the drain has finished'
+    : 'Next step: inspect backend status again now; the current drain-work schedule has elapsed, but that does not guarantee the drain has finished';
+}
+
+function formatShutdownRetainedAuthorityLines(authority: LiveShutdownRetainedAuthority): string[] {
+  return [
+    `Provider control proxy instances retained: ${authority.providerControlProxyInstanceIds.length}`,
+    ...authority.providerControlProxyInstanceIds.map(
+      (proxyInstanceId) => `  Provider proxy instance: ${proxyInstanceId}`,
+    ),
+    `IPC socket retained: ${authority.ipcSocket ? 'yes' : 'no'}`,
+    ...authority.cleanupObligations.map(
+      (obligation) => `Provider cleanup obligation: ${formatShutdownObligation(obligation)}`,
+    ),
+    ...(authority.unnamedCleanupObligations === 0
+      ? []
+      : [`${authority.unnamedCleanupObligations} provider cleanup obligations this build does not name`]),
+  ];
 }
 
 function formatSystemProviderScope(scope: RunningHealth['systemProviderScope']): string {
@@ -2015,7 +2245,7 @@ function formatKernelLine(kernel: RunningHealth['kernel']): string {
   return `Kernel: ${kernel.phase} since ${new Date(kernel.readyAt).toISOString()}`;
 }
 
-function formatComponentLines(component: RuntimeComponent): string[] {
+function formatComponentLines(component: RuntimeComponent, healthStatus: RunningHealth['status']): string[] {
   const head = `  ${component.id}: ${component.phase}`;
   switch (component.phase) {
     case 'online':
@@ -2027,7 +2257,7 @@ function formatComponentLines(component: RuntimeComponent): string[] {
       if (component.reason.lastError) {
         lines.push(`    last error: ${component.reason.lastError}`);
       }
-      lines.push(`    hint: ${formatDegradedHint(component.reason)}`);
+      if (healthStatus !== 'draining') lines.push(`    hint: ${formatDegradedHint(component.reason)}`);
       return lines;
     }
     case 'offline': {
@@ -2044,7 +2274,7 @@ function formatComponentLines(component: RuntimeComponent): string[] {
       if (component.diagnostic?.retry) {
         lines.push(`    retry: ${formatOfflineRetry(component.diagnostic.retry)}`);
       }
-      lines.push(`    hint: ${formatOfflineHint(component.diagnostic?.retry)}`);
+      if (healthStatus !== 'draining') lines.push(`    hint: ${formatOfflineHint(component.diagnostic?.retry)}`);
       return lines;
     }
     default:

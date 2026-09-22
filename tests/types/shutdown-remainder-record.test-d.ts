@@ -1,4 +1,5 @@
-import type { ShutdownRemainderRecord, ShutdownRemainderSubject } from '../../src/infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderRecord } from '../../src/infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderSubject } from '../../src/infra/shutdown-contract.js';
 
 declare const subject: ShutdownRemainderSubject;
 // @ts-expect-error decoded durable facts are immutable.

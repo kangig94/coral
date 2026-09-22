@@ -563,7 +563,9 @@ describe('execution backend server', () => {
     }));
   }
 
-  async function startBackendServer(overrides: Parameters<ServerModule['createCoordinatorServer']>[0] = {}) {
+  async function startBackendServer(
+    overrides: Omit<Parameters<ServerModule['createCoordinatorServer']>[0], 'onFatalShutdownError'> = {},
+  ) {
     const { serverModule, backendInfo } = await loadExecutionModules();
     const { bootSnapshot: bootOverrides, ...restOverrides } = overrides;
     const defaultKbDaemonSupervisor =
@@ -583,6 +585,7 @@ describe('execution backend server', () => {
         ...bootOverrides,
       },
       cleanupStaleJobsFn: () => {},
+      onFatalShutdownError: vi.fn(),
       systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
       ...defaultKbDaemonSupervisor,
       ...restOverrides,
@@ -909,6 +912,7 @@ describe('execution backend server', () => {
       },
       cleanupStaleJobsFn: () => {},
       kbDaemonSupervisor,
+      onFatalShutdownError: vi.fn(),
     });
     const started = await controller.start();
 
@@ -6143,6 +6147,7 @@ describe('execution backend server', () => {
           },
           closeServerFn: async () => {},
           listenFn: async () => ({ port: 4102, host: '127.0.0.1' }),
+          onFatalShutdownError: vi.fn(),
         },
         async () => [],
       );
@@ -6315,6 +6320,7 @@ describe('execution backend server', () => {
         kbDaemonSupervisor,
         cleanupStaleJobsFn: () => {},
         discussRegistry: startupRegistry,
+        onFatalShutdownError: vi.fn(),
       });
 
       const startPromise = controller.start().catch((error: unknown) => error);

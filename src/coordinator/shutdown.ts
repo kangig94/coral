@@ -1,11 +1,18 @@
 import type { Server, ServerResponse } from 'node:http';
 import type { DiscussSessionStore } from '../discuss/shell/session-store.js';
-import { assertNever, formatError, serializeThrown } from '../infra/error-format.js';
+import { formatError, serializeThrown } from '../infra/error-format.js';
 import {
   terminateProcessIncarnationProbes,
   type ProcessIncarnationProbeCleanupDisposition,
 } from '../infra/node-process.js';
-import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
+import {
+  shutdownModeFromReason,
+  type ShutdownRemainderObservation,
+  type ShutdownUndischarged,
+  type ShutdownMode,
+  type ShutdownReason,
+  type UndischargedRemainder,
+} from '../infra/shutdown-contract.js';
 import { createJoinableSettlementTask, type SettlementConfirmation } from '../obligation/settlement.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { IpcListener } from '../transport/ipc/server.js';
@@ -31,8 +38,6 @@ import {
   type ShutdownRetainedAuthorityContribution,
   type ShutdownSequenceDisposition,
   type ShutdownSettlementLedger,
-  type ShutdownUndischarged,
-  type UndischargedRemainder,
 } from './shutdown-settlement.js';
 
 export const SHUTDOWN_DRAIN_TIMEOUT_MS = 10_000;
@@ -48,21 +53,6 @@ export type ShutdownIncidentOccurrence = Readonly<{
   incident: ShutdownIncident;
   occurrence: number;
 }>;
-
-export function shutdownModeFromReason(reason: ShutdownReason): ShutdownMode {
-  switch (reason) {
-    case 'replaced':
-    case 'sigterm':
-    case 'provider-proxy-lifecycle-fatal':
-      return 'handoff';
-    case 'sigint':
-    case 'idle':
-    case 'test-teardown':
-      return 'hard';
-    default:
-      return assertNever(reason);
-  }
-}
 
 export function shutdownIncidentUndischarged({
   incident,
@@ -88,6 +78,7 @@ type RunShutdownSequenceContext = {
   reason: ShutdownReason;
   incident?: ShutdownIncident;
   currentReason?: () => ShutdownReason;
+  registerShutdownObservationReader?: (reader: () => ShutdownRemainderObservation) => void;
   takeIncidents?: () => readonly ShutdownIncidentOccurrence[];
   hardConsequencesAbort?: AbortSignal;
   state: LifecycleWiringState;
@@ -1015,6 +1006,7 @@ export async function runShutdownSequence({
   reason,
   incident,
   currentReason,
+  registerShutdownObservationReader,
   takeIncidents,
   hardConsequencesAbort,
   state,
@@ -1057,6 +1049,7 @@ export async function runShutdownSequence({
     pollMs: SHUTDOWN_POLL_MS,
     ...(acceptProcessExitRemainder === undefined ? {} : { acceptProcessExitRemainder }),
   });
+  registerShutdownObservationReader?.(() => ledger.snapshot());
   let initialIncident = incident;
   const recordPendingIncidents = (): void => {
     // Do not consume incidents after exhaustion: `SettlementLedger.run` would replace their observed evidence

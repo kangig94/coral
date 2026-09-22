@@ -119,6 +119,7 @@ function composeProviderHostPorts(): NonNullable<HttpHandlerPorts['providerHosts
   captured.ports = null;
   createCoordinatorCore(
     {
+      onFatalShutdownError: vi.fn(),
       runtime: createRealRuntime('prod'),
       storeFormat: currentCoralStoreFormat(),
       pluginRoot: process.cwd(),

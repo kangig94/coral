@@ -8,18 +8,3 @@ export const persistedProcessIncarnationSchema = z
   .string()
   .min(1)
   .max(MAX_PROCESS_INCARNATION_LENGTH) as unknown as z.ZodType<ProcessIncarnation>;
-
-export const SHUTDOWN_REASONS = [
-  'replaced',
-  'sigterm',
-  'sigint',
-  'provider-proxy-lifecycle-fatal',
-  'idle',
-  'test-teardown',
-] as const;
-
-export type ShutdownReason = (typeof SHUTDOWN_REASONS)[number];
-
-export const SHUTDOWN_MODES = ['handoff', 'hard'] as const;
-
-export type ShutdownMode = (typeof SHUTDOWN_MODES)[number];

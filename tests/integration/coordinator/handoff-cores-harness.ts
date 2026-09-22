@@ -10,6 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { socketPathByteLimit } from '#src/infra/path/unix-socket.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { vi } from 'vitest';
 
 import { createCoordinatorCore } from '#src/coordinator/composition/index.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
@@ -20,7 +21,7 @@ import type {
   LifecycleShutdownDisposition,
   RunStartupRecoveryOrchestratorFn,
 } from '#src/coordinator/lifecycle.js';
-import type { ShutdownReason } from '#src/infra/persisted-scalar-contracts.js';
+import type { ShutdownReason } from '#src/infra/shutdown-contract.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
@@ -151,6 +152,7 @@ export function createHandoffCoresHarness(options: CreateHarnessOptions = {}): H
 
     const core = createCoordinatorCore(
       {
+        onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime,
         backendNamespace: coreNamespace,

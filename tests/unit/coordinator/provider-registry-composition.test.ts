@@ -41,6 +41,7 @@ describe('coordinator provider registry composition', () => {
     vi.stubEnv('HOME', home);
 
     createCoordinatorServer({
+      onFatalShutdownError: vi.fn(),
       runtime: createRealRuntime('prod'),
       pluginRoot,
       kbDaemonSupervisor: createMockKbDaemonSupervisor(),

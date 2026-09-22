@@ -1,6 +1,13 @@
 import { formatError } from '../infra/error-format.js';
 import type { TimePort } from '../infra/port-types.js';
-import type { ShutdownRemainderSubject } from '../infra/shutdown-remainder-record.js';
+import type {
+  ShutdownHoldExit,
+  ShutdownHoldReason,
+  ShutdownRemainderSubject,
+  ShutdownRetainedAuthority,
+  ShutdownUndischarged,
+  UndischargedRemainder,
+} from '../infra/shutdown-contract.js';
 import {
   SettlementLedger,
   type Settlement,
@@ -8,37 +15,8 @@ import {
   type SettlementDisposition,
   type SettlementObligation,
 } from '../obligation/settlement.js';
-import type { DurableCliRuntimePublicationEvidence } from './live/durable-transport.js';
 
-export type SuccessorRecoveryEvidence =
-  | Readonly<{ kind: 'startup-adoption'; processes: readonly DurableCliRuntimePublicationEvidence[] }>
-  | Readonly<{ kind: 'startup-store-recovery' }>
-  | Readonly<{ kind: 'startup-liveness-recovery' }>;
-
-export type UndischargedRemainder =
-  | Readonly<{ owner: 'process-exit' }>
-  | Readonly<{ owner: 'successor-recovery'; evidence: SuccessorRecoveryEvidence }>;
-
-export type ShutdownHoldReason = 'required-shutdown-step-unsettled';
-
-export type ShutdownHoldExit = 'shutdown-budget-exhaustion' | 'authority-release-settlement';
-
-export type ShutdownRetainedAuthority = Readonly<{
-  ipcSocket: boolean;
-  providerControlProxyInstanceIds: readonly string[];
-  cleanupObligations: readonly string[];
-}>;
-
-export type ShutdownUndischarged = Readonly<{
-  label: string;
-  subject?: ShutdownRemainderSubject;
-  remainder: UndischargedRemainder;
-  settlement: ShutdownDeclinedSettlement;
-}>;
-
-type WithoutKind<Value> = Value extends { kind: unknown } ? Omit<Value, 'kind'> : never;
-
-export type ShutdownDeclinedSettlement = WithoutKind<Extract<Settlement, { kind: 'declined' }>>;
+export type ShutdownDeclinedSettlement = ShutdownUndischarged['settlement'];
 
 export type ProcessExitRemainder = Readonly<{
   undischarged: readonly ShutdownUndischarged[];

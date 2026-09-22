@@ -131,6 +131,7 @@ describe('expansion RPC before store services exist', () => {
     }));
     const core = createCoordinatorCore(
       {
+        onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime: makeRuntime(),
         bootSnapshot: {
@@ -208,6 +209,7 @@ describe('expansion RPC before store services exist', () => {
     }));
     const core = createCoordinatorCore(
       {
+        onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime: makeRuntime(),
         bootSnapshot: {
@@ -253,6 +255,7 @@ describe('expansion RPC before store services exist', () => {
     const mutationBlocked = { owner: 'reindex', ageMs: 5000, signaledAtMs: 1234567890 };
     const core = createCoordinatorCore(
       {
+        onFatalShutdownError: vi.fn(),
         storeFormat: currentCoralStoreFormat(),
         runtime: makeRuntime(),
         bootSnapshot: {

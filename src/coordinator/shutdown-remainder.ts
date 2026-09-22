@@ -7,15 +7,14 @@ import {
 } from '../infra/error-format.js';
 import { sha256Hex } from '../infra/hash.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
-import type { ShutdownMode, ShutdownReason } from '../infra/persisted-scalar-contracts.js';
 import type { StoragePort, TimePort } from '../infra/port-types.js';
 import {
   shutdownRemainderRecordPath,
   shutdownRemainderStagePath,
   type ShutdownRemainderRecord,
 } from '../infra/shutdown-remainder-record.js';
+import { shutdownModeFromReason, type ShutdownReason, type ShutdownUndischarged } from '../infra/shutdown-contract.js';
 import { nowIsoString } from '../infra/time.js';
-import type { ShutdownUndischarged } from './shutdown-settlement.js';
 
 type ShutdownRemainderWriteRuntime = Readonly<{
   storage: Pick<StoragePort, 'mkdirSync' | 'readFileSync' | 'renameSync' | 'unlinkSync' | 'writeAtomicSync'>;
@@ -27,7 +26,6 @@ type ShutdownRemainderWriteRuntime = Readonly<{
 export type ShutdownRemainderRecordInput = Readonly<{
   instanceId: string;
   reason: ShutdownReason;
-  mode: ShutdownMode;
   undischarged: readonly ShutdownUndischarged[];
 }>;
 
@@ -92,7 +90,7 @@ export function recordShutdownRemainder(
     instanceId: input.instanceId,
     recordedAt: nowIsoString(runtime.time),
     reason: input.reason,
-    mode: input.mode,
+    mode: shutdownModeFromReason(input.reason),
     entries: input.undischarged,
   };
   const serializedRecord = `${JSON.stringify(record, null, 2)}\n`;

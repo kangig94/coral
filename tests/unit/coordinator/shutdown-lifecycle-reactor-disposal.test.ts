@@ -57,6 +57,7 @@ function buildServerOptions(disposeLifecycleReactor: () => Promise<void>): Coord
   );
   vi.stubEnv('HOME', home);
   return {
+    onFatalShutdownError: vi.fn(),
     runtime: createRealRuntime('prod'),
     pluginRoot,
     kbDaemonSupervisor: createMockKbDaemonSupervisor(),

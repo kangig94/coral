@@ -1,6 +1,12 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
-import { assertNever } from '../../../infra/error-format.js';
+import { assertNever, serializedThrownIdentifierSchema } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
+import {
+  shutdownRemainderEntrySchema,
+  shutdownRemainderProjectionEnvelopeSchema,
+  type ShutdownRemainderProjection,
+  type ShutdownUndischarged,
+} from '../../../infra/shutdown-contract.js';
 import { isSerializedCoralSetupError, type SerializedCoralSetupError } from '../../../runtime/errors.js';
 import { providerProxySetEnforcerObservationsSchema } from '../../../provider-proxy/containment-proof-contract.js';
 import { decodeProviderProxySetAddress } from '../../../provider-proxy/set-address.js';
@@ -90,6 +96,16 @@ type TransportKbDaemonHealthSnapshot = {
   setupError?: SerializedCoralSetupError;
 };
 
+type BackendShutdownRemainderSkippedEntry = Readonly<{
+  entryNumber: number;
+  label: string | null;
+  owner: string | null;
+}>;
+
+type BackendShutdownRemainderProjection =
+  | (ShutdownRemainderProjection & Readonly<{ skippedEntries: readonly BackendShutdownRemainderSkippedEntry[] }>)
+  | Readonly<{ kind: 'unreadable' }>;
+
 export interface BackendHealth {
   /**
    * Strict-enum status field for clients that validate
@@ -106,6 +122,8 @@ export interface BackendHealth {
   flavor: 'prod' | 'dev';
   instanceId: string;
   namespace: string;
+  pid: number;
+  incarnation?: ProcessIncarnation;
   uptimeMs: number;
   active: number;
   /** Build namespace is provenance, not ownership scope. */
@@ -125,6 +143,7 @@ export interface BackendHealth {
   /** Redacted daemon-owned provider routing: scope name and provider names only. */
   systemProviderScope?: { name: string; providers: string[] };
   kbDaemon?: TransportKbDaemonHealthSnapshot;
+  shutdown?: BackendShutdownRemainderProjection;
   diagnostics?: LaunchPermitDiagnostics & {
     carriers?: {
       coverage: 'complete' | 'unknown';
@@ -177,6 +196,49 @@ export type BackendPing = {
 
 function isBackendNamespaceToken(value: unknown): value is string {
   return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
+}
+
+function parseShutdownRemainderProjection(value: unknown): BackendShutdownRemainderProjection {
+  if (!isRecord(value)) return { kind: 'unreadable' };
+
+  const rawLastDeclined = isRecord(value.lastDeclined) ? value.lastDeclined : null;
+  const rawUndischarged = rawLastDeclined?.undischarged;
+  const envelopeCandidate = Array.isArray(rawUndischarged)
+    ? { ...value, lastDeclined: { ...rawLastDeclined, undischarged: [] } }
+    : value;
+  const parsedEnvelope = shutdownRemainderProjectionEnvelopeSchema.safeParse(envelopeCandidate);
+  if (!parsedEnvelope.success) return { kind: 'unreadable' };
+
+  if (parsedEnvelope.data.lastDeclined === undefined) {
+    return { ...parsedEnvelope.data, skippedEntries: [] };
+  }
+
+  const undischarged: ShutdownUndischarged[] = [];
+  const skippedEntries: BackendShutdownRemainderSkippedEntry[] = [];
+  for (const [index, rawEntry] of (rawUndischarged as readonly unknown[]).entries()) {
+    const parsedEntry = shutdownRemainderEntrySchema.safeParse(rawEntry);
+    if (parsedEntry.success) {
+      undischarged.push(parsedEntry.data);
+      continue;
+    }
+
+    const rawRemainder = isRecord(rawEntry) && isRecord(rawEntry.remainder) ? rawEntry.remainder : null;
+    const parsedLabel = shutdownRemainderEntrySchema.shape.label.safeParse(
+      isRecord(rawEntry) ? rawEntry.label : undefined,
+    );
+    const parsedOwner = serializedThrownIdentifierSchema.safeParse(rawRemainder?.owner);
+    skippedEntries.push({
+      entryNumber: index + 1,
+      label: parsedLabel.success ? parsedLabel.data : null,
+      owner: parsedOwner.success ? parsedOwner.data : null,
+    });
+  }
+
+  return {
+    ...parsedEnvelope.data,
+    lastDeclined: { ...parsedEnvelope.data.lastDeclined, undischarged },
+    skippedEntries,
+  };
 }
 
 function isMutationBlocked(value: unknown): value is { owner: string; ageMs: number; signaledAtMs: number } {
@@ -789,6 +851,10 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     (value.flavor !== 'prod' && value.flavor !== 'dev') ||
     typeof value.instanceId !== 'string' ||
     !isBackendNamespaceToken(value.namespace) ||
+    typeof value.pid !== 'number' ||
+    !Number.isInteger(value.pid) ||
+    value.pid <= 0 ||
+    (value.incarnation !== undefined && !isProcessIncarnation(value.incarnation)) ||
     !Number.isFinite(value.uptimeMs) ||
     !Number.isInteger(value.active) ||
     !Number.isInteger(value.activeJobs) ||
@@ -808,11 +874,13 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
   if (value.diagnostics !== undefined && diagnostics === null) {
     return null;
   }
+  const shutdown = value.shutdown === undefined ? null : parseShutdownRemainderProjection(value.shutdown);
 
   return {
     health: {
       ...value,
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
+      ...(shutdown === null ? {} : { shutdown }),
     } as BackendHealth,
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
     skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],

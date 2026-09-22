@@ -12,7 +12,7 @@ import { shutdownRemainderRecordPath } from '#src/infra/shutdown-remainder-recor
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { observeProcessLiveness } from '#src/infra/node-process.js';
-import { getBackendStatusFull } from '#src/transport/http/backend/status.js';
+import { getBackendStatusFull } from '#src/cli/backend-status.js';
 import {
   buildArtifactsAvailable,
   coordinatorFilesForHome,

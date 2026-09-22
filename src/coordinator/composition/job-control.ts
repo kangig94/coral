@@ -11,7 +11,7 @@ import type { JobStore } from '../../jobs/store.js';
 import type { CoordinatorWorld } from './world.js';
 import type { CanonicalWorkDir } from '../../runtime/canonical-work-dir.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from '../../jobs/scope.js';
-import type { ShutdownReason } from '../../infra/persisted-scalar-contracts.js';
+import type { ShutdownReason } from '../../infra/shutdown-contract.js';
 
 type CreateBackendControlDeps = {
   world: CoordinatorWorld;

@@ -110,6 +110,7 @@ function createHarness(): Readonly<{
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   const core = createCoordinatorCore(
     {
+      onFatalShutdownError: vi.fn(),
       runtime: createRealRuntime('prod'),
       storeFormat: currentCoralStoreFormat(),
       pluginRoot: process.cwd(),

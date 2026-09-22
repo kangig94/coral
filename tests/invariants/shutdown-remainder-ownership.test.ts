@@ -10,7 +10,9 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const OWNERSHIP_SCAN_ROOT = 'src';
 const SHUTDOWN_PATH = 'src/coordinator/shutdown.ts';
 const SHUTDOWN_SETTLEMENT_PATH = 'src/coordinator/shutdown-settlement.ts';
-const BACKEND_STATUS_PATH = 'src/transport/http/backend/status.ts';
+const SHUTDOWN_CONTRACT_PATH = 'src/infra/shutdown-contract.ts';
+const SHUTDOWN_REMAINDER_RECORD_PATH = 'src/infra/shutdown-remainder-record.ts';
+const BACKEND_STATUS_PATH = 'src/cli/backend-status.ts';
 const PROCESS_EXIT_OBLIGATION_INVENTORY = [
   'recovery coordinator teardown',
   'kb child shutdown',
@@ -227,15 +229,15 @@ function ownershipShapeFileViolations(file: ts.SourceFile): string[] {
 function ownershipShapeViolations(): string[] {
   const violations: string[] = sourceFiles(OWNERSHIP_SCAN_ROOT).flatMap(ownershipShapeFileViolations);
 
-  const settlement = sourceFile(SHUTDOWN_SETTLEMENT_PATH);
-  const remainder = settlement.statements.find(
+  const shutdownContract = sourceFile(SHUTDOWN_CONTRACT_PATH);
+  const remainder = shutdownContract.statements.find(
     (statement): statement is ts.TypeAliasDeclaration =>
       ts.isTypeAliasDeclaration(statement) && statement.name.text === 'UndischargedRemainder',
   );
   if (remainder === undefined) {
-    violations.push(`${SHUTDOWN_SETTLEMENT_PATH} must declare UndischargedRemainder`);
+    violations.push(`${SHUTDOWN_CONTRACT_PATH} must declare UndischargedRemainder`);
   } else {
-    const declaration = remainder.type.getText(settlement);
+    const declaration = remainder.type.getText(shutdownContract);
     const armCount = ts.isUnionTypeNode(remainder.type) ? remainder.type.types.length : 1;
     if (armCount !== 2) {
       violations.push(`UndischargedRemainder must contain exactly two owner arms; found ${armCount}`);
@@ -249,6 +251,35 @@ function ownershipShapeViolations(): string[] {
   }
 
   return violations;
+}
+
+function shutdownContractOwnershipViolations(): string[] {
+  const contract = sourceFile(SHUTDOWN_CONTRACT_PATH);
+  const recordAdapter = sourceFile(SHUTDOWN_REMAINDER_RECORD_PATH);
+  const liveDeclarations = [
+    'ShutdownHoldReason',
+    'ShutdownHoldExit',
+    'ShutdownRetainedAuthority',
+    'ShutdownAutomaticRetry',
+    'ShutdownRemainderObservation',
+    'ShutdownRemainderProjection',
+  ];
+  const declaredNames = (file: ts.SourceFile): Set<string> =>
+    new Set(
+      file.statements.flatMap((statement) => {
+        if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement)) {
+          return [statement.name.text];
+        }
+        return [];
+      }),
+    );
+  const contractNames = declaredNames(contract);
+  const adapterNames = declaredNames(recordAdapter);
+
+  return liveDeclarations.flatMap((name) => [
+    ...(contractNames.has(name) ? [] : [`${SHUTDOWN_CONTRACT_PATH} must declare ${name}`]),
+    ...(adapterNames.has(name) ? [`${SHUTDOWN_REMAINDER_RECORD_PATH} must not declare live ${name}`] : []),
+  ]);
 }
 
 function shutdownErrorProjectionViolations(): string[] {
@@ -350,6 +381,10 @@ describe('shutdown remainder ownership inventory', () => {
 
   it('rejects ownerless production state and untyped successor-recovery evidence across src', () => {
     expect(ownershipShapeViolations()).toEqual([]);
+  });
+
+  it('keeps live shutdown vocabulary in its dedicated contract rather than the durable-record adapter', () => {
+    expect(shutdownContractOwnershipViolations()).toEqual([]);
   });
 
   it('maps every repository error name and handled system code to a structured status identity', () => {

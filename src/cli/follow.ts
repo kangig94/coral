@@ -8,7 +8,7 @@ import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStatus, JobTerminal } from '../jobs/records.js';
 import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
-import { HEALTH_TIMEOUT_MS } from '../transport/http/sse.js';
+import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';

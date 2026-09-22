@@ -102,7 +102,7 @@ const mockHttpErrors = vi.hoisted(() => {
 
 vi.mock('#src/transport/http/errors.js', () => mockHttpErrors);
 
-vi.mock('#src/transport/http/backend/status.js', () => ({
+vi.mock('#src/cli/backend-status.js', () => ({
   getBackendStatusFull: mockState.getBackendStatusFull,
 }));
 
@@ -811,7 +811,6 @@ describe('cli main routing', () => {
       ['ok', 0],
       ['no_record_no_socket', 0],
       ['recorded_process_absent', 0],
-      ['shutting_down', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],
       ['undecodable_record', 75],

@@ -1,27 +1,39 @@
-import { observeCoordinator, type CoordinatorObservation } from './coordinator-observation.js';
-import { readBuildFlavor, resolveStrictBundleIdentity } from '../../../infra/bundle-manifest.js';
-import { pluginRootNamespace } from '../../../infra/plugin-identity.js';
-import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../../../infra/error-format.js';
-import { isRecord } from '../../../infra/json.js';
-import type { StoragePort } from '../../../infra/port-types.js';
-import { parseIsoTimestamp } from '../../../infra/time.js';
+import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
+import { readBuildFlavor, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import { pluginRootNamespace } from '../infra/plugin-identity.js';
+import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../infra/error-format.js';
+import { isRecord } from '../infra/json.js';
+import type { StoragePort } from '../infra/port-types.js';
+import { parseIsoTimestamp } from '../infra/time.js';
 import {
   readOperatorFacingCoralSetupError,
   resolveSetupErrorAuthorship,
   type OperatorFacingCoralSetupError,
   type SetupErrorAuthorIdentity,
-} from '../../../runtime/errors.js';
-import { createRealRuntime } from '../../../runtime/real.js';
-import type { Runtime } from '../../../runtime/ports.js';
-import { HEALTH_TIMEOUT_MS, parseJsonResponse } from '../sse.js';
-import { isBackendPing, parseBackendHealth, type BackendHealth } from './health.js';
-import { TransientHttpError } from '../../../infra/http-errors.js';
+} from '../runtime/errors.js';
+import { createRealRuntime } from '../runtime/real.js';
+import type { Runtime } from '../runtime/ports.js';
+import { parseJsonResponse } from '../transport/http/sse.js';
+import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
+import {
+  isBackendPing,
+  parseBackendHealth,
+  type BackendHealth,
+  type BackendHealthParseResult,
+} from '../transport/http/backend/health.js';
+import { TransientHttpError } from '../infra/http-errors.js';
 import {
   classifyShutdownRemainderFile,
   shutdownRemainderRecordPath,
   type DecodedShutdownRemainderRecord,
   type ShutdownRemainderRecord,
-} from '../../../infra/shutdown-remainder-record.js';
+} from '../infra/shutdown-remainder-record.js';
+import type { ShutdownRemainderProjection, ShutdownUndischarged } from '../infra/shutdown-contract.js';
+import {
+  discoveryRecordIdentity,
+  readIdentityCheckedAuthenticatedHealth,
+  type CoordinatorHealthIdentity,
+} from '../transport/ipc/health.js';
 
 const RECENT_COORDINATOR_RECORD_MS = 5 * 60_000;
 const OPERATOR_FACING_ERROR_NAMES = [
@@ -232,42 +244,70 @@ type OperatorFacingShutdownRemainder =
         | Readonly<{ kind: 'startup-liveness-recovery' }>;
     }>;
 
+type OperatorFacingShutdownEntry = Readonly<{
+  entryNumber?: number;
+  obligation: OperatorFacingShutdownObligation | null;
+  remainder: OperatorFacingShutdownRemainder;
+  settlement: OperatorFacingShutdownSettlement;
+}>;
+
+export type OperatorFacingShutdownEntryView = Readonly<{
+  entries: readonly OperatorFacingShutdownEntry[];
+  skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
+}>;
+
 type OperatorFacingShutdownRemainderRecord = Readonly<{
   instanceId: string;
   recordedAt: string;
   reason: ShutdownRemainderRecord['reason'];
   mode: ShutdownRemainderRecord['mode'];
-  entries: readonly Readonly<{
-    entryNumber: number;
-    obligation: OperatorFacingShutdownObligation | null;
-    remainder: OperatorFacingShutdownRemainder;
-    settlement: OperatorFacingShutdownSettlement;
-  }>[];
+  entries: readonly OperatorFacingShutdownEntry[];
 }>;
 
-type BackendStatus =
-  | {
-      status: 'ok';
-      version: string;
-      bundleHash: string;
-      instanceId: string;
-      uptimeMs: number;
-      active: number;
-      /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
-      activeJobs: number;
-      inflightRequests: number;
-      queueDepth?: number;
-      kernel: BackendHealth['kernel'];
-      textProjectionState: BackendHealth['textProjectionState'];
-      components: BackendHealth['components'];
-      systemProviderScope?: BackendHealth['systemProviderScope'];
-      diagnostics?: BackendHealth['diagnostics'];
-      skippedProviderProxySetRows: number;
-      skippedProviderProxySetTokens: readonly string[];
-    }
-  | {
-      status: 'shutting_down';
-    };
+type OperatorFacingShutdownRetainedAuthority = Readonly<{
+  ipcSocket: boolean;
+  providerControlProxyInstanceIds: readonly string[];
+  cleanupObligations: readonly OperatorFacingShutdownObligation[];
+  unnamedCleanupObligations: number;
+}>;
+
+type OperatorFacingLiveShutdown =
+  | Readonly<{ kind: 'unreadable' }>
+  | Readonly<{
+      reason: ShutdownRemainderProjection['reason'];
+      mode: ShutdownRemainderProjection['mode'];
+      elapsedMs: number;
+      boundMs: number;
+      attempt: ShutdownRemainderProjection['attempt'];
+      automaticRetry?: ShutdownRemainderProjection['automaticRetry'];
+      lastDeclined?: Readonly<
+        Pick<NonNullable<ShutdownRemainderProjection['lastDeclined']>, 'attempt' | 'reason' | 'exit'> &
+          OperatorFacingShutdownEntryView & {
+            retainedAuthority: OperatorFacingShutdownRetainedAuthority;
+          }
+      >;
+    }>;
+
+type BackendStatus = {
+  status: Exclude<BackendHealth['status'], 'starting'>;
+  version: string;
+  bundleHash: string;
+  instanceId: string;
+  uptimeMs: number;
+  active: number;
+  /** Jobs in a live phase; build namespace is provenance and does not scope job ownership. */
+  activeJobs: number;
+  inflightRequests: number;
+  queueDepth?: number;
+  kernel: BackendHealth['kernel'];
+  textProjectionState: BackendHealth['textProjectionState'];
+  components: BackendHealth['components'];
+  systemProviderScope?: BackendHealth['systemProviderScope'];
+  diagnostics?: BackendHealth['diagnostics'];
+  shutdown?: OperatorFacingLiveShutdown;
+  skippedProviderProxySetRows: number;
+  skippedProviderProxySetTokens: readonly string[];
+};
 
 /**
  * Shutdown remainder evidence must supplement rather than replace coordinator lifecycle status, and skipped
@@ -302,8 +342,7 @@ export type ShutdownRemainderReport =
     }>;
 
 export type BackendStatusFull =
-  | { status: 'ok'; health: Extract<BackendStatus, { status: 'ok' }>; shutdownRemainder?: ShutdownRemainderReport }
-  | { status: 'shutting_down'; shutdownRemainder?: ShutdownRemainderReport }
+  | { status: 'ok'; health: BackendStatus; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'recorded_process_absent'; pid: number; shutdownRemainder?: ShutdownRemainderReport }
@@ -379,10 +418,7 @@ export type BackendStatusFull =
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type AddressedAmbiguityStatus = Extract<BackendStatusFull, { status: 'unreachable' | 'unauthorized' }>;
-type AddressedProbeStatus = Extract<
-  BackendStatusFull,
-  { status: 'ok' | 'unreachable' | 'unauthorized' | 'shutting_down' }
->;
+type AddressedProbeStatus = Extract<BackendStatusFull, { status: 'ok' | 'unreachable' | 'unauthorized' }>;
 type ShutdownRemainderEvidenceScope =
   | Readonly<{ kind: 'unscoped' }>
   | Readonly<{ kind: 'coordinator'; instanceId?: string; startedAt: number }>;
@@ -485,6 +521,67 @@ function operatorFacingShutdownRemainderOwner(
   }
 }
 
+function operatorFacingShutdownEntry(entry: ShutdownUndischarged, entryNumber?: number): OperatorFacingShutdownEntry {
+  return {
+    ...(entryNumber === undefined ? {} : { entryNumber }),
+    obligation: operatorFacingShutdownObligation(entry.label),
+    remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
+    settlement: operatorFacingShutdownSettlement(entry.settlement),
+  };
+}
+
+function operatorFacingShutdownSkippedEntries(
+  entries: readonly Readonly<{ entryNumber: number; label: string | null; owner: string | null }>[],
+): readonly OperatorFacingShutdownSkippedEntry[] {
+  return entries.map((entry) => ({
+    entryNumber: entry.entryNumber,
+    obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
+    owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
+  }));
+}
+
+function operatorFacingShutdownRetainedAuthority(
+  retainedAuthority: NonNullable<ShutdownRemainderProjection['lastDeclined']>['retainedAuthority'],
+): OperatorFacingShutdownRetainedAuthority {
+  const cleanupObligations: OperatorFacingShutdownObligation[] = [];
+  let unnamedCleanupObligations = 0;
+  for (const label of retainedAuthority.cleanupObligations) {
+    const obligation = operatorFacingShutdownObligation(label);
+    if (obligation === null) unnamedCleanupObligations += 1;
+    else cleanupObligations.push(obligation);
+  }
+  return {
+    ipcSocket: retainedAuthority.ipcSocket,
+    providerControlProxyInstanceIds: retainedAuthority.providerControlProxyInstanceIds,
+    cleanupObligations,
+    unnamedCleanupObligations,
+  };
+}
+
+function operatorFacingLiveShutdown(shutdown: BackendHealth['shutdown']): OperatorFacingLiveShutdown | undefined {
+  if (shutdown === undefined || 'kind' in shutdown) return shutdown;
+  return {
+    reason: shutdown.reason,
+    mode: shutdown.mode,
+    elapsedMs: shutdown.elapsedMs,
+    boundMs: shutdown.boundMs,
+    attempt: shutdown.attempt,
+    ...(shutdown.automaticRetry === undefined ? {} : { automaticRetry: shutdown.automaticRetry }),
+    ...(shutdown.lastDeclined === undefined
+      ? {}
+      : {
+          lastDeclined: {
+            attempt: shutdown.lastDeclined.attempt,
+            reason: shutdown.lastDeclined.reason,
+            exit: shutdown.lastDeclined.exit,
+            entries: shutdown.lastDeclined.undischarged.map((entry) => operatorFacingShutdownEntry(entry)),
+            skippedEntries: operatorFacingShutdownSkippedEntries(shutdown.skippedEntries),
+            retainedAuthority: operatorFacingShutdownRetainedAuthority(shutdown.lastDeclined.retainedAuthority),
+          },
+        }),
+  };
+}
+
 function operatorFacingShutdownRemainder(
   record: DecodedShutdownRemainderRecord,
 ): OperatorFacingShutdownRemainderRecord {
@@ -493,12 +590,7 @@ function operatorFacingShutdownRemainder(
     recordedAt: record.recordedAt,
     reason: record.reason,
     mode: record.mode,
-    entries: record.entries.map((entry) => ({
-      entryNumber: entry.entryNumber,
-      obligation: operatorFacingShutdownObligation(entry.label),
-      remainder: operatorFacingShutdownRemainderOwner(entry.remainder),
-      settlement: operatorFacingShutdownSettlement(entry.settlement),
-    })),
+    entries: record.entries.map((entry) => operatorFacingShutdownEntry(entry, entry.entryNumber)),
   };
 }
 
@@ -602,11 +694,7 @@ function readRecentShutdownRemainder(
     'record' | 'skippedEntries'
   > => ({
     record: operatorFacingShutdownRemainder(candidate),
-    skippedEntries: skippedEntries.map((entry) => ({
-      entryNumber: entry.entryNumber,
-      obligation: entry.label === null ? null : operatorFacingShutdownObligation(entry.label),
-      owner: entry.owner === 'process-exit' || entry.owner === 'successor-recovery' ? entry.owner : null,
-    })),
+    skippedEntries: operatorFacingShutdownSkippedEntries(skippedEntries),
   });
   if (recordedAt > now) {
     return {
@@ -688,6 +776,7 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
 type PingProbeObservation = Readonly<{
   result: AddressedProbeStatus | null;
   instanceId?: string;
+  status?: BackendHealth['status'];
 }>;
 
 async function probeUnauthenticatedPing(
@@ -710,14 +799,54 @@ async function probeUnauthenticatedPing(
       return { result: notOurCoordinator({ namespace: body.namespace, flavor: body.flavor }) };
     }
     return {
-      result: body.status === 'draining' ? { status: 'shutting_down' } : null,
+      result: null,
       instanceId: body.instanceId,
+      status: body.status,
     };
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
     return { result: unreachable(`health responded ${response.status} without a verified Coral health body`) };
   }
   return { result: unreachable(`health responded ${response.status}`) };
+}
+
+export function statusFromParsedHealth(
+  parsed: BackendHealthParseResult,
+): Extract<AddressedProbeStatus, { status: 'ok' }> {
+  const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
+  const { namespace: _namespace, status, shutdown, ...rest } = health;
+  const normalizedShutdown = operatorFacingLiveShutdown(shutdown);
+  return {
+    status: 'ok',
+    health: {
+      ...rest,
+      status: status === 'starting' ? 'ok' : status,
+      ...(normalizedShutdown === undefined ? {} : { shutdown: normalizedShutdown }),
+      skippedProviderProxySetRows,
+      skippedProviderProxySetTokens,
+    },
+  };
+}
+
+function decodeBackendHealth(value: unknown): Readonly<{
+  health: BackendHealthParseResult;
+  identity: CoordinatorHealthIdentity;
+}> | null {
+  const parsed = parseBackendHealth(value);
+  if (parsed === null) return null;
+  const { health } = parsed;
+  return {
+    health: parsed,
+    identity: {
+      instanceId: health.instanceId,
+      version: health.version,
+      bundleHash: health.bundleHash,
+      flavor: health.flavor,
+      namespace: health.namespace,
+      pid: health.pid,
+      ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
+    },
+  };
 }
 
 async function probeDetailedHealth(
@@ -736,23 +865,11 @@ async function probeDetailedHealth(
     if (parsed === null) {
       return unreachable('detailed health responded 200 with a body this build could not decode');
     }
-    const { health, skippedProviderProxySetRows, skippedProviderProxySetTokens } = parsed;
+    const { health } = parsed;
     if (health.namespace !== info.namespace || health.flavor !== info.flavor) {
       return notOurCoordinator({ namespace: health.namespace, flavor: health.flavor });
     }
-    if (health.status === 'draining') {
-      return { status: 'shutting_down' };
-    }
-    const { namespace: _namespace, status: _status, ...rest } = health;
-    return {
-      status: 'ok',
-      health: {
-        ...rest,
-        status: 'ok' as const,
-        skippedProviderProxySetRows,
-        skippedProviderProxySetTokens,
-      },
-    };
+    return statusFromParsedHealth(parsed);
   }
   if (response.status === 503 || TransientHttpError.isTransientStatus(response.status)) {
     return unreachable(`detailed health responded ${response.status} without a verified Coral health body`);
@@ -761,13 +878,11 @@ async function probeDetailedHealth(
   return unreachable(`detailed health responded ${response.status}`);
 }
 
-async function probeAddressedCoordinatorStatus(
-  runtime: Pick<Runtime, 'paths' | 'storage' | 'time'>,
+async function probeAddressedCoordinatorOverHttp(
+  runtime: Pick<Runtime, 'paths'>,
   observed: Extract<CoordinatorObservation, { kind: 'addressed' }>,
-  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
-): Promise<BackendStatusFull> {
+): Promise<AddressedProbeStatus> {
   const info = observed.coordinator;
-
   // A decoded peer mismatch must retain the peer identity, regardless of the recorded pid's liveness.
   const notOurCoordinator = (observedIdentity: {
     namespace: string;
@@ -788,22 +903,19 @@ async function probeAddressedCoordinatorStatus(
     cause: 'responded',
   });
 
-  let result: AddressedProbeStatus;
   try {
     const ping = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-    if (ping.result?.status === 'shutting_down') {
+    if (ping.status === 'draining') {
       try {
-        result = await probeDetailedHealth(info, notOurCoordinator, unreachable);
+        return await probeDetailedHealth(info, notOurCoordinator, unreachable);
       } catch {
         const confirmation = await probeUnauthenticatedPing(info, notOurCoordinator, unreachable);
-        result =
-          confirmation.instanceId === ping.instanceId && confirmation.result?.status === 'shutting_down'
-            ? ping.result
-            : (confirmation.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable)));
+        return confirmation.instanceId === ping.instanceId && confirmation.status === 'draining'
+          ? unreachable('health ping observed draining but detailed health did not answer')
+          : (confirmation.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable)));
       }
-    } else {
-      result = ping.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
     }
+    return ping.result ?? (await probeDetailedHealth(info, notOurCoordinator, unreachable));
   } catch (error: unknown) {
     // Same measurement as `shutdownBackend`'s catch (`shutdown.ts`): Node's `fetch` rejects a refused
     // connection with a `TypeError` whose own `.message` is the generic "fetch failed", while the errno travels
@@ -812,7 +924,7 @@ async function probeAddressedCoordinatorStatus(
     // claim.
     const code = thrownErrnoCode(error);
     if (code === 'ECONNREFUSED') {
-      result = {
+      return {
         status: 'unreachable',
         detail: code,
         cause: 'refused',
@@ -820,11 +932,32 @@ async function probeAddressedCoordinatorStatus(
         pid: info.pid,
         recordPath: runtime.paths.coral.coordinator.infoFile,
       };
-    } else {
-      result = { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
+    }
+    return { status: 'unreachable', detail: code ?? errorMessage(error), cause: 'no_response' };
+  }
+}
+
+async function probeAddressedCoordinatorStatus(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'time'>,
+  observed: Extract<CoordinatorObservation, { kind: 'addressed' }>,
+  provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
+): Promise<BackendStatusFull> {
+  const info = observed.coordinator;
+  let result = await probeAddressedCoordinatorOverHttp(runtime, observed);
+  if (result.status !== 'ok') {
+    const ipc = await readIdentityCheckedAuthenticatedHealth(
+      info,
+      runtime.paths.coral.coordinator.socketPath,
+      discoveryRecordIdentity(info),
+      runtime.time,
+      decodeBackendHealth,
+    );
+    if (ipc.kind === 'health' && ipc.health.health.status === 'draining') {
+      result = statusFromParsedHealth(ipc.health);
     }
   }
-  if (result.status === 'shutting_down' || result.status === 'ok') {
+
+  if (result.status === 'ok') {
     return statusWithShutdownRemainder(
       runtime.storage,
       runtime.paths.coral.coordinator.runDir,

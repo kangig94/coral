@@ -63,12 +63,18 @@ vi.mock('#src/transport/ipc/client.js', async () => {
     ...actual,
     createIpcClient: (socketPath: string, _time?: unknown, auth?: unknown) => {
       mockState.createdClients.push({ socketPath, auth });
+      const readHealth = async (options?: unknown): Promise<unknown> => {
+        const health = await mockState.health(socketPath, options);
+        return typeof health === 'object' && health !== null && 'instanceId' in health && !('pid' in health)
+          ? { ...health, pid: process.pid }
+          : health;
+      };
       return {
         socketPath,
         request: (method: string, params?: unknown, options?: unknown) =>
           mockState.request(socketPath, method, params, options),
-        ping: (options?: unknown) => mockState.health(socketPath, options),
-        health: (options?: unknown) => mockState.health(socketPath, options),
+        ping: readHealth,
+        health: readHealth,
         shutdown: (options?: unknown) => mockState.shutdown(socketPath, options),
       };
     },

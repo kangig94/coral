@@ -34,7 +34,7 @@ import type { KbDaemonSupervisor } from '../live/kb-daemon-supervisor.js';
 import type { ProviderScope } from '../../infra/provider-scope.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import type { ProcessExitRemainder, ProcessExitRemainderAcceptance } from '../shutdown-settlement.js';
-import type { ShutdownReason } from '../../infra/persisted-scalar-contracts.js';
+import type { ShutdownReason } from '../../infra/shutdown-contract.js';
 
 type CoordinatorBootSnapshot = {
   version?: string;

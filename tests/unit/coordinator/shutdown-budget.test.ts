@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinatorShutdownSignalHandler } from '#src/coordinator/bootstrap.js';
+import { formatBackendStatus } from '#src/cli/format/backend.js';
+import { statusFromParsedHealth } from '#src/cli/backend-status.js';
 import { createLifecycle, isLifecycleShutdownTerminal } from '#src/coordinator/lifecycle.js';
 import {
   HANDOFF_DRAIN_TIMEOUT_MS,
@@ -26,6 +28,8 @@ import type {
 } from '#src/coordinator/live/provider-proxy/authority.js';
 import type { DurableProcessRetention } from '#src/coordinator/live/durable-transport.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
+import { parseBackendHealth } from '#src/transport/http/backend/health.js';
+import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { BackendInfoRemovalResult } from '#src/infra/backend-discovery.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
@@ -33,6 +37,31 @@ import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 
 type CallLog = string[];
+
+function formatProducedShutdown(shutdown: NonNullable<HealthSnapshot['shutdown']>): string {
+  const parsed = parseBackendHealth({
+    status: 'draining',
+    kernel: { phase: 'draining', readyAt: null },
+    version: 'test',
+    bundleHash: 'test-bundle',
+    flavor: 'prod',
+    namespace: 'test',
+    instanceId: 'test-instance',
+    pid: process.pid,
+    uptimeMs: 0,
+    active: 0,
+    activeJobs: 0,
+    liveDiscuss: 0,
+    queueDepth: 0,
+    inflightRequests: 0,
+    textProjectionState: 'idle',
+    env: {},
+    components: [],
+    shutdown,
+  } satisfies HealthSnapshot);
+  if (parsed === null) throw new Error('Expected the produced health snapshot to pass the transport decoder.');
+  return formatBackendStatus(statusFromParsedHealth(parsed), { kind: 'absent' }, null);
+}
 
 interface Harness {
   time: VirtualTime;
@@ -332,6 +361,7 @@ function buildRemainderWriteRefusalHarness(
       closeIpcServerFn: harness.ctx.closeIpcServerFn,
       disposeLifecycleReactor: harness.ctx.disposeLifecycleReactor,
       onStopped,
+      onFatalShutdownError: vi.fn(),
     } as never,
     async () => [],
   );
@@ -1757,6 +1787,219 @@ describe('runShutdownSequence drain budget', () => {
 });
 
 describe('settlement ledger exit gate', () => {
+  it('reports the current retry schedule when a late initial timeout revises it', async () => {
+    const time = new VirtualTime();
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: async () => ({ confirmed: true, token: {} }),
+      commit: () => new Promise<never>(() => {}),
+      retainedAuthority: () => ({ ipcSocket: true }),
+      hold: () => ({ reason: 'required-shutdown-step-unsettled', exit: 'shutdown-budget-exhaustion' }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 30_000, time, log: () => {}, pollMs: 50 });
+
+    const initialAttempt = ledger.gate(boundary);
+    await flush();
+    expect(ledger.snapshot()).toMatchObject({ elapsedMs: 0, boundMs: 60_000 });
+
+    time.tick(40_000);
+    expect(ledger.snapshot()).toMatchObject({ elapsedMs: 40_000, boundMs: 20_000 });
+    await flush();
+    requireHeld(await initialAttempt);
+
+    expect(ledger.snapshot()).toMatchObject({ elapsedMs: 40_000, boundMs: 30_000 });
+  });
+
+  it('reports one monotonic terminal bound through the initial attempt and both retry slots', async () => {
+    const time = new VirtualTime();
+    const commit = vi.fn<ShutdownAuthorityReleaseBoundary['commit']>(() => new Promise<never>(() => {}));
+    const retainedAuthority = vi.fn(() => ({ ipcSocket: true }));
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: async () => ({ confirmed: true, token: {} }),
+      commit,
+      retainedAuthority,
+      hold: () => ({ reason: 'required-shutdown-step-unsettled', exit: 'shutdown-budget-exhaustion' }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 30_000, time, log: () => {}, pollMs: 50 });
+
+    const bounds = [ledger.snapshot().boundMs];
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 0,
+      boundMs: 60_000,
+      attempt: { started: 0, limit: 3 },
+    });
+
+    const initialAttempt = ledger.gate(boundary);
+    await flush();
+    time.tick(30_000);
+    await flush();
+    const first = requireHeld(await initialAttempt);
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 30_000,
+      boundMs: 30_000,
+      attempt: { started: 1, limit: 3 },
+      lastDeclined: { attempt: 1 },
+    });
+    expect(retainedAuthority).toHaveBeenCalledOnce();
+
+    const firstRetry = first.retry();
+    await flush();
+    time.tick(7_500);
+    await flush();
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 37_500,
+      boundMs: 22_500,
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 1 },
+    });
+    time.tick(7_500);
+    await flush();
+    const second = requireHeld(await firstRetry);
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 45_000,
+      boundMs: 15_000,
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(retainedAuthority).toHaveBeenCalledTimes(2);
+
+    const secondRetry = second.retry();
+    await flush();
+    time.tick(7_500);
+    await flush();
+    bounds.push(ledger.snapshot().boundMs);
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 52_500,
+      boundMs: 7_500,
+      attempt: { started: 3, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    time.tick(7_500);
+    await flush();
+    requireUnaccepted(await secondRetry);
+    bounds.push(ledger.snapshot().boundMs);
+
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 60_000,
+      boundMs: 0,
+      attempt: { started: 3, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(bounds).toEqual([60_000, 30_000, 22_500, 15_000, 7_500, 0]);
+    expect(commit).toHaveBeenCalledOnce();
+    expect(retainedAuthority).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares one retry slot between delayed preparation and a pending commit', async () => {
+    const time = new VirtualTime();
+    let preparations = 0;
+    const prepare = vi.fn<ShutdownAuthorityReleaseBoundary['prepare']>(async () => {
+      preparations += 1;
+      if (preparations > 1) await time.sleep(5_000);
+      return { confirmed: true, token: {} };
+    });
+    let commits = 0;
+    const commit = vi.fn<ShutdownAuthorityReleaseBoundary['commit']>(async () => {
+      commits += 1;
+      if (commits === 1) return { confirmed: false, detail: 'retry commit required' };
+      return new Promise<never>(() => {});
+    });
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare,
+      commit,
+      retainedAuthority: () => ({ ipcSocket: true }),
+      hold: () => ({
+        reason: 'required-shutdown-step-unsettled',
+        exit: 'shutdown-budget-exhaustion',
+        retryAfter: Promise.resolve(),
+      }),
+    };
+    const ledger = createShutdownSettlementLedger({ budgetMs: 30_000, time, log: () => {}, pollMs: 50 });
+
+    const first = requireHeld(await ledger.gate(boundary));
+    const retry = first.retry();
+    let retryCompleted = false;
+    void retry.then(() => {
+      retryCompleted = true;
+    });
+    await flush();
+    time.tick(5_000);
+    await flush();
+    expect(commit).toHaveBeenCalledTimes(2);
+    time.tick(9_999);
+    await flush();
+    expect(ledger.snapshot().boundMs).toBe(15_001);
+    time.tick(1);
+    await flush();
+    expect(retryCompleted).toBe(true);
+    const second = requireHeld(await retry);
+
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 15_000,
+      boundMs: 15_000,
+      attempt: { started: 2, limit: 3 },
+      lastDeclined: { attempt: 2 },
+    });
+    expect(heldFailureDetail(second)).toContain('exceeded 10000ms');
+  });
+
+  it.each([
+    { label: 'boundary retry signal', pollMs: 50, boundaryRetryMs: 50_000 },
+    { label: 'ledger poll fallback', pollMs: 50_000, boundaryRetryMs: null },
+  ])('caps a long $label at the fixed slot and consumes an already-expired following slot', async (testCase) => {
+    const time = new VirtualTime();
+    const boundary: ShutdownAuthorityReleaseBoundary = {
+      label: 'authority release',
+      prepare: async () => ({ confirmed: true, token: {} }),
+      commit: async () => ({ confirmed: false, detail: 'authority release pending' }),
+      retainedAuthority: () => ({ ipcSocket: true }),
+      hold: () => ({
+        reason: 'required-shutdown-step-unsettled',
+        exit: 'shutdown-budget-exhaustion',
+        ...(testCase.boundaryRetryMs === null ? {} : { retryAfter: time.sleep(testCase.boundaryRetryMs) }),
+      }),
+    };
+    const ledger = createShutdownSettlementLedger({
+      budgetMs: 30_000,
+      time,
+      log: () => {},
+      pollMs: testCase.pollMs,
+    });
+
+    const first = requireHeld(await ledger.gate(boundary));
+    let firstSlotReached = false;
+    void first.retryAfter.then(() => {
+      firstSlotReached = true;
+    });
+    time.tick(14_999);
+    await flush();
+    expect(firstSlotReached).toBe(false);
+    time.tick(1);
+    await flush();
+    expect(firstSlotReached).toBe(true);
+
+    time.tick(15_000);
+    const second = requireHeld(await first.retry());
+    let expiredSlotConsumed = false;
+    void second.retryAfter.then(() => {
+      expiredSlotConsumed = true;
+    });
+    await flush();
+    expect(expiredSlotConsumed).toBe(true);
+    requireUnaccepted(await second.retry());
+
+    expect(ledger.snapshot()).toMatchObject({
+      elapsedMs: 30_000,
+      boundMs: 0,
+      attempt: { started: 3, limit: 3 },
+    });
+  });
+
   it('does not rerun a timed-out non-abort-aware obligation', async () => {
     const time = new VirtualTime();
     let settleTask!: (confirmation: { confirmed: true }) => void;
@@ -2360,6 +2603,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
     finalizationOrder.push(`exit:${exitCode}`);
   });
   const logLines: string[] = [];
+  const requestFatalExit = vi.fn();
   const controller = createLifecycle(
     {
       identity: {
@@ -2424,10 +2668,12 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
         remainder,
         requestExit: onStopped,
       }),
+      onFatalShutdownError: requestFatalExit,
     } as never,
     async () => [],
   );
   return {
+    authority,
     controller,
     finalizationOrder,
     harness,
@@ -2435,6 +2681,7 @@ function buildBoundaryExhaustionHarness(instanceId: string) {
     lifecycle: () => lifecycle,
     logLines,
     onStopped,
+    requestFatalExit,
     remainderDocuments,
   };
 }
@@ -3075,6 +3322,63 @@ describe('required provider-proxy shutdown steps', () => {
       `backend discovery withdrawal refused operation=read code=filesystem-operation-failed errno=EACCES errorName=Error correlation=${'c'.repeat(64)}\n`,
     );
     expect(logLines.join('')).not.toContain('discovery read denied');
+  });
+
+  it('requests fatal exit when a lifecycle continuation fails and reports what ends the hold', async () => {
+    const { authority, controller, harness, logLines, requestFatalExit } =
+      buildBoundaryExhaustionHarness('continuation-failure');
+
+    const initial = controller.shutdown('replaced');
+    await flush(64);
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS);
+    await flush(64);
+    await initial;
+
+    const failedRetryObservation = vi.spyOn(authority, 'liveSets').mockImplementation(() => {
+      throw new Error('retry observation failed');
+    });
+    harness.time.tick(50);
+    await flush(64);
+    harness.time.tick(HANDOFF_DRAIN_TIMEOUT_MS / 2);
+    await flush(64);
+
+    const failed = await controller.waitForShutdown();
+    expect(failed).toMatchObject({
+      disposition: 'held',
+      recovery: {
+        automaticRetry: { status: 'failed' },
+      },
+    });
+    if (failed.disposition !== 'held') throw new Error('Expected the retry failure to retain the held drain.');
+    expect(failed.recovery.automaticRetry).toEqual({ status: 'failed' });
+    const observed = controller.observeShutdown();
+    expect(observed).toMatchObject({
+      automaticRetry: {
+        status: 'failed',
+      },
+    });
+    expect(observed?.automaticRetry).toEqual({ status: 'failed' });
+    expect(requestFatalExit).toHaveBeenCalledOnce();
+    expect(requestFatalExit).toHaveBeenCalledWith(expect.objectContaining({ message: 'retry observation failed' }));
+
+    if (observed === undefined) throw new Error('Expected a live shutdown observation.');
+    const output = formatProducedShutdown(observed);
+    expect(output).toContain('Automatic retry: failed');
+    expect(output).toContain('The fatal coordinator exit has already been requested; process exit ends this hold.');
+    expect(output).not.toContain('Next step:');
+    expect(output).not.toContain('force coordinator process');
+    expect(output).not.toContain('4242');
+    expect(logLines).toContainEqual(expect.stringContaining('retry observation failed'));
+
+    failedRetryObservation.mockRestore();
+    controller.requestShutdownRetry();
+    const retrying = controller.observeShutdown();
+    expect(retrying).toMatchObject({ attempt: { started: 3, limit: 3 } });
+    expect(retrying).not.toHaveProperty('automaticRetry');
+    if (retrying === undefined) throw new Error('Expected the accepted recovery to start a new shutdown attempt.');
+    const retryingOutput = formatProducedShutdown(retrying);
+    expect(retryingOutput).toContain('Current attempt: 3/3');
+    expect(retryingOutput).not.toContain("This build could not read the coordinator's drain report.");
   });
 
   it("a sigint landing between attempts records the ledger's original reason", async () => {

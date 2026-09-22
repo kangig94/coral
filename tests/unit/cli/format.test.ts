@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { describe, expect, it } from 'vitest';
 
 import { BackendToolHttpError } from '#src/transport/http/errors.js';
-import type { BackendStatusFull } from '#src/transport/http/backend/status.js';
+import type { BackendStatusFull } from '#src/cli/backend-status.js';
 import type { ShutdownResult } from '#src/transport/http/backend/shutdown.js';
 import type { AcceptedLaunchResponse } from '#src/jobs/launch.js';
 import type { BidResult, PersonaSeedOutput, SpeechResult } from '#src/discuss/session-types.js';
@@ -1908,19 +1908,22 @@ describe('cli format', () => {
           'Recorded at: 2026-09-18T01:02:03.000Z',
           'Reason: sigterm',
           'Mode: handoff',
-          'Entry 2: child termination',
+          'Entry 2:',
+          '  Obligation: child termination',
           '  Owner: successor-recovery',
           '  Cause: timed-out',
           '  Budget: 5000ms',
           '  Evidence: startup-adoption',
           '    Job: job-1',
           '    PID: 4242',
-          'Entry 3: hooks.onShutdown',
+          'Entry 3:',
+          '  Obligation: hooks.onShutdown',
           '  Owner: process-exit',
           '  Cause: rejected',
           '  Error: Error',
           '  Code: ENOENT',
-          'Entry 5: discuss store dispose',
+          'Entry 5:',
+          '  Obligation: discuss store dispose',
           '  Owner: process-exit',
           '  Cause: unconfirmed',
           'Skipped entry 1: unrecognized obligation',
@@ -2203,7 +2206,6 @@ describe('cli format', () => {
           authorship: 'other-build' as const,
         },
       },
-      { status: 'shutting_down' },
       { status: 'unauthorized' },
     ] satisfies BackendStatusFull[])('uses evidence-safe startup wording for $status', (status) => {
       const text = formatBackendStatus(status);

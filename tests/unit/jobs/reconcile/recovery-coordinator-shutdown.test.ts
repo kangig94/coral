@@ -435,8 +435,12 @@ async function stopLifecycleController(
 
   if (disposition.disposition === 'held') {
     const { automaticRetry, retainedOwnership } = disposition.recovery;
+    const attempts =
+      automaticRetry.status === 'scheduled'
+        ? `${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}`
+        : 'not-scheduled';
     throw new Error(
-      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${automaticRetry.attemptsStarted}/${automaticRetry.attemptLimit}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}`,
+      `Test lifecycle cleanup held: status=${automaticRetry.status}; attempts=${attempts}; reason=${disposition.reason}; exit=${disposition.recovery.exit}; cleanupObligations=${JSON.stringify(retainedOwnership.cleanupObligations)}`,
     );
   }
   return disposition;
@@ -534,6 +538,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       },
       closeServerFn: async () => {},
       listenFn: async () => ({ port: 4105, host: '127.0.0.1' }),
+      onFatalShutdownError: vi.fn(),
     },
     async (
       { identity, runtime, progressStore, providerRegistry, getRecoveryService, createInvocationContext, signal },
