@@ -2293,6 +2293,28 @@ describe('cli main routing', () => {
     expect(stdout).toContain('Run coral-cli wait jobs job-2 to continue waiting.');
   });
 
+  it('returns transient after provider exit zero while another requested job is still running', async () => {
+    const { buildProgram } = await loadMainModule();
+    const program = buildProgram();
+    const firstTerminal = {
+      type: 'terminal' as const,
+      jobId: 'job-1',
+      seq: 1,
+      remainingJobIds: ['job-2'],
+      resultPath: '/tmp/result-1.md',
+      result: { content: '', durationMs: 1_000, outcome: { kind: 'provider_exit' as const, code: 0 } },
+    };
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield firstTerminal;
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', 'job-2']);
+
+    expect(process.exitCode).toBe(75);
+    expect(stdout).toContain('Job job-1 provider exited 0');
+    expect(stdout).toContain('Run coral-cli wait jobs job-2 to continue waiting.');
+  });
+
   it('routes wait jobs --verbose into detailed terminal usage rendering', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();

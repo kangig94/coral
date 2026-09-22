@@ -113,10 +113,10 @@ await failOpen(async () => {
   }
 
   lines.push(
-    'Wait exit codes: 0 = the rendered terminal succeeded with no requested siblings remaining; ' +
-      '1 = failed, aborted, or faulted; provider_exit = normalized child code; ' +
+    'Wait exit codes: a nonzero mapped terminal code returns as-is (1 = failed, aborted, or faulted; provider_exit uses its normalized child code), even when siblings remain; ' +
+      'a zero terminal code returns 0 when no requested siblings remain, or 75 with a continuation command when siblings remain; ' +
       'nonterminal 75 = requested work remains with a continuation command (the cursor can be absent when initial backend recovery/shutdown retries exhaust); ' +
-      'terminal provider_exit may also return 75, with no continuation when no siblings remain.',
+      'provider_exit(75) may instead be terminal 75 with no continuation.',
   );
 
   writeHookOutput({
