@@ -2270,7 +2270,7 @@ describe('cli main routing', () => {
     expect(stdout).toContain('Job job-1 provider exited 7');
   });
 
-  it('waits through intermediate terminals and returns 0 only after every job succeeds', async () => {
+  it('returns transient after a successful terminal while another requested job is still running', async () => {
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
     const firstTerminal = {
@@ -2281,31 +2281,16 @@ describe('cli main routing', () => {
       resultPath: '/tmp/result-1.md',
       result: { content: 'one', durationMs: 1_000, outcome: { kind: 'completed' as const } },
     };
-    const secondTerminal = {
-      type: 'terminal' as const,
-      jobId: 'job-2',
-      seq: 2,
-      remainingJobIds: [] as string[],
-      resultPath: '/tmp/result-2.md',
-      result: { content: 'two', durationMs: 1_000, outcome: { kind: 'completed' as const } },
-    };
-    mockState.streamWait
-      .mockImplementationOnce(async function* () {
-        yield firstTerminal;
-      })
-      .mockImplementationOnce(async function* () {
-        yield secondTerminal;
-      });
+    mockState.streamWait.mockImplementationOnce(async function* () {
+      yield firstTerminal;
+    });
 
     await program.parseAsync(['node', 'coral-cli', 'wait', 'jobs', 'job-1', 'job-2']);
 
-    expect(mockState.streamWait).toHaveBeenCalledTimes(2);
-    expect(mockState.streamWait).toHaveBeenNthCalledWith(
-      2,
-      'jobs.wait',
-      expect.objectContaining({ jobIds: ['job-2'], cursor: { afterSeq: 1 } }),
-    );
-    expect(process.exitCode).toBe(0);
+    expect(mockState.streamWait).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(75);
+    expect(stdout).toContain('Job job-1 completed');
+    expect(stdout).toContain('Run coral-cli wait jobs job-2 to continue waiting.');
   });
 
   it('routes wait jobs --verbose into detailed terminal usage rendering', async () => {

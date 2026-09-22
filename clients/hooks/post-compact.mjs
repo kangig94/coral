@@ -113,10 +113,10 @@ await failOpen(async () => {
   }
 
   lines.push(
-    'Wait exit codes: 0 = all succeeded (completed, or provider_exit with child code 0); ' +
+    'Wait exit codes: 0 = the rendered terminal succeeded with no requested siblings remaining; ' +
       '1 = failed, aborted, or faulted; provider_exit = normalized child code; ' +
-      'nonterminal 75 = still running with a resume command (the cursor can be absent when initial backend recovery/shutdown retries exhaust); ' +
-      'terminal provider_exit may also return 75, with no resume command.',
+      'nonterminal 75 = requested work remains with a continuation command (the cursor can be absent when initial backend recovery/shutdown retries exhaust); ' +
+      'terminal provider_exit may also return 75, with no continuation when no siblings remain.',
   );
 
   writeHookOutput({

@@ -193,7 +193,6 @@ function emitWaitEvent(
         {
           describeCauseRef: renderCauseRef ? (ref) => renderCauseRef(ref, event.result.outcome) : undefined,
           verbose: renderOptions.verbose,
-          exitCode: toExitCode(event.result),
         },
       );
       break;
@@ -510,8 +509,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
             if (remainingJobIds.length === 0) {
               return 0;
             }
-            reconnect = true;
-            break;
+            return errorCodeToExit('transient');
           }
 
           if (event.type === 'waiting') {
