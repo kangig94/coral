@@ -44,6 +44,7 @@ const PROVIDERS_ROOT = 'src/providers/';
 const PROVIDER_HOST_OWNER_ROOTS = ['src/coordinator/', PROVIDER_PROXY_ROOT] as const;
 const PROVIDER_SOURCE_FILES = [...PRODUCTION_FILES].filter((file) => file.startsWith(PROVIDERS_ROOT)).sort();
 const STORE_ROOT = 'src/store/';
+const STORE_FORBIDDEN_ROOTS = [PROVIDER_PROXY_ROOT, 'src/coordinator/', 'src/transport/'] as const;
 const HANDOFF_ROUTING_STATUS_STORE_ROOT = 'src/store/handoff-routing-status-store';
 const PROVIDER_PROXY_FORBIDDEN = [
   STORE_ROOT,
@@ -374,22 +375,19 @@ describe('architecture layering invariants', () => {
     expect(providerHostOwnerImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
-  it('the journal store does not reach into the provider proxy', () => {
+  it('the journal store reaches neither provider proxy, coordinator, nor transport modules', () => {
     // The Journal is durable authority below the live proxy domain; durable records validate provider
     // identities at the providers boundary instead of importing proxy protocol schemas.
     const violations = collectViolations(
-      (source, target) => source.startsWith(STORE_ROOT) && target.startsWith(PROVIDER_PROXY_ROOT),
+      (source, target) => source.startsWith(STORE_ROOT) && startsWithAny(target, STORE_FORBIDDEN_ROOTS),
     );
 
     expect(violations).toEqual([]);
   });
 
-  it('the store does not import coordinator modules', () => {
-    const violations = collectViolations(
-      (source, target) => source.startsWith(STORE_ROOT) && target.startsWith('src/coordinator/'),
-    );
-
-    expect(violations).toEqual([]);
+  it('scans a non-empty store and names only forbidden roots that contain production files', () => {
+    expect([...PRODUCTION_FILES].some((file) => file.startsWith(STORE_ROOT))).toBe(true);
+    expect(STORE_FORBIDDEN_ROOTS.filter((root) => !referencesProductionPath(root))).toEqual([]);
   });
 
   it('the routing-status CLI adapter owns no authorization or raw mutation imports', () => {

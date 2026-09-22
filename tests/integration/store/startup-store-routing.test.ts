@@ -221,18 +221,15 @@ describe('startup store routing', () => {
     );
     const sweepEpoch = result.store.epoch;
     const sweep = sweepStoreEpochs(routedRuntime, runtime.paths.coral.store.dbDir, sweepEpoch);
-    const openDatabasePresent = existsSync(epochPath(runtime.paths.coral.store.dbDir, '1'));
-    result.db.close();
-
-    expect(result).toMatchObject({
-      kind: 'open',
-      store: {
-        epoch: '1',
-        path: epochPath(runtime.paths.coral.store.dbDir, '1'),
-      },
+    const openDatabasePresent = existsSync(epochPath(runtime.paths.coral.store.dbDir, '3'));
+    expect(result.store).toEqual({
+      epoch: '3',
+      path: epochPath(runtime.paths.coral.store.dbDir, '3'),
+      storeRoot: runtime.paths.coral.store.dbDir,
     });
     expect(sweep).toBe('complete');
     expect(openDatabasePresent).toBe(true);
+    result.db.close();
   });
 
   it('hands the settled store capability to a real daemon process across a root retarget', async () => {

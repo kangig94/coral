@@ -89,10 +89,10 @@ export function createSharedFileLockSync(path: string): FileLockLease {
   }
 }
 
-export function acquireSharedFileLockSync(path: string): FileLockLease {
-  const db = new DatabaseSync(path, { readOnly: true, timeout: 5_000 });
+export function acquireSharedFileLockSync(path: string, busyTimeoutMs = 5_000): FileLockLease {
+  const db = new DatabaseSync(path, { readOnly: true, timeout: busyTimeoutMs });
   try {
-    db.exec('PRAGMA busy_timeout = 5000; BEGIN; SELECT count(*) FROM sqlite_schema');
+    db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}; BEGIN; SELECT count(*) FROM sqlite_schema`);
     return sqliteLockLease(db);
   } catch (error: unknown) {
     db.close();
@@ -224,7 +224,7 @@ function createStorageActuator(storage: StoragePort, prove: () => void): Storage
   return actuator as StorageActuator;
 }
 
-function waitSync(ms: number): void {
+export function waitSync(ms: number): void {
   Atomics.wait(syncWaitState, 0, 0, ms);
 }
 

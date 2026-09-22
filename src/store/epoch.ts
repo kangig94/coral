@@ -2,14 +2,17 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
+import { backendLog } from '../infra/backend-log.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
 import {
   acquireSharedFileLockSync,
   attemptExclusiveFileLockSync,
   createSharedFileLockSync,
   type FileLockLease,
+  waitSync,
 } from '../infra/fs-lock.js';
 import type { StoragePort } from '../infra/port-types.js';
+import { truncate } from '../infra/text.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import { openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
@@ -30,14 +33,49 @@ const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
 const STORE_EPOCH_HOLDER_PUBLICATION_ATTEMPTS = 2;
+const STORE_EPOCH_CANDIDATE_DETAIL_LIMIT = 16;
+const STORE_EPOCH_CLASSIFICATION_STRING_MAX_LENGTH = 512;
+const STORE_EPOCH_FAILURE_CAUSE_UNAVAILABLE = 'Store epoch failure cause is unavailable.';
+// This bounds only the retry window; the following mint is not deadline-bounded. It must leave a safety
+// margin below HEALTH_TIMEOUT_MS in src/transport/health.ts, so epoch read-lock waits cannot return to 5 s.
+export const STORE_EPOCH_OPEN_RETRY_BUDGET_MS = 2_000;
+export const STORE_EPOCH_OPEN_RETRY_INTERVAL_MS = 400;
 // Measured on Node 26 / Linux 6.18: node:sqlite reports SQLITE_BUSY as errcode 5 and a removed directory as
 // errcode 14 while its public code remains ERR_SQLITE_ERROR.
 const SQLITE_BUSY_ERRCODE = 5;
+const SQLITE_CORRUPT_ERRCODE = 11;
+const SQLITE_NOTADB_ERRCODE = 26;
+const SQLITE_PRIMARY_ERRCODE_MASK = 0xff;
 
-export type StoreEpochClassification =
-  | StoreFormatClassification
-  | { readonly kind: 'unavailable' }
-  | { readonly kind: 'operator-discard' };
+type StoreEpochFailureCause = Readonly<{
+  attempts?: number;
+  code?: string;
+  errcode?: number;
+  message: string;
+}>;
+
+type StoreEpochOpenFailureStage = 'lock' | 'openable-probe' | 'writable-open' | 'holder-registration';
+
+type StoreEpochUnprovenCandidate = Readonly<{
+  epoch: StoreEpoch;
+  proof: Readonly<{ kind: 'disproven'; cause?: string }> | Readonly<{ kind: 'unobservable'; cause: string }>;
+}>;
+
+export type StoreEpochClassification = (
+  | Exclude<StoreFormatClassification, { readonly kind: 'absent' }>
+  | {
+      readonly kind: 'absent';
+      readonly attempts?: number;
+      readonly candidateCount?: number;
+      readonly candidates?: readonly StoreEpochUnprovenCandidate[];
+    }
+  | {
+      readonly kind: 'unavailable';
+      readonly stage?: StoreEpochOpenFailureStage;
+      readonly cause?: StoreEpochFailureCause;
+    }
+  | { readonly kind: 'operator-discard' }
+) & { readonly releaseFailure?: StoreEpochFailureCause };
 
 export type StoreEpochMetadata = Readonly<{
   supersedes: StoreEpoch | null;
@@ -464,8 +502,9 @@ export function resolveProvenStoreEpochAtPath(
 export function acquireStoreEpochReadLock(
   runtime: Pick<Runtime, 'storage'>,
   resolved: ResolvedStoreEpoch,
+  busyTimeoutMs = 5_000,
 ): FileLockLease | null {
-  const lease = acquireSharedFileLockSync(storeEpochLockPath(resolved.storeRoot, resolved.epoch));
+  const lease = acquireSharedFileLockSync(storeEpochLockPath(resolved.storeRoot, resolved.epoch), busyTimeoutMs);
   const observation = observeStoreEpoch(runtime.storage, resolved.storeRoot, `epoch-${resolved.epoch}`);
   if (observation?.proof.kind === 'proven') return lease;
   lease();
@@ -558,8 +597,163 @@ function errorCode(error: unknown): string | null {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null;
 }
 
-function unavailableClassification(): StoreEpochClassification {
-  return { kind: 'unavailable' };
+function failureCause(error: unknown): StoreEpochFailureCause {
+  try {
+    const reported = typeof error === 'object' && error !== null ? error : null;
+    const reportedCode =
+      reported !== null && 'code' in reported && typeof reported.code === 'string'
+        ? reported.code
+        : reported !== null && 'errno' in reported && typeof reported.errno === 'string'
+          ? reported.errno
+          : undefined;
+    const code =
+      reportedCode === undefined ? undefined : truncate(reportedCode, STORE_EPOCH_CLASSIFICATION_STRING_MAX_LENGTH);
+    const errcode =
+      reported !== null &&
+      'errcode' in reported &&
+      typeof reported.errcode === 'number' &&
+      Number.isInteger(reported.errcode)
+        ? reported.errcode
+        : undefined;
+    const message = truncate(
+      (error instanceof Error ? error.message : String(error)).replace(/\s+/gu, ' '),
+      STORE_EPOCH_CLASSIFICATION_STRING_MAX_LENGTH,
+    );
+    return {
+      ...(code === undefined ? {} : { code }),
+      ...(errcode === undefined ? {} : { errcode }),
+      message,
+    };
+  } catch {
+    return { message: STORE_EPOCH_FAILURE_CAUSE_UNAVAILABLE };
+  }
+}
+
+function unavailableClassification(stage?: StoreEpochOpenFailureStage, error?: unknown): StoreEpochClassification {
+  return stage === undefined ? { kind: 'unavailable' } : { kind: 'unavailable', stage, cause: failureCause(error) };
+}
+
+function classificationAfterLeaseRelease(
+  lease: FileLockLease,
+  classification: StoreEpochClassification,
+): StoreEpochClassification {
+  try {
+    lease();
+    return classification;
+  } catch (error: unknown) {
+    return { ...classification, releaseFailure: failureCause(error) };
+  }
+}
+
+function classificationWithAttempts(
+  classification: StoreEpochClassification,
+  attempts: number,
+): StoreEpochClassification {
+  if (classification.kind === 'unavailable' && classification.cause !== undefined) {
+    return { ...classification, cause: { ...classification.cause, attempts } };
+  }
+  if (classification.kind === 'absent') return { ...classification, attempts };
+  return classification;
+}
+
+function sqlitePrimaryErrcode(classification: StoreEpochClassification): number | null {
+  if (classification.kind !== 'unavailable' || classification.cause?.errcode === undefined) return null;
+  return classification.cause.errcode & SQLITE_PRIMARY_ERRCODE_MASK;
+}
+
+function isDecisiveStoreEpochFailure(classification: StoreEpochClassification): boolean {
+  if (
+    classification.kind === 'older-incompatible' ||
+    classification.kind === 'newer-incompatible' ||
+    classification.kind === 'corrupt-or-unsupported'
+  ) {
+    return true;
+  }
+  const errcode = sqlitePrimaryErrcode(classification);
+  return errcode === SQLITE_NOTADB_ERRCODE || errcode === SQLITE_CORRUPT_ERRCODE;
+}
+
+function storeEpochRetryDeadline(runtime: Runtime): bigint {
+  return runtime.time.monotonicNow() + BigInt(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
+}
+
+function remainingStoreEpochRetryBudgetMs(runtime: Runtime, deadline: bigint): number {
+  return Math.max(0, Number(deadline - runtime.time.monotonicNow()));
+}
+
+function waitForStoreEpochRetry(runtime: Runtime, deadline: bigint, minimumAttemptMs: number): boolean {
+  const remainingMs = remainingStoreEpochRetryBudgetMs(runtime, deadline);
+  if (remainingMs === 0) return false;
+  waitSync(Math.min(STORE_EPOCH_OPEN_RETRY_INTERVAL_MS, remainingMs));
+  return remainingStoreEpochRetryBudgetMs(runtime, deadline) >= minimumAttemptMs;
+}
+
+function hasHigherUnobservableCandidate(
+  observations: readonly StoreEpochObservation[],
+  current: ProvenStoreEpochObservation | null,
+): boolean {
+  return observations.some(
+    (observation) =>
+      observation.proof.kind === 'unobservable' &&
+      (current === null || compareEpoch(observation.epoch, current.epoch) > 0),
+  );
+}
+
+function absentClassification(observations: readonly StoreEpochObservation[]): StoreEpochClassification {
+  const candidates: StoreEpochUnprovenCandidate[] = [];
+  for (const observation of observations) {
+    if (observation.proof.kind === 'proven') continue;
+    candidates.push({
+      epoch: observation.epoch,
+      proof:
+        observation.proof.kind === 'unobservable'
+          ? {
+              kind: 'unobservable',
+              cause: truncate(
+                observation.proof.cause.replace(/\s+/gu, ' '),
+                STORE_EPOCH_CLASSIFICATION_STRING_MAX_LENGTH,
+              ),
+            }
+          : {
+              kind: 'disproven',
+              ...(observation.epochJson.kind === 'missing' ? { cause: 'epoch metadata is missing' } : {}),
+            },
+    });
+  }
+  candidates.sort((left, right) => compareEpoch(left.epoch, right.epoch));
+  return candidates.length === 0
+    ? { kind: 'absent' }
+    : {
+        kind: 'absent',
+        candidateCount: candidates.length,
+        candidates: candidates.slice(-STORE_EPOCH_CANDIDATE_DETAIL_LIMIT),
+      };
+}
+
+function logStoreEpochReplacement(supersedes: StoreEpoch | null, classification: StoreEpochClassification): void {
+  try {
+    if (
+      classification.kind === 'unavailable' &&
+      classification.stage !== undefined &&
+      classification.cause !== undefined
+    ) {
+      backendLog.warn(
+        `Store epoch mint decision: superseded=${supersedes ?? 'none'} classification=${classification.kind} stage=${classification.stage} cause=${JSON.stringify(classification.cause)}`,
+      );
+      return;
+    }
+    if (classification.kind === 'absent' && classification.candidates !== undefined) {
+      backendLog.warn(
+        `Store epoch mint decision: superseded=${supersedes ?? 'none'} classification=${classification.kind} stage=epoch-observation cause=${JSON.stringify(classification.candidates)}`,
+      );
+      return;
+    }
+    backendLog.warn(
+      `Store epoch mint decision: superseded=${supersedes ?? 'none'} classification=${classification.kind} cause=${classification.kind}`,
+    );
+  } catch {
+    return;
+  }
 }
 
 function metadataFor(
@@ -582,9 +776,21 @@ function metadataFor(
   };
 }
 
+function serializeEpochMetadata(metadata: StoreEpochMetadata): string {
+  const boundedClassification = JSON.parse(
+    JSON.stringify(metadata.classification, (key, value: unknown) =>
+      key !== 'kind' && typeof value === 'string'
+        ? truncate(value, STORE_EPOCH_CLASSIFICATION_STRING_MAX_LENGTH)
+        : value,
+    ),
+  ) as StoreEpochClassification;
+  return `${JSON.stringify({ ...metadata, classification: boundedClassification })}\n`;
+}
+
 function writeEpochMetadata(storage: StoragePort, mint: string, metadata: StoreEpochMetadata): void {
+  const serialized = serializeEpochMetadata(metadata);
   if (
-    !storage.writeAtomicDurableSync(join(mint, STORE_EPOCH_METADATA_FILE_NAME), `${JSON.stringify(metadata)}\n`, {
+    !storage.writeAtomicDurableSync(join(mint, STORE_EPOCH_METADATA_FILE_NAME), serialized, {
       encoding: 'utf-8',
       mode: 0o600,
     })
@@ -1754,39 +1960,68 @@ function tryOpenCurrentEpoch(
   runtime: Runtime,
   options: StoreEpochOptions,
   resolved: ResolvedStoreEpoch,
+  deadline: bigint | null,
 ):
   | { readonly kind: 'opened'; readonly db: Database }
   | { readonly kind: 'replace'; readonly classification: StoreEpochClassification } {
-  let lease: FileLockLease | null = null;
+  let lease: FileLockLease | null;
   try {
-    lease = acquireStoreEpochReadLock(runtime, resolved);
-    if (lease === null) {
-      return {
-        kind: 'replace',
-        classification: unavailableClassification(),
-      };
-    }
-    assertProvenStoreOpenable(runtime.storage, resolved.path);
-  } catch {
-    lease?.();
-    return { kind: 'replace', classification: unavailableClassification() };
+    const startupBusyTimeoutMs = Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
+    const lockBusyTimeoutMs =
+      deadline === null
+        ? startupBusyTimeoutMs
+        : Math.max(1, Math.min(startupBusyTimeoutMs, remainingStoreEpochRetryBudgetMs(runtime, deadline)));
+    lease = acquireStoreEpochReadLock(runtime, resolved, lockBusyTimeoutMs);
+  } catch (error: unknown) {
+    return { kind: 'replace', classification: unavailableClassification('lock', error) };
   }
+  if (lease === null) {
+    return {
+      kind: 'replace',
+      classification: unavailableClassification(
+        'lock',
+        new Error(`Store epoch ${resolved.epoch} was no longer proven after acquiring its read lock.`),
+      ),
+    };
+  }
+  try {
+    assertProvenStoreOpenable(runtime.storage, resolved.path);
+  } catch (error: unknown) {
+    return {
+      kind: 'replace',
+      classification: classificationAfterLeaseRelease(lease, unavailableClassification('openable-probe', error)),
+    };
+  }
+  let stage: StoreEpochOpenFailureStage = 'writable-open';
   try {
     const decision = openWritableStoreDatabase({
       path: resolved.path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
-      busyTimeoutMs: options.startupBusyTimeoutMs,
+      busyTimeoutMs: Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_BUDGET_MS),
+      ...(deadline === null
+        ? {}
+        : {
+            busyTimeoutDeadline: {
+              expiresAt: deadline,
+              monotonicNow: () => runtime.time.monotonicNow(),
+            },
+          }),
     });
     if (decision.kind !== 'opened') {
-      lease();
-      return { kind: 'replace', classification: decision.classification };
+      return {
+        kind: 'replace',
+        classification: classificationAfterLeaseRelease(lease, decision.classification),
+      };
     }
+    stage = 'holder-registration';
     return { kind: 'opened', db: registerStoreEpochHolder(runtime, resolved, decision.db, lease) };
-  } catch {
-    lease();
-    return { kind: 'replace', classification: unavailableClassification() };
+  } catch (error: unknown) {
+    return {
+      kind: 'replace',
+      classification: classificationAfterLeaseRelease(lease, unavailableClassification(stage, error)),
+    };
   }
 }
 
@@ -1806,29 +2041,87 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
 
   runtime.storage.mkdirSync(configuredDbDir, { recursive: true, mode: 0o700 });
   const dbDir = runtime.storage.realpathSync(configuredDbDir);
+  let retryDeadline: bigint | null = null;
+  let retryAttempts = 0;
+  let lastRetryableFailure: Readonly<{
+    epoch: StoreEpoch;
+    classification: StoreEpochClassification;
+  }> | null = null;
+  const retryDeadlineForEvidence = (): bigint => {
+    retryDeadline ??= storeEpochRetryDeadline(runtime);
+    return retryDeadline;
+  };
+  const minimumAttemptMs = Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_INTERVAL_MS);
+  const adoptCurrentEpoch = (
+    current: ProvenStoreEpochObservation,
+    resolved: ResolvedStoreEpoch,
+    db: Database,
+  ): StoreEpochSettlement => {
+    if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
+      db.close();
+      throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
+    }
+    db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
+    return { db, store: resolved };
+  };
+  const rememberRetryableFailure = (
+    epoch: StoreEpoch,
+    classification: StoreEpochClassification,
+  ): StoreEpochClassification => {
+    if (lastRetryableFailure?.epoch === epoch) return lastRetryableFailure.classification;
+    lastRetryableFailure = { epoch, classification };
+    return classification;
+  };
   for (;;) {
     const observations = observeStoreEpochs(runtime.storage, dbDir);
     const current = currentProvenEpoch(observations);
-    let classification: StoreEpochClassification = { kind: 'absent' };
+    const shouldReobserve = hasHigherUnobservableCandidate(observations, current);
+    let classification = absentClassification(observations);
     if (current !== null) {
+      const deadline = retryDeadlineForEvidence();
       const resolved = resolvedStoreEpoch(dbDir, current.epoch);
-      const opened = tryOpenCurrentEpoch(runtime, options, resolved);
+      retryAttempts += 1;
+      const opened = tryOpenCurrentEpoch(runtime, options, resolved, deadline);
       if (opened.kind === 'opened') {
-        if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
-          opened.db.close();
-          throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
-        }
-        opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
-        return { db: opened.db, store: resolved };
+        if (!shouldReobserve) return adoptCurrentEpoch(current, resolved, opened.db);
+        opened.db.close();
+        if (waitForStoreEpochRetry(runtime, deadline, minimumAttemptMs)) continue;
+      } else if (isDecisiveStoreEpochFailure(opened.classification)) {
+        classification = classificationWithAttempts(opened.classification, retryAttempts);
+      } else {
+        rememberRetryableFailure(current.epoch, opened.classification);
+        if (waitForStoreEpochRetry(runtime, deadline, minimumAttemptMs)) continue;
       }
-      classification = opened.classification;
+
+      if (!isDecisiveStoreEpochFailure(classification)) {
+        retryAttempts += 1;
+        const finalAttempt = tryOpenCurrentEpoch(runtime, options, resolved, null);
+        if (finalAttempt.kind === 'opened') return adoptCurrentEpoch(current, resolved, finalAttempt.db);
+        if (isDecisiveStoreEpochFailure(finalAttempt.classification)) {
+          classification = finalAttempt.classification;
+        } else {
+          classification = rememberRetryableFailure(current.epoch, finalAttempt.classification);
+        }
+        classification = classificationWithAttempts(classification, retryAttempts);
+      }
+    } else if (shouldReobserve) {
+      retryAttempts += 1;
+      if (waitForStoreEpochRetry(runtime, retryDeadlineForEvidence(), minimumAttemptMs)) continue;
+    }
+    if (current === null && retryAttempts > 0) {
+      classification = classificationWithAttempts(classification, retryAttempts);
     }
     const successor = selectSuccessor(runtime, dbDir, current?.epoch ?? null);
     const published = mintNextEpoch(runtime, options, dbDir, current?.epoch ?? null, successor.epoch, classification);
     if (published.kind === 'published') {
+      if (current !== null || observations.length > 0) {
+        logStoreEpochReplacement(current?.epoch ?? null, classification);
+      }
       return openPublishedEpoch(runtime, options, dbDir, successor.epoch, published.lease);
     }
-    if (published.kind === 'swept') continue;
+    retryDeadline = null;
+    retryAttempts = 0;
+    lastRetryableFailure = null;
   }
 }
 
