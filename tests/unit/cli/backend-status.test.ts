@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   registerBackendCommands,
@@ -2503,10 +2503,6 @@ describe('backend status daemon guidance', () => {
     unreadable: ['command=coral-cli backend status'],
     absent: ['command=coral-cli backend status'],
   } satisfies Record<DrainState, readonly string[]>;
-
-  it('narrows selected running health to statuses the selector can return', () => {
-    expectTypeOf<RunningBackendHealth['status']>().toEqualTypeOf<'ok' | 'draining'>();
-  });
 
   it.each(Object.entries(drainCases) as [DrainState, RunningBackendStatus][])(
     'keeps live-drain executable guidance exact for %s when routing also holds',

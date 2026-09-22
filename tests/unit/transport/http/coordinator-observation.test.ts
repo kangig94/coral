@@ -56,9 +56,6 @@ function record(overrides: Partial<CoordinatorDiscoveryRecord> = {}): Coordinato
 }
 
 describe('observeCoordinator', () => {
-  // Reset here rather than at the tail of each test that mutates it. Three tests below set `liveness` and two
-  // restored it on their last line — a restore an assertion that throws skips, leaking `'absent'` into
-  // whatever ran next and turning one failure into a cascade that names the wrong test.
   beforeEach(() => {
     mockState.read = { kind: 'missing' };
     mockState.liveness = 'alive';

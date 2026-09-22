@@ -1947,8 +1947,7 @@ export function formatProviderProxySetRowSkips(
   return lines;
 }
 
-function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readonly string[]): string {
-  const draining = health.status === 'draining';
+function formatRunningOverviewLines(health: RunningHealth): string[] {
   const componentLines: string[] = [];
   for (const component of health.components) {
     componentLines.push(...formatComponentLines(component, health.status));
@@ -1969,7 +1968,11 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
   if (typeof health.queueDepth === 'number') {
     lines.push(`Queue depth: ${health.queueDepth}`);
   }
-  const launchPermits = health.diagnostics?.launchPermits ?? [];
+  return lines;
+}
+
+function formatLaunchPermitLines(launchPermits: readonly LaunchPermitStatus[]): string[] {
+  const lines: string[] = [];
   if (launchPermits.length > 0) {
     lines.push('', 'Launch permits:');
     for (const permit of launchPermits) {
@@ -1980,7 +1983,13 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
       );
     }
   }
-  const launchReleaseDispositions = health.diagnostics?.launchReleaseDispositions ?? [];
+  return lines;
+}
+
+function formatLaunchReleaseDispositionLines(
+  launchReleaseDispositions: readonly LaunchReleaseDispositionStatus[],
+): string[] {
+  const lines: string[] = [];
   if (launchReleaseDispositions.length > 0) {
     lines.push('', 'Launch release dispositions:');
     for (const release of launchReleaseDispositions) {
@@ -1991,7 +2000,14 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
       );
     }
   }
-  const providerOperationAdoptionRefusals = health.diagnostics?.providerOperationAdoptionRefusals ?? [];
+  return lines;
+}
+
+function formatProviderOperationAdoptionRefusalLines(
+  providerOperationAdoptionRefusals: readonly ProviderOperationAdoptionRefusalStatus[],
+  showOperatorCommands: boolean,
+): string[] {
+  const lines: string[] = [];
   if (providerOperationAdoptionRefusals.length > 0) {
     lines.push('', 'Provider-operation adoption refusals:');
     for (const refusal of providerOperationAdoptionRefusals) {
@@ -2000,10 +2016,16 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
         `    triggerRecord=${refusal.triggerRecordKey} rowDisposition=${refusal.rowDisposition} releasedLaunchPermits=${refusal.releasedLaunchPermits}`,
         `    reason=${refusal.reason}`,
       );
-      if (!draining) lines.push(`    ${formatProviderOperationAdoptionRefusalNextStep(refusal, 'Diagnostic hold')}`);
+      if (showOperatorCommands) {
+        lines.push(`    ${formatProviderOperationAdoptionRefusalNextStep(refusal, 'Diagnostic hold')}`);
+      }
     }
   }
-  const launchReclamations = health.diagnostics?.launchReclamations ?? [];
+  return lines;
+}
+
+function formatLaunchReclamationLines(launchReclamations: readonly LaunchReclamationStatus[]): string[] {
+  const lines: string[] = [];
   if (launchReclamations.length > 0) {
     lines.push('', 'Automatic launch reclamations:');
     for (const reclamation of launchReclamations) {
@@ -2014,7 +2036,14 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
       );
     }
   }
-  const settlementFailures = health.diagnostics?.settlementRefusalRecordingFailures ?? [];
+  return lines;
+}
+
+function formatSettlementRefusalRecordingFailureLines(
+  settlementFailures: readonly SettlementRefusalRecordingFailureStatus[],
+  showOperatorCommands: boolean,
+): string[] {
+  const lines: string[] = [];
   if (settlementFailures.length > 0) {
     lines.push('', 'Settlement refusal recording failures:');
     for (const failure of settlementFailures) {
@@ -2023,9 +2052,14 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
         `  job=${failure.jobId}${operation} cause=${failure.cause} observedAtMs=${failure.observedAtMs}`,
         `    error=${failure.error}`,
       );
-      if (!draining) lines.push(formatSettlementRefusalRecordingFailureNextStep(failure));
+      if (showOperatorCommands) lines.push(formatSettlementRefusalRecordingFailureNextStep(failure));
     }
   }
+  return lines;
+}
+
+function formatProviderProxySetLines(health: RunningHealth, showOperatorCommands: boolean): string[] {
+  const lines: string[] = [];
   const providerProxySets = health.diagnostics?.providerProxySets ?? [];
   const durableDispositionSkips = health.diagnostics?.providerProxyDispositionSkips ?? [];
   const skippedProviderProxySetRows = health.skippedProviderProxySetRows;
@@ -2068,23 +2102,42 @@ function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readon
         ).map((skip) => `    ${skip}`),
       );
       lines.push(
-        draining
-          ? '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it.'
-          : '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.',
+        showOperatorCommands
+          ? '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it. Inspect backend status from a build that understands the row.'
+          : '    No containment or abandonment command is available because this build cannot verify that the backend will authorize it.',
       );
-      if (!draining) lines.push(`    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`);
+      if (showOperatorCommands) lines.push(`    ${formatBackendOperatorCommand({ kind: 'backend-status' })}`);
     }
     for (const skipped of durableDispositionSkips) {
       lines.push(
         `  Durable provider proxy disposition this build could not read: key=${skipped.key}${skipped.setToken === null ? '' : ` set=${skipped.setToken}`}.`,
-        draining
-          ? `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record.`
-          : `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`,
+        showOperatorCommands
+          ? `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record. Run backend status from a build that understands the durable record.`
+          : `    Unavailable action: ${skipped.unavailableAction}; this build will neither reconcile nor retire the record.`,
       );
     }
   }
-  lines.push(...liveShutdownGuidance);
-  return lines.join('\n');
+  return lines;
+}
+
+function formatRunningStatus(health: RunningHealth, liveShutdownGuidance: readonly string[]): string {
+  const showOperatorCommands = health.status !== 'draining';
+  return [
+    ...formatRunningOverviewLines(health),
+    ...formatLaunchPermitLines(health.diagnostics?.launchPermits ?? []),
+    ...formatLaunchReleaseDispositionLines(health.diagnostics?.launchReleaseDispositions ?? []),
+    ...formatProviderOperationAdoptionRefusalLines(
+      health.diagnostics?.providerOperationAdoptionRefusals ?? [],
+      showOperatorCommands,
+    ),
+    ...formatLaunchReclamationLines(health.diagnostics?.launchReclamations ?? []),
+    ...formatSettlementRefusalRecordingFailureLines(
+      health.diagnostics?.settlementRefusalRecordingFailures ?? [],
+      showOperatorCommands,
+    ),
+    ...formatProviderProxySetLines(health, showOperatorCommands),
+    ...liveShutdownGuidance,
+  ].join('\n');
 }
 
 function formatLiveShutdownGuidance(health: RunningHealth): LiveShutdownGuidance {
