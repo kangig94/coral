@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
 import { truncate } from '../infra/text.js';
@@ -258,8 +258,9 @@ export interface ControlEndpoint {
 
 type Tenancy = {
   readonly epoch: ControlEpoch;
-  /** Identity and admission fields are stable across retries of the opening that earned this tenancy. */
   readonly opening: Record<string, unknown>;
+  readonly method: string;
+  readonly paramsDigest: string;
   socket: Socket; // one tenancy, successive connections
   active: boolean;
 };
@@ -388,18 +389,27 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     socket.write(encodeProxyControlFrame(message), onWritten);
   };
 
-  /**
-   * Opens a tenancy on this connection. The credential is proven first and by its own owner — a bootstrap
-   * nonce by the role that holds it, a handoff grant by its registry — so the endpoint learns no secret and
-   * spends none. A bootstrap nonce throws on replay and so never reaches the check below; a grant memoizes
-   * its redemption and answers with the same holder on every retry, which is what that check recognises.
-   */
-  const establishControl = async (socket: Socket, handle: ControlOpenHandler, params: unknown): Promise<unknown> => {
+  const establishControl = async (
+    socket: Socket,
+    method: string,
+    handle: ControlOpenHandler,
+    params: unknown,
+  ): Promise<unknown> => {
+    // The endpoint must retain no credential material; retry identity is limited to the opening method and
+    // a digest of its serialized parameters.
+    const paramsDigest = createHash('sha256')
+      .update(JSON.stringify(params) ?? 'undefined')
+      .digest('hex');
     const { holder, fields } = await handle(params);
     const live = tenancy;
     const installed = holderAuthority.current();
-    if (live !== null && installed !== null && sameControlTenancyHolder(installed.holder, holder)) {
-      // The same tenancy earned again, on this socket or a new one — not a second tenancy to admit.
+    if (
+      live !== null &&
+      installed !== null &&
+      sameControlTenancyHolder(installed.holder, holder) &&
+      live.method === method &&
+      live.paramsDigest === paramsDigest
+    ) {
       const admitted = challenges.reattachControl();
       if (!admitted.accepted) throw new ControlAdmissionRefusedError(admitted.reason ?? 'rejected');
       if (live.socket !== socket) {
@@ -412,8 +422,8 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
       }
       return live.opening;
     }
-    // A different holder on a socket that already holds a tenancy is refused outright: establishing here
-    // would destroy the displaced socket, which is this very connection.
+    // A socket holding a control tenancy must reject every non-replay opening; replacing it would destroy
+    // the connection that must carry this reply.
     if (tenancy?.socket === socket) {
       throw new ProxyControlProtocolError('invalid_state', 'This connection already holds a control tenancy.');
     }
@@ -438,7 +448,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     // Record the replacement before destroying the predecessor: its `close` handler then sees a tenancy that
     // is not its own and reports no control loss. Reporting one would hand the deadline machine an EOF for
     // the tenancy that just began, and the successor would inherit its predecessor's death.
-    tenancy = { epoch, opening, socket, active: false };
+    tenancy = { epoch, opening, method, paramsDigest, socket, active: false };
     displaced?.socket.destroy();
     return opening;
   };
@@ -498,7 +508,7 @@ export function createControlEndpoint(options: ControlEndpointOptions): ControlE
     }
     if (entry.authority === 'establishes-control') {
       markHandlerStarted();
-      return establishControl(socket, entry.handle, params);
+      return establishControl(socket, method, entry.handle, params);
     }
     if (entry.authority === 'pairing') {
       if (pairedSocket !== socket) {

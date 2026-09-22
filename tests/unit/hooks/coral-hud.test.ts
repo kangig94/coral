@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 
 // prettier-ignore
 // @ts-expect-error - statusline hooks are executable .mjs files without TS declarations.
@@ -88,6 +89,117 @@ describe('coral-hud account isolation', () => {
     ]) {
       expect(skill).toContain(pattern);
     }
+  });
+});
+
+describe('coral-hud backend state end to end', () => {
+  const RED_CORAL = '\x1b[31mcoral\x1b[0m';
+  const DIM_CORAL = '\x1b[2mcoral\x1b[0m';
+  const ORANGE_CORAL = '\x1b[38;2;255;133;89mcoral\x1b[0m';
+
+  function renderWithBackendRecord(record?: Record<string, unknown>): string {
+    const root = mkdtempSync(join(tmpdir(), 'hud-backend-'));
+    const home = join(root, 'home');
+    const cfg = join(root, 'cfg');
+    try {
+      if (record !== undefined) {
+        const runDir = join(home, '.coral', 'gen2', 'run');
+        mkdirSync(runDir, { recursive: true });
+        writeFileSync(join(runDir, 'coordinator.json'), JSON.stringify(record));
+      }
+      const result = spawnSync(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
+        input: JSON.stringify({ cwd: root, session_id: 'backend-state', model: { display_name: 'O' } }),
+        env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex'), HOME: home },
+        encoding: 'utf-8',
+      });
+      expect(result.status).toBe(0);
+      return result.stdout ?? '';
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  async function renderWithBackendRecordAsync(record: Record<string, unknown>): Promise<string> {
+    const root = mkdtempSync(join(tmpdir(), 'hud-backend-'));
+    const home = join(root, 'home');
+    const cfg = join(root, 'cfg');
+    try {
+      const runDir = join(home, '.coral', 'gen2', 'run');
+      mkdirSync(runDir, { recursive: true });
+      writeFileSync(join(runDir, 'coordinator.json'), JSON.stringify(record));
+      const result = await new Promise<{ status: number | null; stdout: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [join(process.cwd(), 'clients/skills/statusline/coral-hud.mjs')], {
+          env: { ...process.env, CLAUDE_CONFIG_DIR: cfg, CODEX_HOME: join(root, 'codex'), HOME: home },
+          stdio: ['pipe', 'pipe', 'inherit'],
+        });
+        let stdout = '';
+        child.stdout.setEncoding('utf-8');
+        child.stdout.on('data', (chunk: string) => (stdout += chunk));
+        child.once('error', reject);
+        child.once('close', (status) => resolve({ status, stdout }));
+        child.stdin.end(JSON.stringify({ cwd: root, session_id: 'backend-state', model: { display_name: 'O' } }));
+      });
+      expect(result.status).toBe(0);
+      return result.stdout;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it('renders a dead recorded backend in red', () => {
+    const exited = spawnSync(process.execPath, ['-e', '']);
+    if (exited.pid === undefined) throw new Error('failed to start the dead-pid fixture');
+
+    expect(renderWithBackendRecord({ pid: exited.pid, port: 1, bootToken: 'test' })).toContain(RED_CORAL);
+  });
+
+  it('renders a live backend with an unreachable health endpoint dimly', () => {
+    expect(renderWithBackendRecord({ pid: process.pid, port: 1, bootToken: 'test' })).toContain(DIM_CORAL);
+  });
+
+  it('renders an unprobeable backend with an unreachable health endpoint dimly', () => {
+    const rendered = renderWithBackendRecord({ pid: 1, port: 1, bootToken: 'test' });
+
+    expect(rendered).toContain(DIM_CORAL);
+    expect(rendered).not.toContain(RED_CORAL);
+  });
+
+  it('probes health for pid 1 and renders a reachable backend in orange', async () => {
+    const server = createServer((request, response) => {
+      if (request.method === 'GET' && request.url === '/health?detailed=1') {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end('{}');
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+
+    try {
+      const address = server.address();
+      if (address === null || typeof address === 'string') throw new Error('failed to start the health fixture');
+      const rendered = await renderWithBackendRecordAsync({ pid: 1, port: address.port, bootToken: 'test' });
+
+      expect(rendered).toContain(ORANGE_CORAL);
+      expect(rendered).not.toContain(RED_CORAL);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it.each([{ pid: '123' }, { pid: -1 }, { pid: 1.5 }, { pid: 0 }, { pid: 2_147_483_648 }])(
+    'hides the backend slot for invalid pid $pid',
+    ({ pid }) => {
+      expect(renderWithBackendRecord({ pid, port: 1, bootToken: 'test' })).not.toContain('coral');
+    },
+  );
+
+  it('hides the backend slot when no discovery record exists', () => {
+    expect(renderWithBackendRecord()).not.toContain('coral');
   });
 });
 

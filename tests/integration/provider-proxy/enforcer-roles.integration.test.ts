@@ -360,12 +360,13 @@ const GRANT_SECRET = 'f'.repeat(64);
 async function installGrant(
   set: SetUnderTest,
   operations: ReadonlyArray<Record<string, string>>,
+  control: ControlClient = set.control,
 ): Promise<Record<string, unknown>> {
   const grantId = randomUUID();
   const handoffOperations = [...operations].sort((left, right) => (left.operationId < right.operationId ? -1 : 1));
 
   const installed = (await strictTestExchange(
-    set.control,
+    control,
     'guardian.handoff-install.v1',
     {
       grantId,
@@ -1638,6 +1639,60 @@ describe('provider-proxy guardian and reaper', () => {
       5_000,
     )) as { state: string };
     expect(beat.state).toBe('active');
+  });
+
+  it('redeems a same-holder grant while the bootstrap guardian socket remains open', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const request = await installGrant(set, [operation]);
+    set.lapseControl();
+
+    const successor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => successor.close());
+    const redeemed = guardianHandoffRedeemResultSchema.parse(
+      await strictTestExchange(successor, 'guardian.handoff-redeem.v1', request, 5_000),
+    );
+
+    expect(redeemed.state).toBe('redeemed-provisional');
+    expect(redeemed.controlEpoch).toBe(2);
+    const beat = (await strictTestExchange(
+      successor,
+      'guardian.heartbeat.v1',
+      { controlEpoch: redeemed.controlEpoch, heartbeatChallenge: redeemed.heartbeatChallenge },
+      5_000,
+    )) as { state: string };
+    expect(beat.state).toBe('active');
+  });
+
+  it('redeems a new same-holder grant instead of replaying the previous grant opening', async () => {
+    const set = await startSet();
+    const { operation } = await stage(set);
+    const firstRequest = await installGrant(set, [operation]);
+    set.lapseControl();
+    set.control.close();
+
+    const firstSuccessor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => firstSuccessor.close());
+    const first = guardianHandoffRedeemResultSchema.parse(
+      await strictTestExchange(firstSuccessor, 'guardian.handoff-redeem.v1', firstRequest, 5_000),
+    );
+    await strictTestExchange(
+      firstSuccessor,
+      'guardian.heartbeat.v1',
+      { controlEpoch: first.controlEpoch, heartbeatChallenge: first.heartbeatChallenge },
+      5_000,
+    );
+
+    const secondRequest = await installGrant(set, [operation], firstSuccessor);
+    set.lapseControl();
+    const secondSuccessor = await connectControlClient(set.guardianEndpoint, timer, 5_000);
+    cleanups.push(() => secondSuccessor.close());
+    const second = guardianHandoffRedeemResultSchema.parse(
+      await strictTestExchange(secondSuccessor, 'guardian.handoff-redeem.v1', secondRequest, 5_000),
+    );
+
+    expect(second.redemptionReceipt).not.toBe(first.redemptionReceipt);
+    expect(second.controlEpoch).toBe(3);
   });
 
   it('returns the same redemption to an identical retry and refuses a different successor', async () => {
