@@ -161,9 +161,12 @@ session, and a mixed window called "permitted by design" — so its corrections 
 | [`partially-erased-store-epoch-reaping-residue.md`](./partially-erased-store-epoch-reaping-residue.md) | A `.reaping-<uuid>` directory whose lock is already gone but whose other entries remain cannot be reclaimed by the safe empty-directory `rmdir`; recursive deletion needs a new ownership proof. |
 | [`store-epoch-minting-under-sustained-external-interference.md`](./store-epoch-minting-under-sustained-external-interference.md) | The repaired writer/reclaimer race relies on one reclaimer snapshot. A hostile co-tenant or concurrent manual sweeps can still starve minting; closing that requires a fence that exists before the writer's first artifact. |
 | [`write-atomic-durable-sync-result-overloads-two-dispositions.md`](./write-atomic-durable-sync-result-overloads-two-dispositions.md) | `writeAtomicDurableSyncNode` returns one `false` for a lost private-artifact race and for a post-rename directory-sync failure. Replace the boolean with dispositions without turning unproven durability into a retry. |
+| [`store-epoch-replaced-on-undeterminable-open.md`](./store-epoch-replaced-on-undeterminable-open.md) | `tryOpenCurrentEpoch` turns any lock, probe, open, or holder failure into `unavailable`, and unproven candidates into `absent`. Either mints a successor that abandons the old epoch's `running` jobs, with no adoption and a sweeper that later deletes them. Unknown may not authorize the switch; what is open is the exit when "undeterminable" persists, since refusing to boot bricks every project. |
 
 These do not close together. The first needs ownership for residue whose lock is gone; the second needs
 pre-artifact exclusion against a reclaimer; the third changes the storage-port result every caller consumes.
+The fourth is a decision about when opening may give up on the current epoch, and it owns none of the
+others' mechanisms.
 
 ---
 
@@ -263,10 +266,13 @@ a question it does not answer.
 
 | [`process-port-answers-with-two-values.md`](./process-port-answers-with-two-values.md)                   | **The owner of the primitives is the one over-claiming, and the gate for it is in place.** `ProcessPort.readProcessIncarnation` still returns `null` for absent, unreadable, or unprobed targets; `ProcessPort.kill` still collapses distinct refusal causes into `false`; and `ProcessPort.spawn` still defers launch failure to a later event. `gracefulKill` is outside the remaining migration because its return type exposes signal failure or refusal separately from pending settlement. `process-observation-composition` refuses new collapses and carries the unconverted boundaries as a self-pruning ledger. |
 | [`operator-exit-orchestration.md`](./operator-exit-orchestration.md)                                     | **Filed BLOCKING five rounds running, and the reported failure was never the real one.** Measuring `#completeOperatorExit` rather than reading it found a fence discharged by hand on twenty-one of twenty-six exits — fixed — while a ruling established that the failures the reports named are unreachable, because a released lease cannot authorize a finalization and every hold carries its own kind. Two narrower hazards were closed and lease state finally has tests. The decomposition that would make the next round cheaper is designed and deferred: it buys readability, not safety, and it must not undo the request union that made an invalid behaviour-contract pair unwritable. |
+| [`routing-status-contention-read-as-undeterminable-artifact.md`](./routing-status-contention-read-as-undeterminable-artifact.md) | **A correct sibling beside it, again.** A `SQLITE_BUSY` met by `classifyOpenHandoffRoutingStoreDatabase` becomes an `undeterminable` artifact, which refuses the routing publication without a retry and reports a status read as undeterminable. Its sibling `classifyPublicationError` classifies the same errcode as `contended` once it arrives after `BEGIN IMMEDIATE`, and that one is retried. The rendered incident drops the errcode, so a field report showed only a `backend status` next step that no reader owed. |
 
 These two do not close together and are not the same fix. `exec-result-overclaim` is about a single reader
 deciding more than its evidence carries; `missing-discovery-record-disposition` is about three readers
 deciding differently from evidence none of them over-claims. Fixing either leaves the other untouched.
+The routing-status entry has `exec-result-overclaim`'s shape — one classifier widens what a sibling already
+separates — but shares no code or prerequisite with any entry here and ships on its own.
 
 Both are the same concept as [`project-source-undecidable.md`](./project-source-undecidable.md) one section
 above — a probe result that cannot say which of two things it observed — and that entry is the worked example
@@ -289,8 +295,11 @@ predates the drain-reporting change. None is a regression; each is a behaviour c
 | [`launch-disposition-flattened-below-the-boundary.md`](./launch-disposition-flattened-below-the-boundary.md)                 | **Four independent members; the first needs no new type at all, and the last two are why the first two exist.** `executeAgentAttempt` already distinguishes a launch that never started (`consumedAttempt: false`) from a failure after a job ran, and nothing in `src/` reads the field — so discuss expels required participants, appends a `speech.timed_out` transcript entry that later prompts render, and commits a launch diagnostic as `follow_up.answered`, all for a participant nobody ran. The second: every workflow launch failure becomes `wrapper_crashed`, so the same non-answer exits 75 under `codex` and 1 under `workflow`. |
 | [`starting-coordinator-has-no-exit-contribution.md`](./starting-coordinator-has-no-exit-contribution.md) | **Three inner states collapse into one exit code.** `BACKEND_STATUS_EXIT_CODES` is keyed by the outer probe status, so an answered-but-not-ready coordinator exits 0 exactly like a ready one. Start after the owner decides what that caller should do instead — retry, wait, or proceed. |
 
+| [`abort-acknowledged-while-the-drain-drops-its-stop.md`](./abort-acknowledged-while-the-drain-drops-its-stop.md) | **The reconciler knows it cannot record the stop, and the abort still says `aborted`.** `requestStop` returns `void` when mutation admission has closed, so a drain-time `jobs.abort` is acknowledged while no stop intent exists and the job runs on under the successor. The successor, for its part, answers `Not found` for a job it adopted. The entry designs a first stage that refuses before any effect and routes to the successor, and lists what remains after it. |
+
 The starting-status entry shares this section's loss of a typed disposition, not an implementation path with
-launch handling. It can ship independently once its exit-contribution decision is made.
+launch handling. It can ship independently once its exit-contribution decision is made. The abort entry is
+the same loss one layer lower: the decision exists inside the reconciler and is discarded by its own `void`.
 
 ---
 
