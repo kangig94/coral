@@ -74,7 +74,7 @@ disallowedTools: Write, Edit
        // -> Job job-1 running (session session-1)
 
        // CORRECT: wait text exposes a stable durable artifact path
-       coral-cli wait --jobs "job-1" --embed
+       coral-cli wait jobs "job-1" --embed
        // -> Job job-1 completed
        // -> Result path: /tmp/result.md
        ```
