@@ -251,7 +251,7 @@ describe('cli errors', () => {
     ])('discloses that the refused method never ran for %s', (_case, refusal) => {
       const { envelope } = buildErrorEnvelope(refusal);
 
-      expect(envelope.remediation).toContain('refused jobs.abort before dispatch, so it did not run');
+      expect(envelope.remediation).toContain('refused jobs.abort without running it');
     });
 
     it('reports when to retry in both address-disposition branches', () => {

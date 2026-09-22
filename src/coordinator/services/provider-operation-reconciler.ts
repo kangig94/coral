@@ -112,6 +112,20 @@ export type ProviderOperationReconciliationEvidence =
     }>
   | Readonly<{ kind: 'released-after-terminal'; settledThroughProviderSeq: number }>;
 
+export type ProviderStopOutcome =
+  | Readonly<{ kind: 'no-operation' }>
+  | Readonly<{ kind: 'recorded' }>
+  | Readonly<{ kind: 'unrecorded'; reason: string }>;
+
+export type ProviderStopDecision =
+  | Readonly<{ kind: 'admission-closed'; jobIds: readonly string[] }>
+  | Readonly<{ kind: 'answered'; outcomes: ReadonlyMap<string, ProviderStopOutcome> }>;
+
+type ProviderControlIntentRequestResult =
+  | Readonly<{ kind: 'wrote' }>
+  | Readonly<{ kind: 'already-carried' }>
+  | Readonly<{ kind: 'not-applicable' }>;
+
 export type StartupProviderSetWork = Readonly<{
   key: ProviderProxySetKey;
   identity: ProviderProxySetIdentity;
@@ -193,6 +207,14 @@ export type ProviderOperationReconcilerStopDisposition =
 
 export interface StartupSetRecoveryPort {
   recoverSetAtStartup(work: StartupProviderSetWork, signal: AbortSignal): Promise<StartupSetRecoveryResult>;
+}
+
+function runReportedEffect(effect: () => void | Promise<void>, report: (error: unknown) => void): void {
+  try {
+    void Promise.resolve(effect()).catch(report);
+  } catch (error: unknown) {
+    report(error);
+  }
 }
 
 function startupOperationCanReconcile(ownership: ProviderOperationStartupOwnership['records'][number]): boolean {
@@ -785,7 +807,7 @@ export class ProviderOperationReconciler
       const onAbort = (): void => {
         abortRequestedAt ??= new Date(this.#deps.time.now()).toISOString();
         if (!inserted) return;
-        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        void this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
       };
       input.signal.addEventListener('abort', onAbort, { once: true });
       this.#publications.set(key, {
@@ -809,27 +831,56 @@ export class ProviderOperationReconciler
       }
       inserted = true;
       if (abortRequestedAt !== null) {
-        this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
+        void this.#requestControlIntent(input.record.operation, 'signal_abort', abortRequestedAt, input.authority);
         return;
       }
       void this.reconcile(input.record, input.authority);
     });
   }
 
-  requestStop(jobId: string, cause: ProviderStopCause): void {
-    if (!this.#canMutate()) return;
-    try {
-      const record = readProviderOperationForJob(this.#deps.getProgressStore().getDb(), jobId);
-      if (record === null) {
-        this.#deps.registry.stop(jobId, cause);
-        return;
+  requestStops(jobIds: readonly string[], cause: ProviderStopCause): ProviderStopDecision {
+    const outcomes = new Map<string, ProviderStopOutcome>();
+    if (!this.#canMutate()) {
+      for (const jobId of jobIds) {
+        try {
+          if (readProviderOperationForJob(this.#deps.getProgressStore().getDb(), jobId) !== null) {
+            return { kind: 'admission-closed', jobIds };
+          }
+          outcomes.set(jobId, { kind: 'no-operation' });
+        } catch (error: unknown) {
+          this.#deps.onError?.(
+            `Provider operation stop intent failed for job '${jobId}': ${providerOperationErrorReason(error)}`,
+          );
+          return { kind: 'admission-closed', jobIds };
+        }
       }
-      this.#requestControlIntent(record.operation, cause, new Date(this.#deps.time.now()).toISOString());
-    } catch (error: unknown) {
-      this.#deps.onError?.(
-        `Provider operation stop intent failed for job '${jobId}': ${providerOperationErrorReason(error)}`,
-      );
+      return { kind: 'answered', outcomes };
     }
+
+    for (const jobId of jobIds) {
+      try {
+        const record = readProviderOperationForJob(this.#deps.getProgressStore().getDb(), jobId);
+        if (record === null) {
+          outcomes.set(jobId, { kind: 'no-operation' });
+          continue;
+        }
+        const result = this.#requestControlIntent(
+          record.operation,
+          cause,
+          new Date(this.#deps.time.now()).toISOString(),
+        );
+        outcomes.set(jobId, result.kind === 'not-applicable' ? { kind: 'no-operation' } : { kind: 'recorded' });
+      } catch (error: unknown) {
+        const reason = providerOperationErrorReason(error);
+        outcomes.set(jobId, { kind: 'unrecorded', reason });
+        this.#deps.onError?.(`Provider operation stop intent failed for job '${jobId}': ${reason}`);
+      }
+    }
+    return { kind: 'answered', outcomes };
+  }
+
+  requestStop(jobId: string, cause: ProviderStopCause): void {
+    void this.requestStops([jobId], cause);
   }
 
   onControlEstablished(authority: DurableProviderProxyOperationAuthority): void {
@@ -2336,19 +2387,22 @@ export class ProviderOperationReconciler
     cause: ProviderStopCause,
     requestedAt: string,
     preferredAuthority?: DurableProviderProxyOperationAuthority,
-  ): void {
+  ): ProviderControlIntentRequestResult {
     let current = readProviderOperation(this.#deps.getProgressStore().getDb(), identity);
     while (current !== null) {
       const aborted = isAbortStopCause(cause) ? ({ kind: 'terminal-aborted', cause, requestedAt } as const) : null;
       let next: ProviderOperationRecord;
       if (current.phase === 'prepare-pending' || current.phase === 'guardian-activation-pending') {
-        if (aborted === null) return;
+        if (aborted === null) return { kind: 'not-applicable' };
         next = this.#prestartCleanupRecord(current, aborted);
       } else if (current.phase === 'proxy-activation-pending') {
-        if (aborted === null) return;
+        if (aborted === null) return { kind: 'not-applicable' };
         next = this.#activationResolutionRecord(current, aborted, current.lastError);
       } else if (current.phase === 'activation-resolution-pending') {
-        if (aborted === null || current.onNeverStarted.kind === 'terminal-aborted') return;
+        if (current.onNeverStarted.kind === 'terminal-aborted') {
+          return aborted === null ? { kind: 'not-applicable' } : { kind: 'already-carried' };
+        }
+        if (aborted === null) return { kind: 'not-applicable' };
         next = providerOperationRecordSchema.parse({
           ...current,
           onNeverStarted: aborted,
@@ -2358,7 +2412,12 @@ export class ProviderOperationReconciler
           lastError: current.lastError,
         });
       } else if (current.phase === 'prestart-cleanup-pending') {
-        if (aborted === null || current.afterRelease.kind !== 'local-authorized') return;
+        if (current.afterRelease.kind === 'terminal-aborted') {
+          return aborted === null ? { kind: 'not-applicable' } : { kind: 'already-carried' };
+        }
+        if (aborted === null || current.afterRelease.kind !== 'local-authorized') {
+          return { kind: 'not-applicable' };
+        }
         next = providerOperationRecordSchema.parse({
           ...current,
           afterRelease: aborted,
@@ -2370,12 +2429,12 @@ export class ProviderOperationReconciler
       } else if (current.phase === 'executing') {
         if (current.controlIntent.kind === 'rekey-refusal-containment') {
           void this.reconcile(current, preferredAuthority);
-          return;
+          return { kind: 'not-applicable' };
         }
         if (current.controlIntent.kind === 'stop') {
-          this.#deps.registry.stop(current.operation.jobId, current.controlIntent.cause);
-          void this.reconcile(current, preferredAuthority);
-          return;
+          if (!isAbortStopCause(current.controlIntent.cause)) return { kind: 'not-applicable' };
+          this.#runControlIntentFollowUp(current, preferredAuthority);
+          return { kind: 'already-carried' };
         }
         next = providerOperationRecordSchema.parse({
           ...current,
@@ -2386,7 +2445,7 @@ export class ProviderOperationReconciler
           lastError: current.lastError,
         });
       } else {
-        return;
+        return { kind: 'not-applicable' };
       }
 
       const result = compareAndSwapProviderOperation(this.#deps.getProgressStore().getDb(), current, next);
@@ -2394,12 +2453,26 @@ export class ProviderOperationReconciler
         current = result.current;
         continue;
       }
-      if (result.record.phase === 'executing' && result.record.controlIntent.kind === 'stop') {
-        this.#deps.registry.stop(result.record.operation.jobId, result.record.controlIntent.cause);
-      }
-      void this.reconcile(result.record, preferredAuthority);
-      return;
+      this.#runControlIntentFollowUp(result.record, preferredAuthority);
+      return { kind: 'wrote' };
     }
+    return { kind: 'not-applicable' };
+  }
+
+  #runControlIntentFollowUp(
+    record: ProviderOperationRecord,
+    preferredAuthority?: DurableProviderProxyOperationAuthority,
+  ): void {
+    const report = (error: unknown): void => {
+      this.#deps.onError?.(
+        `Provider operation stop follow-up failed for job '${record.operation.jobId}': ${providerOperationErrorReason(error)}`,
+      );
+    };
+    if (record.phase === 'executing' && record.controlIntent.kind === 'stop') {
+      const cause = record.controlIntent.cause;
+      runReportedEffect(() => this.#deps.registry.stop(record.operation.jobId, cause), report);
+    }
+    runReportedEffect(() => this.reconcile(record, preferredAuthority), report);
   }
 
   #transition(expected: ProviderOperationRecord, next: ProviderOperationRecord): ProviderOperationRecord | null {

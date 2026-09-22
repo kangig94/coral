@@ -1,28 +1,19 @@
-// `src/transport/lifecycle-refusal.ts` is the one home for the `backend_shutting_down` body. Two properties are
-// asserted here, and the second is the one a caller's safety rests on.
+// `issueWithSuccessorAfterLifecycleRefusal` may re-issue a lifecycle-refused request to a successor, so every
+// lifecycle refusal must be produced before any effect.
 //
-//   1. Nothing else in `src/` constructs the code. Every other occurrence of the literal is a *recognizing*
-//      position — `=== '…'`, `!== '…'`, or `case '…':` — so no handler can return a body carrying it and no
-//      second spelling of the body can drift away from the canonical one.
-//   2. In `src/transport/ipc/server.ts`, both writes of `lifecycleRefusalResult` appear textually above the
-//      `dispatchMap.get(request.method)` lookup, and there are exactly two of them, so deleting a gate fails
-//      here instead of quietly admitting a method the lifecycle refuses. Textual order is not execution
-//      order: what this bounds is the shape of the file. That a refused method never executed — the property
-//      re-issuing against a successor rests on — is asserted behaviourally instead; see
-//      'keeps unrelated catalog methods closed while draining' in
-//      tests/unit/transport/ipc/draining-recovery.test.ts.
-//
-// (1) is a text scan, and is bounded in the same way as `thrown-errno-single-home.test.ts`: a sufficiently
-// indirect construction (a computed key, a string concatenation) evades it.
+// See 'refuses before any effect when the saga stop can no longer be recorded' in
+// tests/unit/coordinator/composition/job-control.test.ts.
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
+import ts from 'typescript';
 
 const ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const CANONICAL_FILE = 'src/transport/lifecycle-refusal.ts';
+const DISPATCH_FILE = 'src/transport/dispatch.ts';
 const IPC_SERVER_FILE = 'src/transport/ipc/server.ts';
 const REFUSAL_CODE = 'backend_shutting_down';
 const RECOGNIZING_POSITION = new RegExp(String.raw`(?:[=!]==\s*|case\s+)(['"\`])${REFUSAL_CODE}\1`, 'g');
@@ -63,14 +54,59 @@ describe('lifecycle refusal body single-home invariant', () => {
     expect(constructors).toEqual([]);
   });
 
-  it('writes both lifecycle refusals above the IPC dispatch lookup', () => {
+  it('keeps two pre-dispatch refusal writes and one post-dispatch lifecycle-refused write', () => {
     const text = readFileSync(join(ROOT, IPC_SERVER_FILE), 'utf-8');
     const dispatchLookup = text.indexOf('dispatchMap.get(request.method)');
+    const lifecycleRefusedBranch = text.indexOf("if (invocation.kind === 'lifecycle-refused')");
+    const unaryBranch = text.indexOf("if (invocation.kind === 'unary')", lifecycleRefusedBranch);
     // The write, not the import: matching the bare symbol would count the import line as a third gate.
     const refusalWrites = [...text.matchAll(/result: lifecycleRefusalResult/g)].map((match) => match.index);
 
     expect(dispatchLookup).toBeGreaterThan(-1);
-    expect(refusalWrites).toHaveLength(2);
-    expect(refusalWrites.filter((index) => index > dispatchLookup)).toEqual([]);
+    expect(lifecycleRefusedBranch).toBeGreaterThan(dispatchLookup);
+    expect(unaryBranch).toBeGreaterThan(lifecycleRefusedBranch);
+    expect(refusalWrites).toHaveLength(3);
+    expect(refusalWrites.filter((index) => index < dispatchLookup)).toHaveLength(2);
+    expect(refusalWrites.filter((index) => index > lifecycleRefusedBranch && index < unaryBranch)).toHaveLength(1);
+  });
+
+  it('constructs lifecycle-refused only in the jobs.abort successor-owned arm', () => {
+    const constructors = sourceFiles().flatMap((path) => {
+      const text = readFileSync(join(ROOT, path), 'utf-8');
+      const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const found: Array<{ path: string; index: number }> = [];
+      const visit = (node: ts.Node): void => {
+        if (
+          ts.isObjectLiteralExpression(node) &&
+          node.properties.some(
+            (property) =>
+              ts.isPropertyAssignment(property) &&
+              property.name.getText(source) === 'kind' &&
+              ts.isStringLiteral(property.initializer) &&
+              property.initializer.text === 'lifecycle-refused',
+          )
+        ) {
+          found.push({ path, index: node.getStart(source) });
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(source);
+      return found;
+    });
+    expect(constructors).toHaveLength(1);
+    expect(constructors[0]?.path).toBe(DISPATCH_FILE);
+
+    const text = readFileSync(join(ROOT, DISPATCH_FILE), 'utf-8');
+    const functionStart = text.indexOf('async function executeJobsAbortCatalogRequest');
+    const functionEnd = text.indexOf('\nasync function ', functionStart + 1);
+    const successorOwnedArm = text.indexOf("case 'successor-owned':", functionStart);
+    const constructor = constructors[0]?.index ?? -1;
+
+    expect(functionStart).toBeGreaterThan(-1);
+    expect(functionEnd).toBeGreaterThan(functionStart);
+    expect(successorOwnedArm).toBeGreaterThan(functionStart);
+    expect(successorOwnedArm).toBeLessThan(functionEnd);
+    expect(constructor).toBeGreaterThan(successorOwnedArm);
+    expect(constructor).toBeLessThan(functionEnd);
   });
 });

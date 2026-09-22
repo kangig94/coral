@@ -762,6 +762,10 @@ async function handleCatalogUnaryRoute(
   }
 
   const result = await executeCatalogRequest(spec, request, deps, principal);
+  if (result.kind === 'lifecycle-refused') {
+    sendJson(res, 503, lifecycleRefusalResult);
+    return;
+  }
   if (result.kind === 'subscription') {
     throw new Error(`Expected unary RPC result for ${spec.name}`);
   }
@@ -810,7 +814,11 @@ async function handleJobsWaitSubscription(
   const execution = await executeCatalogRequest(spec, waitRequest, deps, principal, controller.signal);
   if (execution.kind !== 'subscription') {
     controller.abort();
-    sendCatalogResponse(res, execution);
+    if (execution.kind === 'lifecycle-refused') {
+      sendJson(res, 503, lifecycleRefusalResult);
+    } else {
+      sendCatalogResponse(res, execution);
+    }
     return;
   }
 

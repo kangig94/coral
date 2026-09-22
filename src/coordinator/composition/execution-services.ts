@@ -14,9 +14,11 @@ import {
   ProviderOperationReconciler,
   type ProviderOperationReconcilerFatalError,
   type ProviderOperationReconcilerStopDisposition,
+  type ProviderStopDecision,
   StartupSetRecoveryProducer,
   type StartupReconciliationReport,
 } from '../services/provider-operation-reconciler.js';
+import type { ProviderStopCause } from '../../providers/contract.js';
 import {
   notifyProviderProxyControlEstablished,
   subscribeProviderProxyControlEstablished,
@@ -117,6 +119,7 @@ export function createExecutionServices({
   ) => Promise<StartupReconciliationReport>;
   startProviderOperationReconciler: () => void;
   stopProviderOperationReconciler: () => ProviderOperationReconcilerStopDisposition;
+  requestStops: (jobIds: readonly string[], cause: ProviderStopCause) => ProviderStopDecision;
 } {
   const services = new Map<string, ProjectRequestPort>();
   let providerOperationRecovery: RecoveryCoordinator | null = null;
@@ -600,6 +603,7 @@ export function createExecutionServices({
       return providerOperationReconciler.reconcileAtStartup(ownership, signal);
     },
     startProviderOperationReconciler: () => providerOperationReconciler.start(),
+    requestStops: (jobIds, cause) => providerOperationReconciler.requestStops(jobIds, cause),
     stopProviderOperationReconciler: () => {
       const disposition = providerOperationReconciler.stop();
       unsubscribeProviderProxyControlEstablished();

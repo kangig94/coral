@@ -62,6 +62,7 @@ function decodePathSegment(segment: string): string | null {
 export type CatalogRequestExecution =
   | { kind: 'unary'; body: unknown; statusCode?: number }
   | { kind: 'unsupported-method'; body: unknown; statusCode: 404 }
+  | { kind: 'lifecycle-refused' }
   | { kind: 'subscription'; notifications: AsyncIterable<unknown> };
 
 const BACKEND_RECOVERING_MESSAGE = 'recovering — retry after 500ms';
@@ -988,7 +989,13 @@ async function executeJobsAbortCatalogRequest({
     );
   }
 
-  return unary(rpcPorts.jobs.abort(parsed.jobs));
+  const decision = rpcPorts.jobs.abort(parsed.jobs);
+  switch (decision.kind) {
+    case 'answered':
+      return unary(decision.result);
+    case 'successor-owned':
+      return { kind: 'lifecycle-refused' };
+  }
 }
 
 async function executeJobsListCatalogRequest({

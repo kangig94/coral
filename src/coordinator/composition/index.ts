@@ -910,6 +910,7 @@ export function createCoordinatorCore(
     getLifecycleController: () => lifecycleController,
     getProgressStore,
     internalJobAbortRegistry,
+    requestStops: services.requestStops,
   });
   let kbJobRecorder: KbJobRecorder | null = null;
   const getKbJobRecorder = (): KbJobRecorder => {
