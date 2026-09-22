@@ -74,8 +74,6 @@ it does not reach.
   — the planning contract lies rather than the outcome being wrong.
 - `isCoordinatorAlive` in `clients/hooks/session-start.mjs` — every `kill(pid, 0)` exception becomes `false`, so `EPERM` reads as
   coordinator absence. A hook may not refuse, so the fix is a disposition it can report, not a hold.
-- `resolveBackendInfoPath` in `clients/skills/statusline/coral-hud.mjs` — any signal-zero exception renders as "no backend", including
-  the `EPERM` that proves one exists.
 
 ## 4. Contracts weaker than they read
 

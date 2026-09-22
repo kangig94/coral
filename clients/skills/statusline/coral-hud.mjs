@@ -1186,18 +1186,17 @@ async function renderCodexData() {
 
 // --- coral backend ---
 
+function hasValidBackendPid(info) {
+  return Number.isInteger(info?.pid) && info.pid >= 1 && info.pid <= 2_147_483_647;
+}
+
 // Coral daemon state is account-neutral; Claude credentials only select the
 // provider context for an individual request.
 function resolveBackendInfoPath() {
   const infoPath = coralBackendInfoPath(homedir());
   try {
     const info = JSON.parse(readFileSync(infoPath, 'utf-8'));
-    if (!info?.pid) return null;
-    try {
-      process.kill(info.pid, 0);
-    } catch {
-      return null;
-    }
+    if (!hasValidBackendPid(info)) return null;
     return infoPath;
   } catch {
     return null;
@@ -1263,10 +1262,18 @@ async function renderCoralLine() {
   let info;
   try {
     info = JSON.parse(readFileSync(backendInfoPath, 'utf-8'));
-    if (!info?.port || !info?.bootToken) return null;
+    if (!hasValidBackendPid(info)) return null;
   } catch {
     return null;
   }
+
+  let processDead = false;
+  try {
+    process.kill(info.pid, 0);
+  } catch (error) {
+    processDead = error?.code === 'ESRCH';
+  }
+  if (!processDead && (!info.port || !info.bootToken)) return null;
 
   const lock = acquireFetchLock('backend');
   if (!lock) {
@@ -1274,6 +1281,11 @@ async function renderCoralLine() {
   }
 
   try {
+    if (processDead) {
+      const slot = { line: `${RED}coral${RESET}`, indicator: null };
+      writeBackendSlot(slot);
+      return slot;
+    }
     // Job counts live behind `?detailed=1` and the boot token; the bare `/health` ping carries none.
     const resp = await fetch(`http://${info.host ?? '127.0.0.1'}:${info.port}/health?detailed=1`, {
       headers: { 'X-Coral-Boot-Token': info.bootToken },

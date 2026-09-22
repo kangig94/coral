@@ -93,6 +93,7 @@ import {
   type DurableProviderProxyOperationAuthority,
 } from '#src/coordinator/live/provider-proxy/operation-route.js';
 import { createProviderProxySetAuthority } from '#src/coordinator/live/provider-proxy/set-authority.js';
+import { closeRedeemedProviderProxyControl } from '#src/coordinator/live/provider-proxy/control-redemption.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
@@ -237,8 +238,8 @@ async function startGuardianAndReaper() {
 
   const proxyIdentity: ProxyIdentity = {
     proxyInstanceId: shared.proxyInstanceId,
-    pid: 6_000,
-    incarnation: testIncarnation(850),
+    pid: CONTAINMENT.pid,
+    incarnation: CONTAINMENT.incarnation,
     processGroupId: CONTAINMENT.processGroupId,
     guardianInstanceId: shared.guardianInstanceId,
     reaperInstanceId: shared.reaperInstanceId,
@@ -297,13 +298,24 @@ async function startGuardianAndReaper() {
     challengeCount += 1;
     return `challenge-${challengeCount}`;
   };
-  const deadlines = {
-    controlIsLive: () => true,
+  let guardianControlLive = true;
+  let reaperControlLive = true;
+  const deadlinesFor = (role: 'guardian' | 'reaper') => ({
+    controlIsLive: () => (role === 'guardian' ? guardianControlLive : reaperControlLive),
     orphanTimeoutMs: () => DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
     issueFirstChallenge: () => ({ accepted: true, challenge: mintChallenge() }) as const,
-    admitSuccessor: () => ({ accepted: true, challenge: mintChallenge() }) as const,
+    admitSuccessor: () => {
+      if (role === 'guardian' ? guardianControlLive : reaperControlLive) {
+        return { accepted: false, reason: 'control-active' } as const;
+      }
+      return { accepted: true, challenge: mintChallenge() } as const;
+    },
     reattachControl: () => ({ accepted: true }) as const,
-    echoChallenge: () => ({ accepted: true, nextChallenge: mintChallenge() }) as const,
+    echoChallenge: () => {
+      if (role === 'guardian') guardianControlLive = true;
+      else reaperControlLive = true;
+      return { accepted: true, nextChallenge: mintChallenge() } as const;
+    },
     observeEof: () => {},
     observePairingLoss: () => {},
     latchTeardown: () => {},
@@ -312,7 +324,7 @@ async function startGuardianAndReaper() {
     renewHolderCheck: () => {},
     bounds: () => ({ ...boundsOf(), holderCheckAt: boundsOf().adoptionDeadline, holderCheckAccelerated: false }),
     state: () => 'accepting-control' as const,
-  };
+  });
 
   let receipts = 0;
   const mintReceipt = (): string => {
@@ -334,7 +346,7 @@ async function startGuardianAndReaper() {
       guardianReaperAuthSecret: PAIR_SECRET,
     },
     clock,
-    deadlines,
+    deadlines: deadlinesFor('reaper'),
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
@@ -367,7 +379,7 @@ async function startGuardianAndReaper() {
       proxyGuardianAuthSecret: PAIR_SECRET,
     },
     clock,
-    deadlines,
+    deadlines: deadlinesFor('guardian'),
     containmentEnvironment,
     scheduler: idleScheduler,
     timer,
@@ -453,6 +465,11 @@ async function startGuardianAndReaper() {
     guardianEndpoint,
     reaperEndpoint,
     proxyEndpoint,
+    lapseControl: async () => {
+      guardianControlLive = false;
+      reaperControlLive = false;
+      await clock.sleep(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS + 1);
+    },
   };
 }
 
@@ -777,8 +794,23 @@ async function startRotationSet(operationRegistry: LocalOperationRegistry) {
     mutationRpcTimeoutMs: 5_000,
   });
 
-  return { ...set, authority, proxy, proxyControl, semantic };
+  return { ...set, authority, setAuthority: base, setIdentity, proxy, proxyControl, semantic };
 }
+
+describe('provider proxy control reattachment against real roles', () => {
+  it('uses the production redemption sender while the original role sockets remain open', async () => {
+    const set = await startRotationSet(new LocalOperationRegistry());
+    const signal = new AbortController().signal;
+    const installed = await set.setAuthority.installRecoveryCredential(signal);
+    expect(installed.kind).toBe('installed');
+    await set.lapseControl();
+
+    const redemption = await set.setAuthority.controlReattachment.redeem(set.setIdentity, signal);
+
+    expect(redemption.kind).toBe('redeemed');
+    if (redemption.kind === 'redeemed') closeRedeemedProviderProxyControl(redemption);
+  });
+});
 
 async function completeCapacityLocalHandoff(
   source: RotationSet['authority'],

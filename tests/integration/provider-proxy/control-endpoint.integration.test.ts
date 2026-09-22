@@ -663,6 +663,58 @@ describe('provider-proxy control endpoint', () => {
     expect(client.socket.destroyed).toBe(false);
   });
 
+  it('refuses a different opening by the same holder on its tenancy connection', async () => {
+    const set = await startEndpoint();
+    const client = await connect(set.socketPath);
+    await client.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+
+    const second = await client.call('role.redeem.v1', { successorId: 'incumbent' });
+
+    expect(second.error?.message).toContain('already holds a control tenancy');
+    expect(client.socket.destroyed).toBe(false);
+  });
+
+  it('earns a new opening when the same holder switches establish-control methods', async () => {
+    const set = await startEndpoint();
+    const incumbent = await connect(set.socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+
+    const successor = await connect(set.socketPath);
+    const redeemed = await successor.call('role.redeem.v1', { successorId: 'incumbent' });
+
+    expect(redeemed.result).toEqual({
+      role: 'successor',
+      redemptionReceipt: 'receipt-1',
+      controlEpoch: 2,
+      heartbeatChallenge: 'challenge-2',
+    });
+    await vi.waitFor(() => expect(incumbent.socket.destroyed).toBe(true));
+  });
+
+  it('earns a new epoch when the same holder changes params for one establish-control method', async () => {
+    const set = await startEndpoint();
+    const incumbent = await connect(set.socketPath);
+    await incumbent.call('role.open.v1', { bootstrapNonce: BOOTSTRAP_NONCE });
+    set.lapseControl();
+
+    const first = await connect(set.socketPath);
+    const opened = await first.call('role.redeem.v1', { successorId: 'same-holder', attempt: 'first' });
+    expect(opened.result).toMatchObject({ controlEpoch: 2 });
+
+    const second = await connect(set.socketPath);
+    const changed = await second.call('role.redeem.v1', { successorId: 'same-holder', attempt: 'second' });
+
+    expect(changed.result).toMatchObject({
+      role: 'successor',
+      redemptionReceipt: 'receipt-1',
+      controlEpoch: 3,
+      heartbeatChallenge: 'challenge-3',
+    });
+    await vi.waitFor(() => expect(first.socket.destroyed).toBe(true));
+  });
+
   it('replays the identical opening for a same-successor retry on the same connection, not invalid_state', async () => {
     const set = await startEndpoint();
     const { socketPath } = set;
