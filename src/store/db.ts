@@ -70,6 +70,10 @@ type WritableStoreOptions = {
   readonly flavor?: BuildFlavor;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
+  readonly busyTimeoutDeadline?: Readonly<{
+    expiresAt: bigint;
+    monotonicNow: () => bigint;
+  }>;
 };
 
 type AuthorizedWritableStoreOptions = WritableStoreOptions;
@@ -106,22 +110,37 @@ export type JournalPragmaMode =
   | { kind: 'readonly'; busyTimeoutMs?: number }
   | { kind: 'rebuild'; busyTimeoutMs?: number };
 
-export function applyJournalPragmas(db: Database, mode: JournalPragmaMode): void {
-  const busyTimeoutMs = mode.busyTimeoutMs ?? 5000;
+function applyBusyTimeout(db: Database, busyTimeoutMs?: number): void {
+  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs ?? 5000}`);
+}
+
+type BeforeDatabaseOperation = (() => void) | undefined;
+
+export function applyJournalPragmas(
+  db: Database,
+  mode: JournalPragmaMode,
+  beforeOperation?: BeforeDatabaseOperation,
+): void {
+  beforeOperation?.();
   db.exec('PRAGMA foreign_keys = ON');
-  db.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+  if (beforeOperation === undefined) applyBusyTimeout(db, mode.busyTimeoutMs);
   if (mode.kind === 'writable') {
+    beforeOperation?.();
     db.exec('PRAGMA journal_mode = WAL');
+    beforeOperation?.();
     db.exec('PRAGMA synchronous = FULL');
   } else if (mode.kind === 'rebuild') {
+    beforeOperation?.();
     db.exec('PRAGMA journal_mode = WAL');
+    beforeOperation?.();
     db.exec('PRAGMA synchronous = NORMAL');
   }
 }
 
 const USER_TABLE_EXISTS_SQL = "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1";
 
-function hasUserTable(db: Database): boolean {
+function hasUserTable(db: Database, beforeOperation?: BeforeDatabaseOperation): boolean {
+  beforeOperation?.();
   return db.prepare(USER_TABLE_EXISTS_SQL).get() !== undefined;
 }
 
@@ -130,8 +149,13 @@ type StoredMetadataValue =
   | { readonly kind: 'present'; readonly value: unknown }
   | { readonly kind: 'unsupported' };
 
-function readStoredMetadataValue(db: Database, key: string): StoredMetadataValue {
+function readStoredMetadataValue(
+  db: Database,
+  key: string,
+  beforeOperation?: BeforeDatabaseOperation,
+): StoredMetadataValue {
   try {
+    beforeOperation?.();
     const row = db.prepare<[string], { value?: unknown }>('SELECT value FROM meta WHERE key = ? LIMIT 1').get(key);
     return row === undefined ? { kind: 'absent' } : { kind: 'present', value: row.value };
   } catch (error: unknown) {
@@ -184,14 +208,18 @@ function validatedStoreFormatTarget(current: StoreFormatClassificationTarget): {
   return { fingerprint: currentFingerprint, productVersion: currentProductVersion };
 }
 
-export function classifyStoreFormat(db: Database, current: StoreFormatClassificationTarget): StoreFormatClassification {
+export function classifyStoreFormat(
+  db: Database,
+  current: StoreFormatClassificationTarget,
+  beforeOperation?: BeforeDatabaseOperation,
+): StoreFormatClassification {
   const { fingerprint: currentFingerprint, productVersion: currentProductVersion } =
     validatedStoreFormatTarget(current);
 
-  if (!hasUserTable(db)) return { kind: 'fresh' };
+  if (!hasUserTable(db, beforeOperation)) return { kind: 'fresh' };
 
-  const fingerprintMetadata = readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY);
-  const versionMetadata = readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY);
+  const fingerprintMetadata = readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY, beforeOperation);
+  const versionMetadata = readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY, beforeOperation);
   const storedFingerprint = stringMetadataValue(fingerprintMetadata);
   const rawStoredProductVersion = stringMetadataValue(versionMetadata);
   const storedProductVersion =
@@ -291,25 +319,37 @@ export function storeSchemaOutdatedError(
   });
 }
 
-export function applyBundledStoreSchema(db: Database, storeFormat: StoreFormatDescription): void {
+export function applyBundledStoreSchema(
+  db: Database,
+  storeFormat: StoreFormatDescription,
+  beforeOperation?: BeforeDatabaseOperation,
+): void {
+  beforeOperation?.();
   db.exec('BEGIN IMMEDIATE');
   try {
+    beforeOperation?.();
     db.exec(storeFormat.manifest.ddl);
-    const existing = stringMetadataValue(readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY));
+    const existing = stringMetadataValue(
+      readStoredMetadataValue(db, STORE_FORMAT_FINGERPRINT_META_KEY, beforeOperation),
+    );
     if (existing !== null && existing !== storeFormat.fingerprint) {
       throw new StoreFormatChangedDuringAdoptionError(existing);
     }
+    beforeOperation?.();
     db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
       STORE_FORMAT_FINGERPRINT_META_KEY,
       storeFormat.fingerprint,
     );
+    beforeOperation?.();
     db.prepare<[string, string]>(`INSERT OR IGNORE INTO meta (key, value) VALUES (?, ?)`).run(
       STORE_PRODUCT_VERSION_META_KEY,
       storeFormat.productVersion,
     );
+    beforeOperation?.();
     db.exec('COMMIT');
   } catch (error) {
     try {
+      beforeOperation?.();
       db.exec('ROLLBACK');
     } catch {
       // Preserve the original schema-application failure.
@@ -329,17 +369,37 @@ export class StoreFormatChangedDuringAdoptionError extends Error {
   }
 }
 
-function raiseStoredProductVersion(db: Database, currentProductVersion: string): void {
-  withImmediate(db, () => {
-    const storedProductVersion = stringMetadataValue(readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY));
-    if (storedProductVersion === null || validateProductVersion(storedProductVersion) === null) return;
-    if (compareProductVersions(storedProductVersion, currentProductVersion) >= 0) return;
+function raiseStoredProductVersion(
+  db: Database,
+  currentProductVersion: string,
+  beforeOperation?: BeforeDatabaseOperation,
+): void {
+  withImmediate(
+    db,
+    () => {
+      const storedProductVersion = stringMetadataValue(
+        readStoredMetadataValue(db, STORE_PRODUCT_VERSION_META_KEY, beforeOperation),
+      );
+      if (storedProductVersion === null || validateProductVersion(storedProductVersion) === null) return;
+      if (compareProductVersions(storedProductVersion, currentProductVersion) >= 0) return;
 
-    db.prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?').run(
-      currentProductVersion,
-      STORE_PRODUCT_VERSION_META_KEY,
-    );
-  });
+      beforeOperation?.();
+      db.prepare<[string, string]>('UPDATE meta SET value = ? WHERE key = ?').run(
+        currentProductVersion,
+        STORE_PRODUCT_VERSION_META_KEY,
+      );
+    },
+    beforeOperation,
+  );
+}
+
+function deadlineBusyTimeoutRefresher(db: Database, options: AuthorizedWritableStoreOptions): BeforeDatabaseOperation {
+  const deadline = options.busyTimeoutDeadline;
+  if (deadline === undefined) return undefined;
+  return () => {
+    const remainingMs = Math.max(1, Number(deadline.expiresAt - deadline.monotonicNow()));
+    applyBusyTimeout(db, Math.min(options.busyTimeoutMs ?? remainingMs, remainingMs));
+  };
 }
 
 export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
@@ -349,22 +409,34 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
 
   const db = new DatabaseSync(options.path) as unknown as Database;
   try {
-    const classification = classifyStoreFormat(db, options.storeFormat);
+    const beforeOperation = deadlineBusyTimeoutRefresher(db, options);
+    if (beforeOperation === undefined && options.busyTimeoutMs !== undefined) {
+      applyBusyTimeout(db, options.busyTimeoutMs);
+    }
+    const classification = classifyStoreFormat(db, options.storeFormat, beforeOperation);
     if (classification.kind === 'compatible') {
-      applyJournalPragmas(db, {
-        kind: 'writable',
-        busyTimeoutMs: options.busyTimeoutMs,
-      });
-      raiseStoredProductVersion(db, options.storeFormat.productVersion);
+      applyJournalPragmas(
+        db,
+        {
+          kind: 'writable',
+          busyTimeoutMs: options.busyTimeoutMs,
+        },
+        beforeOperation,
+      );
+      raiseStoredProductVersion(db, options.storeFormat.productVersion, beforeOperation);
       writeStoreFormatSidecar(options, db);
       return { kind: 'opened', db };
     }
     if (classification.kind === 'fresh' || classification.kind === 'absent') {
-      applyJournalPragmas(db, {
-        kind: 'writable',
-        busyTimeoutMs: options.busyTimeoutMs,
-      });
-      applyBundledStoreSchema(db, options.storeFormat);
+      applyJournalPragmas(
+        db,
+        {
+          kind: 'writable',
+          busyTimeoutMs: options.busyTimeoutMs,
+        },
+        beforeOperation,
+      );
+      applyBundledStoreSchema(db, options.storeFormat, beforeOperation);
       writeStoreFormatSidecar(options, db);
       return { kind: 'opened', db };
     }
@@ -469,13 +541,16 @@ export function prepareCached<TParams extends unknown[] = unknown[], TRow = unkn
  * exists. If a future call site needs DEFERRED or savepoint nesting, add the
  * helper at that moment.
  */
-export function withImmediate<T>(db: Database, fn: () => T): T {
+export function withImmediate<T>(db: Database, fn: () => T, beforeOperation?: BeforeDatabaseOperation): T {
+  beforeOperation?.();
   db.exec('BEGIN IMMEDIATE');
   try {
     const result = fn();
+    beforeOperation?.();
     db.exec('COMMIT');
     return result;
   } catch (error) {
+    beforeOperation?.();
     db.exec('ROLLBACK');
     throw error;
   }

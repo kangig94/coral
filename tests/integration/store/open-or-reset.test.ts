@@ -46,6 +46,8 @@ import {
   MAX_STORE_EPOCH_HOLDER_BYTES,
   MAX_STORE_EPOCH_METADATA_BYTES,
   STORE_EPOCH_METADATA_FILE_NAME,
+  STORE_EPOCH_OPEN_RETRY_BUDGET_MS,
+  STORE_EPOCH_OPEN_RETRY_INTERVAL_MS,
 } from '#src/store/epoch.js';
 import { openReadOnlyStoreDatabase } from '#src/store/read-port.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -1182,7 +1184,18 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
     expect(settled.store.epoch).toBe('2');
     settled.db.close();
-    expect(attempts).toBe(1);
+    expect(attempts).toBeGreaterThanOrEqual(STORE_EPOCH_OPEN_RETRY_BUDGET_MS / STORE_EPOCH_OPEN_RETRY_INTERVAL_MS - 1);
+    expect(
+      listStoreEpochs(withStorage(runtime, storage)).find(({ epoch }) => epoch === '2')?.publicationReason,
+    ).toEqual({
+      kind: 'unavailable',
+      stage: 'openable-probe',
+      cause: {
+        code,
+        message: expect.stringContaining(`injected ${code}`),
+        attempts,
+      },
+    });
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
   });
 
