@@ -49,6 +49,12 @@ The first stage changes no durable shape, and `AbortResult` stays unchanged on t
    - While admission is closed, any job with a row refuses the whole request, even when its row already carries the stop.
    - Split `#requestControlIntent` into a pure plan and an apply step, so only a stop that still needs a write is refused.
    - A row already carrying the stop answers `recorded`. `settlement-pending` answers `settling`, not "aborted".
+   - Three phases take no stop, but a launch `AbortRegistry` owner can still be registered while they last. A direct abort there still prints `Aborted` from the local registry, while the row keeps its own outcome:
+     - `settlement-pending`, before the launch removes its registration: the job is already terminal;
+     - `prestart-cleanup-pending` with a `terminal-failed` directive: it terminalizes as failed;
+     - `executing` under `rekey-refusal-containment`: it is contained and terminalizes as failed.
+
+     None of them leaves a job running. The label is wrong, and the answer should be the row's disposition rather than the registry's.
 3. **Mixed requests are refused whole.** A saga job named together with a held local job goes entirely to a successor that cannot start until the drain ends. Per-job routing needs a CLI that can re-issue a subset.
 4. **Older successors.** A successor built before the first stage still answers `Not found` for a handed-off job.
 
