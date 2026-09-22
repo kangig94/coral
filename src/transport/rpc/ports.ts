@@ -5,7 +5,7 @@ import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
-import type { AbortResult } from '../../jobs/contracts/abort-registry.js';
+import type { AbortDecision } from '../../jobs/contracts/abort-registry.js';
 import type { KbToolResult } from '../../kb/result.js';
 import type { DiscussToolResult } from '../../discuss/result.js';
 import type { RecoveryQuarantineClearRequest, RecoveryQuarantineClearResult } from '../../recovery/source-registry.js';
@@ -51,7 +51,7 @@ interface SessionRequestPort {
 
 interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
-  abort(jobIds: string[]): AbortResult;
+  abort(jobIds: string[]): AbortDecision;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetailResponse | null;

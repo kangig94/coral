@@ -121,6 +121,10 @@ function createHarness(): {
     getLifecycleController: () => null,
     getProgressStore: () => store,
     internalJobAbortRegistry: new AbortRegistry(runtime.ids),
+    requestStops: (jobIds) => ({
+      kind: 'answered',
+      outcomes: new Map(jobIds.map((jobId) => [jobId, { kind: 'no-operation' } as const])),
+    }),
   });
   const ports = {
     identity: { pluginRoot: '/plugin' },

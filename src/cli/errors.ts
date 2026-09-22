@@ -259,7 +259,7 @@ function directErrorEnvelope(error: unknown): CliErrorResult | null {
 }
 
 function lifecycleRefusalExit(error: IpcLifecycleRefusal): string {
-  const didNotRun = `The coordinator refused ${error.method} before dispatch, so it did not run.`;
+  const didNotRun = `The coordinator refused ${error.method} without running it.`;
   const retry =
     'Shutdown continues as a bounded asynchronous wait. Retry this command after `coral-cli backend status` no longer reports that coordinator as shutting down.';
   return error.addressDisposition.kind === 'held-past-release-budget'

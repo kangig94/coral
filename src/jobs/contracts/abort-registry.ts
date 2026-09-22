@@ -51,6 +51,10 @@ export type AbortResult = {
   held?: AbortHold[];
   abandoned?: AbortAbandonment[];
 };
+
+export type AbortDecision =
+  | Readonly<{ kind: 'answered'; result: AbortResult }>
+  | Readonly<{ kind: 'successor-owned'; jobIds: readonly string[] }>;
 import type { JobOperatorRemedy } from './operator-remedy.js';
 
 export type AbortNextStep = string | Readonly<{ detail: string; remedy: JobOperatorRemedy }>;

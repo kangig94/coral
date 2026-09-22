@@ -2631,20 +2631,27 @@ describe('lifecycle recovery', () => {
         getLifecycleController: () => controller,
         getProgressStore: () => progressStore,
         internalJobAbortRegistry: { abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }) } as never,
+        requestStops: (jobIds) => ({
+          kind: 'answered',
+          outcomes: new Map(jobIds.map((id) => [id, { kind: 'no-operation' } as const])),
+        }),
       });
       expect(control.abortJobs([jobId])).toEqual({
-        aborted: [],
-        notFound: [],
-        abandoned: [
-          {
-            jobId,
-            reason: 'recovery ownership was released without proof of recorded containment absence',
-            nextStep: {
-              detail: 'The recorded containment may still be live and is no longer owned by recovery.',
-              remedy: { kind: 'jobs-detail', jobId },
+        kind: 'answered',
+        result: {
+          aborted: [],
+          notFound: [],
+          abandoned: [
+            {
+              jobId,
+              reason: 'recovery ownership was released without proof of recorded containment absence',
+              nextStep: {
+                detail: 'The recorded containment may still be live and is no longer owned by recovery.',
+                remedy: { kind: 'jobs-detail', jobId },
+              },
             },
-          },
-        ],
+          ],
+        },
       });
 
       await vi.waitFor(() => {
@@ -2727,21 +2734,28 @@ describe('lifecycle recovery', () => {
         internalJobAbortRegistry: {
           abort: (jobIds: string[]) => ({ aborted: [], notFound: jobIds }),
         } as never,
+        requestStops: (jobIds) => ({
+          kind: 'answered',
+          outcomes: new Map(jobIds.map((id) => [id, { kind: 'no-operation' } as const])),
+        }),
       });
 
       expect(control.abortJobs([jobId])).toEqual({
-        aborted: [],
-        notFound: [],
-        held: [
-          {
-            jobId,
-            reason:
-              'identity-safe SIGTERM/SIGKILL reaping is in progress until recorded containment absence is confirmed',
-            nextStep:
-              `Run coral-cli jobs detail ${jobId}; if cleanup remains held, run coral-cli abort jobs ${jobId} ` +
-              'again to explicitly abandon ownership.',
-          },
-        ],
+        kind: 'answered',
+        result: {
+          aborted: [],
+          notFound: [],
+          held: [
+            {
+              jobId,
+              reason:
+                'identity-safe SIGTERM/SIGKILL reaping is in progress until recorded containment absence is confirmed',
+              nextStep:
+                `Run coral-cli jobs detail ${jobId}; if cleanup remains held, run coral-cli abort jobs ${jobId} ` +
+                'again to explicitly abandon ownership.',
+            },
+          ],
+        },
       });
 
       await vi.waitFor(

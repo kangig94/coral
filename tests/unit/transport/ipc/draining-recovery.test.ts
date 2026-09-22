@@ -127,7 +127,7 @@ function createDrainingPorts(containmentKind: 'contained' | 'abandoned' = 'aband
     },
     jobs: {
       scopeCheck: vi.fn((jobs: string[]) => ({ valid: jobs, missing: [], mismatch: [] })),
-      abort: vi.fn((jobs: string[]) => ({ aborted: jobs, notFound: [] })),
+      abort: vi.fn((jobs: string[]) => ({ kind: 'answered', result: { aborted: jobs, notFound: [] } })),
       list: vi.fn(() => []),
     },
     providerProxySets: {
@@ -264,7 +264,7 @@ describe('draining IPC recovery ingress', () => {
     },
   ])('wakes retained shutdown after jobs.abort reports $outcome', async ({ result }) => {
     const ports = createDrainingPorts();
-    ports.jobs.abort = vi.fn(() => result);
+    ports.jobs.abort = vi.fn(() => ({ kind: 'answered' as const, result }));
     const listener = createIpcServer(ports);
     const retryShutdown = vi.fn();
     listener.onShutdownRecoveryAccepted = retryShutdown;
@@ -285,6 +285,31 @@ describe('draining IPC recovery ingress', () => {
     } finally {
       await closeIpcServer(listener);
     }
+  });
+
+  it('returns a lifecycle refusal without waking retained shutdown when the saga stop belongs to a successor', async () => {
+    const ports = createDrainingPorts();
+    ports.jobs.abort = vi.fn(() => ({ kind: 'successor-owned' as const, jobIds: ['held-job'] }));
+    const listener = createIpcServer(ports);
+    const wakeRetainedShutdown = vi.fn();
+    listener.onShutdownRecoveryAccepted = wakeRetainedShutdown;
+    const path = socketPath();
+    await listenIpcServer(listener, path);
+
+    try {
+      await expect(
+        requestIpcMethod(
+          path,
+          'jobs.abort',
+          { jobs: ['held-job'], projectRoot: PROJECT_ROOT },
+          { auth: { kind: 'boot', token: 'boot-token' } },
+        ),
+      ).rejects.toBeInstanceOf(IpcLifecycleRefusal);
+      expect(ports.jobs.abort).toHaveBeenCalledOnce();
+    } finally {
+      await closeIpcServer(listener);
+    }
+    expect(wakeRetainedShutdown).not.toHaveBeenCalled();
   });
 
   it('wakes retained shutdown when the client disconnects before a successful containment returns', async () => {

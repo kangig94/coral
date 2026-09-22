@@ -1181,10 +1181,11 @@ async function ensureSuccessorAfterLifecycleRefusal(
  * Issue one invocation against the coordinator this namespace has, and — for a route whose successor can
  * discharge it — once more against a successor when the reached incumbent refused it on lifecycle grounds.
  *
- * Re-issuing may repeat no work, so a lifecycle-refused method must not have executed; see 'keeps unrelated
- * catalog methods closed while draining' in tests/unit/transport/ipc/draining-recovery.test.ts. And exactly one re-issue: a
- * successor that refuses in turn has answered, so trying again would be a retry loop against a hold no spawn
- * can clear.
+ * Re-issuing is safe only when a lifecycle refusal precedes every effect. A successor that refuses in turn has
+ * answered, so another re-issue would be a retry loop against a hold no spawn can clear.
+ *
+ * See 'refuses before any effect when the saga stop can no longer be recorded' in
+ * tests/unit/coordinator/composition/job-control.test.ts.
  */
 export async function issueWithSuccessorAfterLifecycleRefusal<TResult>(
   method: string,

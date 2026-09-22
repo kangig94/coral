@@ -85,6 +85,7 @@ import { ZodError, ZodIssueCode } from 'zod';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { setStoreServicesForTest } from '#tools/testing/store-services.js';
 import type { KbRequestPort } from '#src/transport/rpc/ports.js';
+import { lifecycleRefusalResult } from '#src/transport/lifecycle-refusal.js';
 import { IdleTimer } from '#src/coordinator/live/idle.js';
 
 // The plugin root is clients/ (where bridge/manifest lives); the backend under
@@ -2117,7 +2118,7 @@ describe('execution backend server', () => {
       const getDiscussContext = () => ({}) as never;
       const requestDrain = vi.fn();
       const scopeCheckJobs = options.scopeCheckJobs ?? (() => ({ valid: [], missing: [], mismatch: [] }));
-      const abortJobs = options.abortJobs ?? (() => ({ aborted: [], notFound: [] }));
+      const abortJobs = options.abortJobs ?? (() => ({ kind: 'answered', result: { aborted: [], notFound: [] } }));
       const listDiscussSessions = options.listDiscussSessions ?? (() => []);
       const loadDiscussDetail = options.loadDiscussDetail ?? (() => null);
       const subscribeBackendEvents = vi.fn();
@@ -4410,8 +4411,11 @@ describe('execution backend server', () => {
 
     it('returns AbortResult directly from POST /jobs/abort and preserves partial misses', async () => {
       const abortJobs = vi.fn((jobIds: string[]) => ({
-        aborted: jobIds.filter((job) => job === 'job-1'),
-        notFound: ['job-2'],
+        kind: 'answered' as const,
+        result: {
+          aborted: jobIds.filter((job) => job === 'job-1'),
+          notFound: ['job-2'],
+        },
       }));
       const { deps } = createHttpHandlerDeps({
         abortJobs,
@@ -4438,6 +4442,32 @@ describe('execution backend server', () => {
           notFound: ['job-2'],
         });
         expect(abortJobs).toHaveBeenCalledWith(['job-1', 'job-2']);
+      } finally {
+        await _closeHttpServer(started.server);
+      }
+    });
+
+    it('maps a post-dispatch lifecycle refusal to the canonical HTTP 503 body', async () => {
+      const abortJobs = vi.fn(() => ({ kind: 'successor-owned' as const, jobIds: ['job-1'] }));
+      const { deps } = createHttpHandlerDeps({
+        abortJobs,
+        scopeCheckJobs: () => ({ valid: ['job-1'], missing: [], mismatch: [] }),
+      });
+      const started = await startHttpHandlerServer(deps);
+
+      try {
+        const response = await fetch(`${started.baseUrl}/jobs/abort`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Coral-Backend-Token': 'test-token',
+          },
+          body: JSON.stringify({ jobs: ['job-1'], projectRoot: DEFAULT_PROJECT_ROOT }),
+        });
+
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual(lifecycleRefusalResult);
+        expect(abortJobs).toHaveBeenCalledWith(['job-1']);
       } finally {
         await _closeHttpServer(started.server);
       }
@@ -6493,7 +6523,7 @@ describe('execution backend server', () => {
         },
         jobs: {
           scopeCheck: () => ({ valid: [], missing: [], mismatch: [] }),
-          abort: () => ({ aborted: [], notFound: [] }),
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
           waitStream: async function* () {
             return;
           },

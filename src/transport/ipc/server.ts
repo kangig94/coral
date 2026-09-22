@@ -849,6 +849,10 @@ async function dispatchFrame(
       await finishUnaryResponse(methodNotFoundResponse(request.id));
       return;
     }
+    if (invocation.kind === 'lifecycle-refused') {
+      await finishUnaryResponse({ kind: 'response', id: request.id, result: lifecycleRefusalResult });
+      return;
+    }
     if (invocation.kind === 'unary') {
       // Domain-level errors (statusCode >= 400) ride a JSON-RPC `error`
       // envelope so the client rejects with a typed error instead of
