@@ -161,12 +161,9 @@ session, and a mixed window called "permitted by design" — so its corrections 
 | [`partially-erased-store-epoch-reaping-residue.md`](./partially-erased-store-epoch-reaping-residue.md) | A `.reaping-<uuid>` directory whose lock is already gone but whose other entries remain cannot be reclaimed by the safe empty-directory `rmdir`; recursive deletion needs a new ownership proof. |
 | [`store-epoch-minting-under-sustained-external-interference.md`](./store-epoch-minting-under-sustained-external-interference.md) | The repaired writer/reclaimer race relies on one reclaimer snapshot. A hostile co-tenant or concurrent manual sweeps can still starve minting; closing that requires a fence that exists before the writer's first artifact. |
 | [`write-atomic-durable-sync-result-overloads-two-dispositions.md`](./write-atomic-durable-sync-result-overloads-two-dispositions.md) | `writeAtomicDurableSyncNode` returns one `false` for a lost private-artifact race and for a post-rename directory-sync failure. Replace the boolean with dispositions without turning unproven durability into a retry. |
-| [`store-epoch-replaced-on-undeterminable-open.md`](./store-epoch-replaced-on-undeterminable-open.md) | `tryOpenCurrentEpoch` turns any lock, probe, open, or holder failure into `unavailable`, and unproven candidates into `absent`. Either mints a successor that abandons the old epoch's `running` jobs, with no adoption and a sweeper that later deletes them. Unknown may not authorize the switch; what is open is the exit when "undeterminable" persists, since refusing to boot bricks every project. |
 
 These do not close together. The first needs ownership for residue whose lock is gone; the second needs
 pre-artifact exclusion against a reclaimer; the third changes the storage-port result every caller consumes.
-The fourth is a decision about when opening may give up on the current epoch, and it owns none of the
-others' mechanisms.
 
 ---
 
