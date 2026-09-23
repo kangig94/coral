@@ -50,6 +50,8 @@ argument-hint: "[existing|new]"
 
   6. **Tier discipline is explicit.** Tier-1/2 safety guardians are binary gates
      (PASS / NEEDS WORK on BLOCKING findings, no rubric); Tier-3 quality agents are rubric-scored.
+     Documentation reviewers are the separate `doc` tier — rubric-scored like Tier 3, but run last,
+     after the code tiers pass. Never put a documentation reviewer in tiers 1–3.
      A guardian without a score and a critic with one are both correct — do not "fix" either
      toward the other.
 </Execution_Discipline>
@@ -145,7 +147,7 @@ argument-hint: "[existing|new]"
 
   Multi-domain: generate the union of all relevant agents. Each domain gets its own validation rules.
 
-  **Tier 2 fallback** (no Tier 1 match): Identify what a senior engineer would always check in review. Create agents by severity: data loss/security → tier 1 (opus), bugs → tier 2 (sonnet), code quality → tier 3 (sonnet).
+  **Tier 2 fallback** (no Tier 1 match): Identify what a senior engineer would always check in review. Create agents by severity: data loss/security → tier 1 (opus), bugs → tier 2 (sonnet), code quality → tier 3 (sonnet). Documentation review → the `doc` tier (sonnet), whatever the severity.
 
   ### 1f. Load References
 
