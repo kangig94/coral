@@ -59,21 +59,15 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     2. **Implementation-divergent**: choosing differently means different code structure, not different parameter values
     3. **Late-cost**: changing the choice after drafting requires rewriting, not refining
 
-    The orchestrator derives concrete axes from the problem itself — they are not predefined. **If every derived axis is decided, skip Step 0 silently and proceed to Step 1.**
+    Derive the axes from the problem itself; they are not predefined. An axis is **decided** when the user's input, prior conversation, or codebase analysis answers it — the gate asks whether the answer is known, not who knew it. **If every axis is decided, skip Step 0 silently and proceed to Step 1.**
 
-    "Decided" — resolvable from the user's input, prior conversation context, or codebase analysis. The gate evaluates whether the answer is known, not who knew it.
-
-    Q&A gate prepares questions **only for undecided axes** — decided axes are never re-asked. One question per derived axis. Do not split a single axis across multiple questions, do not inflate by including borderline axes that fail any of criteria 1–3. Do not use this gate to fill the 7 agreement items — those belong in Step 1 drafting.
+    Ask one question per undecided axis only — never re-ask a decided one, never split an axis across questions, never inflate with borderline axes that fail any of criteria 1–3. The 7 agreement items belong to Step 1 drafting, not to this gate.
 
     **MANDATORY two-step output. Never call `AskUserQuestion` directly.**
 
     #### 0a. Preview Table (always before AskUserQuestion)
 
-    Print a markdown table that enumerates every question, every option, and the option's description. The user audits framing scope here — they may add an option, narrow choices, or correct a misframing before the picker UI commits them.
-
-    For each question, order options by recommendation strength. The LLM's recommended branch MUST be the first option for that question and MUST be labeled with `(recommend)` in the table option cell, e.g. `1.1 (recommend)`, `2.1 (recommend)`. Non-recommended options use only their numeric label, e.g. `1.2`, `1.3`.
-
-    Schema:
+    Print every question, option, and description, so the user can add an option, narrow choices, or correct a misframing before the picker commits them. Order options by recommendation strength: the recommended branch MUST be first and labeled `(recommend)` (e.g. `1.1 (recommend)`); the rest carry only their number (`1.2`, `1.3`).
 
     ```
     ## Q&A Gate
@@ -90,13 +84,13 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
     #### 0b. AskUserQuestion call
 
-    After printing the table, call `AskUserQuestion` with the same questions and options in the same order. The recommended branch MUST be the first structured option for each question. Discrete branches use structured options; for genuinely open dimensions, leave free-form input to the auto-provided "Other" choice rather than adding an explicit option for it.
+    Then call `AskUserQuestion` with the same questions and options in the same order — the recommended branch MUST be the first structured option. Leave genuinely open dimensions to the auto-provided "Other" rather than adding an option for them.
 
     #### 0c. Proceed
 
     Treat Q&A answers as **confirmed framing** anchoring Step 1 drafting — gated axes are not auto-marked `[unconfirmed]`. Step 3 alternatives operate within the chosen tree by default.
 
-    **Elegant override**: if a structurally superior alternative for a gated axis is identified (by Step 2 pioneer when it ran; by the orchestrator's own analysis only when Step 2 was skipped), it MAY be surfaced in Step 3 as `[unconfirmed]` under the same elegant-tier bar — genuine architectural deficiency, not taste — as an elegant tier, or as a sole form when pioneer's Kind is `sole`. Acknowledge the user's original choice and let them keep or switch.
+    **Elegant override**: a structurally superior alternative for a gated axis — from pioneer when Step 2 ran, from your own analysis only when it was skipped — MAY be surfaced in Step 3 as `[unconfirmed]` under the elegant-tier bar (or as a sole form when pioneer's Kind is `sole`). Acknowledge the user's original choice and let them keep or switch.
 
     ### 1. Analyze and Draft
 
@@ -114,17 +108,16 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     **Skip this step unless `--deep` or `--delegate` is set.** Without either flag, proceed
     directly to Step 3 — the orchestrator fills Step 3's alternatives from its own analysis.
 
-    When either flag IS set, pioneer's output is an **input to** the Step 3 draft, not a parallel
-    commentary on it. Until pioneer has returned and its findings are written into the agreement file:
+    With either flag, pioneer's output is an **input to** the Step 3 draft, not a parallel commentary
+    on it. Until 2d passes:
 
     - Do NOT present the draft.
     - Do NOT ask the user to decide, confirm, or react — no `AskUserQuestion`, no alternatives table,
       no "silence is consent".
     - Do NOT enter Step 4.
 
-    A draft shown before pioneer returns is a partial draft, and every decision the user makes on it
-    is made against the alternatives Step 2 was supposed to supply. If it happens anyway: withdraw the
-    request, wait for pioneer, re-present once.
+    Every decision made on a partial draft is made without the alternatives Step 2 was supposed to
+    supply. If it happens anyway: withdraw the request, wait for pioneer, re-present once.
 
     Run pioneer as a single **foreground blocking call** — never background it, never continue other
     work while it runs. Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
@@ -162,8 +155,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     ```
     Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
-    Then consume `output` in four steps, all before Step 3. The report is the source; the agreement
-    items are a view onto it, never a rewrite of it.
+    Then consume `output` in 2a–2d. The report is the source; the agreement is a view onto it, never a rewrite.
 
     #### 2a. Record — write once, never edit
 
@@ -180,10 +172,9 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     Bash(`chmod a-w "<report>" && sha256sum "<report>"`)   // <hash> = the first field
     ```
 
-    From here on the report is **read-only for the rest of the protocol** — no Write, no Edit, no
-    `chmod`, no labels, no annotations, no re-creation, in any step. Everything the orchestrator adds
-    about the report goes into the ledger instead. Labels are derived, not written: `P#` is pioneer's
-    own finding number, `AE#` the n-th bullet under its Already Elegant.
+    From here on the report is **read-only** — no Write, Edit, `chmod`, label, annotation, or
+    re-creation in any step; what you add about it goes into the ledger. Labels are derived, not
+    written: `P#` is pioneer's own finding number, `AE#` the n-th Already Elegant bullet.
 
     #### 2b. Ledger
 
@@ -195,9 +186,9 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
     Disposition is one of:
     - `adopted` — folded into the target sub-item (2c).
-    - `confirmed-current` — an `AE#`: the target sub-item stands as confirmed; do not invent alternatives for it.
-    - `rejected` — Reason cites tree evidence or the user's gated framing that pioneer's form contradicts.
-      Disagreeing with pioneer is recorded here; it is never expressed as a competing alternative.
+    - `confirmed-current` — an `AE#`: the target sub-item stands confirmed, with no alternatives.
+    - `rejected` — Reason cites tree evidence or gated framing that contradicts pioneer's form. This is
+      the only place to disagree with pioneer — never a competing alternative.
     - `out-of-scope` — Reason names the Scope exclusion it falls under.
     - `overridden` — set only in Step 4, when the user chooses otherwise on an `adopted` or
       `confirmed-current` sub-item; Reason quotes the user's choice.
@@ -210,10 +201,9 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     - Kind `preferred` → pioneer's form is the elegant tier. Add default/minimal only where a genuine
       candidate exists (Step 3).
 
-    On every sub-item a `P#` or `AE#` targets, the orchestrator authors no elegant tier of its own —
-    pioneer owns that slot. Sub-items pioneer left unaddressed follow Step 3 as if Step 2 were skipped.
-    If pioneer omitted Target or Kind for a finding, infer it from the finding and write the inference
-    in the ledger's Reason, so the user can see it was inferred.
+    On sub-items a `P#` or `AE#` targets, pioneer owns the elegant slot — author none of your own.
+    Unaddressed sub-items follow Step 3 as if Step 2 were skipped. If pioneer omitted Target or Kind,
+    infer it and say so in the ledger's Reason.
 
     #### 2d. Reconcile
 
@@ -221,19 +211,17 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     - every `P#` and `AE#` in the report has exactly one ledger row;
     - every `adopted` row's target sub-item quotes that finding's Replacement unchanged and carries its tag.
 
-    A mismatch is fixed before Step 3. Step 3 does not begin on an unreconciled ledger.
+    Fix any mismatch before Step 3.
 
-    **If pioneer fails, is unreachable, or returns nothing usable**: fill the spectrum from your own
-    analysis and state the miss when presenting. Never let an orchestrator-only spectrum stand as
-    pioneer-reviewed.
+    **If pioneer fails, is unreachable, or returns nothing usable**: skip 2a–2d, fill the alternatives
+    from your own analysis, and state the miss when presenting. Never let an orchestrator-only draft
+    stand as pioneer-reviewed.
 
     ### 3. Present Draft
 
-    **Precondition**: Step 2 is settled — with `--deep`/`--delegate` that means pioneer has returned
-    and its ledger is reconciled (2d), or pioneer failed and the miss is stated; without either flag it means Step 2 was
-    skipped by rule. Present **once**, complete. Never an interim draft followed by a revision.
-
-    Present complete draft. The user's role is to **correct**, not to fill from scratch.
+    Present **once**, complete, after Step 2 has settled (skipped, reconciled, or failed with the miss
+    stated). Never an interim draft followed by a revision. The user's role is to **correct**, not to
+    fill from scratch.
 
     For each unconfirmed **sub-item** (not the section as a whole), commit to the best choice.
     Three kinds of unconfirmed:
@@ -241,20 +229,19 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
       them in these tiers:
       - **default**: narrowest scope that solves the problem without introducing unnecessary complexity.
       - **minimal**: quickest path, least disruption, accepts known tradeoffs.
-      - **elegant**: the structurally superior solution, regardless of cost. Breaking changes, major refactors, and migration pain are all permitted. Only propose when a genuine architectural deficiency exists that default/minimal cannot address — e.g., dependency violations, god classes, naming that actively misleads. The change must make the codebase fundamentally better, not just different. If you cannot articulate what structural problem it solves that the default does not, it is taste — omit it.
+      - **elegant**: the structurally superior solution, regardless of cost — breaking changes, major refactors, and migration pain are all permitted. Only for a genuine architectural deficiency default/minimal cannot address (dependency violations, god classes, naming that actively misleads). It must make the codebase fundamentally better, not just different; if you cannot name the structural problem it solves that default does not, it is taste — omit it.
 
       The tiers are slots, not a quota. Every listed alternative must solve the problem on its own;
       a tier with no such candidate is omitted, never filled to complete the set. Two tiers are a
       complete decision; when only one survives, the sub-item is a sole form instead.
     - **Sole form** — exactly one form removes the deficiency, and every narrower form leaves it in
       place. Mark `[unconfirmed]` with that form and a single `keep current` counter-option stating what
-      staying costs. With pioneer, this is every `adopted` finding of kind `sole`; do not manufacture a
-      spectrum around it.
+      staying costs. Never manufacture a spectrum around it.
     - **Needs verification** (rare) — purely factual, no meaningful alternatives possible
       (e.g. "is this ESM or CJS?"). Mark `[unconfirmed]` with no nested list.
 
-    Each alternative represents a different point on the scope/investment spectrum, not minor variations of the same idea.
-    Confirmed sub-items have no marker and no alternatives. Unconfirmed sub-items with alternatives show as nested list:
+    Alternatives are different points on the scope/investment spectrum, not variations of one idea.
+    Confirmed sub-items carry no marker and no alternatives. Unconfirmed ones nest their alternatives:
     > - [ ] Response time under 200ms [unconfirmed]
     >   - default: 200ms
     >   - elegant: 50ms with cache layer
@@ -267,7 +254,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
     Respond to user feedback:
     - Correction -> update item, update task, update agreement file
-    - Correction to a sub-item a `P#` or `AE#` targets -> also update that ledger row (`overridden` when the user chose away from pioneer's form); the Pioneer Report stays untouched
+    - Correction to a sub-item a `P#` or `AE#` targets -> also update its ledger row (`overridden` when the user chose away from pioneer's form)
     - Free request (read a file, explore code) -> perform it, reflect findings in relevant items
     - New information surfaces -> update affected items proactively
 
@@ -292,26 +279,20 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
   <Constraints>
     | DO | DON'T |
     |----|-------|
-    | Run Q&A gate when any axis fails the gate-criteria check | Skip gate and draft on shaky framing |
-    | Print Q&A preview table before AskUserQuestion | Call AskUserQuestion directly without preview table |
+    | Run the Q&A gate when any axis is undecided, preview table first | Draft on shaky framing, or call AskUserQuestion without the preview table |
     | Fill the 7 agreement items autonomously before asking | Ask item-by-item like a form |
     | Block on pioneer, fold its findings in, then present once | Present the draft or solicit decisions while pioneer is still running |
-    | Say so when pioneer was skipped, failed, or unreachable | Pass an orchestrator-only spectrum off as pioneer-reviewed |
-    | Seal pioneer's output byte-for-byte as the Pioneer Report; quote its Replacement text | Touch the sealed report in any way, or paraphrase, compress, or trim its findings into the agreement |
-    | Re-read the report and the finalized agreement before transition, and walk every label | Check from memory, or transition on an unverified agreement |
-    | Give every `P#` and `AE#` a ledger row and reconcile against the file | Drop a finding or an Already Elegant entry without a row |
-    | Record disagreement with pioneer as a `rejected` row with a reason | Answer pioneer with a competing elegant tier of your own |
-    | Commit to the best choice per unconfirmed sub-item, listing only alternatives that solve it | Leave unconfirmed items blank or offer alternatives per section |
-    | Present a sole form when only one form removes the deficiency | Invent default/minimal/elegant candidates to fill the tiers |
-    | Mark uncertain items as "unconfirmed" | Present guesses as confirmed facts |
-    | Flag ambiguous items explicitly to the user | Assume the user noticed uncertainty |
-    | Update agreement file on every change | Keep agreement only in conversation |
-    | Respond to user's free requests mid-loop | Refuse non-structural requests |
-    | Propose transition when all required items confirmed | Auto-transition without asking |
-    | Respect user's "Continue discussion" choice | Push for transition prematurely |
+    | Seal pioneer's output byte-for-byte; quote its Replacement text | Touch the sealed report, or paraphrase, compress, or trim its findings into the agreement |
+    | Give every `P#` and `AE#` a ledger row; record disagreement as `rejected` with a reason | Drop a finding silently, or answer pioneer with a competing elegant tier |
+    | List only alternatives that solve the problem; use a sole form when only one does | Invent default/minimal/elegant candidates to fill the tiers |
+    | Say so when pioneer was skipped, failed, or unreachable | Pass an orchestrator-only draft off as pioneer-reviewed |
+    | Mark uncertain items `[unconfirmed]` and flag ambiguity explicitly | Present guesses as confirmed facts, or assume the user noticed |
+    | Update the agreement file on every change, including organic conversation | Keep the agreement only in conversation, or reject updates outside the formal structure |
+    | Respond to the user's free requests mid-loop | Refuse non-structural requests |
+    | Re-read the report and the finalized agreement before transition | Check from memory, or transition on an unverified agreement |
+    | Propose transition when all items are confirmed; respect "Continue discussion" | Auto-transition without asking, or push for it prematurely |
     | Save and exit gracefully on user abort | Block early exit |
     | Stay in problem definition | Suggest implementation details or solutions |
-    | Update items from organic conversation | Reject updates outside formal structure |
   </Constraints>
   <Output_Format>
     Agreement file at `CORAL_PROJECT/plans/pre-{topic}.md`:
@@ -324,15 +305,10 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     - Desired state: ... [unconfirmed]
       - default: X
       - minimal: Y
-      - elegant: Z
 
     ## Success Criteria
     - [ ] Criterion 1
-    - [ ] Criterion 2 [unconfirmed]
-      - default: ...
-      - minimal: ...
-      - elegant: ...
-    - [ ] Criterion 3 [unconfirmed]  <!-- needs verification, no alternatives -->
+    - [ ] Criterion 2 [unconfirmed]  <!-- needs verification, no alternatives -->
 
     ## Scope
     - Included: ...
@@ -368,7 +344,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     | AE1 | 4 Assumptions / ... | confirmed-current | — |
     ```
 
-    Markers: only `[unconfirmed]` is marked — no marker means confirmed. Unconfirmed sub-items that need a decision list only the tiers (default, minimal, elegant) that hold a genuine candidate. Sole-form sub-items list a single `keep current` counter-option. Unconfirmed sub-items that need verification have no nested list. Section headings carry no markers. Optional items need no markers. `(P#)` tags point into the sealed Pioneer Report.
+    Only `[unconfirmed]` is marked — no marker means confirmed; section headings and optional items carry none. Nested lists follow Step 3's three kinds: decision tiers holding a genuine candidate, a sole form's single `keep current`, or none for verification. `(P#)` tags point into the sealed Pioneer Report.
 
     ### Finalization & Transition
 
@@ -383,10 +359,10 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
        original is lost and nothing can be verified against it: tell the user the agreement is
        **not pioneer-verified** and why, and go to 4.
 
-       On a match, `Read` the report and the finalized agreement **in this step**. The conversation
-       has moved since Step 2, and what you recall of either file is the paraphrase this step exists
-       to catch — a check that did not re-read both files did not happen. Then walk the report finding
-       by finding against the ledger and the agreement, looking for:
+       On a match, `Read` the report and the finalized agreement **in this step** — what you recall of
+       either is the paraphrase this step exists to catch, so a check that did not re-read both files
+       did not happen. Walk the report finding by finding against
+       the ledger and the agreement, looking for:
        - a `P#` or `AE#` with no ledger row, or with more than one;
        - an `adopted` sub-item whose text is not the finding's Replacement verbatim;
        - an `overridden` row whose sub-item does not match the user choice its Reason quotes;
@@ -399,19 +375,16 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
        correction that changes a value the user chose goes back to the user through Step 4, then
        finalization reruns from 1; any other correction is applied and this step reruns. Proceed only
        at zero discrepancies.
-    4. **Recommend a path, then ask.** Branch the options on whether *this preplan* was invoked
-       with `--delegate`: when it was, every Proceed/ralph option carries ` --delegate` in both its
-       label and its dispatch args (the delegate branch also runs the pioneer/review pass on the
-       other host); when it wasn't, none do. Read the finalized preplan and pick the path to
-       recommend at your discretion:
+    4. **Recommend a path, then ask.** Read the finalized preplan and pick the path to recommend at
+       your discretion:
        - **ralph** — well-scoped and low-risk, root cause/fix already clear: skip planning, implement directly.
        - **Proceed** — normal task: a single plan review round.
        - **Proceed round=3** — complex, high-risk, or many interacting decisions: deeper plan review.
 
-       Surface the recommendation by **order only** — list your chosen path first (the first option
-       reads as the default); keep "Continue discussion" last. Do NOT put "Recommended" (or any
-       other steer) in a label — a fixed marker in the skill text anchors every run onto the same
-       option. Decide the order per preplan. Example option set, preplan invoked **without** `--delegate`:
+       Recommend by **order only**: your path first (the first option reads as the default),
+       "Continue discussion" last, decided per preplan. No "Recommended" or other steer in a label — a
+       fixed marker in the skill text anchors every run onto the same option. Example, without
+       `--delegate`:
 
     ```
     AskUserQuestion({ questions: [
@@ -424,10 +397,11 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
         ], multiSelect: false }
     ]})
     ```
-       With `--delegate`, the first three labels read `Proceed --delegate`, `Proceed round=3 --delegate`,
-       `ralph --delegate`.
+       When this preplan had `--delegate`, the three non-discussion options carry ` --delegate` in
+       both label and dispatch args (the delegate branch also runs the pioneer/review pass on the
+       other host); otherwise none do.
 
-    Dispatch the selection (append `--delegate` to the args only when this preplan had it):
+    Dispatch the selection:
     - **Proceed** → `Skill({ skill: "coral:plan", args: "{topic} [--delegate]" })`
     - **Proceed round=3** → `Skill({ skill: "coral:plan", args: "{topic} round=3 [--delegate]" })`
     - **ralph** → `Skill({ skill: "coral:ralph", args: "[--delegate] implement CORAL_PROJECT/plans/pre-{topic}.md — satisfy its Success Criteria" })` — prompt mode; skips the separate plan step.
