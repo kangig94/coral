@@ -121,8 +121,21 @@ export class ProviderHostUnserviceableResponseError extends Error {
   }
 }
 
+const SIGNALABLE_PROCESS_GROUP_PLATFORMS: ReadonlySet<string> = new Set([
+  'aix',
+  'android',
+  'cygwin',
+  'darwin',
+  'freebsd',
+  'haiku',
+  'linux',
+  'netbsd',
+  'openbsd',
+  'sunos',
+]);
+
 export function canSignalProviderHostProcessGroup(platform: string): boolean {
-  return platform === 'linux';
+  return SIGNALABLE_PROCESS_GROUP_PLATFORMS.has(platform);
 }
 
 export class ProviderHostUnsupportedPlatformError extends Error {
@@ -132,8 +145,8 @@ export class ProviderHostUnsupportedPlatformError extends Error {
   constructor(platform: string) {
     super(
       `Provider host admission is unsupported on platform '${platform}': ` +
-        'Coral requires detached provider servers whose recorded identity can authorize teardown after launch. ' +
-        'Run Coral on Linux.',
+        'Coral requires detached provider servers to form a signalable POSIX process group. ' +
+        'Run Coral on a supported POSIX platform.',
     );
     this.name = 'ProviderHostUnsupportedPlatformError';
     this.platform = platform;

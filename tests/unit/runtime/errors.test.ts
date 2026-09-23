@@ -205,10 +205,11 @@ const HANDOFF_REFUSAL_CASES = [
     init: { code: 'handoff_platform_identity_insufficient', context: { stage: 'before-signal', pid: 4242 } },
     userMessage:
       'Handoff refused before signaling incumbent pid=4242: this platform cannot produce a process identity strong enough to authorize a signal.',
-    remediation: 'Stop the Coral backend through its service or socket, not by pid, then retry handoff.',
+    remediation:
+      "Run 'kill 4242' to stop the incumbent, then retry startup. If it is still holding the address, run 'kill -9 4242'.",
     exitCode: 77,
     observation: undefined,
-    retryable: false,
+    retryable: true,
   },
   {
     init: { code: 'handoff_published_incarnation_missing', context: { stage: 'before-signal', pid: 4242 } },
