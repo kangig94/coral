@@ -126,3 +126,16 @@ change against `RecoveryQuarantineStore` and the source registry.
 The `session-retention-work` pair now needs only a decision, not a read: should a binding whose account
 has changed settle as unrecoverable rather than retry forever, and if so, does the operator get told
 which sessions were given up on. The evidence is above.
+
+## Re-measured 2026-09-23 — the producer has a rate now
+
+`recovery_quarantine` holds **63** `session-retention-work` rows: 62 `active` at stage `settle`, each
+carrying `Retention provider binding is unavailable for session <id>`, plus the one `continuation` row
+described above. Detection spans 2026-08-15 to 2026-09-17.
+
+Eight rows on 09-01, sixty-three on 09-23. The open question was never which rows to dispose of; it is
+that a login change is recorded as a retryable condition, so every session bound to the retired account
+adds a row and none of them can leave. The rows also hold their sessions' rollout files in
+`~/.codex/sessions` — 62 of the 70 unarchived `coral` primary rollouts measured in
+[`forked-provider-sessions-have-no-owner.md`](./forked-provider-sessions-have-no-owner.md) are these
+sessions, which is how that measurement ruled them out as a second defect.
