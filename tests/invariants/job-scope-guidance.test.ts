@@ -96,17 +96,6 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     ],
   },
   {
-    file: 'clients/skills/ralph/SKILL.md',
-    launch:
-      'coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d',
-    end: '\n       2. Verify',
-    waits: [
-      'cd "<project root>" && coral-cli wait jobs <job> --embed',
-      'cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
-      'cd "<project root>" && <the printed coral-cli wait jobs command>',
-    ],
-  },
-  {
     file: '.claude/agents/ux-critic.md',
     launch: 'Level 3: `coral-cli codex -i "..." --work-dir "<path>" -d`',
     end: '\n       b.',

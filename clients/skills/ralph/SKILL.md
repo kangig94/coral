@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: 'Use when implementing a plan or executing a prompt that requires verified completion.'
-argument-hint: '[--red] [--delegate] [--team] [task description]'
+argument-hint: '[--red] [--delegate] [task description]'
 ---
 
 # Persistent Execution with Verification
@@ -10,12 +10,11 @@ Announce at start: "Using ralph to execute this task with verification loop."
 
 ## Argument Routing
 
-| Argument     | Mode                                                                                                                       |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `<prompt>`   | Self-execute on current host (default)                                                                                     |
+| Argument     | Mode                                                                                                            |
+| ------------ | --------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`   | Self-execute on current host (default)                                                                          |
 | `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`) |
-| `--red`      | Adversarial testing (spawns red-attacker in parallel)                                                                      |
-| `--team`     | Parallel AC execution via Agent Teams (plan mode only)                                                                     |
+| `--red`      | Adversarial testing (spawns red-attacker in parallel)                                                           |
 
 Strip flags before passing the prompt to execution. Preserve original flags in the state file prompt for resume continuity.
 
@@ -59,10 +58,6 @@ No tool calls except Glob/Read for state file until execution mode is determined
 
     Both modes: state file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
 
-    **`--team` pre-flight** (only when `--team` is present):
-    1. Verify `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set to `1`. If not, fall back to sequential.
-    2. Verify plan mode. If prompt mode, error: "--team requires a plan with Acceptance Criteria."
-
     ### Step 2 — Context
 
     **Plan mode**: Read the plan's **Execution Order** section for dependency graph, batches, and file mapping.
@@ -89,8 +84,6 @@ No tool calls except Glob/Read for state file until execution mode is determined
     |-------|---------|
     | *(none)* | `<Exec_Default>` |
     | `--delegate` | `<Exec_Delegate>` |
-    | `--team` | `<Exec_Team>` |
-    | `--team --delegate` | `<Exec_Team>` (with delegated workers — see its `--delegate` subsection) |
 
     ### Step 4 — Post-Implementation (strict order, fail-fast)
 
@@ -179,51 +172,6 @@ Let `<other-host>` = the delegation target for the current host: Claude → Code
        Failed criteria → re-launch only the failed ACs, loop to 1.
 
 </Exec_Delegate>
-<Exec_Team>
-Parallel execution via Agent Teams. Requires plan mode with Acceptance Criteria.
-
-    **Setup**:
-    1. `TeamCreate({ team_name: "ralph-workers" })`
-    2. Spawn N persistent workers (N = max parallel count from any batch in Execution Order).
-       Each worker's initial prompt includes:
-       - Ralph's `<Constraints>`
-       - Plan file path as reference (read for broader context, implement only assigned ACs)
-       - Their assigned AC scope only
-       - Instruction to wait for SendMessage assignments
-
-       **If `--delegate`**: each worker's prompt must ALSO include these delegated-execution instructions
-       (let `<other-host>` = the delegation target for the current host: Claude → Codex, Codex → Claude, Copilot → Codex):
-       ```
-       For each assigned AC, delegate to <other-host> using this prompt structure:
-         Implement <AC numbers> EXACTLY as specified in the plan.
-         Read <plan file path> for full context.
-         ## Acceptance Criteria (verbatim from plan — implement exactly as written)
-         <AC text copied identically from plan>
-       ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
-       ⛔ Do not promote KB notes. Implementation only.
-       1. `coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d`
-          → run `cd "<project root>" && coral-cli wait jobs <job> --embed` and classify its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`. A status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live; only then resume with `cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, run that exact command from the same directory — `cd "<project root>" && <the printed coral-cli wait jobs command>` — since `wait` scopes from the shell's cwd. Do not proceed to step 2 while the output reports the job as still waiting. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
-       2. Verify changes yourself: read changed files, compare against AC.
-       3. If AC not met → re-run delegation. If met → report completion.
-       ```
-
-    3. **`--red`**: Spawn red-attacker as teammate in `ralph-workers` team.
-       Prompt: plan file path + acceptance criteria. Staging: `CORAL_PROJECT/red/`.
-
-    **Batch loop** — for each batch in Execution Order (sequentially):
-    1. **Assign**: SendMessage to each worker with their AC assignment for this batch.
-       If batch has fewer ACs than workers, idle workers wait.
-    2. **Collect**: Workers SendMessage completion reports back.
-       Read modified files to verify each AC independently.
-    3. If a worker fails and downstream batches depend on the failed AC → AskUserQuestion.
-       If no downstream dependency → continue, mark AC incomplete.
-
-    **Teardown**: After all batches complete:
-    1. Verify no conflicting changes across workers.
-    2. Send `shutdown_request` to all teammates, wait for `shutdown_response`.
-    3. `TeamDelete({ team_name: "ralph-workers" })`, then continue to Step 4.
-
-</Exec_Team>
 <Output_Format> ## Completion Report ### Steps Completed
 | # | Step | Verification Evidence |
 |---|------|----------------------|

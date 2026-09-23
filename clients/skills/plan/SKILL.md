@@ -10,13 +10,13 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Argument Routing
 
-| Argument       | Mode                                                                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `<prompt>`     | Self-execute on current host (default)                                                                                            |
+| Argument       | Mode                                                                                                                                                                                                     |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`     | Self-execute on current host (default)                                                                                                                                                                   |
 | `--delegate`   | Add a review pass on `<other-host>` (see Review Phases for the mapping). On a host that is not itself a provider it **replaces** Phase 2 rather than adding to it, so the net is still one review phase. |
-| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
-| `round=N,M,…`  | Per-phase budget, one value per phase in order: Phase 1 gets `N`, Phase 2 gets `M`, and any further value adds that phase. A `0` skips its phase. **Two or more values turn `--delegate` on.**                          |
-| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
+| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                                                                                             |
+| `round=N,M,…`  | Per-phase budget, one value per phase in order: Phase 1 gets `N`, Phase 2 gets `M`, and any further value adds that phase. A `0` skips its phase. **Two or more values turn `--delegate` on.**           |
+| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                                                                                               |
 
 Reviewers and the resolver always run in every review phase that dispatches — the round budget only sets how many times each phase iterates.
 
@@ -316,7 +316,6 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
         options: [
           { label: "ralph", description: "Claude-native sequential" },
           { label: "ralph --delegate", description: "Delegate to the other host" },
-          { label: "ralph --team", description: "Parallel via Agent Teams" },
           { label: "Skip", description: "No implementation" }
         ], multiSelect: false },
       { question: "Enable adversarial testing?", header: "Red",
