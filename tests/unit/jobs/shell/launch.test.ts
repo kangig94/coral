@@ -2060,6 +2060,41 @@ describe('ExecutionService launch', () => {
     },
   );
 
+  it('should resume a replacement at the effort its replaced job was launched with', async () => {
+    const never = new Promise<ProviderTurnResult>(() => {});
+    const { provider, execute } = makeProvider({ execute: () => never });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const service = createService(ctx);
+    const { progressStore, sessionManager } = getInternals(service);
+    const session = allocateTestSession(
+      sessionManager,
+      'codex',
+      'resume-replacement-effort',
+      'gpt-5.4',
+      ctx.projectRoot,
+      ctx.projectRoot,
+      TEST_BACKEND_NAMESPACE,
+    );
+    const readLaunch = progressStore.readLaunchProjection.bind(progressStore);
+    vi.spyOn(progressStore, 'readLaunchProjection').mockImplementation((jobId) =>
+      jobId === 'stale-job'
+        ? ({ jobKind: 'provider', request: { effort: 'high' } } as ReturnType<typeof readLaunch>)
+        : readLaunch(jobId),
+    );
+
+    const decision = await service.resume(
+      'codex',
+      { sessionId: session.sessionId, prompt: 'continue', replacesWorkflowJobId: 'stale-job' },
+      ctx,
+    );
+
+    if (decision.status !== 'running') throw new Error(`expected running resume: ${JSON.stringify(decision)}`);
+    trackJob(decision.jobId);
+    const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+    expect(request.effort).toBe('high');
+    expect(request.coralEnv.CORAL_EFFORT).toBeUndefined();
+  });
+
   it('start defaults bypassPermissions to true when an agent is resolved', async () => {
     realizePluginRoot(ctx);
     const never = new Promise<ProviderTurnResult>(() => {});

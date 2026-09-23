@@ -243,11 +243,19 @@ export class JobLaunchService {
       };
       agentEffort = resolvedAgent.effort;
     }
+    const defaultEffort = agentEffort ?? this.replacedJobEffort(input.replacesWorkflowJobId);
 
     const identity = persisted.value.compareIdentity(caller.envelope);
     if (!identity.ok) return this.refuseBinding(identity.failure);
 
-    return this.resumeResolved(providerName, persisted.value, session, effectiveInput, ctx, agentEffort);
+    return this.resumeResolved(providerName, persisted.value, session, effectiveInput, ctx, defaultEffort);
+  }
+
+  /** A replacement continues the job it replaces, so it runs at the effort that job was launched with. */
+  private replacedJobEffort(replacesWorkflowJobId: string | undefined): EffortLevel | undefined {
+    if (replacesWorkflowJobId === undefined) return undefined;
+    const launch = this.deps.progressStore.readLaunchProjection(replacesWorkflowJobId);
+    return launch?.jobKind === 'provider' ? resolveEffort(launch.request.effort) : undefined;
   }
 
   private bindingRuntime(): ProviderBindingRuntime {
@@ -336,7 +344,7 @@ export class JobLaunchService {
     input: Pick<JobResumeRequest, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
     session: ProviderSession,
     ctx: InvocationContext,
-    agentEffort: EffortLevel | undefined,
+    defaultEffort: EffortLevel | undefined,
   ): CanonicalContinuationProfile {
     const coralEnv = buildEffectiveCoralEnv(ctx.coralEnv, {
       effort: input.effort,
@@ -346,7 +354,7 @@ export class JobLaunchService {
     return {
       model: input.model ?? session.model,
       cwd: input.cwd ?? canonicalizeWorkDir(session.cwd, ctx.projectRoot),
-      effort: resolveEffort(input.effort) ?? agentEffort,
+      effort: resolveEffort(input.effort) ?? defaultEffort,
       bypassPermissions: input.bypassPermissions ?? session.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt ?? session.systemPrompt,
       instruction: input.instruction ?? session.instruction,
@@ -362,7 +370,7 @@ export class JobLaunchService {
     session: ProviderSession,
     input: JobResumeRequest,
     ctx: InvocationContext,
-    agentEffort?: EffortLevel,
+    defaultEffort?: EffortLevel,
   ): Promise<ProviderSessionLaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     if (session.state === 'non_resumable') {
@@ -383,7 +391,7 @@ export class JobLaunchService {
     const expectedVersion = session.version;
     const pool = input.pool ?? 'default';
 
-    const continuation = this.buildContinuationProfile(input, session, ctx, agentEffort);
+    const continuation = this.buildContinuationProfile(input, session, ctx, defaultEffort);
     let preflightRuntime;
     try {
       preflightRuntime = toPreflightRuntime(this.deps.runtime, continuation.cwd, continuation.coralEnv);

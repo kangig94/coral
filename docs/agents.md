@@ -61,7 +61,7 @@ cd "<path>" && coral-cli wait jobs <job-id...> --embed
 
 Behavior:
 
-1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `clients/agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` and `effort:` set the agent's defaults — a request `model`/`effort` overrides them, and a frontmatter `effort` overrides the `CORAL_*_EFFORT` env vars).
+1. `ExecutionService.coralDispatch()` / `JobLaunchService` resolves `clients/agents/<name>.md` into a system-channel `instruction` (frontmatter stripped; `model:` and `effort:` set the agent's defaults — a request `model`/`effort` overrides them, and a frontmatter `effort` overrides the `CORAL_*_EFFORT` env vars; a workflow replacement resumes at the effort its replaced job was launched with).
 2. `jobs/shell/launch.ts` `executeJob` applies the provider-agnostic inject bundle via `applyInjectBundle` (pre-merged into `systemPrompt`; never overwrites an existing caller systemPrompt — prepend/merge). Hooks do not run (`CORAL_CHILD=1`).
 3. The provider adapter consumes `instruction` + `systemPrompt` + `prompt`:
    - Claude: system append channel + user prompt
