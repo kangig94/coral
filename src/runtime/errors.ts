@@ -952,8 +952,11 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   handoff_platform_identity_insufficient: {
     userMessage: (context) =>
       `${verificationLead(context)}: this platform cannot produce a process identity strong enough to authorize a signal.`,
-    remediation: 'Stop the Coral backend through its service or socket, not by pid, then retry handoff.',
+    remediation: (context) =>
+      `Run 'kill ${context.pid}' to stop the incumbent, then retry startup. ` +
+      `If it is still holding the address, run 'kill -9 ${context.pid}'.`,
     exitCode: 77,
+    retryable: true,
   },
   handoff_published_incarnation_missing: {
     userMessage: (context) =>

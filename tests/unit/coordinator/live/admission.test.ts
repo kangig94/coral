@@ -21,7 +21,9 @@ import type {
   SettledUnboundStatusOwnership,
 } from '#src/jobs/contracts/provider-operation-lifecycle.js';
 import { canProbeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
+import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
+import { reapRecordedContainment, type RecordedContainmentIdentity } from '#src/infra/process-containment.js';
 import { liveChildAuthority } from '#src/infra/process-supervision.js';
 import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import type {
@@ -36,6 +38,7 @@ import {
   canSignalProviderHostProcessGroup,
   ProviderHostUnsupportedPlatformError,
 } from '#src/providers/host-admission.js';
+import { PROVIDER_CONTAINMENT_ACCEPTED } from '#src/providers/app-server-transport.js';
 import { createExclusiveSpec } from '#tests/unit/coordinator/live/provider-hosts/helpers.js';
 
 const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
@@ -44,16 +47,16 @@ const TEST_PROVIDER_PID = 20_000;
 const TEST_PROVIDER_INCARNATION = testIncarnation(1_700_000_000);
 
 const PLATFORM_CAPABILITIES = {
-  aix: { canProbeStartTime: false, canSignalProcessGroup: false },
-  android: { canProbeStartTime: false, canSignalProcessGroup: false },
-  cygwin: { canProbeStartTime: false, canSignalProcessGroup: false },
-  darwin: { canProbeStartTime: true, canSignalProcessGroup: false },
-  freebsd: { canProbeStartTime: false, canSignalProcessGroup: false },
-  haiku: { canProbeStartTime: false, canSignalProcessGroup: false },
+  aix: { canProbeStartTime: false, canSignalProcessGroup: true },
+  android: { canProbeStartTime: false, canSignalProcessGroup: true },
+  cygwin: { canProbeStartTime: false, canSignalProcessGroup: true },
+  darwin: { canProbeStartTime: true, canSignalProcessGroup: true },
+  freebsd: { canProbeStartTime: false, canSignalProcessGroup: true },
+  haiku: { canProbeStartTime: false, canSignalProcessGroup: true },
   linux: { canProbeStartTime: true, canSignalProcessGroup: true },
-  netbsd: { canProbeStartTime: false, canSignalProcessGroup: false },
-  openbsd: { canProbeStartTime: false, canSignalProcessGroup: false },
-  sunos: { canProbeStartTime: false, canSignalProcessGroup: false },
+  netbsd: { canProbeStartTime: false, canSignalProcessGroup: true },
+  openbsd: { canProbeStartTime: false, canSignalProcessGroup: true },
+  sunos: { canProbeStartTime: false, canSignalProcessGroup: true },
   win32: { canProbeStartTime: true, canSignalProcessGroup: false },
 } satisfies Record<NodeJS.Platform, { readonly canProbeStartTime: boolean; readonly canSignalProcessGroup: boolean }>;
 
@@ -281,6 +284,53 @@ describe('launch admission', () => {
       await manager.shutdown();
     },
   );
+
+  it('admits Darwin while record-only teardown retains a signal-authorization hold', async () => {
+    const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'darwin');
+    const localCoordinator = new LaunchCoordinator({ runtime: fake.runtime });
+    const abort = new AbortController();
+    let containment: RecordedContainmentIdentity | undefined;
+    const launch = localCoordinator.spawnProviderServer(
+      {
+        provider: 'codex',
+        command: 'fake-codex',
+        args: ['app-server'],
+        initializeRequest: { method: 'initialize', params: {} },
+        signal: abort.signal,
+      },
+      undefined,
+      undefined,
+      (recorded) => {
+        containment = recorded;
+        return PROVIDER_CONTAINMENT_ACCEPTED;
+      },
+      (hold) => ({ kind: 'accepted', owner: 'provider-host-manager', settlement: hold.settled }),
+    );
+
+    await vi.waitFor(() => expect(containment).toBeDefined());
+    abort.abort(new Error('synthetic provider initialization failure'));
+    await expect(launch).rejects.toMatchObject({ name: 'AbortError' });
+    if (containment === undefined) throw new Error('Expected recorded Darwin provider containment.');
+
+    let elapsedMs = 0n;
+    const clock = createMonotonicClock(Symbol('darwin-provider-host-record-only-teardown'), {
+      readMilliseconds: () => elapsedMs,
+      sleep: async (milliseconds) => {
+        elapsedMs += BigInt(milliseconds);
+      },
+    });
+    await expect(
+      reapRecordedContainment(containment, [], clock.shiftMilliseconds(clock.now(), 1_000), {
+        maxRecordedRoots: 0,
+        clock,
+        process: fake.runtime.process,
+        platform: 'darwin',
+        readProcessIncarnation: fake.runtime.process.readProcessIncarnation,
+      }),
+    ).resolves.toEqual({ kind: 'signal-authorization-refused' });
+    expect(fake.spawn).toHaveBeenCalledOnce();
+    expect(fake.processKill).not.toHaveBeenCalled();
+  });
 
   it('signals an owned coordinator-local provider group when its durable incarnation cannot be read', async () => {
     const fake = createProviderProcessRuntime(TEST_PROVIDER_PID, true, 'linux', null);

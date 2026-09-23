@@ -1,6 +1,6 @@
 # TODO — on macOS a process incarnation cannot authorize a signal
 
-**Status**: closed for live durable launches; recovered processes and provider-host admission remain fail-closed.
+**Status**: closed for live durable launches and provider-host admission; record-only teardown remains fail-closed.
 
 ## The token, and the one thing it cannot do on Darwin
 
@@ -49,11 +49,10 @@ cleanup uses the proof only for the wrapper-led group; an additional recorded ch
 the group is reaped and remains held if its absence cannot be established. A recovered durable process has no
 such proof and retains its non-success disposition.
 
-Provider-host admission is Linux-only. Provider initialization can fail after containment is recorded but
-before the handle is returned, so a later cleanup may have no live-child proof. Admitting that launch on
-Darwin would recreate an obligation no teardown path can discharge. Handle-backed teardown still threads the
-exact child authority to the shared reaper, but admission is gated by the weakest teardown path rather than
-the common one.
+Provider-host admission is allowed on Darwin. Provider initialization can fail after containment is recorded
+but before the handle is returned, so a later cleanup may have no live-child proof. The signal-authority gate,
+not admission, refuses that record-only Darwin teardown; the residual containment remains visible as a cleanup
+hold. Handle-backed teardown still threads the exact child authority to the shared reaper.
 
 A completed durable result whose containment cannot be observed publishes a job progress status naming the
 pid and reason. Cleanup retries while ownership remains held. After that status is visible, `coral-cli abort
