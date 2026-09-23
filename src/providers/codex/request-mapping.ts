@@ -279,7 +279,7 @@ function buildCodexTurnInput(prompt: string): UserInput[] {
   return [{ type: 'text', text: prompt, text_elements: [] }];
 }
 
-const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
+const DEFAULT_CODEX_MODEL = 'gpt-6-sol';
 
 /**
  * Canonical sized Codex model ids, keyed by their bare size alias. Single home for these
@@ -288,9 +288,9 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
  */
 const CODEX_SIZE_MODEL: Readonly<Record<string, string>> = Object.freeze({
   astra: 'gpt-6-astra',
-  sol: 'gpt-5.6-sol',
+  sol: 'gpt-6-sol',
   terra: 'gpt-5.6-terra',
-  luna: 'gpt-5.6-luna',
+  luna: 'gpt-6-luna',
 });
 
 function normalizeCodexSizeAlias(model: string | undefined): string | undefined {

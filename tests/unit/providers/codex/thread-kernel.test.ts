@@ -154,9 +154,9 @@ function tokenUsageEvent(
 describe('codex terminal model', () => {
   it.each([
     ['fable', 'gpt-6-astra'],
-    ['opus', 'gpt-5.6-sol'],
+    ['opus', 'gpt-6-sol'],
     ['astra', 'gpt-6-astra'],
-    [undefined, 'gpt-5.6-sol'],
+    [undefined, 'gpt-6-sol'],
   ] as const)('should record the wire model sent for request model %s', (model, wireModel) => {
     const state = createCodexTurnStateForTest(makeRequest({ model }), makeRuntime());
 
