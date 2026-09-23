@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
 
 import {
   exitIfChildProcess,
@@ -15,7 +14,7 @@ import {
   writeHookOutput,
 } from './lib/hook-utils.mjs';
 import { isLivePhase, SNAPSHOT_PREFIX, SNAPSHOT_SUFFIX, SNAPSHOT_TTL_MS } from './lib/jobs-state.mjs';
-import { activeBridgeCommand, exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
+import { exportsJobsDir, projectDirFromInput, projectTmpDir } from './lib/plugin-paths.mjs';
 
 exitIfChildProcess();
 exitIfWrongFlavor();
@@ -91,8 +90,7 @@ await failOpen(async () => {
     return;
   }
 
-  const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-  const bridge = activeBridgeCommand(pluginRoot);
+  const bridge = 'coral-cli';
   const lines = ['Compact recovery snapshot:', ''];
 
   if (liveJobs.length > 0) {

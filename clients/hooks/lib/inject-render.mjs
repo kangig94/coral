@@ -1,16 +1,19 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { coralProjectDir, resolveKbRoot, resolveProjectSource } from './hook-utils.mjs';
-import { activeBridgeCommand } from './plugin-paths.mjs';
 
 export const INJECT_FRAGMENT_GROUPS = {
-  base: ['core.md', 'tools.md'],
+  base: ['core.md', 'tools.md', 'orchestrator.md'],
   kb: ['kb/common.md', 'kb/orchestrator.md', 'kb/session.md'],
 };
 
+// Only a host session may be told the bare name: it resolves solely through the bash-rewrite hook,
+// which never runs in a Coral-spawned child process.
+const HOST_CORAL_CLI = 'coral-cli';
+
 function readInjectBundle({ asOwner, kbEnabled }) {
   return {
-    base: INJECT_FRAGMENT_GROUPS.base,
+    base: INJECT_FRAGMENT_GROUPS.base.filter((path) => asOwner || path !== 'orchestrator.md'),
     kb: kbEnabled
       ? INJECT_FRAGMENT_GROUPS.kb.filter((path) => asOwner || path !== 'kb/orchestrator.md')
       : [],
@@ -56,7 +59,7 @@ export function renderInject({
   return (
     bundle
       .replaceAll('{{CORAL_KB}}', resolveKbRoot())
-      .replaceAll('{{CORAL_CLI}}', activeBridgeCommand(pluginRoot))
+      .replaceAll('{{CORAL_CLI}}', HOST_CORAL_CLI)
       .replaceAll('{{CORAL_METHODS}}', methodsRoot)
       .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(equippedTools))
       .replaceAll('{{SESSION_ID}}', sessionId || '')

@@ -537,7 +537,7 @@ describe('session-start.mjs', () => {
     );
   });
 
-  it('replaces {{CORAL_CLI}} with the shell-quoted coral-cli bridge path', () => {
+  it('should name the CLI bare in a host session, where bash-rewrite resolves it', () => {
     const fixture = createFixture();
     writeInjectBundle(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
 
@@ -546,9 +546,7 @@ describe('session-start.mjs', () => {
     expect(result.status).toBe(0);
 
     const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain(
-      `KB: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}" kb principles`,
-    );
+    expect(output.hookSpecificOutput.additionalContext).toContain('KB: coral-cli kb principles');
   });
 
   it('ignores a newly created coral symlink from the anchored .git/info/exclude entry', () => {
@@ -1017,16 +1015,14 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('rest');
   });
 
-  it('replaces {{CORAL_CLI}} with bridge path', () => {
+  it('should name the CLI bare in a subagent of a host session', () => {
     const fixture = createFixture();
     writeInjectBundle(fixture.pluginRoot, 'CLI: {{CORAL_CLI}}');
 
     const result = runHook(SUBAGENT_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
 
     const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toBe(
-      `CLI: node "${join(fixture.pluginRoot, 'bridge', 'coral-cli.cjs')}"`,
-    );
+    expect(output.hookSpecificOutput.additionalContext).toBe('CLI: coral-cli');
   });
 
   it('renders equipped tools when the engine binary is installed', () => {
