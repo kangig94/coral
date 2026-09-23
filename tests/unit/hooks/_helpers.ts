@@ -302,6 +302,7 @@ export function extractTempInputPaths(command: string): string[] {
 export type InjectBundleFixture = {
   core?: string;
   tools?: string;
+  orchestrator?: string;
   kbCommon?: string;
   kbOrchestrator?: string;
   kbSession?: string;
@@ -314,6 +315,7 @@ export function writeInjectBundle(pluginRoot: string, input: string | InjectBund
   for (const [relativePath, content] of [
     ['core.md', fragments.core],
     ['tools.md', fragments.tools],
+    ['orchestrator.md', fragments.orchestrator],
     ['kb/common.md', fragments.kbCommon],
     ['kb/orchestrator.md', fragments.kbOrchestrator],
     ['kb/session.md', fragments.kbSession],

@@ -25,6 +25,7 @@ afterEach(() => {
 type InjectFragments = {
   core?: string;
   tools?: string;
+  orchestrator?: string;
   kbCommon?: string;
   kbOrchestrator?: string;
   kbSession?: string;
@@ -39,6 +40,7 @@ function pluginRootWith(input: string | InjectFragments): string {
   for (const [relativePath, content] of [
     ['core.md', fragments.core],
     ['tools.md', fragments.tools],
+    ['orchestrator.md', fragments.orchestrator],
     ['kb/common.md', fragments.kbCommon],
     ['kb/orchestrator.md', fragments.kbOrchestrator],
     ['kb/session.md', fragments.kbSession],
@@ -309,5 +311,15 @@ describe('renderInject path aliases', () => {
     });
     expect(out).toContain('project: {{CORAL_PROJECT}}');
     expect(out).toMatch(/methods: .+\/methods\/$/);
+  });
+});
+
+describe('renderInject delegation guidance', () => {
+  it('should give delegation guidance to the owner session only', () => {
+    const pluginRoot = join(process.cwd(), 'clients');
+    const render = (asOwner: boolean): string => renderInject({ pluginRoot, asOwner, group: 'base' });
+
+    expect(render(true)).toContain('<agent> -i');
+    expect(render(false)).not.toContain('<agent> -i');
   });
 });

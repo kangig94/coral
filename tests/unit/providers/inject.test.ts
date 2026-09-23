@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as KbPathsModule from '#src/kb/paths.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
@@ -43,6 +45,22 @@ async function loadResolve() {
   const mod = await import('#src/providers/inject.js');
   return mod.resolveInjectBundle;
 }
+
+describe('provider inject bundle content', () => {
+  it('should never tell a provider session how to launch other agents', async () => {
+    vi.stubGlobal('__PLUGIN_ROOT__', join(process.cwd(), 'clients'));
+    const resolveInjectBundle = await loadResolve();
+
+    const result = resolveInjectBundle({
+      storage: { readFileSync: (path: string) => readFileSync(path, 'utf-8') },
+      ownerSessionId: 'my-session',
+      kbRoot: '/mock/kb',
+    });
+
+    expect(result).toContain('CLI: `node');
+    expect(result).not.toContain('<agent> -i');
+  });
+});
 
 async function loadApply() {
   const mod = await import('#src/providers/inject.js');
