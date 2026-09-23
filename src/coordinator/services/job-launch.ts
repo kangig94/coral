@@ -243,10 +243,10 @@ export class JobLaunchService {
       };
       agentEffort = resolvedAgent.effort;
     }
-    const defaultEffort = agentEffort ?? this.replacedJobEffort(input.replacesWorkflowJobId);
-
     const identity = persisted.value.compareIdentity(caller.envelope);
     if (!identity.ok) return this.refuseBinding(identity.failure);
+
+    const defaultEffort = agentEffort ?? this.replacedJobEffort(input.replacesWorkflowJobId);
 
     return this.resumeResolved(providerName, persisted.value, session, effectiveInput, ctx, defaultEffort);
   }

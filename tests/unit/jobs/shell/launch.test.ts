@@ -2060,40 +2060,57 @@ describe('ExecutionService launch', () => {
     },
   );
 
-  it('should resume a replacement at the effort its replaced job was launched with', async () => {
-    const never = new Promise<ProviderTurnResult>(() => {});
-    const { provider, execute } = makeProvider({ execute: () => never });
-    mockState.getNewProvider.mockReturnValue(provider);
-    const service = createService(ctx);
-    const { progressStore, sessionManager } = getInternals(service);
-    const session = allocateTestSession(
-      sessionManager,
-      'codex',
-      'resume-replacement-effort',
-      'gpt-5.4',
-      ctx.projectRoot,
-      ctx.projectRoot,
-      TEST_BACKEND_NAMESPACE,
-    );
-    const readLaunch = progressStore.readLaunchProjection.bind(progressStore);
-    vi.spyOn(progressStore, 'readLaunchProjection').mockImplementation((jobId) =>
-      jobId === 'stale-job'
-        ? ({ jobKind: 'provider', request: { effort: 'high' } } as ReturnType<typeof readLaunch>)
-        : readLaunch(jobId),
-    );
+  it.each([
+    { name: 'inherits the replaced job effort', replaces: 'launched', effort: undefined, expected: 'high' },
+    { name: 'lets an explicit effort win over it', replaces: 'launched', effort: 'low', expected: 'low' },
+    { name: 'inherits nothing without a replaced job', replaces: undefined, effort: undefined, expected: undefined },
+    { name: 'inherits nothing from a missing job', replaces: 'missing-job', effort: undefined, expected: undefined },
+  ] as const)(
+    'should resume a replacement at its replaced job effort: $name',
+    async ({ replaces, effort, expected }) => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      mockState.resolveAgent.mockReturnValue(
+        createResolvedAgent(
+          { namespace: 'coral', name: 'architect' },
+          '---\nmodel: gpt-5.4\neffort: high\n---\nArchitect instruction',
+        ),
+      );
+      const service = createService(ctx);
+      const launched = await service.start('codex', { prompt: 'first', agent: 'architect' }, ctx);
+      if (launched.status !== 'running') throw new Error(`expected running launch: ${JSON.stringify(launched)}`);
+      trackJob(launched.jobId);
+      const session = allocateTestSession(
+        getInternals(service).sessionManager,
+        'codex',
+        'resume-replacement-effort',
+        'gpt-5.4',
+        ctx.projectRoot,
+        ctx.projectRoot,
+        TEST_BACKEND_NAMESPACE,
+      );
+      const replacesWorkflowJobId = replaces === 'launched' ? launched.jobId : replaces;
 
-    const decision = await service.resume(
-      'codex',
-      { sessionId: session.sessionId, prompt: 'continue', replacesWorkflowJobId: 'stale-job' },
-      ctx,
-    );
+      const decision = await service.resume(
+        'codex',
+        {
+          sessionId: session.sessionId,
+          prompt: 'continue',
+          ...(replacesWorkflowJobId !== undefined ? { replacesWorkflowJobId } : {}),
+          ...(effort !== undefined ? { effort } : {}),
+        },
+        ctx,
+      );
 
-    if (decision.status !== 'running') throw new Error(`expected running resume: ${JSON.stringify(decision)}`);
-    trackJob(decision.jobId);
-    const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
-    expect(request.effort).toBe('high');
-    expect(request.coralEnv.CORAL_EFFORT).toBeUndefined();
-  });
+      if (decision.status !== 'running') throw new Error(`expected running resume: ${JSON.stringify(decision)}`);
+      trackJob(decision.jobId);
+      const [resumed] = execute.mock.calls[1] as unknown as [ProviderRequest];
+      expect(resumed.effort).toBe(expected);
+      expect(resumed.coralEnv.CORAL_EFFORT).toBe(effort);
+    },
+  );
 
   it('start defaults bypassPermissions to true when an agent is resolved', async () => {
     realizePluginRoot(ctx);
