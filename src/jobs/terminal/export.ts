@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 
 import type { Database } from '../../store/db.js';
+import type { AppendedEvent, PostCommitObserver } from '../../store/append.js';
 
 import type { StoragePort } from '../../infra/port-types.js';
 import { decodeBody, type StoreReadContext } from '../../store/body-codec.js';
@@ -12,6 +13,8 @@ import { isRecord } from '../../infra/json.js';
 import { jobTerminalRecordedBodySchema } from './result.js';
 import { describeTerminalOutcome } from '../outcome.js';
 import { readProjectionJobRow } from '../projection-row.js';
+import { backendLog } from '../../infra/backend-log.js';
+import { errorMessage } from '../../infra/error-format.js';
 
 export function resultPathFor(jobsRoot: string, jobId: string): string {
   return join(jobsRoot, jobId, 'result.md');
@@ -163,4 +166,27 @@ export function ensureResultMarkdownArtifact(
 
   materializeResultMarkdown(db, jobId, jobsRoot, storage, ctx);
   return targetPath;
+}
+
+/**
+ * Renders the result export for every job terminal in a committed batch.
+ *
+ * Composed onto the post-commit observer the coordinator hands to each commit path, so a terminal owes
+ * its export by virtue of being committed rather than by the committing site remembering to ask. A
+ * failed render is reported and dropped: the terminal is already durable and the export is rebuildable,
+ * so a storage failure may not fail the job.
+ */
+export function observeTerminalResultExports(ensureResultArtifact: (jobId: string) => string): PostCommitObserver {
+  return (appended: readonly AppendedEvent[]): void => {
+    for (const event of appended) {
+      if (event.stream.kind !== 'job' || event.type !== 'job.terminal.recorded') {
+        continue;
+      }
+      try {
+        ensureResultArtifact(event.stream.id);
+      } catch (error: unknown) {
+        backendLog.warn(`Writing terminal artifact failed for ${event.stream.id}: ${errorMessage(error)}`);
+      }
+    }
+  };
 }

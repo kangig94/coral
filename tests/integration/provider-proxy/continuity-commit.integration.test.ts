@@ -628,6 +628,7 @@ async function createHarness(
     emitSessionReleased: () => undefined,
     recordedStopCauseFor: () => null,
     operations: { settled: () => undefined },
+    observeCommitted: () => undefined,
   });
   const firstProviderEventSeen = deferred();
   const onProviderEvent: ProviderEventHandler = (request) => {

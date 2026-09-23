@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { allocateTestSession } from '../../../helpers/session.js';
 import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js';
 import { TEST_PROVIDER_SCOPE } from '../../../helpers/provider-credentials.js';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
@@ -2077,6 +2077,65 @@ describe('lifecycle recovery', () => {
           )
           .get(foreignFaultJobId),
       ).toEqual({ count: 1 });
+    } finally {
+      await stopLifecycleController(controller);
+    }
+  });
+
+  it('writes a crashed job its result export at terminalization, not at the next read', async () => {
+    const modules = await loadModules();
+    const pluginRoot = createPluginRoot('plugin-crash-terminal-export');
+    const projectRoot = createProjectRoot('project-crash-terminal-export');
+    const namespace = modules.pathsModule.pluginRootNamespace(pluginRoot);
+    const eventBus = new modules.eventBusModule.TypedEventBus();
+    const reducers = modules.reducersModule.composeReducers(
+      modules.jobsEventsModule.jobsRegistry,
+      modules.workflowEventsModule.workflowRegistry,
+    );
+    const progressStore = new modules.progressStoreModule.JobStore(namespace, runtime, createEventBodyCodec(), {
+      db: openTestStoreDb(runtime, ':memory:'),
+      eventBus,
+      providers: permissiveProviderLookupPort,
+      reducers,
+    });
+    const jobId = 'crash-terminal-export';
+    stubLaunchRecord(progressStore, {
+      jobId,
+      sessionId: `${jobId}-session`,
+      provider: 'codex',
+      projectRoot,
+      backendNamespace: namespace,
+    });
+
+    const { controller, runtimeState } = createLifecycleHarness(modules, {
+      pluginRoot,
+      progressStore,
+      eventBus,
+      runStartupRecoveryFn: async () => [],
+      markJobsAsErrorFn: async (message, signal) => {
+        await modules.lifecycleModule.markJobsAsError(
+          progressStore,
+          message,
+          runtime.time.now(),
+          signal,
+          createTestJobJournalDeps(progressStore, runtime).coordinatorCommit,
+        );
+      },
+    });
+
+    try {
+      await controller.start();
+      expect(runtimeState.getLifecycle()).toBe('running');
+      await controller.shutdown('test-teardown');
+
+      expect(progressStore.readStatus(jobId)).toMatchObject({
+        phase: 'error',
+        result: { outcome: { kind: 'job_fault', fault: { kind: 'wrapper_crashed' } } },
+      });
+
+      const exported = readFileSync(join(runtime.paths.coral.exports.jobsRoot, jobId, 'result.md'), 'utf-8');
+      expect(exported.length).toBeGreaterThan(0);
+      expect(exported).toContain('Backend shutting down');
     } finally {
       await stopLifecycleController(controller);
     }

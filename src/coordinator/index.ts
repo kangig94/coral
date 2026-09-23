@@ -26,13 +26,19 @@ import {
   type LifecycleState,
 } from './lifecycle.js';
 import { ExecutionService } from './execution-service.js';
-import { commit as commitJournalEvents, type AppendedEvent, type CommitEventsFn } from '../store/append.js';
+import {
+  commit as commitJournalEvents,
+  type AppendedEvent,
+  type CommitEventsFn,
+  type PostCommitObserver,
+} from '../store/append.js';
 import { prepareCached, type Database } from '../store/db.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { readJobEvents, loadJobProjectionDetail, loadJobProjectionDetails } from '../jobs/read-queries.js';
 import { composeReducers } from '../store/reducers.js';
 import { sealCoralStoreFormat } from '../store-format.js';
 import { publishJobEvents, subscribeJobEvents } from '../jobs/shell/event-subscription.js';
+import { observeTerminalResultExports } from '../jobs/terminal/export.js';
 import { jobsRegistry } from '../jobs/events.js';
 import { sessionsRegistry } from '../sessions/events.js';
 import { discussRegistry } from '../discuss/event-registry.js';
@@ -334,6 +340,17 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
     return consumerDriver;
   };
 
+  const exportTerminalResults = observeTerminalResultExports((jobId) =>
+    getStoreServices().progressStore.ensureResultArtifact(jobId),
+  );
+  // Every commit path that can record a job terminal ends here, so the export is owed by the commit
+  // rather than by the committing site. The render runs before the reactor so a reactor failure cannot
+  // withhold it.
+  const observeCommitted: PostCommitObserver = (appended) => {
+    exportTerminalResults(appended);
+    lifecycleReactor.observe(appended);
+  };
+
   const createStoreServicesFromDbFn = (storeDb: Database): CoordinatorStoreServices => {
     if (core === null) {
       throw documentedCoralSetupError('startup_not_ready');
@@ -343,7 +360,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       eventBus,
       reducers,
       providers: providerLookupPortFromCatalog(providerRegistry),
-      observer: lifecycleReactor.observe,
+      observer: observeCommitted,
     });
     const consumerDriver = new ConsumerDriver({
       db: storeDb,
@@ -376,7 +393,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
 
     publishJobEvents(appended);
     getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
-    lifecycleReactor.observe(appended);
+    observeCommitted(appended);
     return appended;
   };
   // Built fresh on every call rather than once: composed and handed to `providerHostManager` (via `world.ts`)
@@ -398,6 +415,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       providerRegistry,
       runtime,
       emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+      // Export only: this path has never fed the lifecycle reactor, and widening that is a separate change.
+      observeCommitted: exportTerminalResults,
       // The registry is the one party that knows which cause `activateCommittedProviderLaunch`'s abort action
       // (`jobs/shell/launch.ts`) most recently sent as `operation.stop.v1` for this operation — see
       // `LocalOperationRegistry.stop()`. `null` for an operation that was never stopped through it stays a
@@ -449,7 +468,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       }
       publishJobEvents(appended);
       getConsumerDriver().notify('journal', appended[appended.length - 1]?.seq ?? getCurrentJournalSeq());
-      lifecycleReactor.observe(appended);
+      observeCommitted(appended);
       return;
     }
 

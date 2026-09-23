@@ -584,10 +584,6 @@ function createCrashedJobTerminalizationPolicy(
         });
         return undefined;
       });
-      // No export is written here on purpose. The terminal committed above already carries the crash
-      // fault, so `ensureResultMarkdownArtifact` renders it on the next read. Writing a placeholder
-      // instead makes that read a no-op — the file exists, so it is never regenerated — and the
-      // operator is handed a path to an empty file for a failure Coral can describe exactly.
       return {
         kind: 'advanced',
         outcome: 'settled',

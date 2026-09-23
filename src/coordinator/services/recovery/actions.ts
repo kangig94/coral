@@ -310,9 +310,6 @@ function markRecoveryError(
 ): RecoveryDisposition {
   const { log, settleFault } = ctx;
   const facts = settleFault(action.fault);
-  // Deliberately no export write. The settled fault is the durable answer, and
-  // `ensureResultMarkdownArtifact` renders it on the next read; an empty placeholder would satisfy the
-  // existence check that guards regeneration and leave that answer permanently unreachable.
   switch (action.fault.kind) {
     case 'missing_launch_record':
       log(`Marked live job with missing launch record: ${action.jobId}\n`);
