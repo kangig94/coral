@@ -8,6 +8,7 @@ import { jobsRegistry } from '#src/jobs/events.js';
 import { sessionsRegistry } from '#src/sessions/events.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { publishJobEvents } from '#src/jobs/shell/event-subscription.js';
+import { observeTerminalResultExports } from '#src/jobs/terminal/export.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
 import { aggregateWorkflowUsage } from '#src/jobs/workflow-usage.js';
 
@@ -15,6 +16,9 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
   const reducers = composeReducers(jobsRegistry, sessionsRegistry, discussRegistry, workflowRegistry);
   const getCurrentJournalSeq = () =>
     (progressStore.getDb().prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events').get() as { seq: number }).seq;
+  // Mirrors the production composition root, which composes this onto the same observer every commit
+  // path calls (`coordinatorCommit` in src/coordinator/index.ts).
+  const exportTerminalResults = observeTerminalResultExports((jobId) => progressStore.ensureResultArtifact(jobId));
   const coordinatorCommit = (cb: Parameters<typeof commit>[1]) => {
     const appended = commit(progressStore.getDb(), cb, {
       now: () => new Date(runtime.time.now()),
@@ -24,6 +28,7 @@ export function createTestJobJournalDeps(progressStore: JobStore, runtime: Pick<
     });
     if (appended.length > 0) {
       publishJobEvents(appended);
+      exportTerminalResults(appended);
     }
     return appended;
   };

@@ -1,5 +1,4 @@
 import { errorMessage, formatError } from '../../../infra/error-format.js';
-import { backendLog } from '../../../infra/backend-log.js';
 import { isTerminalPhase } from '../../../jobs/phase.js';
 import { isAppServerRuntime, type JobRuntime } from '../../../jobs/records.js';
 import type { DurableCliRuntimeRecord } from '../../../runtime/durable-runtime.js';
@@ -311,14 +310,6 @@ function markRecoveryError(
 ): RecoveryDisposition {
   const { log, settleFault } = ctx;
   const facts = settleFault(action.fault);
-  // Must follow the settle: an export rendered before the fault is durable describes a job that did not
-  // fail, and the guard that skips an existing artifact makes that permanent.
-  // see ensureResultMarkdownArtifact in src/jobs/terminal/export.ts
-  try {
-    ctx.progressStore.ensureResultArtifact(action.jobId);
-  } catch (error: unknown) {
-    backendLog.warn(`Writing terminal artifact failed for ${action.jobId}: ${errorMessage(error)}`);
-  }
   switch (action.fault.kind) {
     case 'missing_launch_record':
       log(`Marked live job with missing launch record: ${action.jobId}\n`);

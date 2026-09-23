@@ -584,14 +584,6 @@ function createCrashedJobTerminalizationPolicy(
         });
         return undefined;
       });
-      // Must follow the commit: an export rendered before the terminal is durable describes a job that
-      // did not fail, and the guard that skips an existing artifact makes that permanent.
-      // see ensureResultMarkdownArtifact in src/jobs/terminal/export.ts
-      try {
-        progressStore.ensureResultArtifact(status.jobId);
-      } catch (error: unknown) {
-        bestEffortLifecycleWarning(`Writing terminal artifact failed for ${status.jobId}: ${formatError(error)}`);
-      }
       return {
         kind: 'advanced',
         outcome: 'settled',
