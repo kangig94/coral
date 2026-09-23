@@ -207,19 +207,20 @@ gpt-5.6-sol  │ 5h: 0% (4:59) wk:22% (2.8d) │ spark 5h: 3% (0:47) wk: 1% (6.8
 
 ## Skills
 
-| Skill                  | Description                                                                 | `--delegate` |
-| ---------------------- | --------------------------------------------------------------------------- | :----------: |
-| `/coral:analyze`       | Deep analysis and investigation                                             |      ✓       |
-| `/coral:pathfind`      | Divergent direction discovery from problem symptoms                         |      -       |
-| `/coral:preplan`       | Problem definition before planning                                          |      ✓       |
-| `/coral:plan`          | Multi-round planning with structured review. `round=N` for deeper iteration |      ✓       |
-| `/coral:ralph`         | Persistent execution with verification. `--red` for adversarial tests       |      ✓       |
-| `/coral:bugfix`        | Bug diagnosis, planning, and fix in one shot                                |      ✓       |
-| `/coral:code-simplify` | Simplify and refine code for clarity                                        |      ✓       |
-| `/coral:init-project`  | Project initialization orchestrator                                         |      -       |
-| `/coral:discuss`       | Moderated multi-agent discussion                                            |      -       |
-| `/coral:bid`           | Submit bid/speech in active `--user` discuss session                        |      -       |
-| `/coral:statusline`    | Install or remove HUD statusline                                            |      -       |
+| Skill                  | Description                                                                                  | `--delegate` |
+| ---------------------- | -------------------------------------------------------------------------------------------- | :----------: |
+| `/coral:analyze`       | Deep analysis and investigation                                                              |      ✓       |
+| `/coral:pathfind`      | Divergent direction discovery from problem symptoms                                          |      -       |
+| `/coral:preplan`       | Problem definition before planning                                                           |      ✓       |
+| `/coral:plan`          | Multi-round planning with structured review. `round=N` for deeper iteration                  |      ✓       |
+| `/coral:ralph`         | Persistent execution with verification. `--red` for adversarial tests                        |      ✓       |
+| `/coral:bugfix`        | Bug diagnosis, planning, and fix in one shot                                                 |      ✓       |
+| `/coral:code-simplify` | Simplify and refine code for clarity                                                         |      ✓       |
+| `/coral:loop-review`   | Review and fix tier by tier until each code tier has no BLOCKING, then one final tier-review |      ✓       |
+| `/coral:init-project`  | Project initialization orchestrator                                                          |      -       |
+| `/coral:discuss`       | Moderated multi-agent discussion                                                             |      -       |
+| `/coral:bid`           | Submit bid/speech in active `--user` discuss session                                         |      -       |
+| `/coral:statusline`    | Install or remove HUD statusline                                                             |      -       |
 
 ## Knowledge Base
 
