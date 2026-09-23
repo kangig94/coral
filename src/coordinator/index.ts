@@ -415,6 +415,8 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       providerRegistry,
       runtime,
       emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
+      // Export only: this path has never fed the lifecycle reactor, and widening that is a separate change.
+      observeCommitted: exportTerminalResults,
       // The registry is the one party that knows which cause `activateCommittedProviderLaunch`'s abort action
       // (`jobs/shell/launch.ts`) most recently sent as `operation.stop.v1` for this operation — see
       // `LocalOperationRegistry.stop()`. `null` for an operation that was never stopped through it stays a

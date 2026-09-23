@@ -101,6 +101,7 @@ function testDeps(overrides: Partial<ProviderEventApplicationDeps> = {}): Provid
     emitSessionReleased: () => {},
     recordedStopCauseFor: () => null,
     operations: { settled: () => {} },
+    observeCommitted: () => {},
     ...overrides,
   };
 }
@@ -424,6 +425,67 @@ describe('createStoreProviderEventEffectPort', () => {
     const terminal = progressStore.readTerminalProjection(identity.jobId);
     expect(terminal?.outcome.kind).toBe('failed');
     expect(readSession(sessionId)?.activeJobId).toBeUndefined();
+  });
+
+  it.each([
+    [
+      'direct',
+      {
+        kind: 'direct',
+        body: {
+          kind: 'terminal',
+          terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+          diagnostics: {},
+        },
+      },
+    ],
+    ['abort', { kind: 'abort', reason: 'user_abort' }],
+    ['interrupted', { kind: 'interrupted' }],
+  ] as const)('hands a committed %s terminal to the post-commit observer', async (disposition, terminal) => {
+    const { identity } = seedOperation();
+    const observed: Array<{ types: string[]; terminalReadable: boolean }> = [];
+    const port = createStoreProviderEventEffectPort(
+      testDeps({
+        observeCommitted: (appended) => {
+          observed.push({
+            types: appended.filter((event) => event.stream.id === identity.jobId).map((event) => event.type),
+            terminalReadable: progressStore.readTerminalProjection(identity.jobId) !== null,
+          });
+        },
+      }),
+    );
+
+    await port.runInTransaction(async (tx) => {
+      if (disposition === 'interrupted') await port.appendSessionInterrupted(tx, identity, 1, 'handoff');
+      await port.appendJobTerminal(tx, identity, 1, terminal as Parameters<typeof port.appendJobTerminal>[3]);
+      return undefined;
+    });
+
+    expect(observed).toHaveLength(1);
+    expect(observed[0]?.types).toContain('job.terminal.recorded');
+    expect(observed[0]?.terminalReadable).toBe(true);
+  });
+
+  it('does not hand a rolled-back terminal to the post-commit observer', async () => {
+    const { identity } = seedOperation();
+    const observeCommitted = vi.fn();
+    const port = createStoreProviderEventEffectPort(testDeps({ observeCommitted }));
+
+    await expect(
+      port.runInTransaction(async (tx) => {
+        await port.appendJobTerminal(tx, identity, 1, {
+          kind: 'direct',
+          body: {
+            kind: 'terminal',
+            terminal: { content: 'done', durationMs: 5, outcome: { kind: 'completed' } },
+            diagnostics: {},
+          },
+        });
+        throw new Error('boom before commit');
+      }),
+    ).rejects.toThrow('boom before commit');
+
+    expect(observeCommitted).not.toHaveBeenCalled();
   });
 
   it('rolls back every effect and the watermark together when a later step fails', async () => {

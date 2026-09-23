@@ -1,5 +1,11 @@
 import type { Database } from '../../store/db.js';
-import { commitWithinOpenTransaction, type AppendContext, type CommitEventsFn } from '../../store/append.js';
+import {
+  commitWithinOpenTransaction,
+  type AppendContext,
+  type AppendedEvent,
+  type CommitEventsFn,
+  type PostCommitObserver,
+} from '../../store/append.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import { appendJobTerminalRecorded } from '../../jobs/terminal/recording.js';
@@ -58,6 +64,8 @@ import { notifyProviderOperationSettlementPending } from './provider-operation-r
  */
 interface PortTx {
   readonly db: Database;
+  /** Every batch committed directly on a job stream inside this transaction, handed on once it commits. */
+  readonly appended: AppendedEvent[];
   pendingInterruption?: ProviderInterruptionCause;
 }
 
@@ -90,6 +98,12 @@ export interface ProviderEventApplicationDeps {
    * handler is built, from the same `LocalOperationRegistry` that also answers `recordedStopCauseFor` above.
    */
   readonly operations: { settled(identity: ProviderOperationEventIdentity): void };
+  /**
+   * Receives the job-stream batches this handler commits, only after `COMMIT`. This handler commits on the
+   * raw database and reaches no other post-commit observer, so a job terminal it records owes its effects to
+   * this call alone.
+   */
+  readonly observeCommitted: PostCommitObserver;
 }
 
 function commitEventsWithinTx(db: Database, ctx: AppendContext): CommitEventsFn {
@@ -204,16 +218,19 @@ export function createStoreProviderEventEffectPort(
   deps: ProviderEventApplicationDeps,
 ): ProviderEventEffectPort<PortTx> {
   const mutationAdmission = providerOperationMutationAdmission(deps.db);
+  const commitInTx = (tx: PortTx, cb: Parameters<typeof commitWithinOpenTransaction>[1]): void => {
+    tx.appended.push(...commitWithinOpenTransaction(tx.db, cb, deps.appendContext));
+  };
   return {
     runInTransaction: (execute) =>
       mutationAdmission.run('provider-event-transaction', async () => {
         const run = async (): Promise<unknown> => {
           deps.db.exec('BEGIN IMMEDIATE');
-          const tx: PortTx = { db: deps.db };
+          const tx: PortTx = { db: deps.db, appended: [] };
+          let result: unknown;
           try {
-            const result = await execute(tx);
+            result = await execute(tx);
             deps.db.exec('COMMIT');
-            return result;
           } catch (error) {
             try {
               deps.db.exec('ROLLBACK');
@@ -222,6 +239,10 @@ export function createStoreProviderEventEffectPort(
             }
             throw error;
           }
+          // Outside the guard above: the transaction is durable here, and a failure from an observer must
+          // not reach a ROLLBACK issued against it.
+          deps.observeCommitted(tx.appended);
+          return result;
         };
         // The chain must survive a rejection, or one failed event would wedge every later one behind it.
         const pending = transactionChains.get(deps.db) ?? Promise.resolve();
@@ -273,21 +294,17 @@ export function createStoreProviderEventEffectPort(
         },
         deps.runtime.time.now(),
       );
-      commitWithinOpenTransaction(
-        tx.db,
-        (c) => {
-          c.append({
-            type: 'job.progress.emitted',
-            stream: { kind: 'job', id: identity.jobId },
-            namespace: ctx.namespace,
-            project: ctx.project,
-            refs: buildJobEventRefs({ jobId: identity.jobId, sessionId: ctx.sessionId }),
-            body: { kind: 'message', message: body.message, timing },
-          });
-          return undefined;
-        },
-        deps.appendContext,
-      );
+      commitInTx(tx, (c) => {
+        c.append({
+          type: 'job.progress.emitted',
+          stream: { kind: 'job', id: identity.jobId },
+          namespace: ctx.namespace,
+          project: ctx.project,
+          refs: buildJobEventRefs({ jobId: identity.jobId, sessionId: ctx.sessionId }),
+          body: { kind: 'message', message: body.message, timing },
+        });
+        return undefined;
+      });
     },
 
     appendSessionEvent: async (tx, identity, _seq, body) => {
@@ -345,29 +362,21 @@ export function createStoreProviderEventEffectPort(
       };
 
       if (disposition.kind === 'direct') {
-        commitWithinOpenTransaction(
-          tx.db,
-          (c) => {
-            appendProviderTerminalInCommit(c, disposition.body, options);
-            return undefined;
-          },
-          deps.appendContext,
-        );
+        commitInTx(tx, (c) => {
+          appendProviderTerminalInCommit(c, disposition.body, options);
+          return undefined;
+        });
         return;
       }
 
       if (disposition.kind === 'abort') {
-        commitWithinOpenTransaction(
-          tx.db,
-          (c) => {
-            appendJobTerminalRecorded(c, {
-              ...options,
-              terminal: { content: '', durationMs, outcome: { kind: 'aborted', reason: disposition.reason } },
-            });
-            return undefined;
-          },
-          deps.appendContext,
-        );
+        commitInTx(tx, (c) => {
+          appendJobTerminalRecorded(c, {
+            ...options,
+            terminal: { content: '', durationMs, outcome: { kind: 'aborted', reason: disposition.reason } },
+          });
+          return undefined;
+        });
         return;
       }
 
@@ -380,14 +389,10 @@ export function createStoreProviderEventEffectPort(
       }
       const session = sessionManagerWithinTx(deps, tx.db, ctx.projectRoot).get(ctx.provider, ctx.sessionId);
       const continuity = derivedInterruptionContinuity(session);
-      commitWithinOpenTransaction(
-        tx.db,
-        (c) => {
-          appendSessionInterruptedTerminalInCommit(c, { trigger, continuity }, options, { content: '', durationMs });
-          return undefined;
-        },
-        deps.appendContext,
-      );
+      commitInTx(tx, (c) => {
+        appendSessionInterruptedTerminalInCommit(c, { trigger, continuity }, options, { content: '', durationMs });
+        return undefined;
+      });
       tx.pendingInterruption = undefined;
     },
 
