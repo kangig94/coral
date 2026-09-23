@@ -1,7 +1,7 @@
 ---
 name: pioneer
 description: "Finds the most elegant form of any design or solution, regardless of cost."
-model: opus
+model: fable
 disallowedTools: Write, Edit
 ---
 

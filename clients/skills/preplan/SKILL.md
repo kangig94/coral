@@ -155,6 +155,11 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     ```
     Classify the rendered output before reading an artifact; do not classify exit code `75` alone. `Result path: <path>` marks a terminal result even when a terminal `provider_exit` propagated code `75`. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
 
+    **Usage-limit fallback** (`--deep`): pioneer runs on `fable`. If the call returns a usage-limit
+    or rate-limit warning instead of a report, retry once on `opus` with the same prompt —
+    `Agent({ subagent_type: "coral:pioneer", model: "opus", prompt: <pioneer prompt> })` — and say in
+    the draft that pioneer ran on `opus`. If the retry fails too, take the pioneer-failed path below.
+
     Then consume `output` in 2a–2d. The report is the source; the agreement is a view onto it, never a rewrite.
 
     #### 2a. Record — write once, never edit
