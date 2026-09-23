@@ -5,11 +5,11 @@
 | Agent | Tier | Model | Purpose |
 |-------|------|-------|---------|
 | code-critic | 3 | sonnet | Code quality review |
-| doc-critic | doc | sonnet | Documentation quality review — runs last, after tiers 1–3 pass |
+| doc-critic | doc | sonnet | Documentation quality review |
 | {domain agents} | {tier} | {model} | {purpose} |
 
-Tiers 1–3 review code. The `doc` tier reviews documentation and runs only after the code tiers
-have no BLOCKING finding — docs are reviewed against stable code.
+Tiers 1–3 review code; the `doc` tier reviews documentation. Under tier-review `--gated` the doc
+tier runs last, after the code findings are fixed, so docs are reviewed against stable code.
 
 ## Consultation Matrix
 

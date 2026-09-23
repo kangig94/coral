@@ -64,8 +64,8 @@ argument-hint: "[existing|new]"
 
   6. **Tier discipline is explicit.** Tier-1/2 safety guardians are binary gates
      (PASS / NEEDS WORK on BLOCKING findings, no rubric); Tier-3 quality agents are rubric-scored.
-     Documentation reviewers are the separate `doc` tier — rubric-scored like Tier 3, but run last,
-     after the code tiers pass. Never put a documentation reviewer in tiers 1–3.
+     Documentation reviewers are the separate `doc` tier — rubric-scored like Tier 3, and run last,
+     after the code fixes, under tier-review `--gated`. Never put a documentation reviewer in tiers 1–3.
      A guardian without a score and a critic with one are both correct — do not "fix" either
      toward the other.
 </Execution_Discipline>
