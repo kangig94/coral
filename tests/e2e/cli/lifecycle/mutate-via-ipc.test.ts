@@ -33,7 +33,7 @@ import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js'
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
-const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
+const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_DURABLE_WRAPPER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-durable-wrapper.cjs');
 const SOURCE_LEGACY_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
@@ -213,7 +213,7 @@ function createFixture(): Fixture {
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
-  copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
+  copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli'));
   // The coordinator validates its whole adjacent build set at startup, so the
   // Claude appserver bundle must be present or boot aborts on build identity.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
@@ -268,7 +268,7 @@ function startCliCommand(fixture: Fixture, args: readonly string[]): CliRun {
     CORAL_SESSION_ID: _coralSessionId,
     ...topLevelEnv
   } = process.env;
-  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), ...args], {
+  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli'), ...args], {
     cwd: fixture.projectRoot,
     env: {
       ...topLevelEnv,

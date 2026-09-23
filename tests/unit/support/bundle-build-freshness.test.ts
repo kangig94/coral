@@ -21,7 +21,7 @@ const INPUTS = [
 ] as const;
 const OUTPUTS = {
   backend: 'clients/build/coral-backend.cjs',
-  cli: 'clients/build/coral-cli.cjs',
+  cli: 'clients/build/coral-cli',
   claudeAppserver: 'clients/build/coral-claude-appserver.cjs',
   durableWrapper: 'clients/build/coral-durable-wrapper.cjs',
   legacyManifest: 'clients/build/manifest.json',

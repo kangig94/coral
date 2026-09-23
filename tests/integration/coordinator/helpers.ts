@@ -23,7 +23,7 @@ import { storePaths } from '#src/infra/path/store.js';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backend.cjs');
-const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli.cjs');
+const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(process.cwd(), 'clients', 'build', 'coral-durable-wrapper.cjs');
 const sourceManifestPath = join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
@@ -92,7 +92,7 @@ export function createPluginFixture(
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   const backendPath = join(root, 'bridge', 'coral-backend.cjs');
-  const cliPath = join(root, 'bridge', 'coral-cli.cjs');
+  const cliPath = join(root, 'bridge', 'coral-cli');
   const claudeAppserverPath = join(root, 'bridge', 'coral-claude-appserver.cjs');
   const durableWrapperPath = join(root, 'bridge', 'coral-durable-wrapper.cjs');
   const copyBundle = (source: string, destination: string): void => {

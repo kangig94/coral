@@ -8,7 +8,7 @@ import { e2eBundleDir } from '#tests/support/e2e-bundle-dir.js';
 import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/temporary-home-lifecycle.js';
 
 const BUNDLE_DIR = e2eBundleDir();
-const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli.cjs');
+const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli');
 const BUILD_FLAVOR = (JSON.parse(readFileSync(join(BUNDLE_DIR, 'manifest.json'), 'utf-8')) as { flavor: BuildFlavor })
   .flavor;
 const temporaryHomes = createTemporaryHomeOwner();

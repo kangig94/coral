@@ -79,7 +79,7 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
   const bundleDir = join(fixture.root, 'fatal-drain-test-bundle');
   mkdirSync(bundleDir);
 
-  for (const artifact of ['coral-cli.cjs', 'coral-claude-appserver.cjs', 'coral-durable-wrapper.cjs']) {
+  for (const artifact of ['coral-cli', 'coral-claude-appserver.cjs', 'coral-durable-wrapper.cjs']) {
     copyFileSync(join(bridgeDir, artifact), join(bundleDir, artifact));
   }
 
@@ -133,7 +133,7 @@ async function runMutatingCommand(
   signal: NodeJS.Signals | null;
   output: string;
 }> {
-  const child = spawn(process.execPath, [join(fixture.root, 'bridge', 'coral-cli.cjs'), 'abort', '--all'], {
+  const child = spawn(process.execPath, [join(fixture.root, 'bridge', 'coral-cli'), 'abort', '--all'], {
     cwd: fixture.root,
     env: topLevelEnvironment(home),
     stdio: ['ignore', 'pipe', 'pipe'],

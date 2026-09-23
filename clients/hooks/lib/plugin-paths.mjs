@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 
 import { coralStateRoot } from './hook-utils.mjs';
 
-export const BRIDGE_SUFFIX = '/bridge/coral-cli.cjs';
+export const BRIDGE_SUFFIX = '/bridge/coral-cli';
 
 export function exportsJobsDir(flavor) {
   const base = flavor === 'dev' ? 'exports-dev' : 'exports';

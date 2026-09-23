@@ -27,7 +27,7 @@ import {
 afterEach(cleanupFixtures);
 
 describe('bash-rewrite.mjs', () => {
-  const cliBundle = join(process.cwd(), 'clients', 'bridge', 'coral-cli.cjs');
+  const cliBundle = join(process.cwd(), 'clients', 'bridge', 'coral-cli');
   const createdTempInputs: string[] = [];
 
   afterEach(() => {
@@ -461,7 +461,7 @@ describe('bash-rewrite.mjs', () => {
 
   it('rewrites a stale bridge path under the coral plugin cache to the active bridge', () => {
     const cacheRoot = process.cwd();
-    const stale = join(cacheRoot, '0.0.0-nonexistent', 'bridge', 'coral-cli.cjs');
+    const stale = join(cacheRoot, '0.0.0-nonexistent', 'bridge', 'coral-cli');
     expect(existsSync(stale)).toBe(false);
 
     const result = runHook(BASH_REWRITE_HOOK, {
@@ -477,7 +477,7 @@ describe('bash-rewrite.mjs', () => {
   });
 
   it('leaves an external --plugin-dir bridge path untouched', () => {
-    const external = '/tmp/does-not-exist-xyz-coral/bridge/coral-cli.cjs';
+    const external = '/tmp/does-not-exist-xyz-coral/bridge/coral-cli';
     expect(existsSync(external)).toBe(false);
 
     const result = runHook(BASH_REWRITE_HOOK, {
@@ -540,7 +540,7 @@ describe('bash-rewrite.mjs', () => {
 });
 
 describe('bash-rewrite.mjs: background-task wrapping', () => {
-  const cliBundle = join(process.cwd(), 'clients', 'bridge', 'coral-cli.cjs');
+  const cliBundle = join(process.cwd(), 'clients', 'bridge', 'coral-cli');
   const SESSION = 'sess-bgwrap-01';
 
   function bgDir(fixture: HookFixture): string {

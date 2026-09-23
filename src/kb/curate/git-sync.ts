@@ -1,4 +1,5 @@
 import { isAbsolute, join } from 'node:path';
+import { CLI_BUNDLE_FILE } from '../../infra/bundle-manifest-address.js';
 import { backendLog } from '../../infra/backend-log.js';
 import type { TimerHandle } from '../../infra/port-types.js';
 import { INDECISIVE_PROBE_REPROBE_INTERVAL_MS } from '../../infra/process-constants.js';
@@ -631,7 +632,7 @@ export function createGitSyncController({
 
   function buildMergeDriverCommand(subcommand: string, gitArgs: string): string {
     const pluginRoot = resolvePluginRoot();
-    const cliPath = pluginRoot === undefined ? 'coral-cli' : join(pluginRoot, 'bridge', 'coral-cli.cjs');
+    const cliPath = pluginRoot === undefined ? 'coral-cli' : join(pluginRoot, 'bridge', CLI_BUNDLE_FILE);
     if (pluginRoot === undefined) {
       return `coral-cli kb ${subcommand} ${gitArgs}`;
     }

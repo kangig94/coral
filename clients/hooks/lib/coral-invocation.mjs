@@ -6,7 +6,7 @@ import { BRIDGE_SUFFIX } from './plugin-paths.mjs';
 
 // Classifies the first tokens as a coral-cli invocation. Returns
 // { kind: 'bare', subcommandStart: 1 } for `coral-cli ...` and
-// { kind: 'node', subcommandStart: 2 } for `node <path>/coral-cli.cjs ...`.
+// { kind: 'node', subcommandStart: 2 } for `node <path>/coral-cli ...`.
 export function detectCoralInvocation(tokens) {
   if (tokens.length < 1) return null;
   const first = tokens[0];
@@ -44,7 +44,7 @@ export function tokensInvokeCoralWait(tokens) {
 // parse (redirections, `$?` expansions, etc.). Read-only, so failing to
 // fire leaves behavior unchanged rather than corrupting the command.
 const WAIT_INVOCATION_RE =
-  /(?:^|[\s;|&])(?:coral-cli|node\s+["']?[^\s"']*coral-cli\.cjs["']?)\s+wait\b/;
+  /(?:^|[\s;|&])(?:coral-cli|node\s+["']?[^\s"']*coral-cli(?:\.cjs)?["']?)\s+wait\b/;
 
 export function textInvokesCoralWait(text) {
   return WAIT_INVOCATION_RE.test(text);

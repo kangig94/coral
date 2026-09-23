@@ -3,7 +3,11 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '../src/infra/bundle-manifest-address.ts';
+import {
+  CLI_BUNDLE_FILE,
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  LEGACY_CLI_BUNDLE_FILE,
+} from '../src/infra/bundle-manifest-address.ts';
 
 const [targetArgument, sourceArgument] = process.argv.slice(2);
 if (!targetArgument) {
@@ -13,9 +17,11 @@ if (!targetArgument) {
 const targetDir = resolve(targetArgument);
 const requiredBundleFiles = [
   'coral-backend.cjs',
-  'coral-cli.cjs',
+  CLI_BUNDLE_FILE,
+  LEGACY_CLI_BUNDLE_FILE,
   'coral-claude-appserver.cjs',
   'coral-durable-wrapper.cjs',
+  'package.json',
   'manifest.json',
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
 ];
@@ -50,7 +56,7 @@ const manifestBytes = readFileSync(join(targetDir, CURRENT_STRICT_BUNDLE_MANIFES
 const manifest = parseJson(manifestBytes, `${basename(targetDir)}/${CURRENT_STRICT_BUNDLE_MANIFEST_FILE}`);
 const identities = [
   runIdentityProbe('coral-backend.cjs'),
-  runIdentityProbe('coral-cli.cjs'),
+  runIdentityProbe(CLI_BUNDLE_FILE),
   runIdentityProbe('coral-claude-appserver.cjs'),
 ];
 // Field-wise, not `JSON.stringify` — the probe returns a schema-parsed object, so its key order follows the
@@ -80,7 +86,8 @@ function bundleHash(file) {
 
 for (const [file, field] of [
   ['coral-backend.cjs', 'bundleHash'],
-  ['coral-cli.cjs', 'cliBundleHash'],
+  [CLI_BUNDLE_FILE, 'cliBundleHash'],
+  [LEGACY_CLI_BUNDLE_FILE, 'cliBundleHash'],
   ['coral-claude-appserver.cjs', 'claudeAppserverBundleHash'],
   ['coral-durable-wrapper.cjs', 'durableWrapperBundleHash'],
 ]) {

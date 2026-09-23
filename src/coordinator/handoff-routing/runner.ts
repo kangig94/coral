@@ -1,4 +1,5 @@
 import { processIncarnationSchema } from '../../infra/node-process.js';
+import { CLI_BUNDLE_FILE } from '../../infra/bundle-manifest-address.js';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -1230,7 +1231,7 @@ async function executeResolvedHandoff(
               expectedAttemptId: startupAttemptIdForDelegation(runtime),
             }
           : undefined;
-      const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : 'coral-cli.cjs';
+      const executable = operation.kind === 'backend-startup' ? 'coral-backend.cjs' : CLI_BUNDLE_FILE;
       const childArguments = [join(execution.bundleDir, executable), ...delegatedArguments(operation)];
       const spawnOptions: SpawnOptions = {
         cwd: runtime.env.cwd(),

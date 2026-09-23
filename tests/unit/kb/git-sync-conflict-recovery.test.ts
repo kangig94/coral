@@ -72,7 +72,7 @@ function writeFakeMergeDriver(pluginRoot: string): void {
   const bridgeDir = join(pluginRoot, 'bridge');
   mkdirSync(bridgeDir, { recursive: true });
   writeFileSync(
-    join(bridgeDir, 'coral-cli.cjs'),
+    join(bridgeDir, 'coral-cli'),
     `#!/usr/bin/env node
 const { spawnSync } = require('node:child_process');
 const args = process.argv.slice(2);
@@ -281,7 +281,7 @@ describe('git sync conflict recovery', () => {
     writeFakeMergeDriver(pluginRoot);
     // `resolvePluginRoot()` checks the esbuild-injected `__PLUGIN_ROOT__` global first, and `vitest/setup.ts`
     // pins that to this repo's own `clients/` for every test — unstubbed, the merge driver invoked below would
-    // be the real bundled `coral-cli.cjs`, not the fake one just written above.
+    // be the real bundled `coral-cli`, not the fake one just written above.
     vi.stubGlobal('__PLUGIN_ROOT__', undefined);
 
     git(root, ['init', '--bare', '--initial-branch=main', remote]);
@@ -520,7 +520,7 @@ describe('git sync conflict recovery', () => {
   //
   // Mocked at the `processPort` level, like the multi-commit test above, rather than through a real merge
   // driver subprocess: `__PLUGIN_ROOT__` is fixed to this repo's own `clients/` under vitest
-  // (`vitest/setup.ts`), so `ensureKbMergeDrivers` always configures the real bundled `coral-cli.cjs` and a
+  // (`vitest/setup.ts`), so `ensureKbMergeDrivers` always configures the real bundled `coral-cli` and a
   // fake driver script written to a scratch `pluginRoot` is never actually invoked — proven by running this
   // scenario against a hand-written refusing driver first, which produced real `git merge-file` markers
   // instead, coming from the real bundle. Driving `ls-files -u`/`diff --check` directly exercises the exact

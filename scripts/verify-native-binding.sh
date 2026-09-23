@@ -17,7 +17,7 @@ TEST_HOME="$TMPDIR_BASE/home"
 mkdir -p "$TEST_HOME"
 
 echo "[verify-native-binding] initialize canonical epoch"
-HOME="$TEST_HOME" node "$REPO_ROOT/clients/build/coral-cli.cjs" backend store-reset discard --target gen2 --flavor prod >/dev/null
+HOME="$TEST_HOME" node "$REPO_ROOT/clients/build/coral-cli" backend store-reset discard --target gen2 --flavor prod >/dev/null
 STORE_PATH="$TEST_HOME/.coral/gen2/data/store/epoch-1/store.db"
 
 echo "[verify-native-binding] spawn smoke in scratch cwd"

@@ -376,10 +376,10 @@ describe('entity graph merge driver', () => {
     expect(gitCalls).toContainEqual(['config', 'rebase.backend', 'merge']);
     const driverCall = gitCalls.find((args) => args[0] === 'config' && args[1] === 'merge.coral-entity-graph.driver');
     expect(driverCall?.[2]).toContain('kb merge-entity-graph "%O" "%A" "%B"');
-    // Asserts `pluginRoot` itself, not just the `bridge/coral-cli.cjs` suffix every plugin root shares — that
+    // Asserts `pluginRoot` itself, not just the `bridge/coral-cli` suffix every plugin root shares — that
     // weaker check would pass even if `resolvePluginRoot()` ignored `envPort` and used the real bundle path.
     expect(driverCall?.[2]).toContain(pluginRoot);
-    expect(driverCall?.[2]).toContain(join('bridge', 'coral-cli.cjs'));
+    expect(driverCall?.[2]).toContain(join('bridge', 'coral-cli'));
   });
 
   it('normalizes the entity graph after inbound sync only when the graph changed', async () => {

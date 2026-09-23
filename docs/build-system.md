@@ -26,8 +26,10 @@ Flavor is injected into every bundle together with `version`, `buildSetId`, and 
 Build output goes to `clients/build/` (git-ignored). The committed runtime bundles in `clients/bridge/` are rebuilt by `npm run build:release` and are refreshed on `main` only by the **Release** workflow (`.github/workflows/release.yml`) — not in feature PRs. The committed bundles are:
 
 - `clients/bridge/coral-backend.cjs`
-- `clients/bridge/coral-cli.cjs`
+- `clients/bridge/coral-cli` — the CLI, extensionless and executable, so `clients/bridge/` on `PATH` answers as the `coral-cli` command
+- `clients/bridge/coral-cli.cjs` — a byte-identical copy kept for 0.10.x builds, which validate and launch a newer bundle's CLI under this name (removed at 0.11.0, `docs/todo/legacy-cli-bundle-name.md`)
 - `clients/bridge/coral-claude-appserver.cjs`
+- `clients/bridge/package.json` — `{"type":"commonjs"}`, so Node reads the extensionless CLI as CommonJS even under a `"type": "module"` package
 - `clients/bridge/manifest.json`
 
 `clients/bridge/` is not checked per-PR: PR CI (`.github/workflows/ci.yml`) only builds and tests. `clients/bridge/` is regenerated for the exact version and committed by the Release workflow at release time, so each release **tag** carries the matching bundles (the plugin installs from tags). Between releases, `clients/bridge/` on `main` is the previous release's build — expected and harmless, since installs never come from `main`'s HEAD.
@@ -47,7 +49,7 @@ dist/**/*.js + dist/**/*.d.ts
   │
   ▼  esbuild (`scripts/build-server.mjs`)
 clients/build/coral-backend.cjs
-clients/build/coral-cli.cjs
+clients/build/coral-cli (+ byte-identical coral-cli.cjs)
 clients/build/coral-claude-appserver.cjs
 clients/build/manifest.json (`{ "version", "buildSetId", "bundleHash", "cliBundleHash", "claudeAppserverBundleHash", "flavor", "storeFormatFingerprint" }`)
   │
@@ -60,7 +62,7 @@ The runtime is anchored by two primary entry points:
 | Entry point                    | Output                            | Role           |
 | ------------------------------ | --------------------------------- | -------------- |
 | `src/coordinator/bootstrap.ts` | `clients/build/coral-backend.cjs` | Backend daemon |
-| `src/cli/bootstrap.ts`         | `clients/build/coral-cli.cjs`     | CLI entrypoint |
+| `src/cli/bootstrap.ts`         | `clients/build/coral-cli`         | CLI entrypoint |
 
 The build script also emits `clients/build/coral-claude-appserver.cjs` from `src/providers/claude/appserver/server.ts` for the Claude broker helper runtime. The filename is retained for bridge compatibility; the helper defaults to `claude -p` stream-json and can use the PTY TUI transport when `CORAL_CLAUDE_TRANSPORT=tui`.
 
@@ -68,14 +70,14 @@ The build script also emits `clients/build/coral-claude-appserver.cjs` from `src
 
 `coral-backend.cjs` is one artifact with six dispatch modes. Before `src/coordinator/bootstrap.ts`'s `main()` constructs the ordinary coordinator, it checks argv and env for five other invocations of that same artifact and returns without ever reaching `createCoordinatorServer`:
 
-| Invocation                                                                                                    | Behavior                                                                                                                             |
-| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `--print-store-format-fingerprint`                                                                              | Prints the canonical store-format fingerprint and exits                                                                              |
-| `--print-store-reset-build-identity`                                                                            | Prints the strict embedded build identity as JSON and exits                                                                          |
-| `--provider-guardian <capsulePath>` \| `--provider-reaper <capsulePath>` \| `--provider-proxy <capsulePath>`   | Dispatches into one provider-proxy role process instead of the coordinator — `src/provider-proxy/role-argv.ts` parses the flag, `role-main.ts` runs the named role |
-| `CORAL_KB_DAEMON=1` (env)                                                                                        | Runs the KB daemon main instead of the coordinator                                                                                    |
-| `--smoke-open-store --path <dbPath>`                                                                            | Opens a proven canonical epoch store, round-trips one row inside a transaction, and exits — a build/release smoke check              |
-| (none of the above)                                                                                              | Ordinary coordinator construction (`createCoordinatorServer`)                                                                         |
+| Invocation                                                                                                   | Behavior                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--print-store-format-fingerprint`                                                                           | Prints the canonical store-format fingerprint and exits                                                                                                            |
+| `--print-store-reset-build-identity`                                                                         | Prints the strict embedded build identity as JSON and exits                                                                                                        |
+| `--provider-guardian <capsulePath>` \| `--provider-reaper <capsulePath>` \| `--provider-proxy <capsulePath>` | Dispatches into one provider-proxy role process instead of the coordinator — `src/provider-proxy/role-argv.ts` parses the flag, `role-main.ts` runs the named role |
+| `CORAL_KB_DAEMON=1` (env)                                                                                    | Runs the KB daemon main instead of the coordinator                                                                                                                 |
+| `--smoke-open-store --path <dbPath>`                                                                         | Opens a proven canonical epoch store, round-trips one row inside a transaction, and exits — a build/release smoke check                                            |
+| (none of the above)                                                                                          | Ordinary coordinator construction (`createCoordinatorServer`)                                                                                                      |
 
 The three provider-role flags are one dispatch branch in `main()` — `parseProviderRoleArgv` refuses more than one role flag per invocation — but name three distinct roles (guardian, reaper, proxy) documented under [Provider proxy](./architecture.md#module-map).
 
@@ -135,14 +137,14 @@ npm run verify:kiwi-runtime-build
 
 ## Build-time Injections
 
-| Constant                       | Source                        | Usage                                                   |
-| ------------------------------ | ----------------------------- | ------------------------------------------------------- |
-| `__VERSION__`                  | `package.json`                | Backend health/version output and CLI version reporting |
-| `__BUILD_SET_ID__`             | generated once per build      | Reject mixed artifacts and cross-build incident reads   |
-| `__BUILD_FLAVOR__`             | `--flavor prod` or `dev`      | Bind executables to the prod/dev state tree             |
-| `__STORE_FORMAT_FINGERPRINT__` | probe backend output          | Bind executable identity to the exact store contract    |
-| `__PLUGIN_ROOT__`              | CJS banner using `__dirname`  | Resolve plugin-relative assets at runtime               |
-| `__IS_CORAL_BACKEND_MAIN__`    | build script                  | Backend main-entry guard                                |
+| Constant                       | Source                       | Usage                                                   |
+| ------------------------------ | ---------------------------- | ------------------------------------------------------- |
+| `__VERSION__`                  | `package.json`               | Backend health/version output and CLI version reporting |
+| `__BUILD_SET_ID__`             | generated once per build     | Reject mixed artifacts and cross-build incident reads   |
+| `__BUILD_FLAVOR__`             | `--flavor prod` or `dev`     | Bind executables to the prod/dev state tree             |
+| `__STORE_FORMAT_FINGERPRINT__` | probe backend output         | Bind executable identity to the exact store contract    |
+| `__PLUGIN_ROOT__`              | CJS banner using `__dirname` | Resolve plugin-relative assets at runtime               |
+| `__IS_CORAL_BACKEND_MAIN__`    | build script                 | Backend main-entry guard                                |
 
 Unbundled hooks read the adjacent manifest; bundled runtimes compare that same manifest with their injected identity and the hashes of all three adjacent executables.
 

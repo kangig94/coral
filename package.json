@@ -17,7 +17,9 @@
   "files": [
     "dist/",
     "clients/bridge/coral-backend.cjs",
+    "clients/bridge/coral-cli",
     "clients/bridge/coral-cli.cjs",
+    "clients/bridge/package.json",
     "clients/bridge/coral-claude-appserver.cjs",
     "clients/bridge/coral-durable-wrapper.cjs",
     "clients/bridge/manifest.json",

@@ -36,7 +36,7 @@ function bundleDir(contents: unknown = manifest): string {
   roots.push(root);
   mkdirSync(root, { recursive: true });
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf-8');
-  writeFileSync(join(root, 'coral-cli.cjs'), cliBundle, 'utf-8');
+  writeFileSync(join(root, 'coral-cli'), cliBundle, 'utf-8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf-8');
   writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf-8');
   writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), `${JSON.stringify(contents)}\n`, 'utf-8');
@@ -100,7 +100,7 @@ describe('bundle-manifest', () => {
   });
 
   it.each([
-    ['coral-cli.cjs', 'tampered cli'],
+    ['coral-cli', 'tampered cli'],
     ['coral-claude-appserver.cjs', 'tampered claude appserver'],
     ['coral-durable-wrapper.cjs', 'tampered durable wrapper'],
   ])('rejects a mismatched adjacent %s artifact', (file, contents) => {
