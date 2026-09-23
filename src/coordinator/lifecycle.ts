@@ -584,10 +584,14 @@ function createCrashedJobTerminalizationPolicy(
         });
         return undefined;
       });
-      // No export is written here on purpose. The terminal committed above already carries the crash
-      // fault, so `ensureResultMarkdownArtifact` renders it on the next read. Writing a placeholder
-      // instead makes that read a no-op — the file exists, so it is never regenerated — and the
-      // operator is handed a path to an empty file for a failure Coral can describe exactly.
+      // Must follow the commit: an export rendered before the terminal is durable describes a job that
+      // did not fail, and the guard that skips an existing artifact makes that permanent.
+      // see ensureResultMarkdownArtifact in src/jobs/terminal/export.ts
+      try {
+        progressStore.ensureResultArtifact(status.jobId);
+      } catch (error: unknown) {
+        bestEffortLifecycleWarning(`Writing terminal artifact failed for ${status.jobId}: ${formatError(error)}`);
+      }
       return {
         kind: 'advanced',
         outcome: 'settled',
