@@ -24,7 +24,6 @@ export const RALPH_LOOP_HOOK = join(process.cwd(), 'clients', 'hooks', 'ralph-lo
 export const CLAUDE_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'claude.json');
 export const CODEX_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'codex.json');
 export const COPILOT_HOOKS_JSON_PATH = join(process.cwd(), 'clients', 'hooks', 'copilot.json');
-export const TEMP_INPUT_FILE_PATTERN = /coral-input-[0-9a-f]{16}\.txt/;
 
 export interface HookRunResult {
   stdout: string;
@@ -293,15 +292,10 @@ export function expectBashRewriteOutput(result: HookRunResult): BashRewriteOutpu
   return output as BashRewriteOutput;
 }
 
-export function extractTempInputPaths(command: string): string[] {
-  return [...command.matchAll(new RegExp(TEMP_INPUT_FILE_PATTERN.source, 'g'))].map((match) =>
-    join(tmpdir(), match[0]),
-  );
-}
-
 export type InjectBundleFixture = {
   core?: string;
   tools?: string;
+  cli?: string;
   orchestrator?: string;
   kbCommon?: string;
   kbOrchestrator?: string;
@@ -315,6 +309,7 @@ export function writeInjectBundle(pluginRoot: string, input: string | InjectBund
   for (const [relativePath, content] of [
     ['core.md', fragments.core],
     ['tools.md', fragments.tools],
+    ['cli.md', fragments.cli],
     ['orchestrator.md', fragments.orchestrator],
     ['kb/common.md', fragments.kbCommon],
     ['kb/orchestrator.md', fragments.kbOrchestrator],

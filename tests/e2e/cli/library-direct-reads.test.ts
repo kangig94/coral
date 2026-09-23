@@ -30,7 +30,7 @@ import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/tem
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BUNDLE_DIR = e2eBundleDir();
-const SOURCE_CLI_BUNDLE = join(SOURCE_BUNDLE_DIR, 'coral-cli.cjs');
+const SOURCE_CLI_BUNDLE = join(SOURCE_BUNDLE_DIR, 'coral-cli');
 const SOURCE_MANIFEST = join(SOURCE_BUNDLE_DIR, 'manifest.json');
 const SOURCE_SQLITE3_DIR = join(REPO_ROOT, 'node_modules', 'better-sqlite3');
 const FIXED_NOW = new Date('2026-03-22T00:00:00.000Z');
@@ -73,7 +73,7 @@ function createFixture(): Fixture {
 
   mkdirSync(join(root, 'bridge'), { recursive: true });
   mkdirSync(projectRoot, { recursive: true });
-  copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
+  copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli'));
   copyFileSync(SOURCE_MANIFEST, join(root, 'bridge', 'manifest.json'));
 
   mkdirSync(join(root, 'node_modules'), { recursive: true });
@@ -258,7 +258,7 @@ function runCliSubprocess(
   fixture: Fixture,
   args: string[],
 ): { status: number | null; stdout: string; stderr: string; error?: Error } {
-  const result = spawnSync('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), ...args], {
+  const result = spawnSync('node', [join(fixture.root, 'bridge', 'coral-cli'), ...args], {
     cwd: fixture.projectRoot,
     env: {
       ...process.env,
@@ -373,7 +373,7 @@ afterEach(async () => {
 describe('cli library-direct reads', () => {
   it.each(READ_COMMANDS)('runs %s without a coordinator and never opens IPC', async (testCase) => {
     if (!existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error(`Expected coral-cli.cjs and manifest.json in ${SOURCE_BUNDLE_DIR}.`);
+      throw new Error(`Expected coral-cli and manifest.json in ${SOURCE_BUNDLE_DIR}.`);
     }
 
     const fixture = createFixture();
@@ -402,7 +402,7 @@ describe('cli library-direct reads', () => {
 
   it('prints an informational note when the CoralStore database does not exist yet', () => {
     if (!existsSync(SOURCE_CLI_BUNDLE) || !existsSync(SOURCE_MANIFEST)) {
-      throw new Error(`Expected coral-cli.cjs and manifest.json in ${SOURCE_BUNDLE_DIR}.`);
+      throw new Error(`Expected coral-cli and manifest.json in ${SOURCE_BUNDLE_DIR}.`);
     }
 
     const fixture = createFixture();

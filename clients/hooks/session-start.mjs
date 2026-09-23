@@ -318,7 +318,7 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
 }
 
 function ensureCliPermission() {
-  const rule = 'Bash(node *coral-cli*)';
+  const rule = 'Bash(coral-cli *)';
   const dir = claudeConfigDir();
   const file = join(dir, 'settings.json');
   try {

@@ -1,4 +1,5 @@
 import { lstatSync, realpathSync } from 'node:fs';
+import { CLI_BUNDLE_FILE } from './bundle-manifest-address.js';
 import { isAbsolute, resolve } from 'node:path';
 
 import {
@@ -141,7 +142,7 @@ function validateAdjacentTarget(
   }
 
   const bundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-backend.cjs');
-  const cliBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-cli.cjs');
+  const cliBundleHash = hashStableAdjacentBundle(evidence.bundleDir, CLI_BUNDLE_FILE);
   const claudeAppserverBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-claude-appserver.cjs');
   const durableWrapperBundleHash = hashStableAdjacentBundle(evidence.bundleDir, 'coral-durable-wrapper.cjs');
   if (

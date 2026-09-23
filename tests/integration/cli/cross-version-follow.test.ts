@@ -98,7 +98,7 @@ function createReplayBundle(tracePath: string): {
   };
 
   writeFileSync(join(bundleDir, 'coral-backend.cjs'), backendBundle, 'utf8');
-  writeFileSync(join(bundleDir, 'coral-cli.cjs'), cliBundle, 'utf8');
+  writeFileSync(join(bundleDir, 'coral-cli'), cliBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-claude-appserver.cjs'), appserverBundle, 'utf8');
   writeFileSync(join(bundleDir, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
   writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifest), 'utf8');

@@ -367,17 +367,17 @@ Live scratch artifacts:
 
 ## Runtime Dependencies
 
-| Package                          | Purpose                                                           |
-| -------------------------------- | ----------------------------------------------------------------- |
-| `zod`                            | Schema validation                                                 |
-| `@orama/orama`                   | Base KB full-text retrieval projection                            |
-| `graphology`                     | Graph data structures for KB community analysis                   |
-| `graphology-communities-louvain` | Community detection                                               |
-| `mammoth` / `turndown`           | Source import conversion                                          |
-| `@lydell/node-pty`               | Interactive Claude CLI broker transport                           |
-| `commander`                      | CLI command parsing (bundled into `clients/bridge/coral-cli.cjs`) |
-| `yaml`                           | YAML parsing                                                      |
-| `zod-to-json-schema`             | Schema export helpers                                             |
+| Package                          | Purpose                                                       |
+| -------------------------------- | ------------------------------------------------------------- |
+| `zod`                            | Schema validation                                             |
+| `@orama/orama`                   | Base KB full-text retrieval projection                        |
+| `graphology`                     | Graph data structures for KB community analysis               |
+| `graphology-communities-louvain` | Community detection                                           |
+| `mammoth` / `turndown`           | Source import conversion                                      |
+| `@lydell/node-pty`               | Interactive Claude CLI broker transport                       |
+| `commander`                      | CLI command parsing (bundled into `clients/bridge/coral-cli`) |
+| `yaml`                           | YAML parsing                                                  |
+| `zod-to-json-schema`             | Schema export helpers                                         |
 
 ## External Dependencies
 
@@ -399,7 +399,7 @@ clients/hooks/claude.json                       -> hook registration (Claude Cod
 clients/hooks/codex.json                        -> hook registration (Codex, subset)
 clients/hooks/copilot.json                      -> hook registration (Copilot, subset)
 clients/bridge/coral-backend.cjs                -> backend daemon bundle
-clients/bridge/coral-cli.cjs                    -> CLI bundle
+clients/bridge/coral-cli                        -> CLI bundle
 clients/bridge/coral-claude-appserver.cjs       -> Claude broker helper bundle
 clients/bridge/manifest.json                    -> embedded build identity + hashes for backend, CLI, and Claude helper
 

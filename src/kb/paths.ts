@@ -1,23 +1,8 @@
 import { isAbsolute, join, relative, resolve } from 'node:path';
-import type { BuildFlavor } from '../infra/build-flavor.js';
-import { kbVaultRoot } from '../infra/path/root.js';
 import { KB_RUNTIME_AUTHORITY } from '../runtime/kb-runtime-authority.js';
 
 // eslint-disable-next-line no-control-regex -- rejects C0/C1 control chars (incl NUL) in KB slugs before they reach writeFileSync
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
-
-/**
- * KB-domain wrapper for the vault root. `customRoot` is the resolved
- * CORAL_KB_PATH value from caller's env port (path resolvers do not read
- * ambient env). Delegates to `infra/path/root.ts:kbVaultRoot` so KB and
- * the CoralPaths composer share identical override semantics.
- */
-export function kbRoot(flavor: BuildFlavor, customRoot?: string, baseDir?: string): string {
-  return kbVaultRoot(flavor, {
-    ...(baseDir === undefined ? {} : { baseDir }),
-    ...(customRoot === undefined ? {} : { customRoot }),
-  });
-}
 
 /** Idempotent. */
 export function stripMdExt(name: string): string {

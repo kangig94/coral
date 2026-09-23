@@ -91,7 +91,7 @@ function startIncumbent(socketPath: string, infoPath: string, armMarker: string)
 }
 
 function startCli(root: string, args: readonly string[], env: NodeJS.ProcessEnv): CliRun {
-  const child = spawn(process.execPath, [join(root, 'bridge', 'coral-cli.cjs'), ...args], {
+  const child = spawn(process.execPath, [join(root, 'bridge', 'coral-cli'), ...args], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

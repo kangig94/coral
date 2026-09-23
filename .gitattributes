@@ -1,3 +1,4 @@
 clients/bridge/coral-backend.cjs -diff linguist-generated=true
 clients/bridge/coral-claude-appserver.cjs -diff linguist-generated=true
+clients/bridge/coral-cli -diff linguist-generated=true
 clients/bridge/coral-cli.cjs -diff linguist-generated=true

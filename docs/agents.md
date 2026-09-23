@@ -3,20 +3,20 @@
 Coral has three agent surfaces:
 
 - Claude-native agents that run directly in Claude Code.
-- Codex-delegated agents launched through `coral-cli codex <agent> -i ...`.
+- Codex-delegated agents launched through `coral-cli codex <agent> -i -` (prompt on stdin).
 - Skill-owned protocols such as `ralph`, `plan`, and `init-project`.
 
 Codex delegation is a normal CLI-to-backend provider launch.
 
 ## Routing Rules
 
-| User request                             | Routing                                   | Reason                                         |
-| ---------------------------------------- | ----------------------------------------- | ---------------------------------------------- |
-| "review with architect"                  | Self-execute `architect` on current host  | Default read-only reviewer                     |
-| "review with the other host's architect" | `coral-cli <other-host> architect -i ...` | Explicit cross-host delegation                 |
-| "review with critic"                     | Self-execute `critic` on current host     | Default critical reviewer                      |
-| "run ralph on this task"                 | `/coral:ralph`                            | Skill-owned execution protocol                 |
-| "delegate ralph this task"               | `/coral:ralph --delegate`                 | Cross-host execution through CLI launch + wait |
+| User request                             | Routing                                  | Reason                                         |
+| ---------------------------------------- | ---------------------------------------- | ---------------------------------------------- |
+| "review with architect"                  | Self-execute `architect` on current host | Default read-only reviewer                     |
+| "review with the other host's architect" | `coral-cli <other-host> architect -i -`  | Explicit cross-host delegation                 |
+| "review with critic"                     | Self-execute `critic` on current host    | Default critical reviewer                      |
+| "run ralph on this task"                 | `/coral:ralph`                           | Skill-owned execution protocol                 |
+| "delegate ralph this task"               | `/coral:ralph --delegate`                | Cross-host execution through CLI launch + wait |
 
 ## Claude-native Agents
 
@@ -54,8 +54,12 @@ These are protocols, not standalone agent files.
 Codex-backed agent launches use the provider route, not a protocol-specific transport:
 
 ```bash
-coral-cli codex architect -i "<prompt>" --work-dir "<path>" -d
-coral-cli codex critic -i "<prompt>" --work-dir "<path>" -d
+coral-cli codex architect --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+<prompt>
+CORAL_INPUT
+coral-cli codex critic --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+<prompt>
+CORAL_INPUT
 cd "<path>" && coral-cli wait jobs <job-id...> --embed
 ```
 
@@ -98,7 +102,9 @@ Create `clients/agents/<name>.md` and route to it through Claude Code's normal a
 Create `clients/agents/<name>.md` and invoke it through the Codex provider surface:
 
 ```bash
-coral-cli codex <name> -i "<prompt>" --work-dir "<path>" -d
+coral-cli codex <name> --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+<prompt>
+CORAL_INPUT
 cd "<path>" && coral-cli wait jobs <job> --embed
 ```
 

@@ -138,7 +138,10 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     output = Agent({ subagent_type: "coral:pioneer", prompt: <pioneer prompt> })
 
     // --delegate: dispatch to the other host, then monitor for one bounded wait
-    launch = Bash(`coral-cli <other-host> pioneer -i "<pioneer prompt>" --work-dir "<work_dir>" -d`)
+    // the heredoc closes on a line holding only `CORAL_INPUT`, unindented
+    launch = Bash(`coral-cli <other-host> pioneer --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'
+    <pioneer prompt>
+    CORAL_INPUT`)
     job = parse `Job <job> <launchState> (session <session>)` from launch
     terminal = Bash(`cd "<work_dir>" && coral-cli wait jobs ${job} --embed`)   // foreground; returns at terminal or the bound
     while true:

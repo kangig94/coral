@@ -33,7 +33,7 @@ function createBundle(adjacentManifest: unknown = manifest): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-handoff-target-'));
   roots.push(root);
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
-  writeFileSync(join(root, 'coral-cli.cjs'), cliBundle, 'utf8');
+  writeFileSync(join(root, 'coral-cli'), cliBundle, 'utf8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
   writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
   writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(adjacentManifest), 'utf8');
@@ -99,7 +99,7 @@ describe('handoff-target', () => {
 
   it.each([
     ['coral-backend.cjs', 'tampered backend'],
-    ['coral-cli.cjs', 'tampered cli'],
+    ['coral-cli', 'tampered cli'],
     ['coral-claude-appserver.cjs', 'tampered claude appserver'],
     ['coral-durable-wrapper.cjs', 'tampered durable wrapper'],
   ])('should hash and reject a changed %s', (fileName, contents) => {
@@ -176,7 +176,7 @@ describe('handoff-target', () => {
     const result = createForeignTargetValidator()(bundleDir, manifest);
     expect(result.kind).toBe('validated');
     if (result.kind !== 'validated') return;
-    writeFileSync(join(bundleDir, 'coral-cli.cjs'), 'changed after validation', 'utf8');
+    writeFileSync(join(bundleDir, 'coral-cli'), 'changed after validation', 'utf8');
 
     const execution = withValidatedHandoffTarget(result.target);
     expect(() => execution.assertExecutable()).toThrow('bytes changed before execution');

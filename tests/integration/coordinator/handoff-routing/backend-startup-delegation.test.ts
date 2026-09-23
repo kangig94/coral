@@ -116,7 +116,7 @@ function topLevelEnvironment(): NodeJS.ProcessEnv {
 }
 
 function startCli(root: string, env: NodeJS.ProcessEnv): CliRun {
-  const child = spawn(process.execPath, [join(root, 'bridge', 'coral-cli.cjs'), 'abort', '--all'], {
+  const child = spawn(process.execPath, [join(root, 'bridge', 'coral-cli'), 'abort', '--all'], {
     cwd: root,
     env,
     stdio: ['ignore', 'pipe', 'pipe'],

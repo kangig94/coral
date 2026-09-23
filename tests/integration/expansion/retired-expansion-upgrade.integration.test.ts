@@ -85,7 +85,7 @@ function runBuiltCli(fixture: PluginFixture, home: string, flavor: BuildFlavor, 
   delete env.CORAL_JOB_ID;
   delete env.CORAL_SESSION_ID;
 
-  const result = spawnSync(process.execPath, [join(fixture.root, 'bridge', 'coral-cli.cjs'), ...args], {
+  const result = spawnSync(process.execPath, [join(fixture.root, 'bridge', 'coral-cli'), ...args], {
     cwd: fixture.root,
     env,
     encoding: 'utf-8',

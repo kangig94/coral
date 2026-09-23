@@ -1,6 +1,4 @@
 import { join } from 'node:path';
-import { isOwnerId } from '../infra/identifiers.js';
-import { CORAL_KB_ENABLE_ENV, resolveKbEnabled } from '../infra/kb-toggle.js';
 import type { StoragePort } from '../infra/port-types.js';
 import type { ProviderRequest } from './contract.js';
 
@@ -14,21 +12,14 @@ interface InjectEquippedTool {
 
 export interface ResolveInjectBundleOptions {
   storage: Pick<StoragePort, 'readFileSync'>;
-  ownerSessionId?: string;
-  /** Resolved KB markdown root. */
-  kbRoot: string;
   /** Resolved per-project data dir; absent when no cwd. */
   coralProjects?: string;
-  /** Resolved project source; absent when no cwd. */
-  projectSource?: string;
-  /** When false, omit all KB fragments so no KB guidance reaches the provider. */
-  kbEnabled?: boolean;
   equippedTools?: readonly InjectEquippedTool[];
 }
 
-const BASE_INJECT_FRAGMENTS = ['core.md', 'tools.md'] as const;
-const KB_COMMON_INJECT_FRAGMENT = 'kb/common.md';
-const KB_SESSION_INJECT_FRAGMENT = 'kb/session.md';
+// A provider child is told nothing about the Coral CLI or the KB: it has no hook to resolve
+// `coral-cli`, and CLI or KB work belongs to the top-level session.
+const PROVIDER_INJECT_FRAGMENTS = ['core.md', 'tools.md'] as const;
 
 const injectFragmentCache = new Map<string, string>();
 
@@ -48,19 +39,9 @@ function readInjectFragment(storage: Pick<StoragePort, 'readFileSync'>, relative
   return fragment;
 }
 
-function readInjectBundle(
-  storage: Pick<StoragePort, 'readFileSync'>,
-  options: { kbEnabled: boolean; hasSession: boolean },
-): string {
-  const paths: string[] = [...BASE_INJECT_FRAGMENTS];
-  if (options.kbEnabled) {
-    paths.push(KB_COMMON_INJECT_FRAGMENT);
-    if (options.hasSession) paths.push(KB_SESSION_INJECT_FRAGMENT);
-  }
-
+function readInjectBundle(storage: Pick<StoragePort, 'readFileSync'>): string {
   try {
-    return paths
-      .map((path) => readInjectFragment(storage, path))
+    return PROVIDER_INJECT_FRAGMENTS.map((path) => readInjectFragment(storage, path))
       .filter((fragment) => fragment.length > 0)
       .join('\n\n');
   } catch {
@@ -85,30 +66,15 @@ function renderEquippedTools(equippedTools: readonly InjectEquippedTool[] | unde
 }
 
 export function resolveInjectBundle(opts: ResolveInjectBundleOptions): string {
-  const { ownerSessionId, kbRoot, coralProjects, projectSource } = opts;
-  const normalizedOwner = isOwnerId(ownerSessionId) ? ownerSessionId : undefined;
-  const bundle = readInjectBundle(opts.storage, {
-    kbEnabled: opts.kbEnabled !== false,
-    hasSession: normalizedOwner !== undefined,
-  });
+  const bundle = readInjectBundle(opts.storage);
   if (!bundle) return '';
 
-  const root = pluginRoot();
-  const cliPath = `node "${join(root, 'bridge', 'coral-cli.cjs')}"`;
   // Trailing slash matches skill-vars / agent path-alias conventions (`CORAL_METHODS/HOW-…`).
-  const methodsRoot = `${join(root, 'methods')}/`;
-  return (
-    bundle
-      .replaceAll('{{CORAL_KB}}', kbRoot)
-      .replaceAll('{{CORAL_CLI}}', cliPath)
-      .replaceAll('{{CORAL_METHODS}}', methodsRoot)
-      .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(opts.equippedTools))
-      .replaceAll('{{SESSION_ID}}', normalizedOwner ?? '')
-      // Singular alias used by skills/agents; plural kept for older inject copy.
-      .replaceAll('{{CORAL_PROJECT}}', coralProjects ?? '{{CORAL_PROJECT}}')
-      .replaceAll('{{CORAL_PROJECTS}}', coralProjects ?? '{{CORAL_PROJECTS}}')
-      .replaceAll('{{PROJECT_SOURCE}}', projectSource ?? '{{PROJECT_SOURCE}}')
-  );
+  const methodsRoot = `${join(pluginRoot(), 'methods')}/`;
+  return bundle
+    .replaceAll('{{CORAL_METHODS}}', methodsRoot)
+    .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(opts.equippedTools))
+    .replaceAll('{{CORAL_PROJECT}}', opts.coralProjects ?? '{{CORAL_PROJECT}}');
 }
 
 /**
@@ -120,19 +86,13 @@ export function applyInjectBundle(
   request: ProviderRequest,
   runtime: {
     storage: Pick<StoragePort, 'readFileSync'>;
-    kbRoot: string;
     coralProjects?: string;
-    projectSource?: string;
     equippedTools?: readonly InjectEquippedTool[];
   },
 ): ProviderRequest {
   const injectBundle = resolveInjectBundle({
     storage: runtime.storage,
-    ownerSessionId: request.coralEnv?.CORAL_OWNER,
-    kbRoot: runtime.kbRoot,
-    kbEnabled: resolveKbEnabled(request.coralEnv?.[CORAL_KB_ENABLE_ENV]),
     ...(runtime.coralProjects === undefined ? {} : { coralProjects: runtime.coralProjects }),
-    ...(runtime.projectSource === undefined ? {} : { projectSource: runtime.projectSource }),
     ...(runtime.equippedTools === undefined ? {} : { equippedTools: runtime.equippedTools }),
   });
   if (!injectBundle) {

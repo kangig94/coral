@@ -14,7 +14,7 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                           |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                           |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                       |
-| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                      | Resolve `coral-cli` calls + wrap `run_in_background` for lifecycle tracking      |
+| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                      | Put `coral-cli` on PATH + wrap `run_in_background` for lifecycle tracking        |
 | `PreToolUse` (`Monitor`)   | `monitor-track.mjs`                                                                     | Wrap the Monitor command for lifecycle tracking (skips ws + persistent monitors) |
 | `PostToolUseFailure`       | `kb-lookup-reminder.mjs`                                                                | KB reminder on explicit tool failures                                            |
 | `PostToolUse` (`Bash`)     | `kb-lookup-reminder.mjs`                                                                | KB reminder on silent-failure command output                                     |
@@ -59,7 +59,8 @@ The `clients/inject/` directory separates behavioral guidelines, tools, and audi
 | Fragment             | Role                                                                 |
 | -------------------- | -------------------------------------------------------------------- |
 | `core.md`            | Shared behavioral guidelines                                         |
-| `tools.md`           | CLI, path aliases, and the live equipped-tools placeholder           |
+| `tools.md`           | Path aliases and the live equipped-tools placeholder                 |
+| `cli.md`             | The `coral-cli` command and its sandbox guidance                     |
 | `orchestrator.md`    | How the top-level session launches project and Coral agents          |
 | `kb/common.md`       | KB search and verification guidance                                  |
 | `kb/orchestrator.md` | Top-level owner propagation, wiki maintenance, and source management |
@@ -79,31 +80,28 @@ Provider children set `CORAL_CHILD=1`, so hooks self-exit and **do not** re-inje
 
 ### Placeholders
 
-| Placeholder          | Meaning                                                                                                                                                               |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `{{CORAL_CLI}}`      | Host hooks: bare `coral-cli`, which `bash-rewrite.mjs` resolves to the active bundle. Provider children: `node "…/bridge/coral-cli.cjs"`, since hooks self-exit there |
-| `{{CORAL_METHODS}}`  | Absolute `…/methods/` (trailing slash). Always filled from plugin root.                                                                                               |
-| `{{CORAL_PROJECT}}`  | Project data dir (`~/.coral/projects/{slug}/…`). Left as placeholder if no project cwd.                                                                               |
-| `{{CORAL_PROJECTS}}` | Same value as `{{CORAL_PROJECT}}` (legacy plural form)                                                                                                                |
-| `{{PROJECT_SOURCE}}` | Project source label for the cwd                                                                                                                                      |
-| `{{CORAL_KB}}`       | KB root                                                                                                                                                               |
-| `{{SESSION_ID}}`     | Owner session id when known                                                                                                                                           |
-| `{{EQUIPPED_TOOLS}}` | Live `/equip` tool list, or empty                                                                                                                                     |
+| Placeholder          | Meaning                                                                                 |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| `{{CORAL_METHODS}}`  | Absolute `…/methods/` (trailing slash). Always filled from plugin root.                 |
+| `{{CORAL_PROJECT}}`  | Project data dir (`~/.coral/projects/{slug}/…`). Left as placeholder if no project cwd. |
+| `{{EQUIPPED_TOOLS}}` | Live `/equip` tool list, or empty                                                       |
+| `{{SESSION_ID}}`     | Owner session id when known (host KB fragments only)                                    |
 
 Path aliases in `tools.md` teach agents to open `CORAL_METHODS/HOW-*.md` and `CORAL_PROJECT/plans/…` via the resolved absolute paths rather than inventing marketplace/cache paths.
 
 ### Fragment composition
 
-| Fragment             | SessionStart (`asOwner: true`) | SubagentStart (`asOwner: false`) | Owned provider | Anonymous provider | KB disabled |
-| -------------------- | ------------------------------ | -------------------------------- | -------------- | ------------------ | ----------- |
-| `core.md`            | included                       | included                         | included       | included           | included    |
-| `tools.md`           | included                       | included                         | included       | included           | included    |
-| `orchestrator.md`    | included                       | omitted                          | omitted        | omitted            | included    |
-| `kb/common.md`       | included                       | included                         | included       | included           | omitted     |
-| `kb/orchestrator.md` | included                       | omitted                          | omitted        | omitted            | omitted     |
-| `kb/session.md`      | included                       | included                         | included       | omitted            | omitted     |
+| Fragment             | SessionStart (`asOwner: true`) | SubagentStart (`asOwner: false`) | Provider child | KB disabled |
+| -------------------- | ------------------------------ | -------------------------------- | -------------- | ----------- |
+| `core.md`            | included                       | included                         | included       | included    |
+| `tools.md`           | included                       | included                         | included       | included    |
+| `cli.md`             | included                       | included                         | omitted        | included    |
+| `orchestrator.md`    | included                       | omitted                          | omitted        | included    |
+| `kb/common.md`       | included                       | included                         | omitted        | omitted     |
+| `kb/orchestrator.md` | included                       | omitted                          | omitted        | omitted     |
+| `kb/session.md`      | included                       | included                         | omitted        | omitted     |
 
-Orchestrator content is limited to the top-level host session. Provider children receive session guidance only when a valid `CORAL_OWNER` identifies the shared session.
+Orchestrator content is limited to the top-level host session. A provider child is told nothing about the Coral CLI or the KB: it has no hook to resolve `coral-cli`, and CLI and KB work belong to the host session.
 
 ### Equipped tools
 
@@ -123,7 +121,7 @@ Hook SQLite access goes through the supported Node runtime's built-in `node:sqli
 
 It also:
 
-- adds `Bash(node *coral-cli*)` permission to `settings.json` under the Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`); the permission is user-wide, not per project
+- adds `Bash(coral-cli *)` permission to `settings.json` under the Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`); the permission is user-wide, not per project
 - runs the [project-ignore maintenance](#project-ignore-maintenance) described below
 - refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
 
@@ -202,7 +200,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
 - `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `inject/tools.md` for all inject surfaces)
-- `bash-rewrite.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
+- `bash-rewrite.mjs` prefixes any Bash command that runs `coral-cli` with `export PATH='<plugin root>/bridge':"$PATH"`, so the shell resolves `coral-cli` to the active plugin's executable CLI bundle; the command itself is never parsed or edited. It gives a `coral-cli wait` the full 600 s Bash timeout, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
 
 ## Failure-aware KB Reminder
 

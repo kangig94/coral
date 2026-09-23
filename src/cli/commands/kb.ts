@@ -31,7 +31,7 @@ import {
   type KbWikiCreateOptions,
   type KbWikiRewriteOptions,
 } from '../dispatch.js';
-import { createOutputFormatOption, emit, emitError, emitText, getCliDisplayPrefix, getOutputFormat } from '../emit.js';
+import { createOutputFormatOption, emit, emitError, emitText, getOutputFormat } from '../emit.js';
 import { parseIntegerFlag, resolveFilePath } from '../flags.js';
 import {
   formatKbDelete,
@@ -451,7 +451,6 @@ function registerKbMemoCommands(kb: Command): void {
 }
 
 export function registerKbCommands(program: Command): void {
-  const cliPrefix = getCliDisplayPrefix();
   const kb = program.command('kb').description('Knowledge base operations');
   // --output-format is intentionally NOT registered on the kb parent. Adding it
   // here would silently extend JSON support to every subcommand, including
@@ -494,7 +493,7 @@ export function registerKbCommands(program: Command): void {
         };
         const client = makeClient(process.cwd(), kbSearchCommand);
         const result = await client.kbSearch(args);
-        emit(result, outputFormat, (data) => formatKbSearch(data, cliPrefix));
+        emit(result, outputFormat, formatKbSearch);
       } catch (error) {
         emitError(error);
       }
@@ -584,7 +583,7 @@ export function registerKbCommands(program: Command): void {
         };
         const client = makeClient(process.cwd(), kbPrinciplesCommand);
         const result = await client.kbPrinciples(args);
-        emit(result, outputFormat, (data) => formatKbPrinciples(data, cliPrefix));
+        emit(result, outputFormat, formatKbPrinciples);
       } catch (error) {
         emitError(error);
       }
@@ -697,7 +696,7 @@ export function registerKbCommands(program: Command): void {
       try {
         const client = makeClient(process.cwd(), kbReindexCommand);
         const result = await client.kbReindex({ async: opts.async === true });
-        emitText(result, (data) => formatKbReindex(data, cliPrefix));
+        emitText(result, formatKbReindex);
       } catch (error) {
         emitError(error);
       }

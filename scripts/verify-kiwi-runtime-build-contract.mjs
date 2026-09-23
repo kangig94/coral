@@ -10,15 +10,21 @@ import {
   createProductionServerEsbuildOptions,
   PLACEHOLDER_STORE_FORMAT_FINGERPRINT,
 } from './server-esbuild-options.mjs';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '../src/infra/bundle-manifest-address.ts';
+import {
+  CLI_BUNDLE_FILE,
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  LEGACY_CLI_BUNDLE_FILE,
+} from '../src/infra/bundle-manifest-address.ts';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const buildDir = resolve(repoRoot, process.argv[2] ?? 'clients/build');
 const expectedBuildFiles = new Set([
   'coral-backend.cjs',
-  'coral-cli.cjs',
+  CLI_BUNDLE_FILE,
+  LEGACY_CLI_BUNDLE_FILE,
   'coral-claude-appserver.cjs',
   'coral-durable-wrapper.cjs',
+  'package.json',
   'manifest.json',
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
 ]);

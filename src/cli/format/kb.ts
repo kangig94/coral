@@ -40,7 +40,7 @@ function pathToSlug(pathOrFilename: string): string {
   return base.endsWith('.md') ? base.slice(0, -3) : base;
 }
 
-function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'): string | undefined {
+function normalizeKbWarning(warning: string | undefined): string | undefined {
   if (warning === undefined || warning.length === 0) {
     return undefined;
   }
@@ -50,15 +50,15 @@ function normalizeKbWarning(warning: string | undefined, cliPrefix = 'coral-cli'
       /\bkb_search_degraded_until_coordinator_rebuild\b/g,
       'Search index is unavailable; start the Coral backend to rebuild it.',
     )
-    .replace(/\bkb_reindex\b/g, () => `${cliPrefix} kb reindex`);
+    .replace(/\bkb_reindex\b/g, 'coral-cli kb reindex');
 }
 
-function normalizeKbWarnings(warnings: string[] | undefined, cliPrefix = 'coral-cli'): string[] | undefined {
+function normalizeKbWarnings(warnings: string[] | undefined): string[] | undefined {
   if (warnings === undefined || warnings.length === 0) {
     return undefined;
   }
 
-  return warnings.map((warning) => normalizeKbWarning(warning, cliPrefix) ?? warning);
+  return warnings.map((warning) => normalizeKbWarning(warning) ?? warning);
 }
 
 function formatCompactNumber(value: number): string {
@@ -81,11 +81,11 @@ function formatRetrievalEvidence(result: KbSearchResponse['results'][number]): s
   return rendered;
 }
 
-function formatRetrievalDiagnosticWarnings(data: KbSearchResponse, cliPrefix: string): string[] {
+function formatRetrievalDiagnosticWarnings(data: KbSearchResponse): string[] {
   const warnings: string[] = [];
   for (const diagnostic of data.retrievalDiagnostics) {
     if (diagnostic.publicText !== undefined && diagnostic.publicText.length > 0) {
-      warnings.push(`Warning: ${normalizeKbWarning(diagnostic.publicText, cliPrefix) ?? diagnostic.publicText}`);
+      warnings.push(`Warning: ${normalizeKbWarning(diagnostic.publicText) ?? diagnostic.publicText}`);
       continue;
     }
     if (diagnostic.recoverable) {
@@ -130,10 +130,10 @@ function toKbReadDisplayResult(data: KbReadResult): KbReadDisplayResult {
 }
 
 /** KB search is consumed by LLM agents, not humans — always return JSON. Do not add text-mode formatting. */
-export function formatKbSearch(data: KbSearchResponse, cliPrefix = 'coral-cli'): string {
-  const warning = normalizeKbWarning(data.warning, cliPrefix);
-  const warnings = normalizeKbWarnings(data.warnings, cliPrefix);
-  const diagnosticWarnings = formatRetrievalDiagnosticWarnings(data, cliPrefix);
+export function formatKbSearch(data: KbSearchResponse): string {
+  const warning = normalizeKbWarning(data.warning);
+  const warnings = normalizeKbWarnings(data.warnings);
+  const diagnosticWarnings = formatRetrievalDiagnosticWarnings(data);
   const results = data.results.map((result) => {
     return {
       note: result.note,
@@ -190,9 +190,9 @@ export function formatKbDiagnose(data: KbDiagnoseResult): string {
     .join('\n\n');
 }
 
-export function formatKbPrinciples(data: KbPrinciplesResult, cliPrefix = 'coral-cli'): string {
+export function formatKbPrinciples(data: KbPrinciplesResult): string {
   const principles = data.principles;
-  const warning = normalizeKbWarning(data.warning, cliPrefix);
+  const warning = normalizeKbWarning(data.warning);
   let principlesText: string;
 
   if (!isVerbosePrincipleRows(principles)) {
@@ -320,12 +320,12 @@ export function formatKbSourceDelete(data: KbSourceDeleteResponse): string {
   return `Deleted source: ${pathToSlug(data.deleted)}`;
 }
 
-export function formatKbReindex(data: KbReindexResponse, cliPrefix = 'coral-cli'): string {
+export function formatKbReindex(data: KbReindexResponse): string {
   if ('status' in data) {
     return `Reindex job ${data.job} ${data.status}`;
   }
 
-  const warning = normalizeKbWarning(data.warning, cliPrefix);
+  const warning = normalizeKbWarning(data.warning);
 
   return joinLines([
     `Reindexed: ${data.notes} notes, ${data.communities} communities, ${data.wikis} wikis, ${data.principles} principles, ${data.tags} tags (${data.duration_ms}ms, ${data.mode})`,

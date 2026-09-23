@@ -8,7 +8,11 @@ import {
   createProductionServerEsbuildOptions,
   PLACEHOLDER_STORE_FORMAT_FINGERPRINT,
 } from './server-esbuild-options.mjs';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '../src/infra/bundle-manifest-address.ts';
+import {
+  CLI_BUNDLE_FILE,
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  LEGACY_CLI_BUNDLE_FILE,
+} from '../src/infra/bundle-manifest-address.ts';
 
 const { storeEpochHookSource } = await import('../dist/store/epoch.js');
 writeFileSync('clients/hooks/lib/store-epoch.mjs', storeEpochHookSource());
@@ -155,7 +159,7 @@ const backendBuild = await esbuild.build({
 });
 
 const backendBundle = readFileSync('clients/build/coral-backend.cjs');
-for (const fragmentPath of ['core.md', 'tools.md', 'kb/common.md', 'kb/session.md']) {
+for (const fragmentPath of ['core.md', 'tools.md']) {
   if (!backendBundle.includes(Buffer.from(JSON.stringify(fragmentPath)))) {
     throw new Error(`Built backend does not reference inject fragment: ${fragmentPath}`);
   }
@@ -169,11 +173,17 @@ console.log('Built clients/build/coral-backend.cjs');
 const cliBuild = await esbuild.build({
   ...sharedOpts,
   entryPoints: ['src/cli/bootstrap.ts'],
-  outfile: 'clients/build/coral-cli.cjs',
+  outfile: `clients/build/${CLI_BUNDLE_FILE}`,
   banner: { js: '#!/usr/bin/env node\n' + sharedOpts.banner.js },
   metafile: true,
 });
-console.log('Built clients/build/coral-cli.cjs');
+chmodSync(`clients/build/${CLI_BUNDLE_FILE}`, 0o755);
+copyFileSync(`clients/build/${CLI_BUNDLE_FILE}`, `clients/build/${LEGACY_CLI_BUNDLE_FILE}`);
+chmodSync(`clients/build/${LEGACY_CLI_BUNDLE_FILE}`, 0o755);
+// The CLI file is extensionless; this keeps Node reading it as CommonJS even under the repo's
+// `"type": "module"` package.json.
+writeFileSync('clients/build/package.json', `${JSON.stringify({ type: 'commonjs' })}\n`);
+console.log(`Built clients/build/${CLI_BUNDLE_FILE}`);
 
 const claudeAppserverBuild = await esbuild.build({
   ...sharedOpts,
@@ -192,7 +202,10 @@ const durableWrapperBuild = await esbuild.build({
 console.log('Built clients/build/coral-durable-wrapper.cjs');
 
 const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
-const cliHash = createHash('sha256').update(readFileSync('clients/build/coral-cli.cjs')).digest('hex').slice(0, 16);
+const cliHash = createHash('sha256')
+  .update(readFileSync(`clients/build/${CLI_BUNDLE_FILE}`))
+  .digest('hex')
+  .slice(0, 16);
 const claudeAppserverHash = createHash('sha256')
   .update(readFileSync('clients/build/coral-claude-appserver.cjs'))
   .digest('hex')
@@ -213,10 +226,7 @@ const manifestIdentity = {
   storeFormatFingerprint,
 };
 
-writeFileSync(
-  `${legacyManifestPath}.tmp`,
-  JSON.stringify(manifestIdentity) + '\n',
-);
+writeFileSync(`${legacyManifestPath}.tmp`, JSON.stringify(manifestIdentity) + '\n');
 renameSync(`${legacyManifestPath}.tmp`, legacyManifestPath);
 writeFileSync(
   `${strictManifestPath}.tmp`,
@@ -269,17 +279,19 @@ function framedSourceSha256(inputs) {
 }
 
 const receiptInputs = [
-  ...new Set([
-    ...Object.keys(backendBuild.metafile.inputs),
-    ...Object.keys(cliBuild.metafile.inputs),
-    ...Object.keys(claudeAppserverBuild.metafile.inputs),
-    ...Object.keys(durableWrapperBuild.metafile.inputs),
-    ...requiredReceiptInputs,
-  ].map(canonicalReceiptInput)),
+  ...new Set(
+    [
+      ...Object.keys(backendBuild.metafile.inputs),
+      ...Object.keys(cliBuild.metafile.inputs),
+      ...Object.keys(claudeAppserverBuild.metafile.inputs),
+      ...Object.keys(durableWrapperBuild.metafile.inputs),
+      ...requiredReceiptInputs,
+    ].map(canonicalReceiptInput),
+  ),
 ].sort();
 const receiptOutputs = {
   backend: { path: 'clients/build/coral-backend.cjs' },
-  cli: { path: 'clients/build/coral-cli.cjs' },
+  cli: { path: `clients/build/${CLI_BUNDLE_FILE}` },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
   durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
   legacyManifest: { path: legacyManifestPath },
@@ -312,9 +324,11 @@ if (release) {
   mkdirSync(bridgeDir, { recursive: true });
   const bridgeFiles = [
     'coral-backend.cjs',
-    'coral-cli.cjs',
+    CLI_BUNDLE_FILE,
+    LEGACY_CLI_BUNDLE_FILE,
     'coral-claude-appserver.cjs',
     'coral-durable-wrapper.cjs',
+    'package.json',
     'manifest.json',
     CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   ];
@@ -328,6 +342,7 @@ if (release) {
   for (const file of bridgeFiles) {
     copyFileSync(join('clients', 'build', file), join(bridgeDir, file));
   }
-  chmodSync(join(bridgeDir, 'coral-cli.cjs'), 0o755);
+  chmodSync(join(bridgeDir, CLI_BUNDLE_FILE), 0o755);
+  chmodSync(join(bridgeDir, LEGACY_CLI_BUNDLE_FILE), 0o755);
   console.log(`Copied clients/build/ -> ${bridgeDir}/`);
 }

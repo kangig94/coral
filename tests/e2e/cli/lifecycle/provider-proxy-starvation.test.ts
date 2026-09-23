@@ -40,7 +40,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const REPO_ROOT = process.cwd();
 const SOURCE_BACKEND_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-backend.cjs');
-const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli.cjs');
+const SOURCE_CLI_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-cli');
 const SOURCE_CLAUDE_APPSERVER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-claude-appserver.cjs');
 const SOURCE_DURABLE_WRAPPER_BUNDLE = join(REPO_ROOT, 'clients', 'build', 'coral-durable-wrapper.cjs');
 const SOURCE_LEGACY_MANIFEST = join(REPO_ROOT, 'clients', 'build', 'manifest.json');
@@ -198,7 +198,7 @@ function createFixture(): Fixture {
   mkdirSync(projectRoot, { recursive: true });
   mkdirSync(binDir, { recursive: true });
   copyFileSync(SOURCE_BACKEND_BUNDLE, join(root, 'bridge', 'coral-backend.cjs'));
-  copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli.cjs'));
+  copyFileSync(SOURCE_CLI_BUNDLE, join(root, 'bridge', 'coral-cli'));
   // The fixture bridge must carry a complete lifecycle build set.
   copyFileSync(SOURCE_CLAUDE_APPSERVER_BUNDLE, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   copyFileSync(SOURCE_DURABLE_WRAPPER_BUNDLE, join(root, 'bridge', 'coral-durable-wrapper.cjs'));
@@ -247,7 +247,7 @@ function startCli(fixture: Fixture, promptPath: string, watchdogMs: number): Cli
     CORAL_SESSION_ID: _coralSessionId,
     ...topLevelEnv
   } = process.env;
-  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli.cjs'), 'codex', '-i', promptPath], {
+  const child = spawn('node', [join(fixture.root, 'bridge', 'coral-cli'), 'codex', '-i', promptPath], {
     cwd: fixture.projectRoot,
     env: {
       ...topLevelEnv,

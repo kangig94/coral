@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import type { BuildFlavor } from './build-flavor.js';
 import { nodeFsBoundedReadStorage, readBoundedFileAtIdentity } from './bounded-file-read.js';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from './bundle-manifest-address.js';
+import { CLI_BUNDLE_FILE, CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from './bundle-manifest-address.js';
 import { isRecord } from './json.js';
 
 declare const __BUNDLE_DIR__: string | undefined;
@@ -253,7 +253,7 @@ export function resolveStrictBundleIdentity(options?: {
     manifest.flavor !== embedded.flavor ||
     manifest.storeFormatFingerprint !== embedded.storeFormatFingerprint ||
     hashStableAdjacentBundle(activeBundleDir, 'coral-backend.cjs') !== manifest.bundleHash ||
-    hashStableAdjacentBundle(activeBundleDir, 'coral-cli.cjs') !== manifest.cliBundleHash ||
+    hashStableAdjacentBundle(activeBundleDir, CLI_BUNDLE_FILE) !== manifest.cliBundleHash ||
     hashStableAdjacentBundle(activeBundleDir, 'coral-claude-appserver.cjs') !== manifest.claudeAppserverBundleHash ||
     hashStableAdjacentBundle(activeBundleDir, 'coral-durable-wrapper.cjs') !== manifest.durableWrapperBundleHash
   ) {

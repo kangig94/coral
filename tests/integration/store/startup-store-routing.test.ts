@@ -67,7 +67,7 @@ function createBundle(root: string, build: StrictBundleManifest): string {
   const bundleDir = mkdtempSync(join(root, 'bundle-'));
   for (const [name, contents] of [
     ['coral-backend.cjs', 'backend'],
-    ['coral-cli.cjs', 'cli'],
+    ['coral-cli', 'cli'],
     ['coral-claude-appserver.cjs', 'appserver'],
     ['coral-durable-wrapper.cjs', 'wrapper'],
   ] as const) {

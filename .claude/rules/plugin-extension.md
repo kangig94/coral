@@ -31,7 +31,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 
 - **Path alias resolution**: absolute paths are filled in `inject/tools.md` (`{{CORAL_METHODS}}`, `{{CORAL_PROJECT}}`) for host SessionStart, Claude `SubagentStart`, and provider jobs (`applyInjectBundle`). Do not hardcode marketplace/cache paths in agent or skill bodies.
 - **Skills**: `coral-skill-vars.mjs` also injects short `CORAL_PROJECT` / `CORAL_METHODS` lines on UserPromptSubmit and PreToolUse(Skill) for host skill protocols (redundant with inject-bundle aliases; keep skill bodies on the alias form).
-- **Agents**: spawned via `Agent({ subagent_type: "coral:<name>" })` (Claude-native; SubagentStart inject) or `coral-cli codex|claude <name> -i ...` (provider job; applyInjectBundle). The framework resolves agent files â€” do not read agent files directly from skills.
+- **Agents**: spawned via `Agent({ subagent_type: "coral:<name>" })` (Claude-native; SubagentStart inject) or `coral-cli codex|claude <name> -i -` (provider job; prompt on stdin; applyInjectBundle). The framework resolves agent files â€” do not read agent files directly from skills.
 - `coral:xxx` references are for Agent tool's `subagent_type` only â€” the framework resolves them.
   Do not use `coral:xxx` when the intent is to read a file.
 
@@ -59,7 +59,7 @@ plugin files from project files. Two read patterns and one spawn pattern exist â
 
 ```
 Caller invokes Coral CLI:
-  -> coral-cli codex <agent> -i "<prompt>" --work-dir "<path>" -d
+  -> coral-cli codex <agent> --work-dir "<path>" -d -i - <<'CORAL_INPUT'   (prompt on stdin, left literal)
   -> CLI validates args and dispatches the provider launch
   -> backend resolves clients/agents/<agent>.md
   -> detached launch prints `Job <job> <launchState> (session <session>)`

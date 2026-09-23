@@ -1,50 +1,21 @@
-// Detection helpers for coral-cli invocations inside shell commands.
-// Used by bash-rewrite (Bash command rewriting). These operate on token
-// streams produced by shell-parser plus the flag-helpers semantic layer.
+// Detects coral-cli invocations in Bash command text without parsing it. A
+// detection may add to the command or its timeout, never rewrite what the shell
+// will read. A match also auto-approves the whole command, so detection stays
+// on command position: `coral-cli` merely mentioned as an argument must not match.
 
-import { BRIDGE_SUFFIX } from './plugin-paths.mjs';
+// Words that may precede a command name without being the command themselves.
+const COMMAND_LEAD = String.raw`(?:(?:[A-Za-z_]\w*=\S*|time|!|\{|if|then|elif|else|while|until|do)\s+)*`;
 
-// Classifies the first tokens as a coral-cli invocation. Returns
-// { kind: 'bare', subcommandStart: 1 } for `coral-cli ...` and
-// { kind: 'node', subcommandStart: 2 } for `node <path>/coral-cli.cjs ...`.
-export function detectCoralInvocation(tokens) {
-  if (tokens.length < 1) return null;
-  const first = tokens[0];
+// `coral-cli` in command position: at the start of a line, after a command
+// separator, or opening a subshell / command substitution.
+const COMMAND_POSITION = String.raw`(?:^|[\n;&|(\x60])\s*${COMMAND_LEAD}coral-cli`;
 
-  if (
-    first.value === 'coral-cli'
-    && first.segments.length === 1
-    && first.segments[0].kind === 'unquoted'
-  ) {
-    return { kind: 'bare', subcommandStart: 1 };
-  }
+const INVOCATION_RE = new RegExp(`${COMMAND_POSITION}(?=\\s|$|[;&|)\\x60])`);
+const WAIT_INVOCATION_RE = new RegExp(`${COMMAND_POSITION}\\s+wait\\b`);
 
-  if (
-    first.value === 'node'
-    && tokens.length >= 2
-    && tokens[1].value.endsWith(BRIDGE_SUFFIX)
-  ) {
-    return { kind: 'node', subcommandStart: 2 };
-  }
-
-  return null;
+export function textInvokesCoralCli(text) {
+  return INVOCATION_RE.test(text);
 }
-
-// Returns true when the given token stream invokes `coral-cli wait`.
-// Used by bash-rewrite to decide whether to inject a foreground Bash timeout.
-export function tokensInvokeCoralWait(tokens) {
-  const invocation = detectCoralInvocation(tokens);
-  if (invocation === null) return false;
-
-  if (invocation.subcommandStart >= tokens.length) return false;
-  return tokens[invocation.subcommandStart].value === 'wait';
-}
-
-// Regex-based `coral-cli wait` detection for text that our tokenizer won't
-// parse (redirections, `$?` expansions, etc.). Read-only, so failing to
-// fire leaves behavior unchanged rather than corrupting the command.
-const WAIT_INVOCATION_RE =
-  /(?:^|[\s;|&])(?:coral-cli|node\s+["']?[^\s"']*coral-cli\.cjs["']?)\s+wait\b/;
 
 export function textInvokesCoralWait(text) {
   return WAIT_INVOCATION_RE.test(text);

@@ -3,13 +3,9 @@ import { join } from 'node:path';
 import { coralProjectDir, resolveKbRoot, resolveProjectSource } from './hook-utils.mjs';
 
 export const INJECT_FRAGMENT_GROUPS = {
-  base: ['core.md', 'tools.md', 'orchestrator.md'],
+  base: ['core.md', 'tools.md', 'cli.md', 'orchestrator.md'],
   kb: ['kb/common.md', 'kb/orchestrator.md', 'kb/session.md'],
 };
-
-// Only a host session may be told the bare name: it resolves solely through the bash-rewrite hook,
-// which never runs in a Coral-spawned child process.
-const HOST_CORAL_CLI = 'coral-cli';
 
 function readInjectBundle({ asOwner, kbEnabled }) {
   return {
@@ -20,7 +16,7 @@ function readInjectBundle({ asOwner, kbEnabled }) {
   };
 }
 
-// Render the equipped-tools block that follows the `CLI:` line. Empty string
+// Render the equipped-tools block at the end of tools.md. Empty string
 // when there are no tools (or the caller omits them), so the placeholder
 // vanishes cleanly and the section stays absent.
 function renderEquippedTools(equippedTools) {
@@ -59,7 +55,6 @@ export function renderInject({
   return (
     bundle
       .replaceAll('{{CORAL_KB}}', resolveKbRoot())
-      .replaceAll('{{CORAL_CLI}}', HOST_CORAL_CLI)
       .replaceAll('{{CORAL_METHODS}}', methodsRoot)
       .replaceAll('{{EQUIPPED_TOOLS}}', renderEquippedTools(equippedTools))
       .replaceAll('{{SESSION_ID}}', sessionId || '')

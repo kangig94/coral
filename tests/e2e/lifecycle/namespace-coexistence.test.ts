@@ -36,7 +36,7 @@ import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const sourceBuildDir = join(process.cwd(), 'clients', 'build');
 const sourceBackendBundle = join(sourceBuildDir, 'coral-backend.cjs');
-const sourceCliBundle = join(sourceBuildDir, 'coral-cli.cjs');
+const sourceCliBundle = join(sourceBuildDir, 'coral-cli');
 const sourceClaudeAppserverBundle = join(sourceBuildDir, 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(sourceBuildDir, 'coral-durable-wrapper.cjs');
 const sourceManifestPath = join(sourceBuildDir, 'manifest.json');
@@ -74,7 +74,7 @@ function createPluginFixture(): {
   tempRoots.push(root);
   mkdirSync(join(root, 'bridge'), { recursive: true });
   copyFileSync(sourceBackendBundle, join(root, 'bridge', 'coral-backend.cjs'));
-  copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli.cjs'));
+  copyFileSync(sourceCliBundle, join(root, 'bridge', 'coral-cli'));
   copyFileSync(sourceClaudeAppserverBundle, join(root, 'bridge', 'coral-claude-appserver.cjs'));
   copyFileSync(sourceDurableWrapperBundle, join(root, 'bridge', 'coral-durable-wrapper.cjs'));
   copyFileSync(sourceManifestPath, join(root, 'bridge', 'manifest.json'));

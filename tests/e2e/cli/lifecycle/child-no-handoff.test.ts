@@ -69,7 +69,7 @@ describe('bundled child coordinator confinement', () => {
     const fixture = createPluginFixture(tempRoots, { flavor, bundleHash: 'child-no-parent' });
     const paths = coordinatorFilesForHome(home, flavor);
 
-    const result = runUnregisteredChildCli(join(fixture.root, 'bridge', 'coral-cli.cjs'), home);
+    const result = runUnregisteredChildCli(join(fixture.root, 'bridge', 'coral-cli'), home);
 
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
@@ -108,7 +108,7 @@ describe('bundled child coordinator confinement', () => {
     // without launching a provider. The IPC server integration suite covers a
     // registered child succeeding within its caps and receiving the actionable
     // missing_capability response outside them.
-    const result = runUnregisteredChildCli(join(childFixture.root, 'bridge', 'coral-cli.cjs'), home);
+    const result = runUnregisteredChildCli(join(childFixture.root, 'bridge', 'coral-cli'), home);
 
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);

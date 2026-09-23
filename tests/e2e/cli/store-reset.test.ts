@@ -26,7 +26,7 @@ import { createTemporaryHomeOwner, type TemporaryHome } from '#tests/support/tem
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const BUNDLE_DIR = e2eBundleDir();
-const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli.cjs');
+const CLI_BUNDLE = join(BUNDLE_DIR, 'coral-cli');
 const BACKEND_BUNDLE = join(BUNDLE_DIR, 'coral-backend.cjs');
 const CLAUDE_APPSERVER_BUNDLE = join(BUNDLE_DIR, 'coral-claude-appserver.cjs');
 const DURABLE_WRAPPER_BUNDLE = join(BUNDLE_DIR, 'coral-durable-wrapper.cjs');
@@ -630,7 +630,7 @@ describe('bundled store-reset CLI', () => {
     const home = temporaryHome('coral-store-reset-e2e-mixed-home-');
     const mixedBundle = root('coral-store-reset-e2e-mixed-bundle-');
     mkdirSync(join(home, 'tmp'));
-    copyFileSync(CLI_BUNDLE, join(mixedBundle, 'coral-cli.cjs'));
+    copyFileSync(CLI_BUNDLE, join(mixedBundle, 'coral-cli'));
     copyFileSync(BACKEND_BUNDLE, join(mixedBundle, 'coral-backend.cjs'));
     copyFileSync(CLAUDE_APPSERVER_BUNDLE, join(mixedBundle, 'coral-claude-appserver.cjs'));
     copyFileSync(DURABLE_WRAPPER_BUNDLE, join(mixedBundle, 'coral-durable-wrapper.cjs'));
@@ -640,7 +640,7 @@ describe('bundled store-reset CLI', () => {
     const coherent = runCli(
       home,
       ['backend', 'store-reset', 'list', '--target', 'gen2'],
-      join(mixedBundle, 'coral-cli.cjs'),
+      join(mixedBundle, 'coral-cli'),
     );
     expect(coherent.status, coherent.stderr).toBe(0);
 
@@ -652,11 +652,7 @@ describe('bundled store-reset CLI', () => {
       })}\n`,
     );
 
-    const result = runCli(
-      home,
-      ['backend', 'store-reset', 'list', '--target', 'gen2'],
-      join(mixedBundle, 'coral-cli.cjs'),
-    );
+    const result = runCli(home, ['backend', 'store-reset', 'list', '--target', 'gen2'], join(mixedBundle, 'coral-cli'));
     expect(result).toEqual({
       stdout: '',
       stderr:

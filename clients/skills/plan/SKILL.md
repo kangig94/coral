@@ -173,7 +173,10 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     expression = "(coral:architect, coral:critic) -> coral:resolver"
     startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\nConfirmed decisions (agreed with the user in {preplan path} — review how the plan implements them, do not propose reversing them):\n{preplan Scope, Constraints, Approach Direction, adopted/overridden pioneer findings}\n\n{round context, key changes from previous rounds, key files to check}"
     sharedContext = "--deep\n\nReview plan: {plan file path}\n\nDo not promote KB notes."
-    launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
+    // the heredoc closes on a line holding only `CORAL_INPUT`, unindented
+    launch = Bash(`coral-cli workflow -e "${expression}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d -s - <<'CORAL_INPUT'
+    ${startPrompt}
+    CORAL_INPUT`)
     ```
     Reviewers always run in `--deep` methodology and the resolver always runs — both are independent of the round budget.
     Run `cd "{work_dir}" && coral-cli wait jobs <job>` and classify the result from its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact for the full workflow result and locate the resolver's synthesis section there, even when a terminal `provider_exit` propagated code `75`. A status beginning `Still waiting` with `(cursor: <cursor>)` means the workflow is still live; only then resume with `cd "{work_dir}" && coral-cli wait jobs <job> --cursor <cursor>`. If a transient error instead prints `remediation:`, run that exact command from the same directory — `cd "{work_dir}" && <the printed coral-cli wait jobs command>` — since `wait` scopes from the shell's cwd. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).

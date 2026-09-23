@@ -176,7 +176,7 @@ function createBundle(): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-handoff-runner-'));
   roots.push(root);
   writeFileSync(join(root, 'coral-backend.cjs'), backendBundle, 'utf8');
-  writeFileSync(join(root, 'coral-cli.cjs'), cliBundle, 'utf8');
+  writeFileSync(join(root, 'coral-cli'), cliBundle, 'utf8');
   writeFileSync(join(root, 'coral-claude-appserver.cjs'), claudeAppserverBundle, 'utf8');
   writeFileSync(join(root, 'coral-durable-wrapper.cjs'), durableWrapperBundle, 'utf8');
   writeFileSync(join(root, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), JSON.stringify(manifest), 'utf8');
@@ -776,7 +776,7 @@ describe('handoff-routing/runner', () => {
     });
     expect(mockState.spawn).toHaveBeenCalledWith(
       process.execPath,
-      [join(bundleDir, 'coral-cli.cjs'), 'backend', 'status'],
+      [join(bundleDir, 'coral-cli'), 'backend', 'status'],
       {
         cwd: '/handoff/cwd',
         env: { CORAL_BASE_ENV: 'preserved', [GUARD_ENV]: '1' },
@@ -813,7 +813,7 @@ describe('handoff-routing/runner', () => {
 
     expect(mockState.spawn).toHaveBeenCalledWith(
       process.execPath,
-      [join(bundleDir, 'coral-cli.cjs'), 'wait', 'jobs', 'job-1', '--cursor', serializeWaitCursor({ afterSeq: 7 })],
+      [join(bundleDir, 'coral-cli'), 'wait', 'jobs', 'job-1', '--cursor', serializeWaitCursor({ afterSeq: 7 })],
       expect.objectContaining({ stdio: 'inherit' }),
     );
   });
@@ -2150,7 +2150,7 @@ describe('handoff-routing/runner', () => {
       _chunk: string | Uint8Array,
       callback?: (error?: Error | null) => void,
     ) => {
-      writeFileSync(join(bundleDir, 'coral-cli.cjs'), 'changed after validation', 'utf8');
+      writeFileSync(join(bundleDir, 'coral-cli'), 'changed after validation', 'utf8');
       callback?.();
       return true;
     }) as typeof process.stdout.write);

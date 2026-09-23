@@ -1071,12 +1071,10 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     const equippedTools = resolveEquippedTools(this.deps.runtime);
     const requestWithInject = applyInjectBundle(request, {
       storage: this.deps.runtime.storage,
-      kbRoot: this.deps.runtime.paths.coral.corpus.kbRoot,
       equippedTools,
       ...(request.cwd
         ? {
             coralProjects: this.deps.runtime.paths.projectData(request.cwd),
-            projectSource: this.deps.runtime.paths.projectSource(request.cwd),
           }
         : {}),
     });

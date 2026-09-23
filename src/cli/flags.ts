@@ -11,11 +11,29 @@ export function resolveFilePath(filePath: string): string {
   return filePath;
 }
 
+const STDIN_INPUT = '-';
+let stdinConsumed = false;
+
+function readStdinInput(): string {
+  if (stdinConsumed) {
+    throw new UsageError(`Only one input per command can be read from stdin ("${STDIN_INPUT}")`);
+  }
+  stdinConsumed = true;
+  return readFileSync(0, 'utf8');
+}
+
+/**
+ * Resolve a text-or-file input. `-` reads stdin, so a caller can pass text through a quoted heredoc
+ * (`<<'EOF'`), which the shell leaves unexpanded. Multi-value inputs are joined with spaces, which
+ * recovers a prompt a shell split into several argv entries (e.g. unquoted `-i hello world`).
+ */
 export function resolveInput(values: string[]): string {
-  // Multi-value inputs are joined with spaces, which recovers prompts that a shell split into
-  // multiple argv entries (e.g. unquoted `-i hello world`) and prompts that the bash-rewrite
-  // hook partially materialized into a temp file alongside adjacent literal tokens.
-  return values.map((token) => (existsSync(token) ? readFileSync(token, 'utf8') : token)).join(' ');
+  return values
+    .map((token) => {
+      if (token === STDIN_INPUT) return readStdinInput();
+      return existsSync(token) ? readFileSync(token, 'utf8') : token;
+    })
+    .join(' ');
 }
 
 export function parseIntegerFlag(flagName: string, value: string): number {

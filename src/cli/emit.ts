@@ -30,14 +30,6 @@ export function getOutputFormat(command: Command): CliOutputFormat {
   return command.optsWithGlobals<{ outputFormat?: string }>().outputFormat === 'json' ? 'json' : 'text';
 }
 
-export function getCliDisplayPrefix(argv: readonly string[] = process.argv): string {
-  const executable = argv[0];
-  if (executable?.match(/node(\.exe)?$/)) {
-    return `node "${argv[1]}"`;
-  }
-  return executable ?? 'coral-cli';
-}
-
 export function emit<T>(result: T, outputFormat: CliOutputFormat, textFormatter?: (data: T) => string): void {
   const text = outputFormat === 'text' && textFormatter !== undefined ? textFormatter(result) : JSON.stringify(result);
   process.stdout.write(text + '\n');
