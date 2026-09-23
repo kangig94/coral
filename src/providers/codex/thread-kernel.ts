@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { errorMessage } from '../../infra/error-format.js';
 import { readString } from '../../infra/json.js';
 import type { TimePort } from '../../infra/port-types.js';
-import { resolveModelTier } from '../request-policy.js';
 import type {
   Provider,
   ProviderEventBody,
@@ -27,6 +26,7 @@ import {
   mapThreadStartParams,
   mapTurnStartParams,
   readCodexPersistedContinuity,
+  resolveCodexModel,
   resolveCodexServiceTier,
   type CodexServiceTier,
 } from './request-mapping.js';
@@ -110,7 +110,7 @@ export type TurnAttempt = {
 export type CodexTurnState = {
   startedAt: number;
   cwd: string;
-  model: string | undefined;
+  model: string;
   serviceTier: CodexServiceTier | undefined;
   sessionId: string;
   persistedThreadId: string | null;
@@ -188,7 +188,7 @@ function createState(request: ProviderRequest, runtime: CodexProviderRuntime): C
   const state = {
     startedAt: runtime.time.now(),
     cwd: persistedContinuity.cwd ?? request.cwd,
-    model: resolveModelTier(request.model),
+    model: resolveCodexModel(request),
     serviceTier: resolveCodexServiceTier(request, runtime),
     sessionId: request.sessionId,
     persistedThreadId,

@@ -3,7 +3,12 @@ import { backendLog } from '../infra/backend-log.js';
 
 const VALID_EFFORT_LEVELS = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 const EFFORT_VALUES_HINT = 'low, medium, high, xhigh, max, ultra';
-export const ABSTRACT_MODEL_TIERS: Record<string, number> = { haiku: 1, sonnet: 2, opus: 3 };
+export const ABSTRACT_MODEL_TIERS: Readonly<Record<string, number>> = Object.freeze({
+  haiku: 1,
+  sonnet: 2,
+  opus: 3,
+  fable: 4,
+});
 
 /**
  * Validate an effort string supplied directly on a request (a contract input).
@@ -51,18 +56,18 @@ export function resolveProviderEffort(
   );
 }
 
-/** Returns undefined for abstract tiers (provider decides). */
-export function resolveModelTier(
-  model: string | undefined,
-  cap?: string,
-  tiers: Readonly<Record<string, number>> = ABSTRACT_MODEL_TIERS,
-): string | undefined {
+/**
+ * Resolve a requested model against an optional tier cap. An abstract tier is kept as requested
+ * unless it ranks above the cap, in which case the cap replaces it; any other name is a concrete
+ * model id and passes through uncapped.
+ */
+export function resolveModelTier(model: string | undefined, cap?: string): string | undefined {
   if (model === undefined) return undefined;
-  const modelRank = tiers[model];
+  const modelRank = ABSTRACT_MODEL_TIERS[model];
   if (modelRank === undefined) return model;
   if (cap !== undefined) {
-    const capRank = tiers[cap];
+    const capRank = ABSTRACT_MODEL_TIERS[cap];
     if (capRank !== undefined && modelRank > capRank) return cap;
   }
-  return undefined;
+  return model;
 }

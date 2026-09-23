@@ -151,6 +151,19 @@ function tokenUsageEvent(
   };
 }
 
+describe('codex terminal model', () => {
+  it.each([
+    ['fable', 'gpt-6-astra'],
+    ['opus', 'gpt-5.6-sol'],
+    ['astra', 'gpt-6-astra'],
+    [undefined, 'gpt-5.6-sol'],
+  ] as const)('should record the wire model sent for request model %s', (model, wireModel) => {
+    const state = createCodexTurnStateForTest(makeRequest({ model }), makeRuntime());
+
+    expect(buildCodexAbortedTerminalForTest(state).terminal.model).toBe(wireModel);
+  });
+});
+
 describe('codexTurnKernel pre-turn mailbox', () => {
   it('admits only lifecycle-compatible notifications, evicts FIFO over cap, and replays retained matches after turn discovery', () => {
     const state = createCodexTurnStateForTest(

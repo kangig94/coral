@@ -232,7 +232,10 @@ describe('mapTurnStartParams effort mapping', () => {
     ).toBe('xhigh');
   });
 
-  it('allows ultra on Sol and Terra, but caps Luna at max', () => {
+  it('allows ultra on Astra, Sol and Terra, but caps Luna at max', () => {
+    expect(mapTurnStartParams(makeRequest({ model: 'astra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
+    expect(mapTurnStartParams(makeRequest({ model: 'gpt-6-astra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
+    expect(mapTurnStartParams(makeRequest({ model: 'fable', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
     expect(mapTurnStartParams(makeRequest({ model: 'sol', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
     expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
     expect(mapTurnStartParams(makeRequest({ model: 'gpt-5.6-sol', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
@@ -339,6 +342,11 @@ describe('mapTurnStartParams effort mapping', () => {
     expect(mapTurnStartParams(makeRequest({ model: 'luna', effort: 'xhigh' }), 'thread-1').effort).toBe('xhigh');
     expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'max' }), 'thread-1').effort).toBe('max');
     expect(mapTurnStartParams(makeRequest({ model: 'terra', effort: 'ultra' }), 'thread-1').effort).toBe('ultra');
+  });
+
+  it('does not floor astra effort', () => {
+    expect(mapTurnStartParams(makeRequest({ model: 'astra', effort: 'low' }), 'thread-1').effort).toBe('low');
+    expect(mapTurnStartParams(makeRequest({ model: 'fable', effort: 'medium' }), 'thread-1').effort).toBe('medium');
   });
 
   it('does not apply terra/luna floor on non-GPT-5.6 baselines', () => {
@@ -726,10 +734,11 @@ describe('resolveCodexModel uses coralEnv', () => {
   });
 
   it.each([
+    ['astra', 'gpt-6-astra'],
     ['sol', 'gpt-5.6-sol'],
     ['terra', 'gpt-5.6-terra'],
     ['luna', 'gpt-5.6-luna'],
-  ] as const)('normalizes bare GPT-5.6 baseline alias %s to %s', (alias, codexModel) => {
+  ] as const)('normalizes bare size baseline alias %s to %s', (alias, codexModel) => {
     const request = makeRequest({ model: undefined, coralEnv: { CORAL_CODEX_MODEL: alias } });
 
     expect(mapThreadStartParams(request, {}).model).toBe(codexModel);
@@ -752,10 +761,11 @@ describe('resolveCodexModel uses coralEnv', () => {
   });
 
   it.each([
+    ['fable', 'gpt-6-astra'],
     ['opus', 'gpt-5.6-sol'],
     ['sonnet', 'gpt-5.6-terra'],
     ['haiku', 'gpt-5.6-luna'],
-  ] as const)('maps abstract tier %s to Codex model %s under GPT-5.6 default', (tier, codexModel) => {
+  ] as const)('maps abstract tier %s to Codex model %s under the default baseline', (tier, codexModel) => {
     const request = makeRequest({ model: tier });
 
     expect(mapThreadStartParams(request, {}).model).toBe(codexModel);
@@ -764,13 +774,14 @@ describe('resolveCodexModel uses coralEnv', () => {
   });
 
   it.each([
+    ['fable', 'gpt-6-astra'],
     ['opus', 'gpt-5.6-sol'],
     ['sonnet', 'gpt-5.6-terra'],
     ['haiku', 'gpt-5.6-luna'],
-  ] as const)('maps abstract tier %s when CORAL_CODEX_MODEL is GPT-5.6 family', (tier, codexModel) => {
+  ] as const)('maps abstract tier %s when CORAL_CODEX_MODEL is a GPT-6 sized model', (tier, codexModel) => {
     const request = makeRequest({
       model: tier,
-      coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.6-sol' },
+      coralEnv: { CORAL_CODEX_MODEL: 'astra' },
     });
 
     expect(mapThreadStartParams(request, {}).model).toBe(codexModel);
@@ -787,15 +798,28 @@ describe('resolveCodexModel uses coralEnv', () => {
   });
 
   it.each([
+    ['astra', 'gpt-6-astra'],
+    ['ASTRA', 'gpt-6-astra'],
     ['sol', 'gpt-5.6-sol'],
     ['terra', 'gpt-5.6-terra'],
     ['luna', 'gpt-5.6-luna'],
-  ] as const)('normalizes bare GPT-5.6 size alias %s to %s', (alias, codexModel) => {
+  ] as const)('normalizes bare size alias %s to %s', (alias, codexModel) => {
     const request = makeRequest({ model: alias });
 
     expect(mapThreadStartParams(request, {}).model).toBe(codexModel);
     expect(mapThreadResumeParams(request, 'thread-1', {}).model).toBe(codexModel);
     expect(mapTurnStartParams(request, 'thread-1').model).toBe(codexModel);
+    expect(
+      mapThreadStartParams(makeRequest({ model: alias, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } }), {}).model,
+    ).toBe(codexModel);
+  });
+
+  it('collapses every abstract tier, fable included, to a single-size baseline', () => {
+    for (const model of ['fable', 'opus', 'sonnet', 'haiku']) {
+      expect(mapThreadStartParams(makeRequest({ model, coralEnv: { CORAL_CODEX_MODEL: 'gpt-5.5' } }), {}).model).toBe(
+        'gpt-5.5',
+      );
+    }
   });
 
   it('normalizes a bare size alias even under a non-GPT-5.6 CORAL_CODEX_MODEL (explicit concrete size)', () => {

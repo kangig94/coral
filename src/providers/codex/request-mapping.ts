@@ -2,7 +2,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import type { EffortLevel, ProviderContinuityUpdate, ProviderRequest, ProviderRuntime } from '../contract.js';
 import type { ProviderContinuityBlob } from '../../sessions/continuity.js';
-import { resolveModelTier, resolveProviderEffort } from '../request-policy.js';
+import { resolveProviderEffort } from '../request-policy.js';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readString } from '../../infra/json.js';
@@ -68,7 +68,7 @@ export function buildCodexPrompt(
 const CODEX_DEFAULT_EFFORT: EffortLevel = 'high';
 /** Terra/Luna get a higher reasoning floor — smaller sizes compensate with more effort. */
 const CODEX_TERRA_LUNA_MIN_EFFORT: EffortLevel = 'xhigh';
-const CODEX_GPT56_EFFORT_CEILING: EffortLevel = 'ultra';
+const CODEX_SIZED_EFFORT_CEILING: EffortLevel = 'ultra';
 const CODEX_LUNA_EFFORT_CEILING: EffortLevel = 'max';
 const CODEX_LEGACY_EFFORT_CEILING: EffortLevel = 'xhigh';
 const EFFORT_RANK: Record<EffortLevel, number> = {
@@ -95,13 +95,13 @@ function isCodexLuna(model: string): boolean {
 }
 
 function codexEffortCeiling(model: string): EffortLevel {
-  if (!isCodexGpt56Family(model)) {
+  if (!isCodexSizedFamily(model)) {
     return CODEX_LEGACY_EFFORT_CEILING;
   }
   if (isCodexLuna(model)) {
     return CODEX_LUNA_EFFORT_CEILING;
   }
-  return CODEX_GPT56_EFFORT_CEILING;
+  return CODEX_SIZED_EFFORT_CEILING;
 }
 
 function clampEffort(level: EffortLevel, min: EffortLevel | undefined, max: EffortLevel): EffortLevel {
@@ -282,41 +282,39 @@ function buildCodexTurnInput(prompt: string): UserInput[] {
 const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 
 /**
- * Canonical GPT-5.6 size model ids, keyed by their bare size alias. Single home
- * for the `gpt-5.6-<size>` literals: the abstract-tier map, the family check, and
- * the bare-alias normalization in `resolveCodexModel` all derive from this.
+ * Canonical sized Codex model ids, keyed by their bare size alias. Single home for these
+ * literals: the abstract-tier map, the family check, and the bare-alias normalization in
+ * `resolveCodexModel` all derive from this.
  */
-const GPT56_SIZE_MODEL: Record<string, string> = {
+const CODEX_SIZE_MODEL: Readonly<Record<string, string>> = Object.freeze({
+  astra: 'gpt-6-astra',
   sol: 'gpt-5.6-sol',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-5.6-luna',
-};
+});
 
-function normalizeGpt56SizeAlias(model: string | undefined): string | undefined {
+function normalizeCodexSizeAlias(model: string | undefined): string | undefined {
   if (model === undefined) return undefined;
   const key = model.trim().toLowerCase();
-  return Object.hasOwn(GPT56_SIZE_MODEL, key) ? GPT56_SIZE_MODEL[key] : model;
+  return Object.hasOwn(CODEX_SIZE_MODEL, key) ? CODEX_SIZE_MODEL[key] : model;
 }
 
 /**
- * Agent frontmatter / Coral abstract tiers → Codex GPT-5.6 family aliases.
- * Agent files declare Claude-style tiers (`opus` / `sonnet` / `haiku`); Codex
- * consumes the generation-family names gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna instead.
- *
- * Only applied when the configured baseline model is a GPT-5.6 family id.
- * Older single-size lines (e.g. `gpt-5.5`) have no sol/terra/luna split, so
- * abstract tiers collapse to that one baseline model.
+ * Coral abstract tiers → sized Codex models. Applied only when the baseline model is itself a
+ * sized line; a single-size line (e.g. `gpt-5.5`) has no size split, so every abstract tier
+ * collapses to that baseline.
  */
-const CODEX_ABSTRACT_MODEL: Record<string, string> = {
-  opus: GPT56_SIZE_MODEL.sol,
-  sonnet: GPT56_SIZE_MODEL.terra,
-  haiku: GPT56_SIZE_MODEL.luna,
-};
+const CODEX_ABSTRACT_MODEL: Readonly<Record<string, string>> = Object.freeze({
+  fable: CODEX_SIZE_MODEL.astra,
+  opus: CODEX_SIZE_MODEL.sol,
+  sonnet: CODEX_SIZE_MODEL.terra,
+  haiku: CODEX_SIZE_MODEL.luna,
+});
 
-function isCodexGpt56Family(model: string): boolean {
+function isCodexSizedFamily(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   if (normalized.includes('gpt-5.6')) return true;
-  return GPT56_SIZE_MODEL[normalized] !== undefined;
+  return Object.hasOwn(CODEX_SIZE_MODEL, normalized) || Object.values(CODEX_SIZE_MODEL).includes(normalized);
 }
 
 function normalizeServiceTierEnv(value: string | undefined): CodexServiceTier | undefined {
@@ -402,28 +400,25 @@ export function resolveCodexServiceTier(
 }
 
 /**
- * Baseline = CORAL_CODEX_MODEL ?? DEFAULT. Abstract tiers must resolve here —
- * `resolveModelTier` returns undefined for them so Claude can defer to CLI
- * aliases; Codex has no equivalent for those Claude-style names.
+ * The wire model for a Codex request. Baseline = `CORAL_CODEX_MODEL` ?? default. Codex has no
+ * name for a Coral abstract tier, so one must never reach the wire unmapped. A bare size alias
+ * (`astra`, `sol`, …) is a concrete request for that size, whatever the baseline line, and is
+ * sent under its canonical id.
  */
-function resolveCodexModel(request: ProviderRequest): string {
-  const baseline = normalizeGpt56SizeAlias(request.coralEnv['CORAL_CODEX_MODEL']) ?? DEFAULT_CODEX_MODEL;
+export function resolveCodexModel(request: Pick<ProviderRequest, 'model' | 'coralEnv'>): string {
+  const baseline = normalizeCodexSizeAlias(request.coralEnv['CORAL_CODEX_MODEL']) ?? DEFAULT_CODEX_MODEL;
 
   if (request.model !== undefined) {
     const mapped = Object.hasOwn(CODEX_ABSTRACT_MODEL, request.model) ? CODEX_ABSTRACT_MODEL[request.model] : undefined;
     if (mapped !== undefined) {
-      return isCodexGpt56Family(baseline) ? mapped : baseline;
+      return isCodexSizedFamily(baseline) ? mapped : baseline;
     }
-    // Bare GPT-5.6 size aliases (sol/terra/luna) are concrete model requests, not
-    // abstract tiers: normalize to the canonical `gpt-5.6-<size>` id so the wire
-    // model (and Codex) never sees the prefix-less alias. Unconditional — these
-    // names are explicit 5.6 sizes regardless of the baseline line.
-    const sizeModel = normalizeGpt56SizeAlias(request.model) ?? request.model;
+    const sizeModel = normalizeCodexSizeAlias(request.model) ?? request.model;
     if (sizeModel !== request.model) {
       return sizeModel;
     }
   }
-  return resolveModelTier(request.model) ?? baseline;
+  return request.model ?? baseline;
 }
 
 export function mapThreadStartParams(
