@@ -90,7 +90,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
 
     Treat Q&A answers as **confirmed framing** anchoring Step 1 drafting — gated axes are not auto-marked `[unconfirmed]`. Step 3 alternatives operate within the chosen tree by default.
 
-    **Elegant override**: a structurally superior alternative for a gated axis — from pioneer when Step 2 ran, from your own analysis only when it was skipped — MAY be surfaced in Step 3 as `[unconfirmed]` under the elegant-tier bar (or as a sole form when pioneer's Kind is `sole`). Acknowledge the user's original choice and let them keep or switch.
+    **Elegant override**: a structurally superior alternative for a gated axis — from pioneer when Step 2 ran, from your own analysis only when it was skipped — MAY be surfaced in Step 3 as `[unconfirmed]` under the elegant-tier bar (or as a sole form when pioneer's `Kind` — defined in Step 2's return contract — is `sole`). Acknowledge the user's original choice and let them keep or switch.
 
     ### 1. Analyze and Draft
 
@@ -184,9 +184,10 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     | Label | Target | Disposition | Reason |
     |-------|--------|-------------|--------|
 
-    Disposition is one of:
+    Disposition is one of — `adopted`, `rejected`, and `out-of-scope` apply only to `P#` rows,
+    `confirmed-current` only to `AE#` rows, `overridden` to either:
     - `adopted` — folded into the target sub-item (2c).
-    - `confirmed-current` — an `AE#`: the target sub-item stands confirmed, with no alternatives.
+    - `confirmed-current` — the target sub-item stands confirmed, with no alternatives.
     - `rejected` — Reason cites tree evidence or gated framing that contradicts pioneer's form. This is
       the only place to disagree with pioneer — never a competing alternative.
     - `out-of-scope` — Reason names the Scope exclusion it falls under.
@@ -336,7 +337,8 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     <!-- exists only when pioneer returned a report -->
 
     ## Pioneer Ledger
-    Report: CORAL_PROJECT/plans/pre-{topic}.pioneer.md sha256=<hash>
+    Report: CORAL_PROJECT/plans/pre-{topic}.pioneer.<UTC yyyymmddThhmmss>.md sha256=<hash>
+    Verified: yes | no (<reason>)
 
     | Label | Target | Disposition | Reason |
     |-------|--------|-------------|--------|
@@ -351,13 +353,15 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
     When zero unconfirmed items remain:
     1. Present the decision summary table
     2. Finalize `CORAL_PROJECT/plans/pre-{topic}.md` — remove all `[unconfirmed]` markers and
-       alternative lists, keeping only the chosen values. Keep `(P#)` tags and `## Pioneer Ledger` —
-       they lead the implementer to pioneer's reasoning; update a ledger row whose disposition the
-       conversation changed
+       alternative lists, keeping only the chosen values. Keep `## Pioneer Ledger` and the `(P#)` tag of every `adopted`
+       sub-item — they lead the implementer to pioneer's reasoning. Drop the tag from an `overridden`
+       sub-item: its text is the user's choice, not pioneer's form, and its ledger row keeps the
+       record. Update a ledger row whose disposition the conversation changed
     3. **Verify against the original** (only when Step 2 ran and pioneer returned a report).
-       First, `sha256sum` the report and compare it with the ledger's `sha256=`. On a mismatch the
-       original is lost and nothing can be verified against it: tell the user the agreement is
-       **not pioneer-verified** and why, and go to 4.
+       First, `sha256sum` the report and compare it with the ledger's `sha256=`. If the command
+       fails (the report is missing or unreadable) or the hash differs, the original is lost and
+       nothing can be verified against it: write `Verified: no (<reason>)` under the ledger's
+       `Report:` line, tell the user the agreement is **not pioneer-verified** and why, and go to 4.
 
        On a match, `Read` the report and the finalized agreement **in this step** — what you recall of
        either is the paraphrase this step exists to catch, so a check that did not re-read both files
@@ -365,6 +369,7 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
        the ledger and the agreement, looking for:
        - a `P#` or `AE#` with no ledger row, or with more than one;
        - an `adopted` sub-item whose text is not the finding's Replacement verbatim;
+       - a `(P#)` tag on a sub-item whose ledger row is not `adopted`;
        - an `overridden` row whose sub-item does not match the user choice its Reason quotes;
        - a `rejected` or `out-of-scope` finding whose form appears in the agreement anyway, tagged or not;
        - an agreement statement contradicted by a finding's Why or Cost (e.g. "no migration" against a
@@ -373,8 +378,8 @@ carries `## Pioneer Ledger` after the items, pointing at the sealed Pioneer Repo
        Print one line — `Pioneer check: <n> labels, <k> discrepancies` — followed by each discrepancy
        with its label and a quote from both files. Correct the agreement file, never the report. A
        correction that changes a value the user chose goes back to the user through Step 4, then
-       finalization reruns from 1; any other correction is applied and this step reruns. Proceed only
-       at zero discrepancies.
+       finalization reruns from 1; any other correction is applied and this step reruns. At zero
+       discrepancies, write `Verified: yes` under the ledger's `Report:` line, then proceed.
     4. **Recommend a path, then ask.** Read the finalized preplan and pick the path to recommend at
        your discretion:
        - **ralph** — well-scoped and low-risk, root cause/fix already clear: skip planning, implement directly.

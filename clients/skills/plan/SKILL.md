@@ -67,7 +67,10 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
       - **Pioneer Ledger**, if present → `adopted` and `overridden` rows are confirmed decisions, and
         `rejected` / `out-of-scope` forms are not reintroduced. Read the Pioneer Report its `Report:`
         line points to for the Why and Cost behind each adopted finding, and carry them into
-        Implementation Phases and Risks & Mitigations. The report is read-only.
+        Implementation Phases and Risks & Mitigations. The report is read-only. When the ledger's
+        `Verified:` line is not `yes`, the agreement was never checked against the report: still
+        honor the user's confirmed decisions, but do not take Why or Cost from the report, and state
+        in the plan summary that the preplan is not pioneer-verified.
 
       Pass the preplan path and its confirmed decisions to reviewers in step 4a.
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
