@@ -13,7 +13,7 @@
       "source": {
         "source": "github",
         "repo": "kangig94/coral",
-        "ref": "v0.10.12",
+        "ref": "v0.10.13",
         "path": "clients"
       }
     }
