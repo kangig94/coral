@@ -1347,7 +1347,7 @@ function alignColumns(a, b) {
   return [padVisual(a, w), padVisual(b, w)];
 }
 
-const CODEX_MODEL_DEFAULT = 'gpt-5.6-sol';
+const CODEX_MODEL_DEFAULT = 'gpt-6-sol';
 
 // A project-local settings file is repository content, so this value arrives from whoever wrote the
 // repo rather than from the user reading it: it is printed every render and must carry no control
