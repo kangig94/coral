@@ -23,16 +23,17 @@ vi.mock('node:os', async () => {
 
 async function loadKbModules() {
   vi.resetModules();
-  const [runtime, paths, oramaPaths] = await Promise.all([
+  const [runtime, paths, oramaPaths, rootPaths] = await Promise.all([
     import('#src/kb/runtime.js'),
     import('#src/kb/paths.js'),
     import('#src/engines/orama/paths.js'),
+    import('#src/infra/path/root.js'),
   ]);
   return {
     createKbRuntime: runtime.createKbRuntime,
     paths,
     oramaPaths,
-    infraPaths: paths,
+    kbVaultRoot: rootPaths.kbVaultRoot,
   };
 }
 
@@ -69,10 +70,10 @@ describe('kb detection and paths', () => {
 
   it('honors a caller-provided custom root when creating a runtime', async () => {
     const customRoot = join(mockState.tmpHome, 'configured-kb');
-    const { infraPaths } = await loadKbModules();
+    const { kbVaultRoot } = await loadKbModules();
 
     const { kb } = createKbTestRuntime({
-      markdownRoot: infraPaths.kbRoot('prod', customRoot),
+      markdownRoot: kbVaultRoot('prod', { customRoot }),
       runtimeDir: kbRuntimePaths('prod').root,
       db: openKbTestStoreDb(':memory:'),
     });
@@ -81,16 +82,16 @@ describe('kb detection and paths', () => {
   });
 
   it('derives flavor-specific KB roots and runtime dirs', async () => {
-    const { infraPaths, oramaPaths } = await loadKbModules();
+    const { kbVaultRoot, oramaPaths } = await loadKbModules();
 
-    expect(infraPaths.kbRoot('prod')).toBe(join(mockState.tmpHome, '.coral', 'kb'));
+    expect(kbVaultRoot('prod')).toBe(join(mockState.tmpHome, '.coral', 'kb'));
     const prodRuntimeDir = kbRuntimePaths('prod').root;
     expect(prodRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb'));
     expect(oramaPaths.oramaSnapshotDir(prodRuntimeDir)).toBe(
       join(mockState.tmpHome, '.coral', 'gen2', 'data', 'kb', 'orama'),
     );
 
-    expect(infraPaths.kbRoot('dev')).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
+    expect(kbVaultRoot('dev')).toBe(join(mockState.tmpHome, '.coral', 'kb-dev'));
     const devRuntimeDir = kbRuntimePaths('dev').root;
     expect(devRuntimeDir).toBe(join(mockState.tmpHome, '.coral', 'gen2', 'data-dev', 'kb'));
     expect(oramaPaths.oramaSnapshotDir(devRuntimeDir)).toBe(

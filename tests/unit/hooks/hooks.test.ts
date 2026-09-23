@@ -537,18 +537,6 @@ describe('session-start.mjs', () => {
     );
   });
 
-  it('should name the CLI bare in a host session, where bash-rewrite resolves it', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, 'KB: {{CORAL_CLI}} kb principles');
-
-    const result = runHook(SESSION_START_HOOK, { session_id: 'sess-1' }, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
-
-    expect(result.status).toBe(0);
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toContain('KB: coral-cli kb principles');
-  });
-
   it('ignores a newly created coral symlink from the anchored .git/info/exclude entry', () => {
     const fixture = createFixture();
     initGitRepo(fixture.projectRoot, 'https://github.com/acme/repo.git');
@@ -1013,16 +1001,6 @@ describe('subagent-start.mjs', () => {
     expect(output.hookSpecificOutput.additionalContext).toContain('base');
     expect(output.hookSpecificOutput.additionalContext).not.toContain('propagate owner');
     expect(output.hookSpecificOutput.additionalContext).toContain('rest');
-  });
-
-  it('should name the CLI bare in a subagent of a host session', () => {
-    const fixture = createFixture();
-    writeInjectBundle(fixture.pluginRoot, 'CLI: {{CORAL_CLI}}');
-
-    const result = runHook(SUBAGENT_START_HOOK, {}, { CLAUDE_PLUGIN_ROOT: fixture.pluginRoot });
-
-    const output = expectHookOutput(result);
-    expect(output.hookSpecificOutput.additionalContext).toBe('CLI: coral-cli');
   });
 
   it('renders equipped tools when the engine binary is installed', () => {

@@ -143,13 +143,9 @@ function stripInternalCoralKeys(env: Readonly<Record<string, string>>): Record<s
  *   once at boot and pin which daemon a spawned child talks back to; they are
  *   re-asserted from the daemon's own snapshot so a nested `coral-cli` targets the
  *   right daemon rather than one the caller names.
- * - Daemon-scoped decisions that are nonetheless read per request from the
- *   controller env. `CORAL_KB_ENABLE` gates whether the daemon booted its KB
- *   runtime at all, yet `applyInjectBundle` reads it off the request's coralEnv to
- *   decide KB injection — so it must reflect the daemon's boot state, not a value
- *   a caller forwards, or injection would disagree with the running KB daemon.
- *   (The parent daemon's KB boot gate and the CLI's re-enable reconcile read it
- *   from `runtime.env`/`process.env` directly, so they are unaffected either way.)
+ * - Daemon-scoped decisions. `CORAL_KB_ENABLE` gates whether the daemon booted its
+ *   KB runtime at all, so a child must see the daemon's boot state, not a value a
+ *   caller forwards.
  */
 export const DAEMON_OWNED_CORAL_ENV_KEYS: ReadonlySet<string> = new Set([
   'CORAL_CHILD',

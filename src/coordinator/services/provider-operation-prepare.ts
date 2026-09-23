@@ -116,12 +116,10 @@ export function materializeProviderOperationPrepare(
   const request = toProviderRequest(launch, session.conversationRef);
   const requestWithInject = applyInjectBundle(request, {
     storage: deps.runtime.storage,
-    kbRoot: deps.runtime.paths.coral.corpus.kbRoot,
     equippedTools: resolveEquippedTools(deps.runtime),
     ...(request.cwd
       ? {
           coralProjects: deps.runtime.paths.projectData(request.cwd),
-          projectSource: deps.runtime.paths.projectSource(request.cwd),
         }
       : {}),
   });

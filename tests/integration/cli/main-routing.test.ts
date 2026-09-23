@@ -3021,8 +3021,8 @@ describe('cli main routing', () => {
     expect(stdout).toBe('Import job kb-import-job running (ready=active-vector)\n');
   });
 
-  it('routes kb reindex and rewrites warning text using the active CLI invocation prefix', async () => {
-    process.argv = ['node', '/tmp/path with spaces/coral-cli.cjs'];
+  it('should route kb reindex and name the bare coral-cli command whatever path the CLI ran from', async () => {
+    process.argv = ['node', '/tmp/path with spaces/coral-cli'];
     const { buildProgram } = await loadMainModule();
     const program = buildProgram();
 
@@ -3041,7 +3041,7 @@ describe('cli main routing', () => {
 
     expect(mockState.kbReindex).toHaveBeenCalledWith({ async: false });
     expect(stdout).toContain('Reindexed:');
-    expect(stdout).toContain('node "/tmp/path with spaces/coral-cli.cjs" kb reindex');
+    expect(stdout).toContain('Run coral-cli kb reindex again');
   });
 
   it('routes kb reindex --async to the async job launch path', async () => {

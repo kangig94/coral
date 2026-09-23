@@ -2286,35 +2286,30 @@ describe('cli format', () => {
 
   describe('kb formatters', () => {
     it('formats hybrid kb search results as JSON, adds an indicator, and rewrites kb_reindex warnings', () => {
-      const formatted = formatKbSearch(
-        {
-          results: [
-            {
-              note: 'cli-kb-tooling',
-              kind: 'note',
-              title: 'KB CLI Tooling',
-              matchedBy: ['filename', 'content'],
-              tags: ['cli', 'kb'],
-              principles: ['contract-first-design'],
-              snippet: 'Use kb_reindex after stale writes.',
-              evidence: [],
-            },
-          ],
-          mode: 'hybrid',
-          warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
-          retrievalDiagnostics: [],
-        },
-        'node "/tmp/coral-cli.cjs"',
-      );
+      const formatted = formatKbSearch({
+        results: [
+          {
+            note: 'cli-kb-tooling',
+            kind: 'note',
+            title: 'KB CLI Tooling',
+            matchedBy: ['filename', 'content'],
+            tags: ['cli', 'kb'],
+            principles: ['contract-first-design'],
+            snippet: 'Use kb_reindex after stale writes.',
+            evidence: [],
+          },
+        ],
+        mode: 'hybrid',
+        warning: 'Enhanced KB index is stale; run kb_reindex to refresh it.',
+        retrievalDiagnostics: [],
+      });
 
       const parsed = JSON.parse(formatted);
       expect(parsed.count).toBe(1);
       expect(parsed.indicator).toBe('[hybrid]');
       expect(parsed.results[0].note).toBe('cli-kb-tooling');
       expect(parsed.results[0].kind).toBe('note');
-      expect(parsed.warning).toBe(
-        'Enhanced KB index is stale; run node "/tmp/coral-cli.cjs" kb reindex to refresh it.',
-      );
+      expect(parsed.warning).toBe('Enhanced KB index is stale; run coral-cli kb reindex to refresh it.');
     });
 
     it('formats an empty kb search result set', () => {
@@ -2448,24 +2443,21 @@ describe('cli format', () => {
     });
 
     it('formats kb reindex as one-liner and rewrites kb_reindex warnings', () => {
-      const formatted = formatKbReindex(
-        {
-          notes: 4,
-          sources: 0,
-          communities: 0,
-          wikis: 0,
-          principles: 2,
-          tags: 3,
-          duration_ms: 25,
-          mode: 'text',
-          warning: 'Run kb_reindex again to refresh the enhanced index.',
-        },
-        'node "/tmp/coral-cli.cjs"',
-      );
+      const formatted = formatKbReindex({
+        notes: 4,
+        sources: 0,
+        communities: 0,
+        wikis: 0,
+        principles: 2,
+        tags: 3,
+        duration_ms: 25,
+        mode: 'text',
+        warning: 'Run kb_reindex again to refresh the enhanced index.',
+      });
 
       expect(formatted).toBe(
         'Reindexed: 4 notes, 0 communities, 0 wikis, 2 principles, 3 tags (25ms, text)\n' +
-          'Warning: Run node "/tmp/coral-cli.cjs" kb reindex again to refresh the enhanced index.',
+          'Warning: Run coral-cli kb reindex again to refresh the enhanced index.',
       );
     });
 

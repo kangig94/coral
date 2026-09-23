@@ -25,6 +25,7 @@ afterEach(() => {
 type InjectFragments = {
   core?: string;
   tools?: string;
+  cli?: string;
   orchestrator?: string;
   kbCommon?: string;
   kbOrchestrator?: string;
@@ -40,6 +41,7 @@ function pluginRootWith(input: string | InjectFragments): string {
   for (const [relativePath, content] of [
     ['core.md', fragments.core],
     ['tools.md', fragments.tools],
+    ['cli.md', fragments.cli],
     ['orchestrator.md', fragments.orchestrator],
     ['kb/common.md', fragments.kbCommon],
     ['kb/orchestrator.md', fragments.kbOrchestrator],
@@ -321,5 +323,13 @@ describe('renderInject delegation guidance', () => {
 
     expect(render(true)).toContain('<agent> -i');
     expect(render(false)).not.toContain('<agent> -i');
+  });
+
+  it('should give the Coral CLI guidance to every host session, subagents included', () => {
+    const pluginRoot = join(process.cwd(), 'clients');
+    const render = (asOwner: boolean): string => renderInject({ pluginRoot, asOwner, group: 'base' });
+
+    expect(render(true)).toContain('CLI: `coral-cli`');
+    expect(render(false)).toContain('CLI: `coral-cli`');
   });
 });

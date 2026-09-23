@@ -159,7 +159,7 @@ const backendBuild = await esbuild.build({
 });
 
 const backendBundle = readFileSync('clients/build/coral-backend.cjs');
-for (const fragmentPath of ['core.md', 'tools.md', 'kb/common.md', 'kb/session.md']) {
+for (const fragmentPath of ['core.md', 'tools.md']) {
   if (!backendBundle.includes(Buffer.from(JSON.stringify(fragmentPath)))) {
     throw new Error(`Built backend does not reference inject fragment: ${fragmentPath}`);
   }
