@@ -5,6 +5,8 @@ import {
   PROVIDER_PREFLIGHT_RETRY_BACKOFF_MS,
   buildEffectiveCoralEnv,
   buildSessionControllerProfile,
+  mapResolverError,
+  resolveAgentLaunchProfile,
   runProviderPreflight,
   toPreflightRuntime,
 } from '#src/coordinator/services/execution-policies.js';
@@ -19,6 +21,43 @@ function pendingTimerCount(runtime: SimulationRuntime): number {
 }
 
 const CODEX_DEADLINE_MESSAGE = `Coral could not complete the codex availability check within ${PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS}ms. Repeat the request; if it times out again, verify that the codex CLI starts promptly for the user running the Coral daemon.`;
+
+function agentContext(content: string) {
+  return {
+    projectRoot: '/project',
+    coralPluginRoot: '/plugin',
+    discoverPluginRoot: () => null,
+    storage: {
+      existsSync: (path: string) => path.endsWith('/tester.md'),
+      readFileSync: () => content,
+    },
+  } as unknown as Parameters<typeof resolveAgentLaunchProfile>[1];
+}
+
+describe('resolveAgentLaunchProfile', () => {
+  it('should carry the frontmatter effort as the agent default', () => {
+    const profile = resolveAgentLaunchProfile('tester', agentContext('---\nmodel: fable\neffort: xhigh\n---\n# Body'));
+
+    expect(profile).toMatchObject({ model: 'fable', effort: 'xhigh' });
+  });
+
+  it('should leave effort unset when the frontmatter declares none', () => {
+    expect(resolveAgentLaunchProfile('tester', agentContext('---\nmodel: opus\n---\n# Body'))).not.toHaveProperty(
+      'effort',
+    );
+  });
+
+  it.each(['extreme', 'ultra'])('should refuse an agent whose frontmatter effort is %s', (effort) => {
+    let thrown: unknown;
+    try {
+      resolveAgentLaunchProfile('tester', agentContext(`---\neffort: ${effort}\n---\n# Body`));
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(mapResolverError(thrown)).toMatchObject({ status: 'refused', code: 'invalid_agent' });
+  });
+});
 
 describe('execution policies', () => {
   it('bounds provider preflight before a launch can wait forever without a job id', async () => {

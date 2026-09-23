@@ -86,6 +86,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'HttpBodyReadError',
   'IncumbentMatchesError',
   'InterruptedRecoveryCommitError',
+  'InvalidAgentMetadataError',
   'InvalidAgentRefError',
   'IpcDeadlineExceededError',
   'IpcDrainRequestUnanswered',

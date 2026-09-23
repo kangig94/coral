@@ -426,6 +426,14 @@ describe('parseAgentMeta', () => {
   it('supports CRLF frontmatter parsing', () => {
     expect(parseAgentMeta('---\r\nmodel: sonnet\r\n---\r\n# Body')).toEqual({ model: 'sonnet' });
   });
+
+  it('should extract effort alongside model, and effort without model', () => {
+    expect(parseAgentMeta('---\nmodel: fable\neffort: xhigh\n---\n# Body')).toEqual({
+      model: 'fable',
+      effort: 'xhigh',
+    });
+    expect(parseAgentMeta('---\nname: architect\neffort: max\n---\n# Body')).toEqual({ effort: 'max' });
+  });
 });
 
 describe('stripAgentMetadata', () => {

@@ -12,6 +12,7 @@ import { type JobLaunchRequest, type RefusedLaunchDecision, refuseLaunch } from 
 import {
   AgentNotFoundError,
   AgentNamespaceNotFoundError,
+  InvalidAgentMetadataError,
   InvalidAgentRefError,
   parseAgentMeta,
   parseAgentRef,
@@ -41,6 +42,7 @@ export type ResolvedAgentLaunchProfile = {
   agentName: string;
   name: string;
   model?: string;
+  effort?: EffortLevel;
   instruction: ProviderInstruction;
 };
 
@@ -76,7 +78,9 @@ export function buildSessionControllerProfile(
 }
 
 export function mapResolverError(err: unknown): RefusedLaunchDecision | null {
-  if (err instanceof InvalidAgentRefError) return refuseLaunch('invalid_agent', err.message);
+  if (err instanceof InvalidAgentRefError || err instanceof InvalidAgentMetadataError) {
+    return refuseLaunch('invalid_agent', err.message);
+  }
   if (err instanceof AgentNotFoundError) return refuseLaunch('agent_not_found', err.message);
   if (err instanceof AgentNamespaceNotFoundError) return refuseLaunch('agent_namespace_not_found', err.message);
   return null;
@@ -93,6 +97,13 @@ export function normalizeCoralIntent(input: CoralIntent): CanonicalCoralIntent |
   return { ...rest, sessionId };
 }
 
+/** The frontmatter range Claude Code's native agents also accept; `ultra` exists only on Codex. */
+const AGENT_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const satisfies readonly EffortLevel[];
+
+function isAgentEffortLevel(value: string): value is (typeof AGENT_EFFORT_LEVELS)[number] {
+  return (AGENT_EFFORT_LEVELS as readonly string[]).includes(value);
+}
+
 export function resolveAgentLaunchProfile(
   agentIdent: string,
   resolutionCtx: AgentResolutionContext,
@@ -105,11 +116,18 @@ export function resolveAgentLaunchProfile(
     channel: 'system',
   } satisfies ProviderInstruction;
   const canonicalName = resolved.ref.name;
+  const effort = meta.effort;
+  if (effort !== undefined && !isAgentEffortLevel(effort)) {
+    throw new InvalidAgentMetadataError(
+      `Agent ${canonicalName} frontmatter declares effort "${effort}". Valid values: ${AGENT_EFFORT_LEVELS.join(', ')}`,
+    );
+  }
 
   return {
     agentName: canonicalName,
     name: canonicalName,
     model: meta.model,
+    ...(effort !== undefined ? { effort } : {}),
     instruction,
   };
 }

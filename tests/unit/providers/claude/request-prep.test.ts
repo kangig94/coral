@@ -11,8 +11,7 @@ describe('resolveClaudeModel', () => {
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: '' })).toBeUndefined();
   });
 
-  it('applies an in-cap abstract CORAL_CLAUDE_MODEL tier verbatim (the cappedDefault ?? envModel fallback)', () => {
-    // resolveModelTier returns undefined for an in-cap abstract tier; the fallback re-applies it.
+  it('should apply an in-cap abstract CORAL_CLAUDE_MODEL tier verbatim', () => {
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'opus' })).toBe('opus');
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'sonnet' })).toBe('sonnet');
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'fable' })).toBe(
@@ -33,38 +32,45 @@ describe('resolveClaudeModel', () => {
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'opus', CORAL_CLAUDE_MODEL_CAP: 'sonnet' })).toBe(
       'sonnet',
     );
-    expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable' })).toBe('opus');
+    expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'opus' })).toBe('opus');
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'sonnet' })).toBe(
       'sonnet',
     );
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'opus', CORAL_CLAUDE_MODEL_CAP: 'fable' })).toBe('opus');
   });
 
-  it('falls back to the existing opus cap when CORAL_CLAUDE_MODEL_CAP is invalid or empty', () => {
+  it('should default the cap to fable when CORAL_CLAUDE_MODEL_CAP is unset, invalid, or empty', () => {
+    expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable' })).toBe('fable');
     expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'invalid' })).toBe(
-      'opus',
+      'fable',
     );
-    expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: '' })).toBe('opus');
+    expect(resolveClaudeModel(undefined, { CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: '' })).toBe('fable');
   });
 
   it('prefers an explicit request model over CORAL_CLAUDE_MODEL', () => {
     expect(resolveClaudeModel('claude-custom', { CORAL_CLAUDE_MODEL: 'opus' })).toBe('claude-custom');
   });
 
-  it('returns undefined for an in-cap abstract request model and never falls through to CORAL_CLAUDE_MODEL', () => {
-    // A soft per-request tier defers to the provider...
-    expect(resolveClaudeModel('sonnet', {})).toBeUndefined();
-    expect(resolveClaudeModel('opus', { CORAL_CLAUDE_MODEL_CAP: 'opus' })).toBeUndefined();
-    expect(resolveClaudeModel('fable', { CORAL_CLAUDE_MODEL_CAP: 'fable' })).toBeUndefined();
-    // ...and a present request model is never overridden by the env default (unlike Codex).
-    expect(resolveClaudeModel('sonnet', { CORAL_CLAUDE_MODEL: 'opus' })).toBeUndefined();
+  it('should send an in-cap abstract request tier as that tier and never fall through to CORAL_CLAUDE_MODEL', () => {
+    expect(resolveClaudeModel('sonnet', {})).toBe('sonnet');
+    expect(resolveClaudeModel('opus', {})).toBe('opus');
+    expect(resolveClaudeModel('fable', {})).toBe('fable');
+    expect(resolveClaudeModel('sonnet', { CORAL_CLAUDE_MODEL: 'opus' })).toBe('sonnet');
+  });
+
+  it('should cap an over-cap abstract request tier without consulting CORAL_CLAUDE_MODEL', () => {
+    expect(resolveClaudeModel('fable', { CORAL_CLAUDE_MODEL_CAP: 'opus' })).toBe('opus');
+    expect(resolveClaudeModel('fable', { CORAL_CLAUDE_MODEL_CAP: 'sonnet', CORAL_CLAUDE_MODEL: 'haiku' })).toBe(
+      'sonnet',
+    );
   });
 });
 
 describe('buildPreparedClaudeRequest assembly', () => {
   it.each([
     [{ CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'fable' }, 'fable', 'xhigh'],
-    [{ CORAL_CLAUDE_MODEL: 'fable' }, 'opus', 'xhigh'],
+    [{ CORAL_CLAUDE_MODEL: 'fable' }, 'fable', 'xhigh'],
+    [{ CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'opus' }, 'opus', 'xhigh'],
     [{ CORAL_CLAUDE_MODEL: 'fable', CORAL_CLAUDE_MODEL_CAP: 'sonnet' }, 'sonnet', 'max'],
     [{ CORAL_CLAUDE_MODEL: 'opus', CORAL_CLAUDE_MODEL_CAP: 'fable' }, 'opus', 'xhigh'],
     [{ CORAL_CLAUDE_MODEL: 'sonnet' }, 'sonnet', 'max'],

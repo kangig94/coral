@@ -37,6 +37,15 @@ export class InvalidAgentRefError extends Error {
   }
 }
 
+export class InvalidAgentMetadataError extends Error {
+  readonly kind = 'invalid_agent' as const;
+
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'InvalidAgentMetadataError';
+  }
+}
+
 export class AgentNotFoundError extends Error {
   readonly kind = 'agent_not_found' as const;
 
@@ -101,15 +110,17 @@ export function resolveAgent(ref: AgentRef, ctx: AgentResolutionContext): Resolv
   return attempt.result;
 }
 
-export function parseAgentMeta(content: string): { model?: string } {
+export function parseAgentMeta(content: string): { model?: string; effort?: string } {
   const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!fmMatch) return {};
 
   const fm = fmMatch[1];
-  const modelMatch = fm.match(/^model:\s*(.+)$/m);
-  if (!modelMatch) return {};
-
-  return { model: modelMatch[1].trim() };
+  const model = fm.match(/^model:\s*(.+)$/m)?.[1].trim();
+  const effort = fm.match(/^effort:\s*(.+)$/m)?.[1].trim();
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
+  };
 }
 
 export function stripAgentMetadata(content: string): string {

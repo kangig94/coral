@@ -38,13 +38,12 @@ export type ClaudeBootstrapConfiguration = Readonly<{
 }>;
 
 const CLAUDE_DEFAULT_EFFORT: EffortLevel = 'xhigh';
-const DEFAULT_CLAUDE_MODEL_CAP = 'opus';
-const CLAUDE_MODEL_TIERS: Readonly<Record<string, number>> = Object.freeze({ ...ABSTRACT_MODEL_TIERS, fable: 4 });
+const DEFAULT_CLAUDE_MODEL_CAP = 'fable';
 const OPUS_RANK = ABSTRACT_MODEL_TIERS.opus;
 
 function resolveClaudeModelCap(env: Record<string, string>): string {
   const configured = env.CORAL_CLAUDE_MODEL_CAP;
-  return configured !== undefined && CLAUDE_MODEL_TIERS[configured] !== undefined
+  return configured !== undefined && ABSTRACT_MODEL_TIERS[configured] !== undefined
     ? configured
     : DEFAULT_CLAUDE_MODEL_CAP;
 }
@@ -108,39 +107,22 @@ export function normalizeControllerEnv(env?: Record<string, string>): Record<str
 }
 
 /**
- * Resolve the model for a Coral-launched Claude session, capped by
- * `CORAL_CLAUDE_MODEL_CAP` (default `opus`).
+ * Resolve the model for a Coral-launched Claude session.
  *
- * Precedence: an explicit per-request `model` wins outright; else
- * `CORAL_CLAUDE_MODEL` is the launch default; else `undefined`, which leaves the
- * model unspecified so Claude uses its own default (Coral states no
- * opinion). Empty string is treated as unset.
- *
- * The control flow deliberately differs from the Codex analog
- * (`resolveModelTier(model) ?? env ?? DEFAULT`, a single fall-through): the
- * request branch returns *without* consulting the env, so a soft per-request
- * tier never silently adopts the operator default. The env default, in
- * contrast, is applied verbatim even for an in-cap abstract tier — there
- * `resolveModelTier` returns `undefined` to defer to the provider, but an
- * explicit operator config must take effect, so we fall back to the configured
- * value.
+ * The request model (the agent's frontmatter `model`, overridden by `--model`) wins; else
+ * `CORAL_CLAUDE_MODEL`; else `undefined`, which leaves the choice to Claude. An abstract tier is
+ * sent as the tier alias itself, capped by `CORAL_CLAUDE_MODEL_CAP` (default `fable`). A present
+ * request model must never fall back to the env default, even when capped.
  */
 export function resolveClaudeModel(model: string | undefined, env: Record<string, string>): string | undefined {
-  const cap = resolveClaudeModelCap(env);
-  if (model !== undefined) {
-    return resolveModelTier(model, cap, CLAUDE_MODEL_TIERS);
-  }
   const envModel = env.CORAL_CLAUDE_MODEL;
-  if (envModel === undefined || envModel.length === 0) {
-    return undefined;
-  }
-  const cappedDefault = resolveModelTier(envModel, cap, CLAUDE_MODEL_TIERS);
-  return cappedDefault ?? envModel;
+  const requested = model ?? (envModel === undefined || envModel.length === 0 ? undefined : envModel);
+  return resolveModelTier(requested, resolveClaudeModelCap(env));
 }
 
 function resolveClaudeEffort(request: Pick<ProviderRequest, 'effort' | 'model' | 'coralEnv'>): EffortLevel {
   const resolved = resolveProviderEffort(request, 'CORAL_CLAUDE_EFFORT', request.coralEnv) ?? CLAUDE_DEFAULT_EFFORT;
-  // Claude has no `ultra` (Codex GPT-5.6 Sol/Terra only) — collapse to Claude ceiling.
+  // Claude has no `ultra` — collapse to Claude's ceiling.
   const withoutUltra = resolved === 'ultra' ? 'max' : resolved;
   if (withoutUltra !== 'xhigh') {
     return withoutUltra;
@@ -184,13 +166,13 @@ export function buildPreparedClaudeRequest(
 }
 
 function isAtLeastOpusEffectiveTier(model: string | undefined, env: Record<string, string>): boolean {
-  const capRank = CLAUDE_MODEL_TIERS[resolveClaudeModelCap(env)] ?? OPUS_RANK;
+  const capRank = ABSTRACT_MODEL_TIERS[resolveClaudeModelCap(env)] ?? OPUS_RANK;
   const configuredModel = model ?? (env.CORAL_CLAUDE_MODEL || undefined);
   if (configuredModel === undefined) {
     return capRank >= OPUS_RANK;
   }
 
-  const abstractRank = CLAUDE_MODEL_TIERS[configuredModel];
+  const abstractRank = ABSTRACT_MODEL_TIERS[configuredModel];
   if (abstractRank !== undefined) {
     return Math.min(abstractRank, capRank) >= OPUS_RANK;
   }

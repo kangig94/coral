@@ -1,4 +1,4 @@
-import type { ProviderRequest } from '../../providers/contract.js';
+import type { EffortLevel, ProviderRequest } from '../../providers/contract.js';
 import { hasUnterminalRetentionDiscardRequest, type ProviderSession } from '../../sessions/entry.js';
 import { resolveEffort } from '../../providers/request-policy.js';
 import { hasProviderScope, type InvocationContext } from '../../runtime/invocation-context.js';
@@ -171,7 +171,7 @@ export class JobLaunchService {
       prompt: input.prompt,
       model,
       cwd,
-      effort: resolveEffort(input.effort),
+      effort: resolveEffort(input.effort) ?? resolvedAgent?.effort,
       bypassPermissions,
       systemPrompt: input.systemPrompt,
       instruction,
@@ -220,6 +220,7 @@ export class JobLaunchService {
     if ('status' in caller) return caller;
 
     let effectiveInput = input;
+    let agentEffort: EffortLevel | undefined;
     if (input.agent) {
       let resolvedAgent: ReturnType<typeof resolveAgentLaunchProfile>;
       try {
@@ -240,12 +241,21 @@ export class JobLaunchService {
         model: input.model ?? resolvedAgent.model,
         instruction: input.instruction ?? resolvedAgent.instruction,
       };
+      agentEffort = resolvedAgent.effort;
     }
-
     const identity = persisted.value.compareIdentity(caller.envelope);
     if (!identity.ok) return this.refuseBinding(identity.failure);
 
-    return this.resumeResolved(providerName, persisted.value, session, effectiveInput, ctx);
+    const defaultEffort = agentEffort ?? this.replacedJobEffort(input.replacesWorkflowJobId);
+
+    return this.resumeResolved(providerName, persisted.value, session, effectiveInput, ctx, defaultEffort);
+  }
+
+  /** A replacement continues the job it replaces, so it runs at the effort that job was launched with. */
+  private replacedJobEffort(replacesWorkflowJobId: string | undefined): EffortLevel | undefined {
+    if (replacesWorkflowJobId === undefined) return undefined;
+    const launch = this.deps.progressStore.readLaunchProjection(replacesWorkflowJobId);
+    return launch?.jobKind === 'provider' ? resolveEffort(launch.request.effort) : undefined;
   }
 
   private bindingRuntime(): ProviderBindingRuntime {
@@ -334,6 +344,7 @@ export class JobLaunchService {
     input: Pick<JobResumeRequest, 'model' | 'cwd' | 'effort' | 'bypassPermissions' | 'systemPrompt' | 'instruction'>,
     session: ProviderSession,
     ctx: InvocationContext,
+    defaultEffort: EffortLevel | undefined,
   ): CanonicalContinuationProfile {
     const coralEnv = buildEffectiveCoralEnv(ctx.coralEnv, {
       effort: input.effort,
@@ -343,7 +354,7 @@ export class JobLaunchService {
     return {
       model: input.model ?? session.model,
       cwd: input.cwd ?? canonicalizeWorkDir(session.cwd, ctx.projectRoot),
-      effort: resolveEffort(input.effort),
+      effort: resolveEffort(input.effort) ?? defaultEffort,
       bypassPermissions: input.bypassPermissions ?? session.bypassPermissions ?? false,
       systemPrompt: input.systemPrompt ?? session.systemPrompt,
       instruction: input.instruction ?? session.instruction,
@@ -359,6 +370,7 @@ export class JobLaunchService {
     session: ProviderSession,
     input: JobResumeRequest,
     ctx: InvocationContext,
+    defaultEffort?: EffortLevel,
   ): Promise<ProviderSessionLaunchDecision> {
     const busyMessage = `Session ${input.sessionId} already has an active job. Wait for it to complete or abort it first.`;
     if (session.state === 'non_resumable') {
@@ -379,7 +391,7 @@ export class JobLaunchService {
     const expectedVersion = session.version;
     const pool = input.pool ?? 'default';
 
-    const continuation = this.buildContinuationProfile(input, session, ctx);
+    const continuation = this.buildContinuationProfile(input, session, ctx, defaultEffort);
     let preflightRuntime;
     try {
       preflightRuntime = toPreflightRuntime(this.deps.runtime, continuation.cwd, continuation.coralEnv);
