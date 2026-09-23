@@ -17,6 +17,15 @@ have no BLOCKING finding — docs are reviewed against stable code.
 |-----------|----------------|-------------------|
 | {task type} | {agent} | {agent} |
 
+## Excluded Agents
+
+Every agent is a spawn paid on every review. A concern a checked-in gate already proves gets no
+agent, and concerns that share a trigger share one agent.
+
+| Agent | Reason |
+|-------|--------|
+| {candidate agent} | {covered by <agent> (same trigger) / proven by <gate> / not applicable} |
+
 ## Design Principles
 
 ### Fresh Context for Verification
