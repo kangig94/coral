@@ -42,14 +42,30 @@ argument-hint: "[existing|new]"
      artifact contains every section and directive its template has — a structural diff, not a
      frontmatter-key existence check. "name: present" does not catch a dropped section.
 
-  5. **Enumerate concerns before writing agents; one agent per concern; justify omissions.**
-     In the Tier-2 fallback, first produce an explicit `concern → severity → agent` table for the
-     domain. Give each distinct failure mode its own agent — do not bundle several into one
-     guardian — and record in `agents.md` why any plausible agent was deliberately NOT created
-     (covered-by-X), so the roster is a justified decision, not an accident.
+  5. **Enumerate concerns first, then group them into the fewest agents that keep each one sharp.**
+     Every agent is a separate spawn that re-reads the diff and its context on every review, so an
+     agent that could have been merged is a cost the user pays forever. Before writing any agent,
+     produce one concern table for the whole project (all domains together):
+     `concern → severity → invariant → trigger (which diffs invoke it) → already proven by a gate?`
+     Then form the roster from it:
+     - **Exclude** a concern a deterministic checked-in gate already proves (build, CI, a release
+       or check script). Name that gate; no agent duplicates it.
+     - **Merge** concerns whose triggers coincide — they would read the same diff at the same lines.
+       The merged agent fixes its concerns as ordered stages in its protocol, so merging never drops
+       a perspective.
+     - **Never split one invariant** by language, directory, or crate; it has one owner.
+     - **Keep agents apart** only when their triggers differ, so each is invoked without the other,
+       or when their invariants differ enough that one prompt would blur both.
+
+     Beyond three domain agents (fixed critics not counted), each additional one needs a written
+     reason it cannot merge — its trigger or invariant differs from every other agent's. Record
+     every merge and exclusion in `agents.md` `## Excluded Agents` (covered-by-X, or proven-by-gate),
+     so the roster is a justified decision, not an accident.
 
   6. **Tier discipline is explicit.** Tier-1/2 safety guardians are binary gates
      (PASS / NEEDS WORK on BLOCKING findings, no rubric); Tier-3 quality agents are rubric-scored.
+     Documentation reviewers are the separate `doc` tier — rubric-scored like Tier 3, and run last,
+     after the code fixes, under tier-review `--gated`. Never put a documentation reviewer in tiers 1–3.
      A guardian without a score and a critic with one are both correct — do not "fix" either
      toward the other.
 </Execution_Discipline>
@@ -143,9 +159,11 @@ argument-hint: "[existing|new]"
   | C/C++ (no GPU), CMake, RTOS, embedded | `references/systems.md` |
   | CUDA, OptiX, Vulkan, Metal, GPU compute | `references/gpu.md` |
 
-  Multi-domain: generate the union of all relevant agents. Each domain gets its own validation rules.
+  Multi-domain: take the union of all relevant **concerns**, not agents, and group them per
+  Execution_Discipline #5 — a concern two domains share is one agent. Each domain gets its own
+  validation rules.
 
-  **Tier 2 fallback** (no Tier 1 match): Identify what a senior engineer would always check in review. Create agents by severity: data loss/security → tier 1 (opus), bugs → tier 2 (sonnet), code quality → tier 3 (sonnet).
+  **Tier 2 fallback** (no Tier 1 match): Identify what a senior engineer would always check in review, as concerns in the #5 table. Group them into agents, and tier each agent by its most severe concern: data loss/security → tier 1 (opus), bugs → tier 2 (sonnet), code quality → tier 3 (sonnet). Documentation review → the `doc` tier (sonnet), whatever the severity.
 
   ### 1f. Load References
 
@@ -154,7 +172,9 @@ argument-hint: "[existing|new]"
   3. Merge policy: `references/merge-policy.md`
   4. Templates: `templates/CLAUDE.md.template`, `templates/rules/*.md.template`, `templates/agents/*.md` (fixed agents), `templates/agents/AGENT.md.template` (agent writing guide — internal use only, not copied to project), `templates/skills/tier-review/SKILL.md`
 
-  Extract from each domain reference: required agents, mandatory concerns, validation items, core patterns, recommended docs.
+  Extract from each domain reference: mandatory concerns, validation items, core patterns, recommended docs,
+  and its agent tables as **candidates** — they list concerns worth covering, not a roster to copy.
+  Feed them into the #5 concern table and let its grouping decide the agents.
 
   ## Phase 2: Plan
 
@@ -170,6 +190,8 @@ argument-hint: "[existing|new]"
      - Plan content requirements:
        * Structure: Requirements, Acceptance Criteria, Artifact Manifest, Risks, Verification Steps
        * For each artifact: file path, content description, merge rule (create/skip/enhance/update)
+       * Agent roster: the Execution_Discipline #5 concern table, the resulting agents with the
+         concerns each covers, and the Excluded Agents entries
        * Artifact Manifest must include domain-specific docs: evaluate each domain reference's Recommended Docs
          table against analysis findings (Strong docs included by default, Conditional docs included only when
          their detection condition is met). List only the docs that apply to this project.
@@ -257,6 +279,9 @@ argument-hint: "[existing|new]"
   - Read `{skill_base_dir}/references/writing-guide.md` for structural standards
   - Read analysis document for content fidelity check (analysis ↔ generated output)
   - Agents: `<Agent_Prompt>` XML with required sections, no `{placeholder}` text, protocols reference real project patterns
+  - Roster: no two domain agents share a trigger; no concern already proven by a gate has an agent;
+    every domain agent beyond three carries its can't-merge reason; `## Excluded Agents` records every
+    merge and exclusion
   - Rules: `paths:` frontmatter for domain-specific, validation items trace to analysis findings
   - Docs: layer diagram in ARCHITECTURE.md, exact commands in DEV_GUIDE.md, paths and architecture match analysis
   - Docs staleness surface: flag per-file catalogs, exhaustive directory trees (>15 entries),
@@ -396,7 +421,7 @@ argument-hint: "[existing|new]"
   |----------|------|-----------|---------------|
   | Analysis | `CORAL_PROJECT/analysis/*-init-*.md` | If existing project | Scan Report section present |
   | Hub | `.claude/CLAUDE.md` | Must exist (created or pre-existing) | Quality principle line present |
-  | Rules | `.claude/rules/agents.md` | Must exist | - |
+  | Rules | `.claude/rules/agents.md` | Must exist | `## Excluded Agents` section present |
   | Rules | `.claude/rules/design-philosophy.md` | Must exist | - |
   | Rules | `.claude/rules/validation.md` | Must exist | - |
   | Rules | `.claude/rules/conventions.md` | Must exist | `## Comments` section present |
@@ -431,7 +456,8 @@ argument-hint: "[existing|new]"
   | Copy fixed artifacts (tier-review SKILL, *-critic agents) from their template, then graft project hooks | Author fixed artifacts from memory or another repo's output |
   | Read each template in full and obey directives in its body | Treat templates as `{placeholder}`-only |
   | Diff each generated fixed artifact against its template in Phase 4 | Pass verification on a frontmatter-key existence check |
-  | Enumerate concerns→severity→agent before writing agents; one agent per concern; justify omissions in agents.md | Bundle multiple distinct concerns into one guardian |
+  | Build the concern table first; merge concerns sharing a trigger into one staged agent; record merges and exclusions in agents.md | One agent per concern, or a guardian for what a checked-in gate already proves |
+  | Keep agents apart when their triggers or invariants differ | Merge unrelated concerns just to lower the count, or split one invariant by language or directory |
 </Constraints>
 <Error_Handling>
   | Scenario | Action |

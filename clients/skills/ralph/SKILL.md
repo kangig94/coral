@@ -1,7 +1,7 @@
 ---
 name: ralph
 description: 'Use when implementing a plan or executing a prompt that requires verified completion.'
-argument-hint: '[--red] [--delegate] [--team] [task description]'
+argument-hint: '[--red] [--delegate] [task description]'
 ---
 
 # Persistent Execution with Verification
@@ -10,12 +10,11 @@ Announce at start: "Using ralph to execute this task with verification loop."
 
 ## Argument Routing
 
-| Argument     | Mode                                                                                                                       |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| `<prompt>`   | Self-execute on current host (default)                                                                                     |
+| Argument     | Mode                                                                                                            |
+| ------------ | --------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`   | Self-execute on current host (default)                                                                          |
 | `--delegate` | Delegate to the other host (Claude → Codex, Codex → Claude, Copilot → Codex; from SessionStart `Current host:`) |
-| `--red`      | Adversarial testing (spawns red-attacker in parallel)                                                                      |
-| `--team`     | Parallel AC execution via Agent Teams (plan mode only)                                                                     |
+| `--red`      | Adversarial testing (spawns red-attacker in parallel)                                                           |
 
 Strip flags before passing the prompt to execution. Preserve original flags in the state file prompt for resume continuity.
 
@@ -40,7 +39,8 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 | Implement every AC fully as written | Stub, skeleton, placeholder, or partial implementation |
 | Pass AC text verbatim to every delegate | Rephrase, simplify, defer, or omit any part of an AC |
 | Treat AC complexity as the job, not an obstacle | Judge an AC as "too complex" and reduce its scope |
-| Run build/test only in post-implementation | Run build or test during implementation |
+| Run lint, validation, build, and test once, in Step 4 after the last batch | Gate between batches, or let a subagent or delegate run them |
+| Commit each batch with exactly the paths it changed | Fold batches into one commit, `git add -A`, or let a subagent or delegate commit |
 | Verify subagent output independently | Trust "agent said success" |
 | Escalate to architect after 3 failed fix attempts | Try variations of the same fix |
 | Output `<promise>` only after ALL verification passes | Output false promise to escape the loop |
@@ -58,10 +58,6 @@ No tool calls except Glob/Read for state file until execution mode is determined
     → Write `"{flags} {cleaned prompt}"` to state file.
 
     Both modes: state file persists for loop continuation. When done: `<promise>{completionPromise}</promise>`.
-
-    **`--team` pre-flight** (only when `--team` is present):
-    1. Verify `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set to `1`. If not, fall back to sequential.
-    2. Verify plan mode. If prompt mode, error: "--team requires a plan with Acceptance Criteria."
 
     ### Step 2 — Context
 
@@ -89,12 +85,23 @@ No tool calls except Glob/Read for state file until execution mode is determined
     |-------|---------|
     | *(none)* | `<Exec_Default>` |
     | `--delegate` | `<Exec_Delegate>` |
-    | `--team` | `<Exec_Team>` |
-    | `--team --delegate` | `<Exec_Team>` (with delegated workers — see its `--delegate` subsection) |
+
+    **Batch boundary** (both paths): a batch ends when every AC in it is implemented and its changed
+    files have been read against the AC text. That reading is the only check between batches — no
+    lint, review, build, or test; those run once, in Step 4. Commit the batch before starting the next:
+    - Before the first batch: if on the default branch, create a feature branch first. Record
+      `git status --porcelain` as the baseline — paths already dirty there are the user's work.
+    - Commit only after every job and agent of the batch has settled — nothing may still be writing.
+    - Stage exactly the paths this batch changed (`git add -- <paths>`), never `git add -A` or `.`, and
+      never a baseline-dirty path the batch did not touch. When the batch changed a baseline-dirty path,
+      commit it and name it in the Completion Report's Notes.
+    - Message: the project's commit convention (prefix, attribution), batch AC numbers in the body.
+    - Never bypass hooks (`--no-verify`); a hook failure is fixed and the commit retried.
+    - Only ralph commits. Subagents and delegated jobs never stage or commit.
 
     ### Step 4 — Post-Implementation (strict order, fail-fast)
 
-    Scope gate: source-affecting files run a–d; non-source changes skip to e.
+    Runs **once**, after the last batch commit. Scope gate: source-affecting files run a–d; non-source changes skip to e.
 
     a. **Lint**: run linter if available.
     b. **Validation**: invoke `Skill(tier-review)` when the project exposes it. If no tier-review skill exists, fall back to spawning `Agent("coral:architect")` directly (foreground, never `run_in_background`).
@@ -113,7 +120,8 @@ No tool calls except Glob/Read for state file until execution mode is determined
         belong. No separate `red-*.test.ts` files. Delete the red files after merge.
     d6. Re-run merged test files to verify (max 3 fix iterations; escalate if stuck).
 
-    e. **Done**: Only declare done when all applicable checks pass.
+    e. **Done**: Only declare done when all applicable checks pass. Commit the fixes Step 4 made
+       (including merged red tests) as one final commit under the same batch-commit rules.
 
     ### Step 5 — Completion
 
@@ -137,10 +145,11 @@ No tool calls except Glob/Read for state file until execution mode is determined
        Launch independent ACs as parallel `Agent` calls; tightly coupled ACs go into one `Agent` call.
        Include in every spawn prompt: "NEVER run `git checkout`, `git switch`, `git stash`, `git reset`,
        `git restore`, or `git clean`, and never stage or commit — parallel agents share this working tree;
-       a single revert destroys their in-progress work."
-    2. Verify each AC's output before proceeding to the next batch.
+       a single revert destroys their in-progress work. Do not run lint, build, test, or reviews — ralph
+       runs them once after the last batch."
+    2. Read each AC's output against its text, then commit the batch (batch boundary) and start the next.
 
-    Then continue to Step 4.
+    After the last batch commit, continue to Step 4.
 
 </Exec_Default>
 <Exec_Delegate>
@@ -163,6 +172,9 @@ Let `<other-host>` = the delegation target for the current host: Claude → Code
 
     ## Context
     <relevant file paths, code sections, constraints for the assigned ACs>
+
+    Never stage or commit, and never run git checkout/switch/stash/reset/restore/clean — other jobs
+    share this working tree. Do not run lint, build, test, or reviews — ralph runs them once at the end.
     ```
     ⛔ The AC text MUST be identical to the plan — no rewording, no additions,
     no scope-reduction annotations. Ralph executes ACs, not edits them.
@@ -175,59 +187,21 @@ Let `<other-host>` = the delegation target for the current host: Claude → Code
        Collect all job IDs from the detached launch lines.
     2. Run `cd "<project root>" && coral-cli wait jobs <job-id...> --embed` and classify each result from its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact and stop waiting for that job even when a terminal `provider_exit` propagated code `75`. If siblings remain, the terminal block names them (`Run coral-cli wait jobs <ids> to continue waiting.`); wait for those IDs before proceeding because they are still writing to the shared worktree. A status beginning `Still waiting` with `(cursor: <cursor>)` means the named jobs are still live; only then resume with `cd "<project root>" && coral-cli wait jobs <job-id...> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, run that exact command from the same directory — `cd "<project root>" && <the printed coral-cli wait jobs command>` — since `wait` scopes from the shell's cwd. Do not proceed to step 3 while the output still names live jobs. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
     3. Verify changes yourself: read changed files, compare against acceptance criteria.
-    4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself. Then continue to Step 4.
+    4. All criteria pass → read all modified files, compare against plan, fix discrepancies yourself,
+       then commit the batch (batch boundary) and start the next. After the last batch commit, continue to Step 4.
        Failed criteria → re-launch only the failed ACs, loop to 1.
 
 </Exec_Delegate>
-<Exec_Team>
-Parallel execution via Agent Teams. Requires plan mode with Acceptance Criteria.
-
-    **Setup**:
-    1. `TeamCreate({ team_name: "ralph-workers" })`
-    2. Spawn N persistent workers (N = max parallel count from any batch in Execution Order).
-       Each worker's initial prompt includes:
-       - Ralph's `<Constraints>`
-       - Plan file path as reference (read for broader context, implement only assigned ACs)
-       - Their assigned AC scope only
-       - Instruction to wait for SendMessage assignments
-
-       **If `--delegate`**: each worker's prompt must ALSO include these delegated-execution instructions
-       (let `<other-host>` = the delegation target for the current host: Claude → Codex, Codex → Claude, Copilot → Codex):
-       ```
-       For each assigned AC, delegate to <other-host> using this prompt structure:
-         Implement <AC numbers> EXACTLY as specified in the plan.
-         Read <plan file path> for full context.
-         ## Acceptance Criteria (verbatim from plan — implement exactly as written)
-         <AC text copied identically from plan>
-       ⛔ AC text must be identical to the plan. No rewording, no scope-reduction annotations.
-       ⛔ Do not promote KB notes. Implementation only.
-       1. `coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d`
-          → run `cd "<project root>" && coral-cli wait jobs <job> --embed` and classify its rendered output, not exit code `75` alone. `Result path: <path>` marks a terminal result; read that artifact and stop waiting even when a terminal `provider_exit` propagated code `75`. A status beginning `Still waiting` with `(cursor: <cursor>)` means the job is still live; only then resume with `cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed`. If a transient error instead prints `remediation:`, run that exact command from the same directory — `cd "<project root>" && <the printed coral-cli wait jobs command>` — since `wait` scopes from the shell's cwd. Do not proceed to step 2 while the output reports the job as still waiting. A non-zero `provider_exit` code is terminal and is passed through unchanged (0–255).
-       2. Verify changes yourself: read changed files, compare against AC.
-       3. If AC not met → re-run delegation. If met → report completion.
-       ```
-
-    3. **`--red`**: Spawn red-attacker as teammate in `ralph-workers` team.
-       Prompt: plan file path + acceptance criteria. Staging: `CORAL_PROJECT/red/`.
-
-    **Batch loop** — for each batch in Execution Order (sequentially):
-    1. **Assign**: SendMessage to each worker with their AC assignment for this batch.
-       If batch has fewer ACs than workers, idle workers wait.
-    2. **Collect**: Workers SendMessage completion reports back.
-       Read modified files to verify each AC independently.
-    3. If a worker fails and downstream batches depend on the failed AC → AskUserQuestion.
-       If no downstream dependency → continue, mark AC incomplete.
-
-    **Teardown**: After all batches complete:
-    1. Verify no conflicting changes across workers.
-    2. Send `shutdown_request` to all teammates, wait for `shutdown_response`.
-    3. `TeamDelete({ team_name: "ralph-workers" })`, then continue to Step 4.
-
-</Exec_Team>
 <Output_Format> ## Completion Report ### Steps Completed
 | # | Step | Verification Evidence |
 |---|------|----------------------|
 | 1 | [What was done] | [Command output summary] |
+
+    ### Commits
+    | Batch | ACs | Commit |
+    |-------|-----|--------|
+    | 1 | AC1, AC2 | [short sha] [subject] |
+    | final | Step 4 fixes | [short sha] [subject] — or "none" |
 
     ### Post-Implementation Sequence
     | Phase | Check | Result |

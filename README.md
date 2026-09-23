@@ -135,7 +135,6 @@ Persistent executor with verification loop.
 In plan mode, reads the execution order and dispatches batches — parallelizing independent ACs.
 Every completion claim requires fresh verification evidence (lint → build → test).
 `--red` spawns a red-attacker in parallel to write adversarial tests targeting blind spots.
-`--team` uses Agent Teams for parallel AC execution.
 
 </details>
 
@@ -248,7 +247,7 @@ Coral learns from every session. Root causes, gotchas, and patterns stay searcha
 | `CORAL_KB_ENABLE`             | _(unset → enabled)_ | Set `0` to boot the daemon without the KB daemon runtime — no indexing, curate, or KB content injected. Flipping back to `1` and running a `kb …` command auto-restarts the daemon to re-enable ([details](docs/configuration.md))                                         |
 | `CORAL_KB_EXTRA_LANGS`        | _(none)_            | Extra KB language analyzers on top of the always-on `Intl.Segmenter` baseline; lowercase comma-separated codes such as `ko`. `ko` enables the Kiwi morphological analyzer (~1 GB resident when loaded)                                                                     |
 | `CODEX_HOME`                  | caller `~/.codex`   | Codex profile selected for this invocation. Coral creates an account binding to its provider-managed workspace identity and rechecks it for resume/recovery ([details](docs/configuration.md#multi-account-provider-routing))                                              |
-| `CLAUDE_CONFIG_DIR`           | caller `~/.claude`  | Claude profile selected for this invocation. Coral creates a profile binding (not an account-identity claim), canonicalizes the caller-local default when unset, and never uses daemon boot state ([details](docs/configuration.md#multi-account-provider-routing))          |
+| `CLAUDE_CONFIG_DIR`           | caller `~/.claude`  | Claude profile selected for this invocation. Coral creates a profile binding (not an account-identity claim), canonicalizes the caller-local default when unset, and never uses daemon boot state ([details](docs/configuration.md#multi-account-provider-routing))        |
 
 > **Tip:** Set `CORAL_CLAUDE_MODEL_CAP=sonnet` to cap all subagent calls at Sonnet tier for Pro plans or to conserve usage.
 >

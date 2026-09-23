@@ -201,8 +201,7 @@ Project-level or global Claude Code settings can persist the same environment va
   "env": {
     "CORAL_CODEX_MODEL": "gpt-5.6-sol",
     "CORAL_CODEX_FAST": "1",
-    "CORAL_DISCUSS_MAX_EPOCHS": "3",
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CORAL_DISCUSS_MAX_EPOCHS": "3"
   }
 }
 ```

@@ -5,13 +5,26 @@
 | Agent | Tier | Model | Purpose |
 |-------|------|-------|---------|
 | code-critic | 3 | sonnet | Code quality review |
+| doc-critic | doc | sonnet | Documentation quality review |
 | {domain agents} | {tier} | {model} | {purpose} |
+
+Tiers 1–3 review code; the `doc` tier reviews documentation. Under tier-review `--gated` the doc
+tier runs last, after the code findings are fixed, so docs are reviewed against stable code.
 
 ## Consultation Matrix
 
 | Task Type | Mandatory Agent | Recommended Agent |
 |-----------|----------------|-------------------|
 | {task type} | {agent} | {agent} |
+
+## Excluded Agents
+
+Every agent is a spawn paid on every review. A concern a checked-in gate already proves gets no
+agent, and concerns that share a trigger share one agent.
+
+| Agent | Reason |
+|-------|--------|
+| {candidate agent} | {covered by <agent> (same trigger) / proven by <gate> / not applicable} |
 
 ## Design Principles
 

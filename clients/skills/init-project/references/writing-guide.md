@@ -45,7 +45,7 @@ Include only when the agent genuinely needs them — not by default.
 
 ### Quality Review Agent Design
 
-Tier 3 quality agents (code-critic, ux-critic, and domain-specific reviewers) must use rubric-anchored scoring:
+Tier 3 quality agents (code-critic, ux-critic, and domain-specific reviewers) and doc-tier agents (doc-critic) must use rubric-anchored scoring:
 
 1. **Multi-dimensional scoring** - decompose quality into 3-5 measurable dimensions, not a single number. Each dimension evaluates a distinct aspect of quality.
 2. **4-tier rubric anchors** per dimension - define what 10, 7, 4, and 1 look like concretely. Anchors make the evaluation philosophy executable and repeatable.

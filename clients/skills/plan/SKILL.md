@@ -10,13 +10,13 @@ Execute a multi-round planning session with architect/critic review.
 
 ## Argument Routing
 
-| Argument       | Mode                                                                                                                              |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `<prompt>`     | Self-execute on current host (default)                                                                                            |
+| Argument       | Mode                                                                                                                                                                                                     |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `<prompt>`     | Self-execute on current host (default)                                                                                                                                                                   |
 | `--delegate`   | Add a review pass on `<other-host>` (see Review Phases for the mapping). On a host that is not itself a provider it **replaces** Phase 2 rather than adding to it, so the net is still one review phase. |
-| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                      |
-| `round=N,M,…`  | Per-phase budget, one value per phase in order: Phase 1 gets `N`, Phase 2 gets `M`, and any further value adds that phase. A `0` skips its phase. **Two or more values turn `--delegate` on.**                          |
-| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                        |
+| `round=N`      | Review rounds for every applicable phase (default `1`). e.g. `round=3` for deeper iteration.                                                                                                             |
+| `round=N,M,…`  | Per-phase budget, one value per phase in order: Phase 1 gets `N`, Phase 2 gets `M`, and any further value adds that phase. A `0` skips its phase. **Two or more values turn `--delegate` on.**           |
+| `--no-handoff` | Internal: skip implementation prompt at step 5 (caller controls next step)                                                                                                                               |
 
 Reviewers and the resolver always run in every review phase that dispatches — the round budget only sets how many times each phase iterates.
 
@@ -57,9 +57,22 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     ### 2. Gather Context
     Parse task description, read key files, identify acceptance criteria, extract working directory.
-    - **Preplan**: If `CORAL_PROJECT/plans/pre-{topic}.md` exists, read it.
-      Extract the **Success Criteria** section — these are the acceptance criteria the plan must satisfy.
-      Pass them to reviewers in step 4a.
+    - **Preplan**: If `CORAL_PROJECT/plans/pre-{topic}.md` exists, read all of it. Every finalized item
+      is a decision the user already confirmed — the plan implements it, it does not reopen it:
+      - **Success Criteria** → the acceptance criteria the plan must satisfy.
+      - **Problem Statement** → the Requirements Summary.
+      - **Scope** (Included / Excluded / Compatibility), **Constraints**, **Approach Direction** → bounds
+        the plan stays inside; an excluded item never reappears as a phase or AC.
+      - **Assumptions**, **Affected Systems** → starting points for research, re-checked against the code.
+      - **Pioneer Ledger**, if present → `adopted` and `overridden` rows are confirmed decisions, and
+        `rejected` / `out-of-scope` forms are not reintroduced. Read the Pioneer Report its `Report:`
+        line points to for the Why and Cost behind each adopted finding, and carry them into
+        Implementation Phases and Risks & Mitigations. The report is read-only. When the ledger's
+        `Verified:` line is not `yes`, the agreement was never checked against the report: still
+        honor the user's confirmed decisions, but do not take Why or Cost from the report, and state
+        in the plan summary that the preplan is not pioneer-verified.
+
+      Pass the preplan path and its confirmed decisions to reviewers in step 4a.
     - **Bug enrichment**: If the task involves deep bug diagnosis (root cause unclear, multiple
       possible causes), `Agent("coral:debugger")` in the background (`run_in_background: true`).
       Continue with step 3 without waiting. When the debugger result arrives, incorporate its
@@ -104,6 +117,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     - [ ] No fundamental constraints violated
     - [ ] Approach viable given actual codebase structure
     - [ ] Preplan Success Criteria satisfied (if they exist)
+    - [ ] Preplan Scope, Constraints, Approach Direction, and adopted pioneer findings honored (if they exist)
 
     #### Phase 0b — Complexity Gate (after Frame Gate passes)
 
@@ -157,7 +171,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
 
     ```
     expression = "(coral:architect, coral:critic) -> coral:resolver"
-    startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\n{round context, key changes from previous rounds, key files to check, preplan constraints}"
+    startPrompt = "Success Criteria (must be satisfied):\n{preplan Success Criteria items}\n\nConfirmed decisions (agreed with the user in {preplan path} — review how the plan implements them, do not propose reversing them):\n{preplan Scope, Constraints, Approach Direction, adopted/overridden pioneer findings}\n\n{round context, key changes from previous rounds, key files to check}"
     sharedContext = "--deep\n\nReview plan: {plan file path}\n\nDo not promote KB notes."
     launch = Bash(`coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d`)
     ```
@@ -172,7 +186,7 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
     Read the updated plan file, then the resolver's synthesis report from the workflow result.
     Record Deferred/Diverged items.
     ⛔ The resolver applying changes does NOT mean the phase can exit — you MUST still write the Round Summary (4c) and evaluate the Exit Condition (4d). Do not skip to the next phase.
-    ⛔ **Prior-agreement guard**: After reading the resolver's changes, verify that no prior agreement with the user was overridden. Reviewers and resolvers lack conversation context — they may reject or restructure decisions the user already confirmed. If the resolver changed an explicitly agreed-upon design decision, revert that change in the plan and note it as a rejected finding. The user's explicit decisions take precedence over reviewer recommendations.
+    ⛔ **Prior-agreement guard**: After reading the resolver's changes, verify that no prior agreement with the user was overridden. Reviewers and resolvers lack conversation context — they may reject or restructure decisions the user already confirmed. If the resolver changed an explicitly agreed-upon design decision — including any finalized preplan item or adopted/overridden pioneer finding — revert that change in the plan and note it as a rejected finding. The user's explicit decisions take precedence over reviewer recommendations.
     If the resolver's findings invalidate the current approach without redirecting it, propose an alternative path that achieves the user's goal. If no viable alternative exists, state why and continue to the next round (or exit if at the round cap).
 
     **4c. Round Summary** (AFTER 4b)
@@ -316,7 +330,6 @@ Do NOT use EnterPlanMode — it writes to `~/.claude/plans/` which is not projec
         options: [
           { label: "ralph", description: "Claude-native sequential" },
           { label: "ralph --delegate", description: "Delegate to the other host" },
-          { label: "ralph --team", description: "Parallel via Agent Teams" },
           { label: "Skip", description: "No implementation" }
         ], multiSelect: false },
       { question: "Enable adversarial testing?", header: "Red",

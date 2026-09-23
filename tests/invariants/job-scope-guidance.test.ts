@@ -77,7 +77,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: 'clients/skills/preplan/SKILL.md',
-    launch: 'coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d',
+    launch: 'coral-cli <other-host> pioneer -i "<pioneer prompt>" --work-dir "<work_dir>" -d',
     end: '\n    ```',
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs ${job} --embed',
@@ -92,17 +92,6 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
     waits: [
       'cd "<project root>" && coral-cli wait jobs <job-id...> --embed',
       'cd "<project root>" && coral-cli wait jobs <job-id...> --cursor <cursor> --embed',
-      'cd "<project root>" && <the printed coral-cli wait jobs command>',
-    ],
-  },
-  {
-    file: 'clients/skills/ralph/SKILL.md',
-    launch:
-      'coral-cli <other-host> -b -i "<above structure + file paths + constraints>" --work-dir "<project root>" -d',
-    end: '\n       2. Verify',
-    waits: [
-      'cd "<project root>" && coral-cli wait jobs <job> --embed',
-      'cd "<project root>" && coral-cli wait jobs <job> --cursor <cursor> --embed',
       'cd "<project root>" && <the printed coral-cli wait jobs command>',
     ],
   },

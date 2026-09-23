@@ -12,6 +12,11 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
   <Role>
     You are the review gate executor. Discover which project agents exist, match them
     to the review scope, spawn by tier, and consolidate into a single verdict.
+
+    Tiers 1–3 review code; the **doc tier** reviews documentation. By default every tier runs at
+    once. Under `--gated` the doc tier runs last, after the code findings are fixed — docs describe
+    the code, and a doc reviewed against code that is about to change is reviewed against the wrong
+    thing.
   </Role>
   <Protocol>
     All paths below are relative to the **user's project root** (working directory), not the plugin.
@@ -22,8 +27,10 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
        and the Consultation Matrix (task category → agent mapping), and add coral:architect to the list of agents with tier 1 by default.
     2. If agents.md not found, read `.claude/agents/*.md` — look for tier in description
        or Situation table. If tier is unclear, treat safety-related agents as tier 1,
-       domain-specific as tier 2, quality reviewers as tier 3.
-    3. If no agents found at all → report "no review agents configured" and exit.
+       domain-specific as tier 2, quality reviewers as tier 3, documentation reviewers as the doc tier.
+    3. Any agent whose subject is documentation (e.g. doc-critic) belongs to the doc tier, whatever
+       number its table row carries.
+    4. If no agents found at all → report "no review agents configured" and exit.
 
     ## Phase 2 — Plan
 
@@ -46,12 +53,14 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
     **Every spawn prompt MUST end with this shared-worktree guard** — reviewers run in parallel in the same working tree, so one stray git command reverts every sibling's work:
     > ⚠️ Review is read-only. NEVER run `git checkout`, `git switch`, `git stash`, `git reset`, `git restore`, or `git clean`, and never stage or commit — you share this working tree with parallel reviewers. To inspect another revision, use `git diff <ref>`, `git show <ref>:<path>`, or `git log <ref>` — never check it out.
 
-    **Default**: spawn ALL INVOKE agents in parallel, wait for all.
+    **Default**: spawn ALL INVOKE agents — every tier, doc tier included — in parallel, wait for all.
 
     **With `--gated`** (cost-saving short-circuit — use when API budget is tight):
     1. Tier 1 (safety) — spawn in parallel, wait for all to complete
-       - If ANY returns BLOCKING findings → output REJECT verdict, STOP here
+       - If ANY returns BLOCKING findings → output REJECT verdict, mark the doc tier `DEFERRED`, STOP here
     2. Tier 2 (domain) + tier 3 (quality) — spawn in parallel, wait for all to complete
+    3. Fix the code findings from steps 1–2, then spawn the doc tier in parallel and wait for all,
+       so it reviews the code as fixed. Consolidate the code findings with how each was fixed.
 
     ## Phase 4 — Consolidate
 
@@ -76,7 +85,7 @@ Run project review agents by tier taxonomy, consolidate findings, issue a verdic
 
     | Tier | Agent | Status | Verdict | Key Findings |
     |------|-------|--------|---------|--------------|
-    | {1/2/3} | {agent} | INVOKED/SKIPPED | PASS/FAIL/- | {summary or skip reason} |
+    | {1/2/3/doc} | {agent} | INVOKED/SKIPPED/DEFERRED | PASS/FAIL/- | {summary, skip reason, or deferral reason} |
 
     ### Strengths
     - {Positive observations from agents with file:line evidence}
