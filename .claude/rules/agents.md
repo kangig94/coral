@@ -8,7 +8,7 @@
 | hook-safety | `.claude/agents/hook-safety.md` | sonnet | 2 | Hook timeout safety, Node.js ESM conventions |
 | skill-quality | `.claude/agents/skill-quality.md` | sonnet | 2 | SKILL.md quality, frontmatter correctness |
 | code-critic | `.claude/agents/code-critic.md` | sonnet | 3 | Code quality, elegance, complexity |
-| doc-critic | `.claude/agents/doc-critic.md` | sonnet | 3 | Documentation quality, accuracy, structure |
+| doc-critic | `.claude/agents/doc-critic.md` | sonnet | doc | Documentation quality, accuracy, structure — runs last, after tiers 1–3 pass |
 | test-critic | `.claude/agents/test-critic.md` | sonnet | 3 | Test quality, coverage architecture, assertions |
 | ux-critic | `.claude/agents/ux-critic.md` | sonnet | 3 | Plugin UX, skill discoverability, CLI ergonomics |
 
