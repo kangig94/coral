@@ -77,7 +77,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: 'clients/skills/preplan/SKILL.md',
-    launch: 'coral-cli <other-host> pioneer -i "<draft file content>" --work-dir "<work_dir>" -d',
+    launch: 'coral-cli <other-host> pioneer -i "<pioneer prompt>" --work-dir "<work_dir>" -d',
     end: '\n    ```',
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs ${job} --embed',
