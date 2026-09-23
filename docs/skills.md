@@ -39,7 +39,9 @@ Resolved absolute paths are injected through `inject/tools.md` (`{{CORAL_METHODS
 Many skills follow the same detached-launch pattern:
 
 ```bash
-coral-cli codex -i "<prompt>" --work-dir "<path>" -d
+coral-cli codex --work-dir "<path>" -d -i - <<'CORAL_INPUT'
+<prompt>
+CORAL_INPUT
 cd "<path>" && coral-cli wait jobs <jobId> --embed
 ```
 

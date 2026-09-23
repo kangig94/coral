@@ -16,25 +16,25 @@ type GuidanceBlock = {
 const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   {
     file: 'docs/skills.md',
-    launch: 'coral-cli codex -i "<prompt>" --work-dir "<path>" -d',
+    launch: `coral-cli codex --work-dir "<path>" -d -i - <<'CORAL_INPUT'`,
     end: '\n```\n\nRules:',
     waits: ['cd "<path>" && coral-cli wait jobs <jobId> --embed'],
   },
   {
     file: 'docs/agents.md',
-    launch: 'coral-cli codex architect -i "<prompt>" --work-dir "<path>" -d',
+    launch: `coral-cli codex architect --work-dir "<path>" -d -i - <<'CORAL_INPUT'`,
     end: '\n```\n\nBehavior:',
     waits: ['cd "<path>" && coral-cli wait jobs <job-id...> --embed'],
   },
   {
     file: 'docs/agents.md',
-    launch: 'coral-cli codex <name> -i "<prompt>" --work-dir "<path>" -d',
+    launch: `coral-cli codex <name> --work-dir "<path>" -d -i - <<'CORAL_INPUT'`,
     end: '\n```\n\n### Prompt design guidance',
     waits: ['cd "<path>" && coral-cli wait jobs <job> --embed'],
   },
   {
     file: 'clients/skills/analyze/SKILL.md',
-    launch: 'coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d',
+    launch: `coral-cli <other-host> <role_name> --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'`,
     end: '\nOn error, abort',
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs <job> --embed',
@@ -44,7 +44,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: 'clients/skills/bugfix/SKILL.md',
-    launch: 'coral-cli <other-host> debugger -i "<--deep prompt>" --work-dir "<work_dir>" -d',
+    launch: `coral-cli <other-host> debugger --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'`,
     end: '\n     On error',
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs <job> --embed',
@@ -54,8 +54,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: 'clients/skills/code-simplify/SKILL.md',
-    launch:
-      'coral-cli <other-host> -b -i "<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>" --work-dir "<project root>" -d',
+    launch: `coral-cli <other-host> -b --work-dir "<project root>" -d -i - <<'CORAL_INPUT'`,
     end: '\n    5) Review',
     waits: [
       'cd "<project root>" && coral-cli wait jobs <job> --embed',
@@ -67,7 +66,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   {
     file: 'clients/skills/plan/SKILL.md',
     launch:
-      'coral-cli workflow -e "${expression}" -s "${startPrompt}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d',
+      'coral-cli workflow -e "${expression}" -c "${sharedContext}" -p "{phase provider}" -w "{work_dir}" -d -s - <<\'CORAL_INPUT\'',
     end: '\n\n    A phase',
     waits: [
       'cd "{work_dir}" && coral-cli wait jobs <job>',
@@ -77,7 +76,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: 'clients/skills/preplan/SKILL.md',
-    launch: 'coral-cli <other-host> pioneer -i "<pioneer prompt>" --work-dir "<work_dir>" -d',
+    launch: `coral-cli <other-host> pioneer --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'`,
     end: '\n    ```',
     waits: [
       'cd "<work_dir>" && coral-cli wait jobs ${job} --embed',
@@ -87,7 +86,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: 'clients/skills/ralph/SKILL.md',
-    launch: 'coral-cli <other-host> -b -i "<ACs + file paths + constraints>" --work-dir "<project root>" -d',
+    launch: `coral-cli <other-host> -b --work-dir "<project root>" -d -i - <<'CORAL_INPUT'`,
     end: '\n    3. Verify',
     waits: [
       'cd "<project root>" && coral-cli wait jobs <job-id...> --embed',
@@ -103,7 +102,7 @@ const GUIDANCE_BLOCKS: readonly GuidanceBlock[] = [
   },
   {
     file: '.claude/rules/plugin-extension.md',
-    launch: 'coral-cli codex <agent> -i "<prompt>" --work-dir "<path>" -d',
+    launch: `coral-cli codex <agent> --work-dir "<path>" -d -i - <<'CORAL_INPUT'`,
     end: '\n```',
     waits: ['cd "<path>" && coral-cli wait jobs "<job>" --embed'],
   },

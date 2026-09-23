@@ -321,8 +321,8 @@ describe('renderInject delegation guidance', () => {
     const pluginRoot = join(process.cwd(), 'clients');
     const render = (asOwner: boolean): string => renderInject({ pluginRoot, asOwner, group: 'base' });
 
-    expect(render(true)).toContain('<agent> -i');
-    expect(render(false)).not.toContain('<agent> -i');
+    expect(render(true)).toContain('coral-cli codex <agent>');
+    expect(render(false)).not.toContain('coral-cli codex <agent>');
   });
 
   it('should give the Coral CLI guidance to every host session, subagents included', () => {

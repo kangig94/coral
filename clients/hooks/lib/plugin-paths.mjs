@@ -5,15 +5,9 @@ import { join, resolve } from 'node:path';
 
 import { coralStateRoot } from './hook-utils.mjs';
 
-export const BRIDGE_SUFFIX = '/bridge/coral-cli';
-
 export function exportsJobsDir(flavor) {
   const base = flavor === 'dev' ? 'exports-dev' : 'exports';
   return join(coralStateRoot(), base, 'jobs');
-}
-
-export function activeBridgePath(pluginRoot) {
-  return `${pluginRoot}${BRIDGE_SUFFIX}`;
 }
 
 /** Claude Code's external transcript-directory convention; never use as a Coral-owned path key. */

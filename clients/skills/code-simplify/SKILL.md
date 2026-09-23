@@ -62,7 +62,7 @@ NEVER change what the code does — only how it does it.
        Let `<other-host>` = the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
        Single pass:
        - Self-execute (default): run `<Execution>` directly on the target files.
-       - Delegate (`--delegate`): run `coral-cli <other-host> -b -i "<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>" --work-dir "<project root>" -d`.
+       - Delegate (`--delegate`): run `coral-cli <other-host> -b --work-dir "<project root>" -d -i - <<'CORAL_INPUT'` with `<Execution + Constraints + Failure_Modes_To_Avoid + Output_Format + target file paths + coding standards>` as the body of that quoted heredoc, closed by a `CORAL_INPUT` line.
          **Every delegated prompt MUST include**: "NEVER run git checkout, git restore, git reset, git clean,
          or any command that discards uncommitted changes. Other processes may be working in the same
          worktree. Only edit target files through tool calls."
@@ -70,7 +70,7 @@ NEVER change what the code does — only how it does it.
        Parallel split:
        - Self-execute (default): spawn each group as a parallel Task (`subagent_type: "general-purpose"`).
          Pass `<Execution>`, `<Constraints>`, the file group, and project coding standards.
-       - Delegate (`--delegate`): dispatch one detached `coral-cli <other-host> -b -i ... -d` launch per file group.
+       - Delegate (`--delegate`): dispatch one detached launch per file group, each in the single-pass heredoc form with that group's files as its target file paths.
          **Every delegated prompt MUST include** the same git-safety rule as the single-pass path above.
          Collect all `job`s from the detached launch lines, then run `cd "<project root>" && coral-cli wait jobs <job-id...> --embed`. Apply the same rendered-output distinction as the single-pass path: resume only jobs reported by a `Still waiting` status with `(cursor: <cursor>)`, and treat every block with `Result path: <path>` as terminal even if its exit code is `75`. If one terminal block names still-running siblings (`Run coral-cli wait jobs <ids> to continue waiting.`), wait for those too before moving to step 5, since they are still writing to the same files.
     5) Review each change for correctness AND justification.

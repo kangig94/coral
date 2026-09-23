@@ -69,8 +69,8 @@ makes the pre-existing `mode: 0o600` unconditional, since the file is now always
 Both halves are asserted — one test runs the hook under a zero umask and reads the spill's mode, another
 pre-creates the spill path as a symlink and proves the target is untouched and the hook still fails open.
 
-Two things the fix does not do, and neither is a defect: identical prompts no longer collapse onto one
-file, and nothing in production unlinks these files — that was true before and is unchanged.
+The spill itself is gone: the hook no longer rewrites prompt arguments, because prompts reach the CLI on
+stdin through a quoted heredoc.
 
 ## 3. `/tmp/coral-discovery-<uuid>.md` — the KB curate corpus
 

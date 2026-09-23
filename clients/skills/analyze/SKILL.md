@@ -57,8 +57,7 @@ Wait for each step's result before evaluating the next. At least one step must r
 Wait for the agent to return its findings.
 You (the executor) post-process and append the result to the file after each step completes.
 
-**Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> -i "<--deep prompt>" --work-dir "<work_dir>" -d` where `<other-host>` is the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex)
-with scope, `work_dir`, and analysis file content so far.
+**Delegate (`--delegate`)**: run `coral-cli <other-host> <role_name> --work-dir "<work_dir>" -d -i - <<'CORAL_INPUT'` with the `<--deep prompt>` (scope, `work_dir`, and analysis file content so far) as the body of that quoted heredoc, closed by a `CORAL_INPUT` line, where `<other-host>` is the delegation target for the current host (Claude → Codex, Codex → Claude, Copilot → Codex).
 Run one step at a time — do NOT launch steps in parallel. Each step's output informs
 the next step's scope and "Needed when" evaluation.
 Each step is a fresh call (no session continuity — each agent has a different role).

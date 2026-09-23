@@ -14,7 +14,7 @@ Hook registration is split per client, each `plugin.json` pointing at its own fi
 | `PreCompact`               | `pre-compact.mjs`                                                                       | Snapshot active jobs before compaction                                           |
 | `UserPromptSubmit`         | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `kb-memo-reminder.mjs`, `coral-skill-vars.mjs` | KB flags, Ralph loop state, memo reminders, skill vars                           |
 | `PreToolUse` (`Skill`)     | `kb-promote-gate.mjs`, `ralph-loop.mjs`, `coral-skill-vars.mjs`                         | Same state setup for skill-initiated flows                                       |
-| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                      | Resolve `coral-cli` calls + wrap `run_in_background` for lifecycle tracking      |
+| `PreToolUse` (`Bash`)      | `bash-rewrite.mjs`                                                                      | Put `coral-cli` on PATH + wrap `run_in_background` for lifecycle tracking        |
 | `PreToolUse` (`Monitor`)   | `monitor-track.mjs`                                                                     | Wrap the Monitor command for lifecycle tracking (skips ws + persistent monitors) |
 | `PostToolUseFailure`       | `kb-lookup-reminder.mjs`                                                                | KB reminder on explicit tool failures                                            |
 | `PostToolUse` (`Bash`)     | `kb-lookup-reminder.mjs`                                                                | KB reminder on silent-failure command output                                     |
@@ -121,7 +121,7 @@ Hook SQLite access goes through the supported Node runtime's built-in `node:sqli
 
 It also:
 
-- adds `Bash(node *coral-cli*)` permission to `settings.json` under the Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`); the permission is user-wide, not per project
+- adds `Bash(coral-cli *)` permission to `settings.json` under the Claude config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`); the permission is user-wide, not per project
 - runs the [project-ignore maintenance](#project-ignore-maintenance) described below
 - refreshes the HUD only for prod builds; `hud-auto-update.mjs` exits early for dev flavor even if the hook is registered locally
 
@@ -200,7 +200,7 @@ These hooks set up runtime state for KB-producing skills and prompt-mode Ralph:
 - `kb-promote-gate.mjs` creates session-scoped KB activity flags
 - `ralph-loop.mjs` creates or updates the prompt-loop state file
 - `coral-skill-vars.mjs` injects short `CORAL_PROJECT` / `CORAL_METHODS` lines for host skill flows (aliases also live in `inject/tools.md` for all inject surfaces)
-- `bash-rewrite.mjs` rewrites bare `coral-cli` Bash commands to the plugin-local CLI bundle path, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
+- `bash-rewrite.mjs` prefixes any Bash command that runs `coral-cli` with `export PATH='<plugin root>/bridge':"$PATH"`, so the shell resolves `coral-cli` to the active plugin's executable CLI bundle; the command itself is never parsed or edited. It gives a `coral-cli wait` the full 600 s Bash timeout, and wraps `run_in_background` commands so they record start / liveness / exit in the live-work registry (`lib/live-work-registry.mjs`)
 
 ## Failure-aware KB Reminder
 
