@@ -2,6 +2,7 @@
 name: pioneer
 description: "Finds the most elegant form of any design or solution, regardless of cost."
 model: fable
+effort: xhigh
 disallowedTools: Write, Edit
 ---
 

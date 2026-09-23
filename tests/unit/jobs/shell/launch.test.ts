@@ -2000,7 +2000,8 @@ describe('ExecutionService launch', () => {
         channel: 'system',
       },
     });
-    expect(request.effort).toBeUndefined();
+    expect(request.effort).toBe('high');
+    expect(session?.controllerProfile?.effort).toBeUndefined();
     expect(session).toMatchObject({
       name: 'architect',
       model: 'gpt-5.4',
@@ -2012,6 +2013,52 @@ describe('ExecutionService launch', () => {
       },
     });
   });
+
+  it.each([
+    [undefined, 'high'],
+    ['low', 'low'],
+  ] as const)(
+    'should resume with the agent frontmatter effort unless the request names one (%s)',
+    async (requestEffort, expectedEffort) => {
+      realizePluginRoot(ctx);
+      const never = new Promise<ProviderTurnResult>(() => {});
+      const { provider, execute } = makeProvider({ execute: () => never });
+      mockState.getNewProvider.mockReturnValue(provider);
+      mockState.resolveAgent.mockReturnValue(
+        createResolvedAgent(
+          { namespace: 'coral', name: 'architect' },
+          '---\nmodel: gpt-5.4\neffort: high\n---\nArchitect instruction',
+        ),
+      );
+      const service = createService(ctx);
+      const session = allocateTestSession(
+        getInternals(service).sessionManager,
+        'codex',
+        'resume-agent-effort',
+        'gpt-5.4',
+        ctx.projectRoot,
+        ctx.projectRoot,
+        TEST_BACKEND_NAMESPACE,
+      );
+
+      const decision = await service.resume(
+        'codex',
+        {
+          sessionId: session.sessionId,
+          prompt: 'continue',
+          agent: 'architect',
+          ...(requestEffort !== undefined ? { effort: requestEffort } : {}),
+        },
+        ctx,
+      );
+
+      if (decision.status !== 'running') throw new Error(`expected running resume: ${JSON.stringify(decision)}`);
+      trackJob(decision.jobId);
+      const [request] = execute.mock.calls[0] as unknown as [ProviderRequest];
+      expect(request.effort).toBe(expectedEffort);
+      expect(request.coralEnv.CORAL_EFFORT).toBe(requestEffort);
+    },
+  );
 
   it('start defaults bypassPermissions to true when an agent is resolved', async () => {
     realizePluginRoot(ctx);
