@@ -137,5 +137,5 @@ Eight rows on 09-01, sixty-three on 09-23. The open question was never which row
 that a login change is recorded as a retryable condition, so every session bound to the retired account
 adds a row and none of them can leave. The rows also hold their sessions' rollout files in
 `~/.codex/sessions` — 62 of the 70 unarchived `coral` primary rollouts measured in
-[`forked-provider-sessions-have-no-owner.md`](./forked-provider-sessions-have-no-owner.md) are these
+[`provider-session-residue-has-no-owner.md`](./provider-session-residue-has-no-owner.md) are these
 sessions, which is how that measurement ruled them out as a second defect.
