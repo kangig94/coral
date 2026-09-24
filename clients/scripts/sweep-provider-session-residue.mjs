@@ -6,7 +6,7 @@
 // Usage: node sweep-provider-session-residue.mjs [--apply] [--flavor prod|dev] [--state-root <dir>] [--verbose]
 // Without --apply nothing is deleted; the report says what would be.
 
-import { closeSync, existsSync, lstatSync, openSync, readSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, openSync, readFileSync, readSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -29,6 +29,38 @@ function parseArgs(argv) {
   }
   if (options.flavor !== 'prod' && options.flavor !== 'dev') throw new Error('--flavor must be prod or dev');
   return options;
+}
+
+/**
+ * Every resume claim goes through the coordinator, so while none runs no session can be claimed between
+ * choosing a root and deleting its residue. A record that cannot be read proves nothing, so it counts as
+ * running; only an absent record or a confirmed-absent process does not.
+ */
+function runningBackendPid(stateRoot, flavor) {
+  const record = join(stateRoot, 'gen2', flavor === 'dev' ? 'run-dev' : 'run', 'coordinator.json');
+  let pid;
+  try {
+    pid = JSON.parse(readFileSync(record, 'utf8')).pid;
+  } catch (error) {
+    return error?.code === 'ENOENT' ? null : 'unknown';
+  }
+  if (!Number.isInteger(pid) || pid < 1) return 'unknown';
+  try {
+    process.kill(pid, 0);
+    return pid;
+  } catch (error) {
+    return error?.code === 'ESRCH' ? null : pid;
+  }
+}
+
+function refuseWhileBackendRuns(options) {
+  const pid = runningBackendPid(options.stateRoot, options.flavor);
+  if (pid === null) return false;
+  console.log(`Refusing --apply: the Coral backend is running (pid ${pid}), so a session could be resumed mid-sweep.`);
+  console.log('Stop it first, then re-run:');
+  console.log('command=coral-cli backend shutdown');
+  process.exitCode = 1;
+  return true;
 }
 
 /** Every store generation on disk: the flat pre-epoch store and each epoch. Residue predates the current one. */
@@ -290,6 +322,7 @@ function megabytes(bytes) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.apply && refuseWhileBackendRuns(options)) return;
   const databases = storeDatabases(options.stateRoot, options.flavor);
   if (databases.length === 0) {
     console.log(`No Coral store found under ${options.stateRoot}; nothing to sweep.`);
@@ -318,6 +351,9 @@ function main() {
       claudeRoots.push(root);
     }
   }
+
+  // Scanning takes seconds, and a session hook may start the backend meanwhile.
+  if (options.apply && refuseWhileBackendRuns(options)) return;
 
   const codex = { files: 0, bytes: 0, deleted: 0, retained: [] };
   for (const [home, refs] of codexRootsByHome) {

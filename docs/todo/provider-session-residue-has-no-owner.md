@@ -132,7 +132,10 @@ dry run unless given `--apply`. Its roots are sessions whose retention completed
 `discarded` — never `skipped_protected`, which is a session the user asked to keep — and it reads every
 store generation on disk, because the flat pre-epoch `store/store.db` holds almost all of them: 0.10.11
 started a fresh epoch-1 with no data carried forward ([`no-store-migration-path.md`](./no-store-migration-path.md)).
-A claude directory is reclaimed only once its transcript is already gone.
+A claude directory is reclaimed only once its transcript is already gone, and a codex root only once its own
+rollout is. A completed discard does not retire a session: it stays `ready` and the live coordinator can
+claim it for a new resume, so `--apply` refuses while the coordinator runs — every claim goes through it —
+checking at start and again just before deleting. A discovery record it cannot read counts as running.
 
 Measured by its dry run on 2026-09-24: 6,476 discarded roots (6,397 in the flat store, 79 in epoch-1),
 872 codex forks totalling **2.15 GB**, and 127 claude conversation directories (343 files, 27.1 MB). The
