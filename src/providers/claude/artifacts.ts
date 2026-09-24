@@ -1,7 +1,13 @@
 import { join } from 'node:path';
 
 import { discardRecordedArtifacts, managed, reconcileRecordedArtifactDiscard } from '../capability.js';
-import type { ProviderArtifactHandleInput, ProviderRuntime } from '../contract.js';
+import type {
+  ArtifactCleanupRuntime,
+  ProviderArtifactHandleInput,
+  ProviderResidueDiscardOutcome,
+  ProviderRuntime,
+} from '../contract.js';
+import { errorMessage } from '../../infra/error-format.js';
 import type { StoragePort } from '../../infra/port-types.js';
 import type { ProviderArtifactIdentity } from '../artifact-identity.js';
 import type { ClaudeProviderAccess, ClaudeExecutionPlan } from './execution-plan.js';
@@ -178,6 +184,77 @@ function safeReadDir(storage: ClaudeArtifactLocatorStorage, path: string) {
   }
 }
 
+// A conversation id is a single path segment; anything else could name a directory it does not own.
+const CLAUDE_CONVERSATION_REF = /^[0-9A-Za-z][0-9A-Za-z-]*$/;
+
+type ResidueAccumulator = {
+  readonly discarded: string[];
+  readonly retained: Array<{ path: string; reason: string }>;
+};
+
+/** Removes a directory tree bottom-up without following links; a directory keeps any entry it could not remove. */
+function removeClaudeResidueTree(storage: StoragePort, directory: string, residue: ResidueAccumulator): boolean {
+  let entries;
+  try {
+    entries = storage.readdirSync(directory, { withFileTypes: true });
+  } catch (error: unknown) {
+    residue.retained.push({ path: directory, reason: errorMessage(error) });
+    return false;
+  }
+  let complete = true;
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!removeClaudeResidueTree(storage, path, residue)) complete = false;
+      continue;
+    }
+    try {
+      storage.unlinkSync(path);
+      residue.discarded.push(path);
+    } catch (error: unknown) {
+      residue.retained.push({ path, reason: errorMessage(error) });
+      complete = false;
+    }
+  }
+  if (!complete) return false;
+  try {
+    storage.rmdirSync(directory);
+    residue.discarded.push(directory);
+    return true;
+  } catch (error: unknown) {
+    residue.retained.push({ path: directory, reason: errorMessage(error) });
+    return false;
+  }
+}
+
+/**
+ * Discards the directory Claude keeps beside a conversation's JSONL — `<project>/<conversationRef>/`, which
+ * holds out-of-line tool results. It is found by name in every project directory rather than beside the
+ * JSONL, because the JSONL is already gone when retention reaches this.
+ */
+export function discardClaudeSessionResidue(options: {
+  readonly conversationRef: string;
+  readonly projectsRoot: string;
+  readonly runtime: ArtifactCleanupRuntime;
+}): ProviderResidueDiscardOutcome {
+  const residue: ResidueAccumulator = { discarded: [], retained: [] };
+  if (!CLAUDE_CONVERSATION_REF.test(options.conversationRef)) return residue;
+  const storage = options.runtime.storage;
+  for (const project of safeReadDir(storage, options.projectsRoot)) {
+    if (!project.isDirectory()) continue;
+    const directory = join(options.projectsRoot, project.name, options.conversationRef);
+    let kind;
+    try {
+      kind = storage.lstatSync(directory);
+    } catch {
+      continue;
+    }
+    if (!kind.isDirectory() || kind.isSymbolicLink()) continue;
+    removeClaudeResidueTree(storage, directory, residue);
+  }
+  return residue;
+}
+
 export const claudeArtifactCapability = managed<ClaudeProviderAccess>({
   discardArtifacts: ({ handles, runtime }) => discardRecordedArtifacts(handles, runtime),
   reconcileDiscard: ({ handles, runtime }) => Promise.resolve(reconcileRecordedArtifactDiscard(handles, runtime)),
@@ -189,4 +266,6 @@ export const claudeArtifactCapability = managed<ClaudeProviderAccess>({
     });
     return result.kind === 'match' ? result.artifact.handle : null;
   },
+  discardResidue: ({ conversationRef, access, runtime }) =>
+    Promise.resolve(discardClaudeSessionResidue({ conversationRef, projectsRoot: access.projectsRoot, runtime })),
 });

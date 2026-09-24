@@ -3,6 +3,7 @@ import type {
   DiscardOutcome,
   HostRef,
   ProviderArtifactHandle,
+  ProviderResidueDiscardOutcome,
   ProviderArtifactDiscardReconciliation,
   ProviderCurationPreparationRuntime,
   ProviderCurationRequest,
@@ -58,6 +59,11 @@ export type BoundProviderArtifacts =
         conversationRef: string;
         runtime: ArtifactCleanupRuntime;
       }): ProviderArtifactHandle | null;
+      discardResidue?(options: {
+        conversationRef: string;
+        since: number;
+        runtime: ArtifactCleanupRuntime;
+      }): Promise<ProviderResidueDiscardOutcome>;
     }
   | { readonly kind: 'none'; readonly reason: string };
 

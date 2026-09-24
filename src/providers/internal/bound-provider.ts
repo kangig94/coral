@@ -379,6 +379,7 @@ function bindArtifacts<Access extends JsonValue>(
   const discardArtifacts = artifacts.discardArtifacts;
   const reconcileDiscard = artifacts.reconcileDiscard;
   const locateArtifact = artifacts.locateArtifact;
+  const discardResidue = artifacts.discardResidue;
   return Object.freeze({
     kind: 'managed' as const,
     protocol: artifacts.protocol,
@@ -425,6 +426,21 @@ function bindArtifacts<Access extends JsonValue>(
               locateArtifact(Object.freeze({ conversationRef: input.conversationRef, runtime: input.runtime, access })),
               'Bound artifact location outcome',
             );
+          },
+        }),
+    ...(discardResidue === undefined
+      ? {}
+      : {
+          discardResidue: (options: { conversationRef: string; since: number; runtime: ArtifactCleanupRuntime }) => {
+            const input = snapshotPlainReceiver(options, 'Bound residue discard input', new Set(['runtime']));
+            return discardResidue(
+              Object.freeze({
+                conversationRef: input.conversationRef,
+                since: input.since,
+                runtime: input.runtime,
+                access,
+              }),
+            ).then((result) => snapshotProviderResult(result, 'Bound residue discard outcome'));
           },
         }),
   });

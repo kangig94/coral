@@ -21,7 +21,7 @@ const FINAL_UNLINK_SETTLE_MS = 500;
 
 export function managed<Access extends ProviderAccess>(
   impl: Pick<ProviderManagedArtifactCapability<Access>, 'discardArtifacts' | 'locateArtifact'> &
-    Partial<Pick<ProviderManagedArtifactCapability<Access>, 'reconcileDiscard'>>,
+    Partial<Pick<ProviderManagedArtifactCapability<Access>, 'reconcileDiscard' | 'discardResidue'>>,
 ): ProviderManagedArtifactCapability<Access> {
   return {
     kind: 'managed',
@@ -75,6 +75,7 @@ export function managed<Access extends ProviderAccess>(
       return { kind: 'not-applied' };
     },
     ...(impl.locateArtifact !== undefined ? { locateArtifact: impl.locateArtifact } : {}),
+    ...(impl.discardResidue !== undefined ? { discardResidue: impl.discardResidue } : {}),
   };
 }
 

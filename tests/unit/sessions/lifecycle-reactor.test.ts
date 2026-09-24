@@ -43,6 +43,7 @@ import {
   type ArtifactCleanupRuntime,
   type DiscardOutcome,
   type ProviderArtifactDiscardReconciliation,
+  type ProviderResidueDiscardOutcome,
 } from '#src/providers/contract.js';
 import { openTestStoreDb } from '#tests/helpers/store-db.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
@@ -101,6 +102,7 @@ function createHarness(
       runtime: ArtifactCleanupRuntime,
     ) => Promise<ProviderArtifactDiscardReconciliation>;
     locateArtifact?: (conversationRef: string) => string | null;
+    discardResidue?: (conversationRef: string, since: number) => Promise<ProviderResidueDiscardOutcome>;
     afterCommit?: (appended: readonly AppendedEvent[], commitEvents: CommitEventsFn) => void;
     interruptedRecovery?: boolean;
   } = {},
@@ -173,6 +175,9 @@ function createHarness(
                   }),
               ...(options.locateArtifact !== undefined
                 ? { locateArtifact: ({ conversationRef }) => options.locateArtifact!(conversationRef) }
+                : {}),
+              ...(options.discardResidue !== undefined
+                ? { discardResidue: ({ conversationRef, since }) => options.discardResidue!(conversationRef, since) }
                 : {}),
             })
           : none('test provider has no artifacts'),
@@ -1117,6 +1122,88 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([['/tmp/rollout-thread-fallback.jsonl']]);
   });
 
+  it('discards session residue after the primary discard and before retention completes', async () => {
+    const order: string[] = [];
+    const residueCalls: Array<{ conversationRef: string; since: number }> = [];
+    const retention = { completed: (): boolean => false };
+    const harness = createHarness({
+      locateArtifact: (conversationRef) =>
+        conversationRef === 'thread-residue' ? '/tmp/rollout-thread-residue.jsonl' : null,
+      discardArtifacts: async () => {
+        order.push('primary');
+        return { kind: 'discarded' };
+      },
+      discardResidue: async (conversationRef, since) => {
+        residueCalls.push({ conversationRef, since });
+        order.push(retention.completed() ? 'residue-after-completion' : 'residue');
+        return { discarded: ['/tmp/rollout-fork.jsonl'], retained: [] };
+      },
+    });
+    const jobId = 'job-residue';
+    const sessionId = await openClaimedSession(harness, jobId);
+    retention.completed = () =>
+      readRetentionEvents(harness, sessionId).some((event) => event.type === 'session.retention.discard.completed');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-residue',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-residue' },
+    });
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await expectRetentionEvents(harness, sessionId, [
+      { type: 'session.retention.discard.requested', attempt: 1, handles: ['/tmp/rollout-thread-residue.jsonl'] },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: ['/tmp/rollout-thread-residue.jsonl'],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(order).toEqual(['primary', 'residue']);
+    expect(residueCalls).toHaveLength(1);
+    expect(residueCalls[0]?.conversationRef).toBe('thread-residue');
+    expect(Number.isFinite(residueCalls[0]?.since)).toBe(true);
+  });
+
+  it('completes retention even when the residue discard throws', async () => {
+    const harness = createHarness({
+      locateArtifact: (conversationRef) =>
+        conversationRef === 'thread-residue-fail' ? '/tmp/rollout-thread-residue-fail.jsonl' : null,
+      discardResidue: async () => {
+        throw new Error('residue scan exploded');
+      },
+    });
+    const jobId = 'job-residue-fail';
+    const sessionId = await openClaimedSession(harness, jobId);
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-residue-fail',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-residue-fail' },
+    });
+    initRunningJob(harness, jobId, sessionId);
+
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await expectRetentionEvents(harness, sessionId, [
+      {
+        type: 'session.retention.discard.requested',
+        attempt: 1,
+        handles: ['/tmp/rollout-thread-residue-fail.jsonl'],
+      },
+      {
+        type: 'session.retention.discard.completed',
+        attempt: 1,
+        handles: ['/tmp/rollout-thread-residue-fail.jsonl'],
+        outcome: 'discarded',
+      },
+    ]);
+    expect(harness.logs.some((line) => line.includes('residue scan exploded'))).toBe(true);
+  });
+
   it('records skipped_no_handles when locateArtifact also finds nothing', async () => {
     const harness = createHarness({ locateArtifact: () => null });
     const jobId = 'job-locate-miss';
@@ -1193,6 +1280,32 @@ describe('LifecycleReactor retention enforcement', () => {
     await harness.reactor.discardSessionArtifacts(sessionId);
 
     expect(harness.discardCalls).toEqual([['/tmp/rollout-ondemand.jsonl']]);
+  });
+
+  it('discardSessionArtifacts discards session residue after the recorded handles', async () => {
+    const residueRefs: string[] = [];
+    const harness = createHarness({
+      discardResidue: async (conversationRef) => {
+        residueRefs.push(conversationRef);
+        return { discarded: [], retained: [] };
+      },
+    });
+    const jobId = 'job-ondemand-residue';
+    const sessionId = await openClaimedSession(harness, jobId, 'retain');
+    await checkpointClaimedTestContinuity(harness.sessionManager, sessionId, jobId, {
+      conversationRef: 'thread-ondemand-residue',
+      resumable: true,
+      providerContinuity: { threadId: 'thread-ondemand-residue' },
+    });
+    await recordArtifact(harness, sessionId, jobId, '/tmp/rollout-ondemand-residue.jsonl');
+    initRunningJob(harness, jobId, sessionId);
+    completeJob(harness, jobId, sessionId);
+    harness.sessionManager.releaseJob(sessionId, jobId);
+
+    await harness.reactor.discardSessionArtifacts(sessionId);
+
+    expect(harness.discardCalls).toEqual([['/tmp/rollout-ondemand-residue.jsonl']]);
+    expect(residueRefs).toEqual(['thread-ondemand-residue']);
   });
 
   it('discardSessionArtifacts falls back to locateArtifact when no handle was recorded', async () => {

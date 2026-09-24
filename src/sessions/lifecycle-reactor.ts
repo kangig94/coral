@@ -653,6 +653,28 @@ export class LifecycleReactor {
         this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
       }
     }
+    await this.discardSessionResidue(bound, entry);
+  }
+
+  /**
+   * Residue is best-effort by construction: nothing records it, so keeping a file is always the safe
+   * direction, and a failure here may not hold back the retention whose primary discard already applied.
+   */
+  private async discardSessionResidue(bound: BoundProvider, entry: ProviderSession): Promise<void> {
+    if (bound.artifacts.kind !== 'managed' || bound.artifacts.discardResidue === undefined) return;
+    if (entry.conversationRef === undefined) return;
+    try {
+      const residue = await bound.artifacts.discardResidue({
+        conversationRef: entry.conversationRef,
+        since: Date.parse(entry.createdAt),
+        runtime: this.options.runtime,
+      });
+      for (const kept of residue.retained) {
+        this.log(`Residue retained for session ${entry.sessionId}: ${kept.path} (${kept.reason})`);
+      }
+    } catch (error: unknown) {
+      this.log(`Residue discard failed for session ${entry.sessionId}: ${errorMessage(error)}`);
+    }
   }
 
   async enforceRetention(work: SessionRetentionWork): Promise<RecoveryDisposition> {
@@ -797,6 +819,9 @@ export class LifecycleReactor {
     if (continuation.stage !== 'discard-applied' || observed?.kind !== 'applied') {
       throw new Error(`Retention discard '${continuation.descriptor.discardActionId}' has no durable applied outcome.`);
     }
+    // Before the completion append: a crash here re-runs retention from its continuation, and residue is
+    // re-derived rather than recorded, so the next run discards whatever this one did not reach.
+    await this.discardSessionResidue(bound, recoveryWork.entry);
     try {
       appendRetentionDiscardCompleted(this.options.commitEvents, {
         sessionId,

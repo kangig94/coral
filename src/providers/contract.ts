@@ -704,6 +704,15 @@ export type DiscardOutcome =
   | { readonly kind: 'skipped_no_handles'; readonly details?: Record<string, unknown> }
   | { readonly kind: 'provider_declares_none'; readonly details?: Record<string, unknown> };
 
+/**
+ * What a residue discard removed and what it left. A retained path is not a failure of the session's
+ * retention: residue is never recorded, so leaving it is always the safe direction.
+ */
+export type ProviderResidueDiscardOutcome = {
+  readonly discarded: readonly ProviderArtifactHandle[];
+  readonly retained: readonly { readonly path: string; readonly reason: string }[];
+};
+
 export const PROVIDER_ARTIFACT_DISCARD_PROTOCOL = 'provider-artifact-discard.v1' as const;
 
 export type ProviderArtifactDiscardReconciliation =
@@ -757,6 +766,18 @@ export interface ProviderManagedArtifactCapability<Access extends ProviderAccess
     access: Access;
     runtime: ArtifactCleanupRuntime;
   }): ProviderArtifactHandle | null;
+  /**
+   * Discards what the provider wrote for this conversation beyond the one located artifact — forked
+   * sessions, sibling directories. Residue is never archived and never enters a handle set: it is
+   * re-derived from `conversationRef` on every call, so a call interrupted part-way is completed by the
+   * next one. `since` bounds any scan to artifacts written no earlier than the session began.
+   */
+  discardResidue?(options: {
+    conversationRef: string;
+    since: number;
+    access: Access;
+    runtime: ArtifactCleanupRuntime;
+  }): Promise<ProviderResidueDiscardOutcome>;
 }
 
 export interface ProviderNoArtifactCapability {
