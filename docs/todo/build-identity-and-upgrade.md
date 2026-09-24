@@ -162,6 +162,16 @@ about. Treat it as motivation, not as evidence.
   already spawns a contender unconditionally, and `bindWithHandoff` already evicts an older incumbent.
   What it needed was for the contender to stop discarding the incumbent's credential over a comparison
   that could not hold.
+
+  **That "done" was premature: there were two such comparisons, and the second survived until #385.**
+  `verifiedIncumbentFromDiscovery` also required the record's `namespace` to equal the contender's.
+  Namespace hashes the plugin root, and an installed plugin root is a per-version directory, so an
+  upgrade _always_ meets another namespace: the record was discarded, the `bootToken` with it, and
+  every installed-to-installed upgrade was refused with `handoff_shutdown_credential_unavailable` while
+  the old daemon kept serving. It never showed in tests because every fixture pair shared one plugin
+  root. The same comparison had also switched off `incumbentOutranksContender` for every cross-version
+  pair; both are gone. The takeover was first observed completing on 2026-09-24, from an installed
+  `0.10.11` incumbent to a separately rooted build.
 - ~~**Refuse the mixed window.**~~ Ruled out earlier and still ruled out: refusing is a cold upgrade,
   and handing off backwards makes the upgrade silently not take effect. Note that this is a different
   question from the takeover above — refusing keeps the old daemon, finishing the takeover replaces it.

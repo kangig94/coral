@@ -254,7 +254,10 @@ export function verifiedIncumbentFromDiscovery(
   if (!info) {
     return null;
   }
-  if (info.socketPath !== socketPath || info.flavor !== desired.flavor || info.namespace !== desired.namespace) {
+  // Namespace is not compared with the contender's own: it hashes the plugin root, whose path carries the
+  // version, so every upgrade meets an incumbent from another namespace. Refusing that record discards its
+  // `bootToken`, and the upgrade then has no credential to ask the previous build to stand down.
+  if (info.socketPath !== socketPath || info.flavor !== desired.flavor) {
     return null;
   }
   if (

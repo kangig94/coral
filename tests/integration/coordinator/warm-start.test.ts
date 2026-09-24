@@ -15,11 +15,22 @@ import {
   waitForProcessExit,
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const tempRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
 // A contender that defers does so on one ping round-trip, so this only has to outlast process startup.
 const DEFERRAL_BUDGET_MS = 30_000;
+const TAKEOVER_BUDGET_MS = 60_000;
+
+async function waitForDiscoveryRecordFrom(home: string, bundleHash: string, timeoutMs: number) {
+  await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.bundleHash === bundleHash, timeoutMs);
+  const record = readDiscoveryRecordForHome(home, 'prod');
+  if (record === null) {
+    throw new Error(`Expected a discovery record from bundle ${bundleHash}`);
+  }
+  return record;
+}
 
 afterEach(async () => {
   while (coordinators.length > 0) {
@@ -97,5 +108,49 @@ describe('coordinator warm-start integration', () => {
     expect(afterContender?.bundleHash).toBe(firstFixture.bundleHash);
     expect(afterContender?.instanceId).toBe(initial.instanceId);
     expect(observeProcessLiveness(initial.pid)).toBe('alive');
+  });
+
+  // An installed upgrade: each version lives in its own plugin root, so the pair never shares a namespace.
+  // Every other real-process case reuses one root, which is how a contender discarding a record from another
+  // namespace — and the boot token with it — refused every upgrade without failing a test (#385).
+  it('takes over from an older incumbent installed under another plugin root', async () => {
+    if (!buildArtifactsAvailable()) {
+      throw new Error('Expected clients/build/coral-backend.cjs to exist before running integration tests');
+    }
+
+    const home = mkdtempSync(join(tmpdir(), 'coral-warm-home-'));
+    tempRoots.push(home);
+
+    const olderFixture = createPluginFixture(tempRoots, { flavor: 'prod', version: '0.0.1' });
+    const older = spawnCoordinator({
+      fixture: olderFixture,
+      home,
+      tempRoots,
+      env: { CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' },
+    });
+    coordinators.push(older);
+    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    expect(initial.version).toBe('0.0.1');
+
+    const newerFixture = createPluginFixture(tempRoots, { flavor: 'prod' });
+    const newer = spawnCoordinator({
+      fixture: newerFixture,
+      home,
+      tempRoots,
+      env: { CORAL_BOOT_FRESHNESS_TIMEOUT_MS: '1000' },
+    });
+    coordinators.push(newer);
+
+    try {
+      await waitForProcessExit(older, TAKEOVER_BUDGET_MS);
+      const replaced = await waitForDiscoveryRecordFrom(home, newerFixture.bundleHash, TAKEOVER_BUDGET_MS);
+      expect(replaced.namespace).not.toBe(initial.namespace);
+      expect(observeProcessLiveness(replaced.pid)).toBe('alive');
+    } catch (error: unknown) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}\nincumbent output:\n${older.output()}\nreplacement output:\n${newer.output()}`,
+        { cause: error },
+      );
+    }
   });
 });

@@ -90,15 +90,30 @@ describe('verifiedIncumbentFromDiscovery', () => {
     expect(verifiedIncumbentFromDiscovery(preTokenRecord({ incarnation }), evidence())?.incarnation).toBe(incarnation);
   });
 
-  it('is not the incumbent when the record names another socket, flavor or namespace', () => {
-    for (const record of [
-      preTokenRecord({ socketPath: '/tmp/coral-other.sock' }),
-      preTokenRecord({ flavor: 'dev' }),
-      preTokenRecord({ namespace: 'other-ns' }),
-    ]) {
+  it('is not the incumbent when the record names another socket or flavor', () => {
+    for (const record of [preTokenRecord({ socketPath: '/tmp/coral-other.sock' }), preTokenRecord({ flavor: 'dev' })]) {
       expect(verifiedIncumbentFromDiscovery(record, evidence())).toBeNull();
     }
     expect(verifiedIncumbentFromDiscovery(null, evidence())).toBeNull();
+  });
+
+  // Namespace hashes the plugin root, and an installed plugin root is a per-version directory, so the previous
+  // release's record always names another namespace. Discarding it dropped the boot token and refused every
+  // upgrade with `handoff_shutdown_credential_unavailable`, leaving the previous build serving (#385).
+  it('keeps the boot token of an incumbent from another namespace', () => {
+    const health: IncumbentHealth = {
+      flavor: 'prod',
+      namespace: 'previous-release-ns',
+      bundleHash: 'incumbent-bundle',
+    };
+
+    for (const lastHealth of [null, health]) {
+      const incumbent = verifiedIncumbentFromDiscovery(
+        preTokenRecord({ namespace: 'previous-release-ns' }),
+        evidence(lastHealth),
+      );
+      expect(incumbent?.bootToken).toBe('incumbent-boot-token');
+    }
   });
 
   // `writeDiscoveryRecord` probes once and serializes nothing if that probe fails, so a perfectly ordinary
@@ -144,6 +159,7 @@ describe('verifiedIncumbentFromDiscovery', () => {
     expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence(health))).not.toBeNull();
     expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...health, pid: 9999 }))).toBeNull();
     expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...health, bundleHash: 'other' }))).toBeNull();
+    expect(verifiedIncumbentFromDiscovery(preTokenRecord(), evidence({ ...health, namespace: 'other' }))).toBeNull();
     // Two statements that disagree, which is what a contradiction is. One statement and a silence is not.
     expect(
       verifiedIncumbentFromDiscovery(
