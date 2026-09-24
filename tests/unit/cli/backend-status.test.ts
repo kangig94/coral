@@ -455,6 +455,34 @@ describe('backend status generation readiness', () => {
     expect(stdout).toContain('No coordinator discovery record and no coordinator socket');
   });
 
+  it('keeps what it already printed when a later status read fails', async () => {
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset,
+      backendStatus: {
+        inspectReadiness: () => ({
+          kind: 'legacy-ignored',
+          legacyPath: '/state/data',
+          generatedPath: '/state/gen2/data',
+        }),
+        getStatus: async () => ({ status: 'unreachable', detail: 'request timed out', cause: 'no_response' }),
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+        readProviderProxySetHolderStatusDirect: async () => {
+          throw new Error('holder dial failed');
+        },
+      },
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stderr).toContain('Legacy Coral history remains at /state/data');
+    expect(stderr).toContain('holder dial failed');
+    expect(stdout).toContain('request timed out');
+    expect(process.exitCode).not.toBe(0);
+  });
+
   it('prints a recent startup failure returned by the read-only status probe', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),

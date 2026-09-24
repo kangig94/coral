@@ -1150,10 +1150,13 @@ export async function ensureRunningCoordinator(pluginRoot?: string, timePort?: T
   return client;
 }
 
+// Observed through the unauthenticated ping so a child's client can answer it too. Each reading is bounded and a
+// failed one is only a reading: an unanswered poll cannot hang the start or end it while the deadline remains.
 async function waitForRunningLifecycle(client: EnsuredIpcClient, timePort: TimePort): Promise<void> {
   const deadline = timePort.now() + KERNEL_READY_DEADLINE_MS;
   for (;;) {
-    const status = parseRawCoordinatorHealth(await client.health())?.status;
+    const reading = await readRawCoordinatorHealth(client);
+    const status = answeredHealth(reading)?.status;
     if (status === 'ok' || status === 'running') return;
     if (status === 'draining') {
       throw new BackendUnreachableError(
@@ -1162,7 +1165,7 @@ async function waitForRunningLifecycle(client: EnsuredIpcClient, timePort: TimeP
     }
     if (timePort.now() >= deadline) {
       throw new BackendUnreachableError(
-        `Timed out waiting for the coordinator to finish startup (last status: ${status ?? 'unreadable'}). Run \`coral-cli backend status\` to check coordinator health.`,
+        `Timed out waiting for the coordinator to finish startup (last observation: ${reading.kind === 'answered' ? reading.health.status : reading.cause}). Run \`coral-cli backend status\` to check coordinator health.`,
       );
     }
     await timePort.sleep(STARTUP_POLL_MS);

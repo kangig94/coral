@@ -1436,17 +1436,17 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
-  const readBackendStatusReport = async (): Promise<
-    Readonly<{ notice: string | null; output: string; exitCode: BackendStatusLocalExitContribution }>
-  > => {
+  // Written as each part is known, so a read that fails midway still leaves what was already established.
+  const reportBackendStatus = async (
+    write: Readonly<{ stderr(text: string): void; stdout(text: string): void }>,
+  ): Promise<BackendStatusLocalExitContribution> => {
     const readiness = backendStatus.inspectReadiness();
-    let notice: string | null = null;
     switch (readiness.kind) {
       case 'generated-ready':
       case 'no-legacy':
         break;
       case 'legacy-ignored':
-        notice = formatLegacyGenerationIgnoredNotice(readiness);
+        write.stderr(`${formatLegacyGenerationIgnoredNotice(readiness)}\n`);
         break;
       default:
         assertNever(readiness);
@@ -1456,13 +1456,13 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       backendStatus.getRoutingStatus(),
     ]);
     const liveHandoffResult = backendStatus.getLiveHandoffResult();
-    let output = formatBackendStatus(status, routingStatusRead, liveHandoffResult);
+    write.stdout(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
     let directHolderStatusExitContribution: BackendStatusLocalExitContribution = 0;
     if (!hasUsableCoordinatorDiagnostics(status)) {
       const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
         readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
       if (direct.length > 0) {
-        output = `${output}\n\n${formatProviderProxySetHolderStatusDirect(direct)}`;
+        write.stdout(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
       }
       directHolderStatusExitContribution = directProviderProxySetHolderStatusExitContribution(direct);
     }
@@ -1475,7 +1475,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
       providerProxySetNoVerdictExitContribution(status),
       directHolderStatusExitContribution,
     ];
-    return { notice, output, exitCode: combineBackendStatusLocalExitContributions(localExitContributions) };
+    return combineBackendStatusLocalExitContributions(localExitContributions);
   };
 
   const startCommand = backend.command('start');
@@ -1490,7 +1490,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     // printed here, they would read as the next step of a start that already succeeded.
     let statusNeedsAttention: boolean;
     try {
-      statusNeedsAttention = (await readBackendStatusReport()).exitCode !== 0;
+      statusNeedsAttention = (await reportBackendStatus({ stderr: () => {}, stdout: () => {} })) !== 0;
     } catch {
       statusNeedsAttention = true;
     }
@@ -1501,10 +1501,10 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   const statusCommand = backend.command('status');
   statusCommand.description('Show backend daemon status').action(async () => {
     try {
-      const report = await readBackendStatusReport();
-      if (report.notice !== null) process.stderr.write(`${report.notice}\n`);
-      process.stdout.write(`${report.output}\n`);
-      process.exitCode = report.exitCode;
+      process.exitCode = await reportBackendStatus({
+        stderr: (text) => process.stderr.write(text),
+        stdout: (text) => process.stdout.write(text),
+      });
     } catch (error) {
       emitError(error);
     }

@@ -29,6 +29,7 @@ const mockState = vi.hoisted(() => ({
   shutdown: vi.fn<(socketPath: string, options?: unknown) => Promise<unknown>>(),
   bindSocket: vi.fn<() => Promise<{ kind: 'bound' } | { kind: 'incumbent'; reason: string }>>(),
   createdClients: [] as Array<{ socketPath: string; auth: unknown }>,
+  healthReads: [] as Array<{ method: 'ping' | 'health'; options: unknown }>,
   home: '',
   platform: process.platform,
   /** What this build can prove about its own bundle; a unit run has no injected identity, so default is a refusal. */
@@ -73,8 +74,14 @@ vi.mock('#src/transport/ipc/client.js', async () => {
         socketPath,
         request: (method: string, params?: unknown, options?: unknown) =>
           mockState.request(socketPath, method, params, options),
-        ping: readHealth,
-        health: readHealth,
+        ping: (options?: unknown) => {
+          mockState.healthReads.push({ method: 'ping', options });
+          return readHealth(options);
+        },
+        health: (options?: unknown) => {
+          mockState.healthReads.push({ method: 'health', options });
+          return readHealth(options);
+        },
         shutdown: (options?: unknown) => mockState.shutdown(socketPath, options),
       };
     },
@@ -285,6 +292,7 @@ afterEach(() => {
   mockState.bindSocket.mockReset();
   mockState.bindSocket.mockResolvedValue({ kind: 'bound' });
   mockState.createdClients.length = 0;
+  mockState.healthReads.length = 0;
   for (const key of childEnvKeys) {
     const value = savedChildEnv.get(key);
     if (value === undefined) delete process.env[key];
@@ -476,6 +484,8 @@ describe('ipc ensure', () => {
       await vi.advanceTimersByTimeAsync(2_000);
       await ensuredPromise;
       expect(mockState.spawn).not.toHaveBeenCalled();
+      // A child's client carries no principal, and `transport.health` requires one.
+      expect(mockState.healthReads.filter(({ method }) => method === 'health')).toEqual([]);
     });
 
     it('does not wait for release or spawn when the parent is draining', async () => {
@@ -994,9 +1004,44 @@ describe('ipc ensure', () => {
 
     const { ensureRunningCoordinator, KERNEL_READY_DEADLINE_MS } = await importEnsure();
     const ensuredPromise = ensureRunningCoordinator(root);
-    const refusal = expect(ensuredPromise).rejects.toThrow('last status: kernel-ready');
+    const refusal = expect(ensuredPromise).rejects.toThrow('last observation: kernel-ready');
     await vi.advanceTimersByTimeAsync(KERNEL_READY_DEADLINE_MS + 1_000);
     await refusal;
+  });
+
+  it('bounds every startup poll and survives a poll that goes unanswered', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeDiscovery(root, { port: 4238, token: 'ready-token', instanceId: 'booting-coordinator' });
+    const sequence: Array<string | Error> = [
+      ...Array.from({ length: 5 }, () => 'kernel-ready'),
+      new Error('connection reset'),
+      'ok',
+    ];
+    let healthCalls = 0;
+    mockState.health.mockImplementation(async () => {
+      const next = sequence[Math.min(healthCalls++, sequence.length - 1)];
+      if (next instanceof Error) throw next;
+      return {
+        status: next,
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'booting-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+
+    const { ensureRunningCoordinator } = await importEnsure();
+    const ensuredPromise = ensureRunningCoordinator(root);
+    await vi.advanceTimersByTimeAsync(3_000);
+    await ensuredPromise;
+
+    expect(healthCalls).toBeGreaterThan(sequence.length - 1);
+    const lastPoll = mockState.healthReads.at(-1);
+    expect(lastPoll?.method).toBe('ping');
+    expect((lastPoll?.options as { timeoutMs?: number } | undefined)?.timeoutMs).toBeGreaterThan(0);
   });
 
   it('serves a draining incumbent for a route the catalog admits while draining', async () => {
