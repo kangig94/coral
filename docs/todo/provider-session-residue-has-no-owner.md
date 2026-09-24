@@ -128,14 +128,22 @@ any discovery runs and nothing will ever revisit them. They are reachable: the c
 root id, which `projection_sessions` still holds, and the claude path derives from it.
 
 `clients/scripts/sweep-provider-session-residue.mjs` reclaims them, and is removed at 0.11.0. It is a
-dry run unless given `--apply`. Its roots are sessions whose retention completed with outcome
-`discarded` — never `skipped_protected`, which is a session the user asked to keep — and it reads every
-store generation on disk, because the flat pre-epoch `store/store.db` holds almost all of them: 0.10.11
-started a fresh epoch-1 with no data carried forward ([`no-store-migration-path.md`](./no-store-migration-path.md)).
-A claude directory is reclaimed only once its transcript is already gone, and a codex root only once its own
-rollout is. A completed discard does not retire a session: it stays `ready` and the live coordinator can
-claim it for a new resume, so `--apply` refuses while the coordinator runs — every claim goes through it —
-checking at start and again just before deleting. A discovery record it cannot read counts as running.
+dry run unless given `--apply`, and it reads every store generation on disk, because the flat pre-epoch
+`store/store.db` holds almost all of them: 0.10.11 started a fresh epoch-1 with no data carried forward
+([`no-store-migration-path.md`](./no-store-migration-path.md)).
+
+**A completion is history, not ownership.** A session stays `ready` after retention finishes with it, so
+the live coordinator can claim it again. A root therefore needs its latest `discarded` or
+`skipped_no_handles` completion to be the **last non-retention event on the session** — no claim, lease,
+or checkpoint after it — and no current `activeJobId`. `skipped_protected` never qualifies. A claude
+directory is reclaimed only once its transcript is gone, and a codex root only once its own rollout is.
+
+**Claims only come from a running coordinator.** The script reads and scans first, then checks that no
+coordinator runs — every claim is committed by it — immediately before the first unlink, and refuses
+`--apply` otherwise; a discovery record it cannot read counts as running. The coordinator holds no lock the
+script could take, so exclusion is not held through the last unlink: a coordinator would have to start
+**and** commit a claim on one of these sessions within the milliseconds the unlinks take. That residual is
+accepted for a one-shot tool.
 
 Measured by its dry run on 2026-09-24: 6,476 discarded roots (6,397 in the flat store, 79 in epoch-1),
 872 codex forks totalling **2.15 GB**, and 127 claude conversation directories (343 files, 27.1 MB). The

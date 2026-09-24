@@ -81,30 +81,50 @@ function columnText(value) {
   return value instanceof Uint8Array ? Buffer.from(value).toString('utf8') : String(value);
 }
 
+const RETENTION_ROOT_OUTCOMES = new Set(['discarded', 'skipped_no_handles']);
+
 /**
- * Sessions whose retention completed by actually discarding. A `skipped_protected` completion is a session
- * the user asked to keep, so only `discarded` names a root whose residue is owed deletion.
+ * Sessions nothing has touched since retention finished with them. A completion is historical, and a
+ * session stays `ready` afterwards, so a later claim, lease, or checkpoint means the conversation may be in
+ * use again and its completion no longer speaks for it; so does a current `activeJobId`. `skipped_protected`
+ * never qualifies: it is a session the user asked to keep.
  */
-function discardedRoots(databasePath) {
+function ownedRoots(databasePath) {
   const db = new DatabaseSync(databasePath, { readOnly: true });
   try {
-    const discarded = new Set();
-    for (const row of db.prepare("SELECT stream_id, body FROM events WHERE type = 'session.retention.discard.completed'").iterate()) {
+    const completedAt = new Map();
+    for (const row of db
+      .prepare("SELECT stream_id, seq, body FROM events WHERE type = 'session.retention.discard.completed'")
+      .iterate()) {
       try {
-        if (JSON.parse(columnText(row.body)).outcome === 'discarded') discarded.add(row.stream_id);
-      } catch {
-        // An undecodable completion names nothing this script may act on.
-      }
-    }
-    const roots = [];
-    for (const row of db.prepare('SELECT session_id, conversation_ref, entry FROM projection_sessions').iterate()) {
-      if (!discarded.has(row.session_id) || typeof row.conversation_ref !== 'string') continue;
-      let binding;
-      try {
-        binding = JSON.parse(columnText(row.entry)).binding;
+        if (!RETENTION_ROOT_OUTCOMES.has(JSON.parse(columnText(row.body)).outcome)) continue;
       } catch {
         continue;
       }
+      completedAt.set(row.stream_id, Math.max(completedAt.get(row.stream_id) ?? 0, Number(row.seq)));
+    }
+    const lastActivityAt = new Map();
+    for (const row of db
+      .prepare(
+        "SELECT stream_id, MAX(seq) AS seq FROM events WHERE stream_kind = 'session' AND type NOT LIKE 'session.retention.%' GROUP BY stream_id",
+      )
+      .iterate()) {
+      lastActivityAt.set(row.stream_id, Number(row.seq));
+    }
+
+    const roots = [];
+    for (const row of db.prepare('SELECT session_id, conversation_ref, entry FROM projection_sessions').iterate()) {
+      const completed = completedAt.get(row.session_id);
+      if (completed === undefined || typeof row.conversation_ref !== 'string') continue;
+      if ((lastActivityAt.get(row.session_id) ?? 0) > completed) continue;
+      let entry;
+      try {
+        entry = JSON.parse(columnText(row.entry));
+      } catch {
+        continue;
+      }
+      if (entry.activeJobId !== undefined && entry.activeJobId !== null) continue;
+      const binding = entry.binding;
       const home = binding?.binding?.profile?.canonicalLocation;
       if (typeof home !== 'string' || (binding.provider !== 'codex' && binding.provider !== 'claude')) continue;
       roots.push({ provider: binding.provider, home, conversationRef: row.conversation_ref });
@@ -332,9 +352,9 @@ function main() {
   const roots = [];
   for (const database of databases) {
     try {
-      const found = discardedRoots(database);
+      const found = ownedRoots(database);
       roots.push(...found);
-      console.log(`store ${database}: ${found.length} discarded sessions`);
+      console.log(`store ${database}: ${found.length} sessions retention finished with and nothing touched since`);
     } catch (error) {
       console.log(`store ${database}: unreadable, skipped (${error instanceof Error ? error.message : String(error)})`);
     }
@@ -352,10 +372,8 @@ function main() {
     }
   }
 
-  // Scanning takes seconds, and a session hook may start the backend meanwhile.
-  if (options.apply && refuseWhileBackendRuns(options)) return;
-
   const codex = { files: 0, bytes: 0, deleted: 0, retained: [] };
+  const codexWork = [];
   for (const [home, refs] of codexRootsByHome) {
     const { forksByParent, present } = codexForksByParent(join(home, 'sessions'));
     // A root whose own rollout is still on disk was not discarded here, whatever the store recorded.
@@ -364,18 +382,11 @@ function main() {
     codex.files += descendants.length;
     codex.bytes += descendants.reduce((sum, fork) => sum + fileSize(fork.path), 0);
     if (options.verbose) for (const fork of descendants) console.log(`  codex fork ${fork.path}`);
-    if (options.apply) {
-      let sessionsRoot;
-      try {
-        sessionsRoot = realpathSync(join(home, 'sessions'));
-      } catch {
-        continue;
-      }
-      discardCodex(forksByParent, descendants, sessionsRoot, codex);
-    }
+    codexWork.push({ home, forksByParent, descendants });
   }
 
   const claude = { directories: 0, files: 0, bytes: 0, deleted: 0, retained: [] };
+  const claudeWork = [];
   const seen = new Set();
   for (const root of claudeRoots) {
     for (const directory of claudeResidueDirectories(join(root.home, 'projects'), root.conversationRef)) {
@@ -386,15 +397,31 @@ function main() {
       claude.files += files.length;
       claude.bytes += files.reduce((sum, path) => sum + fileSize(path), 0);
       if (options.verbose) console.log(`  claude dir ${directory}`);
-      if (options.apply) {
-        let boundary;
-        try {
-          boundary = realpathSync(directory);
-        } catch {
-          continue;
-        }
-        removeTree(directory, boundary, claude);
+      claudeWork.push(directory);
+    }
+  }
+
+  // Everything above only reads. The coordinator is checked again here, after the scan that takes seconds and
+  // immediately before the first unlink, because a session hook may have started it meanwhile.
+  if (options.apply && refuseWhileBackendRuns(options)) return;
+  if (options.apply) {
+    for (const { home, forksByParent, descendants } of codexWork) {
+      let sessionsRoot;
+      try {
+        sessionsRoot = realpathSync(join(home, 'sessions'));
+      } catch {
+        continue;
       }
+      discardCodex(forksByParent, descendants, sessionsRoot, codex);
+    }
+    for (const directory of claudeWork) {
+      let boundary;
+      try {
+        boundary = realpathSync(directory);
+      } catch {
+        continue;
+      }
+      removeTree(directory, boundary, claude);
     }
   }
 
