@@ -92,6 +92,20 @@ synthesis, has no such exclusion: a concurrent resume can spawn a fork that desc
 conversation while the walk runs. It therefore does **not** discard residue, and a codex discuss
 participant's forks stay on disk. Excluding resume there is the precondition for adding it.
 
+**The resume block has to be current, not merely recorded.** A crash between an answered attempt — the
+`skipped_protected` completion — and clearing its continuation recovers that continuation with its request
+already answered, which no longer holds resume back. `enforceRetention` therefore restarts such a
+continuation as a fresh attempt, whose new request commits before any discard
+(`hasRetentionDiscardAttemptOutcome` in `src/sessions/retention-outbox.ts`). This hole predates residue: it
+exposed the primary discard the same way.
+
+**Threat model for path races.** Deletion resolves each directory with `realpath` at the moment it acts —
+codex against the sessions root, claude against the conversation directory — and removes a link as a link.
+What remains is the interval between that resolution and the unlink: a concurrent process swapping a
+directory for a link inside it. That process must run as the same user with write access to the same
+tree, so it could delete the target directly and gains nothing; closing the interval fully needs
+directory-relative `unlinkat`, which Node does not expose. It is out of scope, not unexamined.
+
 **Residue is not retried.** A residue read or delete failure is logged and retention still completes, so
 that session is never revisited. Keeping a file is the safe direction; what is kept joins the backlog.
 

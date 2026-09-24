@@ -6,9 +6,9 @@
 // Usage: node sweep-provider-session-residue.mjs [--apply] [--flavor prod|dev] [--state-root <dir>] [--verbose]
 // Without --apply nothing is deleted; the report says what would be.
 
-import { closeSync, existsSync, lstatSync, openSync, readSync, readdirSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, openSync, readSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -150,9 +150,10 @@ function codexForksByParent(sessionsRoot) {
       const header = readRolloutParent(path);
       // A header naming another thread than its filename is not evidence about either.
       if (header === undefined || header.parent === null || header.threadId.toLowerCase() !== threadId.toLowerCase()) continue;
-      const siblings = forksByParent.get(header.parent) ?? [];
-      siblings.push({ threadId, path });
-      forksByParent.set(header.parent, siblings);
+      const parent = header.parent.toLowerCase();
+      const siblings = forksByParent.get(parent) ?? [];
+      siblings.push({ threadId: threadId.toLowerCase(), path });
+      forksByParent.set(parent, siblings);
     }
   };
   visit(sessionsRoot, 0);
@@ -165,6 +166,7 @@ function codexResidue(forksByParent, rootThreadIds) {
   const visited = new Set();
   for (const root of rootThreadIds) {
     if (!THREAD_ID.test(root)) continue;
+    // Keys are lower-cased when the fork map is built.
     const queue = [{ threadId: root, depth: 0 }];
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
       for (const fork of forksByParent.get(next.threadId) ?? []) {
@@ -178,12 +180,27 @@ function codexResidue(forksByParent, rootThreadIds) {
   return descendants.sort((left, right) => right.depth - left.depth);
 }
 
-function discardCodex(forksByParent, descendants, report) {
+/** Resolved at deletion time: a directory swapped for a link after listing resolves outside `root`. */
+function resolvesWithin(directory, root) {
+  try {
+    const resolved = realpathSync(directory);
+    return resolved === root || resolved.startsWith(root + sep);
+  } catch {
+    return false;
+  }
+}
+
+function discardCodex(forksByParent, descendants, sessionsRoot, report) {
   const retainedThreads = new Set();
   for (const fork of descendants) {
     if ((forksByParent.get(fork.threadId) ?? []).some((child) => retainedThreads.has(child.threadId))) {
       retainedThreads.add(fork.threadId);
       report.retained.push({ path: fork.path, reason: 'a descendant fork was retained' });
+      continue;
+    }
+    if (!resolvesWithin(dirname(fork.path), sessionsRoot)) {
+      retainedThreads.add(fork.threadId);
+      report.retained.push({ path: fork.path, reason: 'its directory no longer resolves inside the sessions root' });
       continue;
     }
     try {
@@ -226,7 +243,11 @@ function treeFiles(directory) {
   return files;
 }
 
-function removeTree(directory, report) {
+function removeTree(directory, boundary, report) {
+  if (!resolvesWithin(directory, boundary)) {
+    report.retained.push({ path: directory, reason: 'no longer resolves inside the conversation directory' });
+    return false;
+  }
   let complete = true;
   for (const entry of safeReadDir(directory)) {
     const path = join(directory, entry.name);
@@ -241,7 +262,7 @@ function removeTree(directory, report) {
         continue;
       }
       if (kind.isDirectory() && !kind.isSymbolicLink()) {
-        if (!removeTree(path, report)) complete = false;
+        if (!removeTree(path, boundary, report)) complete = false;
         continue;
       }
     }
@@ -302,12 +323,20 @@ function main() {
   for (const [home, refs] of codexRootsByHome) {
     const { forksByParent, present } = codexForksByParent(join(home, 'sessions'));
     // A root whose own rollout is still on disk was not discarded here, whatever the store recorded.
-    const discardedRefs = new Set([...refs].filter((ref) => !present.has(ref.toLowerCase())));
+    const discardedRefs = new Set([...refs].map((ref) => ref.toLowerCase()).filter((ref) => !present.has(ref)));
     const descendants = codexResidue(forksByParent, discardedRefs);
     codex.files += descendants.length;
     codex.bytes += descendants.reduce((sum, fork) => sum + fileSize(fork.path), 0);
     if (options.verbose) for (const fork of descendants) console.log(`  codex fork ${fork.path}`);
-    if (options.apply) discardCodex(forksByParent, descendants, codex);
+    if (options.apply) {
+      let sessionsRoot;
+      try {
+        sessionsRoot = realpathSync(join(home, 'sessions'));
+      } catch {
+        continue;
+      }
+      discardCodex(forksByParent, descendants, sessionsRoot, codex);
+    }
   }
 
   const claude = { directories: 0, files: 0, bytes: 0, deleted: 0, retained: [] };
@@ -321,7 +350,15 @@ function main() {
       claude.files += files.length;
       claude.bytes += files.reduce((sum, path) => sum + fileSize(path), 0);
       if (options.verbose) console.log(`  claude dir ${directory}`);
-      if (options.apply) removeTree(directory, claude);
+      if (options.apply) {
+        let boundary;
+        try {
+          boundary = realpathSync(directory);
+        } catch {
+          continue;
+        }
+        removeTree(directory, boundary, claude);
+      }
     }
   }
 

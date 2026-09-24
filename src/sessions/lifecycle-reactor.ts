@@ -65,6 +65,7 @@ import {
   appendRetentionDiscardCompleted,
   appendRetentionDiscardFailed,
   appendRetentionDiscardRequested,
+  hasRetentionDiscardAttemptOutcome,
   hasTerminalRetentionDiscardOutcome,
   readNextRetentionDiscardAttempt,
 } from './retention-outbox.js';
@@ -691,7 +692,15 @@ export class LifecycleReactor {
     if (bound === null) {
       throw new Error(`Retention provider binding is unavailable for session ${sessionId}.`);
     }
-    const recoveredContinuation = recoveryWork.recovery.continuation;
+    // A crash between an answered attempt and clearing its continuation recovers that continuation with its
+    // request already answered, which no longer holds resume back. It restarts as a fresh attempt, whose new
+    // request is committed before any discard.
+    const recovered = recoveryWork.recovery.continuation;
+    const recoveredContinuation =
+      recovered !== null &&
+      hasRetentionDiscardAttemptOutcome(this.options.db(), this.options.readCtx, sessionId, recovered.attempt)
+        ? null
+        : recovered;
     let continuation: RetentionDiscardContinuation;
     if (recoveredContinuation === null) {
       const handles = collectArtifactHandles(recoveryWork.entry, bound, this.options.runtime, { jobId });

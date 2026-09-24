@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join, sep } from 'node:path';
 
 import { discardRecordedArtifacts, managed, reconcileRecordedArtifactDiscard } from '../capability.js';
 import type {
@@ -258,11 +258,25 @@ function codexForksByParent(storage: StoragePort, sessionsRoot: string, since: n
     const parent = codexRolloutParent(storage, rollout.path);
     // A header naming another thread than its filename is not evidence about either.
     if (parent.kind !== 'fork' || parent.threadId.toLowerCase() !== threadId.toLowerCase()) continue;
-    const siblings = forksByParent.get(parent.parent) ?? [];
-    siblings.push({ threadId, path: rollout.path });
-    forksByParent.set(parent.parent, siblings);
+    const siblings = forksByParent.get(parent.parent.toLowerCase()) ?? [];
+    siblings.push({ threadId: threadId.toLowerCase(), path: rollout.path });
+    forksByParent.set(parent.parent.toLowerCase(), siblings);
   }
   return forksByParent;
+}
+
+/**
+ * Resolved at the moment of deletion: a directory replaced by a link after it was listed resolves elsewhere,
+ * and a path through it would delete outside the tree it was found in.
+ */
+function isWithinDirectory(storage: StoragePort, directory: string, root: string): boolean {
+  let resolved: string;
+  try {
+    resolved = storage.realpathSync(directory);
+  } catch {
+    return false;
+  }
+  return resolved === root || resolved.startsWith(`${root}${sep}`);
 }
 
 /**
@@ -282,16 +296,21 @@ export function discardCodexRolloutResidue(options: {
     return { discarded: [], retained: [] };
   }
   const storage = options.runtime.storage;
+  const rootThreadId = options.rootThreadId.toLowerCase();
+  let sessionsRoot: string;
+  try {
+    sessionsRoot = storage.realpathSync(options.sessionsRoot);
+  } catch {
+    return { discarded: [], retained: [] };
+  }
   const forksByParent = codexForksByParent(storage, options.sessionsRoot, options.since);
 
   const descendants: Array<CodexRollout & { readonly depth: number }> = [];
   const visited = new Set<string>();
-  const queue: Array<{ readonly threadId: string; readonly depth: number }> = [
-    { threadId: options.rootThreadId, depth: 0 },
-  ];
+  const queue: Array<{ readonly threadId: string; readonly depth: number }> = [{ threadId: rootThreadId, depth: 0 }];
   for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
     for (const fork of forksByParent.get(next.threadId) ?? []) {
-      if (fork.threadId === options.rootThreadId || visited.has(fork.path)) continue;
+      if (fork.threadId === rootThreadId || visited.has(fork.path)) continue;
       visited.add(fork.path);
       descendants.push({ ...fork, depth: next.depth + 1 });
       queue.push({ threadId: fork.threadId, depth: next.depth + 1 });
@@ -306,6 +325,11 @@ export function discardCodexRolloutResidue(options: {
     if ((forksByParent.get(fork.threadId) ?? []).some((child) => retainedThreads.has(child.threadId))) {
       retainedThreads.add(fork.threadId);
       retained.push({ path: fork.path, reason: 'a descendant fork was retained' });
+      continue;
+    }
+    if (!isWithinDirectory(storage, dirname(fork.path), sessionsRoot)) {
+      retainedThreads.add(fork.threadId);
+      retained.push({ path: fork.path, reason: 'its directory no longer resolves inside the sessions root' });
       continue;
     }
     try {

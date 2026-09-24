@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ArtifactCleanupRuntime } from '#src/providers/contract.js';
@@ -31,6 +31,19 @@ function storageFailingUnlink(paths: readonly string[]): ArtifactCleanupRuntime[
           if (paths.includes(path)) throw Object.assign(new Error(`EACCES: ${path}`), { code: 'EACCES' });
           return target.unlinkSync(path);
         };
+      }
+      const value: unknown = Reflect.get(target, property, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+/** Wraps the real storage, resolving the named directories somewhere else — a directory swapped for a link. */
+function storageResolvingElsewhere(directories: readonly string[]): ArtifactCleanupRuntime['storage'] {
+  return new Proxy(realStorage, {
+    get(target, property, receiver) {
+      if (property === 'realpathSync') {
+        return (path: string) => (directories.includes(path) ? '/elsewhere/entirely' : target.realpathSync(path));
       }
       const value: unknown = Reflect.get(target, property, receiver);
       return typeof value === 'function' ? value.bind(target) : value;
@@ -128,6 +141,29 @@ describe('discardCodexRolloutResidue', () => {
     expect(existsSync(mismatched)).toBe(true);
   });
 
+  it('refuses a fork whose directory no longer resolves inside the sessions root when it is deleted', () => {
+    const child = rollout(CHILD, ROOT);
+
+    const residue = discard(storageResolvingElsewhere([dirname(child)]));
+
+    expect(existsSync(child)).toBe(true);
+    expect(residue.discarded).toEqual([]);
+  });
+
+  it('matches thread ids regardless of case', () => {
+    const child = rollout(CHILD.toUpperCase(), ROOT.toUpperCase());
+    const grandchild = rollout(GRANDCHILD, CHILD.toUpperCase());
+
+    const residue = discardCodexRolloutResidue({
+      rootThreadId: ROOT,
+      sessionsRoot: join(root, 'sessions'),
+      since: NOW - 60 * 60 * 1000,
+      runtime: runtime(),
+    });
+
+    expect(residue.discarded).toEqual([grandchild, child]);
+  });
+
   it('ignores a rollout last written before the session began', () => {
     const stale = rollout(CHILD, ROOT, new Date(2020, 0, 1));
     const written = new Date(2020, 0, 1);
@@ -202,6 +238,18 @@ describe('discardClaudeSessionResidue', () => {
     const residue = discard(REF, swapped);
 
     expect(existsSync(join(inner, 'outside-if-followed.txt'))).toBe(true);
+    expect(residue.retained.map(({ path }) => path)).toContain(inner);
+  });
+
+  it('refuses a nested directory that resolves outside the conversation directory when entered', () => {
+    const directory = project();
+    const inner = join(directory, REF, 'tool-results');
+    mkdirSync(inner, { recursive: true });
+    writeFileSync(join(inner, 'kept.txt'), 'k');
+
+    const residue = discard(REF, storageResolvingElsewhere([inner]));
+
+    expect(existsSync(join(inner, 'kept.txt'))).toBe(true);
     expect(residue.retained.map(({ path }) => path)).toContain(inner);
   });
 

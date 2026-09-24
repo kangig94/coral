@@ -49,6 +49,23 @@ export function readNextRetentionDiscardAttempt(
   return Math.max(durableMax, minimumExclusive) + 1;
 }
 
+/**
+ * Whether this attempt has already been answered. Only an unanswered request holds resume back, so a
+ * continuation recovered at an answered attempt may not authorize a discard.
+ */
+export function hasRetentionDiscardAttemptOutcome(
+  db: ReadonlyDatabase,
+  readCtx: StoreReadContext,
+  sessionId: string,
+  attempt: number,
+): boolean {
+  return readRetentionDiscardEvents(db, readCtx, sessionId).some(
+    (event) =>
+      (event.type === 'session.retention.discard.completed' || event.type === 'session.retention.discard.failed') &&
+      (event.body as { attempt: number }).attempt === attempt,
+  );
+}
+
 export function hasTerminalRetentionDiscardOutcome(
   db: ReadonlyDatabase,
   readCtx: StoreReadContext,

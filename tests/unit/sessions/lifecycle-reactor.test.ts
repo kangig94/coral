@@ -955,6 +955,73 @@ describe('LifecycleReactor retention enforcement', () => {
     expect(harness.discardCalls).toEqual([]);
   });
 
+  it('never discards under a recovered continuation whose attempt was already answered', async () => {
+    let sessionIdForHook = '';
+    let jobIdForHook = '';
+    let protectedOnce = false;
+    let staleContinuation: Record<string, unknown> | undefined;
+    const discardsUnderOpenRequest: boolean[] = [];
+    const harness: Harness = createHarness({
+      afterCommit: (appended, commitEvents) => {
+        if (sessionIdForHook.length === 0) return;
+        if (!protectedOnce && appended.some((event) => event.type === 'session.retention.discard.requested')) {
+          const entry = readProjectionProviderSession(harness.db, sessionIdForHook);
+          if (entry === null) throw new Error(`Expected session ${sessionIdForHook}`);
+          protectedOnce = true;
+          appendContinuationLeaseRecord(commitEvents, entry, jobIdForHook, harness.runtime.time.now() + 100);
+          return;
+        }
+        // The continuation row still exists when the answered attempt commits: this is the crash window.
+        if (
+          staleContinuation === undefined &&
+          appended.some((event) => event.type === 'session.retention.discard.completed')
+        ) {
+          staleContinuation = harness.db
+            .prepare(
+              `SELECT * FROM recovery_quarantine WHERE boundary_id = 'session-retention-work' AND subject_key = ?`,
+            )
+            .get(`${sessionIdForHook}\u0000${jobIdForHook}`) as Record<string, unknown> | undefined;
+        }
+      },
+      discardArtifacts: async () => {
+        const events = readRetentionEvents(harness, sessionIdForHook);
+        const latest = Math.max(
+          ...events
+            .filter((event) => event.type === 'session.retention.discard.requested')
+            .map((event) => event.body.attempt),
+        );
+        discardsUnderOpenRequest.push(
+          !events.some(
+            (event) => event.type !== 'session.retention.discard.requested' && event.body.attempt === latest,
+          ),
+        );
+        return { kind: 'discarded' };
+      },
+    });
+    jobIdForHook = 'job-stale-continuation';
+    sessionIdForHook = await openClaimedSession(harness, jobIdForHook);
+    await recordArtifact(harness, sessionIdForHook, jobIdForHook, '/tmp/rollout-stale.jsonl');
+    initRunningJob(harness, jobIdForHook, sessionIdForHook);
+    completeJob(harness, jobIdForHook, sessionIdForHook);
+    harness.sessionManager.releaseJob(sessionIdForHook, jobIdForHook);
+    await harness.reactor.waitForIdle();
+
+    expect(staleContinuation).toBeDefined();
+    const columns = Object.keys(staleContinuation!);
+    harness.db
+      .prepare(
+        `INSERT OR REPLACE INTO recovery_quarantine (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+      )
+      .run(...columns.map((column) => staleContinuation![column] as never));
+    harness.runtime.time.tick(200);
+
+    await harness.reactor.scanStartup(harness.reactorLifetime.signal);
+    await harness.reactor.waitForIdle();
+
+    expect(discardsUnderOpenRequest.length).toBeGreaterThan(0);
+    expect(discardsUnderOpenRequest.every(Boolean)).toBe(true);
+  });
+
   it('rejects contradictory completed and failed outcomes transactionally', async () => {
     const harness = createHarness();
     const entry = harness.sessionManager.allocate({

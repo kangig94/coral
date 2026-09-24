@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 
 import { discardRecordedArtifacts, managed, reconcileRecordedArtifactDiscard } from '../capability.js';
 import type {
@@ -192,8 +192,28 @@ type ResidueAccumulator = {
   readonly retained: Array<{ path: string; reason: string }>;
 };
 
-/** Removes a directory tree bottom-up without following links; a directory keeps any entry it could not remove. */
-function removeClaudeResidueTree(storage: StoragePort, directory: string, residue: ResidueAccumulator): boolean {
+/**
+ * Removes a directory tree bottom-up without following links; a directory keeps any entry it could not
+ * remove. Each directory is resolved against `boundary` when it is entered, so one replaced by a link after
+ * it was listed is refused rather than followed.
+ */
+function removeClaudeResidueTree(
+  storage: StoragePort,
+  directory: string,
+  boundary: string,
+  residue: ResidueAccumulator,
+): boolean {
+  let resolved: string;
+  try {
+    resolved = storage.realpathSync(directory);
+  } catch (error: unknown) {
+    residue.retained.push({ path: directory, reason: errorMessage(error) });
+    return false;
+  }
+  if (resolved !== boundary && !resolved.startsWith(`${boundary}${sep}`)) {
+    residue.retained.push({ path: directory, reason: 'no longer resolves inside the conversation directory' });
+    return false;
+  }
   let entries;
   try {
     entries = storage.readdirSync(directory, { withFileTypes: true });
@@ -216,7 +236,7 @@ function removeClaudeResidueTree(storage: StoragePort, directory: string, residu
         continue;
       }
       if (kind.isDirectory() && !kind.isSymbolicLink()) {
-        if (!removeClaudeResidueTree(storage, path, residue)) complete = false;
+        if (!removeClaudeResidueTree(storage, path, boundary, residue)) complete = false;
         continue;
       }
     }
@@ -262,7 +282,13 @@ export function discardClaudeSessionResidue(options: {
       continue;
     }
     if (!kind.isDirectory() || kind.isSymbolicLink()) continue;
-    removeClaudeResidueTree(storage, directory, residue);
+    let boundary: string;
+    try {
+      boundary = storage.realpathSync(directory);
+    } catch {
+      continue;
+    }
+    removeClaudeResidueTree(storage, directory, boundary, residue);
   }
   return residue;
 }
