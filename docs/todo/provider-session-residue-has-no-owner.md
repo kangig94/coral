@@ -38,10 +38,10 @@ Claude: **124 of 124** Coral claude sessions whose retention completed still hav
 **Archive-then-discard is not failing.** 6,471 archive manifests (6,169 codex, 302 claude), every record
 `status: "archived"`, and zero archived handles still on disk.
 
-**The 70 unarchived `coral` primary rollouts are not a gap.** All 70 have `projection_sessions` rows; 62
-are `session-retention-work` quarantine rows under the binding refusal owned by
-[`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md). The rest are live or
-never retained.
+**The 70 unarchived `coral` primary rollouts are not a gap.** All 70 have `projection_sessions` rows in
+the flat pre-epoch store; 62 are `session-retention-work` quarantine rows under the binding refusal owned
+by [`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md). The rest are live
+or never retained.
 
 ## Settled
 
@@ -98,13 +98,24 @@ call graph does not resolve). Codex discuss participants can fork, so both need 
   unlinks files and validates nothing. A recursive removal is a new storage operation and must be pinned
   to the one derived path.
 
-## The backlog — separate, after this
+## The backlog — a temporary script, not product code
 
 Retention for these sessions is already terminal, so `hasTerminalRetentionDiscardOutcome` returns before
 any discovery runs and nothing will ever revisit them. They are reachable: the codex walk needs only the
-root id, which `projection_sessions` still holds, and the claude path derives from it. What is missing is
-a sweep over sessions whose retention completed, gated by the same binding check — so the 63 sessions
-under the account-mismatch refusal will refuse here too.
+root id, which `projection_sessions` still holds, and the claude path derives from it.
+
+`clients/scripts/sweep-provider-session-residue.mjs` reclaims them, and is removed at 0.11.0. It is a
+dry run unless given `--apply`. Its roots are sessions whose retention completed with outcome
+`discarded` — never `skipped_protected`, which is a session the user asked to keep — and it reads every
+store generation on disk, because the flat pre-epoch `store/store.db` holds almost all of them: 0.10.11
+started a fresh epoch-1 with no data carried forward ([`no-store-migration-path.md`](./no-store-migration-path.md)).
+A claude directory is reclaimed only once its transcript is already gone.
+
+Measured by its dry run on 2026-09-24: 6,476 discarded roots (6,397 in the flat store, 79 in epoch-1),
+872 codex forks totalling **2.15 GB**, and 127 claude conversation directories (343 files, 27.1 MB). The
+codex count is below the 975 `coral` forks on disk because a fork whose root never completed a
+`discarded` retention — quarantined, still resumable — is not reachable from any root, which is the
+intent.
 
 ## Correction to a neighbouring entry
 
