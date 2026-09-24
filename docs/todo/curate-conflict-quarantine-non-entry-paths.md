@@ -86,3 +86,7 @@ that lists path-keyed rows with the recovery ref and the `git update-ref -d` cle
 Then `'recovered-unaccounted'` has nothing left to describe and goes, because there is no longer a path
 recovery cannot account for — which is the signal that this entry is done. The other statuses answer a
 different question and stay.
+
+**Withdrawn by principle 12.** The proposed path row's exit through an operator running `git update-ref -d`
+waits for a person who is not on the affected machine. Keep the missing durable-subject finding, but
+re-decide its exit under "No Operator Is Watching" in `.claude/rules/design-philosophy.md`.

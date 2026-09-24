@@ -19,8 +19,10 @@ itself answering two ways at several members, so callers re-derive the third ans
   return value alone cannot distinguish the disposition.
 - `kill(): boolean` — collapses ESRCH (decisive absence), EPERM (alive and unsignalable) and every other
   errno into `false`. `gracefulKillByPid` names the collapse in a literal: `reason: 'kill-port-returned-false'`.
-- `spawn(): ChildProcessLike` — launch failure arrives later on the child's `'error'` event, so callers each
-  re-implement the listener-first race.
+- `spawn(): ChildProcessLike` — launch failure arrives later on the child's `'error'` event. The launch
+  boundary and its deferred-failure disposition belong to
+  [`launch-disposition-flattened-below-the-boundary.md`](./launch-disposition-flattened-below-the-boundary.md);
+  this entry owns the ProcessPort result shape that would carry it.
 
 The batch form of the identity question already has the union the single form lacks:
 `ProcessIdentityObservation['evidence']` is `incarnation | pid-absent | unobservable(cause)`.
@@ -64,6 +66,10 @@ When that lands, delete what it makes redundant: the bare-`safeKill` half of
 `timeout-kill-escalation` once `safeKill` is unexported, keeping its
 signal-sequence half, which is a different invariant. Also remove the `'kill-port-returned-false'` reason
 literal and `observeRecordedTarget`'s private `unobservable` spelling of the shared `unknown` concept.
+
+The same answer-shape class appears at the storage boundary in
+[`write-atomic-durable-sync-result-overloads-two-dispositions.md`](./write-atomic-durable-sync-result-overloads-two-dispositions.md)
+and in [`provider-operation-last-error-overloads-two-dispositions.md`](./provider-operation-last-error-overloads-two-dispositions.md).
 
 ## Why the process-port reshape remains deferred
 

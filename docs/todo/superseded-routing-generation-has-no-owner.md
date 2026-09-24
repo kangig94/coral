@@ -50,6 +50,11 @@ durable status an operator can read, keyed by an identity it can be acted on wit
 command that exists. It also improves on the sibling precedent in `generation-mutation-coordination.ts`,
 which reports a legacy path and offers nothing to do about it.
 
+**Withdrawn by principle 12.** The proposed exit where an operator lists and clears a quarantined
+generation waits for a person who is not on the affected machine. Do not implement that exit as written;
+the lifetime design must be re-decided under "No Operator Is Watching" in
+`.claude/rules/design-philosophy.md`.
+
 ## Not `export-lifetime`'s shape
 
 Worth stating because they look alike. That entry holds the user's content at 17 GB, where a retention
@@ -60,6 +65,6 @@ decision is owed.
 ## Start condition
 
 `MAX_HANDOFF_ROUTING_STATUS_QUARANTINES` is 16, and `list` exits 75 on overflow. Eleven superseded
-generations would consume most of that ceiling and signal a fault for something that is not one. Decide
-whether a superseded address competes for the same slots a damaged store uses, or gets its own
-coordinate class. Nothing else blocks this.
+generations would consume most of that ceiling and signal a fault for something that is not one. Re-decide
+the exit withdrawn above, then decide whether a superseded address competes for the same slots a damaged
+store uses or gets its own coordinate class.

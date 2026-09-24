@@ -66,10 +66,12 @@ Four, and none is discretionary. Each is a fact about the tree measured while G3
    foreign-retirement source therefore cannot close over the lifecycle object. It needs a narrow facet built
    synchronously ahead of it and resolved at retry time, in the shape the existing factories already use.
 3. **Three literal lists restate the boundary manifest.**
-   `tests/unit/recovery/retry-service.test.ts` writes the eleven boundary ids out again as an expected
+   `tests/unit/recovery/retry-service.test.ts` writes the thirteen boundary ids out again as an expected
    array, then a second time as an array of real source constructors, then a third time as a
    runtime-registration block. A new boundary is an edit to the manifest
    (`src/recovery/source-registry.ts`) and to all three, and the test fails until the four agree.
+   `UNREADABLE_PROVIDER_OPERATION_BOUNDARY` is already among them; this capsule boundary would be a
+   separate addition.
 4. **The composition suite needs a boundary-specific `until-cleared` fixture.**
    `tests/unit/coordinator/recovery-quarantine-composition.test.ts` drives every registered boundary
    through one `it.each` that builds its subject with a `fingerprint` revision. A capsule path has no content
@@ -108,22 +110,18 @@ or the preplan, and an honest gap is recorded instead of a reconstruction.
   from `runStartupRecovery` through the launch-fence release, `setLifecycle('running')`, the KB supervisor and
   Era III sits behind that one await, so nothing on that path may block.
 
-## How this interacts with the two entries that also want a boundary
+## How this interacts with the adjacent recovery entries
 
-It shares the recovery-boundary prerequisite with
-[`provider-operation-admission-hold.md`](./provider-operation-admission-hold.md) and
-[`coordinator-process-disposition.md`](./coordinator-process-disposition.md), and **it does not ship with
-either.** What they share is shape cost, not a disposition: `repeatableRecoveryBoundaryIds` is a closed
-manifest checked for exact equality, so each new subject kind is its own registered boundary with its own
-source and policy, and whichever of the three lands first pays for the registry factory, the restated lists in
-prerequisite 3, and the composition ordering in prerequisite 2. The other two then inherit that and add
-their own boundary.
+The `provider-operation-unreadable` boundary now exists, and
+[`provider-operation-admission-hold.md`](./provider-operation-admission-hold.md) asks what happens when
+that row cannot be attributed to any one job. This capsule receipt still needs its own subject kind in
+`repeatableRecoveryBoundaryIds` and its own source and policy. It does not ship with admission hold or
+[`coordinator-process-disposition.md`](./coordinator-process-disposition.md).
 
-Their dispositions do not merge. Admission-hold is a startup-wide refusal whose exit is an operator clear or
-abandon; coordinator-process-disposition is a custody transfer verified by receipt before ownership is
-released; this one is a retirement receipt for a path this build may not dial. And this one is last of the
-three by need, not only by order: its residue is already bounded and consumes nothing, so it has the weakest
-claim on introducing a boundary. It should not be the entry that introduces the shape.
+Their dispositions do not merge. Admission-hold is a startup-wide refusal whose unattended exit must be
+re-decided under principle 12; coordinator-process-disposition is a custody transfer verified by receipt
+before ownership is released; this one is a retirement receipt for a path this build may not dial. Its
+residue is already bounded and consumes nothing, so it has the weakest claim on adding another boundary.
 
 ## Explicitly out of scope
 
@@ -139,6 +137,5 @@ is that no way it can fail is evidence about this coordinator.
 A reason to want crash-exactness that the rescan does not already serve. The residue is one readable file
 retried by the next boot, and every term of that is measured above; a receipt costs a new recovery boundary
 with four prerequisites and an unresolved successor-state decision. The honest trigger is either a case where
-the rescan cannot run — a run directory this build will not discover again — or one of the two neighbouring
-entries landing first and paying the boundary cost, after which this becomes an increment rather than a
-subsystem.
+the rescan cannot run — a run directory this build will not discover again — or an existing boundary
+pattern making the capsule-specific receipt cheap enough to justify.

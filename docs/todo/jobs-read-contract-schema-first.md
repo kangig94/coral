@@ -9,8 +9,8 @@ Jobs list/detail responses cross producer, RPC, CLI dispatch, and formatting bou
 schema as their authority.
 
 The core vocabulary lives as TypeScript-first records in `src/jobs/records.ts`, while `jobs.list`
-and `jobs.detail` lack response schemas in `src/transport/rpc/catalog.ts` — the only methods in the
-catalog that carry a `responseSchema` are the three `coordinator.provider_host.*` ones. Producer values pass through `executeJobsListCatalogRequest` / `executeJobsDetailCatalogRequest`
+and `jobs.detail` lack response schemas in `src/transport/rpc/catalog.ts`. Other catalog methods already
+carry `responseSchema`; see the provider-host and provider-proxy-set specs there. Producer values pass through `executeJobsListCatalogRequest` / `executeJobsDetailCatalogRequest`
 (`src/transport/dispatch.ts`), both of which reach their input by `request as …` cast, and
 `src/cli/dispatch.ts` requests typed values rather than parsing `unknown`. Measured today, the type
 family (`JobStatus`, `JobEvent`, `JobExit`, `JobsListResponse`, `JobDetailResponse`) has **120 references

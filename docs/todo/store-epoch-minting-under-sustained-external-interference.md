@@ -18,3 +18,6 @@ Closing that needs a fencing mechanism the branch does not have — the writer w
 the reclaimer must respect before its first artifact exists, which is the same pre-lock gap the
 construction directory has. It is a new guarantee, not a repair, and it belongs to whoever decides the
 store root needs to tolerate a hostile co-tenant.
+
+That pre-lock fence is also absent when a partially erased reaping directory has lost its lock; see
+[`partially-erased-store-epoch-reaping-residue.md`](./partially-erased-store-epoch-reaping-residue.md).

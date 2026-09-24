@@ -48,7 +48,7 @@ different roots with one name is what produced the contradiction, and it is why 
 root every time it makes a claim.
 
 The preserved provider artifacts live **inside** the export tree —
-`exports.jobsRoot/<jobId>/artifacts/<provider>/actions/<archiveActionId>/`
+`exports.jobsRoot/<jobId>/provider-artifacts/<provider>/actions/<archiveActionId>/`
 (`src/sessions/provider-artifact-archive.ts`) — so they inherit its absent lifetime exactly,
 and no separate decision covers them.
 

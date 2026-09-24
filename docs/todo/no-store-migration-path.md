@@ -32,6 +32,10 @@ make incompatible data readable by the successor.
 
 ## Why retention is not migration
 
+`reapPostReadyStoreEpochEntries` in `src/store/epoch.ts` can delete a retained older epoch without checking
+for `running` rows. That separate disposition gap is tracked in
+[`store-epoch-replaced-on-undeterminable-open.md`](./store-epoch-replaced-on-undeterminable-open.md).
+
 Keeping the superseded positive epoch preserves its bytes temporarily. It does not make those rows part
 of the current authority: this build does not copy from it, transform it, or open it as the active store.
 The flat previous-generation artifact is preserved for rollback but is never an epoch candidate.

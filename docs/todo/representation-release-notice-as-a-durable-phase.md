@@ -43,10 +43,9 @@ The abort fence is an entry effect of delivering a new decision, not a property 
 drive loses a later compare-and-swap on `revision`. Abandonment can use the same ordering. The earlier claim
 that the latch's active abort had to acquire a new durable owner was therefore not a blocker.
 
-Generation is a timing fact, not a blocker. Provider-operation record generation 3 landed in `94204799` on
-2026-09-12. As verified on 2026-09-21, `git tag --contains 94204799` returns no tag, so no released build selects
-generation 3. Changing the strict v3 shape is free until the next release; after a release selects v3, the next
-shape change requires a generation bump. This TODO should be decided before that window closes.
+Generation 3 has shipped: `git tag --contains 94204799` includes `v0.10.10` through `v0.10.13`.
+Its strict shape can no longer change in place. A new abandonment `controlIntent` kind needs generation 4
+at a new address under principle 10, with the old generation left readable by builds that already shipped.
 
 The remaining work is the record-shape and drive design itself, plus tests that prove abandonment survives a
 coordinator restart. It is not part of the retry withdrawal.

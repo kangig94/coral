@@ -52,6 +52,7 @@ real subject moved somewhere else. No option is selected by this entry.
 `docs/todo/invariant-scans-stop-at-src.md` records an invariant whose scan scope ends at `src/` instead of
 covering `clients/hooks/`. This entry concerns a literal inside an already-running scan losing its subject.
 Changing the roots of either scan cannot repair the other's failure, so the two entries do not overlap.
+See [`invariant-scans-stop-at-src.md`](./invariant-scans-stop-at-src.md) when changing either invariant.
 
 ## Start condition
 

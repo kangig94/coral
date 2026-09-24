@@ -3,6 +3,11 @@
 **Status**: open, and **smaller than the entry that preceded it**. Rewritten 2026-08-15, hours after the
 first version, once the rows were actually read instead of inferred from a status line.
 
+The row counts below describe the retired flat store and are retained as corrections to earlier claims;
+they are not counts for the active epoch. The current defects are the absence of automatic quarantine
+re-evaluation and the retryable retention-binding refusal in `LifecycleReactor.enforceRetention`
+(`src/sessions/lifecycle-reactor.ts`).
+
 ## Correction — the previous version of this document was wrong
 
 It said the rows were **not** #311, that they had "survived a restart onto `0.10.8`", and that the count
@@ -119,6 +124,10 @@ re-evaluated quarantined subjects would empty it without an operator knowing the
 later build can no longer produce, and about the two rows that are not those.
 
 ## Start condition
+
+An operator clearing each stale row is withdrawn as an exit by principle 12, No Operator Is Watching.
+The automatic re-evaluation design must own this exit; the retention-binding disposition still needs a
+decision that does not depend on an operator.
 
 None for the first half — the disposal already works, and a startup re-evaluation pass is a contained
 change against `RecoveryQuarantineStore` and the source registry.

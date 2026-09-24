@@ -61,6 +61,10 @@ most of why it is here rather than in the branch.
 
 ## Member 3 — the discuss launch wrapper abandons a launch that can still commit a job
 
+The wrapper's hand-rolled timeout is also tracked in
+[`hand-rolled-timeout-latches.md`](./hand-rolled-timeout-latches.md); change its race and late-result
+ownership together.
+
 `withDiscussLaunchTimeout` (`src/discuss/shell/runtime-build.ts`) arms `DISCUSS_LAUNCH_TIMEOUT_MS` (30 s) when
 it calls into the coordinator. The preflight budget `PROVIDER_PREFLIGHT_ANSWER_BUDGET_MS` (27 s) is armed
 *inside* that call, after provider binding and agent resolution. The two are relative timers started at
@@ -104,6 +108,9 @@ deadline or a cancellation capability that crosses into the provider — so whoe
 both at once rather than adding a second mechanism.
 
 ## Member 4 — a capability probe runs in the requester's working directory
+
+The deferred spawn-failure classification overlaps
+[`process-port-answers-with-two-values.md`](./process-port-answers-with-two-values.md).
 
 `buildCodexPreflightRuntime` (`src/providers/codex/execution-plan.ts`) builds `runExact` with
 `cwd: input.cwd`, so every preflight probe spawns in the working directory the request named. Two of those
