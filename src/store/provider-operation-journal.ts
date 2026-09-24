@@ -103,6 +103,8 @@ type ActiveProviderOperationMutation = {
   label: string;
   setKey: string | null;
   settlement: Promise<void>;
+  /** The admitted mutation this one runs within; it cannot settle before this one does. */
+  parent: symbol | null;
 };
 
 type ClosedProviderOperationMutationSet = {
@@ -170,7 +172,12 @@ export class ProviderOperationMutationAdmission {
     const settlement = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#active.set(token, { label, setKey, settlement });
+    this.#active.set(token, {
+      label,
+      setKey,
+      settlement,
+      parent: inheritedAdmission && inherited !== undefined ? inherited : null,
+    });
     setFence?.admittedTokens.add(token);
 
     try {
@@ -210,7 +217,7 @@ export class ProviderOperationMutationAdmission {
     const settlement = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#active.set(token, { label, setKey, settlement });
+    this.#active.set(token, { label, setKey, settlement, parent: null });
     try {
       return this.#context.run(token, mutation);
     } finally {
@@ -276,11 +283,11 @@ export class ProviderOperationMutationAdmission {
     };
     const run = <Result>(label: string, mutation: () => Result | Promise<Result>): Promise<Result> =>
       this.#runWithinSetFence(setKey, fence, lease, label, mutation);
-    // A fence may never wait on the mutation it is created within: that token settles only after this call
-    // returns, so awaiting it is a hold whose exit is its own caller.
-    const inherited = this.#context.getStore();
+    // A fence may never wait on any mutation in the admission chain it is created within: each of them settles
+    // only after this call's caller returns, so awaiting one is a hold whose exit is its own caller.
+    const ownChain = this.#admissionChain(this.#context.getStore());
     const pending = [...fence.admittedTokens]
-      .filter((token) => token !== inherited)
+      .filter((token) => !ownChain.has(token))
       .map((token) => this.#active.get(token))
       .filter((mutation): mutation is ActiveProviderOperationMutation => mutation !== undefined);
     if (pending.length === 0) {
@@ -290,7 +297,7 @@ export class ProviderOperationMutationAdmission {
       kind: 'holding',
       pendingMutations: pending.map(({ label }) => label),
       exit: 'admitted-provider-operation-mutation-settlement',
-      retryAfter: this.#drainSet(fence),
+      retryAfter: this.#drainSet(fence, ownChain),
       currentGeneration,
       isHeld,
       release,
@@ -338,12 +345,18 @@ export class ProviderOperationMutationAdmission {
     if (this.#closedSets.get(setKey) !== fence || !fence.leases.has(lease)) {
       throw new Error('Provider operation mutation set fence is no longer held.');
     }
+    const inherited = this.#context.getStore();
     const token = Symbol(label);
     let release!: () => void;
     const settlement = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.#active.set(token, { label, setKey, settlement });
+    this.#active.set(token, {
+      label,
+      setKey,
+      settlement,
+      parent: inherited !== undefined && this.#active.has(inherited) ? inherited : null,
+    });
     fence.admittedTokens.add(token);
     try {
       return await this.#context.run(token, mutation);
@@ -356,9 +369,21 @@ export class ProviderOperationMutationAdmission {
     }
   }
 
-  async #drainSet(fence: ClosedProviderOperationMutationSet): Promise<void> {
+  #admissionChain(token: symbol | undefined): ReadonlySet<symbol> {
+    const chain = new Set<symbol>();
+    for (let current = token; current !== undefined && !chain.has(current); ) {
+      const mutation = this.#active.get(current);
+      if (mutation === undefined) break;
+      chain.add(current);
+      current = mutation.parent ?? undefined;
+    }
+    return chain;
+  }
+
+  async #drainSet(fence: ClosedProviderOperationMutationSet, ownChain: ReadonlySet<symbol>): Promise<void> {
     while (true) {
       const active = [...fence.admittedTokens]
+        .filter((token) => !ownChain.has(token))
         .map((token) => this.#active.get(token))
         .filter((mutation): mutation is ActiveProviderOperationMutation => mutation !== undefined);
       if (active.length === 0) return;

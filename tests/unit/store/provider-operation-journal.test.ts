@@ -86,6 +86,62 @@ describe('provider operation journal', () => {
       claim: () => ({ kind: 'claimed' as const, settle: () => true }),
     });
 
+  // Issue #380: startup reconciliation runs set-less, so it is admitted into every fence closed while it runs.
+  it('does not make a fence wait on a mutation it is nested within', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const set = providerOperationRecord('prepare-pending').operation;
+    const settled = (promise: Promise<unknown>): Promise<'settled' | 'waiting'> =>
+      Promise.race([
+        promise.then(() => 'settled' as const),
+        new Promise<'waiting'>((resolve) => setTimeout(() => resolve('waiting'), 100)),
+      ]);
+
+    const outcome = await admission.run('provider-operation-startup-reconciliation', () =>
+      admission.run(
+        'provider-operation:recover-set',
+        async () => {
+          const fence = admission.closeSet(set);
+          const drained = fence.kind === 'holding' ? await settled(fence.retryAfter) : 'settled';
+          fence.release();
+          return drained;
+        },
+        set,
+      ),
+    );
+
+    expect(outcome).toBe('settled');
+  });
+
+  it('still waits on a mutation outside its own chain, and only on that one', async () => {
+    const admission = new ProviderOperationMutationAdmission();
+    const set = providerOperationRecord('prepare-pending').operation;
+    let settleOther!: () => void;
+    const otherMaySettle = new Promise<void>((resolve) => {
+      settleOther = resolve;
+    });
+    const probe = (promise: Promise<unknown>): Promise<'settled' | 'waiting'> =>
+      Promise.race([
+        promise.then(() => 'settled' as const),
+        new Promise<'waiting'>((resolve) => setTimeout(() => resolve('waiting'), 50)),
+      ]);
+
+    const observed = await admission.run('provider-operation-startup-reconciliation', async () => {
+      const other = admission.run('provider-operation:other', () => otherMaySettle, set);
+      await Promise.resolve();
+      const fence = admission.closeSet(set);
+      expect(fence).toMatchObject({ kind: 'holding', pendingMutations: ['provider-operation:other'] });
+      if (fence.kind !== 'holding') throw new Error('expected a holding fence');
+      const beforeOther = await probe(fence.retryAfter);
+      settleOther();
+      await other;
+      const afterOther = await probe(fence.retryAfter);
+      fence.release();
+      return { beforeOther, afterOther };
+    });
+
+    expect(observed).toEqual({ beforeOther: 'waiting', afterOther: 'settled' });
+  });
+
   it('closes only one set and joins mutations admitted before its fence', async () => {
     const admission = new ProviderOperationMutationAdmission();
     const target = providerOperationRecord('prepare-pending');
