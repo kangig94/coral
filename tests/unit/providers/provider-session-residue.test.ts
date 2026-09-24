@@ -116,6 +116,18 @@ describe('discardCodexRolloutResidue', () => {
     expect(existsSync(beneathIt)).toBe(true);
   });
 
+  it('never deletes a rollout whose header names another thread than its filename', () => {
+    const mismatched = join(dayDirectory(new Date(NOW)), `rollout-2026-09-20T12-00-00-${CHILD}.jsonl`);
+    const header = {
+      type: 'session_meta',
+      payload: { id: UNRELATED_FORK, source: { subagent: { thread_spawn: { parent_thread_id: ROOT } } } },
+    };
+    writeFileSync(mismatched, `${JSON.stringify(header)}\n`);
+
+    expect(discard().discarded).toEqual([]);
+    expect(existsSync(mismatched)).toBe(true);
+  });
+
   it('ignores a rollout last written before the session began', () => {
     const stale = rollout(CHILD, ROOT, new Date(2020, 0, 1));
     const written = new Date(2020, 0, 1);
@@ -167,6 +179,30 @@ describe('discardClaudeSessionResidue', () => {
     discard();
 
     expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+  });
+
+  it('does not descend into an entry that is no longer a real directory when it gets there', () => {
+    const directory = project();
+    const inner = join(directory, REF, 'tool-results');
+    mkdirSync(inner, { recursive: true });
+    writeFileSync(join(inner, 'outside-if-followed.txt'), 'x');
+    const swapped = new Proxy(realStorage, {
+      get(target, property, receiver) {
+        if (property === 'lstatSync') {
+          return (path: string) =>
+            path === inner
+              ? { isDirectory: () => false, isFile: () => false, isSymbolicLink: () => true }
+              : target.lstatSync(path);
+        }
+        const value: unknown = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    const residue = discard(REF, swapped);
+
+    expect(existsSync(join(inner, 'outside-if-followed.txt'))).toBe(true);
+    expect(residue.retained.map(({ path }) => path)).toContain(inner);
   });
 
   it('keeps a directory it could not empty and reports what it kept', () => {

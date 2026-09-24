@@ -205,8 +205,20 @@ function removeClaudeResidueTree(storage: StoragePort, directory: string, residu
   for (const entry of entries) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (!removeClaudeResidueTree(storage, path, residue)) complete = false;
-      continue;
+      // Re-checked at the moment of descent: an entry listed as a directory may since have been replaced by a
+      // link, and descending through a link would delete outside this tree.
+      let kind;
+      try {
+        kind = storage.lstatSync(path);
+      } catch (error: unknown) {
+        residue.retained.push({ path, reason: errorMessage(error) });
+        complete = false;
+        continue;
+      }
+      if (kind.isDirectory() && !kind.isSymbolicLink()) {
+        if (!removeClaudeResidueTree(storage, path, residue)) complete = false;
+        continue;
+      }
     }
     try {
       storage.unlinkSync(path);

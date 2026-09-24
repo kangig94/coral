@@ -80,11 +80,20 @@ is removed only when its name is the session's `conversationRef` and it sits bes
 provider-written identity tying the file to this session (a lineage field for codex, the directory name
 for claude), under the same `bound` provider `readyBoundProvider` verified for this session. The binding
 refusal therefore applies to residue exactly as it does to the primary. A rollout header that cannot be
-read is unknown and is not deleted — which also leaves its descendants, the safe direction.
+read, or whose `payload.id` differs from the id in its filename, is unknown and is not deleted — which also
+leaves its descendants, the safe direction. Claude's tree removal re-checks each directory with `lstat` at
+the moment it descends, so an entry replaced by a link mid-walk is removed as a link, never followed.
 
-**Both entry points.** `enforceRetention` handles job retention. `discardSessionArtifacts` handles
-on-demand discard for discuss synthesis (`finalizeSynthesizedSession`, through a composed callback the
-call graph does not resolve). Codex discuss participants can fork, so both need the same step.
+**Retention only — not the on-demand discard.** `enforceRetention` runs the step after the primary discard
+applies, and also when no primary could be located (`skipped_no_handles`), since a conversation can have
+residue without a surviving primary. Retention is safe to delete in because a pending discard request
+blocks resume until it completes. `discardSessionArtifacts`, the on-demand discard behind discuss
+synthesis, has no such exclusion: a concurrent resume can spawn a fork that descends from the same
+conversation while the walk runs. It therefore does **not** discard residue, and a codex discuss
+participant's forks stay on disk. Excluding resume there is the precondition for adding it.
+
+**Residue is not retried.** A residue read or delete failure is logged and retention still completes, so
+that session is never revisited. Keeping a file is the safe direction; what is kept joins the backlog.
 
 ### Where the cost is
 

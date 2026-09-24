@@ -653,7 +653,8 @@ export class LifecycleReactor {
         this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
       }
     }
-    await this.discardSessionResidue(bound, entry);
+    // No residue discard here. Nothing excludes a concurrent resume while an on-demand discard runs, and a
+    // resumed turn's new forks descend from this same conversation, so a residue walk could delete live work.
   }
 
   /**
@@ -741,6 +742,7 @@ export class LifecycleReactor {
       return this.completeRetentionNoEffect(recoveryWork, continuation, 'provider_declares_none');
     }
     if (continuation.handles.length === 0) {
+      await this.discardSessionResidue(bound, recoveryWork.entry);
       return this.completeRetentionNoEffect(recoveryWork, continuation, 'skipped_no_handles');
     }
 

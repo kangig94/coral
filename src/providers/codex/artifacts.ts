@@ -166,8 +166,8 @@ const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 const CODEX_ROLLOUT_THREAD_ID = /-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 
 type CodexRolloutParent =
-  | { readonly kind: 'fork'; readonly parent: string }
-  | { readonly kind: 'root' }
+  | { readonly kind: 'fork'; readonly threadId: string; readonly parent: string }
+  | { readonly kind: 'root'; readonly threadId: string }
   | { readonly kind: 'unreadable' };
 
 type CodexRollout = { readonly threadId: string; readonly path: string };
@@ -184,11 +184,15 @@ function parseCodexRolloutParent(line: string): CodexRolloutParent {
     return { kind: 'unreadable' };
   }
   if (!isRecord(record) || record.type !== 'session_meta' || !isRecord(record.payload)) return { kind: 'unreadable' };
+  const threadId = record.payload.id;
+  if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId)) return { kind: 'unreadable' };
   const source = record.payload.source;
   const subagent = isRecord(source) ? source.subagent : undefined;
   const spawn = isRecord(subagent) ? subagent.thread_spawn : undefined;
   const parent = isRecord(spawn) ? spawn.parent_thread_id : undefined;
-  return typeof parent === 'string' && CODEX_THREAD_ID.test(parent) ? { kind: 'fork', parent } : { kind: 'root' };
+  return typeof parent === 'string' && CODEX_THREAD_ID.test(parent)
+    ? { kind: 'fork', threadId, parent }
+    : { kind: 'root', threadId };
 }
 
 function readCodexRolloutParent(storage: StoragePort, path: string): CodexRolloutParent {
@@ -252,7 +256,8 @@ function codexForksByParent(storage: StoragePort, sessionsRoot: string, since: n
     }
     if (modifiedAt < since - ROLLOUT_MTIME_SLACK_MS) continue;
     const parent = codexRolloutParent(storage, rollout.path);
-    if (parent.kind !== 'fork') continue;
+    // A header naming another thread than its filename is not evidence about either.
+    if (parent.kind !== 'fork' || parent.threadId.toLowerCase() !== threadId.toLowerCase()) continue;
     const siblings = forksByParent.get(parent.parent) ?? [];
     siblings.push({ threadId, path: rollout.path });
     forksByParent.set(parent.parent, siblings);

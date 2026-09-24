@@ -117,8 +117,10 @@ function readRolloutParent(path) {
       if (newline >= 0) {
         chunks.push(Buffer.from(chunk.subarray(0, newline)));
         const record = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-        const parent = record?.payload?.source?.subagent?.thread_spawn?.parent_thread_id;
-        return record?.type === 'session_meta' ? (typeof parent === 'string' && THREAD_ID.test(parent) ? parent : null) : undefined;
+        const threadId = record?.payload?.id;
+        if (record?.type !== 'session_meta' || typeof threadId !== 'string' || !THREAD_ID.test(threadId)) return undefined;
+        const parent = record.payload.source?.subagent?.thread_spawn?.parent_thread_id;
+        return { threadId, parent: typeof parent === 'string' && THREAD_ID.test(parent) ? parent : null };
       }
       chunks.push(Buffer.from(chunk));
       position += read;
@@ -131,8 +133,10 @@ function readRolloutParent(path) {
   }
 }
 
+/** Forks by parent id, plus every thread id that still has a rollout on disk. */
 function codexForksByParent(sessionsRoot) {
   const forksByParent = new Map();
+  const present = new Set();
   const visit = (directory, depth) => {
     for (const entry of safeReadDir(directory)) {
       const path = join(directory, entry.name);
@@ -142,15 +146,17 @@ function codexForksByParent(sessionsRoot) {
       }
       const threadId = entry.isFile() ? ROLLOUT_THREAD_ID.exec(entry.name)?.[1] : undefined;
       if (threadId === undefined) continue;
-      const parent = readRolloutParent(path);
-      if (typeof parent !== 'string') continue;
-      const siblings = forksByParent.get(parent) ?? [];
+      present.add(threadId.toLowerCase());
+      const header = readRolloutParent(path);
+      // A header naming another thread than its filename is not evidence about either.
+      if (header === undefined || header.parent === null || header.threadId.toLowerCase() !== threadId.toLowerCase()) continue;
+      const siblings = forksByParent.get(header.parent) ?? [];
       siblings.push({ threadId, path });
-      forksByParent.set(parent, siblings);
+      forksByParent.set(header.parent, siblings);
     }
   };
   visit(sessionsRoot, 0);
-  return forksByParent;
+  return { forksByParent, present };
 }
 
 /** Descendants of every root, deepest first; a fork is found through its parent's id, so leaves go first. */
@@ -225,8 +231,19 @@ function removeTree(directory, report) {
   for (const entry of safeReadDir(directory)) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) {
-      if (!removeTree(path, report)) complete = false;
-      continue;
+      // Re-checked at the moment of descent: an entry may since have been replaced by a link.
+      let kind;
+      try {
+        kind = lstatSync(path);
+      } catch (error) {
+        report.retained.push({ path, reason: error instanceof Error ? error.message : String(error) });
+        complete = false;
+        continue;
+      }
+      if (kind.isDirectory() && !kind.isSymbolicLink()) {
+        if (!removeTree(path, report)) complete = false;
+        continue;
+      }
     }
     try {
       unlinkSync(path);
@@ -283,8 +300,10 @@ function main() {
 
   const codex = { files: 0, bytes: 0, deleted: 0, retained: [] };
   for (const [home, refs] of codexRootsByHome) {
-    const forksByParent = codexForksByParent(join(home, 'sessions'));
-    const descendants = codexResidue(forksByParent, refs);
+    const { forksByParent, present } = codexForksByParent(join(home, 'sessions'));
+    // A root whose own rollout is still on disk was not discarded here, whatever the store recorded.
+    const discardedRefs = new Set([...refs].filter((ref) => !present.has(ref.toLowerCase())));
+    const descendants = codexResidue(forksByParent, discardedRefs);
     codex.files += descendants.length;
     codex.bytes += descendants.reduce((sum, fork) => sum + fileSize(fork.path), 0);
     if (options.verbose) for (const fork of descendants) console.log(`  codex fork ${fork.path}`);
