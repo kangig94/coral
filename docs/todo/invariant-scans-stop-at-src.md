@@ -3,6 +3,10 @@
 **Status**: open, half-closed. One of the two scans was extended and found nothing; the other cannot be
 extended without teaching its detector a second idiom, and that is the work this entry holds.
 
+[`invariant-path-literals-go-stale-silently.md`](./invariant-path-literals-go-stale-silently.md)
+tracks a separate failure in the same invariant family: a moved target can leave a path-literal guard
+matching nothing even while its scan still runs.
+
 ## What exists
 
 `tests/invariants/sync-subprocess-timeout.test.ts` was extended to `clients/hooks/**/*.mjs` on 2026-08-18.

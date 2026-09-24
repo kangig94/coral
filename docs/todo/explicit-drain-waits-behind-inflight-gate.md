@@ -24,3 +24,11 @@ ended, so `/jobs/wait` is also interrupted, but as a transport close rather than
 Give listener close its own ordering so it cannot begin before the in-flight wait it is supposed to
 follow, or decide that an explicit drain stops answering immediately. Removing the gate before one of
 those is settled trades an unbounded wait for a coordinator that cannot report the drain it just entered.
+
+## Shared blocker
+
+The gate's unbounded member needs the same decision about who may end a coordinator that cannot end
+itself as [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md),
+[`discovery-withdrawal-is-unbounded-on-the-exit-path.md`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md),
+and [`ensure-waits-less-than-the-drain-it-waits-for.md`](./ensure-waits-less-than-the-drain-it-waits-for.md).
+The listener-close ordering decision above remains its own prerequisite.

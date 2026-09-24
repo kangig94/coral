@@ -1,6 +1,7 @@
 # TODO — on macOS a process incarnation cannot authorize a signal
 
-**Status**: closed for live durable launches and provider-host admission; record-only teardown remains fail-closed.
+**Status**: signal authority is closed for live durable launches and provider-host admission;
+the unverified UTC probe change remains open. Record-only teardown remains fail-closed.
 
 ## The token, and the one thing it cannot do on Darwin
 

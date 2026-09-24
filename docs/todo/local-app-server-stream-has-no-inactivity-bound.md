@@ -2,7 +2,9 @@
 
 The local app-server path can hold a launch permit indefinitely when a provider turn stops producing events
 without closing its stream. `src/providers/app-server-transport.ts` bounds initialization, but the consuming
-stream has no inactivity deadline. The durable-CLI path independently has `IDLE_TIMEOUT` in
+stream has no inactivity deadline on the Codex/local transport. The Claude app-server controller has
+`SingleSessionController.recoverStalledTurn` in `src/providers/claude/appserver/controller.ts`; its
+recovery does not bound the Codex stream. The durable-CLI path independently has `IDLE_TIMEOUT` in
 `src/coordinator/live/durable-transport.ts`.
 
 This is the likely cause of the usage-limit incident that prompted the launch-permit work: if the provider

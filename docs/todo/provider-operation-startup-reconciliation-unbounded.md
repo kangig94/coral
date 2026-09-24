@@ -32,6 +32,10 @@ the machine where a backend sits in `starting`.
 
 ## Start condition
 
+The set-fence cycle in [`set-fence-closers-can-wait-on-each-other.md`](./set-fence-closers-can-wait-on-each-other.md)
+is a concrete way to hold startup. The missing process-level exit contribution is tracked in
+[`starting-coordinator-has-no-exit-contribution.md`](./starting-coordinator-has-no-exit-contribution.md).
+
 Decide the successor the expired set is handed to, and prove it can still discharge the set after
 `running`: the due poll must be able to take a set whose startup recovery was abandoned mid-flight, including
 any fence that recovery closed. Choosing the bound's value is the easy half.

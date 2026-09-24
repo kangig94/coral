@@ -3,6 +3,10 @@
 **Status**: open, recorded not fixed. Found while release re-attempts still wrote the provider-operation row;
 changing the overloaded terminalization contract remains separate from that deleted bookkeeping path.
 
+The same one-value/two-dispositions problem appears in
+[`write-atomic-durable-sync-result-overloads-two-dispositions.md`](./write-atomic-durable-sync-result-overloads-two-dispositions.md)
+and [`process-port-answers-with-two-values.md`](./process-port-answers-with-two-values.md).
+
 `providerHostUnserviceableLastError` (`src/jobs/provider-operation-terminalization.ts`) builds a `lastError`
 whose `message` is the literal prefix `provider_host_unserviceable:` followed by a JSON object carrying the
 `hostRef` and the operator remediation. `terminalizeProviderOperation` parses it back out of that same string

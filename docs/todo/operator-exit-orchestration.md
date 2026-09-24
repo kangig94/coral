@@ -55,6 +55,6 @@ and ownership belongs at the commit rather than in a label a caller re-classifie
 
 ## Start condition
 
-After this branch lands. Revisit sooner if the next change adds another branch here, or if the lease
-tests prove awkward to write against the current shape — either is evidence the cost has caught up with
-the reason for waiting.
+The branch containing `ProviderProxySetLifecycle.#completeOperatorExit` has landed. Start when the next
+change adds another branch here, or when the lease tests prove awkward to write against the current
+shape — either is evidence the readability cost has caught up with the reason for waiting.

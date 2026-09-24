@@ -1,242 +1,36 @@
-# TODO — two builds are live at once during an upgrade
+# TODO — enforce additive durable records during an upgrade
 
-**Status**: open, **narrowed**. Read this block and skip to "Still open"; everything between is why this
-document has been wrong three times, kept because the corrections are the part that does not re-derive.
+**Status**: open. Principle 10 settles the policy: a durable record keeps existing fields and meanings,
+adds only optional fields, and tolerates unknown keys. A shape that cannot do so needs a new generation at
+a new address. This entry asks for enforcement of that rule at the mixed-build boundary.
 
-|                |                                                                                                                                                                                                                                                                           |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Shipped**    | The takeover works. A process start time is no longer compared across a process boundary in `probeCoordinator` or on the handoff signal path, so a newer build can obtain the incumbent's `bootToken`, ask it to stand down, and escalate if it does not. The routing-reason step is also closed: the routing preflight continuation retains its basis and `backend status` renders the process-local result. |
-| **Still open** | The **record** direction (a new CLI writes what an old coordinator reads), now under a settled policy — durable records are additive-only — and what remains is applying it. The **output** direction is closed as a deliberate non-goal; see the end of "Options". |
-| **Elsewhere**  | The same defect, uncorrected, at four other pairs of processes — see `proxy-set-acquisition.md`.                                                                                                                                                                          |
+An installed plugin swaps CLI and skill files while its existing coordinator may keep serving an older
+build. A newer writer can therefore leave a record for an older reader. Quarantine prevents destruction
+when that reader cannot decode a row, but it can leave a job stalled. The reader and writer must be
+checked together when a durable shape changes, with an invariant or mixed-build contract test that fails
+on removing, renaming, retyping, or newly requiring a field under the same address. No such cross-build
+gate currently protects all durable records.
 
-## Correction — this document named the wrong cause
+## Corrections retained
 
-An earlier revision opened with the 2026-08-15 incident: four provider jobs, launched as one batch,
-terminalized together at `07:53:47`, each recording
+The 2026-08-15 `recovery_parse_failed` incident was first attributed to version skew. That was wrong:
+`readCodexPersistedContinuity` produced a `turnId` key with `undefined` in a single build, and
+`jsonValueSchema.parse` rejected it. The producer was fixed in #318; unreadable recovery records were
+quarantined in #316. A visible build difference did not establish the incident's cause.
 
-```
-kind: failed
-causeRef → job.progress.emitted { kind: 'recovery_parse_failed',
-  cause: { message: 'Running recovery adoption failed: [ … Zod invalid_union … ]' } }
-```
+The takeover was also declared complete too early. `verifiedIncumbentFromDiscovery` in
+`src/coordinator/lifecycle.ts` still compared the incumbent's namespace with the contender's, although
+plugin roots change by version. That comparison discarded the incumbent's `bootToken`. The comparison is
+gone; the fix landed in PR #386 (issue #385), and installed-to-installed takeover was observed on
+2026-09-24. `routeLiveIncumbent` in `src/coordinator/handoff-routing/policy.ts` keeps the routing basis.
 
-and it attributed the parse failure to two builds disagreeing about the shape of `turnId`, inferred
-from a diff of the `0.10.6` and `0.10.8` bundles (`turnId:Je(n.turnId)` against `turnId:null`).
-
-**That inference was wrong.** The cause was a single-build defect, traced to source and fixed in #318:
-`readCodexPersistedContinuity` rebuilt its result with all three keys always present, so a continuity
-with no current turn carried `turnId` as a key holding `undefined`. Production hands that object to
-`jsonValueSchema.parse`, a union of `null | boolean | number | string | array | object` — and JSON has
-no `undefined`. One build, one writer, one reader, no version skew.
-
-The recorded issue tree is what settles it. Its failing branch is
-
-```
-path: ["turnId"], received: "undefined", message: "Required"
-```
-
-A version skew would have produced a value of the **wrong type**. This is a value that was **absent**.
-The parse never saw a foreign shape; it saw a key that should not have existed.
-
-The batch/re-run asymmetry, which read so strongly as an upgrade boundary, has a simpler explanation:
-four jobs at the same lifecycle moment shared the same continuity state, and a later single re-run did
-not. The plugin update was the restart that made recovery read continuity at all. It was the occasion,
-not the cause.
-
-**The lesson is the document's most durable content.** This entry was written during a consolidation
-pass whose own index names "built on a cause that had been inferred rather than reproduced" as one of
-the defects it was correcting — and then did exactly that, from a bundle-string diff. A build
-difference that is _visible_ at the time of a failure is not thereby the failure's cause. Reproduce
-inside one build before writing skew into a record.
-
-## What shipped, and what it leaves
-
-Two independent changes closed the incident and its class:
-
-- **#318** removes the producer. The codex reader now builds the way `buildCodexContinuity` and the
-  Claude reader already did, so absent optionals stay absent.
-- **#316** removes the destruction. A record this build cannot parse is now quarantined —
-  `StoreDecodeError` and `ZodError` route to `{ kind: 'quarantine' }` instead of settling a terminal
-  fault. This was this document's "half 1" and it landed as written.
-
-So the data loss is gone, and so is the value that triggered it. What is left is the window itself,
-which needs its own justification rather than the incident's.
-
-## What remains genuinely open
-
-Updating the plugin swaps the CLI and the skill bundle **immediately**. The coordinator does not swap —
-the process already running keeps serving on the build it started with, for an arbitrarily long time
-bounded only by its next restart. The evidence for this is independent of the incident: during it, one
-log line showed the daemon reporting `0.10.6` while the environment it handed to spawned children
-carried `…/coral/0.10.8/bin` on `PATH`.
-
-### Correction, again — it is triggered, and it died at one gate
-
-**The section below was wrong, and this is the third time this document has been wrong about this
-subject.** The trigger exists and fires on every session start: `clients/hooks/session-start.mjs`
-calls `spawnBackend` unconditionally, and `bindWithHandoff` lets a strictly newer contender evict an
-older incumbent (`incumbentOutranksContender`, `src/transport/ipc/handoff.ts`).
-
-It fired, and it died. From the coordinator log, 2026-08-15:
-
-```
-07:43:14.210 INFO  [0.10.8] Incumbent bundleHash=040765a5 pid=3274924; requested shutdown via IPC
-07:43:14.211 ERROR [0.10.8] Handoff escalation failed: Manual shutdown required: refusing handoff
-                            for pid=3274924 because verified shutdown capability was unavailable
-07:43:14.211 ERROR [0.10.8] Fatal startup error
-```
-
-One millisecond, twice, and the contender exited. The chain: `probeCoordinator` rejected the discovery
-record because a freshly probed start time disagreed with the recorded one → no `bootToken` →
-`requestIncumbentShutdown` only attempts a shutdown when it holds that token, so `shutdownAttempted`
-stayed false → the gate at `coordinator/handoff.ts` threw. A token was needed to attempt, and the
-attempt was needed to excuse the missing token.
-
-The disagreement is not a clock going wrong. The primitive, `probeProcessStartedAtSeconds`, added
-`/proc/stat` btime over a module-level cache, so two processes' values differed by the age gap between
-their first reads — measured at 168 seconds for a coordinator probing its own pid. The value was a
-process-local pid disambiguator, not a timestamp, and comparing it across a process boundary was
-meaningless.
-
-**Fixed**: the primitive is gone (#324 replaced it with an opaque `ProcessIncarnation`), `probeCoordinator`
-no longer compares a start time at all (liveness only), and the signal path anchors on a baseline the
-contender observed itself, which keeps the guarantee that matters — the pid must not have been recycled
-between handshake and signal — and drops the one that was never sound.
-
-`proxy-set-acquisition.md` is the same defect at a different pair of processes. They were filed as two
-items and are one.
-
-### Superseded: "designed, built, and never triggered"
-
-Observed 2026-08-15, four hours after `0.10.8` was installed: the live coordinator was still `0.10.6`,
-pid unchanged since boot, serving a `0.10.8` CLI. It had accumulated 27 unresolved quarantine rows,
-none of the release's fixes in effect, and the operator's report was that the tool had become unstable.
-Nothing was wrong with the fixes. They had never run.
-
-The intended behaviour exists: `createReplacementBackendOwnershipChecker`
-(`src/coordinator/ownership-checker.ts`) polls the discovery record every 30s and, on seeing a
-**different `instanceId`**, calls `idleTimer.requestDrain('replaced')`, which `shutdownModeFromReason`
-routes to a handoff-mode drain. An incumbent yielding to a successor is a solved problem.
-
-What is missing is anything that turns a build-identity comparison into starting a successor. Three entry
-points could participate, but none starts the newer successor:
-
-| Entry point                                              | What it decides on                                                 |
-| -------------------------------------------------------- | ------------------------------------------------------------------ |
-| `clients/hooks/session-start.mjs` (`isCoordinatorAlive`) | pid liveness only — no version, no bundle hash                     |
-| `routeLiveIncumbent` (`src/coordinator/handoff-routing/policy.ts`) | a newer invoking CLI continues with an `invoking-build-not-older` basis |
-| `src/transport/ipc/ensure.ts`                            | discovery-record ↔ health self-consistency, not "is this my build" |
-
-So the incumbent can only learn it has been replaced by seeing a successor's `instanceId`; a successor
-only appears if one starts; and nothing starts one. The loop never closes, and the old daemon serves
-until something unrelated kills it.
-
-**An earlier revision of this document called that "permitted by design."** It is not — the design is
-present and unreached. The corrected reading is that the mixed window is not a policy choice but an
-unfinished path, which also changes its severity: this is not a latent compatibility question, it is the
-reason a shipped fix can sit installed and inert for as long as a daemon stays up.
-
-Two consequences, and they are not the same problem:
-
-**The record direction — a new CLI writes what an old coordinator reads.** No rule anywhere says a
-durable record must be readable by an older reader; nothing enforces additive-only shapes. Since #316
-the failure mode is no longer destruction, it is a **stall**: a job the coordinator declines to adopt
-sits quarantined until a build that can read it runs, and nothing tells the operator that is why their
-job stopped moving. Better than losing the work, still not a behaviour anyone asked for.
-
-**The output direction — a session holding old skill text drives a new CLI.** The plugin swaps skills
-and CLI together on disk, but a Claude Code session already running holds the _previous_ skill's text
-in its context and keeps invoking against the binary that just changed underneath it. Nothing parses
-here and nothing fails; the output is simply read with the wrong expectations. This direction has **no
-defense at all** and is the binding constraint on the `wait` contract change — a stale skill reading
-the new always-zero exit would convert failure into success. See `cli-machine-channel.md`.
-
-A third, weaker claim worth keeping and worth _not_ trusting: two items in this directory were once
-recorded as live defects and turned out to have been fixed two releases earlier, and a stale bundle is
-the most plausible channel. That is an inference, of exactly the kind the correction above warns
-about. Treat it as motivation, not as evidence.
-
-## Options, none costless
-
-- ~~**Finish the takeover.**~~ **Done.** It never needed a new entry point: the session-start hook
-  already spawns a contender unconditionally, and `bindWithHandoff` already evicts an older incumbent.
-  What it needed was for the contender to stop discarding the incumbent's credential over a comparison
-  that could not hold.
-
-  **That "done" was premature: there were two such comparisons, and the second survived until #385.**
-  `verifiedIncumbentFromDiscovery` also required the record's `namespace` to equal the contender's.
-  Namespace hashes the plugin root, and an installed plugin root is a per-version directory, so an
-  upgrade _always_ meets another namespace: the record was discarded, the `bootToken` with it, and
-  every installed-to-installed upgrade was refused with `handoff_shutdown_credential_unavailable` while
-  the old daemon kept serving. It never showed in tests because every fixture pair shared one plugin
-  root. The same comparison had also switched off `incumbentOutranksContender` for every cross-version
-  pair; both are gone. The takeover was first observed completing on 2026-09-24, from an installed
-  `0.10.11` incumbent to a separately rooted build.
-- ~~**Refuse the mixed window.**~~ Ruled out earlier and still ruled out: refusing is a cold upgrade,
-  and handing off backwards makes the upgrade silently not take effect. Note that this is a different
-  question from the takeover above — refusing keeps the old daemon, finishing the takeover replaces it.
-- ~~**Make durable records forward-readable.**~~ **Chosen, 2026-09-12.** A durable record is
-  additive-only and its reader tolerates unknown keys: a field may be added; none may be removed,
-  renamed, retyped, or made newly required, and an existing field's meaning may not change under the
-  same name. A shape that cannot stay additive becomes a new generation at a new address rather than an
-  edit to the old one. The rule is in [`design-philosophy`](../../.claude/rules/design-philosophy.md)
-  §10, and it is the same rule `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`
-  were waiting on, so all three are settled by it.
-- **Restart the coordinator on upgrade.** Honest, but it is the cold upgrade the project rules out, and
-  it does not help the jobs already running when the restart happens.
-
-**The output direction will not be defended. Decided 2026-09-12.** A skill already loaded in a live
-session cannot be reached by anything the CLI or coordinator does, and it does not have to be: restarting
-or resuming the session replaces that text, and a model that reads an unexpected result in conversation
-recovers without help. Paying for a defense here buys less than it costs.
-
-That is a decision about effort, not a licence. It leaves one constraint behind, and it is the one
-`cli-machine-channel.md` is bound by: a CLI surface may not be changed so that a stale reader's existing
-expectation silently becomes wrong. Reshaping output so an old reader fails to find its field is fine.
-Redefining what a value it already reads means is not — which is exactly what making `wait`'s exit code
-always zero would do to a skill still branching on it.
-
-## Evidence to preserve
-
-The incident's records remain in the live store — events `51310` and `51317`, with four
-`projection_jobs` rows created `2026-08-15T07:53:47` at `phase='error'` pointing into them. They are
-now evidence for **#318**, and they are the counter-example this document exists to remember. Read them
-before any retention window removes them.
-
-## Explicitly out of scope
-
-The recovery boundary, the handoff protocol, and the store fingerprint are not redesigned here. Nor is
-the continuity defect — it is fixed, and this document is not its home.
-
-## What the preflight actually does, since it keeps being assumed
-
-`runCliHandoffPreflight` runs on ordinary invocations except `--print-store-reset-build-identity`; help and
-version enter preflight but return before routing, and a build comparison is reached only when routing
-observes a usable live incumbent with both identities available. The decision is `routeLiveIncumbent`
-(`src/coordinator/handoff-routing/policy.ts`), which distinguishes same build set,
-newer-or-equal invoking build, invalid foreign target, and a validated handoff. The observation layer in
-`src/coordinator/handoff-routing/runner.ts` separately distinguishes incumbent absence, three unresolved causes,
-two live-but-unusable causes, and invoking or incumbent identity failure. `backend status` renders the
-memoized top-level continuation, including its basis, when the command continues in this process.
-
-That closes the routing-reason step only. The record direction remains open behind the shared compatibility
-policy, and the independent output direction remains open as well; this process-local result is neither
-durable history nor a contract for a session holding old skill text.
-
-At the far end, a `0.10.4` CLI reports **`Backend not running`** against a live daemon — it predates the
-strict-identity protocol entirely. Its own message then says a mutating command relaunches the backend,
-which points at two coordinators over one journal. Not tested, deliberately — and the socket-identity fix
-does not close it, because closing it needs both processes running the new address rule. A `0.10.4` build
-still resolves an overflowing socket through `TMPDIR`, so against a current daemon it computes a different
-address, finds it unbound, and binds. Mixed-version divergence is the part of that defect no forward-only
-change can reach.
+The output direction was settled as a deliberate non-goal in principle 10. Its remaining constraint is
+that a stale skill must not silently misread a CLI value whose meaning changed; the `wait` case belongs
+to [`cli-machine-channel.md`](./cli-machine-channel.md).
 
 ## Start condition
 
-1. ~~**Make the window observable.**~~ **Routing-reason step shipped.** The routing result carries its basis,
-   and `backend status` surfaces the process-local continuation. This does not close the record or output
-   directions below.
-2. **Fold the record direction into the one compatibility policy** shared with
-   `jobs-read-contract-schema-first.md` and `result-artifact-availability.md`. It is a consumer of a
-   policy those two need anyway, not a driver.
-3. **The output direction** waits on none of that — it is already the constraint blocking `wait`.
+Inventory durable record schemas and their shipped readers, then add a check that pins additive changes
+and tests a newer writer against an older reader. The jobs read contracts and result artifact availability
+are consumers of the same rule; see [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md)
+and [`result-artifact-availability.md`](./result-artifact-availability.md).

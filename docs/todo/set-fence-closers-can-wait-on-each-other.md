@@ -27,6 +27,11 @@ outcome — not a wider exclusion.
 
 ## Start condition
 
+The resulting startup hold is tracked in
+[`provider-operation-startup-reconciliation-unbounded.md`](./provider-operation-startup-reconciliation-unbounded.md);
+[`starting-coordinator-has-no-exit-contribution.md`](./starting-coordinator-has-no-exit-contribution.md)
+tracks the process-level exit gap while `starting` is held.
+
 Establish whether any production route starts two closers of the same set concurrently: the four `closeSet`
 sites are the recovery dispatcher's containment proof, the operator disposition proof, the operator exit
 fence (`src/coordinator/composition/execution-services.ts`), and set inheritance's fenced containment proof

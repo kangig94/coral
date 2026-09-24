@@ -52,3 +52,12 @@ requested and observed with a bound rather than performed inline.
 outside the daemon may decide it should stop; this one asks only that the daemon's own last two calls not
 be the ones that keep it alive after it has already said it stopped. Ship this after that entry has picked a
 half, because an external watchdog changes what an unbounded call here costs.
+
+## Shared blocker
+
+The writer-withdrawal decision shares the question of who can end a wedged coordinator with
+[`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md),
+[`ensure-waits-less-than-the-drain-it-waits-for.md`](./ensure-waits-less-than-the-drain-it-waits-for.md),
+and [`explicit-drain-waits-behind-inflight-gate.md`](./explicit-drain-waits-behind-inflight-gate.md).
+A reader-expiry answer also needs the single stale-record reader proposed in
+[`missing-discovery-record-disposition.md`](./missing-discovery-record-disposition.md).

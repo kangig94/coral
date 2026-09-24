@@ -12,6 +12,11 @@ coordinator that cannot serve it yet.
 
 ## Start condition
 
+This answered-but-starting status is adjacent to the startup stalls in
+[`provider-operation-startup-reconciliation-unbounded.md`](./provider-operation-startup-reconciliation-unbounded.md)
+and [`set-fence-closers-can-wait-on-each-other.md`](./set-fence-closers-can-wait-on-each-other.md).
+Those entries address why startup can remain unfinished; this one addresses what its CLI exit reports.
+
 Start after the owner decides whether an answered-but-not-ready coordinator earns its own exit contribution,
 and what a caller is expected to do with it — retry, wait, or proceed. The decision belongs with the other
 exit contributions composed at the `backend status` call site rather than in the inner health projection,

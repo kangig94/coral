@@ -216,3 +216,10 @@ place to look first.
 
 If neither candidate survives that check, the intermediate is the whole answer and the external supervisor
 should not be built.
+
+## Shared blocker
+
+Deciding who may end a coordinator that cannot end itself also blocks
+[`discovery-withdrawal-is-unbounded-on-the-exit-path.md`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md),
+[`ensure-waits-less-than-the-drain-it-waits-for.md`](./ensure-waits-less-than-the-drain-it-waits-for.md),
+and [`explicit-drain-waits-behind-inflight-gate.md`](./explicit-drain-waits-behind-inflight-gate.md).

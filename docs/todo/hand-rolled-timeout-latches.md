@@ -20,6 +20,11 @@ check and set the latch before resolving or rejecting:
 `Promise.race` against a deadline promise, with the timer cleared in `finally`, expresses all three
 directly. The latch exists because each site settles from two callbacks instead of racing two promises.
 
+Restructuring `withDiscussLaunchTimeout` belongs with member 3 of
+[`launch-disposition-flattened-below-the-boundary.md`](./launch-disposition-flattened-below-the-boundary.md):
+its current timeout can abandon a launch that later commits a job. Settle that ownership contract while
+changing the wrapper's race.
+
 ## Why it is worth doing, and why not here
 
 The latch is where this pattern goes wrong, and it already did once: `runPreflightWithTimeout` closed its
@@ -44,6 +49,6 @@ correct and covered, and the branch that touched it was fixing a different defec
 
 ## Start condition
 
-Independent of everything else, and independent of each other. Do the three timeout sites together — the
+The Claude settings member is independent. Do the three timeout sites together — the
 point is that one shape stops being written three ways — and confirm each site's existing tests still
 describe the behaviour rather than the mechanism before changing it.

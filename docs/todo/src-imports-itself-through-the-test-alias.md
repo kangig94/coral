@@ -1,7 +1,7 @@
 # TODO — eight `src/` files import `src/` through `#src/`, and the emitted `dist/` cannot be loaded
 
 **Status**: open, not started. The reproduction and the file list are below; the work is one invariant plus
-eight static import rewrites.
+static import rewrites in eight files.
 
 ## What exists
 
@@ -18,7 +18,7 @@ Every other file in `src/` uses a relative specifier.
 
 `src/expansion/bundled.ts` also carries `#src/engines/gemini/expansion.js` and
 `#src/engines/onnx/expansion.js` as runtime manifest string values consumed by
-`await import(entry.specifier)`. They are not import declarations and are not part of the nine rewrites.
+`await import(entry.specifier)`. They are not import declarations and are not part of the static import rewrites.
 
 `tsc` does not rewrite module specifiers, so seven emitted artifacts carry the alias into `dist/`
 (the last file imports types only, which are erased). Loading one of those artifacts as an ES module
@@ -45,10 +45,10 @@ reaching anything it was written to capture. Observed 2026-08-30. That script is
 
 Bundling the two `dist/` entries in the capture script would make that one tool work and leave `dist/` a
 build output that cannot be loaded — a property nobody would expect and nothing states. The alias is
-test-side vocabulary; `src/` importing itself through it is the anomaly, and it is the anomaly in nine files
+test-side vocabulary; `src/` importing itself through it is the anomaly, and it is the anomaly in eight files
 against the rest of the tree.
 
-Rewrite those nine static imports as relative, and add an invariant that no static import, `export … from`,
+Rewrite those static imports as relative, and add an invariant that no static import, `export … from`,
 or literal dynamic-import specifier under `src/` begins with `#src/`. The invariant deliberately does not
 scan arbitrary string values, so the Gemini and ONNX manifest specifiers remain unchanged.
 

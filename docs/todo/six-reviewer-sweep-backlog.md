@@ -1,6 +1,6 @@
 # TODO — what a six-reviewer sweep found outside the branch it was aimed at
 
-**Status**: open, batched deliberately, and scheduled **after PR3** of the handoff-routing work. Written
+**Status**: open, batched deliberately. Written
 2026-08-22 from six delegated reviewers (architect, integration-guardian, code-critic, test-critic,
 doc-critic, ux-critic) pointed at `refactor/handoff-routing-disposition` and asked to sweep the repository
 for the defect classes that branch had just closed in itself. Everything the branch introduced was fixed on
@@ -61,13 +61,9 @@ type nobody checks.
 `tests/invariants/liveness-is-never-a-boolean.test.ts`, so the rule is enforced somewhere and these are what
 it does not reach.
 
-- `verifySignalTarget` in `src/coordinator/handoff.ts` — `unknown` collapses into `alive`, and the next line tells the operator
-  the pid **is** alive.
 - `observeProcessIdentity` in `src/infra/process-containment.ts` — both identity observers merge `unknown` with `alive` and
   emit "while it is alive". Signalling stays conservatively refused, so the refusal is right and the stated
   evidence is false.
-- `removeDeadWriterLeases` in `src/store/generation-mutation-coordination.ts` — an unknown writer probe is appended to a collection
-  named `live` and then reported as the holder blocking maintenance. Only `absent` may remove a lease.
 - `buildRecoverySnapshot` in `src/coordinator/services/recovery/snapshot.ts` — a tri-state observation is exposed as
   `isPidAlive(): boolean`, so `unknown` becomes `true`, and that boolean decides wrapper-lost in
   `planJobRecovery` in `src/jobs/reconcile/plan.ts`. A later observer re-observes correctly, so nothing finalizes on it today
@@ -95,11 +91,13 @@ it does not reach.
 
 ## 5. Assertions that pass when their subject is absent
 
-All the same shape: optional chaining makes a missing subject satisfy a negative assertion.
+Negative assertions without a positive witness can pass when the intended subject is absent.
 `readStatus(...)?.phase` compared with `not.toBe('error')` passes when the status was deleted rather than
-rebound; `getSession(...)?.snapshot.state.status` "not bidding" passes when the session is gone. Sites:
-`tests/unit/jobs/reconcile/lifecycle-recovery.test.ts` (`:3742`, `:4019`, `:4291`),
-`tests/e2e/cli/main.test.ts` (`:177`, `:216`), `tests/unit/discuss/shell/discuss-manager.test.ts`,
+rebound; `getSession(...)?.snapshot.state.status` "not bidding" passes when the session is gone. Sites include:
+`readStatus` assertions in `tests/unit/jobs/reconcile/lifecycle-recovery.test.ts`,
+the "accepts discuss seed payload from --input-json stdin" case in `tests/e2e/cli/main.test.ts`,
+the "schedules the loop after start completes initial bid collection" case in
+`tests/unit/discuss/shell/discuss-manager.test.ts`,
 `tests/integration/coordinator/service-composition.test.ts`, `tests/unit/jobs/provider-event.test.ts`,
 `tests/unit/kb/curate.test.ts`, `tests/integration/coordinator/pre-pr-running-incumbent.test.ts`.
 
@@ -109,7 +107,7 @@ already asserts the positive sequence, in which case deleting is the honest fix.
 
 ## Start condition
 
-After PR3 of `backend-routing-disposition`. Item 1 is independent of that work and of the rest of this file;
-nothing here blocks anything else. Item 2's instances are individually independent. Item 5 is test-only and
+Item 1 is independent of the rest of this file; nothing here blocks anything else. Item 2's instances are
+individually independent. Item 5 is test-only and
 can be done in any order, but doing it first would tell whether items 2 and 3 have coverage that was passing
 vacuously.

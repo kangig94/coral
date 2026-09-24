@@ -69,3 +69,7 @@ One reader for "is there a coordinator behind this record's absence", used by al
 return type carries whichever of the three answers it actually established. Whether that reader dials is the
 decision above. Whatever it answers, `expansion` renders the same disposition as `backend status` for the
 same evidence, rather than a catalog.
+
+
+A reader-expiry answer to [`discovery-withdrawal-is-unbounded-on-the-exit-path.md`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md)
+should use this same stale-record reader rather than introducing a second verdict for the same evidence.

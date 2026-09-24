@@ -32,7 +32,7 @@ pioneer pass caught only because both were considered together.
 > classifying store bytes, hands off to a valid newer local target, and records a durable
 > transition before publishing a successor epoch for an invalid-target newer store. `settleStoreEpoch`
 > publishes the successor, while `garbageStoreEpochs` applies ordinal retention to proven epochs and keeps
-> the highest two (`src/store/epoch.ts`). This remains one store path per flavor; it is not the
+> the highest two (`src/store/epoch.ts`). This remains one active epoch family per flavor; it is not the
 > fingerprint-keyed multi-format routing proposed below.
 >
 > Routing is a _further_ refinement: an older build would find its own store instead of
@@ -41,34 +41,34 @@ pioneer pass caught only because both were considered together.
 
 ## The problem it solves
 
-One store per flavor means a build can meet a store it cannot read. Ordinary boot now
+One active epoch family per flavor means a build can meet a store it cannot read. Ordinary boot now
 publishes a fresh successor epoch for older or corrupt/unsupported state and retains the superseded epoch.
 For a newer store, the build-selection
 pointer hands off to a valid newer local build or, when the selection is absent, malformed,
 or invalidated, retains the invalid-target evidence and publishes a fresh successor epoch. That is safe
-cross-version ownership over one store path, not multi-format routing.
+cross-version ownership over one active epoch family, not multi-format routing.
 
 The remaining routing problem is that an older build cannot find and open its own
 format-compatible store; it must hand authority to the selected newer build or replace the
-single active store when no valid target exists. The dangerous state is **two builds with
+single active epoch family when no valid target exists. The dangerous state is **two builds with
 different schemas alternating over one store** — the shape of the 2026-08-01 data incident.
 Fingerprint-keyed paths would isolate those schemas while preserving each format's history.
 
 ## Shape (from pioneer, 2026-08-02)
 
 **Unimplemented proposal.** What shipped is `active-store-selection.v1.json`, a
-build-identity selection pointer with one store path per flavor. It does not create
-`active-format.json` or `formats/<sha256>/store.db`; the fingerprint-keyed shape below
-remains open.
+build-identity selection pointer with one active epoch family per flavor. It does not create
+`active-format.json` or a fingerprint-keyed epoch family; the fingerprint-keyed shape below
+remains open. Its example path predates the write-once epoch layout and must be redesigned before use.
 
 Two identities, not one:
 
 ```
-gen2/data/store/formats/<sha256-hex>/store.db   # path prevents opening the wrong schema
+gen2/data/store/formats/<sha256-hex>/...         # illustrative; epoch placement unresolved
 active-format.json            (flavor level)    # catalog prevents silent history forking
 ```
 
-`active-format.json` holds the active/high-water fingerprint plus strictly validated build
+`active-format.json` would hold the active/high-water fingerprint plus strictly validated build
 identity. The path alone is **not** sufficient — see the residual cases below.
 
 Rules established:
@@ -110,9 +110,10 @@ The claim "no build ever meets an incompatible store" is false in four ways:
    participates in the fingerprint; violating it is a format-contract bug that path
    partitioning cannot prevent.
 4. **The layout transition itself carries the same fingerprint.** Changing only
-   `storePaths()` does not change the format manifest, so a pre-keying build and a keyed
-   build report the same fingerprint while opening different physical paths, and silently
-   fork. A durable flat-path tombstone is required so a pre-keying build cannot see "absent"
+   store-path selection does not change the format manifest, so a pre-keying build and a keyed
+   build report the same fingerprint while opening different physical epoch families, and silently
+   fork. The old flat-path tombstone proposal predates the epoch selector; a transition fence must be
+   designed against that selector so a pre-keying build cannot see "absent"
    and start a second flat history. **That protocol was not designed.**
 
 ## Blocking conflict with cross-version coordinator continuity
@@ -121,7 +122,7 @@ The claim "no build ever meets an incompatible store" is false in four ways:
 fingerprint-keyed paths and the wider cross-version coordinator continuity work — a plan that
 lives outside this repo. The slice of it already shipped, the active-store selection pointer,
 is covered by `architecture.md`'s "Generation boundary and operator recovery" section. That
-shipped pointer externalizes the selected build identity while retaining one store path per
+shipped pointer externalizes the selected build identity while retaining one active epoch family per
 flavor; it neither implements `active-format.json` nor resolves the keyed-path and tombstone
 protocol described here.
 
@@ -145,7 +146,7 @@ installation provenance, not storage compatibility.
 
 Durable recovery for coordinator-local provider hosts is not shipped. When it is added, it must run after
 coordinator authority is established but before store routing can hide the only evidence naming an orphaned
-group. `routeOrOpenBackendStoreAtStartup` (`src/coordinator/lifecycle.ts`) currently runs before
+group. `routeOrOpenBackendStoreAtStartup` (`src/store/startup-store-routing.ts`) currently runs before
 `runStartupRecovery` and may replace the active epoch, so a containment record remains in the retained
 superseded epoch but is invisible to recovery while the detached app-server and its MCP children remain alive.
 
@@ -176,7 +177,7 @@ ignore it, and this remains a pre-existing defect rather than a new one.
 Recorded so the next attempt starts from the end of the argument, not the beginning.
 
 - **A filesystem capsule, never SQLite.** Store routing may publish a successor epoch _before_ recovery
-  runs (`src/coordinator/lifecycle.ts`'s `routeOrOpenBackendStoreAtStartup` vs `runStartupRecovery`), so a
+  runs (`src/store/startup-store-routing.ts`'s `routeOrOpenBackendStoreAtStartup` vs `runStartupRecovery`), so a
   record can remain in the retained superseded epoch while recovery opens the successor and never sees it.
   Not the host inventory either — `captureInventory`
   (`src/coordinator/services/provider-host-administration.ts`) assembles rows on demand from live owners.
@@ -255,19 +256,19 @@ continuity.
   alive while being useless, which is the failure shape fixed on 2026-08-02. A typed refusal
   is cleaner; a deliberately diagnostic-only lifecycle that never reports `running` would be
   the only honest alternative.
-- **`recovery_quarantine` belongs inside each fingerprint store.** Offender and quarantine
+- **`recovery_quarantine` belongs inside each fingerprint epoch family.** Offender and quarantine
   share a schema, reverting to an older fingerprint restores that format's quarantine state,
-  and pruning removes work and quarantine together. Complications: health and `clear` operate
-  only on the active fingerprint, so historical quarantine needs an explicit fingerprint
-  selector; and adding the table changes the fingerprint, so the first keyed build starts a
-  new store rather than inheriting existing recovery candidates.
+  and pruning removes work and quarantine together. Health and `clear` operate only on the active
+  epoch, so historical quarantine needs an explicit fingerprint and epoch selector. The table is
+  already present in the current format; moving to keyed families is a layout migration, not a
+  new-table fingerprint change.
 
 ## Scope this would add
 
 Store-root catalog and its lock, the tombstone migration barrier, historical fingerprint
 selectors, and path updates in: `src/store/read-port.ts`, `src/store/db.ts`,
 `src/cli/read-store.ts`, `src/store/operator-store-reset.ts`, and
-`clients/hooks/pre-compact.mjs` (which hardcodes the flat path). Docs:
+`clients/hooks/lib/store-epoch.mjs` (`resolveCurrentStoreDbPath`, used by the pre-compact hook). Docs:
 `architecture.md` items 3–5 and its "one canonical store per flavor" statement,
 `configuration.md`, `hooks.md`.
 

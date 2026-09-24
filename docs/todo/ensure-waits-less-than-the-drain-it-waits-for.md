@@ -60,3 +60,10 @@ that fixture belongs here only if the follow-up still needs it; the reporting ph
 Design the address-turnover observation and decide how a wedged incumbent is allowed to end before replacing
 the 30-second release wait. Tests must include the failed-continuation counterexample and must prove that a
 zero reported bound does not by itself permit timeout, spawn, or replacement.
+
+## Shared blocker
+
+An address wait cannot acquire an honest terminal outcome until someone may end a coordinator that
+cannot end itself. That decision is shared with [`wedged-coordinator-self-drain.md`](./wedged-coordinator-self-drain.md),
+[`discovery-withdrawal-is-unbounded-on-the-exit-path.md`](./discovery-withdrawal-is-unbounded-on-the-exit-path.md),
+and [`explicit-drain-waits-behind-inflight-gate.md`](./explicit-drain-waits-behind-inflight-gate.md).

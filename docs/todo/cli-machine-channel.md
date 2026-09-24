@@ -98,7 +98,7 @@ a contract regression are indistinguishable in one diff.
 
 ## Start condition
 
-The `wait` half needs `build-identity-and-upgrade.md`'s **output** direction answered — not its first
-half, which shipped as #316 and addressed the unrelated record direction. The hazard here is a live
-session holding the old skill's text against a new CLI, and nothing addresses it yet. It also needs the
-skill branches inventoried before `toExitCode` is removed. The `jobs` half needs the CLI owner to pick a branch.
+The `wait` half needs a new surface whose result an old skill cannot silently misread, with mixed-build
+coverage for a live session holding old skill text. The output direction has already been settled as a
+non-goal by principle 10; waiting for it cannot make an always-zero `wait` exit safe. Inventory the skill
+branches before retiring `toExitCode`. The `jobs` half needs the CLI owner to pick a branch.

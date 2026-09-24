@@ -131,9 +131,10 @@ retaining on `unknown` is not in question here, only what may end the retention.
 
 ## Start condition
 
+The proposed operator-command exit is withdrawn by principle 12 (No Operator Is Watching). No replacement
+is chosen here; the exit for an undecidable capsule must be re-decided.
+
 A decision, not an inventory, and there is no observation to gather first. Absence is undecidable for these
-three shapes, so closing the entry means naming what may end the hold when no evidence will: an age-based
-retirement with a stated tolerance for deleting a live set's credential, an operator command that retires a
-named path as an explicit authority override, or a documented acceptance that this residue is permanent and
-bounded. Principle 11 requires that whichever is chosen names its own exit; the current honest state is the
-third answer, recorded here, with the residue measured above.
+three shapes. An age-based retirement would need a stated tolerance for deleting a live set's credential;
+permanent bounded residue is another possible policy. Neither is selected. Principle 11 requires that
+whichever is chosen names its own exit; the current honest state is the third answer, recorded here.

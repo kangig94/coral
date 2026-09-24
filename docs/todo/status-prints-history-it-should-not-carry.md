@@ -31,7 +31,11 @@ A capacity-eviction tombstone is a hold, up to `MAX_RETIREMENT_TOMBSTONES` of th
 many separate obligations. Capping it would hide an operator's work, which is the one thing a hold may
 never do. The answer there is a bulk form of `resolve`, not a narrower render.
 
+**Withdrawn by principle 12.** An operator bulk-resolving held tombstones is not a reachable exit on
+the affected machine. That part of the design must be re-decided under "No Operator Is Watching" in
+`.claude/rules/design-philosophy.md`.
+
 ## Start condition
 
 Design the inspection verb before removing the threshold, so status never briefly loses evidence with
-nowhere to read it. The bulk `resolve` is independent and can go first.
+nowhere to read it. Re-decide the held-tombstone exit before implementing that independent member.
