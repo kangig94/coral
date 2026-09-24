@@ -85,7 +85,9 @@ export class IpcDeadlineExceededError extends Error {
 
 /**
  * Bundle hashes do not order builds: same-version contenders must not evict the incumbent, and older contenders
- * must not evict a healthy newer incumbent.
+ * must not evict a healthy newer incumbent. Namespace does not exempt a pair from that ordering: it differs
+ * between any two installed versions, so gating on it would switch this guard off for exactly the pairs it
+ * exists to order.
  *
  * Of two contenders racing for one incumbent, at most one may conclude the other side is upgradeable. At equal
  * version neither may, so both defer: an equal-version rebuild with a different bundle hash converges on
@@ -93,7 +95,7 @@ export class IpcDeadlineExceededError extends Error {
  * on every lap.
  */
 export function incumbentOutranksContender(health: IncumbentHealth, desired: DesiredIncumbentIdentity): boolean {
-  if (health.version === undefined || health.flavor !== desired.flavor || health.namespace !== desired.namespace) {
+  if (health.version === undefined || health.flavor !== desired.flavor) {
     return false;
   }
   return compareProductVersions(desired.version, health.version) <= 0;

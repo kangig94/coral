@@ -97,17 +97,30 @@ describe('incumbentOutranksContender', () => {
     expect(incumbentOutranksContender(health, desired)).toBe(true);
   });
 
-  it('does not outrank on flavor or namespace mismatch even at a same-or-newer version', () => {
+  it('does not outrank on flavor mismatch even at a same-or-newer version', () => {
     const desired: DesiredIncumbentIdentity = { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'ns' };
     expect(
       incumbentOutranksContender({ version: '0.9.1', bundleHash: 'h1', flavor: 'dev', namespace: 'ns' }, desired),
     ).toBe(false);
-    expect(
-      incumbentOutranksContender(
-        { version: '0.9.1', bundleHash: 'h1', flavor: 'prod', namespace: 'other-ns' },
-        desired,
-      ),
-    ).toBe(false);
+  });
+
+  // Every installed version has its own plugin root and therefore its own namespace. Were a namespace mismatch
+  // exempt from ranking, an older installed build could evict a newer one.
+  it('ranks by version across namespaces', () => {
+    const olderContender: DesiredIncumbentIdentity = {
+      version: '0.8.7',
+      bundleHash: 'h1',
+      flavor: 'prod',
+      namespace: 'older-install',
+    };
+    const newerIncumbent: IncumbentHealth = {
+      version: '0.9.1',
+      bundleHash: 'h2',
+      flavor: 'prod',
+      namespace: 'newer-install',
+    };
+    expect(incumbentOutranksContender(newerIncumbent, olderContender)).toBe(true);
+    expect(incumbentOutranksContender({ ...newerIncumbent, version: '0.8.6' }, olderContender)).toBe(false);
   });
 
   it('does not outrank when the incumbent reported no version at all', () => {
