@@ -401,6 +401,15 @@ describe('CoralSetupError', () => {
     ).toEqual([]);
   });
 
+  it('ends each record remedy in the start command, and clears a record only once its pid is not Coral', () => {
+    for (const code of ['coordinator_record_unreadable', 'coordinator_unreachable'] as const) {
+      expect(documentedCoralSetupError(code).remediation, code).toContain("run 'coral-cli backend start'");
+    }
+    const unreachable = documentedCoralSetupError('coordinator_unreachable').remediation;
+    expect(unreachable).toContain('only if it is not, delete');
+    expect(unreachable).not.toContain('cannot tell');
+  });
+
   it('owns documented exit and retryability policy in the setup-error registry', () => {
     const contended = documentedCoralSetupError('handoff_fresh_discovery_changed', {
       stage: 'before-signal',

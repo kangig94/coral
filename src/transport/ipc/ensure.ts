@@ -1138,6 +1138,38 @@ export async function ensure(method: string, pluginRoot?: string, timePort?: Tim
 }
 
 /**
+ * Must not resolve for a coordinator that is draining or has not finished starting, and a child may neither
+ * start nor replace one.
+ */
+export async function ensureRunningCoordinator(pluginRoot?: string, timePort?: TimePort): Promise<EnsuredIpcClient> {
+  const reach = await reachCoordinator(pluginRoot, timePort);
+  const client = isCoralChildEnvironment(reach.runtime.env.fullSnapshot())
+    ? await ensureChildIncumbent(reach.paths, reach.observation.socketPath, reach.observation.health, reach.timePort)
+    : await ensureTopLevelCoordinator(reach, 'running');
+  await waitForRunningLifecycle(client, reach.timePort);
+  return client;
+}
+
+async function waitForRunningLifecycle(client: EnsuredIpcClient, timePort: TimePort): Promise<void> {
+  const deadline = timePort.now() + KERNEL_READY_DEADLINE_MS;
+  for (;;) {
+    const status = parseRawCoordinatorHealth(await client.health())?.status;
+    if (status === 'ok' || status === 'running') return;
+    if (status === 'draining') {
+      throw new BackendUnreachableError(
+        'The coordinator began draining before its startup completed. Run `coral-cli backend start` again.',
+      );
+    }
+    if (timePort.now() >= deadline) {
+      throw new BackendUnreachableError(
+        `Timed out waiting for the coordinator to finish startup (last status: ${status ?? 'unreadable'}). Run \`coral-cli backend status\` to check coordinator health.`,
+      );
+    }
+    await timePort.sleep(STARTUP_POLL_MS);
+  }
+}
+
+/**
  * Obtain the successor a refused invocation may re-issue against. The reach is entered again rather than
  * spawned past: the coordinator that refused may have finished releasing, or a running one may have taken the
  * address meanwhile, and either is the successor. The admission is `'running'` whatever the route admits —

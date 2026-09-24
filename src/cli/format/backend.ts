@@ -47,6 +47,7 @@ export const RECOVERY_REVISION_FINGERPRINT_PREFIX = 'fingerprint:';
 
 type BackendOperatorCommand =
   | Readonly<{ kind: 'abort-job'; jobId: string }>
+  | Readonly<{ kind: 'backend-start' }>
   | Readonly<{ kind: 'backend-status' }>
   | Readonly<{ kind: 'backend-shutdown' }>
   | Readonly<{ kind: 'jobs-detail'; jobId: string }>
@@ -63,6 +64,9 @@ function renderBackendOperatorCommand(command: BackendOperatorCommand): string {
   switch (command.kind) {
     case 'abort-job':
       commandArguments = `abort jobs ${command.jobId}`;
+      break;
+    case 'backend-start':
+      commandArguments = 'backend start';
       break;
     case 'backend-status':
       commandArguments = 'backend status';
@@ -119,6 +123,16 @@ function formatBackendOperatorCommand(
   label: OperatorCommandLabel = 'command',
 ): string {
   return `${label}=${renderBackendOperatorCommand(command)}`;
+}
+
+export function formatBackendStartResult(statusNeedsAttention: boolean): string {
+  const verdict = 'Backend start: a running coordinator is serving.';
+  if (!statusNeedsAttention) return verdict;
+  return [
+    verdict,
+    'Backend status reports something that needs attention; run the status command below to see it.',
+    formatBackendOperatorCommand({ kind: 'backend-status' }),
+  ].join('\n');
 }
 
 export function formatBackendStatusCommand(): string {
@@ -528,8 +542,9 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
       return basis.cause === 'health-shape-rejected'
         ? [
             `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
-            'Handoff hold: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+            'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from the current installation.',
             formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+            formatBackendOperatorCommand({ kind: 'backend-start' }),
           ].join('\n')
         : [
             `Handoff: continuing current build — the incumbent coordinator could not be resolved because ${formatUnresolvedIncumbentCause(basis.cause)}.`,
@@ -545,8 +560,9 @@ export function formatHandoffRoutingBasis(basis: HandoffRoutingBasis): string {
     case 'incumbent-identity-unavailable':
       return [
         `Handoff: continuing current build — incumbent ${basis.incumbent.version} did not report a complete bundle identity.`,
-        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from this installation.',
         formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+        formatBackendOperatorCommand({ kind: 'backend-start' }),
       ].join('\n');
     case 'same-build-set':
       return `Handoff: continuing current build — invoking and incumbent builds share build set ${basis.buildSetId}.`;
@@ -563,8 +579,9 @@ function formatInvokingBuildNotOlder(
   basis: Extract<HandoffRoutingBasis, { kind: 'invoking-build-not-older' }>,
 ): string {
   const nextStep = [
-    'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+    'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from this installation.',
     formatBackendOperatorCommand({ kind: 'backend-shutdown' }),
+    formatBackendOperatorCommand({ kind: 'backend-start' }),
   ].join('\n');
   switch (basis.comparison) {
     case 'same-version':
@@ -717,12 +734,18 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       );
     case 'no_record_no_socket':
       return withShutdownRemainderSection(
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+        [
+          'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.',
+          formatBackendOperatorCommand({ kind: 'backend-start' }),
+        ].join('\n'),
         result.shutdownRemainder,
       );
     case 'recorded_process_absent':
       return withShutdownRemainderSection(
-        `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+        [
+          `A coordinator discovery record names pid=${result.pid}, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.`,
+          formatBackendOperatorCommand({ kind: 'backend-start' }),
+        ].join('\n'),
         result.shutdownRemainder,
       );
     case 'undecodable_record':
@@ -1141,7 +1164,8 @@ function formatUndecodableRecordStatus(result: Extract<BackendStatusFull, { stat
   return [
     `Backend state is unknown: the coordinator discovery record could not be read (${result.reason}).`,
     'A coordinator may still be running; this is not a report that none is.',
-    `Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run a mutating Coral command; it attempts startup or handoff.`,
+    `Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete ${result.path} and run the start command below; it attempts startup or handoff.`,
+    formatBackendOperatorCommand({ kind: 'backend-start' }),
   ].join('\n');
 }
 
@@ -1174,7 +1198,7 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
     case 'no_response':
       return 'The request to the recorded address never completed; this is not a report that the backend stopped, and nothing observed here says whether anything is listening.';
     case 'foreign_peer':
-      return 'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A mutating Coral command (or a Claude Code session start) still attempts startup or handoff.';
+      return 'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. Startup or handoff through that socket is unaffected by whoever holds the port.';
     default:
       return assertNever(result);
   }
@@ -1184,7 +1208,7 @@ function formatUnreachableCauseLine(result: Extract<BackendStatusFull, { status:
 // process and deleting the record. The same evidence must reach the operator with the same remedy whichever
 // surface observed it.
 function checkRecordedProcessThenClear(pid: number, recordPath: string): string {
-  return `run 'ps -p ${pid}' (or check your process manager), and if that is not Coral, delete ${recordPath} and run a mutating Coral command; it attempts startup or handoff.`;
+  return `run 'ps -p ${pid}' (or check your process manager), and if that is not Coral, delete ${recordPath} and run the start command below; it attempts startup or handoff.`;
 }
 
 function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 'unreachable' }>): string {
@@ -1193,9 +1217,15 @@ function formatUnreachableNextStep(result: Extract<BackendStatusFull, { status: 
     case 'no_response':
       return 'Next step: retry, and check the coordinator logs if it persists.';
     case 'refused':
-      return `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: ${checkRecordedProcessThenClear(result.pid, result.recordPath)}`;
+      return [
+        `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: ${checkRecordedProcessThenClear(result.pid, result.recordPath)}`,
+        formatBackendOperatorCommand({ kind: 'backend-start' }),
+      ].join('\n');
     case 'foreign_peer':
-      return `Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: ${checkRecordedProcessThenClear(result.pid, result.recordPath)} The ordinary shutdown command cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.`;
+      return [
+        `Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: ${checkRecordedProcessThenClear(result.pid, result.recordPath)} The ordinary shutdown command cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.`,
+        formatBackendOperatorCommand({ kind: 'backend-start' }),
+      ].join('\n');
     default:
       return assertNever(result);
   }
@@ -1211,22 +1241,29 @@ function formatNoRecordSocketPresentStatus(
     'Backend state is unknown: the coordinator IPC socket exists, but no discovery record has been written yet.',
     `Socket: ${result.socketPath}`,
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that the backend is running or that it has stopped.',
-    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run a mutating Coral command (or start a Claude Code session) either way; it attempts startup or handoff. If it reports the backend unreachable, the coordinator log is what says why.',
+    'Next step: retry shortly — a coordinator mid-boot writes its record within seconds, and how long this persists does not by itself tell a stale socket from one still starting. Run the start command below either way; it attempts startup or handoff. If it reports the backend unreachable, the coordinator log is what says why.',
+    formatBackendOperatorCommand({ kind: 'backend-start' }),
   ].join('\n');
 }
 
 // Shared by every disposition that names a code it could not render text for. "Upgrade Coral" may be said
 // only about a record another build wrote: a refusal the running build itself recorded has no later release
 // that resolves it, so pointing at one sends the operator after something that does not exist.
-function unrenderedSetupErrorNextStep(authorship: SetupErrorAuthorshipKind): string {
+function unrenderedSetupErrorNextStep(authorship: SetupErrorAuthorshipKind): readonly string[] {
   const retry =
-    "then retry a mutating Coral command; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.";
+    "then run the start command below; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.";
   switch (authorship) {
     case 'this-build':
     case 'unprovable':
-      return `Next step: inspect the coordinator log for that code, ${retry}`;
+      return [
+        `Next step: inspect the coordinator log for that code, ${retry}`,
+        formatBackendOperatorCommand({ kind: 'backend-start' }),
+      ];
     case 'other-build':
-      return `Next step: inspect the coordinator log for that code, upgrade Coral, ${retry}`;
+      return [
+        `Next step: inspect the coordinator log for that code, upgrade Coral, ${retry}`,
+        formatBackendOperatorCommand({ kind: 'backend-start' }),
+      ];
     default:
       return assertNever(authorship);
   }
@@ -1243,17 +1280,17 @@ function formatUnrecognizedSetupErrorLines(
     case 'this-build':
       return [
         `Cause: Coral recorded a setup refusal this build wrote, and the text recorded with it could not be re-read. [code=${setupError.code}]`,
-        nextStep,
+        ...nextStep,
       ];
     case 'other-build':
       return [
         `Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=${setupError.code}]`,
-        nextStep,
+        ...nextStep,
       ];
     case 'unprovable':
       return [
         `Cause: Coral recorded a setup refusal and could not prove which Coral build wrote it. [code=${setupError.code}]`,
-        nextStep,
+        ...nextStep,
       ];
     default:
       return assertNever(setupError.authorship);
@@ -1268,7 +1305,7 @@ function formatUnrenderableContextSetupErrorLines(
 ): readonly string[] {
   return [
     `Cause: Coral documents this setup refusal, but the details recorded with it are not in the shape this build renders that code from, so its text could not be regenerated. [code=${setupError.code}]`,
-    unrenderedSetupErrorNextStep(setupError.authorship),
+    ...unrenderedSetupErrorNextStep(setupError.authorship),
   ];
 }
 
@@ -1284,7 +1321,8 @@ function formatSetupErrorLines(setupError: OperatorFacingCoralSetupError): reado
     case 'invalid_diagnostic':
       return [
         'Cause: Coral recorded a setup refusal that carries no readable setup-error code.',
-        'Next step: inspect the coordinator log, then retry a mutating Coral command so a current valid startup diagnostic replaces this one.',
+        'Next step: inspect the coordinator log, then run the start command below so a current valid startup diagnostic replaces this one.',
+        formatBackendOperatorCommand({ kind: 'backend-start' }),
       ];
     default:
       return assertNever(setupError);
@@ -1301,7 +1339,8 @@ function formatRecentFailureStatus(result: Extract<BackendStatusFull, { status: 
     // A failure that is not a setup error has no authored remediation, and its raw message can carry provider
     // payloads or credentials, so the log stays the only place it is rendered.
     lines.push(
-      'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
+      'Next step: inspect the coordinator log, fix the reported cause, then run the start command below; it attempts startup or handoff.',
+      formatBackendOperatorCommand({ kind: 'backend-start' }),
     );
     return lines.join('\n');
   }
@@ -1474,7 +1513,8 @@ function formatUnreadableRecordShutdown(detail: string): string {
   return [
     `Shutdown not attempted: the coordinator discovery record could not be read (${detail}).`,
     'A coordinator may still be running; this is not confirmation that one stopped.',
-    'Next step: no Coral command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (backend status reports its path) and run a mutating Coral command; it attempts startup or handoff.',
+    'Next step: no Coral command can dial a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete the record file (backend status reports its path) and run the start command below; it attempts startup or handoff.',
+    formatBackendOperatorCommand({ kind: 'backend-start' }),
   ].join('\n');
 }
 
@@ -1505,7 +1545,8 @@ function formatNoRecordSocketPresentShutdown(): string {
     'A coordinator may still be starting, or this may be a stale socket left by one that did not exit cleanly; this is not a report that it stopped.',
     // Not `SHUTDOWN_RETRY_NEXT_STEP`: `backend status` is a read, so for a stale socket it reports this same
     // state forever and the two commands loop. Only a bind clears a stale socket, and no read command binds.
-    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run a mutating Coral command (or start a Claude Code session) either way; it attempts startup or handoff, and starting up is what clears a stale socket. If it instead reports the backend unreachable, the coordinator log is what says why. Once a coordinator is serving, retry the shutdown.',
+    'Next step: retry shortly in case a coordinator is mid-boot — how long this persists does not by itself tell a stale socket from one still starting. Run the start command below either way; it attempts startup or handoff, and starting up is what clears a stale socket. If it instead reports the backend unreachable, the coordinator log is what says why. Once a coordinator is serving, retry the shutdown.',
+    formatBackendOperatorCommand({ kind: 'backend-start' }),
   ].join('\n');
 }
 
@@ -1527,6 +1568,7 @@ function formatSocketRefused(result: Extract<ShutdownResult, { reason: 'socket_r
     `Shutdown not confirmed: ${whatRefusalMeans}`,
     'The coordinator may still be running; this is not a report that it stopped.',
     `Next step: retry shortly — a drain finishes on its own. If it keeps refusing, the record may name a pid something else now holds: ${checkRecordedProcessThenClear(result.pid, result.recordPath)}`,
+    formatBackendOperatorCommand({ kind: 'backend-start' }),
   ].join('\n');
 }
 

@@ -141,6 +141,7 @@ export const commandContainerPaths = new Set<string>([
 ]);
 
 export const commandClassExemptions = {
+  'backend start': 'local operational startup request',
   'backend status': 'local operational health probe',
   'backend shutdown': 'local operational drain request',
   'backend kb-commit quarantine': 'operator-only local KB evidence quarantine',

@@ -428,6 +428,56 @@ describe('ipc ensure', () => {
       expect(mockState.spawn).not.toHaveBeenCalled();
     });
 
+    it('refuses a startup request from a child without starting or replacing anything', async () => {
+      makeHome();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, { instanceId: 'parent-coordinator' });
+      mockState.health.mockResolvedValue({
+        status: 'draining',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      });
+
+      const { ensureRunningCoordinator } = await importEnsure();
+
+      await expect(ensureRunningCoordinator(root)).rejects.toThrow('parent coordinator is draining');
+      expect(mockState.bindSocket).not.toHaveBeenCalled();
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('waits past a kernel-ready parent before answering a startup request from a child', async () => {
+      makeHome();
+      vi.useFakeTimers();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, { instanceId: 'parent-coordinator' });
+      const statuses = ['kernel-ready', 'kernel-ready', 'kernel-ready', 'ok'];
+      let healthCalls = 0;
+      mockState.health.mockImplementation(async () => ({
+        status: statuses[Math.min(healthCalls++, statuses.length - 1)],
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: 'parent-coordinator',
+        namespace: pluginRootNamespace(root),
+      }));
+
+      const { ensureRunningCoordinator } = await importEnsure();
+      let settled = false;
+      const ensuredPromise = ensureRunningCoordinator(root).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await ensuredPromise;
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
     it('does not wait for release or spawn when the parent is draining', async () => {
       makeHome();
       const root = createPluginRoot();
@@ -837,6 +887,116 @@ describe('ipc ensure', () => {
     expect(ensured.instanceId).toBe('replacement-coordinator');
     expect(mockState.spawn).toHaveBeenCalledTimes(1);
     expect(mockState.shutdown).not.toHaveBeenCalled();
+  });
+
+  it('replaces a draining incumbent for a startup request instead of returning it', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeDiscovery(root, { port: 4233, token: 'old-token', instanceId: 'draining-coordinator' });
+    let healthCalls = 0;
+    mockState.health.mockImplementation(async () => {
+      healthCalls += 1;
+      return {
+        status: healthCalls === 1 ? 'draining' : 'ok',
+        version: '0.5.2',
+        bundleHash: 'test-hash',
+        flavor: 'prod',
+        instanceId: healthCalls === 1 ? 'draining-coordinator' : 'replacement-coordinator',
+        namespace: pluginRootNamespace(root),
+      };
+    });
+    let bindCalls = 0;
+    mockState.bindSocket.mockImplementation(async () => {
+      bindCalls += 1;
+      return bindCalls === 1 ? { kind: 'incumbent', reason: 'live-listener' } : { kind: 'bound' };
+    });
+    mockState.spawn.mockImplementation(() => {
+      writeDiscovery(root, { port: 4234, token: 'replacement-token', instanceId: 'replacement-coordinator' });
+      return spawnedChild();
+    });
+
+    const { ensureRunningCoordinator } = await importEnsure();
+    const ensuredPromise = ensureRunningCoordinator(root);
+    await vi.advanceTimersByTimeAsync(800);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('replacement-coordinator');
+    expect(mockState.spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits past kernel-ready for a startup request and resolves only once the coordinator is running', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeDiscovery(root, { port: 4235, token: 'ready-token', instanceId: 'booting-coordinator' });
+    const statuses = ['kernel-ready', 'kernel-ready', 'kernel-ready', 'ok'];
+    let healthCalls = 0;
+    mockState.health.mockImplementation(async () => ({
+      status: statuses[Math.min(healthCalls++, statuses.length - 1)],
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'booting-coordinator',
+      namespace: pluginRootNamespace(root),
+    }));
+
+    const { ensureRunningCoordinator } = await importEnsure();
+    let settled = false;
+    const ensuredPromise = ensureRunningCoordinator(root).finally(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const ensured = await ensuredPromise;
+
+    expect(ensured.instanceId).toBe('booting-coordinator');
+    expect(mockState.spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses a startup request whose coordinator begins draining before it is running', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeDiscovery(root, { port: 4236, token: 'ready-token', instanceId: 'booting-coordinator' });
+    const statuses = ['kernel-ready', 'kernel-ready', 'draining'];
+    let healthCalls = 0;
+    mockState.health.mockImplementation(async () => ({
+      status: statuses[Math.min(healthCalls++, statuses.length - 1)],
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'booting-coordinator',
+      namespace: pluginRootNamespace(root),
+    }));
+
+    const { ensureRunningCoordinator } = await importEnsure();
+    const ensuredPromise = ensureRunningCoordinator(root);
+    const refusal = expect(ensuredPromise).rejects.toThrow('began draining before its startup completed');
+    await vi.advanceTimersByTimeAsync(2_000);
+    await refusal;
+  });
+
+  it('gives up on a startup request whose coordinator never finishes starting', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    writeDiscovery(root, { port: 4237, token: 'ready-token', instanceId: 'stuck-coordinator' });
+    mockState.health.mockResolvedValue({
+      status: 'kernel-ready',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'stuck-coordinator',
+      namespace: pluginRootNamespace(root),
+    });
+
+    const { ensureRunningCoordinator, KERNEL_READY_DEADLINE_MS } = await importEnsure();
+    const ensuredPromise = ensureRunningCoordinator(root);
+    const refusal = expect(ensuredPromise).rejects.toThrow('last status: kernel-ready');
+    await vi.advanceTimersByTimeAsync(KERNEL_READY_DEADLINE_MS + 1_000);
+    await refusal;
   });
 
   it('serves a draining incumbent for a route the catalog admits while draining', async () => {

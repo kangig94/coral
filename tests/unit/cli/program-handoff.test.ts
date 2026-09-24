@@ -131,7 +131,7 @@ describe('program', () => {
     await buildProgram().parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout.join('')).toBe(
-      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.\ncommand=coral-cli backend start\n',
     );
   });
 
@@ -163,15 +163,19 @@ describe('program', () => {
     const rendered = stdout.join('');
     expect(rendered).toBe(
       [
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.\ncommand=coral-cli backend start',
         'Handoff: continuing current build — invoking build 0.10.8 is newer than incumbent 0.10.6.',
-        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
+        'command=coral-cli backend start',
         '',
       ].join('\n'),
     );
     const dispatched: string[] = [];
-    await executeRenderedCommand(shutdownCommandProgram(dispatched), rendered, { label: 'command' });
+    await executeRenderedCommand(shutdownCommandProgram(dispatched), rendered, {
+      label: 'command',
+      includes: 'backend shutdown',
+    });
     expect(dispatched).toEqual(['shutdown']);
     expect(process.exitCode).toBe(75);
   });

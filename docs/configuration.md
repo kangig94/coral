@@ -86,8 +86,8 @@ realpath /abs/path/to/claude-system
 export CORAL_SYSTEM_PROVIDER_SCOPE='{"origin":"system","name":"automation","profiles":[{"provider":"claude","profile":{"canonicalLocation":"/canonical/claude-system","routing":{"kind":"config-dir","emitConfigDir":true}}},{"provider":"codex","profile":{"canonicalLocation":"/canonical/codex-system","routing":{"kind":"home"}}}]}'
 
 coral-cli backend shutdown
-# This normal provider command relaunches the daemon with the exported scope.
-CLAUDE_CONFIG_DIR=/canonical/claude-system coral-cli claude -i 'Reply READY.'
+# Relaunches the daemon with the exported scope.
+coral-cli backend start
 coral-cli backend status
 ```
 
@@ -108,7 +108,7 @@ Provider-routing failures are intentionally distinct so the operator can repair 
 | `provider_binding_invalid_persisted_binding` | Durable state does not decode as the strict current binding codec                 | Stop using the affected state and start a new session/operation; do not edit or translate the record                                |
 | `provider_scope_missing`                     | The operation's captured scope does not cover every provider it can launch        | Relaunch the operation from a caller with all required provider profiles selected                                                   |
 | `system_provider_scope_invalid`              | `CORAL_SYSTEM_PROVIDER_SCOPE` is malformed, incomplete, or non-canonical          | Rebuild the strict JSON from `realpath` results, export it, and restart the daemon                                                  |
-| `system_provider_scope_unconfigured`         | HTTP/internal work requested a provider but daemon boot had no named system scope | Configure the named scope, run `coral-cli backend shutdown`, restart through a normal mutating command, and verify `backend status` |
+| `system_provider_scope_unconfigured`         | HTTP/internal work requested a provider but daemon boot had no named system scope | Configure the named scope, run `coral-cli backend shutdown`, then `coral-cli backend start`, and verify `coral-cli backend status` |
 
 See [CLI Errors](./cli-errors.md) for the wire envelope and exit-code behavior.
 
@@ -210,7 +210,7 @@ Changes to `settings.json` env take effect on the next Claude Code session start
 
 ### Embedding credentials
 
-Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's process environment. Set them in the user-level `~/.claude/settings.json` `env` block or your shell profile — not in repo-checked settings — then restart the backend (`coral-cli backend shutdown`; the next command relaunches it with the new environment).
+Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's process environment. Set them in the user-level `~/.claude/settings.json` `env` block or your shell profile — not in repo-checked settings — then restart the backend (`coral-cli backend shutdown`, then `coral-cli backend start`, which launches it with the new environment).
 
 ## Config Files
 
