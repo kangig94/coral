@@ -9,6 +9,7 @@ Options:
   -h, --help           display help for command
 
 Commands:
+  start                Start the backend daemon when none is running
   status               Show backend daemon status
   routing-status       Inspect and repair routing status
   shutdown             Gracefully shut down backend daemon
