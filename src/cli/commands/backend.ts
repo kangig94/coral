@@ -112,7 +112,11 @@ import {
   IpcRpcError,
   type IpcClient,
 } from '../../transport/ipc/client.js';
-import { ensure, issueWithSuccessorAfterLifecycleRefusal } from '../../transport/ipc/ensure.js';
+import {
+  ensure,
+  ensureRunningCoordinator,
+  issueWithSuccessorAfterLifecycleRefusal,
+} from '../../transport/ipc/ensure.js';
 import {
   recoveryQuarantineClearRequestSchema,
   recoveryQuarantineClearResultSchema,
@@ -150,6 +154,7 @@ import { emitError } from '../emit.js';
 import { errorCodeToExit } from '../errors.js';
 import { renderHandoffPublicationIncidents } from '../handoff-notice.js';
 import {
+  formatBackendStartResult,
   formatBackendStatusCommand,
   formatBackendStatus,
   formatHandoffRoutingResolveResult,
@@ -578,7 +583,13 @@ export interface ProviderProxySetCommandOperations {
   contain(request: ProviderProxySetContainRequest): Promise<ProviderProxySetContainCommandResult>;
 }
 
+export interface BackendLifecycleCommandOperations {
+  /** Must not resolve for a coordinator that is draining or has not finished starting. */
+  start(): Promise<void>;
+}
+
 export type BackendCommandOperations = Readonly<{
+  backendLifecycle?: BackendLifecycleCommandOperations;
   storeReset?: StoreResetCommandOperations;
   kbCommit?: KbCommitCommandOperations;
   backendStatus?: BackendStatusCommandOperations;
@@ -989,6 +1000,14 @@ export function createBackendStatusCommandOperations(
     getLiveHandoffResult,
     getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, statusPath),
     readProviderProxySetHolderStatusDirect: () => readProviderProxySetHolderStatusDirect(runtime),
+  };
+}
+
+export function createBackendLifecycleCommandOperations(): BackendLifecycleCommandOperations {
+  return {
+    start: async () => {
+      await ensureRunningCoordinator(getPluginRoot());
+    },
   };
 }
 
@@ -1406,6 +1425,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     kbCommit = {
       quarantine: quarantineKbCommitLocal,
     },
+    backendLifecycle = createBackendLifecycleCommandOperations(),
     backendStatus = createBackendStatusCommandOperations(),
     routingStatus = createHandoffRoutingStatusCommandOperations(),
     routingStatusQuarantine = createRoutingStatusQuarantineCommandOperations(),
@@ -1416,45 +1436,75 @@ export function registerBackendCommands(program: Command, operations: BackendCom
   } = operations;
   const backend = program.command('backend').description('Backend administration and local incident inspection');
 
+  // Written as each part is known, so a read that fails midway still leaves what was already established.
+  const reportBackendStatus = async (
+    write: Readonly<{ stderr(text: string): void; stdout(text: string): void }>,
+  ): Promise<BackendStatusLocalExitContribution> => {
+    const readiness = backendStatus.inspectReadiness();
+    switch (readiness.kind) {
+      case 'generated-ready':
+      case 'no-legacy':
+        break;
+      case 'legacy-ignored':
+        write.stderr(`${formatLegacyGenerationIgnoredNotice(readiness)}\n`);
+        break;
+      default:
+        assertNever(readiness);
+    }
+    const [status, routingStatusRead] = await Promise.all([
+      backendStatus.getStatus(),
+      backendStatus.getRoutingStatus(),
+    ]);
+    const liveHandoffResult = backendStatus.getLiveHandoffResult();
+    write.stdout(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
+    let directHolderStatusExitContribution: BackendStatusLocalExitContribution = 0;
+    if (!hasUsableCoordinatorDiagnostics(status)) {
+      const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
+        readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
+      if (direct.length > 0) {
+        write.stdout(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
+      }
+      directHolderStatusExitContribution = directProviderProxySetHolderStatusExitContribution(direct);
+    }
+    const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
+    const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
+      BACKEND_STATUS_EXIT_CODES[status.status],
+      liveHandoffObligation.exitContribution,
+      handoffRoutingStatusExitContribution(routingStatusRead),
+      handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
+      providerProxySetNoVerdictExitContribution(status),
+      directHolderStatusExitContribution,
+    ];
+    return combineBackendStatusLocalExitContributions(localExitContributions);
+  };
+
+  const startCommand = backend.command('start');
+  startCommand.description('Start the backend daemon when none is running').action(async () => {
+    try {
+      await backendLifecycle.start();
+    } catch (error) {
+      emitError(error);
+      return;
+    }
+    // A confirmed start exits 0 whatever else the backend reports. Its remedies stay behind `backend status`:
+    // printed here, they would read as the next step of a start that already succeeded.
+    let statusNeedsAttention: boolean;
+    try {
+      statusNeedsAttention = (await reportBackendStatus({ stderr: () => {}, stdout: () => {} })) !== 0;
+    } catch {
+      statusNeedsAttention = true;
+    }
+    process.stdout.write(`${formatBackendStartResult(statusNeedsAttention)}\n`);
+    process.exitCode = 0;
+  });
+
   const statusCommand = backend.command('status');
   statusCommand.description('Show backend daemon status').action(async () => {
     try {
-      const readiness = backendStatus.inspectReadiness();
-      switch (readiness.kind) {
-        case 'generated-ready':
-        case 'no-legacy':
-          break;
-        case 'legacy-ignored':
-          process.stderr.write(`${formatLegacyGenerationIgnoredNotice(readiness)}\n`);
-          break;
-        default:
-          assertNever(readiness);
-      }
-      const [status, routingStatusRead] = await Promise.all([
-        backendStatus.getStatus(),
-        backendStatus.getRoutingStatus(),
-      ]);
-      const liveHandoffResult = backendStatus.getLiveHandoffResult();
-      process.stdout.write(`${formatBackendStatus(status, routingStatusRead, liveHandoffResult)}\n`);
-      let directHolderStatusExitContribution: BackendStatusLocalExitContribution = 0;
-      if (!hasUsableCoordinatorDiagnostics(status)) {
-        const direct = await (backendStatus.readProviderProxySetHolderStatusDirect?.() ??
-          readProviderProxySetHolderStatusDirect(createRealRuntime(resolveBuildFlavor(process.env))));
-        if (direct.length > 0) {
-          process.stdout.write(`\n${formatProviderProxySetHolderStatusDirect(direct)}\n`);
-        }
-        directHolderStatusExitContribution = directProviderProxySetHolderStatusExitContribution(direct);
-      }
-      const liveHandoffObligation = liveHandoffResultObligation(liveHandoffResult);
-      const localExitContributions: NonEmptyReadonlyArray<BackendStatusLocalExitContribution> = [
-        BACKEND_STATUS_EXIT_CODES[status.status],
-        liveHandoffObligation.exitContribution,
-        handoffRoutingStatusExitContribution(routingStatusRead),
-        handoffPublicationIncidentsExitContribution(liveHandoffResult?.publicationIncidents ?? []),
-        providerProxySetNoVerdictExitContribution(status),
-        directHolderStatusExitContribution,
-      ];
-      process.exitCode = combineBackendStatusLocalExitContributions(localExitContributions);
+      process.exitCode = await reportBackendStatus({
+        stderr: (text) => process.stderr.write(text),
+        stdout: (text) => process.stdout.write(text),
+      });
     } catch (error) {
       emitError(error);
     }

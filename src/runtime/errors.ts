@@ -602,7 +602,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator discovery record at ${stringContextValue(context, 'path', '<record-path>')} could not be read (${stringContextValue(context, 'detail', 'unknown')}). This does not mean no coordinator is running.`,
     remediation: (context) =>
-      `Fix the permissions on ${stringContextValue(context, 'path', '<record-path>')}, or delete it if its content is corrupt — a running coordinator never rewrites it, and a fresh one recreates it safely. Then run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff. Retrying this exact command re-reads the same file and will not resolve on its own.`,
+      `Fix the permissions on ${stringContextValue(context, 'path', '<record-path>')}, or delete it if its content is corrupt — a running coordinator never rewrites it, and a fresh one recreates it safely. Then run 'coral-cli backend start'; it attempts startup or handoff. Retrying this exact command re-reads the same file and will not resolve on its own.`,
     exitCode: 75,
     observation: 'not_observed',
   },
@@ -619,7 +619,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Coral cannot report ${stringContextValue(context, 'subject', 'expansion status')}: the coordinator recorded itself at ${stringContextValue(context, 'path', '<record-path>')} but did not answer (${stringContextValue(context, 'detail', 'unknown')}).`,
     remediation: (context) =>
-      `Retry shortly in case the coordinator is only busy. If it persists, run 'ps -p ${stringContextValue(context, 'pid', '<pid>')}' or check your process manager to see whether that process is actually Coral's coordinator; if it is not, or you cannot tell, delete ${stringContextValue(context, 'path', '<record-path>')} yourself and run any coral-cli mutating command (or start a Claude Code session); it attempts startup or handoff.`,
+      `Retry shortly in case the coordinator is only busy. If it persists, run 'ps -p ${stringContextValue(context, 'pid', '<pid>')}' or check your process manager to see whether that process is actually Coral's coordinator; only if it is not, delete ${stringContextValue(context, 'path', '<record-path>')} yourself and run 'coral-cli backend start'; it attempts startup or handoff.`,
     exitCode: 75,
     observation: 'not_observed',
   },

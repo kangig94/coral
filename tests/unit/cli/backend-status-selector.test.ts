@@ -2,6 +2,7 @@
 // none may be widened into a claim that no coordinator exists.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { operatorArtifactLines } from '#tests/helpers/rendered-command.js';
 import type { BackendInfo } from '#src/infra/backend-discovery.js';
 import type { BackendStatusFull, ShutdownRemainderReport } from '#src/cli/backend-status.js';
 import { parseBackendHealth, type BackendHealthParseResult } from '#src/transport/http/backend/health.js';
@@ -285,7 +286,10 @@ describe('getBackendStatusFull record disposition', () => {
       shutdownRemainder: { status: 'shutdown_remainder_unreadable', reason: 'corrupt', path: REMAINDER_PATH },
     });
     expect(JSON.stringify(status)).not.toContain('coral-cli');
-    expect(formatBackendStatus(status, { kind: 'absent' }, null)).not.toContain('coral-cli');
+    const rendered = formatBackendStatus(status, { kind: 'absent' }, null);
+    expect(rendered).not.toContain('--force');
+    expect(rendered).not.toContain('run directory');
+    expect(operatorArtifactLines(rendered)).toEqual(['command=coral-cli backend start']);
   });
 
   it('treats an absent record as no remainder evidence at all', async () => {

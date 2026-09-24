@@ -41,7 +41,7 @@ Claude Code
 clients/bridge/coral-cli
   ├── Provider commands (`codex`, `claude`)
   ├── Workflow commands (`workflow`, `jobs`, `wait`, `abort`)
-  ├── Admin commands (`backend status|shutdown`, `backend provider-proxy-set contain|abandon`, `backend routing-status resolve|discard|quarantine list|quarantine clear`, `backend provider-host list|inspect|evict`, `backend store-reset list|report|discard|release`, `backend recovery-quarantine list|clear|discard-provider-operation`, `backend kb-commit quarantine`)
+  ├── Admin commands (`backend start|status|shutdown`, `backend provider-proxy-set contain|abandon`, `backend routing-status resolve|discard|quarantine list|quarantine clear`, `backend provider-host list|inspect|evict`, `backend store-reset list|report|discard|release`, `backend recovery-quarantine list|clear|discard-provider-operation`, `backend kb-commit quarantine`)
   ├── Discuss commands (`discuss *`)
   └── KB commands (`kb *`)
       │

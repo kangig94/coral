@@ -1026,7 +1026,8 @@ describe('cli format', () => {
         [
           'Backend state is unknown: the coordinator discovery record could not be read (corrupt-json).',
           'A coordinator may still be running; this is not a report that none is.',
-          'Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete /run/coral/coordinator.json and run a mutating Coral command; it attempts startup or handoff.',
+          'Next step: no Coral command can stop a coordinator whose own record it cannot read. If one is running, find and stop that process yourself (ps, or your process manager), then delete /run/coral/coordinator.json and run the start command below; it attempts startup or handoff.',
+          'command=coral-cli backend start',
           'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
           `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=corrupt`,
         ].join('\n'),
@@ -1674,10 +1675,10 @@ describe('cli format', () => {
 
     it('formats each no-daemon observation without inventing a general absence', () => {
       expect(formatBackendStatus({ status: 'no_record_no_socket' })).toBe(
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.\ncommand=coral-cli backend start',
       );
       expect(formatBackendStatus({ status: 'recorded_process_absent', pid: 4242 })).toBe(
-        'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.',
+        'A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.\ncommand=coral-cli backend start',
       );
     });
 
@@ -1699,8 +1700,9 @@ describe('cli format', () => {
       expect(text).toBe(
         [
           'Backend state is unknown: the recorded coordinator address is answered by a Coral coordinator for namespace=another-installation flavor=dev, which is not the identity the discovery record carries.',
-          'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. A mutating Coral command (or a Claude Code session start) still attempts startup or handoff.',
-          "Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: run 'ps -p 4242' (or check your process manager), and if that is not Coral, delete /run/coral/coordinator.json and run a mutating Coral command; it attempts startup or handoff. The ordinary shutdown command cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.",
+          'That says only who holds the recorded port, which the operating system reassigns freely: it is not a report that the backend stopped, and it is not a conflict over startup, because this installation is reached through its own socket rather than that port. Startup or handoff through that socket is unaffected by whoever holds the port.',
+          "Next step: the record names a port that coordinator holds, so it is stale unless the recorded process still owns it: run 'ps -p 4242' (or check your process manager), and if that is not Coral, delete /run/coral/coordinator.json and run the start command below; it attempts startup or handoff. The ordinary shutdown command cannot stop the coordinator that answered: it presents the boot token from a record that coordinator never wrote, and is rejected.",
+          'command=coral-cli backend start',
         ].join('\n'),
       );
       expect(text, 'nothing observed here says startup cannot proceed').not.toMatch(/stays held|remains held/u);
@@ -1796,7 +1798,8 @@ describe('cli format', () => {
 
       expect(text).toMatch(/ps -p 4242/u);
       expect(text).toContain('/run/coral/coordinator.json');
-      expect(text).toMatch(/mutating Coral command; it attempts startup or handoff/u);
+      expect(text).toMatch(/run the start command below; it attempts startup or handoff/u);
+      expect(text).toContain('command=coral-cli backend start');
     });
 
     // Not "not running": the coordinator's own IPC socket exists with no record written yet, so a boot in
@@ -1824,7 +1827,8 @@ describe('cli format', () => {
           'Coral recorded a recent coordinator failure.',
           'Phase: startup_failed',
           'Retryable: no',
-          'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
+          'Next step: inspect the coordinator log, fix the reported cause, then run the start command below; it attempts startup or handoff.',
+          'command=coral-cli backend start',
         ].join('\n'),
       );
     });
@@ -1902,7 +1906,7 @@ describe('cli format', () => {
 
       expect(text).toBe(
         [
-          'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+          'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.\ncommand=coral-cli backend start',
           'Coral recorded a recent shutdown with unfinished obligations.',
           'Instance: instance-1',
           'Recorded at: 2026-09-18T01:02:03.000Z',
@@ -1947,7 +1951,7 @@ describe('cli format', () => {
         }),
       ).toBe(
         [
-          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Any mutating Coral command (or a Claude Code session start) attempts startup or handoff.`,
+          `A coordinator discovery record names pid=4242, and that process was observed absent. The record may be stale while another coordinator holds the socket without having published its own record. Run the start command below; it attempts startup or handoff.\ncommand=coral-cli backend start`,
           'A shutdown remainder record is present and this build could not read it; nothing in it identifies which coordinator wrote it.',
           `Unusable: path=/run/coral/${SHUTDOWN_REMAINDER_RECORD_NAME} cause=corrupt`,
         ].join('\n'),
@@ -2009,7 +2013,8 @@ describe('cli format', () => {
           'Phase: startup_failed',
           'Retryable: no',
           'Cause: Coral recorded a setup refusal from another Coral build, whose codes this build cannot name. [code=future_setup_refusal]',
-          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a mutating Coral command; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.",
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then run the start command below; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.",
+          'command=coral-cli backend start',
         ].join('\n'),
       );
     });
@@ -2090,7 +2095,8 @@ describe('cli format', () => {
           'Phase: startup_failed',
           'Retryable: no',
           'Cause: Coral documents this setup refusal, but the details recorded with it are not in the shape this build renders that code from, so its text could not be regenerated. [code=handoff_socket_holder_unverified]',
-          "Next step: inspect the coordinator log for that code, upgrade Coral, then retry a mutating Coral command; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.",
+          "Next step: inspect the coordinator log for that code, upgrade Coral, then run the start command below; it attempts startup or handoff. Inspect backend status again to observe that attempt's result.",
+          'command=coral-cli backend start',
         ].join('\n'),
       );
     });

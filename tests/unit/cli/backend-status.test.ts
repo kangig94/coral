@@ -324,6 +324,85 @@ describe('backend store-reset release failures', () => {
   });
 });
 
+describe('backend start', () => {
+  const RUNNING = 'Backend start: a running coordinator is serving.';
+
+  function runningStatusOperations(
+    order: string[],
+    overrides: Partial<BackendStatusCommandOperations> = {},
+  ): BackendStatusCommandOperations {
+    return {
+      inspectReadiness: () => ({ kind: 'no-legacy' }),
+      getStatus: async () => {
+        order.push('status');
+        return { status: 'ok', health: BASE_RUNNING_HEALTH };
+      },
+      getLiveHandoffResult: () => null,
+      getRoutingStatus: async () => ({ kind: 'absent' }),
+      readProviderProxySetHolderStatusDirect: noDirectProviderProxySetHolders,
+      ...overrides,
+    };
+  }
+
+  async function runStart(status: BackendStatusCommandOperations, start: () => Promise<void>): Promise<void> {
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, { storeReset, backendStatus: status, backendLifecycle: { start } });
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'start']);
+  }
+
+  it('reads status only after the start and reports a clean start as its single line', async () => {
+    const order: string[] = [];
+
+    await runStart(runningStatusOperations(order), async () => {
+      order.push('start');
+    });
+
+    expect(order).toEqual(['start', 'status']);
+    expect(stdout).toBe(`${RUNNING}\n`);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('points only at backend status, never at a hold remedy, when the status carries a hold', async () => {
+    await runStart(
+      runningStatusOperations([], { getRoutingStatus: async () => ({ kind: 'unreadable', reason: 'invalid-json' }) }),
+      async () => {},
+    );
+
+    expect(stdout).toContain(RUNNING);
+    expect(operatorArtifactLines(stdout)).toEqual(['command=coral-cli backend status']);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('keeps a confirmed start successful when the status read afterwards fails', async () => {
+    await runStart(
+      runningStatusOperations([], {
+        getStatus: async () => {
+          throw new Error('status probe failed');
+        },
+      }),
+      async () => {},
+    );
+
+    expect(stdout).toContain(RUNNING);
+    expect(operatorArtifactLines(stdout)).toEqual(['command=coral-cli backend status']);
+    expect(process.exitCode).toBe(0);
+  });
+
+  it('reports a failed start as an error and reads no status', async () => {
+    const order: string[] = [];
+
+    await runStart(runningStatusOperations(order), async () => {
+      throw new Error('coordinator did not become ready');
+    });
+
+    expect(order).toEqual([]);
+    expect(stdout).toBe('');
+    expect(stderr).toContain('coordinator did not become ready');
+    expect(process.exitCode).not.toBe(0);
+  });
+});
+
 describe('backend status generation readiness', () => {
   it.each([
     [{ kind: 'unreadable', reason: 'invalid-json' } as const, 'Routing status is unreadable (invalid-json).'],
@@ -376,6 +455,34 @@ describe('backend status generation readiness', () => {
     expect(stdout).toContain('No coordinator discovery record and no coordinator socket');
   });
 
+  it('keeps what it already printed when a later status read fails', async () => {
+    const program = new Command();
+    program.exitOverride();
+    registerBackendCommands(program, {
+      storeReset,
+      backendStatus: {
+        inspectReadiness: () => ({
+          kind: 'legacy-ignored',
+          legacyPath: '/state/data',
+          generatedPath: '/state/gen2/data',
+        }),
+        getStatus: async () => ({ status: 'unreachable', detail: 'request timed out', cause: 'no_response' }),
+        getLiveHandoffResult: () => null,
+        getRoutingStatus: async () => ({ kind: 'absent' }),
+        readProviderProxySetHolderStatusDirect: async () => {
+          throw new Error('holder dial failed');
+        },
+      },
+    });
+
+    await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
+
+    expect(stderr).toContain('Legacy Coral history remains at /state/data');
+    expect(stderr).toContain('holder dial failed');
+    expect(stdout).toContain('request timed out');
+    expect(process.exitCode).not.toBe(0);
+  });
+
   it('prints a recent startup failure returned by the read-only status probe', async () => {
     const status: BackendStatusCommandOperations = {
       inspectReadiness: () => ({ kind: 'no-legacy' }),
@@ -400,7 +507,8 @@ describe('backend status generation readiness', () => {
         'Coral recorded a recent coordinator failure.',
         'Phase: startup_failed',
         'Retryable: no',
-        'Next step: inspect the coordinator log, fix the reported cause, then retry a mutating Coral command; it attempts startup or handoff.',
+        'Next step: inspect the coordinator log, fix the reported cause, then run the start command below; it attempts startup or handoff.',
+        'command=coral-cli backend start',
         '',
       ].join('\n'),
     );
@@ -624,15 +732,19 @@ describe('backend status live handoff disposition', () => {
 
     expect(stdout).toBe(
       [
-        'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.',
+        'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.\ncommand=coral-cli backend start',
         'Handoff: continuing current build — the CLI and running backend are both version 0.10.9 but come from different builds, so guarded operations will not proceed.',
-        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
+        'command=coral-cli backend start',
         '',
       ].join('\n'),
     );
     const dispatched: RecordedBackendCommand[] = [];
-    await executeRenderedCommand(backendCommandProgram(dispatched), stdout, { label: 'command' });
+    await executeRenderedCommand(backendCommandProgram(dispatched), stdout, {
+      label: 'command',
+      includes: 'backend shutdown',
+    });
     expect(dispatched).toEqual([{ kind: 'shutdown' }]);
     expect(process.exitCode).toBe(75);
   });
@@ -662,7 +774,7 @@ describe('backend status live handoff disposition', () => {
     await program.parseAsync(['node', 'coral-cli', 'backend', 'status']);
 
     expect(stdout).toBe(
-      'No coordinator discovery record and no coordinator socket at the current expected address were found. Any mutating Coral command (or a Claude Code session start) attempts startup.\n',
+      'No coordinator discovery record and no coordinator socket at the current expected address were found. Run the start command below; it attempts startup.\ncommand=coral-cli backend start\n',
     );
     expect(process.exitCode).toBe(0);
   });
@@ -1506,7 +1618,10 @@ describe('backend routing status', () => {
       'Selected routing: continued current (same-build-set: 123e4567-e89b-42d3-a456-426614174000).',
     );
     const dispatched: RecordedBackendCommand[] = [];
-    await executeRenderedCommand(backendCommandProgram(dispatched), stdout, { label: 'command' });
+    await executeRenderedCommand(backendCommandProgram(dispatched), stdout, {
+      label: 'command',
+      includes: 'routing-status resolve',
+    });
     expect(dispatched).toEqual([
       { kind: 'routing-status-resolve', invocationId: 'routing-invocation', forceUnobservable: false },
     ]);
@@ -1529,8 +1644,9 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the incumbent coordinator could not be resolved because its authenticated health reply was not recognized.',
-        'Handoff hold: run the shutdown command below, then run any mutating Coral command (or start a Claude Code session); it attempts startup or handoff from the current installation.',
+        'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from the current installation.',
         'command=coral-cli backend shutdown',
+        'command=coral-cli backend start',
       ].join('\n'),
       expectedCommand: { kind: 'shutdown' },
     },
@@ -1594,8 +1710,9 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — incumbent 2.1.0 did not report a complete bundle identity.',
-        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
+        'command=coral-cli backend start',
       ].join('\n'),
       expectedCommand: { kind: 'shutdown' },
     },
@@ -1622,8 +1739,9 @@ describe('handoff continuation remediation', () => {
       },
       expected: [
         'Handoff: continuing current build — the CLI and running backend are both version 2.1.0 but come from different builds, so guarded operations will not proceed.',
-        'Handoff hold: run the shutdown command below, then rerun a mutating command; it attempts startup or handoff from this installation.',
+        'Handoff hold: run the shutdown command below, then the start command below it; that attempts startup or handoff from this installation.',
         'command=coral-cli backend shutdown',
+        'command=coral-cli backend start',
       ].join('\n'),
       expectedCommand: { kind: 'shutdown' },
     },
@@ -1692,7 +1810,7 @@ describe('backend status subordinate guidance', () => {
   type UnresolvedInvocation = Extract<HandoffRoutingInvocationStatus, { kind: 'unresolved' }>;
   type TerminalInvocation = Extract<HandoffRoutingInvocationStatus, { kind: 'terminal' }>;
 
-  const noGuidanceDaemonStatus = { status: 'no_record_no_socket' } satisfies BackendStatusFull;
+  const noGuidanceDaemonStatus = { status: 'ok', health: BASE_RUNNING_HEALTH } satisfies BackendStatusFull;
   const emptyRetirementHistory = {
     kind: 'retirement-history-truncated',
     expiredIdentityCount: 0,
