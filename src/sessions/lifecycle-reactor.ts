@@ -65,6 +65,7 @@ import {
   appendRetentionDiscardCompleted,
   appendRetentionDiscardFailed,
   appendRetentionDiscardRequested,
+  hasRetentionDiscardAttemptOutcome,
   hasTerminalRetentionDiscardOutcome,
   readNextRetentionDiscardAttempt,
 } from './retention-outbox.js';
@@ -653,6 +654,29 @@ export class LifecycleReactor {
         this.log(`On-demand artifact discard failed for session ${sessionId}: ${errorMessage(error)}`);
       }
     }
+    // No residue discard here. Nothing excludes a concurrent resume while an on-demand discard runs, and a
+    // resumed turn's new forks descend from this same conversation, so a residue walk could delete live work.
+  }
+
+  /**
+   * Residue is best-effort by construction: nothing records it, so keeping a file is always the safe
+   * direction, and a failure here may not hold back the retention whose primary discard already applied.
+   */
+  private async discardSessionResidue(bound: BoundProvider, entry: ProviderSession): Promise<void> {
+    if (bound.artifacts.kind !== 'managed' || bound.artifacts.discardResidue === undefined) return;
+    if (entry.conversationRef === undefined) return;
+    try {
+      const residue = await bound.artifacts.discardResidue({
+        conversationRef: entry.conversationRef,
+        since: Date.parse(entry.createdAt),
+        runtime: this.options.runtime,
+      });
+      for (const kept of residue.retained) {
+        this.log(`Residue retained for session ${entry.sessionId}: ${kept.path} (${kept.reason})`);
+      }
+    } catch (error: unknown) {
+      this.log(`Residue discard failed for session ${entry.sessionId}: ${errorMessage(error)}`);
+    }
   }
 
   async enforceRetention(work: SessionRetentionWork): Promise<RecoveryDisposition> {
@@ -668,7 +692,15 @@ export class LifecycleReactor {
     if (bound === null) {
       throw new Error(`Retention provider binding is unavailable for session ${sessionId}.`);
     }
-    const recoveredContinuation = recoveryWork.recovery.continuation;
+    // A crash between an answered attempt and clearing its continuation recovers that continuation with its
+    // request already answered, which no longer holds resume back. It restarts as a fresh attempt, whose new
+    // request is committed before any discard.
+    const recovered = recoveryWork.recovery.continuation;
+    const recoveredContinuation =
+      recovered !== null &&
+      hasRetentionDiscardAttemptOutcome(this.options.db(), this.options.readCtx, sessionId, recovered.attempt)
+        ? null
+        : recovered;
     let continuation: RetentionDiscardContinuation;
     if (recoveredContinuation === null) {
       const handles = collectArtifactHandles(recoveryWork.entry, bound, this.options.runtime, { jobId });
@@ -719,6 +751,7 @@ export class LifecycleReactor {
       return this.completeRetentionNoEffect(recoveryWork, continuation, 'provider_declares_none');
     }
     if (continuation.handles.length === 0) {
+      await this.discardSessionResidue(bound, recoveryWork.entry);
       return this.completeRetentionNoEffect(recoveryWork, continuation, 'skipped_no_handles');
     }
 
@@ -797,6 +830,9 @@ export class LifecycleReactor {
     if (continuation.stage !== 'discard-applied' || observed?.kind !== 'applied') {
       throw new Error(`Retention discard '${continuation.descriptor.discardActionId}' has no durable applied outcome.`);
     }
+    // Before the completion append: a crash here re-runs retention from its continuation, and residue is
+    // re-derived rather than recorded, so the next run discards whatever this one did not reach.
+    await this.discardSessionResidue(bound, recoveryWork.entry);
     try {
       appendRetentionDiscardCompleted(this.options.commitEvents, {
         sessionId,

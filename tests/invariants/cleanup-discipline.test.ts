@@ -16,7 +16,7 @@ const PRODUCTION_SOURCE_FILES = PRODUCTION_FILE_PATHS.map((filePath) => ({
 
 const LIFECYCLE_REACTOR = 'src/sessions/lifecycle-reactor.ts';
 const RETIRED_WORKFLOW_CLEANUP_MODULE = 'src/coordinator/workflow-cleanup.ts';
-const CLEANUP_METHOD_NAMES = new Set(['cleanupSessions', 'discardArtifacts']);
+const CLEANUP_METHOD_NAMES = new Set(['cleanupSessions', 'discardArtifacts', 'discardResidue']);
 const DISPOSAL_NAME_PATTERN = /workflow.*(?:cleanup|discard|dispos)|(?:cleanup|discard|dispos).*workflow/iu;
 
 function isProviderFile(canonicalPath: string): boolean {
