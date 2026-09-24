@@ -210,7 +210,7 @@ Changes to `settings.json` env take effect on the next Claude Code session start
 
 ### Embedding credentials
 
-Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's process environment. Set them in the user-level `~/.claude/settings.json` `env` block or your shell profile — not in repo-checked settings — then restart the backend (`coral-cli backend shutdown`, then `coral-cli backend start`, which launches it with the new environment).
+Embedding credentials (e.g. `GEMINI_API_KEY`) are read from the backend's process environment. Set them in the user-level `~/.claude/settings.json` `env` block or your shell profile — not in repo-checked settings — then restart the backend: `coral-cli backend shutdown`, then `coral-cli backend start` from an environment that carries the credential. The daemon inherits the environment of the command that starts it, so run it from a Claude Code session (whose tool processes receive the `settings.json` `env` block) or from a shell that exports the variable; a plain shell without it starts a daemon without it.
 
 ## Config Files
 
