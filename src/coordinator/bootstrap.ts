@@ -16,7 +16,8 @@ import {
 import type { UnresolvedIncumbentCause } from './handoff-routing/policy.js';
 import type { handoffRoutingStatusExitContribution } from './handoff-routing/status.js';
 import { createCoordinatorServer } from './index.js';
-import { StartupStoreHandoffError } from './lifecycle.js';
+import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from './succession/attempt-child.js';
+import { StartupStoreHandoffError, SuccessionAttemptStartupHoldError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { assertNever } from '../infra/error-format.js';
@@ -324,6 +325,9 @@ export async function main(): Promise<number> {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
+  const successionAttempt = await receiveSuccessionAttemptChild();
+  installSuccessionAttemptChild(successionAttempt);
+
   // Hold a ref'd keepalive for the duration of startup. Without it, a contender
   // entering `bindWithHandoff`'s retry sleep can drain the event loop and exit
   // silently with code 0: `runtime.time.sleep` uses `timer.unref()` (real.ts),
@@ -335,6 +339,7 @@ export async function main(): Promise<number> {
   try {
     const coordinator = createCoordinatorServer({
       pluginRoot: __PLUGIN_ROOT__,
+      ...(successionAttempt === null ? {} : { bootSnapshot: { bootToken: successionAttempt.bootToken } }),
       onStopped: (exitCode = 0) => {
         bootstrapProbeExitGate.requestExit(exitCode);
       },
@@ -370,6 +375,14 @@ export async function main(): Promise<number> {
     backendLog.info(`Running on ${info.host}:${info.port}`);
     return 0;
   } catch (error: unknown) {
+    if (successionAttempt !== null) {
+      backendLog.warn(
+        error instanceof SuccessionAttemptStartupHoldError
+          ? error.message
+          : `Succession attempt startup failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return 1;
+    }
     if (error instanceof BackendAlreadyRunningError) {
       backendLog.info(error.message);
       return 0;

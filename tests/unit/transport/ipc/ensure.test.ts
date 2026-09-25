@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import type * as NodeOs from 'node:os';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
+import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import {
   readBuildFlavor,
   type StrictBundleIdentityResult,
@@ -694,6 +695,64 @@ describe('ipc ensure', () => {
       expect(mockState.shutdown).not.toHaveBeenCalled();
       expect(mockState.bindSocket).not.toHaveBeenCalled();
       expect(mockState.spawn).not.toHaveBeenCalled();
+    });
+
+    it('follows the exact successor named by a completed serving receipt', async () => {
+      makeHome();
+      vi.useFakeTimers();
+      const root = createPluginRoot();
+      setCompleteChildEnv();
+      writeDiscovery(root, { instanceId: 'parent-coordinator' });
+      const successorBuild = {
+        version: '0.5.3',
+        buildSetId: 'next-build',
+        flavor: 'prod' as const,
+        storeFormatFingerprint: 'same-format',
+        bundleHash: 'new-hash',
+        cliBundleHash: 'new-cli',
+        claudeAppserverBundleHash: 'new-appserver',
+        durableWrapperBundleHash: 'new-wrapper',
+      };
+      mockState.health
+        .mockResolvedValueOnce({
+          status: 'starting', version: '0.5.2', bundleHash: 'test-hash', flavor: 'prod',
+          instanceId: 'parent-coordinator', namespace: pluginRootNamespace(root), pid: process.pid,
+        })
+        .mockResolvedValue({
+          status: 'ok', version: successorBuild.version, bundleHash: successorBuild.bundleHash,
+          flavor: 'prod', instanceId: 'committed-successor', namespace: 'successor-namespace', pid: process.pid,
+        });
+      setTimeout(() => {
+        writeFileSync(upgradeIntentPath(coordinatorPaths('prod').runDir), JSON.stringify({
+          version: 'v1', requestId: 'upgrade-1', revision: 1,
+          incumbent: {
+            instanceId: 'parent-coordinator', pid: process.pid, incarnation: null,
+            version: '0.5.2', bundleHash: 'test-hash', flavor: 'prod',
+          },
+          target: { pluginRootLabel: root, build: successorBuild },
+          attemptId: 'attempt-1',
+          attemptOwner: { kind: 'incumbent', instanceId: 'parent-coordinator', pid: process.pid, incarnation: null },
+          disposition: 'completed', blockers: [], retryCondition: null,
+          attemptDeadline: '2099-01-01T00:01:00.000Z',
+          completionReceipt: {
+            kind: 'serving', attemptId: 'attempt-1',
+            successor: { instanceId: 'committed-successor', pid: process.pid, incarnation: null, build: successorBuild },
+            epochKey: 'epoch-1:lineage-1', controlGeneration: 2, acceptedObligations: [],
+            recordedAt: '2099-01-01T00:00:00.000Z',
+          },
+        }));
+        writeDiscovery(root, {
+          instanceId: 'committed-successor', version: successorBuild.version,
+          bundleHash: successorBuild.bundleHash, namespace: 'successor-namespace',
+        });
+      }, 100);
+
+      const { ensure } = await importEnsure();
+      const result = ensure('sessions.create', root);
+      await vi.advanceTimersByTimeAsync(400);
+      expect((await result).instanceId).toBe('committed-successor');
+      expect(mockState.spawn).not.toHaveBeenCalled();
+      expect(mockState.shutdown).not.toHaveBeenCalled();
     });
 
     it('rejects stale discovery even when health is ready', async () => {

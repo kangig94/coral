@@ -177,6 +177,28 @@ describe('succession admission pause', () => {
     expect(coordinator.beginSuccessionCommitWindow('next-attempt', coordinator.admissionRevision()).kind).toBe('paused');
     expect(coordinator.endSuccessionCommitWindow('next-attempt')).toBe(true);
   });
+
+  it('should settle cancellation of an accepted queued launch during a commit window', async () => {
+    const first = coordinator.requestLaunch(
+      'active', 'claude', { kind: 'provider-session', id: 'session-active' }, 'default',
+    );
+    if (typeof first !== 'object' || first.type !== 'immediate') throw new Error('active launch was not admitted');
+    const queued = coordinator.requestLaunch(
+      'queued', 'claude', { kind: 'provider-session', id: 'session-queued' }, 'default',
+    );
+    if (typeof queued !== 'object' || queued.type !== 'queued') throw new Error('launch was not queued');
+
+    expect(coordinator.beginSuccessionCommitWindow('attempt', coordinator.admissionRevision()).kind).toBe('paused');
+    const rejected = queued.waitForPermit().then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+    expect(queued.cancel()).toEqual({ kind: 'cancelled' });
+    expect((await rejected)?.message).toBe('Launch canceled while queued');
+    expect(coordinator.successionAdmissionPaused()).toBe(true);
+    expect(coordinator.endSuccessionCommitWindow('attempt')).toBe(true);
+    expect(coordinator.releaseLaunch(first.permit).kind).toBe('released');
+  });
 });
 
 const PLATFORM_CAPABILITIES = {

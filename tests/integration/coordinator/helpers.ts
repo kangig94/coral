@@ -16,7 +16,11 @@ import { createConnection } from 'node:net';
 import { join } from 'node:path';
 
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import {
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+  SUCCESSION_CAPABILITY_VERSION,
+} from '#src/infra/bundle-manifest-address.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
 import { coordinatorPaths } from '#src/infra/path/coordinator.js';
@@ -28,12 +32,14 @@ const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(process.cwd(), 'clients', 'build', 'coral-durable-wrapper.cjs');
 const sourceManifestPath = join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
+const sourceSuccessionCapabilitiesPath = join(process.cwd(), 'clients', 'build', SUCCESSION_CAPABILITIES_FILE);
 const requiredBuildArtifacts = [
   sourceBackendBundle,
   sourceCliBundle,
   sourceClaudeAppserverBundle,
   sourceDurableWrapperBundle,
   sourceManifestPath,
+  sourceSuccessionCapabilitiesPath,
 ] as const;
 
 type SourceManifest = {
@@ -174,6 +180,17 @@ export function createPluginFixture(
     `${JSON.stringify(fixtureManifest)}\n`,
     'utf-8',
   );
+  writeFileSync(
+    join(root, 'bridge', SUCCESSION_CAPABILITIES_FILE),
+    `${JSON.stringify({
+      version: SUCCESSION_CAPABILITY_VERSION,
+      buildSetId: fixtureManifest.buildSetId,
+      bundleHash: fixtureManifest.bundleHash,
+      protocols: ['prepare', 'commit'],
+      accepts: [],
+    })}\n`,
+    'utf-8',
+  );
 
   mkdirSync(join(root, 'node_modules'), { recursive: true });
   symlinkSync(
@@ -265,6 +282,16 @@ export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash
   writeFileSync(
     join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE),
     `${JSON.stringify(fixtureManifest)}\n`,
+  );
+  writeFileSync(
+    join(fixture.root, 'bridge', SUCCESSION_CAPABILITIES_FILE),
+    `${JSON.stringify({
+      version: SUCCESSION_CAPABILITY_VERSION,
+      buildSetId: fixtureManifest.buildSetId,
+      bundleHash: fixtureManifest.bundleHash,
+      protocols: ['prepare', 'commit'],
+      accepts: [],
+    })}\n`,
   );
   writeFileSync(
     join(fixture.root, 'bridge', 'manifest.json'),

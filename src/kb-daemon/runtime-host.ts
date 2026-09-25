@@ -1,5 +1,6 @@
 declare const __VERSION__: string;
 
+import { dirname } from 'node:path';
 import { readBuildFlavor, readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
 import { nowDate } from '../infra/time.js';
@@ -55,7 +56,13 @@ import {
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
 import type { Database } from '../store/db.js';
-import { openWritableStoreDbNoReset, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { openWritableStoreDbNoReset, resolveCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
+import {
+  fenceCorpusStorage,
+  joinSuccessionWriterGeneration,
+  type SuccessionWriterEntitlement,
+  type SuccessionWriterGeneration,
+} from '../store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '../store-format.js';
 import type { KbDaemonExpansionRequest, KbDaemonExpansionResult } from './protocol.js';
 import { cleanupRetiredExpansion } from './expansion/retirement.js';
@@ -97,6 +104,7 @@ type KbDaemonWriteRuntimeState = {
   runtime: Runtime;
   db: WritableDatabase;
   ownsDb: boolean;
+  writerEntitlement: SuccessionWriterEntitlement | null;
   generationWriterLease: GenerationWriterLease;
   kbRuntime: DaemonKnowledgeBaseRuntime;
   consumerDriver: ConsumerDriver;
@@ -131,6 +139,8 @@ export type KbDaemonWriteRuntimeHost = {
   expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
   listActiveJobs(): string[];
   abortJobs(jobIds: string[]): { aborted: string[]; notFound: string[] };
+  parkWriterTurn(options?: { signal?: AbortSignal }): Promise<void>;
+  reclaimWriterTurn(generation?: SuccessionWriterGeneration, signal?: AbortSignal): void;
   dispose(options?: { signal?: AbortSignal }): Promise<void>;
   health(): KbDaemonKbReadHealth;
 };
@@ -374,14 +384,24 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           ...(options.store === undefined ? {} : { resolved: options.store }),
         }) as unknown as WritableDatabase);
       const activeDb = db;
+      const resolvedStore = options.store ?? resolveCurrentStore(runtime).epoch;
+      const writerEntitlement = ownsDb
+        ? joinSuccessionWriterGeneration(
+            runtime,
+            resolvedStore ?? { storeRoot: dirname(resolveCurrentStore(runtime).path), epoch: 'legacy' },
+          )
+        : null;
+      const corpusStorage =
+        writerEntitlement === null ? runtime.storage : fenceCorpusStorage(runtime.storage, writerEntitlement);
+      const guardedRuntime = { ...runtime, storage: corpusStorage };
       const backendNamespace = options.backendNamespace ?? pluginRootNamespace(options.pluginRoot);
       const bundleHash = options.bundleHash ?? readBundleHash(options.pluginRoot);
       const markdownRoot = runtime.paths.coral.corpus.kbRoot;
       const runtimeDir = runtime.paths.coral.kbRuntime.root;
-      cleanupSourceImportRuntimeArtifacts(runtimeDir, runtime);
+      cleanupSourceImportRuntimeArtifacts(runtimeDir, guardedRuntime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
-      const progressStore = new JobStore(backendNamespace, runtime, createEventBodyCodec(), {
+      const progressStore = new JobStore(backendNamespace, guardedRuntime, createEventBodyCodec(), {
         db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
         providers: noProviderLookupPort,
         observer: (appended) => options.onJournalEvents?.(appended),
@@ -396,7 +416,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         envPort: runtime.env,
         time: runtime.time,
         ids: runtime.ids,
-        storage: runtime.storage,
+        storage: corpusStorage,
         curateAssistant,
         processPort: runtime.process,
         corpusPublishCallbacks: {
@@ -481,7 +501,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       const expansionStateStore = new ExpansionStateStore(activeDb as Database);
       const activeExpansionLifecycleService = new ExpansionLifecycleService({
         makeHost: createHostFactory({
-          runtime,
+          runtime: guardedRuntime,
           kbRuntime: kb,
           consumerDriver: activeConsumerDriver,
         }),
@@ -498,7 +518,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         protectedPackageIds: new Set(INSTALL_ONLY_PACKAGES.map((entry) => entry.id)),
         retireCatalogAbsent: (name, finalizeState) =>
           cleanupRetiredExpansion(name, {
-            runtime,
+            runtime: guardedRuntime,
             kbRuntimeDir: kb.runtimeDir,
             manifestCatalog,
             consumerDriver: activeConsumerDriver,
@@ -516,7 +536,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       // results until the Korean analyzer is ready, so the first note mutation is never blocked
       // on the ~89MB artifact downloads or a corpus-scale Korean re-tokenization.
       const kiwiArtifactBootHandle = startKiwiArtifactFetchOnBoot({
-        runtime,
+        runtime: guardedRuntime,
         kb,
         driver: activeConsumerDriver,
         timeoutMs: corpusReadinessTimeoutMs,
@@ -530,7 +550,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           kb,
           curateAssistant,
           processPort: runtime.process,
-          storagePort: runtime.storage,
+          storagePort: corpusStorage,
           envPort: runtime.env,
           usageBudget: options.curateUsageBudget,
           runCommunitySummaryJob: (signal) => runCommunitySummaryAgent(kb, curateAssistant, signal),
@@ -564,7 +584,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         });
       };
       const sourceImportService = new KbSourceImportService({
-        runtime,
+        runtime: guardedRuntime,
         progressStore,
         backendNamespace,
         bundleHash,
@@ -573,7 +593,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         internalJobOwner: 'kb-daemon',
       });
       const reindexService = new KbReindexService({
-        runtime,
+        runtime: guardedRuntime,
         progressStore,
         backendNamespace,
         bundleHash,
@@ -582,9 +602,10 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
         internalJobOwner: 'kb-daemon',
       });
       state = {
-        runtime,
+        runtime: guardedRuntime,
         db: activeDb,
         ownsDb,
+        writerEntitlement,
         generationWriterLease,
         kbRuntime,
         consumerDriver: activeConsumerDriver,
@@ -892,6 +913,26 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
     listActiveJobs() {
       const activeState = state;
       return activeState === null ? [] : activeState.abortRegistry.listActive();
+    },
+    async parkWriterTurn(options) {
+      const activeState = state;
+      if (activeState === null || activeState.writerEntitlement === null) {
+        throw new Error('KB daemon writer turn is unavailable.');
+      }
+      await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal: options?.signal });
+      if (state !== activeState) throw new Error('KB daemon writer turn changed during park.');
+      activeState.writerEntitlement.park();
+    },
+    reclaimWriterTurn(generation, signal) {
+      const writer = state?.writerEntitlement;
+      if (writer === undefined || writer === null) throw new Error('KB daemon writer turn is unavailable.');
+      signal?.throwIfAborted();
+      if (generation !== undefined && generation.generation !== writer.generation.generation) writer.rebind(generation);
+      writer.unpark();
+      if (signal?.aborted) {
+        writer.park();
+        signal.throwIfAborted();
+      }
     },
     dispose,
     health() {

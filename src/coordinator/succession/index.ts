@@ -1,5 +1,8 @@
+import { join } from 'node:path';
+
 import { SUCCESSION_METHODS } from '../../infra/succession-address.js';
 import {
+  readSuccessionCapabilities,
   successionAbortSchema,
   successionCommitSchema,
   successionPrepareSchema,
@@ -24,8 +27,20 @@ export function createSuccessionCoordinator(options: SuccessionReconcilerOptions
         const parsed = successionRequestSchema.safeParse(params);
         if (!parsed.success) return { kind: 'refused', reason: 'invalid succession request' };
         const decision = await reconciler.request(parsed.data);
+        const targetCapabilities = decision.kind === 'registered'
+          ? readSuccessionCapabilities(
+              join(decision.intent.target.pluginRootLabel, 'bridge'),
+              decision.intent.target.build,
+            )
+          : null;
         return decision.kind === 'registered'
-          ? { ...decision, incumbentCanCommit: options.commitAvailable === true }
+          ? {
+              ...decision,
+              incumbentCanCommit:
+                options.commitAvailable === true &&
+                targetCapabilities?.kind === 'declared' &&
+                targetCapabilities.capabilities.protocols.includes('commit'),
+            }
           : decision;
       }
       case SUCCESSION_METHODS.prepare: {

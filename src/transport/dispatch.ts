@@ -993,6 +993,8 @@ async function executeJobsAbortCatalogRequest({
   switch (decision.kind) {
     case 'answered':
       return unary(decision.result);
+    case 'retryable':
+      return unary({ code: decision.code, message: 'Succession commit is temporarily pausing cancellation' }, 503);
     case 'successor-owned':
       return { kind: 'lifecycle-refused' };
   }

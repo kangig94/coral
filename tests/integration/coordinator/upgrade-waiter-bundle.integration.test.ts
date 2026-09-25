@@ -24,7 +24,7 @@ describe('upgrade waiter bundle', () => {
     expect(waiter.length).toBeGreaterThan(0);
     expect(readSuccessionCapabilities(bundleDir, manifest)).toMatchObject({
       kind: 'declared',
-      capabilities: { protocols: ['prepare'] },
+      capabilities: { protocols: ['prepare', 'commit'] },
     });
     expect(packageFiles).toContain(`clients/bridge/${UPGRADE_WAITER_BUNDLE_FILE}`);
     expect(packageFiles).toContain(`clients/bridge/${SUCCESSION_CAPABILITIES_FILE}`);

@@ -18,6 +18,11 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import { resolvedStoreEpoch, STORE_EPOCH_METADATA_FILE_NAME } from '#src/store/epoch.js';
+import {
+  advanceSuccessionWriterGeneration,
+  handbackSuccessionWriterGeneration,
+  joinSuccessionWriterGeneration,
+} from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openSettledTestStoreDb, openTestStoreDb } from '#tests/helpers/store-db.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
@@ -141,18 +146,31 @@ describe('KB daemon runtime host', () => {
         }),
       );
     }
+    const store = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1');
     const host = createKbDaemonWriteRuntimeHost({
       pluginRoot: join(root, 'plugin'),
       backendNamespace: 'test-namespace',
       bundleHash: 'test-bundle',
       curateUsageBudget: { isExhausted: async () => false },
       runtime,
-      store: resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1'),
+      store,
     });
 
     try {
       await host.withKb(({ db }) => {
         expect(db.prepare<[], { epoch: string }>('SELECT epoch FROM epoch_marker').get()?.epoch).toBe('1');
+      });
+      await host.parkWriterTurn();
+      await expect(
+        host.withKb(({ db }) => db.prepare('INSERT INTO epoch_marker (epoch) VALUES (?)').run('parked')),
+      ).rejects.toThrow(/parked|closed/u);
+      const parkedWriter = joinSuccessionWriterGeneration(runtime, store);
+      const failed = advanceSuccessionWriterGeneration(runtime, parkedWriter.generation, store);
+      const handedBack = handbackSuccessionWriterGeneration(runtime, failed, store);
+      host.reclaimWriterTurn(handedBack);
+      await host.withKb(({ db }) => {
+        db.prepare('INSERT INTO epoch_marker (epoch) VALUES (?)').run('reclaimed');
+        expect(db.prepare<[], { total: number }>('SELECT count(*) AS total FROM epoch_marker').get()?.total).toBe(2);
       });
     } finally {
       await host.dispose().catch(() => undefined);

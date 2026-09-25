@@ -55,6 +55,49 @@ export class ChildPrincipalNonceLedger {
       .map((row) => String(row.token));
   }
 
+  claimGenerationAndReplay(
+    grantId: string,
+    checkpoint: number,
+    expectedGeneration: number,
+    successorGeneration: number,
+    handles: readonly string[],
+  ): ReadonlyMap<string, readonly string[]> | null {
+    if (successorGeneration <= expectedGeneration) return null;
+    try {
+      this.db.exec('BEGIN IMMEDIATE');
+      const grant = this.db.prepare(
+        'SELECT generation, checkpoint FROM child_principal_grant WHERE grant_id = ?',
+      ).get(grantId) as { generation: number; checkpoint: number } | undefined;
+      const currentGeneration = this.generation();
+      if (
+        grant?.generation !== expectedGeneration ||
+        grant.checkpoint !== checkpoint ||
+        this.checkpoint() < checkpoint ||
+        (currentGeneration !== expectedGeneration && currentGeneration !== successorGeneration)
+      ) {
+        this.db.exec('ROLLBACK');
+        return null;
+      }
+      if (currentGeneration === expectedGeneration) {
+        this.db.prepare(
+          'UPDATE child_principal_authority SET generation = ? WHERE singleton = 1 AND generation = ?',
+        ).run(successorGeneration, expectedGeneration);
+      }
+      const consumed = new Map<string, readonly string[]>(
+        handles.map((handle) => [handle, this.consumedTokens(handle)]),
+      );
+      this.db.exec('COMMIT');
+      return consumed;
+    } catch {
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // An uncertain claim cannot authorize transferred authentication.
+      }
+      return null;
+    }
+  }
+
   prepareGrant(attemptId: string, generation: number): { grantId: string; checkpoint: number } | null {
     const grantId = `child-principal-nonces:${attemptId}`;
     try {
@@ -83,17 +126,6 @@ export class ChildPrincipalNonceLedger {
         // A grant without a durable commit cannot authorize transfer.
       }
       return null;
-    }
-  }
-
-  hasGrant(grantId: string, generation: number, checkpoint: number): boolean {
-    try {
-      const row = this.db.prepare(
-        'SELECT checkpoint FROM child_principal_grant WHERE grant_id = ? AND generation <= ?',
-      ).get(grantId, generation) as { checkpoint: number } | undefined;
-      return row?.checkpoint === checkpoint;
-    } catch {
-      return false;
     }
   }
 

@@ -18,6 +18,8 @@ export type KbDaemonRequestMethod =
   | 'kb.abort'
   | 'kb.jobs'
   | 'kb.warmup'
+  | 'writer.park'
+  | 'writer.reclaim'
   | 'expansion.rpc';
 
 type KbDaemonParentRequestMethod =
@@ -296,6 +298,8 @@ export function isKbDaemonRequestMessage(value: unknown): value is KbDaemonReque
       record.method === 'kb.abort' ||
       record.method === 'kb.jobs' ||
       record.method === 'kb.warmup' ||
+      record.method === 'writer.park' ||
+      record.method === 'writer.reclaim' ||
       record.method === 'expansion.rpc')
   );
 }

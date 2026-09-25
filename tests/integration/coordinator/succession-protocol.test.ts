@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
 import { readSuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
@@ -14,6 +14,7 @@ import {
   SUCCESSION_CAPABILITIES_FILE,
 } from '#src/infra/bundle-manifest-address.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const roots: string[] = [];
 
@@ -63,6 +64,74 @@ afterEach(() => {
 });
 
 describe('succession protocol', () => {
+  it('launches the prepared target after its final obligation settles without another contender', async () => {
+    const target = fixture();
+    let blocked = true;
+    const launchPrepared = vi.fn(async () => {});
+    const owner: SuccessionOwner = {
+      id: 'launch-admission',
+      classify: async () => blocked
+        ? { kind: 'blocking', reason: 'accepted job is running' }
+        : { kind: 'completed', reason: 'accepted job settled' },
+    };
+    const service = createSuccessionCoordinator({
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent', pid: 100, incarnation: null,
+        version: '1.0.0', bundleHash: 'old-bundle', flavor: 'prod',
+      },
+      owners: [owner],
+      requiredOwners: [owner.id],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      launchPrepared,
+    });
+    try {
+      expect(await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      })).toMatchObject({ kind: 'registered' });
+      expect(await service.reconciler.reconcile()).toMatchObject({ kind: 'deferred' });
+      expect(launchPrepared).not.toHaveBeenCalled();
+
+      blocked = false;
+      service.reconciler.notifyObligationChange();
+      await waitForCondition(() => launchPrepared.mock.calls.length === 1);
+      expect(launchPrepared).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: 'request' }),
+        expect.objectContaining({ stage: 'prepared', receipts: [] }),
+      );
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
+  it('reports no incumbent commit capability when the registered target declares preparation only', async () => {
+    const target = fixture();
+    writeFileSync(target.declarationPath, JSON.stringify({ ...target.declaration, protocols: ['prepare'] }));
+    const service = createSuccessionCoordinator({
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      },
+      owners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+    });
+    expect(await service.dispatch('coordinator.succession.v1.request', {
+      requestId: 'request',
+      target: { build: target.build, pluginRootLabel: target.pluginRoot },
+    })).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
+    service.reconciler.dispose();
+  });
+
   it.each([
     ['blocking', async () => ({ kind: 'blocking' as const, reason: 'owner still holds work' })],
     ['unavailable', async () => { throw new Error('owner inventory failed'); }],
@@ -225,7 +294,7 @@ describe('succession protocol', () => {
     expect(await service.reconciler.reportReady(ready)).toMatchObject({ kind: 'ready' });
     expect(await service.reconciler.commit(first.preparation.attemptId)).toEqual({
       kind: 'deferred',
-      reason: 'succession commit capability is not released',
+      reason: 'awaiting durable serving record',
     });
     expect(service.reconciler.status()).toMatchObject({
       kind: 'readable',
@@ -333,7 +402,13 @@ describe('succession protocol', () => {
 
   it('recovers the committed answer from a durable serving receipt after a lost reply', async () => {
     const target = fixture();
-    const serving = { epochKey: 'epoch-one', controlGeneration: 1, successorInstanceId: 'successor' };
+    let admissionRevision = 0;
+    let serving: {
+      epochKey: string;
+      controlGeneration: number;
+      successorInstanceId: string;
+      recordedAt: string;
+    } | null = null;
     const service = createSuccessionCoordinator({
       runDir: target.runDir,
       incumbent: {
@@ -347,7 +422,7 @@ describe('succession protocol', () => {
       owners: [],
       requiredOwners: [],
       epochKey: () => 'epoch-one',
-      admissionRevision: () => 0,
+      admissionRevision: () => admissionRevision,
       newAttemptId: () => 'attempt',
       observeServing: () => serving,
     });
@@ -367,8 +442,12 @@ describe('succession protocol', () => {
       receiptIds: [],
     };
     await service.reconciler.reportReady(report);
-    const observed = readUpgradeIntent(target.runDir);
-    if (observed.kind !== 'readable') throw new Error('expected durable intent');
+    serving = {
+      epochKey: 'epoch-one',
+      controlGeneration: 1,
+      successorInstanceId: 'successor',
+      recordedAt: new Date().toISOString(),
+    };
     const receipt = {
       kind: 'serving' as const,
       attemptId: 'attempt',
@@ -381,16 +460,14 @@ describe('succession protocol', () => {
       epochKey: 'epoch-one',
       controlGeneration: 1,
       acceptedObligations: [],
-      recordedAt: new Date().toISOString(),
+      recordedAt: serving.recordedAt,
     };
-    expect(
-      await compareAndSwapUpgradeIntent(target.runDir, observed.intent.revision, {
-        ...observed.intent,
-        disposition: 'completed',
-        completionReceipt: receipt,
-      }),
-    ).toMatchObject({ kind: 'written' });
-
+    admissionRevision++;
+    expect(await service.reconciler.request({
+      requestId: 'later-contender',
+      target: { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot },
+    })).toMatchObject({ kind: 'registered', intent: { requestId: 'request' } });
+    expect(await service.reconciler.abort('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.commit('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.commit('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.abort('attempt')).toEqual({

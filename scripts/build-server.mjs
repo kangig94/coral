@@ -254,7 +254,7 @@ writeFileSync(
     version: SUCCESSION_CAPABILITY_VERSION,
     buildSetId,
     bundleHash: backendHash,
-    protocols: ['prepare'],
+    protocols: ['prepare', 'commit'],
     accepts: [],
   }) + '\n',
 );

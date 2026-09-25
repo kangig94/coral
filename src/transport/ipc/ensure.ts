@@ -53,6 +53,7 @@ import {
 import { assertNever } from '../../infra/error-format.js';
 import { isCoralChildEnvironment } from '../../security/child-principal-env.js';
 import { resolveStartupAttemptLineage } from '../../infra/startup-attempt-lineage.js';
+import { readUpgradeIntent } from '../../infra/upgrade-intent.js';
 export const STARTUP_POLL_MS = 200;
 /**
  * Time budget for an already-starting incumbent to reach a usable lifecycle phase (kernel-ready or running).
@@ -900,7 +901,7 @@ async function waitForExistingIncumbentReady(
   timeoutMs: number,
   timePort: TimePort,
 ): Promise<ReadyCoordinatorEvidence> {
-  const incumbent = existingIncumbentIdentity(initialHealth);
+  let incumbent = existingIncumbentIdentity(initialHealth);
   const deadline = timePort.now() + timeoutMs;
   let health: RawCoordinatorHealth | null = initialHealth;
 
@@ -912,7 +913,28 @@ async function waitForExistingIncumbentReady(
       throw childCoordinatorUnavailable('the observed parent coordinator is draining');
     }
     if (!identityMatchesExistingIncumbent(health, incumbent)) {
-      throw childCoordinatorUnavailable('the coordinator identity changed while the child was connecting');
+      const observed = readUpgradeIntent(paths.runDir);
+      const receipt = observed.kind === 'readable' && observed.intent.disposition === 'completed'
+        ? observed.intent.completionReceipt
+        : null;
+      if (
+        receipt === null ||
+        observed.kind !== 'readable' ||
+        observed.intent.incumbent.instanceId !== incumbent.instanceId ||
+        observed.intent.incumbent.version !== incumbent.version ||
+        observed.intent.incumbent.bundleHash !== incumbent.bundleHash ||
+        observed.intent.incumbent.flavor !== incumbent.flavor ||
+        (incumbent.pid !== undefined && observed.intent.incumbent.pid !== incumbent.pid) ||
+        receipt.successor.instanceId !== health.instanceId ||
+        receipt.successor.pid !== health.pid ||
+        receipt.successor.build.version !== health.version ||
+        receipt.successor.build.bundleHash !== health.bundleHash ||
+        receipt.successor.build.flavor !== health.flavor ||
+        (receipt.successor.incarnation !== null && receipt.successor.incarnation !== health.incarnation)
+      ) {
+        throw childCoordinatorUnavailable('the coordinator identity changed while the child was connecting');
+      }
+      incumbent = existingIncumbentIdentity(health);
     }
 
     const info = readDiscoverySnapshot(paths);

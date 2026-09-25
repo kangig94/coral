@@ -35,6 +35,7 @@ export type SuccessionReconcilerOptions = Readonly<{
     epochKey: string;
     controlGeneration: number;
     successorInstanceId: string;
+    recordedAt: string;
   }> | null;
   onIntentChanged?: () => void;
   onReconcileError?: (error: unknown) => void;
@@ -198,8 +199,20 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     if (incumbentKey(intent.incumbent) !== incumbentKey(options.incumbent)) {
       return { kind: 'deferred', reason: 'upgrade intent names another incumbent' };
     }
+    if (
+      intent.disposition === 'deferred' &&
+      intent.retryCondition?.kind === 'target-change' &&
+      intent.blockers.some((blocker) =>
+        blocker.owner === 'succession-commit' || blocker.owner === 'succession-prepare'
+      )
+    ) {
+      return { kind: 'deferred', reason: 'successor target must change after failed attempt' };
+    }
     if (options.commitAvailable !== true) {
       return { kind: 'deferred', reason: 'incumbent needs a legacy retirement waiter' };
+    }
+    if (intent.attemptId !== null && options.observeServing?.(intent.attemptId) != null) {
+      return commit(intent.attemptId);
     }
     const prepared = await prepare(intent.requestId);
     if (prepared.kind !== 'prepared') return prepared;
@@ -262,6 +275,10 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       }
       const current = observed.kind === 'readable' ? observed.intent : null;
       if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
+        if (current.attemptId !== null && options.observeServing?.(current.attemptId) != null) {
+          notifyObligationChange();
+          return { kind: 'registered', intent: current };
+        }
         let comparison: number;
         try {
           comparison = compareProductVersions(input.target.build.version, current.target.build.version);
@@ -311,6 +328,9 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       }
       if (incumbentKey(intent.incumbent) !== incumbentKey(options.incumbent)) {
         return { kind: 'refused', reason: 'incumbent identity changed' };
+      }
+      if (intent.attemptId !== null && options.observeServing?.(intent.attemptId) != null) {
+        return commit(intent.attemptId);
       }
       const validated = revalidateUpgradeIntentTarget(intent);
       const declared =
@@ -505,6 +525,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const intent = observed.intent;
       if (intent.attemptId !== attemptId) return { kind: 'refused', reason: 'attempt is not current' };
       if (intent.disposition === 'completed') return { kind: 'refused', reason: 'attempt already serves' };
+      if (options.observeServing?.(attemptId) != null) return commit(attemptId);
       const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
         disposition: 'pending',
@@ -542,6 +563,53 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (preparation === null || preparation.attemptId !== attemptId) {
         return { kind: 'refused', reason: 'attempt is not prepared' };
       }
+      const serving = options.observeServing?.(attemptId);
+      if (serving != null) {
+        if (
+          preparation.ready === null ||
+          preparation.targetKey !== targetKey(intent.target) ||
+          serving.epochKey !== preparation.epochKey ||
+          serving.successorInstanceId.length === 0 ||
+          !Number.isSafeInteger(serving.controlGeneration) ||
+          serving.controlGeneration < 1 ||
+          !Number.isFinite(Date.parse(serving.recordedAt)) ||
+          (intent.attemptDeadline !== null &&
+            Date.parse(serving.recordedAt) > Date.parse(intent.attemptDeadline))
+        ) {
+          return { kind: 'deferred', reason: 'durable serving record does not match the prepared attempt' };
+        }
+        const receipt: NonNullable<UpgradeIntent['completionReceipt']> = {
+          kind: 'serving',
+          attemptId,
+          successor: {
+            instanceId: serving.successorInstanceId,
+            pid: preparation.ready.successorPid,
+            incarnation:
+              intent.attemptChild?.attemptId === attemptId &&
+              intent.attemptChild.pid === preparation.ready.successorPid
+                ? intent.attemptChild.incarnation
+                : null,
+            build: intent.target.build,
+          },
+          epochKey: serving.epochKey,
+          controlGeneration: serving.controlGeneration,
+          acceptedObligations: preparation.receipts.map((ownerReceipt) => ({
+            owner: ownerReceipt.owner,
+            receiptId: ownerReceipt.receiptId,
+            controlGeneration: serving.controlGeneration,
+          })),
+          recordedAt: serving.recordedAt,
+        };
+        const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          disposition: 'completed',
+          completionReceipt: receipt,
+        });
+        if (written.kind === 'conflict') continue;
+        if (written.kind !== 'written') return { kind: 'deferred', reason: `upgrade intent is ${written.kind}` };
+        options.onIntentChanged?.();
+        return { kind: 'committed', receipt };
+      }
       if (!currentPreparation(intent, preparation, options)) {
         const declared = readSuccessionCapabilities(join(intent.target.pluginRootLabel, 'bridge'), intent.target.build);
         const targetChanged =
@@ -564,8 +632,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         return { kind: 'refused', reason: 'preparation is stale' };
       }
       if (preparation.stage !== 'ready') return { kind: 'deferred', reason: 'successor has not reported ready' };
-      // Commit cannot advance until exact-epoch open, writer fencing, and succession release exist.
-      return { kind: 'deferred', reason: 'succession commit capability is not released' };
+      return { kind: 'deferred', reason: 'awaiting durable serving record' };
     }
     return { kind: 'deferred', reason: 'upgrade intent changed concurrently' };
   }

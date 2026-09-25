@@ -6,6 +6,7 @@ import type { StoragePort } from '../infra/port-types.js';
 import { compareProductVersions, validateProductVersion } from '../infra/product-version.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
 import type { ReadonlyDatabase, ReadonlyStatement } from './read-types.js';
+import type { SuccessionWriterEntitlement } from './succession-writer-generation.js';
 import {
   isStoreFormatFingerprint,
   STORE_FORMAT_FINGERPRINT_META_KEY,
@@ -70,11 +71,121 @@ type WritableStoreOptions = {
   readonly flavor?: BuildFlavor;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
+  readonly writerEntitlement?: SuccessionWriterEntitlement;
   readonly busyTimeoutDeadline?: Readonly<{
     expiresAt: bigint;
     monotonicNow: () => bigint;
   }>;
 };
+
+function fenceWritableDatabase(db: Database, entitlement: SuccessionWriterEntitlement): void {
+  const exec = db.exec.bind(db);
+  const prepare = db.prepare.bind(db);
+  let transactionTurn: (() => void) | null = null;
+
+  const write = <T>(operation: () => T): T => {
+    if (db.isTransaction) {
+      if (transactionTurn === null) throw new Error('Unfenced store write transaction.');
+      return operation();
+    }
+    const release = entitlement.beginWriteTurn();
+    let began = false;
+    try {
+      exec('BEGIN IMMEDIATE');
+      began = true;
+      entitlement.assertCurrent();
+      const result = operation();
+      exec('COMMIT');
+      return result;
+    } catch (error: unknown) {
+      if (began && db.isTransaction) exec('ROLLBACK');
+      throw error;
+    } finally {
+      release();
+    }
+  };
+
+  Object.defineProperty(db, 'exec', {
+    configurable: true,
+    value: (sql: string) => {
+      if (/^\s*BEGIN\b/iu.test(sql)) {
+        if (/;\s*\S/u.test(sql)) throw new Error('Compound BEGIN scripts cannot be generation fenced.');
+        if (transactionTurn !== null) throw new Error('Nested fenced store transaction.');
+        const release = entitlement.beginWriteTurn();
+        try {
+          exec(sql);
+          entitlement.assertCurrent();
+          if (db.isTransaction) transactionTurn = release;
+          else release();
+        } catch (error: unknown) {
+          if (db.isTransaction) exec('ROLLBACK');
+          release();
+          throw error;
+        }
+        return;
+      }
+      if (/^\s*(?:COMMIT|ROLLBACK)\b/iu.test(sql)) {
+        if (/;\s*\S/u.test(sql)) throw new Error('Compound transaction endings cannot be generation fenced.');
+        try {
+          exec(sql);
+        } finally {
+          if (!db.isTransaction) {
+            transactionTurn?.();
+            transactionTurn = null;
+          }
+        }
+        return;
+      }
+      if (transactionTurn !== null) {
+        exec(sql);
+        return;
+      }
+      if (/\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b/iu.test(sql)) {
+        write(() => exec(sql));
+        return;
+      }
+      entitlement.withWriteTurn(() => exec(sql));
+    },
+  });
+  Object.defineProperty(db, 'prepare', {
+    configurable: true,
+    value: <TParams extends unknown[] = unknown[], TRow = unknown>(sql: string): Statement<TParams, TRow> => {
+      const statement = prepare(sql) as Statement<TParams, TRow>;
+      return new Proxy(statement, {
+        get(target, property) {
+          const value: unknown = Reflect.get(target, property, target);
+          const mutates = /^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b/iu.test(sql);
+          if (property === 'run') {
+            return (...params: TParams) =>
+              /^\s*PRAGMA\b/iu.test(sql)
+                ? entitlement.withWriteTurn(() => target.run(...params))
+                : write(() => target.run(...params));
+          }
+          if (mutates && property === 'get') return (...params: TParams) => write(() => target.get(...params));
+          if (mutates && property === 'all') return (...params: TParams) => write(() => target.all(...params));
+          if (mutates && property === 'iterate') {
+            return () => {
+              throw new Error('A mutating iterator cannot outlive a succession writer turn.');
+            };
+          }
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    },
+  });
+  const close = db.close.bind(db);
+  Object.defineProperty(db, 'close', {
+    configurable: true,
+    value: () => {
+      try {
+        close();
+      } finally {
+        transactionTurn?.();
+        transactionTurn = null;
+      }
+    },
+  });
+}
 
 type AuthorizedWritableStoreOptions = WritableStoreOptions;
 
@@ -402,13 +513,17 @@ function deadlineBusyTimeoutRefresher(db: Database, options: AuthorizedWritableS
   };
 }
 
-export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
+function openPhysicalWritableStoreDatabase(
+  options: AuthorizedWritableStoreOptions,
+  reclaim: boolean,
+): WritableStoreOpenDecision {
   if (options.path !== ':memory:') {
     options.storage.mkdirSync(dirname(options.path), { recursive: true });
   }
 
   const db = new DatabaseSync(options.path) as unknown as Database;
   try {
+    if (options.writerEntitlement !== undefined) fenceWritableDatabase(db, options.writerEntitlement);
     const beforeOperation = deadlineBusyTimeoutRefresher(db, options);
     if (beforeOperation === undefined && options.busyTimeoutMs !== undefined) {
       applyBusyTimeout(db, options.busyTimeoutMs);
@@ -424,10 +539,11 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
         beforeOperation,
       );
       raiseStoredProductVersion(db, options.storeFormat.productVersion, beforeOperation);
-      writeStoreFormatSidecar(options, db);
+      if (options.writerEntitlement === undefined) writeStoreFormatSidecar(options, db);
+      else options.writerEntitlement.withWriteTurn(() => writeStoreFormatSidecar(options, db));
       return { kind: 'opened', db };
     }
-    if (classification.kind === 'fresh' || classification.kind === 'absent') {
+    if (!reclaim && (classification.kind === 'fresh' || classification.kind === 'absent')) {
       applyJournalPragmas(
         db,
         {
@@ -437,7 +553,8 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
         beforeOperation,
       );
       applyBundledStoreSchema(db, options.storeFormat, beforeOperation);
-      writeStoreFormatSidecar(options, db);
+      if (options.writerEntitlement === undefined) writeStoreFormatSidecar(options, db);
+      else options.writerEntitlement.withWriteTurn(() => writeStoreFormatSidecar(options, db));
       return { kind: 'opened', db };
     }
     db.close();
@@ -450,6 +567,74 @@ export function openWritableStoreDatabase(options: AuthorizedWritableStoreOption
     }
     throw error;
   }
+}
+
+function reopenableWritableStoreDatabase(
+  initial: Database,
+  options: AuthorizedWritableStoreOptions & { writerEntitlement: SuccessionWriterEntitlement },
+): Database {
+  let active: Database | null = initial;
+  let revision = 0;
+  let closed = false;
+  const target = {
+    close() {
+      if (closed) return;
+      closed = true;
+      unregisterPark();
+      unregisterUnpark();
+      const current = active;
+      active = null;
+      current?.close();
+    },
+    prepare<TParams extends unknown[] = unknown[], TRow = unknown>(sql: string): Statement<TParams, TRow> {
+      if (active === null) throw new Error('Succession store writer is parked or closed.');
+      let statement: Statement<TParams, TRow> | null = null;
+      let statementRevision = -1;
+      const currentStatement = (): Statement<TParams, TRow> => {
+        if (active === null) throw new Error('Succession store writer is parked or closed.');
+        if (statementRevision !== revision) {
+          statement = active.prepare<TParams, TRow>(sql);
+          statementRevision = revision;
+        }
+        return statement as Statement<TParams, TRow>;
+      };
+      return new Proxy({} as Statement<TParams, TRow>, {
+        get(_statementTarget, property) {
+          const current = currentStatement();
+          const value: unknown = Reflect.get(current, property, current);
+          return typeof value === 'function' ? value.bind(current) : value;
+        },
+      });
+    },
+  };
+  const unregisterPark = options.writerEntitlement.onPark(() => {
+    const current = active;
+    active = null;
+    current?.close();
+  });
+  const unregisterUnpark = options.writerEntitlement.onUnpark(() => {
+    if (closed || active !== null) return;
+    const reopened = openPhysicalWritableStoreDatabase(options, true);
+    if (reopened.kind !== 'opened') {
+      throw new Error(`Succession reclaim cannot reopen the exact store: ${reopened.classification.kind}.`);
+    }
+    active = reopened.db;
+    revision += 1;
+  });
+  return new Proxy(target as unknown as Database, {
+    get(object, property, receiver) {
+      if (property in object) return Reflect.get(object, property, receiver);
+      if (active === null) throw new Error('Succession store writer is parked or closed.');
+      const value: unknown = Reflect.get(active, property, active);
+      return typeof value === 'function' ? value.bind(active) : value;
+    },
+  });
+}
+
+export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
+  const opened = openPhysicalWritableStoreDatabase(options, false);
+  if (opened.kind !== 'opened' || options.writerEntitlement === undefined) return opened;
+  return { kind: 'opened', db: reopenableWritableStoreDatabase(opened.db, { ...options, writerEntitlement: options.writerEntitlement }) };
 }
 
 export function openStoreDatabase(options: OpenStoreOptions): Database {

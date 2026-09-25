@@ -97,6 +97,15 @@ const upgradeIntentSchema = z
       })
       .passthrough(),
     attemptId: z.string().min(1).nullable(),
+    attemptChild: z
+      .object({
+        attemptId: z.string().min(1),
+        pid: z.number().int().positive(),
+        incarnation: processIncarnationSchema,
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
     attemptOwner: attemptOwnerSchema.nullable(),
     disposition: z.enum(['pending', 'deferred', 'attempting', 'completed', 'closed']),
     blockers: z.array(blockerSchema),

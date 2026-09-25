@@ -12,6 +12,7 @@ import {
 } from '../../infra/process-supervision.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { encodeResolvedStoreEpoch, type ResolvedStoreEpoch } from '../../store/epoch.js';
+import type { SuccessionWriterGeneration } from '../../store/succession-writer-generation.js';
 import {
   KB_DAEMON_REQUEST_MESSAGE,
   KB_DAEMON_PARENT_RESPONSE_MESSAGE,
@@ -108,6 +109,8 @@ export interface KbDaemonSupervisor {
   abortKbJobs?(jobIds: string[]): Promise<KbDaemonAbortResult>;
   listActiveKbJobs?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
   listActiveKbJobsForSuccession?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
+  parkWriterTurn?(signal?: AbortSignal): Promise<void>;
+  reclaimWriterTurn?(generation: SuccessionWriterGeneration, signal?: AbortSignal): Promise<void>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonHealthSnapshot>;
   restart(reason?: string): Promise<KbDaemonHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonDisposalSettlement>;
@@ -312,6 +315,8 @@ export function createDisabledKbDaemonSupervisor(reason = 'disabled'): KbDaemonS
     onExit: () => () => {},
     abortKbJobs: async (jobIds) => ({ aborted: [], notFound: [...jobIds] }),
     listActiveKbJobs: async () => ({ active: [] }),
+    parkWriterTurn: async () => {},
+    reclaimWriterTurn: async () => {},
     stop: async () => ({ ...snapshot }),
     restart: async () => ({ ...snapshot }),
     dispose: async () => ({ kind: 'confirmed-absent', snapshot: { ...snapshot } }),
@@ -1261,6 +1266,20 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     abortKbJobs: abortKbJobsNow,
     listActiveKbJobs: listActiveKbJobsNow,
     listActiveKbJobsForSuccession,
+    parkWriterTurn: async (signal) => {
+      if (daemonProcess === null) return;
+      const response = await sendRequest('writer.park', undefined, requestTimeoutMs, signal);
+      if (!response.ok || typeof response.result !== 'object' || response.result === null || !('kind' in response.result) || response.result.kind !== 'parked') {
+        throw new Error('KB daemon did not confirm its writer turn was parked.');
+      }
+    },
+    reclaimWriterTurn: async (writerGeneration, signal) => {
+      if (daemonProcess === null) return;
+      const response = await sendRequest('writer.reclaim', writerGeneration, requestTimeoutMs, signal);
+      if (!response.ok || typeof response.result !== 'object' || response.result === null || !('kind' in response.result) || response.result.kind !== 'reclaimed') {
+        throw new Error('KB daemon did not confirm its writer turn was reclaimed.');
+      }
+    },
     stop: async (reason, stopOptions) => (await runExclusive(() => stopNow(reason, stopOptions?.signal))).snapshot,
     restart: (reason = 'restart') =>
       runExclusive(async () => {

@@ -473,6 +473,12 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
     kbRead: kbService.health(),
     kbWrite: kbWriteHost.health(),
   });
+  let writerTurnOperation: Promise<void> = Promise.resolve();
+  const runWriterTurn = async (operation: () => Promise<void> | void): Promise<void> => {
+    const next = writerTurnOperation.then(operation);
+    writerTurnOperation = next.catch(() => {});
+    await next;
+  };
   const handleRequest = async (request: KbDaemonRequestMessage): Promise<void> => {
     switch (request.method) {
       case 'health':
@@ -546,6 +552,22 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
           result: await kbService.warmup(),
         });
         return;
+      case 'writer.park':
+        await runWriterTurn(() => kbWriteHost.parkWriterTurn());
+        writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: { kind: 'parked' } });
+        return;
+      case 'writer.reclaim': {
+        const generation = request.params as { generation?: unknown; storeRoot?: unknown; epoch?: unknown } | undefined;
+        if (
+          generation === undefined ||
+          !Number.isSafeInteger(generation.generation) ||
+          typeof generation.storeRoot !== 'string' ||
+          typeof generation.epoch !== 'string'
+        ) throw new Error('Invalid KB daemon writer generation.');
+        await runWriterTurn(() => kbWriteHost.reclaimWriterTurn(generation as { generation: number; storeRoot: string; epoch: string }));
+        writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: { kind: 'reclaimed' } });
+        return;
+      }
       case 'expansion.rpc':
         writeControlMessage({
           type: KB_DAEMON_RESPONSE_MESSAGE,

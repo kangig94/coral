@@ -2,7 +2,7 @@ import { IpcRpcError } from '../transport/ipc/client.js';
 
 const PAUSE_RETRY_INTERVAL_MS = 100;
 
-export async function retrySuccessionPausedLaunch<TResult>(
+export async function retrySuccessionPausedRequest<TResult>(
   issue: (remainingMs: number) => Promise<TResult>,
   budgetMs: number,
 ): Promise<TResult> {

@@ -81,7 +81,10 @@ export type ChildPrincipalSnapshot = Readonly<{
   consumedNonceCheckpoint: number;
 }>;
 
-export type ChildPrincipalTransfer = ChildPrincipalSnapshot & Readonly<{ recoveryGrantId: string }>;
+export type ChildPrincipalTransfer = ChildPrincipalSnapshot & Readonly<{
+  recoveryGrantId: string;
+  authorityGeneration: number;
+}>;
 
 type ChildAuthMetadata = {
   readonly kind: 'child';
@@ -138,6 +141,7 @@ export class ChildPrincipalRegistry {
       ...this.transferSnapshot(nowMs),
       consumedNonceCheckpoint: grant.checkpoint,
       recoveryGrantId: grant.grantId,
+      authorityGeneration: this.generation,
     };
   }
 
@@ -148,26 +152,20 @@ export class ChildPrincipalRegistry {
     nowMs: number,
   ): boolean {
     if (this.ledger === null) return false;
-    try {
-      if (this.ledger.generation() !== generation ||
-        this.ledger.checkpoint() < transfer.consumedNonceCheckpoint) return false;
-    } catch {
-      return false;
-    }
-    if (!this.ledger.hasGrant(transfer.recoveryGrantId, generation, transfer.consumedNonceCheckpoint)) {
-      return false;
-    }
     if (this.originNamespace === null) return false;
     if (new Set(transfer.entries.map((entry) => entry.handle)).size !== transfer.entries.length) return false;
     const adopted = new Map<string, ChildPrincipalEntry>();
     for (const entry of transfer.entries) {
       if (
+        entry.handle.length === 0 ||
+        entry.issuer.length === 0 ||
+        entry.parentJobId.length === 0 ||
+        entry.parentSessionId.length === 0 ||
+        entry.authorization.namespace.length === 0 ||
         entry.authorization.expiresAtMs <= nowMs ||
         !acceptedJobIds.has(entry.parentJobId) ||
         !this.matchesOrigin(entry.parentJobId, entry.authorization.namespace)
-      ) {
-        return false;
-      }
+      ) return false;
       try {
         adopted.set(entry.handle, {
           issuer: entry.issuer,
@@ -176,11 +174,22 @@ export class ChildPrincipalRegistry {
           parentJobId: entry.parentJobId,
           parentSessionId: entry.parentSessionId,
           expiresAt: entry.authorization.expiresAtMs,
-          usedNonces: new Set(this.ledger.consumedTokens(entry.handle)),
+          usedNonces: new Set(),
         });
       } catch {
         return false;
       }
+    }
+    const consumed = this.ledger.claimGenerationAndReplay(
+      transfer.recoveryGrantId,
+      transfer.consumedNonceCheckpoint,
+      transfer.authorityGeneration,
+      generation,
+      transfer.entries.map((entry) => entry.handle),
+    );
+    if (consumed === null) return false;
+    for (const [handle, entry] of adopted) {
+      for (const token of consumed.get(handle) ?? []) entry.usedNonces.add(token);
     }
     try {
       if (this.ledger.generation() !== generation) return false;
@@ -202,7 +211,9 @@ export class ChildPrincipalRegistry {
   reclaimAuthentication(generation: number): boolean {
     if (this.ledger === null) return false;
     try {
-      if (this.ledger.generation() !== generation) return false;
+      const current = this.ledger.generation();
+      if (current > generation ||
+        (current < generation && !this.ledger.advanceGeneration(current, generation))) return false;
     } catch {
       return false;
     }

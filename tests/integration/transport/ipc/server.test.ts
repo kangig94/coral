@@ -402,6 +402,37 @@ describe('ipc server', () => {
     expect([socketPath, ...compatibilityPaths].some(existsSync)).toBe(false);
   });
 
+  it('forwards an already-open partial frame without changing its bytes', async () => {
+    const listener = createIpcServer(createPorts());
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    const observed = new Promise<void>((resolve) => {
+      listener.server.once('connection', (socket) => socket.once('data', () => resolve()));
+    });
+    const client = createConnection(socketPath);
+    const forwarded: Socket[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        client.once('connect', resolve);
+        client.once('error', reject);
+      });
+      const partial = Buffer.from('{"jsonrpc":"2.0","method":"transport.ping","id":"\xc3', 'latin1');
+      client.write(partial);
+      await observed;
+      const received = new Promise<Buffer>((resolve) => {
+        listener.forwardConnections!((socket, pendingFrameBase64) => {
+          forwarded.push(socket);
+          resolve(Buffer.from(pendingFrameBase64, 'base64'));
+        });
+      });
+      expect(await received).toEqual(partial);
+    } finally {
+      for (const socket of forwarded) socket.destroy();
+      client.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
   it('reports sockets accepted on a published compatibility address in coordinator health', async () => {
     const harness = createHandoffCoresHarness({ relocatedSocket: true });
     // Derived through the same owner the claim validates against, so the fixture cannot drift from the
@@ -763,7 +794,6 @@ describe('ipc server', () => {
       kind: 'child', handle: credential.handle, token: 'consumed', jobId: 'job-a', sessionId: 'session-a',
     }, null, 1)).not.toBeNull();
     incumbent.fenceAuthentication();
-    expect(incumbentLedger.advanceGeneration(1, 2)).toBe(true);
 
     const successor = new ChildPrincipalRegistry(ids, { ledger: successorLedger, originNamespace });
     expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 2)).toBe(true);

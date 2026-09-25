@@ -54,6 +54,7 @@ export type AbortResult = {
 
 export type AbortDecision =
   | Readonly<{ kind: 'answered'; result: AbortResult }>
+  | Readonly<{ kind: 'retryable'; code: 'succession_admission_paused'; jobIds: readonly string[] }>
   | Readonly<{ kind: 'successor-owned'; jobIds: readonly string[] }>;
 import type { JobOperatorRemedy } from './operator-remedy.js';
 

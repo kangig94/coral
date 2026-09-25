@@ -69,7 +69,7 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
-import { retrySuccessionPausedLaunch } from './launch-retry.js';
+import { retrySuccessionPausedRequest } from './succession-pause-retry.js';
 import { ensure, issueWithSuccessorAfterLifecycleRefusal, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
@@ -520,8 +520,9 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         client.request<TResult | null | undefined>(method, params, { timeoutMs, ...authOptions }),
       );
     const result =
-      method === 'sessions.create' || method === 'workflow.run' || method === 'discuss.session.create'
-        ? await retrySuccessionPausedLaunch(issue, TOOL_TIMEOUT_MS)
+      method === 'sessions.create' || method === 'workflow.run' || method === 'discuss.session.create' ||
+      method === 'jobs.abort'
+        ? await retrySuccessionPausedRequest(issue, TOOL_TIMEOUT_MS)
         : await issue(TOOL_TIMEOUT_MS);
     if (result === null || result === undefined) {
       throw new BackendUnreachableError(

@@ -27,7 +27,7 @@ import { elapsedDurationMs } from '../jobs/duration.js';
 import type { ProviderHostManager } from './live/provider-hosts/index.js';
 import type { ProviderProxyAuthorityRegistry } from './live/provider-proxy/authority.js';
 import type { Runtime } from '../runtime/ports.js';
-import type { ProcessIncarnation } from '../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
 import {
   describeStartupReconciliationIncident,
   type ProviderOperationReconcilerStopDisposition,
@@ -89,15 +89,24 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../transport/ipc/server.js';
-import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
+import {
+  resolveRunningBundleDir,
+  resolveStrictBundleIdentity,
+  type StrictBundleManifest,
+} from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
-import type { ResolvedStoreEpoch } from '../store/epoch.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent, revalidateUpgradeIntentTarget, type UpgradeIntent } from '../infra/upgrade-intent.js';
 import {
   acquireProviderOperationMutationAdmission,
   type ProviderOperationMutationAdmission,
 } from '../store/provider-operation-journal.js';
-import { routeOrOpenBackendStoreAtStartup } from '../store/startup-store-routing.js';
+import {
+  openCommittedBackendStoreAtStartup,
+  prepareCommittedBackendStoreAtStartup,
+  routeOrOpenBackendStoreAtStartup,
+} from '../store/startup-store-routing.js';
 import { ACTIVE_STORE_SELECTION_VERSION } from '../store/active-store-selection.js';
 import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
@@ -118,6 +127,16 @@ import {
 import type { RecoveryRetryPolicy, RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
 import { RecoveryQuarantineStore } from '../recovery/quarantine.js';
 import { createCoordinatorSocketAddressClaim } from './socket-address-claim.js';
+import { currentSuccessionAttemptChild, type SuccessionAttemptChild } from './succession/attempt-child.js';
+import {
+  advanceSuccessionWriterGeneration,
+  joinSuccessionWriterGeneration,
+  observeSuccessionServing,
+  observeSuccessionWriterGeneration,
+  recordSuccessionServing,
+  type SuccessionWriterGeneration,
+} from '../store/succession-writer-generation.js';
+import { readSuccessionCapabilities, successionPreparationSchema } from './succession/protocol.js';
 import {
   crashedJobTerminalizationSource,
   type RawCrashedJobRow,
@@ -139,6 +158,13 @@ export class StartupStoreHandoffError extends Error {
     super('Coordinator startup is continuing in the selected active-store build.');
     this.name = 'StartupStoreHandoffError';
     this.target = target;
+  }
+}
+
+export class SuccessionAttemptStartupHoldError extends Error {
+  constructor(reason: string) {
+    super(`Succession attempt startup holds: ${reason}`);
+    this.name = 'SuccessionAttemptStartupHoldError';
   }
 }
 
@@ -835,6 +861,8 @@ export type LifecycleDeps = {
     publishedCompatibilitySocketAddresses?: readonly PublishedIpcSocketAddress[],
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: (exitCode: number) => void;
+  readonly onSuccessionServing?: (attemptId: string) => Promise<void>;
+  readonly beforeShutdown?: (reason: ShutdownReason) => Promise<'continue' | 'succession-release'>;
   readonly acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   readonly onFatalShutdownError: (error: unknown) => void;
 };
@@ -846,6 +874,8 @@ export type LifecycleController = {
   requestShutdownRetry(): void;
   waitForShutdown(): Promise<LifecycleShutdownDisposition>;
   getRecoveryRegistry(): RecoveryRegistry | null;
+  parkProviderOperationMutations(signal?: AbortSignal): Promise<void>;
+  adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void;
 };
 
 /** Lifecycle finalization is forbidden while coordinator authority remains retained. */
@@ -948,6 +978,261 @@ export async function yieldPastKernelReadyResponse(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+async function prepareSuccessionAttemptStore(
+  runtime: Runtime,
+  identity: CoordinatorIdentity,
+  storeFormat: StoreFormatDescription,
+  currentBuild: StrictBundleManifest,
+  child: SuccessionAttemptChild,
+): Promise<ResolvedStoreEpoch> {
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  const bundleDir = resolveRunningBundleDir(identity.pluginRoot);
+  const capabilities =
+    observed.kind === 'readable' && bundleDir !== null
+      ? readSuccessionCapabilities(bundleDir, observed.intent.target.build)
+      : null;
+  const preparation =
+    observed.kind === 'readable' ? successionPreparationSchema.safeParse(observed.intent.successionPreparation) : null;
+  if (child.recovery) {
+    if (
+      observed.kind !== 'readable' ||
+      observed.intent.recoveryAttemptId !== child.attemptId ||
+      observed.intent.recoveryBuildSetId !== currentBuild.buildSetId ||
+      observed.intent.attemptId !== child.attemptId ||
+      observed.intent.attemptOwner?.kind !== 'incumbent' ||
+      observed.intent.incumbent.version !== currentBuild.version ||
+      observed.intent.incumbent.bundleHash !== currentBuild.bundleHash ||
+      observed.intent.incumbent.flavor !== currentBuild.flavor ||
+      preparation === null || !preparation.success ||
+      preparation.data.stage !== 'prepared' ||
+      preparation.data.ready !== null ||
+      preparation.data.epochKey !== child.epochKey ||
+      JSON.stringify(preparation.data.receipts.map((receipt) => receipt.receiptId)) !== JSON.stringify(child.receiptIds)
+    ) {
+      throw new SuccessionAttemptStartupHoldError('same-build recovery preparation changed');
+    }
+    const prepared = prepareCommittedBackendStoreAtStartup(
+      runtime,
+      { storeFormat, build: currentBuild },
+      child.epochKey,
+    );
+    if (prepared.kind === 'holding') throw new SuccessionAttemptStartupHoldError(prepared.reason);
+    await child.acknowledge({ kind: 'ready', epochKey: child.epochKey, receiptIds: child.receiptIds });
+    return prepared.store;
+  }
+  if (
+    observed.kind !== 'readable' ||
+    bundleDir === null ||
+    capabilities?.kind !== 'declared' ||
+    preparation === null ||
+    !preparation.success ||
+    preparation.data.stage !== 'prepared' ||
+    preparation.data.ready !== null ||
+    preparation.data.capabilitiesKey !== JSON.stringify(capabilities.capabilities) ||
+    JSON.stringify(preparation.data.accepts.map(({ owner, generation }) => [owner, generation])) !==
+      JSON.stringify(capabilities.capabilities.accepts.map(({ owner, generation }) => [owner, generation])) ||
+    preparation.data.receipts.some(
+      (receipt) =>
+        receipt.attemptId !== child.attemptId ||
+        !preparation.data.accepts.some(
+          (acceptance) => acceptance.owner === receipt.owner && acceptance.generation === receipt.generation,
+        ),
+    ) ||
+    observed.intent.attemptId !== child.attemptId ||
+    observed.intent.attemptOwner?.kind !== 'incumbent' ||
+    observed.intent.disposition !== 'pending' ||
+    observed.intent.target.pluginRootLabel !== identity.pluginRoot ||
+    observed.intent.target.build.version !== currentBuild.version ||
+    observed.intent.target.build.buildSetId !== currentBuild.buildSetId ||
+    observed.intent.target.build.bundleHash !== currentBuild.bundleHash ||
+    observed.intent.target.build.cliBundleHash !== currentBuild.cliBundleHash ||
+    observed.intent.target.build.claudeAppserverBundleHash !== currentBuild.claudeAppserverBundleHash ||
+    observed.intent.target.build.durableWrapperBundleHash !== currentBuild.durableWrapperBundleHash ||
+    observed.intent.target.build.flavor !== currentBuild.flavor ||
+    observed.intent.target.build.storeFormatFingerprint !== currentBuild.storeFormatFingerprint ||
+    revalidateUpgradeIntentTarget(observed.intent).kind !== 'validated' ||
+    preparation.data.attemptId !== child.attemptId ||
+    preparation.data.requestId !== observed.intent.requestId ||
+    preparation.data.incumbentInstanceId !== observed.intent.incumbent.instanceId ||
+    preparation.data.incumbentPid !== observed.intent.incumbent.pid ||
+    preparation.data.targetKey !==
+      JSON.stringify([
+        identity.pluginRoot,
+        currentBuild.version,
+        currentBuild.buildSetId,
+        currentBuild.flavor,
+        currentBuild.storeFormatFingerprint,
+        currentBuild.bundleHash,
+        currentBuild.cliBundleHash,
+        currentBuild.claudeAppserverBundleHash,
+        currentBuild.durableWrapperBundleHash,
+      ]) ||
+    preparation.data.epochKey !== child.epochKey ||
+    JSON.stringify(preparation.data.receipts.map((receipt) => receipt.receiptId)) !== JSON.stringify(child.receiptIds)
+  ) {
+    throw new SuccessionAttemptStartupHoldError('prepared attempt or target changed');
+  }
+  const prepared = prepareCommittedBackendStoreAtStartup(
+    runtime,
+    { storeFormat, build: currentBuild },
+    child.epochKey,
+  );
+  if (prepared.kind === 'holding') throw new SuccessionAttemptStartupHoldError(prepared.reason);
+  await child.acknowledge({ kind: 'ready', epochKey: child.epochKey, receiptIds: child.receiptIds });
+  return prepared.store;
+}
+
+function prepareCommittedSuccessorRecovery(
+  runtime: Runtime,
+  identity: CoordinatorIdentity,
+  storeFormat: StoreFormatDescription,
+  currentBuild: StrictBundleManifest,
+): { store: ResolvedStoreEpoch; intent: UpgradeIntent } | null {
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (observed.kind !== 'readable' || observed.intent.disposition !== 'completed') return null;
+  const intent = observed.intent;
+  const receipt = intent.completionReceipt;
+  if (receipt === null) return null;
+  const current = inspectCurrentStore(runtime);
+  if (current.kind !== 'current' || encodeResolvedStoreEpoch(current.epoch) !== receipt.epochKey) return null;
+  const serving = observeSuccessionServing(runtime, receipt.attemptId);
+  const writer = observeSuccessionWriterGeneration(runtime);
+  if (
+    writer === null ||
+    writer.generation < receipt.controlGeneration ||
+    (writer.generation === receipt.controlGeneration && serving === null) ||
+    (serving !== null &&
+      (serving.epochKey !== receipt.epochKey || serving.controlGeneration < receipt.controlGeneration))
+  ) {
+    throw new SuccessionAttemptStartupHoldError('committed successor generation cannot be attributed');
+  }
+  const proveDead = (pid: number, incarnation: ProcessIncarnation | null): void => {
+    if (incarnation === null) {
+      throw new SuccessionAttemptStartupHoldError('committed successor has no recorded process incarnation');
+    }
+    const liveIncarnation = probeProcessIncarnation(pid);
+    if (liveIncarnation === incarnation ||
+        (liveIncarnation === null && observeProcessLiveness(pid) !== 'absent')) {
+      throw new SuccessionAttemptStartupHoldError('committed successor has not been proven dead');
+    }
+  };
+  proveDead(receipt.successor.pid, receipt.successor.incarnation);
+  if (
+    intent.attemptChild !== undefined && intent.attemptChild !== null &&
+    (intent.attemptChild.pid !== receipt.successor.pid ||
+      intent.attemptChild.incarnation !== receipt.successor.incarnation)
+  ) {
+    proveDead(intent.attemptChild.pid, intent.attemptChild.incarnation);
+  }
+  if (
+    serving !== null && serving.controlGeneration === receipt.controlGeneration &&
+    serving.successorInstanceId !== receipt.successor.instanceId
+  ) {
+    throw new SuccessionAttemptStartupHoldError('committed successor identity does not match its writer');
+  }
+  const target = revalidateUpgradeIntentTarget(intent);
+  if (target.kind !== 'validated') {
+    throw new SuccessionAttemptStartupHoldError('committed successor build no longer validates');
+  }
+  if (
+    intent.target.pluginRootLabel !== identity.pluginRoot ||
+    intent.target.build.version !== currentBuild.version ||
+    intent.target.build.buildSetId !== currentBuild.buildSetId ||
+    intent.target.build.flavor !== currentBuild.flavor ||
+    intent.target.build.storeFormatFingerprint !== currentBuild.storeFormatFingerprint ||
+    intent.target.build.bundleHash !== currentBuild.bundleHash ||
+    intent.target.build.cliBundleHash !== currentBuild.cliBundleHash ||
+    intent.target.build.claudeAppserverBundleHash !== currentBuild.claudeAppserverBundleHash ||
+    intent.target.build.durableWrapperBundleHash !== currentBuild.durableWrapperBundleHash
+  ) {
+    throw new StartupStoreHandoffError(target.target);
+  }
+  const prepared = prepareCommittedBackendStoreAtStartup(
+    runtime,
+    { storeFormat, build: currentBuild },
+    receipt.epochKey,
+  );
+  if (prepared.kind === 'holding') throw new SuccessionAttemptStartupHoldError(prepared.reason);
+  return { store: prepared.store, intent };
+}
+
+async function recordRecoveryProcess(
+  runtime: Runtime,
+  intent: UpgradeIntent,
+  pid: number,
+  incarnation: ProcessIncarnation,
+): Promise<void> {
+  const receipt = intent.completionReceipt;
+  if (receipt === null) throw new Error('Committed successor receipt disappeared before process registration.');
+  for (let retry = 0; retry < 8; retry++) {
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (
+      observed.kind !== 'readable' ||
+      observed.intent.attemptId !== intent.attemptId ||
+      observed.intent.completionReceipt?.successor.instanceId !== receipt.successor.instanceId
+    ) {
+      throw new Error('Committed successor recovery changed before process registration.');
+    }
+    const updated = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        attemptChild: { attemptId: receipt.attemptId, pid, incarnation },
+      },
+    );
+    if (updated.kind === 'conflict') continue;
+    if (updated.kind === 'written') return;
+    throw new Error(`Committed successor recovery registration was ${updated.kind}.`);
+  }
+  throw new Error('Committed successor recovery changed throughout process registration.');
+}
+
+async function publishRecoveredServing(
+  runtime: Runtime,
+  intent: UpgradeIntent,
+  instanceId: string,
+  pid: number,
+  incarnation: ProcessIncarnation,
+  generation: SuccessionWriterGeneration,
+): Promise<void> {
+  const receipt = intent.completionReceipt;
+  if (receipt === null) throw new Error('Committed successor receipt disappeared during recovery.');
+  for (let retry = 0; retry < 8; retry++) {
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (
+      observed.kind !== 'readable' ||
+      observed.intent.attemptId !== receipt.attemptId ||
+      observed.intent.completionReceipt?.successor.instanceId !== receipt.successor.instanceId
+    ) {
+      throw new Error('Committed successor recovery changed before publication.');
+    }
+    const updated = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        attemptDeadline: null,
+        attemptChild: { attemptId: receipt.attemptId, pid, incarnation },
+        completionReceipt: {
+          ...receipt,
+          successor: { instanceId, pid, incarnation, build: observed.intent.target.build },
+          controlGeneration: generation.generation,
+          acceptedObligations: receipt.acceptedObligations.map((obligation) => ({
+            ...obligation,
+            controlGeneration: generation.generation,
+          })),
+          recordedAt: new Date(runtime.time.now()).toISOString(),
+        },
+      },
+    );
+    if (updated.kind === 'conflict') continue;
+    if (updated.kind === 'written') return;
+    throw new Error(`Committed successor recovery receipt was ${updated.kind}.`);
+  }
+  throw new Error('Committed successor recovery receipt changed throughout publication.');
+}
+
 async function runLifecycleStartup({
   deps,
   runStartupRecovery,
@@ -1016,53 +1301,85 @@ async function runLifecycleStartup({
     // The address this coordinator publishes is its own canonical one; the claim additionally holds the
     // legacy and published addresses, which are exclusion inputs rather than what this build serves.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
+    const successionAttemptChild = currentSuccessionAttemptChild();
+    const currentBuild = {
+      version,
+      buildSetId,
+      bundleHash,
+      cliBundleHash,
+      claudeAppserverBundleHash,
+      durableWrapperBundleHash,
+      flavor,
+      storeFormatFingerprint: deps.storeFormat.fingerprint,
+    };
+    if (successionAttemptChild !== null && (ipcServer === undefined || listenIpcFn === undefined)) {
+      throw new Error('Succession attempt requires an IPC listener');
+    }
+    let preparedCommittedStore: ResolvedStoreEpoch | null = null;
+    if (successionAttemptChild !== null) {
+      preparedCommittedStore = await prepareSuccessionAttemptStore(
+        runtime,
+        identity,
+        deps.storeFormat,
+        currentBuild,
+        successionAttemptChild,
+      );
+    }
+    const preinjectedStoreServices = storeServicesRef.tryGet();
+    const committedRecovery = successionAttemptChild === null && preinjectedStoreServices === null
+      ? prepareCommittedSuccessorRecovery(runtime, identity, deps.storeFormat, currentBuild)
+      : null;
     let bound: BoundCoordinator | null = null;
     if (ipcServer && listenIpcFn) {
       if (closeIpcServerFn === undefined) {
         throw new Error('IPC startup requires a close operation before binding');
       }
-      const addressClaim = createCoordinatorSocketAddressClaim(runtime, 'coordinator startup');
-      bound = await bindWithHandoff({
-        socketPath: addressClaim.initialIncumbentSocketPath,
-        desired: { version, bundleHash, flavor, namespace },
-        bindAttempt: async () => {
-          signal.throwIfAborted();
-          const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
-            const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths, publishedSocketAddresses);
-            return listenResult.kind === 'incumbent'
-              ? listenResult
-              : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };
-          });
-          return binding.kind === 'incumbent'
-            ? { kind: 'addressed-incumbent' as const, socketPath: binding.socketPath }
-            : { kind: 'bound' as const };
-        },
-        runStartupRecovery,
-        runtime,
-        readVerifiedIncumbentFromDiscovery: (evidence) =>
-          verifiedIncumbentFromRuntimeProbe(
-            { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
-            evidence,
-          ),
-        requestSuccession: async (incumbentSocketPath, incumbent, health) => {
-          const target = resolveStrictBundleIdentity();
-          if (!target.ok) return;
-          const waiting = await requestUpgradeFromContender({
-            runDir: runtime.paths.coral.coordinator.runDir,
-            socketPath: incumbentSocketPath,
-            incumbent,
-            health,
-            target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
-            requestId: runtime.ids.uuid(),
-            time: runtime.time,
-          });
-          if (waiting.kind === 'refused' || waiting.kind === 'deferred') {
-            throw new UpgradeWaiterUnavailableError(waiting.reason);
-          }
-        },
-        signal,
-        totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
-      });
+      if (successionAttemptChild !== null) {
+        await successionAttemptChild.adoptListeners(ipcServer);
+      } else {
+        const addressClaim = createCoordinatorSocketAddressClaim(runtime, 'coordinator startup');
+        bound = await bindWithHandoff({
+          socketPath: addressClaim.initialIncumbentSocketPath,
+          desired: { version, bundleHash, flavor, namespace },
+          bindAttempt: async () => {
+            signal.throwIfAborted();
+            const binding = await addressClaim.acquire(async (additionalSocketPaths, publishedSocketAddresses) => {
+              const listenResult = await listenIpcFn(ipcServer, additionalSocketPaths, publishedSocketAddresses);
+              return listenResult.kind === 'incumbent'
+                ? listenResult
+                : { kind: 'held' as const, release: () => closeIpcServerFn(ipcServer) };
+            });
+            return binding.kind === 'incumbent'
+              ? { kind: 'addressed-incumbent' as const, socketPath: binding.socketPath }
+              : { kind: 'bound' as const };
+          },
+          runStartupRecovery,
+          runtime,
+          readVerifiedIncumbentFromDiscovery: (evidence) =>
+            verifiedIncumbentFromRuntimeProbe(
+              { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
+              evidence,
+            ),
+          requestSuccession: async (incumbentSocketPath, incumbent, health) => {
+            const target = resolveStrictBundleIdentity();
+            if (!target.ok) return;
+            const waiting = await requestUpgradeFromContender({
+              runDir: runtime.paths.coral.coordinator.runDir,
+              socketPath: incumbentSocketPath,
+              incumbent,
+              health,
+              target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
+              requestId: runtime.ids.uuid(),
+              time: runtime.time,
+            });
+            if (waiting.kind === 'refused' || waiting.kind === 'deferred') {
+              throw new UpgradeWaiterUnavailableError(waiting.reason);
+            }
+          },
+          signal,
+          totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
+        });
+      }
     }
     signal.throwIfAborted();
 
@@ -1080,20 +1397,15 @@ async function runLifecycleStartup({
       }
     }
 
-    const currentBuild = {
-      version,
-      buildSetId,
-      bundleHash,
-      cliBundleHash,
-      claudeAppserverBundleHash,
-      durableWrapperBundleHash,
-      flavor,
-      storeFormatFingerprint: deps.storeFormat.fingerprint,
-    };
-    const preinjectedStoreServices = storeServicesRef.tryGet();
+    if (successionAttemptChild !== null && preinjectedStoreServices !== null) {
+      throw new SuccessionAttemptStartupHoldError('committed open requires a filesystem store');
+    }
     const shouldScheduleStoreEpochSweep = preinjectedStoreServices === null;
     let storeDb: Database;
     let openedStore: ResolvedStoreEpoch | null = null;
+    let successionGeneration: SuccessionWriterGeneration | null = null;
+    let recoveryGeneration: SuccessionWriterGeneration | null = null;
+    let recoveryIncarnation: ProcessIncarnation | null = null;
     if (preinjectedStoreServices !== null) {
       // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
       // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
@@ -1102,37 +1414,92 @@ async function runLifecycleStartup({
       }
       storeDb = preinjectedStoreServices.storeDb;
     } else {
-      const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
-      if (currentBundleDir === null) {
-        throw documentedCoralSetupError({
-          code: 'startup_bundle_unresolvable',
-          pluginRoot: identity.pluginRoot,
-        });
-      }
-      const routing = await routeOrOpenBackendStoreAtStartup({
-        runtime,
-        validateForeignTarget: validateForeignHandoffTarget,
-        options: {
-          storeFormat: deps.storeFormat,
-          startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-          currentSelection: {
-            version: ACTIVE_STORE_SELECTION_VERSION,
-            manifest: currentBuild,
-            bundleDir: currentBundleDir,
-            activeStoreFingerprint: currentBuild.storeFormatFingerprint,
-          },
-        },
-      });
-      if (routing.kind === 'handoff') {
-        throw new StartupStoreHandoffError(routing.target);
-      }
-      if (routing.kind === 'reset-newer-invalid') {
-        backendLog.warn(
-          `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
+      if (committedRecovery !== null) {
+        const priorGeneration = joinSuccessionWriterGeneration(runtime, committedRecovery.store).generation;
+        const priorReceipt = committedRecovery.intent.completionReceipt;
+        if (priorReceipt === null || priorGeneration.generation < priorReceipt.controlGeneration) {
+          throw new SuccessionAttemptStartupHoldError('committed successor generation changed before recovery');
+        }
+        if (
+          priorGeneration.generation > priorReceipt.controlGeneration &&
+          (committedRecovery.intent.attemptChild?.pid === priorReceipt.successor.pid ||
+            committedRecovery.intent.attemptChild === null ||
+            committedRecovery.intent.attemptChild === undefined)
+        ) {
+          throw new SuccessionAttemptStartupHoldError('advanced recovery generation has no recorded process');
+        }
+        recoveryIncarnation = deps.readSelfIncarnationFn();
+        if (recoveryIncarnation === null) {
+          throw new SuccessionAttemptStartupHoldError('recovery process incarnation is unavailable');
+        }
+        await recordRecoveryProcess(runtime, committedRecovery.intent, backendPid, recoveryIncarnation);
+        recoveryGeneration = advanceSuccessionWriterGeneration(runtime, priorGeneration, committedRecovery.store);
+        const committed = openCommittedBackendStoreAtStartup(
+          runtime,
+          { storeFormat: deps.storeFormat, build: currentBuild, startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS },
+          committedRecovery.store,
         );
+        if (committed.kind === 'holding') throw new SuccessionAttemptStartupHoldError(committed.reason);
+        storeDb = committed.db;
+        openedStore = committed.store;
+      } else if (successionAttemptChild !== null) {
+        await successionAttemptChild.waitForWritersParked();
+        if (preparedCommittedStore === null) {
+          throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
+        }
+        if (successionAttemptChild.receiptIds.length > 0) {
+          throw new SuccessionAttemptStartupHoldError('accepted obligation adoption is unavailable');
+        }
+        const priorGeneration = joinSuccessionWriterGeneration(runtime, preparedCommittedStore).generation;
+        successionGeneration = advanceSuccessionWriterGeneration(runtime, priorGeneration, preparedCommittedStore);
+        if (
+          runtime.env.get('NODE_ENV') === 'test' &&
+          runtime.env.get('CORAL_TEST_SUCCESSION_OPEN_FAILURE') === '1' &&
+          !successionAttemptChild.recovery
+        ) {
+          throw new SuccessionAttemptStartupHoldError('injected committed-open failure');
+        }
+        const committed = openCommittedBackendStoreAtStartup(
+          runtime,
+          { storeFormat: deps.storeFormat, build: currentBuild, startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS },
+          preparedCommittedStore,
+        );
+        if (committed.kind === 'holding') throw new SuccessionAttemptStartupHoldError(committed.reason);
+        storeDb = committed.db;
+        openedStore = committed.store;
+      } else {
+        const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+        if (currentBundleDir === null) {
+          throw documentedCoralSetupError({
+            code: 'startup_bundle_unresolvable',
+            pluginRoot: identity.pluginRoot,
+          });
+        }
+        const routing = await routeOrOpenBackendStoreAtStartup({
+          runtime,
+          validateForeignTarget: validateForeignHandoffTarget,
+          options: {
+            storeFormat: deps.storeFormat,
+            startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+            currentSelection: {
+              version: ACTIVE_STORE_SELECTION_VERSION,
+              manifest: currentBuild,
+              bundleDir: currentBundleDir,
+              activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+            },
+          },
+        });
+        if (routing.kind === 'handoff') {
+          throw new StartupStoreHandoffError(routing.target);
+        }
+        if (routing.kind === 'reset-newer-invalid') {
+          backendLog.warn(
+            `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
+          );
+        }
+        storeDb = routing.db;
+        openedStore = routing.store;
       }
-      storeDb = routing.db;
-      openedStore = routing.store;
     }
     let storeServices: CoordinatorStoreServices;
     try {
@@ -1185,7 +1552,8 @@ async function runLifecycleStartup({
     signal.throwIfAborted();
     runtimeState.setStartedAt(now());
     const startedAt = runtimeState.getStartedAt();
-    const discoveryPublished = writeBackendInfoFn({
+    const publishDiscovery = (): void => {
+      const discoveryPublished = writeBackendInfoFn({
       pid: backendPid,
       port,
       host,
@@ -1200,13 +1568,15 @@ async function runLifecycleStartup({
       instanceId,
       startedAt,
       ...(openedStore === null ? {} : { storeEpoch: openedStore.epoch }),
-    });
-    if (discoveryPublished === false) {
-      throw new Error('Coordinator discovery publication failed.');
-    }
-    runtimeState.setLifecycle('kernel-ready');
+      });
+      if (discoveryPublished === false) throw new Error('Coordinator discovery publication failed.');
+    };
+    if (successionAttemptChild === null && committedRecovery === null) publishDiscovery();
+    if (committedRecovery === null) runtimeState.setLifecycle('kernel-ready');
     runtimeState.setLaunchFenceActive(true);
-    if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+    if (committedRecovery === null && shouldScheduleStoreEpochSweep && openedStore !== null) {
+      deps.scheduleStoreEpochSweepFn?.(openedStore);
+    }
     const serverInfo = {
       port,
       host,
@@ -1274,6 +1644,68 @@ async function runLifecycleStartup({
     startProviderOperationReconciler?.();
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
     signal.throwIfAborted();
+    if (successionAttemptChild !== null) {
+      if (successionGeneration === null || ipcServer === undefined) {
+        throw new SuccessionAttemptStartupHoldError('succession writer or listener is unavailable');
+      }
+      const intentAtCommit = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      if (
+        intentAtCommit.kind !== 'readable' ||
+        intentAtCommit.intent.attemptId !== successionAttemptChild.attemptId ||
+        intentAtCommit.intent.attemptDeadline === null ||
+        Date.parse(intentAtCommit.intent.attemptDeadline) <= runtime.time.now()
+      ) {
+        throw new SuccessionAttemptStartupHoldError('succession commit deadline or intent changed');
+      }
+      const servingDelay = Number(runtime.env.get('CORAL_TEST_SUCCESSION_SERVING_DELAY_MS'));
+      if (runtime.env.get('NODE_ENV') === 'test' && servingDelay > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, servingDelay));
+        signal.throwIfAborted();
+      }
+      if (Date.parse(intentAtCommit.intent.attemptDeadline) <= runtime.time.now()) {
+        throw new SuccessionAttemptStartupHoldError('succession commit deadline expired');
+      }
+      if (
+        runtime.env.get('NODE_ENV') === 'test' &&
+        runtime.env.get('CORAL_TEST_SUCCESSION_CRASH_BEFORE_SERVING') === '1' &&
+        !successionAttemptChild.recovery
+      ) {
+        process.exit(82);
+      }
+      const committed = recordSuccessionServing(runtime, successionGeneration, {
+        attemptId: successionAttemptChild.attemptId,
+        epochKey: successionAttemptChild.epochKey,
+        successorInstanceId: instanceId,
+        controlGeneration: successionGeneration.generation,
+        recordedAt: new Date(runtime.time.now()).toISOString(),
+      });
+      successionAttemptChild.markServing(ipcServer, committed);
+      publishDiscovery();
+      await deps.onSuccessionServing?.(successionAttemptChild.attemptId);
+      await successionAttemptChild.acknowledge({
+        kind: 'serving',
+        epochKey: committed.epochKey,
+        controlGeneration: committed.controlGeneration,
+        successorInstanceId: committed.successorInstanceId,
+      }).catch(() => {});
+    } else if (committedRecovery !== null) {
+      if (recoveryGeneration === null || recoveryIncarnation === null) {
+        throw new Error('Committed successor recovery has no writer identity.');
+      }
+      const receipt = committedRecovery.intent.completionReceipt;
+      if (receipt === null) throw new Error('Committed successor recovery lost its receipt.');
+      recordSuccessionServing(runtime, recoveryGeneration, {
+        attemptId: receipt.attemptId,
+        epochKey: receipt.epochKey,
+        successorInstanceId: instanceId,
+        controlGeneration: recoveryGeneration.generation,
+        recordedAt: new Date(runtime.time.now()).toISOString(),
+      });
+      await publishRecoveredServing(runtime, committedRecovery.intent, instanceId, backendPid, recoveryIncarnation, recoveryGeneration);
+      runtimeState.setLifecycle('kernel-ready');
+      publishDiscovery();
+      if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+    }
     if (runtimeState.getLaunchFenceActive()) {
       runtimeState.setLaunchFenceActive(false);
     }
@@ -1335,6 +1767,15 @@ async function runLifecycleStartup({
 
     return serverInfo;
   } catch (error: unknown) {
+    const successionAttemptChild = currentSuccessionAttemptChild();
+    if (successionAttemptChild !== null && !successionAttemptChild.isServing()) {
+      await successionAttemptChild
+        .acknowledge({
+          kind: 'hold',
+          reason: error instanceof Error ? error.message : String(error),
+        })
+        .catch(() => {});
+    }
     const mutationAdmissionDisposition = state.providerOperationMutationAdmission?.close();
     if (
       (error as { name?: string } | null)?.name === 'AbortError' &&
@@ -1477,6 +1918,7 @@ export function createLifecycle(
   }
 
   async function shutdown(reason: ShutdownReason, incident?: ShutdownIncident): Promise<LifecycleShutdownDisposition> {
+    if (await deps.beforeShutdown?.(reason) === 'succession-release') process.exit(0);
     state.shutdownReason ??= reason;
     if (reason === 'provider-proxy-lifecycle-fatal' || incident !== undefined) {
       state.shutdownReason = 'provider-proxy-lifecycle-fatal';
@@ -1789,6 +2231,27 @@ export function createLifecycle(
     }
   }
 
+  async function parkProviderOperationMutations(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const disposition = state.providerOperationMutationAdmission?.close();
+    if (disposition?.kind === 'holding') {
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = (): void => reject(signal?.reason ?? new Error('Succession writer park aborted.'));
+        signal?.addEventListener('abort', onAbort, { once: true });
+        void disposition.retryAfter.then(resolve, reject).finally(() => signal?.removeEventListener('abort', onAbort));
+      });
+      signal?.throwIfAborted();
+      if (state.providerOperationMutationAdmission?.close().kind === 'holding') {
+        throw new Error('Provider operation mutations did not drain before succession.');
+      }
+    }
+    state.providerOperationMutationAdmission = null;
+  }
+
+  function adoptProviderOperationAdmission(admission: ProviderOperationMutationAdmission): void {
+    state.providerOperationMutationAdmission = admission;
+  }
+
   function requestShutdownRetry(): void {
     const currentAttempt = state.shutdownPromise;
     if (currentAttempt === null) {
@@ -1822,5 +2285,7 @@ export function createLifecycle(
       return Promise.reject(new Error('Shutdown has not been requested'));
     },
     getRecoveryRegistry: () => state.recoveryCoordinator?.getRecoveryRegistry() ?? null,
+    parkProviderOperationMutations,
+    adoptProviderOperationAdmission,
   };
 }

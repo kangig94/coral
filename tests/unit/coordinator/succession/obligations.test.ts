@@ -62,6 +62,12 @@ describe('succession owner preparation', () => {
       kind: 'prepared',
       receipts: [{ receiptId: 'receipt', recoveryGrantId: 'grant' }],
     });
+    expect(await prepareOwnerObligations([owner], 'attempt', {
+      ...capabilities, accepts: [{ owner: owner.id, generation: 2 }],
+    }, [owner.id])).toMatchObject({
+      kind: 'blocking',
+      blockers: [{ owner: owner.id, reason: 'transfer receipt or recovery grant does not match the attempt' }],
+    });
     expect(await prepareOwnerObligations([owner], 'other-attempt', capabilities, [owner.id])).toMatchObject({
       kind: 'blocking',
     });

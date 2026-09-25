@@ -4,8 +4,16 @@ import {
   coordinateActiveStoreSelection,
   type ActiveStoreSelectionProtocolOptions,
 } from './active-store-selection-coordination.js';
-import type { Database } from './db.js';
-import type { ResolvedStoreEpoch } from './epoch.js';
+import { classifyStoreFile, type Database } from './db.js';
+import {
+  decodeResolvedStoreEpoch,
+  encodeResolvedStoreEpoch,
+  openExactStoreEpoch,
+  resolveProvenStoreEpochAtPath,
+  type ExactStoreEpochOpen,
+  type ResolvedStoreEpoch,
+  type StoreEpochOptions,
+} from './epoch.js';
 
 type OpenedStartupBackendStore = Readonly<{
   db: Database;
@@ -26,6 +34,42 @@ export type RouteOrOpenBackendStoreAtStartupInput = Readonly<{
   options: StartupActiveStoreSelectionOptions;
   validateForeignTarget: ForeignTargetValidator;
 }>;
+
+export type CommittedBackendStorePreparation =
+  | Readonly<{ kind: 'prepared'; store: ResolvedStoreEpoch }>
+  | Readonly<{ kind: 'holding'; reason: 'epoch-unproven' | 'format-incompatible' | 'probe-failed' }>;
+
+export function prepareCommittedBackendStoreAtStartup(
+  runtime: Runtime,
+  options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
+  epochKey: string,
+): CommittedBackendStorePreparation {
+  const expected = decodeResolvedStoreEpoch(epochKey);
+  if (expected === undefined) return { kind: 'holding', reason: 'epoch-unproven' };
+  try {
+    if (runtime.storage.realpathSync(runtime.paths.coral.store.dbDir) !== expected.storeRoot) {
+      return { kind: 'holding', reason: 'epoch-unproven' };
+    }
+    const proven = resolveProvenStoreEpochAtPath(runtime.storage, expected.storeRoot, expected.path);
+    if (proven === null || encodeResolvedStoreEpoch(proven) !== epochKey) {
+      return { kind: 'holding', reason: 'epoch-unproven' };
+    }
+    const classification = classifyStoreFile(proven.path, runtime.storage, options.storeFormat);
+    return classification.kind === 'compatible'
+      ? { kind: 'prepared', store: proven }
+      : { kind: 'holding', reason: 'format-incompatible' };
+  } catch {
+    return { kind: 'holding', reason: 'probe-failed' };
+  }
+}
+
+export function openCommittedBackendStoreAtStartup(
+  runtime: Runtime,
+  options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
+  expected: ResolvedStoreEpoch,
+): ExactStoreEpochOpen {
+  return openExactStoreEpoch(runtime, options, expected);
+}
 
 export async function routeOrOpenBackendStoreAtStartup(
   input: RouteOrOpenBackendStoreAtStartupInput,

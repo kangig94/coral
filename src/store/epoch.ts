@@ -15,9 +15,10 @@ import type { StoragePort } from '../infra/port-types.js';
 import { truncate } from '../infra/text.js';
 import type { Runtime } from '../runtime/ports.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
-import { openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
+import { classifyStoreFile, openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 import { observeStorePath } from './path-observation.js';
+import { joinSuccessionWriterGeneration } from './succession-writer-generation.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
@@ -94,6 +95,10 @@ export type StoreEpochSettlement = Readonly<{
   db: Database;
   store: ResolvedStoreEpoch;
 }>;
+
+export type ExactStoreEpochOpen =
+  | (Readonly<{ kind: 'opened' }> & StoreEpochSettlement)
+  | Readonly<{ kind: 'holding'; reason: 'epoch-unproven' | 'open-failed'; classification?: StoreEpochClassification }>;
 
 export type StoreEpochListEntry = Readonly<{
   epoch: StoreEpoch;
@@ -433,7 +438,7 @@ export function resolveCurrentStore(runtime: Pick<Runtime, 'paths' | 'storage'>,
 }
 
 export function openWritableStoreDbNoReset(
-  runtime: Pick<Runtime, 'env' | 'flavor' | 'ids' | 'paths' | 'storage'>,
+  runtime: Runtime,
   options: ({ readonly path?: string; readonly resolved?: never } | { readonly resolved: ResolvedStoreEpoch }) & {
     readonly busyTimeoutMs?: number;
     readonly storeFormat: StoreFormatDescription;
@@ -454,12 +459,20 @@ export function openWritableStoreDbNoReset(
           : { kind: 'disproven' as const };
   if (proof.kind === 'proven') {
     try {
+      const writerEntitlement =
+        resolved.path === ':memory:'
+          ? undefined
+          : joinSuccessionWriterGeneration(
+              runtime,
+              resolved.epoch ?? { storeRoot: dirname(resolved.path), epoch: 'legacy' },
+            );
       const db = openStoreDatabase({
         path: resolved.path,
         storage: runtime.storage,
         storeFormat: options.storeFormat,
         flavor: runtime.flavor,
         busyTimeoutMs: options.busyTimeoutMs,
+        writerEntitlement,
       });
       return resolved.epoch === null || lease === null
         ? db
@@ -1775,6 +1788,10 @@ function mintNextEpoch(
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs,
+      writerEntitlement: joinSuccessionWriterGeneration(runtime, {
+        storeRoot: dbDir,
+        epoch: supersedes ?? successor,
+      }),
     });
     if (opened.kind !== 'opened') {
       throw new Error(`A private store mint was classified as ${opened.classification.kind}.`);
@@ -1822,6 +1839,7 @@ function openPublishedEpoch(
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs,
+      writerEntitlement: joinSuccessionWriterGeneration(runtime, resolved),
     });
     db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
     return { db: registerStoreEpochHolder(runtime, resolved, db, lease), store: resolved };
@@ -1853,6 +1871,7 @@ function tryOpenCurrentEpoch(
   options: StoreEpochOptions,
   resolved: ResolvedStoreEpoch,
   deadline: bigint | null,
+  requireCompatible = false,
 ):
   | { readonly kind: 'opened'; readonly db: Database }
   | { readonly kind: 'replace'; readonly classification: StoreEpochClassification } {
@@ -1886,12 +1905,27 @@ function tryOpenCurrentEpoch(
   }
   let stage: StoreEpochOpenFailureStage = 'writable-open';
   try {
+    if (requireCompatible) {
+      const classification = classifyStoreFile(resolved.path, runtime.storage, options.storeFormat);
+      if (classification.kind !== 'compatible') {
+        return {
+          kind: 'replace',
+          classification: classificationAfterLeaseRelease(
+            lease,
+            classification.kind === 'absent'
+              ? unavailableClassification('openable-probe', new Error('Agreed store epoch is absent.'))
+              : classification,
+          ),
+        };
+      }
+    }
     const decision = openWritableStoreDatabase({
       path: resolved.path,
       storage: runtime.storage,
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_BUDGET_MS),
+      writerEntitlement: joinSuccessionWriterGeneration(runtime, resolved),
       ...(deadline === null
         ? {}
         : {
@@ -1914,6 +1948,40 @@ function tryOpenCurrentEpoch(
       kind: 'replace',
       classification: classificationAfterLeaseRelease(lease, unavailableClassification(stage, error)),
     };
+  }
+}
+
+/** An accepted epoch may never fall through to the successor-mint path. */
+export function openExactStoreEpoch(
+  runtime: Runtime,
+  options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
+  expected: ResolvedStoreEpoch,
+): ExactStoreEpochOpen {
+  let proven: ResolvedStoreEpoch | null;
+  try {
+    proven = resolveProvenStoreEpochAtPath(runtime.storage, expected.storeRoot, expected.path);
+  } catch {
+    return { kind: 'holding', reason: 'epoch-unproven' };
+  }
+  if (proven === null || encodeResolvedStoreEpoch(proven) !== encodeResolvedStoreEpoch(expected)) {
+    return { kind: 'holding', reason: 'epoch-unproven' };
+  }
+  const opened = tryOpenCurrentEpoch(runtime, options, proven, null, true);
+  if (opened.kind !== 'opened') {
+    return { kind: 'holding', reason: 'open-failed', classification: opened.classification };
+  }
+  let adopted = false;
+  try {
+    if (!runtime.storage.syncDirectoryDurableSync(proven.storeRoot)) {
+      return { kind: 'holding', reason: 'open-failed' };
+    }
+    opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
+    adopted = true;
+    return { kind: 'opened', db: opened.db, store: proven };
+  } catch {
+    return { kind: 'holding', reason: 'open-failed' };
+  } finally {
+    if (!adopted) opened.db.close();
   }
 }
 

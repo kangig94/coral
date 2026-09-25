@@ -96,7 +96,12 @@ export type IpcListener = {
   readonly sockets: Set<Socket>;
   readonly compatibilityListeners?: IpcListener[];
   createCompatibilityListener?(): IpcListener;
+  acceptSocket?(socket: Socket, pendingFrameBase64?: string): void;
+  forwardConnections?(forward: (socket: Socket, pendingFrameBase64: string) => void): () => void;
+  drainConnections?(): Promise<void>;
   socketPath: string | null;
+  inheritedServer?: NetServer;
+  unlinkInheritedOnClose?: boolean;
   onShutdownRecoveryAccepted?: (() => void) | null;
 };
 
@@ -580,13 +585,6 @@ export async function listenIpcServer(
   return { kind: 'bound', socketPath };
 }
 
-/**
- * Ownership-safe close: destroy tracked sockets, close the server, and forget
- * the listener's socket path. Node unlinks a listening unix socket's path
- * when `server.close()` completes, so a clean run of this function leaves no
- * socket file behind; a leftover one is evidence this function never ran —
- * a SIGKILL or OOM kill skipped it, not a graceful shutdown that reached it.
- */
 export async function closeIpcServer(listener: IpcListener): Promise<void> {
   for (const compatibility of listener.compatibilityListeners?.splice(0) ?? []) {
     await closeIpcServer(compatibility);
@@ -595,19 +593,48 @@ export async function closeIpcServer(listener: IpcListener): Promise<void> {
     socket.destroy();
   }
 
-  await new Promise<void>((resolve, reject) => {
-    if (!listener.server.listening) {
-      resolve();
-      return;
-    }
+  const closeServer = (server: NetServer): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      if (!server.listening) {
+        resolve();
+        return;
+      }
 
-    listener.server.close((error) => {
-      if (error) reject(error);
-      else resolve();
+      server.close((error) => {
+        if (error) reject(error);
+        else resolve();
+      });
     });
-  });
+  if (listener.inheritedServer !== undefined) await closeServer(listener.inheritedServer);
+  await closeServer(listener.server);
+  if (
+    process.platform !== 'win32' &&
+    listener.inheritedServer !== undefined &&
+    listener.unlinkInheritedOnClose &&
+    listener.socketPath !== null
+  ) {
+    try {
+      unlinkSync(listener.socketPath);
+    } catch (error: unknown) {
+      if (!isNoEntryError(error)) throw error;
+    }
+  }
 
   listener.socketPath = null;
+}
+
+export function attachInheritedIpcServer(listener: IpcListener, inherited: NetServer, socketPath: string): void {
+  if (listener.inheritedServer !== undefined || listener.server.listening || listener.acceptSocket === undefined) {
+    throw new Error('IPC listener cannot adopt another listening handle');
+  }
+  listener.inheritedServer = inherited;
+  listener.socketPath = socketPath;
+  inherited.on('connection', listener.acceptSocket);
+}
+
+export function enableInheritedIpcCleanup(listener: IpcListener): void {
+  listener.unlinkInheritedOnClose = true;
+  for (const compatibility of listener.compatibilityListeners ?? []) enableInheritedIpcCleanup(compatibility);
 }
 
 async function streamSubscription(
@@ -898,8 +925,24 @@ function createTrackedIpcListener(
   const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS;
   const writeDrainTimeoutMs = options.writeDrainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS;
   const listenerRef: { current: IpcListener | null } = { current: null };
+  const pendingSockets = new Map<Socket, () => void>();
+  const openSockets = new Set<Socket>();
+  const drained = new Set<() => void>();
+  let forwardAccepted: ((socket: Socket, pendingFrameBase64: string) => void) | null = null;
+  const releaseSocket = (socket: Socket): void => {
+    openSockets.delete(socket);
+    if (openSockets.size === 0) {
+      for (const resolve of drained) resolve();
+      drained.clear();
+    }
+  };
 
-  const server = createServer((socket) => {
+  const acceptSocket = (socket: Socket, pendingFrameBase64 = ''): void => {
+    if (forwardAccepted !== null) {
+      socket.pause();
+      forwardAccepted(socket, pendingFrameBase64);
+      return;
+    }
     if (resources.sockets.size >= resources.maxOpenSockets) {
       rpcPorts.identity.log(
         `IPC connection cap exceeded (${resources.sockets.size} >= ${resources.maxOpenSockets}); destroying socket\n`,
@@ -916,9 +959,13 @@ function createTrackedIpcListener(
     }
 
     resources.sockets.add(socket);
+    openSockets.add(socket);
     const framer = createLineFramer();
+    let pendingFrame = Buffer.from(pendingFrameBase64, 'base64');
+    if (pendingFrame.length > 0) framer.push(pendingFrame);
     let inflightRequest = false;
-    let pendingFrameBytes = 0;
+    let pendingFrameBytes = framer.pendingBytes();
+    resources.aggregatePendingFrameBytes += pendingFrameBytes;
     const firstFrameTimer = timers.setTimeout(() => {
       rpcPorts.identity.log(`IPC socket did not send a complete frame within ${firstFrameTimeoutMs}ms; destroying\n`);
       socket.destroy();
@@ -942,21 +989,43 @@ function createTrackedIpcListener(
       rpcPorts.admin.endRequest();
     };
 
-    socket.once('close', () => {
+    const onClose = () => {
       timers.clearTimeout(firstFrameTimer);
       releasePendingFrameBytes();
       finishRequest();
       resources.sockets.delete(socket);
-    });
+      pendingSockets.delete(socket);
+      releaseSocket(socket);
+    };
+    socket.once('close', onClose);
 
-    socket.on('error', (error) => {
+    const onError = (error: Error) => {
       rpcPorts.identity.log(`IPC socket error: ${formatError(error)}\n`);
       finishRequest();
-    });
+    };
+    socket.on('error', onError);
+
+    const transferPending = (): void => {
+      if (forwardAccepted === null || socket.destroyed) return;
+      socket.pause();
+      socket.off('data', onData);
+      socket.off('close', onClose);
+      socket.off('error', onError);
+      timers.clearTimeout(firstFrameTimer);
+      releasePendingFrameBytes();
+      resources.sockets.delete(socket);
+      pendingSockets.delete(socket);
+      releaseSocket(socket);
+      forwardAccepted(socket, pendingFrame.toString('base64'));
+    };
+    pendingSockets.set(socket, transferPending);
 
     const onData = (chunk: Buffer | string) => {
       let frames: string[];
       try {
+        pendingFrame = Buffer.concat([pendingFrame, typeof chunk === 'string' ? Buffer.from(chunk) : chunk]);
+        const lastNewline = pendingFrame.lastIndexOf(0x0a);
+        if (lastNewline !== -1) pendingFrame = pendingFrame.subarray(lastNewline + 1);
         frames = framer.push(chunk);
         updatePendingFrameBytes(framer.pendingBytes());
       } catch (error: unknown) {
@@ -1002,6 +1071,7 @@ function createTrackedIpcListener(
         timers.clearTimeout(firstFrameTimer);
         releasePendingFrameBytes();
         socket.off('data', onData);
+        pendingSockets.delete(socket);
         void dispatchFrame(
           frame,
           socket,
@@ -1020,13 +1090,26 @@ function createTrackedIpcListener(
     };
 
     socket.on('data', onData);
-  });
+    socket.resume();
+  };
+  const server = createServer({ pauseOnConnect: true }, acceptSocket);
 
   const listener: IpcListener = {
     server,
     sockets: resources.sockets,
     compatibilityListeners: [],
     createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
+    acceptSocket,
+    forwardConnections: (forward) => {
+      forwardAccepted = forward;
+      for (const transfer of pendingSockets.values()) transfer();
+      return () => {
+        if (forwardAccepted === forward) forwardAccepted = null;
+      };
+    },
+    drainConnections: () => openSockets.size === 0 ? Promise.resolve() : new Promise<void>((resolve) => {
+      drained.add(resolve);
+    }),
     socketPath: null,
     onShutdownRecoveryAccepted: null,
   };

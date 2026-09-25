@@ -76,17 +76,15 @@ describe('ChildPrincipalRegistry', () => {
       if (receipt === null) throw new Error('Expected a durable child transfer grant.');
 
       expect(incumbent.authenticate(childAuth(credential.handle), null, 1_002)).not.toBeNull();
-      incumbent.fenceAuthentication();
-      expect(incumbentLedger.advanceGeneration(1, 2)).toBe(true);
-
       const successor = new ChildPrincipalRegistry(ids(), { ledger: successorLedger, originNamespace });
       expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_003)).toBe(true);
+      expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-3' }), null, 1_003)).toBeNull();
       expect(successor.authenticate(childAuth(credential.handle), null, 1_004)).toBeNull();
       expect(successor.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_004)).not.toBeNull();
 
-      expect(successorLedger.advanceGeneration(2, 3)).toBe(true);
       expect(incumbent.reclaimAuthentication(3)).toBe(true);
       expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).toBeNull();
+      expect(successor.authenticate(childAuth(credential.handle, { token: 'nonce-4' }), null, 1_005)).toBeNull();
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }
@@ -100,16 +98,19 @@ describe('ChildPrincipalRegistry', () => {
       register(incumbent, testProjectPrincipal('/workspace/project'));
       const receipt = incumbent.prepareTransfer('attempt', 1_001);
       if (receipt === null) throw new Error('Expected a durable child transfer grant.');
-      expect(ledger.advanceGeneration(1, 2)).toBe(true);
-
       const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-b' });
       expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_002)).toBe(false);
       expect(successor.adoptTransfer(receipt, new Set(), 2, 1_002)).toBe(false);
+      expect(ledger.generation()).toBe(1);
       const matchingOrigin = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
+      expect(matchingOrigin.adoptTransfer(
+        { ...receipt, authorityGeneration: 2 }, new Set(['job-a']), 2, 1_002,
+      )).toBe(false);
       expect(matchingOrigin.adoptTransfer(
         { ...receipt, consumedNonceCheckpoint: receipt.consumedNonceCheckpoint + 1 },
         new Set(['job-a']), 2, 1_002,
       )).toBe(false);
+      expect(ledger.generation()).toBe(1);
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }
@@ -128,7 +129,6 @@ describe('ChildPrincipalRegistry', () => {
 
       const recoveredLedger = new ChildPrincipalNonceLedger(runDir);
       try {
-        expect(recoveredLedger.advanceGeneration(1, 2)).toBe(true);
         const successor = new ChildPrincipalRegistry(ids(), {
           ledger: recoveredLedger,
           originNamespace: () => 'ns-a',

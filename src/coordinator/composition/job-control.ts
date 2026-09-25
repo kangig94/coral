@@ -47,6 +47,9 @@ export function createCoordinatorControl({
     const abandoned: AbortAbandonment[] = [];
     const providerStops = requestStops(jobIds, 'signal_abort');
     if (providerStops.kind === 'admission-closed') {
+      if (world.launchCoordinator.successionAdmissionPaused()) {
+        return { kind: 'retryable', code: 'succession_admission_paused', jobIds: providerStops.jobIds };
+      }
       return { kind: 'successor-owned', jobIds: providerStops.jobIds };
     }
     const recorded = new Set<string>();
