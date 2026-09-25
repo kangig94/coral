@@ -439,7 +439,7 @@ describe('write-once store epochs', () => {
           operation === 'post-ready sweep'
             ? await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))
             : sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
-        expect(result).toBe('live-holder');
+        expect(result).toBe(operation === 'post-ready sweep' ? 'complete' : 'live-holder');
         expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
         expect(db.prepare<[], { value: string }>('SELECT value FROM rollback_sentinel').get()?.value).toBe(
           'concurrent-winner',
@@ -451,7 +451,7 @@ describe('write-once store epochs', () => {
   );
 
   it.each(['synchronous', 'post-ready'] as const)(
-    'skips one contended garbage epoch during the %s sweep, removes garbage on both sides, and syncs',
+    'handles a contended old epoch during the %s sweep',
     async (kind) => {
       const runtime = harness();
       const dbDir = runtime.paths.coral.store.dbDir;
@@ -481,11 +481,11 @@ describe('write-once store epochs', () => {
           kind === 'synchronous'
             ? sweepStoreEpochs(withStorage(runtime, storage), dbDir, '5')
             : await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
-        expect(result).toBe('live-holder');
-        expect(existsSync(epochPath(dbDir, '1'))).toBe(false);
+        expect(result).toBe(kind === 'post-ready' ? 'complete' : 'live-holder');
+        expect(existsSync(epochPath(dbDir, '1'))).toBe(kind === 'post-ready');
         expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
-        expect(existsSync(epochPath(dbDir, '3'))).toBe(false);
-        expect(rootSyncs).toBeGreaterThan(0);
+        expect(existsSync(epochPath(dbDir, '3'))).toBe(kind === 'post-ready');
+        if (kind === 'synchronous') expect(rootSyncs).toBeGreaterThan(0);
       } finally {
         held();
       }
@@ -733,7 +733,7 @@ describe('write-once store epochs', () => {
   });
 
   it.each(['synchronous', 'post-ready'] as const)(
-    'reclaims a large invalid epoch-0 directory in the %s sweep',
+    'handles a large invalid epoch-0 directory in the %s sweep',
     async (kind) => {
       const runtime = harness();
       const dbDir = runtime.paths.coral.store.dbDir;
@@ -749,7 +749,7 @@ describe('write-once store epochs', () => {
           : await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
 
       expect(result).toBe('complete');
-      expect(existsSync(invalid)).toBe(false);
+      expect(existsSync(invalid)).toBe(kind === 'post-ready');
     },
   );
 
@@ -781,7 +781,7 @@ describe('write-once store epochs', () => {
           operation === 'post-ready sweep'
             ? await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))
             : sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' });
-        expect(result).toBe('live-holder');
+        expect(result).toBe(operation === 'post-ready sweep' ? 'complete' : 'live-holder');
         expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
       });
     },
@@ -1750,6 +1750,30 @@ describe('write-once store epochs', () => {
     await new Promise<void>((resolveClosed) => server.close(() => resolveClosed()));
   });
 
+  it('retains superseded and disproven epochs while removing proven-absent residue', async () => {
+    const runtime = harness();
+    const dbDir = runtime.paths.coral.store.dbDir;
+    for (const epoch of ['1', '2', '3', '4', '5']) {
+      publishAdversarialEpoch(epochDirectory(dbDir, epoch), true);
+    }
+    const oldestBefore = readFileSync(epochPath(dbDir, '1'));
+    writeFileSync(join(epochDirectory(dbDir, '2'), STORE_EPOCH_METADATA_FILE_NAME), '{');
+    const invalidEpoch = join(dbDir, 'epoch-0');
+    mkdirSync(invalidEpoch);
+    writeFileSync(join(invalidEpoch, 'payload'), 'retained');
+    const residue = join(dbDir, '.mint-abandoned');
+    createCompatibleStore(join(residue, 'store.db'), 'abandoned');
+    createSharedFileLockSync(storeMintLockPath(dbDir, 'abandoned'))();
+
+    expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('complete');
+    for (const epoch of ['1', '2', '3', '4', '5']) {
+      expect(existsSync(epochPath(dbDir, epoch))).toBe(true);
+    }
+    expect(readFileSync(epochPath(dbDir, '1'))).toEqual(oldestBefore);
+    expect(readFileSync(join(invalidEpoch, 'payload'), 'utf-8')).toBe('retained');
+    expect(existsSync(residue)).toBe(false);
+  });
+
   it('bounds an oversized holder before parsing it', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
@@ -1920,7 +1944,7 @@ describe('write-once store epochs', () => {
     expect(afterRelease).not.toBeNull();
   });
 
-  it('removes the public epoch address before recursive deletion can erase its lock', async () => {
+  it('does not enter recursive deletion for a superseded epoch', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
@@ -1952,10 +1976,10 @@ describe('write-once store epochs', () => {
     try {
       const result = await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
       const present = existsSync(epochPath(dbDir, '1'));
-      expect(interpositionRan).toBe(true);
+      expect(interpositionRan).toBe(false);
       expect(openedValue).toBeUndefined();
       expect(result).toBe('complete');
-      expect(present).toBe(false);
+      expect(present).toBe(true);
     } finally {
       closeOpened?.();
     }
@@ -2003,7 +2027,7 @@ describe('write-once store epochs', () => {
   );
 
   it.each(['.mint-invalid', '.preparing-invalid', '.reaping-invalid', 'epoch-1'] as const)(
-    'reclaims %s when its regular lock is not a SQLite database',
+    'reclaims absent residue but retains %s when its regular lock is not a SQLite database',
     async (name) => {
       const runtime = harness();
       const dbDir = runtime.paths.coral.store.dbDir;
@@ -2017,7 +2041,7 @@ describe('write-once store epochs', () => {
       const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'));
 
       expect(result).toBe('complete');
-      expect(existsSync(target)).toBe(false);
+      expect(existsSync(target)).toBe(name === 'epoch-1');
     },
   );
 
@@ -2157,7 +2181,7 @@ describe('write-once store epochs', () => {
     publishAdversarialEpoch(join(dbDir, 'epoch-3'), true);
     publishAdversarialEpoch(join(dbDir, 'epoch-5'), true);
     try {
-      expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
+      expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('complete');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     } finally {
       settled.db.close();
@@ -2196,7 +2220,7 @@ describe('write-once store epochs', () => {
     const kbDatabase = openWritableStoreDbNoReset(runtime, { path: epochPath(dbDir, '1'), storeFormat });
     releaseSnapshot();
     try {
-      expect(await sweep).toBe('live-holder');
+      expect(await sweep).toBe('complete');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     } finally {
       kbDatabase.close();
@@ -2237,7 +2261,7 @@ describe('write-once store epochs', () => {
     linkSync(storeEpochLockPath(dbDir, '1'), alias);
     releaseSnapshot();
     try {
-      expect(await sweep).toBe('deletion-failed');
+      expect(await sweep).toBe('complete');
       expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
     } finally {
       held.close();
@@ -2291,10 +2315,13 @@ describe('write-once store epochs', () => {
     rollback.close();
   });
 
-  it('syncs an epoch removal before returning cancellation after the sweep yield', async () => {
+  it('syncs an abandoned residue removal before returning cancellation after the sweep yield', async () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     for (const epoch of ['1', '2', '3']) publishAdversarialEpoch(join(dbDir, `epoch-${epoch}`), true);
+    const residue = join(dbDir, '.mint-abandoned');
+    createCompatibleStore(join(residue, 'store.db'), 'abandoned');
+    createSharedFileLockSync(storeMintLockPath(dbDir, 'abandoned'))();
     const controller = new AbortController();
     const events: string[] = [];
     const storage = new Proxy(runtime.storage, {
@@ -2303,7 +2330,7 @@ describe('write-once store epochs', () => {
           return async (path: string, rmOptions?: { recursive?: boolean; force?: boolean }): Promise<void> => {
             await subject.rm(path, rmOptions);
             if (basename(path).startsWith('.reaping-')) {
-              events.push('epoch-removed');
+              events.push('residue-removed');
               controller.abort();
             }
           };
@@ -2323,7 +2350,8 @@ describe('write-once store epochs', () => {
         signal: controller.signal,
       }),
     ).resolves.toBe('cancelled');
-    expect(events).toEqual(['epoch-removed', 'parent-sync']);
+    expect(events).toEqual(['residue-removed', 'parent-sync']);
+    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
   });
 
   it('releases the socket guard when discard cannot acquire the adoption lock', async () => {
@@ -2471,6 +2499,9 @@ describe('write-once store epochs', () => {
     const settled = settleStoreEpoch(withStorage(runtime, storage), options());
 
     expect(settled.store.epoch).toBe('3');
+    const dbDir = runtime.paths.coral.store.dbDir;
+    createCompatibleStore(join(dbDir, '.mint-failed', 'store.db'), 'abandoned');
+    createSharedFileLockSync(storeMintLockPath(dbDir, 'failed'))();
     publishLiveCoordinator(runtime, runtime.env.pid());
     await expect(sweepStoreEpochsPostReady(withStorage(runtime, storage), settled.store)).resolves.toBe(
       'deletion-failed',

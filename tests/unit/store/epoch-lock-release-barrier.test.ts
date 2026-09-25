@@ -36,6 +36,7 @@ import {
   epochPath,
   resolvedStoreEpoch,
   storeEpochLockPath,
+  storeMintLockPath,
   sweepStoreEpochs,
   sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
@@ -119,19 +120,24 @@ describe('store epoch lock-release durability barriers', () => {
     expect(tracked.syncs()).toBeGreaterThan(0);
   });
 
-  it('syncs a post-ready removal when its lock release throws', async () => {
+  it('syncs a post-ready residue removal when its lock release throws', async () => {
     const base = harness();
     publishEpoch(base, '1');
     publishEpoch(base, '3');
     publishEpoch(base, '5');
     const dbDir = base.paths.coral.store.dbDir;
     const tracked = trackingRootSync(base);
-    lockReleaseFault.paths.add(storeEpochLockPath(dbDir, '1'));
+    const residue = join(dbDir, '.mint-abandoned');
+    mkdirSync(residue);
+    const lockPath = storeMintLockPath(dbDir, 'abandoned');
+    writeFileSync(lockPath, '');
+    lockReleaseFault.paths.add(lockPath);
 
     await expect(sweepStoreEpochsPostReady(tracked.runtime, resolvedStoreEpoch(dbDir, '5'))).resolves.toBe(
       'lock-release-failed',
     );
-    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(true);
+    expect(existsSync(residue)).toBe(false);
     expect(tracked.syncs()).toBeGreaterThan(0);
   });
 

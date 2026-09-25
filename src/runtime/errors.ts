@@ -912,9 +912,9 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   },
   handoff_socket_holder_unverified: {
     userMessage: (context) =>
-      `Handoff refused at the startup deadline for socket ${context.socketPath}: the socket remained bound but no verified holder pid was available.`,
+      `Handoff refused for socket ${context.socketPath}: the address remained bound without an answering coordinator.`,
     remediation:
-      'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff.',
+      'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
     exitCode: 75,
     observation: 'not_observed',
   },

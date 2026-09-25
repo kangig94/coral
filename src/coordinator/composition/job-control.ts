@@ -36,6 +36,7 @@ export function createCoordinatorControl({
   abortJobs: (jobIds: string[]) => AbortDecision;
   scopeCheckJobs: (jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation) => ScopeCheckResult;
   isDrainRequested: () => boolean;
+  decideLegacyShutdown: () => { code: 'shutdown_unauthorized'; message: string };
   requestDrain: (reason: ShutdownReason) => void;
 } {
   function abortJobs(jobIds: string[]): AbortDecision {
@@ -195,6 +196,10 @@ export function createCoordinatorControl({
     abortJobs,
     scopeCheckJobs,
     isDrainRequested,
+    decideLegacyShutdown: () => ({
+      code: 'shutdown_unauthorized',
+      message: 'Manual shutdown required: incumbent rejected shutdown capability.',
+    }),
     requestDrain,
   };
 }

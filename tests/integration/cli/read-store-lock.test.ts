@@ -72,7 +72,7 @@ it('keeps the cached CLI reader shared lock until its cached SQLite handle close
   publishEpoch(runtime, '3');
   publishEpoch(runtime, '5');
 
-  expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('live-holder');
+  expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('complete');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
 
   expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('live-holder');

@@ -1,4 +1,4 @@
-import { observeProcessLiveness } from '../../infra/node-process.js';
+import { observeProcessLiveness, probeProcessIncarnation } from '../../infra/node-process.js';
 import { processIncarnationSchema, type ProcessIncarnation } from '../../infra/node-process.js';
 declare const __PLUGIN_ROOT__: string;
 declare const __BUNDLE_DIR__: string | undefined;
@@ -61,8 +61,8 @@ export const STARTUP_POLL_MS = 200;
  */
 export const KERNEL_READY_DEADLINE_MS = 15_000;
 /**
- * Time budget for the previous daemon to release the socket after shutdown
- * request. Mirrors `HANDOFF_DRAIN_TIMEOUT_MS` in `coordinator/shutdown.ts` —
+ * Time budget for administrative drain to release the socket.
+ * Mirrors `HANDOFF_DRAIN_TIMEOUT_MS` in `coordinator/shutdown.ts` —
  * defined locally here to avoid a transport→coordinator import cycle. The
  * coordinator side is canonical; the two must stay in sync.
  */
@@ -714,7 +714,20 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
  * before binding: a probe that never completed did not observe that, and a coordinator that is serving would
  * answer the same way to a dropped request.
  */
-function endedStartupMessage(terminal: SpawnedCoordinatorTerminal, reading: CoordinatorHealthReading): string {
+function verifiedUnresponsivePid(info: VerifiedBackendInfo | null): number | null {
+  return info !== null &&
+    info.incarnation !== undefined &&
+    probeProcessIncarnation(info.pid) === info.incarnation &&
+    observeProcessLiveness(info.pid) === 'alive'
+    ? info.pid
+    : null;
+}
+
+function endedStartupMessage(
+  terminal: SpawnedCoordinatorTerminal,
+  reading: CoordinatorHealthReading,
+  info: VerifiedBackendInfo | null,
+): string {
   const inspect = 'Run `coral-cli backend status` to inspect the recorded startup outcome.';
   if (terminal.kind === 'never-started') {
     return `The Coral coordinator process could not be started (${terminal.reason}). ${inspect}`;
@@ -727,11 +740,20 @@ function endedStartupMessage(terminal: SpawnedCoordinatorTerminal, reading: Coor
         'The spawned Coral coordinator stopped, and this address answered something this Coral build cannot read ' +
         `as coordinator health. ${inspect}`
       );
-    case 'unanswered':
+    case 'unanswered': {
+      const pid = verifiedUnresponsivePid(info);
+      if (pid !== null) {
+        return (
+          'The spawned Coral coordinator stopped. The coordinator at this address cannot answer health requests; ' +
+          `its recorded process is still alive (${reading.cause}). Force-kill it to allow a fresh start.\n` +
+          `action=kill -9 ${pid}`
+        );
+      }
       return (
-        'The spawned Coral coordinator stopped, and this invocation could not reach a coordinator at this address ' +
-        `to see whether one is serving it (${reading.cause}), so whether one is remains unobserved. ${inspect}`
+        'The spawned Coral coordinator stopped, and this address does not answer health requests ' +
+        `(${reading.cause}). Verify the socket owner, force-kill it if it is still alive, then retry.`
       );
+    }
     default:
       return assertNever(reading);
   }
@@ -807,6 +829,14 @@ async function waitForBackendReady(
     if (startupError) {
       switch (startupError.kind) {
         case 'documented':
+          if (
+            startupError.code === 'handoff_socket_holder_unverified' &&
+            observedReading.kind === 'unanswered' &&
+            verifiedUnresponsivePid(info) !== null
+          ) {
+            throw new BackendUnreachableError(endedStartupMessage({ kind: 'exited' }, observedReading, info));
+          }
+          throw new CoralSetupError(startupError);
         case 'self_authored':
           throw new CoralSetupError(startupError);
         case 'unrecognized_code':
@@ -843,7 +873,7 @@ async function waitForBackendReady(
           expectedSocketPath,
         );
       }
-      throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading));
+      throw new BackendUnreachableError(endedStartupMessage(terminalOutcome, observedReading, info));
     }
 
     if (waitContext.kind === 'current-attempt') {

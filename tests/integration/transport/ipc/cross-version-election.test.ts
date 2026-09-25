@@ -226,11 +226,10 @@ describe('cross-version election on the daemon bind path', () => {
     expect(incumbent.listening).toBe(true);
   });
 
-  it('a newer build still takes over from a healthy older incumbent', async () => {
+  it('a newer build concedes to a healthy older incumbent without requesting shutdown', async () => {
     const socketPath = makeSocketPath('newer-contender');
     let shutdownRequests = 0;
-    let incumbentServer: NetServer | null = null;
-    incumbentServer = await startScriptedIncumbent(socketPath, async (request) => {
+    const incumbentServer = await startScriptedIncumbent(socketPath, async (request) => {
       if (request.method === 'transport.ping') {
         return {
           kind: 'response',
@@ -248,34 +247,24 @@ describe('cross-version election on the daemon bind path', () => {
       }
       if (request.method === 'transport.shutdown') {
         shutdownRequests += 1;
-        expect(request.auth).toEqual({ kind: 'boot', token: 'boot-token' });
-        // Release the socket so the contender's next bind attempt succeeds —
-        // the accepted proxy for "the older daemon actually drained".
-        queueMicrotask(() => incumbentServer?.close());
         return { kind: 'response', id: request.id, result: { status: 'draining' } };
       }
       return { kind: 'response', id: request.id, result: null };
     });
 
-    const result = await bindWithHandoff({
-      socketPath,
-      desired: { version: '2.0.0', bundleHash: 'new-hash', flavor: 'prod', namespace: 'ns' },
-      bindAttempt: realBindAttempt(socketPath),
-      runStartupRecovery: async () => [],
-      runtime: noSignalRuntime(),
-      readVerifiedIncumbentFromDiscovery: () => ({
-        pid: 777,
-        incarnation: testIncarnation(888),
-        source: 'discovery',
-        instanceId: 'older-incumbent',
-        token: 'token',
-        bootToken: 'boot-token',
-        shutdownToken: 'shutdown-token',
+    await expect(
+      bindWithHandoff({
+        socketPath,
+        desired: { version: '2.0.0', bundleHash: 'new-hash', flavor: 'prod', namespace: 'ns' },
+        bindAttempt: realBindAttempt(socketPath),
+        runStartupRecovery: async () => [],
+        runtime: noSignalRuntime(),
+        readVerifiedIncumbentFromDiscovery: () => null,
+        totalBudgetMs: 5_000,
       }),
-      totalBudgetMs: 5_000,
-    });
+    ).rejects.toBeInstanceOf(IncumbentMatchesError);
 
-    expect(result.acquiredViaHandoff).toBe(true);
-    expect(shutdownRequests).toBeGreaterThanOrEqual(1);
+    expect(shutdownRequests).toBe(0);
+    expect(incumbentServer.listening).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as IpcClientMod from '#src/transport/ipc/client.js';
-import type { ProcessIncarnation } from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2174,9 +2174,30 @@ describe('ipc ensure', () => {
   });
 
   const UNREACHABLE_AFTER_CHILD_STOPPED =
-    'The spawned Coral coordinator stopped, and this invocation could not reach a coordinator at this address to ' +
-    'see whether one is serving it (health-request-failed), so whether one is remains unobserved. Run ' +
-    '`coral-cli backend status` to inspect the recorded startup outcome.';
+    'The spawned Coral coordinator stopped, and this address does not answer health requests ' +
+    '(health-request-failed). Verify the socket owner, force-kill it if it is still alive, then retry.';
+
+  it('names a verified live unresponsive coordinator in labeled force-kill guidance', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation! });
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    child.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(`action=kill -9 ${process.pid}`);
+  });
 
   // A child that never spawned did not stop before binding, and the reason it never spawned is this process's
   // own: `spawnCoordinator` gives the child `stdio: ['ignore', 'ignore', <coordinator.log fd>]`, so nothing the

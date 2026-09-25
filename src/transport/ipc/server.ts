@@ -97,13 +97,6 @@ export type IpcListener = {
   readonly compatibilityListeners?: IpcListener[];
   createCompatibilityListener?(): IpcListener;
   socketPath: string | null;
-  /**
-   * Optional callback invoked alongside `transport.shutdown`'s `requestDrain`.
-   * Composition wires this to `coordinator.shutdown(reason)` so a contender
-   * can replace a still-`starting` incumbent (where idle-timer driven drain
-   * has not yet been installed). Setting/clearing is composition's job.
-   */
-  onShutdownRequest: ((reason: 'replaced') => void) | null;
   onShutdownRecoveryAccepted?: (() => void) | null;
 };
 
@@ -284,8 +277,6 @@ function authenticateIpcRequest(auth: IpcAuthMetadata | undefined, rpcPorts: Htt
   return IPC_OPERATOR_PRINCIPAL;
 }
 
-/** The manual shutdown and KB-restart routes answer every authorization refusal in their own documented
- *  vocabulary. */
 function routeCredentialRefusal(spec: IpcOperationalSpec): typeof IPC_UNAUTHORIZED_RESPONSE | null {
   if (spec.dispatch.kind === 'shutdown') {
     return SHUTDOWN_UNAUTHORIZED_RESPONSE;
@@ -570,7 +561,6 @@ export async function listenIpcServer(
       if (compatibility === undefined || listener.compatibilityListeners === undefined) {
         throw new Error('IPC listener does not support compatibility sockets');
       }
-      compatibility.onShutdownRequest = (reason) => listener.onShutdownRequest?.(reason);
       compatibility.onShutdownRecoveryAccepted = () => listener.onShutdownRecoveryAccepted?.();
       const compatibilityResult =
         compatibilityAddress.kind === 'published'
@@ -688,7 +678,6 @@ async function dispatchFrame(
   socket: Socket,
   dispatchMap: ReadonlyMap<string, IpcDispatchEntry>,
   rpcPorts: HttpHandlerPorts,
-  onShutdownRequest: ((reason: 'replaced') => void) | null,
   onShutdownRecoveryAccepted: (() => void) | null,
   startRequest: () => void,
   finishRequest: () => void,
@@ -754,28 +743,8 @@ async function dispatchFrame(
     }
 
     if (operationalSpec.dispatch.kind === 'shutdown') {
-      const reason = 'replaced';
-      writeAuditEvent(
-        'admin_shutdown_requested',
-        {
-          transport: 'ipc',
-          reason,
-          instanceId: rpcPorts.identity.instanceId,
-        },
-        'warn',
-      );
-      rpcPorts.admin.requestDrain(reason);
-      // `requestDrain` only flips the drain flag and notifies the idle timer;
-      // the idle timer is not installed until lifecycle reaches 'running'.
-      // To unblock contenders during a still-`starting` incumbent, lifecycle
-      // composition registers `onShutdownRequest` to drive `coordinator.shutdown`
-      // directly. No-op when lifecycle is already running (drain handles it).
-      onShutdownRequest?.(reason);
-      await finishUnaryResponse({
-        kind: 'response',
-        id: request.id,
-        result: { status: 'draining', instanceId: rpcPorts.identity.instanceId },
-      });
+      const refusal = rpcPorts.admin.decideLegacyShutdown?.() ?? SHUTDOWN_UNAUTHORIZED_RESPONSE;
+      await finishUnaryResponse(requestErrorResponse(request.id, refusal.message, refusal));
       return;
     }
 
@@ -912,9 +881,6 @@ function createTrackedIpcListener(
   const dispatchMap = new Map(dispatchTable.map((entry) => [entry.method, entry]));
   const firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? IPC_DEFAULT_FIRST_FRAME_TIMEOUT_MS;
   const writeDrainTimeoutMs = options.writeDrainTimeoutMs ?? IPC_DEFAULT_WRITE_DRAIN_TIMEOUT_MS;
-  // Mutable holder so the per-connection `dispatchFrame` closure reads the
-  // current callback via `listener.onShutdownRequest`. Composition writes to
-  // it after wiring the lifecycle controller.
   const listenerRef: { current: IpcListener | null } = { current: null };
 
   const server = createServer((socket) => {
@@ -1025,7 +991,6 @@ function createTrackedIpcListener(
           socket,
           dispatchMap,
           rpcPorts,
-          listenerRef.current?.onShutdownRequest ?? null,
           listenerRef.current?.onShutdownRecoveryAccepted ?? null,
           () => {
             rpcPorts.admin.beginRequest();
@@ -1047,7 +1012,6 @@ function createTrackedIpcListener(
     compatibilityListeners: [],
     createCompatibilityListener: () => createTrackedIpcListener(rpcPorts, options, resources),
     socketPath: null,
-    onShutdownRequest: null,
     onShutdownRecoveryAccepted: null,
   };
   listenerRef.current = listener;

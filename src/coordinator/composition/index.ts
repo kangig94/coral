@@ -1444,6 +1444,7 @@ export function createCoordinatorCore(
         world.idleTimer.endRequest();
       },
       requestDrain: control.requestDrain,
+      decideLegacyShutdown: control.decideLegacyShutdown,
       probeKbDaemon: () => kbDaemonSupervisor.probe(),
       restartKbDaemon: (reason) => kbDaemonSupervisorWithTrackedShutdown.restart(reason),
     },
@@ -1824,10 +1825,6 @@ export function createCoordinatorCore(
 
   lifecycleController = createLifecycle(lifecycleDeps, runStartupRecovery);
   const resolvedLifecycleController = lifecycleController;
-  // A starting incumbent must accept explicit shutdown before its idle watcher exists.
-  ipcServer.onShutdownRequest = (reason) => {
-    void resolvedLifecycleController.shutdown(reason).catch(() => {});
-  };
   ipcServer.onShutdownRecoveryAccepted = () => {
     resolvedLifecycleController.requestShutdownRetry();
   };

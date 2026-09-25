@@ -1320,58 +1320,6 @@ async function observeStoreEpochLockAsync(
   return observeContainedRegularFileAsync(storage, directory, lock, directoryProof);
 }
 
-async function readEpochMetadataAsync(storage: StoragePort, directory: string): Promise<StoreEpochMetadataDisposition> {
-  const metadataPath = join(directory, STORE_EPOCH_METADATA_FILE_NAME);
-  try {
-    const entry = await storage.lstat(metadataPath);
-    const identity = storage.lstatSync(metadataPath, { bigint: true });
-    const directoryEntry = storage.lstatSync(directory, { bigint: true });
-    if (
-      !entry.isFile() ||
-      entry.isSymbolicLink() ||
-      identity.nlink !== 1n ||
-      identity.dev !== directoryEntry.dev ||
-      entry.size > MAX_STORE_EPOCH_METADATA_BYTES
-    ) {
-      return { kind: 'malformed' };
-    }
-  } catch (error: unknown) {
-    return errorCode(error) === 'ENOENT' ? { kind: 'missing' } : { kind: 'unreadable' };
-  }
-  try {
-    const parsed = parseStoreEpochMetadata(JSON.parse(await storage.readFile(metadataPath, 'utf-8')));
-    return parsed === null ? { kind: 'malformed' } : { kind: 'valid', value: parsed };
-  } catch (error: unknown) {
-    return error instanceof SyntaxError ? { kind: 'malformed' } : { kind: 'unreadable' };
-  }
-}
-
-async function observeStoreEpochAsync(
-  storage: StoragePort,
-  dbDir: string,
-  entry: string,
-): Promise<StoreEpochObservation | null> {
-  const epoch = epochNumber(entry);
-  if (epoch === null) return null;
-  const directory = join(dbDir, entry);
-  const contained = await observeContainedDirectoryAsync(storage, dbDir, directory);
-  if (contained.kind !== 'proven') {
-    return {
-      epoch,
-      proof: contained,
-      epochJson: contained.kind === 'unobservable' ? { kind: 'unreadable' } : { kind: 'malformed' },
-    };
-  }
-  const epochJson = await readEpochMetadataAsync(storage, directory);
-  if (epochJson.kind === 'unreadable') {
-    return { epoch, proof: { kind: 'unobservable', cause: 'epoch metadata is unreadable' }, epochJson };
-  }
-  const database = await observeContainedRegularFileAsync(storage, directory, epochPath(dbDir, epoch), contained);
-  const lock =
-    database.kind === 'proven' ? await observeStoreEpochLockAsync(storage, dbDir, epoch, contained) : database;
-  return { epoch, proof: epochJson.kind === 'valid' ? lock : { kind: 'disproven' }, epochJson };
-}
-
 async function observeStoreEpochHolderAsync(
   runtime: Runtime,
   dbDir: string,
@@ -1505,21 +1453,6 @@ async function removeAfterReapingRenameAsync(
   return (await removeDuringPostReadySweep(runtime.storage, dbDir, reapingPath)) ? 'removed' : 'target-failed';
 }
 
-async function removeEpochEntryAsync(runtime: Runtime, dbDir: string, epoch: StoreEpoch): Promise<LockedRemoval> {
-  const targetPath = epochDirectory(dbDir, epoch);
-  const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, targetPath);
-  if (root.kind === 'unobservable') return 'target-failed';
-  if (root.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, targetPath);
-  const lock = await observeStoreEpochLockAsync(runtime.storage, dbDir, epoch, root);
-  if (lock.kind === 'unobservable') return 'target-failed';
-  if (lock.kind === 'disproven') {
-    return (await readEpochMetadataAsync(runtime.storage, targetPath)).kind === 'valid'
-      ? 'target-failed'
-      : removeAfterReapingRenameAsync(runtime, dbDir, targetPath);
-  }
-  return removeWhileExclusivelyLockedAsync(runtime, dbDir, storeEpochLockPath(dbDir, epoch), targetPath);
-}
-
 async function removeAbandonedStoreDirectory(
   runtime: Runtime,
   dbDir: string,
@@ -1631,25 +1564,6 @@ async function cleanPostReadyStoreEpochHolders(
   return { kind: 'cleaned', deletionFailed, lockReleaseFailed, unobservableHolder };
 }
 
-type PostReadyEpochObservationResult =
-  | Readonly<{ kind: 'cancelled' }>
-  | Readonly<{ kind: 'observed'; observations: readonly StoreEpochObservation[] }>;
-
-async function observePostReadyStoreEpochs(
-  context: PostReadyStoreEpochSweepContext,
-  entries: readonly string[],
-): Promise<PostReadyEpochObservationResult> {
-  const { runtime, dbDir, signal } = context;
-  const observations: StoreEpochObservation[] = [];
-  for (const entry of entries) {
-    if (signal?.aborted) return { kind: 'cancelled' };
-    const observation = await observeStoreEpochAsync(runtime.storage, dbDir, entry);
-    if (observation !== null) observations.push(observation);
-    await yieldSweepTurn();
-  }
-  return { kind: 'observed', observations };
-}
-
 type PostReadyEpochReapingResult =
   | Readonly<{ kind: 'cancelled' }>
   | Readonly<{
@@ -1664,36 +1578,19 @@ async function reapPostReadyStoreEpochEntries(
   context: PostReadyStoreEpochSweepContext,
   entries: readonly string[],
   residueEntries: ReadonlySet<string>,
-  retention: StoreEpochRetentionSelection,
   mutations: PostReadySweepMutationState,
 ): Promise<PostReadyEpochReapingResult> {
-  const { runtime, dbDir, openEpoch, signal } = context;
+  const { runtime, dbDir, signal } = context;
   let complete = true;
   let liveHolder = false;
   let lockReleaseFailed = false;
   let unobservableResidue = false;
   for (const entry of entries) {
     if (signal?.aborted) return { kind: 'cancelled' };
-    const epoch = epochNumber(entry);
-    const observation = epoch === null ? undefined : retention.byEpoch.get(epoch);
-    const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
-    const abandonedStoreDirectory = residueEntries.has(entry);
-    const disprovenEpochEntry = observation?.proof.kind === 'disproven';
-    const garbageEpoch = observation?.proof.kind === 'proven' && retention.garbageEpochs.has(observation.epoch);
-    if (
-      abandonedStoreDirectory ||
-      invalidEpochEntry ||
-      (epoch !== openEpoch && (disprovenEpochEntry || garbageEpoch))
-    ) {
+    if (residueEntries.has(entry)) {
       const wasPending = mutations.pending;
       mutations.pending = true;
-      const removal = abandonedStoreDirectory
-        ? await removeAbandonedStoreDirectory(runtime, dbDir, join(dbDir, entry))
-        : epoch === null
-          ? (await removeDuringPostReadySweep(runtime.storage, dbDir, join(dbDir, entry)))
-            ? 'removed'
-            : 'target-failed'
-          : await removeEpochEntryAsync(runtime, dbDir, epoch);
+      const removal = await removeAbandonedStoreDirectory(runtime, dbDir, join(dbDir, entry));
       if (removal === 'unobservable') {
         mutations.pending = wasPending;
         unobservableResidue = true;
@@ -1756,13 +1653,8 @@ export async function sweepStoreEpochsPostReady(
   if (holderCleanup.deletionFailed) return 'deletion-failed';
   if (holderCleanup.unobservableHolder) return 'unobservable-holder';
 
-  const observation = await observePostReadyStoreEpochs(context, entries);
-  if (observation.kind === 'cancelled') {
-    return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
-  }
   const residueEntries = new Set(entries.filter((entry) => isStoreEpochResidue(entry)));
-  const retention = selectStoreEpochRetention(observation.observations);
-  const reaping = await reapPostReadyStoreEpochEntries(context, entries, residueEntries, retention, mutations);
+  const reaping = await reapPostReadyStoreEpochEntries(context, entries, residueEntries, mutations);
   if (reaping.kind === 'cancelled') {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }

@@ -145,9 +145,9 @@ const HANDOFF_REFUSAL_CASES = [
       context: { stage: 'handoff-deadline', socketPath: '/run/coral/coordinator.sock' },
     },
     userMessage:
-      'Handoff refused at the startup deadline for socket /run/coral/coordinator.sock: the socket remained bound but no verified holder pid was available.',
+      'Handoff refused for socket /run/coral/coordinator.sock: the address remained bound without an answering coordinator.',
     remediation:
-      'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff.',
+      'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
     exitCode: 75,
     observation: 'not_observed',
     retryable: false,
@@ -613,9 +613,9 @@ describe('CoralSetupError', () => {
     ).toEqual({
       kind: 'documented',
       code: 'handoff_socket_holder_unverified',
-      userMessage: `Handoff refused at the startup deadline for socket ${socketPath}: the socket remained bound but no verified holder pid was available.`,
+      userMessage: `Handoff refused for socket ${socketPath}: the address remained bound without an answering coordinator.`,
       remediation:
-        'Inspect and recover the process or stale socket that holds the coordinator socket, then retry handoff.',
+        'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
     });
   });
 

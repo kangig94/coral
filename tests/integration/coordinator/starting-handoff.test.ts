@@ -1,23 +1,25 @@
-// Phase C: when a contender's `transport.shutdown` arrives at a still-`starting`
-// incumbent, lifecycle shutdown must fire IMMEDIATELY via the
-// `onShutdownRequest` callback — not defer until idle-timer drain
-// (`startWatching`) is installed.
-//
-// This is an integration-level concern but does not need a real daemon: the
-// IPC server's contract is "invoke `onShutdownRequest` synchronously when
-// `transport.shutdown` is dispatched, regardless of lifecycle state".
-
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { closeIpcServer, createIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts, HealthSnapshot } from '#src/transport/server-ports.js';
 import { TEST_SYSTEM_PROVIDER_SCOPE } from '../../helpers/provider-credentials.js';
+import {
+  coordinatorFilesForHome,
+  createShippedPluginFixture,
+  spawnCoordinator,
+  stopCoordinator,
+  waitForProcessExit,
+  type SpawnedCoordinator,
+} from './helpers.js';
 
 const tempDirs: string[] = [];
 const liveListeners: IpcListener[] = [];
+const liveChildren: ChildProcess[] = [];
+const contenders: SpawnedCoordinator[] = [];
 
 function makeSocketPath(name: string): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-starting-handoff-test-'));
@@ -28,25 +30,27 @@ function makeSocketPath(name: string): string {
 }
 
 function buildPorts(opts: {
+  state: 'starting' | 'idle' | 'busy' | 'preparing' | 'committing';
   isLifecycleRunning: () => boolean;
   isDrainRequested: () => boolean;
   onRequestDrain: (reason: string) => void;
+  pid?: number;
 }): HttpHandlerPorts {
   const health: HealthSnapshot = {
-    status: 'starting',
-    kernel: { phase: 'starting', readyAt: null },
-    version: '0.0.0',
-    bundleHash: 'h',
+    status: opts.isLifecycleRunning() ? 'ok' : 'starting',
+    kernel: opts.isLifecycleRunning() ? { phase: 'running', readyAt: 1 } : { phase: 'starting', readyAt: null },
+    version: '0.11.0',
+    bundleHash: 'new-incumbent',
     flavor: 'prod',
     namespace: 'ns',
     instanceId: 'i',
-    pid: 1,
+    pid: opts.pid ?? 1,
     uptimeMs: 0,
     active: 0,
-    activeJobs: 0,
+    activeJobs: opts.state === 'busy' ? 1 : 0,
     liveDiscuss: 0,
     queueDepth: 0,
-    inflightRequests: 0,
+    inflightRequests: opts.state === 'preparing' || opts.state === 'committing' ? 1 : 0,
     textProjectionState: 'idle',
     env: {},
     components: [{ id: 'kb', phase: 'offline', reason: 'test' }],
@@ -57,8 +61,8 @@ function buildPorts(opts: {
       token: 't',
       bootToken: 'boot-token',
       shutdownToken: 'shutdown-token',
-      version: '0.0.0',
-      bundleHash: 'h',
+      version: '0.11.0',
+      bundleHash: 'new-incumbent',
       flavor: 'prod',
       namespace: 'ns',
       instanceId: 'i',
@@ -68,6 +72,7 @@ function buildPorts(opts: {
     coralEnvSnapshot: {},
     systemProviderScope: TEST_SYSTEM_PROVIDER_SCOPE,
     admin: {
+      getLifecycleState: () => (opts.state === 'starting' ? 'starting' : 'running'),
       isLifecycleRunning: opts.isLifecycleRunning,
       isDrainRequested: opts.isDrainRequested,
       isLaunchFenceActive: () => false,
@@ -99,6 +104,8 @@ function buildPorts(opts: {
 }
 
 afterEach(async () => {
+  for (const contender of contenders.splice(0)) await stopCoordinator(contender);
+  for (const child of liveChildren.splice(0)) child.kill('SIGKILL');
   for (const listener of liveListeners.splice(0)) {
     try {
       await closeIpcServer(listener);
@@ -111,59 +118,114 @@ afterEach(async () => {
   }
 });
 
-describe('starting-incumbent transport.shutdown handoff', () => {
-  it('invokes onShutdownRequest immediately while lifecycle is still starting', async () => {
-    const socketPath = makeSocketPath('starting');
-    let drainCalled = false;
-    let onShutdownCalled = false;
-    let lifecycle: 'starting' | 'running' | 'draining' = 'starting';
+describe('legacy transport.shutdown at a new incumbent', () => {
+  it.each(['starting', 'idle', 'busy', 'preparing', 'committing'] as const)(
+    'refuses an authenticated replacement request while %s',
+    async (state) => {
+      const socketPath = makeSocketPath(state);
+      const requestDrain = vi.fn();
+      const decideLegacyShutdown = vi.fn(() => ({
+        code: 'shutdown_unauthorized' as const,
+        message: 'Manual shutdown required: incumbent rejected shutdown capability.',
+      }));
+      const ports = buildPorts({
+        state,
+        isLifecycleRunning: () => state !== 'starting',
+        isDrainRequested: () => false,
+        onRequestDrain: requestDrain,
+      });
+      ports.admin.decideLegacyShutdown = decideLegacyShutdown;
+      const ipcServer = createIpcServer(ports);
+      await listenIpcServer(ipcServer, socketPath);
+      liveListeners.push(ipcServer);
 
-    const ports = buildPorts({
-      isLifecycleRunning: () => lifecycle === 'running',
-      isDrainRequested: () => lifecycle === 'draining',
-      onRequestDrain: () => {
-        drainCalled = true;
-      },
-    });
-    const ipcServer = createIpcServer(ports);
-    ipcServer.onShutdownRequest = (reason) => {
-      onShutdownCalled = true;
-      // Composition wires this to `lifecycleController.shutdown(reason)`.
-      // For the assertion we just flip lifecycle to 'draining'.
-      lifecycle = 'draining';
-      void reason;
-    };
-    await listenIpcServer(ipcServer, socketPath);
-    liveListeners.push(ipcServer);
+      const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
+      await expect(client.shutdown({ timeoutMs: 1_000 })).rejects.toMatchObject({
+        code: 'shutdown_unauthorized',
+      });
+      expect(decideLegacyShutdown).toHaveBeenCalledOnce();
+      expect(requestDrain).not.toHaveBeenCalled();
+      expect(ports.admin.isDrainRequested()).toBe(false);
+    },
+  );
 
-    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-    const result = await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
-    expect(result).toMatchObject({ status: 'draining' });
-    expect(onShutdownCalled).toBe(true);
-    expect(drainCalled).toBe(true);
-    expect(lifecycle).toBe('draining');
-  });
+  it.each(['starting', 'idle', 'busy', 'preparing', 'committing'] as const)(
+    'refuses a shipped contender and v0.10.0 CLI while %s',
+    async (state) => {
+      const fixture = createShippedPluginFixture(tempDirs, 'v0.10.0');
+      const home = mkdtempSync(join(tmpdir(), 'coral-legacy-arrival-'));
+      tempDirs.push(home);
+      const paths = coordinatorFilesForHome(home, 'prod');
+      const dummy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+      liveChildren.push(dummy);
+      if (dummy.pid === undefined) throw new Error('incumbent pid was unavailable');
 
-  it('also invokes onShutdownRequest while lifecycle is running', async () => {
-    const socketPath = makeSocketPath('running');
-    let onShutdownCalled = false;
-    let lifecycle: 'running' | 'draining' = 'running';
+      const requestDrain = vi.fn();
+      const decideLegacyShutdown = vi.fn(() => ({
+        code: 'shutdown_unauthorized' as const,
+        message: 'Manual shutdown required: incumbent rejected shutdown capability.',
+      }));
+      const ports = buildPorts({
+        state,
+        isLifecycleRunning: () => state !== 'starting',
+        isDrainRequested: () => false,
+        onRequestDrain: requestDrain,
+        pid: dummy.pid,
+      });
+      ports.admin.decideLegacyShutdown = decideLegacyShutdown;
+      const listener = createIpcServer(ports);
+      mkdirSync(paths.runDir, { recursive: true });
+      await listenIpcServer(listener, paths.socketPath);
+      liveListeners.push(listener);
+      writeFileSync(
+        paths.infoFile,
+        JSON.stringify({
+          pid: dummy.pid,
+          port: 1,
+          socketPath: paths.socketPath,
+          bundleHash: 'new-incumbent',
+          flavor: 'prod',
+          namespace: 'ns',
+          startedAt: Date.now(),
+          token: 't',
+          bootToken: 'boot-token',
+          version: '0.11.0',
+          instanceId: 'i',
+        }),
+        { mode: 0o600 },
+      );
 
-    const ports = buildPorts({
-      isLifecycleRunning: () => lifecycle === 'running',
-      isDrainRequested: () => lifecycle === 'draining',
-      onRequestDrain: () => undefined,
-    });
-    const ipcServer = createIpcServer(ports);
-    ipcServer.onShutdownRequest = () => {
-      onShutdownCalled = true;
-      lifecycle = 'draining';
-    };
-    await listenIpcServer(ipcServer, socketPath);
-    liveListeners.push(ipcServer);
+      const contender = spawnCoordinator({ fixture, home, tempRoots: tempDirs });
+      contenders.push(contender);
+      await waitForProcessExit(contender, 15_000);
+      expect(decideLegacyShutdown).toHaveBeenCalled();
+      expect(dummy.exitCode).toBeNull();
+      expect(dummy.signalCode).toBeNull();
+      expect(requestDrain).not.toHaveBeenCalled();
 
-    const client = createIpcClient(socketPath, undefined, { kind: 'boot', token: 'boot-token' });
-    await client.shutdown<{ status: string }>({ timeoutMs: 1_000 });
-    expect(onShutdownCalled).toBe(true);
-  });
+      const cli = spawn(process.execPath, [fixture.cliPath, 'backend', 'status'], {
+        env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      liveChildren.push(cli);
+      cli.stdout?.resume();
+      cli.stderr?.resume();
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('shipped CLI did not exit')), 15_000);
+        cli.once('exit', () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        cli.once('error', (error) => {
+          clearTimeout(timeout);
+          reject(error);
+        });
+      });
+      expect(decideLegacyShutdown.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(dummy.exitCode).toBeNull();
+      expect(dummy.signalCode).toBeNull();
+      expect(requestDrain).not.toHaveBeenCalled();
+    },
+    40_000,
+  );
 });

@@ -40,16 +40,6 @@ import {
   SPAWN_TIMEOUT_MS,
 } from './lib/project-ignore/arena.mjs';
 
-// Unconditionally spawn coral-backend on session start. The daemon's own
-// socket-as-lock contention is the single source of truth for staleness:
-//   - matching incumbent (same bundle/flavor/namespace) -> new daemon throws
-//     BackendAlreadyRunningError and exits without touching the live process
-//   - mismatching bundle -> bindWithHandoff sends transport.shutdown and the
-//     new daemon takes over the bound socket
-// Letting the daemon's contention layer decide keeps the hook free of
-// bundle/flavor comparison logic that would otherwise drift from the daemon's
-// `requestIncumbentShutdown` decision.
-
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
 const PROJECT_IGNORE_OWNER_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), 'project-ignore-owner.mjs');

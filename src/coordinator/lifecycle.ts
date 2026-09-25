@@ -68,7 +68,6 @@ import type { InterruptedAppServerReason } from '../jobs/reconcile/interrupted-r
 import {
   bindWithHandoff,
   BackendAlreadyRunningError,
-  createFileHandoffSignalLedger,
   HandoffEscalationError,
   type BoundCoordinator,
 } from './handoff.js';
@@ -1009,11 +1008,6 @@ async function runLifecycleStartup({
 
   try {
     // ===== Era I (kernel) =====
-    // Socket-as-lock: bind first, gracefully handing off any incumbent via
-    // its own IPC. The lifecycle shutdown callback (composition wires
-    // `ipcServer.onShutdownRequest`) is already installed before we reach
-    // here, so a contender that arrives while we are still 'starting' triggers
-    // immediate shutdown via that path.
     // The address this coordinator publishes is its own canonical one; the claim additionally holds the
     // legacy and published addresses, which are exclusion inputs rather than what this build serves.
     const socketPath = runtime.paths.coral.coordinator.socketPath;
@@ -1045,11 +1039,6 @@ async function runLifecycleStartup({
             { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
             evidence,
           ),
-        signalLedger: createFileHandoffSignalLedger({
-          storage: runtime.storage,
-          ids: runtime.ids,
-          runDir: runtime.paths.coral.coordinator.runDir,
-        }),
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });

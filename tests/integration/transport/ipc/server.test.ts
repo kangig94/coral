@@ -737,7 +737,7 @@ describe('ipc server', () => {
     }
   });
 
-  it('exposes unauthenticated ping plus boot-token-authenticated health and shutdown methods', async () => {
+  it('exposes unauthenticated ping and boot-token-authenticated health while refusing legacy shutdown', async () => {
     const ports = createPorts();
     const requestDrain = vi.spyOn(ports.admin, 'requestDrain');
     const listener = createIpcServer(ports);
@@ -764,18 +764,14 @@ describe('ipc server', () => {
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.shutdown', {}, { auth: { kind: 'boot', token: 'boot-token' } }),
-      ).resolves.toEqual({
-        status: 'draining',
-        instanceId: 'test-instance',
-      });
-      expect(requestDrain).toHaveBeenCalledWith('replaced');
+      ).rejects.toMatchObject({ code: 'shutdown_unauthorized' });
+      expect(requestDrain).not.toHaveBeenCalled();
       const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
       expect(
         messages.some(
           (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
         ),
-      ).toBe(true);
-      expect(messages.some((message) => message.includes('"transport":"ipc"'))).toBe(true);
+      ).toBe(false);
     } finally {
       await closeIpcServer(listener);
       warnSpy.mockRestore();
