@@ -12,6 +12,7 @@ import {
   coordinatorPaths,
   handoffRoutingStatusPathForRunDir,
   socketPathForRunDir,
+  upgradeIntentPath,
   v0109CoordinatorSocketGuardSetForRunDir,
 } from './coordinator.js';
 import { coralStateRoot, generationRoot, generationStateRoot, kbVaultRoot } from './root.js';
@@ -72,7 +73,12 @@ export type CoralPaths = {
 // provider endpoint and capsule paths are dynamic and therefore publish their constructors here.
 export type { CoordinatorPaths } from './coordinator.js';
 export type { V0109CoordinatorSocketGuardSet } from './coordinator.js';
-export { handoffRoutingStatusPathForRunDir, socketPathForRunDir, v0109CoordinatorSocketGuardSetForRunDir };
+export {
+  handoffRoutingStatusPathForRunDir,
+  socketPathForRunDir,
+  upgradeIntentPath,
+  v0109CoordinatorSocketGuardSetForRunDir,
+};
 export { isRelocatedSocket } from './unix-socket.js';
 export type {
   ProviderBootstrapCapsulePathOptions,

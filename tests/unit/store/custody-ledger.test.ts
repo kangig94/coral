@@ -1,8 +1,10 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { bindCustodyProcessTicket } from '../../../src/infra/custody-process-ticket.js';
+import { processIncarnationSchema } from '../../../src/infra/node-process.js';
+import { createRealRuntime } from '../../../src/runtime/real.js';
 
 import {
   bindCustodyChild,
@@ -21,6 +23,10 @@ function runDir(): string {
   return join(root, 'run');
 }
 
+function runtimeFor(run: string) {
+  return createRealRuntime('prod', { baseDir: dirname(run) });
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -28,7 +34,7 @@ afterEach(() => {
 describe('custody ledger', () => {
   it('should ignore an intent directory abandoned before publication', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-2',
       owner: 'durable-cli',
@@ -39,12 +45,12 @@ describe('custody ledger', () => {
     });
     mkdirSync(join(custodyLedgerDir(run), '.stage.interrupted'));
 
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'holding', intent: { id: intent.id } }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'holding', intent: { id: intent.id } }]);
   });
 
   it('should hold a crash after intent until deadline, grace, and absence evidence', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-2',
       owner: 'durable-cli',
@@ -54,36 +60,40 @@ describe('custody ledger', () => {
       nowMs: 100,
     });
 
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'holding' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'holding' }]);
     expect(
-      reconcileCustodyLedger(run, 1_099, 100, () => ({
+      reconcileCustodyLedger(runtimeFor(run), run, 1_099, 100, () => ({
         kind: 'absent',
         processToken: intent.processToken,
         evidence: 'no process',
       })),
     ).toMatchObject([{ kind: 'holding' }]);
-    expect(reconcileCustodyLedger(run, 1_200, 100, () => ({ kind: 'unknown' }))).toMatchObject([{ kind: 'holding' }]);
-    expect(reconcileCustodyLedger(run, 1_200, 100, () => ({ kind: 'alive' }))).toMatchObject([{ kind: 'holding' }]);
+    expect(reconcileCustodyLedger(runtimeFor(run), run, 1_200, 100, () => ({ kind: 'unknown' }))).toMatchObject([
+      { kind: 'holding' },
+    ]);
+    expect(reconcileCustodyLedger(runtimeFor(run), run, 1_200, 100, () => ({ kind: 'alive' }))).toMatchObject([
+      { kind: 'holding' },
+    ]);
     expect(
-      reconcileCustodyLedger(run, 1_200, 100, () => ({
+      reconcileCustodyLedger(runtimeFor(run), run, 1_200, 100, () => ({
         kind: 'absent',
         processToken: 'wrong',
         evidence: 'other process',
       })),
     ).toMatchObject([{ kind: 'holding' }]);
     expect(
-      reconcileCustodyLedger(run, 1_200, 100, () => ({
+      reconcileCustodyLedger(runtimeFor(run), run, 1_200, 100, () => ({
         kind: 'absent',
         processToken: intent.processToken,
         evidence: 'capsule intact; token absent',
       })),
     ).toMatchObject([{ kind: 'absent', intent: { id: intent.id } }]);
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'absent' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'absent' }]);
   });
 
   it('should recover a child binding when the parent crashes before observing the spawned process', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-3',
       owner: 'provider-proxy-set',
@@ -93,12 +103,13 @@ describe('custody ledger', () => {
       nowMs: 100,
     });
     bindCustodyChild(
+      runtimeFor(run),
       { runDir: run, intentId: intent.id, processToken: intent.processToken },
-      { pid: 4123, incarnation: 'linux:boot:2', processGroupId: 4123 },
+      { pid: 4123, incarnation: processIncarnationSchema.parse('linux:boot:2'), processGroupId: 4123 },
       300,
     );
 
-    expect(readCustodyLedger(run)).toMatchObject([
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([
       {
         kind: 'bound',
         intent: { processToken: intent.processToken },
@@ -107,9 +118,9 @@ describe('custody ledger', () => {
     ]);
     const bindingPath = join(custodyLedgerDir(run), intent.id, 'binding.v1.json');
     writeFileSync(bindingPath, JSON.stringify({ ...JSON.parse(readFileSync(bindingPath, 'utf8')), futureField: true }));
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'bound' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'bound' }]);
     expect(
-      reconcileCustodyLedger(run, 10_000, 100, () => ({
+      reconcileCustodyLedger(runtimeFor(run), run, 10_000, 100, () => ({
         kind: 'absent',
         processToken: intent.processToken,
         evidence: 'stale',
@@ -119,7 +130,7 @@ describe('custody ledger', () => {
 
   it('should self-fence a late child even when its parent bound the observed pid', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-3',
       owner: 'durable-cli',
@@ -135,20 +146,20 @@ describe('custody ledger', () => {
       processToken: intent.processToken,
       processGroupId: null,
     };
-    bindCustodyIdentity(run, intent, {
-      process: { pid: 4123, incarnation: 'linux:boot:3', processGroupId: 4123 },
+    bindCustodyIdentity(runtimeFor(run), run, intent, {
+      process: { pid: 4123, incarnation: processIncarnationSchema.parse('linux:boot:3'), processGroupId: 4123 },
       capsule: null,
       observedAtMs: 200,
     });
     expect(() => bindCustodyProcessTicket(ticket, { pid: 4123, incarnation: 'linux:boot:3' }, 1_101)).toThrow(
       'expired',
     );
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'bound' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'bound' }]);
   });
 
   it('should let the child and parent bind the same observed process in either order', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-3',
       owner: 'provider-proxy-set',
@@ -166,18 +177,20 @@ describe('custody ledger', () => {
     };
     bindCustodyProcessTicket(ticket, { pid: 4123, incarnation: 'linux:boot:3' }, 200);
     expect(
-      bindCustodyIdentity(run, intent, {
-        process: { pid: 4123, incarnation: 'linux:boot:3', processGroupId: 4123 },
+      bindCustodyIdentity(runtimeFor(run), run, intent, {
+        process: { pid: 4123, incarnation: processIncarnationSchema.parse('linux:boot:3'), processGroupId: 4123 },
         capsule: '/capsule',
         observedAtMs: 400,
       }).observedAtMs,
     ).toBe(200);
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'bound', binding: { process: { pid: 4123 } } }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([
+      { kind: 'bound', binding: { process: { pid: 4123 } } },
+    ]);
   });
 
   it('should keep unknown keys readable and malformed binding evidence on hold', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-4',
       owner: 'durable-cli',
@@ -188,20 +201,20 @@ describe('custody ledger', () => {
     });
     const path = join(custodyLedgerDir(run), intent.id, 'intent.v1.json');
     writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), futureField: true }));
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'holding' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'holding' }]);
     expect(() =>
-      bindCustodyIdentity(run, intent, {
-        process: { pid: 1, incarnation: 'linux:boot:2', processGroupId: 1 },
+      bindCustodyIdentity(runtimeFor(run), run, intent, {
+        process: { pid: 1, incarnation: processIncarnationSchema.parse('linux:boot:2'), processGroupId: 1 },
         capsule: null,
         observedAtMs: 1_101,
       }),
     ).toThrow('deadline');
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'holding' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'holding' }]);
   });
 
   it('should settle an incomplete identity binding only after process absence is proven', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'process-spawn',
       epoch: 'epoch-4',
       owner: 'durable-cli',
@@ -211,29 +224,29 @@ describe('custody ledger', () => {
       nowMs: 100,
     });
     writeFileSync(join(custodyLedgerDir(run), intent.id, 'binding.v1.json'), '{"pid":');
-    expect(readCustodyLedger(run)).toMatchObject([
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([
       { kind: 'holding', reason: 'identity binding is incomplete or mismatched' },
     ]);
     expect(
-      reconcileCustodyLedger(run, 1_199, 100, () => ({
+      reconcileCustodyLedger(runtimeFor(run), run, 1_199, 100, () => ({
         kind: 'absent',
         processToken: intent.processToken,
         evidence: 'token absent',
       })),
     ).toMatchObject([{ kind: 'holding' }]);
     expect(
-      reconcileCustodyLedger(run, 1_200, 100, () => ({
+      reconcileCustodyLedger(runtimeFor(run), run, 1_200, 100, () => ({
         kind: 'absent',
         processToken: intent.processToken,
         evidence: 'token absent',
       })),
     ).toMatchObject([{ kind: 'absent' }]);
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'absent' }]);
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'absent' }]);
   });
 
   it('should bind a published operation without inventing a process', () => {
     const run = runDir();
-    const intent = recordCustodyIntent(run, {
+    const intent = recordCustodyIntent(runtimeFor(run), run, {
       effect: 'provider-operation-publication',
       epoch: 'epoch-5',
       owner: 'provider-operation',
@@ -243,13 +256,13 @@ describe('custody ledger', () => {
       nowMs: 100,
     });
     expect(() =>
-      bindCustodyIdentity(run, intent, {
-        process: { pid: 1, incarnation: 'linux:boot:2', processGroupId: 1 },
+      bindCustodyIdentity(runtimeFor(run), run, intent, {
+        process: { pid: 1, incarnation: processIncarnationSchema.parse('linux:boot:2'), processGroupId: 1 },
         capsule: null,
         observedAtMs: 200,
       }),
     ).toThrow('intended effect');
-    bindCustodyIdentity(run, intent, { process: null, capsule: null, observedAtMs: 200 });
-    expect(readCustodyLedger(run)).toMatchObject([{ kind: 'bound', binding: { process: null } }]);
+    bindCustodyIdentity(runtimeFor(run), run, intent, { process: null, capsule: null, observedAtMs: 200 });
+    expect(readCustodyLedger(runtimeFor(run), run)).toMatchObject([{ kind: 'bound', binding: { process: null } }]);
   });
 });

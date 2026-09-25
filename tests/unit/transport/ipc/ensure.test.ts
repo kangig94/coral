@@ -715,35 +715,66 @@ describe('ipc ensure', () => {
       };
       mockState.health
         .mockResolvedValueOnce({
-          status: 'starting', version: '0.5.2', bundleHash: 'test-hash', flavor: 'prod',
-          instanceId: 'parent-coordinator', namespace: pluginRootNamespace(root), pid: process.pid,
+          status: 'starting',
+          version: '0.5.2',
+          bundleHash: 'test-hash',
+          flavor: 'prod',
+          instanceId: 'parent-coordinator',
+          namespace: pluginRootNamespace(root),
+          pid: process.pid,
         })
         .mockResolvedValue({
-          status: 'ok', version: successorBuild.version, bundleHash: successorBuild.bundleHash,
-          flavor: 'prod', instanceId: 'committed-successor', namespace: 'successor-namespace', pid: process.pid,
+          status: 'ok',
+          version: successorBuild.version,
+          bundleHash: successorBuild.bundleHash,
+          flavor: 'prod',
+          instanceId: 'committed-successor',
+          namespace: 'successor-namespace',
+          pid: process.pid,
         });
       setTimeout(() => {
-        writeFileSync(upgradeIntentPath(coordinatorPaths('prod').runDir), JSON.stringify({
-          version: 'v1', requestId: 'upgrade-1', revision: 1,
-          incumbent: {
-            instanceId: 'parent-coordinator', pid: process.pid, incarnation: null,
-            version: '0.5.2', bundleHash: 'test-hash', flavor: 'prod',
-          },
-          target: { pluginRootLabel: root, build: successorBuild },
-          attemptId: 'attempt-1',
-          attemptOwner: { kind: 'incumbent', instanceId: 'parent-coordinator', pid: process.pid, incarnation: null },
-          disposition: 'completed', blockers: [], retryCondition: null,
-          attemptDeadline: '2099-01-01T00:01:00.000Z',
-          completionReceipt: {
-            kind: 'serving', attemptId: 'attempt-1',
-            successor: { instanceId: 'committed-successor', pid: process.pid, incarnation: null, build: successorBuild },
-            epochKey: 'epoch-1:lineage-1', controlGeneration: 2, acceptedObligations: [],
-            recordedAt: '2099-01-01T00:00:00.000Z',
-          },
-        }));
+        writeFileSync(
+          upgradeIntentPath(coordinatorPaths('prod').runDir),
+          JSON.stringify({
+            version: 'v1',
+            requestId: 'upgrade-1',
+            revision: 1,
+            incumbent: {
+              instanceId: 'parent-coordinator',
+              pid: process.pid,
+              incarnation: null,
+              version: '0.5.2',
+              bundleHash: 'test-hash',
+              flavor: 'prod',
+            },
+            target: { pluginRootLabel: root, build: successorBuild },
+            attemptId: 'attempt-1',
+            attemptOwner: { kind: 'incumbent', instanceId: 'parent-coordinator', pid: process.pid, incarnation: null },
+            disposition: 'completed',
+            blockers: [],
+            retryCondition: null,
+            attemptDeadline: '2099-01-01T00:01:00.000Z',
+            completionReceipt: {
+              kind: 'serving',
+              attemptId: 'attempt-1',
+              successor: {
+                instanceId: 'committed-successor',
+                pid: process.pid,
+                incarnation: null,
+                build: successorBuild,
+              },
+              epochKey: 'epoch-1:lineage-1',
+              controlGeneration: 2,
+              acceptedObligations: [],
+              recordedAt: '2099-01-01T00:00:00.000Z',
+            },
+          }),
+        );
         writeDiscovery(root, {
-          instanceId: 'committed-successor', version: successorBuild.version,
-          bundleHash: successorBuild.bundleHash, namespace: 'successor-namespace',
+          instanceId: 'committed-successor',
+          version: successorBuild.version,
+          bundleHash: successorBuild.bundleHash,
+          namespace: 'successor-namespace',
         });
       }, 100);
 

@@ -1,10 +1,9 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import type { Server as NetServer, Socket } from 'node:net';
-import { join } from 'node:path';
 
 import { withValidatedHandoffTarget } from '../../infra/handoff-target.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '../../infra/node-process.js';
+import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { revalidateUpgradeIntentTarget, type UpgradeIntent } from '../../infra/upgrade-intent.js';
+import type { SuccessionAttemptPorts, SuccessionAttemptProcess } from '../../runtime/succession-attempt.js';
 import type { CommittedSuccessionServing } from '../../store/succession-writer-generation.js';
 import { attachInheritedIpcServer, enableInheritedIpcCleanup, type IpcListener } from '../../transport/ipc/server.js';
 import type { SuccessionPreparation } from './protocol.js';
@@ -21,7 +20,15 @@ export type AttemptAcknowledgment =
 
 type AttemptMessage =
   | { kind: 'child-online'; attemptId: string }
-  | { kind: 'start'; attemptId: string; bootToken: string; socketPaths: string[]; epochKey: string; receiptIds: string[]; recovery: boolean }
+  | {
+      kind: 'start';
+      attemptId: string;
+      bootToken: string;
+      socketPaths: string[];
+      epochKey: string;
+      receiptIds: string[];
+      recovery: boolean;
+    }
   | { kind: 'listener-ready'; attemptId: string }
   | { kind: 'listener'; attemptId: string; socketPath: string }
   | { kind: 'listener-accepted'; attemptId: string; socketPath: string }
@@ -57,7 +64,7 @@ function listeningClaim(listener: IpcListener): { socketPath: string; server: Ne
 
 export type SuccessionAttempt = Readonly<{
   attemptId: string;
-  child: ChildProcess;
+  child: SuccessionAttemptProcess;
   childIdentity: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   transferListeners(listener: IpcListener): Promise<void>;
   forwardConnections(listener: IpcListener): () => void;
@@ -69,13 +76,14 @@ export type SuccessionAttempt = Readonly<{
 }>;
 
 export async function startSuccessionAttempt(options: {
+  ports: SuccessionAttemptPorts;
   intent: UpgradeIntent;
   preparation: SuccessionPreparation;
   listener: IpcListener;
   bootToken: string;
   recoveryBundleDir?: string;
 }): Promise<SuccessionAttempt> {
-  const { intent, preparation, listener, bootToken, recoveryBundleDir } = options;
+  const { ports, intent, preparation, listener, bootToken, recoveryBundleDir } = options;
   if (intent.attemptId !== preparation.attemptId || intent.attemptOwner?.kind !== 'incumbent') {
     throw new Error('Succession launch requires the incumbent-owned prepared attempt');
   }
@@ -89,18 +97,22 @@ export async function startSuccessionAttempt(options: {
   }
   void listeningClaim(listener);
   const attemptId = preparation.attemptId;
-  const child = spawn(process.execPath, [join(bundleDir, 'coral-backend.cjs')], {
-    cwd: process.cwd(),
-    env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: attemptId, CORAL_SUCCESSION_ATTEMPT_ID: attemptId },
-    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-  });
+  const child = ports.spawn(bundleDir, attemptId);
   await new Promise<void>((resolve, reject) => {
     child.once('spawn', resolve);
     child.once('error', reject);
   });
 
   try {
-    return await createSuccessionAttemptChannel(child, attemptId, listener, bootToken, preparation, recoveryBundleDir !== undefined);
+    return await createSuccessionAttemptChannel(
+      ports,
+      child,
+      attemptId,
+      listener,
+      bootToken,
+      preparation,
+      recoveryBundleDir !== undefined,
+    );
   } catch (error: unknown) {
     child.kill();
     throw error;
@@ -108,7 +120,8 @@ export async function startSuccessionAttempt(options: {
 }
 
 export async function createSuccessionAttemptChannel(
-  child: ChildProcess,
+  ports: SuccessionAttemptPorts,
+  child: SuccessionAttemptProcess,
   attemptId: string,
   listener: IpcListener,
   bootToken: string,
@@ -120,8 +133,8 @@ export async function createSuccessionAttemptChannel(
   if (pid === undefined) throw new Error('Succession attempt child has no process identity');
   let incarnation: ProcessIncarnation | null = null;
   for (let retry = 0; retry < 5 && incarnation === null; retry++) {
-    incarnation = probeProcessIncarnation(pid);
-    if (incarnation === null) await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    incarnation = ports.processIncarnation(pid);
+    if (incarnation === null) await ports.time.sleep(20);
   }
   if (incarnation === null) {
     child.kill();
@@ -170,19 +183,19 @@ export async function createSuccessionAttemptChannel(
       child.send(message, handle, (error) => (error ? reject(error) : resolve()));
     });
 
-  let onlineDeadline: ReturnType<typeof setTimeout> | null = null;
+  let onlineDeadline: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
   try {
     await Promise.race([
       waitFor('child-online'),
       new Promise<void>((_, reject) => {
-        onlineDeadline = setTimeout(
+        onlineDeadline = ports.time.setTimeout(
           () => reject(new Error('Succession attempt child did not open its private channel')),
           10_000,
         );
       }),
     ]);
   } finally {
-    if (onlineDeadline !== null) clearTimeout(onlineDeadline);
+    ports.time.clearTimeout(onlineDeadline);
   }
   await send({
     kind: 'start',
@@ -224,13 +237,15 @@ export async function createSuccessionAttemptChannel(
       if (entries.some((entry) => entry.listener.forwardConnections === undefined)) {
         throw new Error('IPC listener cannot forward overlap connections');
       }
-      const stops = entries.map((entry) =>
-        entry.listener.forwardConnections!((socket, pendingFrameBase64) => {
+      const stops = entries.map((entry) => {
+        const forward = entry.listener.forwardConnections;
+        if (forward === undefined) throw new Error('IPC listener cannot forward overlap connections');
+        return forward((socket, pendingFrameBase64) => {
           void send({ kind: 'connection', attemptId, socketPath: entry.socketPath, pendingFrameBase64 }, socket).catch(
             () => socket.destroy(),
           );
-        }),
-      );
+        });
+      });
       return () => stops.forEach((stop) => stop());
     },
     drainIncumbentConnections: async (current) => {
@@ -279,10 +294,12 @@ export function currentSuccessionAttemptChild(): SuccessionAttemptChild | null {
   return activeAttemptChild;
 }
 
-export async function receiveSuccessionAttemptChild(): Promise<SuccessionAttemptChild | null> {
-  const attemptId = process.env.CORAL_SUCCESSION_ATTEMPT_ID;
+export async function receiveSuccessionAttemptChild(
+  ports: SuccessionAttemptPorts,
+): Promise<SuccessionAttemptChild | null> {
+  const attemptId = ports.env('CORAL_SUCCESSION_ATTEMPT_ID');
   if (attemptId === undefined) return null;
-  if (process.send === undefined || process.channel === undefined) {
+  if (!ports.channel.available) {
     throw new Error('Succession attempt requires its private spawn channel');
   }
   let startResolve: ((message: Extract<AttemptMessage, { kind: 'start' }>) => void) | null = null;
@@ -301,24 +318,23 @@ export async function receiveSuccessionAttemptChild(): Promise<SuccessionAttempt
   const servingPromise = new Promise<void>((resolve) => {
     servingResolve = resolve;
   });
-  let deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let deadlineTimer: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
   const pendingConnections: { socket: Socket; socketPath: string; pendingFrameBase64: string }[] = [];
   const stopParking: (() => void)[] = [];
   const send = (message: AttemptMessage): void => {
-    process.send?.(message);
+    ports.channel.send(message);
   };
-  const online = setInterval(() => send({ kind: 'child-online', attemptId }), 100);
-  online.unref();
+  const online = ports.time.setInterval(() => send({ kind: 'child-online', attemptId }), 100);
+  online.unref?.();
   const fail = (reason: string): void => {
     adoptReject?.(new Error(reason));
-    process.exitCode = 1;
-    if (!serving) process.exit(1);
+    ports.channel.fail(serving);
   };
-  process.on('disconnect', () => {
+  ports.channel.on('disconnect', () => {
     if (!serving) fail('Succession attempt lost its incumbent channel before serving');
     else if (servingListener !== null) enableInheritedIpcCleanup(servingListener);
   });
-  process.on('message', (message: unknown, handle: unknown) => {
+  ports.channel.on('message', (message: unknown, handle: unknown) => {
     if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
     if (
       message.kind === 'start' &&
@@ -328,7 +344,7 @@ export async function receiveSuccessionAttemptChild(): Promise<SuccessionAttempt
       Array.isArray(message.receiptIds) &&
       typeof message.recovery === 'boolean'
     ) {
-      clearInterval(online);
+      ports.time.clearInterval(online);
       startResolve?.(message);
       return;
     }
@@ -337,10 +353,10 @@ export async function receiveSuccessionAttemptChild(): Promise<SuccessionAttempt
       return;
     }
     if (message.kind === 'deadline' && !serving && Number.isFinite(message.at)) {
-      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
-      deadlineTimer = setTimeout(
+      ports.time.clearTimeout(deadlineTimer);
+      deadlineTimer = ports.time.setTimeout(
         () => fail('Succession attempt exceeded its commit deadline'),
-        Math.max(0, message.at - Date.now()),
+        Math.max(0, message.at - ports.time.now()),
       );
       return;
     }
@@ -409,17 +425,17 @@ export async function receiveSuccessionAttemptChild(): Promise<SuccessionAttempt
       new Promise<void>((resolve, reject) => {
         if (
           acknowledgment.kind === 'serving' &&
-          process.env.NODE_ENV === 'test' &&
-          process.env.CORAL_TEST_SUCCESSION_DROP_SERVING_ACK === '1'
+          ports.env('NODE_ENV') === 'test' &&
+          ports.env('CORAL_TEST_SUCCESSION_DROP_SERVING_ACK') === '1'
         ) {
           resolve();
           return;
         }
-        if (!process.connected) {
+        if (!ports.channel.connected) {
           reject(new Error('Succession attempt channel is unavailable'));
           return;
         }
-        process.send?.({ kind: 'ack', attemptId, acknowledgment }, (error) => {
+        ports.channel.send({ kind: 'ack', attemptId, acknowledgment }, (error) => {
           if (error) reject(error);
           else resolve();
         });
@@ -430,7 +446,7 @@ export async function receiveSuccessionAttemptChild(): Promise<SuccessionAttempt
     markServing: (current, commit) => {
       if (commit.attemptId !== attemptId) throw new Error('Succession serving record names another attempt');
       if (adopted.size !== socketPaths.length) throw new Error('Succession cannot serve an incomplete IPC claim');
-      if (deadlineTimer !== null) clearTimeout(deadlineTimer);
+      ports.time.clearTimeout(deadlineTimer);
       serving = true;
       servingListener = current;
       servingResolve?.();

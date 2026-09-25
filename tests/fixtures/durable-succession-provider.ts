@@ -2,9 +2,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { BackendAlreadyRunningError } from '#src/coordinator/handoff.js';
+import { consumeHandoffRunResult, runHandoff } from '#src/coordinator/handoff-routing/runner.js';
+import { StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
-import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from '#src/coordinator/succession/attempt-child.js';
-import { probeRetainedEpochOpen, runRetainedEpochRecovery } from '#src/coordinator/succession/retained-epoch-executor.js';
+import {
+  installSuccessionAttemptChild,
+  receiveSuccessionAttemptChild,
+} from '#src/coordinator/succession/attempt-child.js';
+import { probeRetainedEpochOpen } from '#src/coordinator/succession/retained-epoch-executor.js';
+import { runRetainedEpochRecovery } from '#src/coordinator/services/retained-epoch-recovery.js';
 import { resolveStrictBundleIdentity } from '#src/infra/bundle-manifest.js';
 import { runKbDaemonMain } from '#src/kb-daemon/daemon-main.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
@@ -14,6 +20,7 @@ import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '#src/providers/stream.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createRealSuccessionAttemptPorts } from '#src/runtime/succession-attempt.js';
 
 declare const __PLUGIN_ROOT__: string;
 
@@ -34,26 +41,29 @@ const durableClaude = defineProvider<TestPlan, ReturnType<typeof claudeBindingCo
       extraEnv: undefined,
     }),
   }),
-  run: (request, runtime) => streamProviderEvents(async (emit) => {
-    const result = await runtime.runCli({
-      command: process.execPath,
-      args: [
-        runtime.executionPlan.host.script,
-        join(request.cwd, '.durable-state', request.coralEnv.CORAL_JOB_ID ?? 'missing'),
-        join(__PLUGIN_ROOT__, 'bridge', 'coral-cli'),
-      ],
-      onEvent: (line) => emit(providerProgressEvent(line, new Date().toISOString())),
-    });
-    emit(providerTerminalEvent({
-      content: result.stdout,
-      durationMs: 0,
-      outcome: result.aborted
-        ? { kind: 'aborted', reason: 'user_abort' }
-        : result.code === 0
-          ? { kind: 'completed' }
-          : { kind: 'provider_exit', code: result.code ?? -1 },
-    }));
-  }),
+  run: (request, runtime) =>
+    streamProviderEvents(async (emit) => {
+      const result = await runtime.runCli({
+        command: process.execPath,
+        args: [
+          runtime.executionPlan.host.script,
+          join(request.cwd, '.durable-state', request.coralEnv.CORAL_JOB_ID ?? 'missing'),
+          join(__PLUGIN_ROOT__, 'bridge', 'coral-cli'),
+        ],
+        onEvent: (line) => emit(providerProgressEvent(line, new Date().toISOString())),
+      });
+      emit(
+        providerTerminalEvent({
+          content: result.stdout,
+          durationMs: 0,
+          outcome: result.aborted
+            ? { kind: 'aborted', reason: 'user_abort' }
+            : result.code === 0
+              ? { kind: 'completed' }
+              : { kind: 'provider_exit', code: result.code ?? -1 },
+        }),
+      );
+    }),
   recovery: {
     finalizeInterrupted: () => ({ kind: 'clear_non_resumable' }),
     finalizeFromArtifacts: async ({ stdoutPath, storage }) => {
@@ -96,11 +106,11 @@ async function main(): Promise<void> {
     return;
   }
   if (process.argv.length === 4 && process.argv[2] === '--recover-retained-epoch') {
-    process.exitCode = runRetainedEpochRecovery(process.argv[3]!);
+    process.exitCode = runRetainedEpochRecovery(process.argv[3]);
     return;
   }
   if (process.argv.length === 5 && process.argv[2] === '--probe-retained-epoch') {
-    process.exitCode = probeRetainedEpochOpen(process.argv[3]!, process.argv[4]!);
+    process.exitCode = probeRetainedEpochOpen(process.argv[3], currentCoralStoreFormat(), process.argv[4]);
     return;
   }
   if (process.env.CORAL_KB_DAEMON === '1') {
@@ -109,7 +119,7 @@ async function main(): Promise<void> {
   }
   const keepalive = setInterval(() => {}, 60_000);
   try {
-    const attempt = await receiveSuccessionAttemptChild();
+    const attempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
     installSuccessionAttemptChild(attempt);
     const coordinator = createCoordinatorServer({
       pluginRoot: __PLUGIN_ROOT__,
@@ -130,6 +140,17 @@ async function main(): Promise<void> {
     try {
       await coordinator.start();
     } catch (error) {
+      if (error instanceof StartupStoreHandoffError) {
+        const handoff = await runHandoff(
+          { kind: 'backend-startup' },
+          { pluginRoot: __PLUGIN_ROOT__, activeSelectionTarget: error.target },
+        );
+        const continuation = consumeHandoffRunResult(handoff, (incidents) => {
+          process.stderr.write(`${JSON.stringify(incidents)}\n`);
+        });
+        if (continuation.kind === 'delegated-startup' && continuation.observation.kind === 'serving') return;
+        throw new Error(`Selected old controller did not start: ${JSON.stringify(continuation)}`, { cause: error });
+      }
       if (!(error instanceof BackendAlreadyRunningError)) throw error;
     }
   } catch (error) {

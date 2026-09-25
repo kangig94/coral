@@ -155,6 +155,8 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'SemanticOperationShutdownError',
   'SessionClaimError',
   'SocketDirectoryError',
+  'SuccessionAdmissionPausedError',
+  'SuccessionAttemptStartupHoldError',
   'StartupStoreHandoffError',
   'StoreCodecError',
   'StoreDecodeError',
@@ -174,6 +176,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'UnknownWorkflowRecoveryOutcome',
   'UsageError',
   'UserInputError',
+  'UpgradeWaiterUnavailableError',
   'WaitResumeError',
   'WorkDirectoryError',
   'WorkflowExecutionError',
@@ -745,22 +748,35 @@ function readRecentFailureDiagnostic(
     const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
     const diagnostic = statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
     if (diagnostic !== null) return diagnostic;
-  } catch {}
+  } catch {
+    // A missing or unreadable diagnostic may still have a usable startup sentinel.
+  }
   try {
-    const value: unknown = JSON.parse(storage.readFileSync(join(dirname(diagnosticFile), 'startup-error.json'), 'utf-8'));
+    const value: unknown = JSON.parse(
+      storage.readFileSync(join(dirname(diagnosticFile), 'startup-error.json'), 'utf-8'),
+    );
     return statusFromStartupSentinel(value, now);
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export function statusFromStartupSentinel(
   value: unknown,
   now: number,
 ): Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
-  if (!isRecord(value) || value.version !== 1 || value.state !== 'stopped_with_diagnostic' ||
-      !isRecord(value.error) || value.error.kind !== 'coral_setup_error' ||
-      value.error.code !== 'handoff_shutdown_capability_rejected' ||
-      typeof value.recordedAt !== 'number' || value.recordedAt > now ||
-      now - value.recordedAt > RECENT_COORDINATOR_RECORD_MS) return null;
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    value.state !== 'stopped_with_diagnostic' ||
+    !isRecord(value.error) ||
+    value.error.kind !== 'coral_setup_error' ||
+    value.error.code !== 'handoff_shutdown_capability_rejected' ||
+    typeof value.recordedAt !== 'number' ||
+    value.recordedAt > now ||
+    now - value.recordedAt > RECENT_COORDINATOR_RECORD_MS
+  )
+    return null;
   return { status: 'deferred_upgrade' };
 }
 
@@ -806,14 +822,19 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   const intent = readUpgradeIntent(runDir);
   const upgrade = intent.kind === 'readable' ? visibleUpgradeIntent(intent.intent) : null;
   const upgradeProblem = upgradeIntentProblem(intent);
-  const legacyContenderDeferred = fallback.status === 'ok' &&
-    readRecentFailureDiagnostic(storage, join(runDir, 'startup-diagnostic.json'), now, () => null)?.status === 'deferred_upgrade';
+  const legacyContenderDeferred =
+    fallback.status === 'ok' &&
+    readRecentFailureDiagnostic(storage, join(runDir, 'startup-diagnostic.json'), now, () => null)?.status ===
+      'deferred_upgrade';
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
-  return Object.assign({}, fallback,
+  return Object.assign(
+    {},
+    fallback,
     shutdownRemainder === null ? {} : { shutdownRemainder },
     upgrade === null ? {} : { upgrade },
     upgradeProblem === null ? {} : { upgradeProblem },
-    legacyContenderDeferred ? { legacyContenderDeferred: true } : {}) as Status;
+    legacyContenderDeferred ? { legacyContenderDeferred: true } : {},
+  ) as Status;
 }
 
 type PingProbeObservation = Readonly<{

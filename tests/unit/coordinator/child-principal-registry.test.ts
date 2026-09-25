@@ -63,15 +63,22 @@ function childAuth(
   };
 }
 
+function projectIn(runDir: string): string {
+  const projectRoot = join(runDir, 'project');
+  mkdirSync(projectRoot);
+  return projectRoot;
+}
+
 describe('ChildPrincipalRegistry', () => {
   it('keeps a transferred handle and rejects a nonce consumed after its receipt was prepared', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-child-ledger-'));
     try {
+      const projectRoot = projectIn(runDir);
       const incumbentLedger = new ChildPrincipalNonceLedger(runDir);
       const successorLedger = new ChildPrincipalNonceLedger(runDir);
       const originNamespace = () => 'ns-a';
       const incumbent = new ChildPrincipalRegistry(ids(), { ledger: incumbentLedger, originNamespace });
-      const credential = register(incumbent, testProjectPrincipal('/workspace/project'));
+      const credential = register(incumbent, testProjectPrincipal(projectRoot));
       const receipt = incumbent.prepareTransfer('attempt', 1_001);
       if (receipt === null) throw new Error('Expected a durable child transfer grant.');
 
@@ -83,9 +90,12 @@ describe('ChildPrincipalRegistry', () => {
       const transferredChild = successor.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_004);
       expect(transferredChild).not.toBeNull();
       if (transferredChild === null) throw new Error('Transferred child authentication failed.');
-      expect(authorize(transferredChild, 'kb:read', {
-        kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project'),
-      })).toEqual({ ok: true });
+      expect(
+        authorize(transferredChild, 'kb:read', {
+          kind: 'project',
+          root: fixtureCanonicalWorkDir(projectRoot),
+        }),
+      ).toEqual({ ok: true });
 
       expect(incumbent.reclaimAuthentication(3)).toBe(true);
       expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).toBeNull();
@@ -98,9 +108,10 @@ describe('ChildPrincipalRegistry', () => {
   it('refuses a transferred handle without its accepted job and persisted origin', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-child-origin-'));
     try {
+      const projectRoot = projectIn(runDir);
       const ledger = new ChildPrincipalNonceLedger(runDir);
       const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      register(incumbent, testProjectPrincipal('/workspace/project'));
+      register(incumbent, testProjectPrincipal(projectRoot));
       const receipt = incumbent.prepareTransfer('attempt', 1_001);
       if (receipt === null) throw new Error('Expected a durable child transfer grant.');
       const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-b' });
@@ -108,13 +119,17 @@ describe('ChildPrincipalRegistry', () => {
       expect(successor.adoptTransfer(receipt, new Set(), 2, 1_002)).toBe(false);
       expect(ledger.generation()).toBe(1);
       const matchingOrigin = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      expect(matchingOrigin.adoptTransfer(
-        { ...receipt, authorityGeneration: 2 }, new Set(['job-a']), 2, 1_002,
-      )).toBe(false);
-      expect(matchingOrigin.adoptTransfer(
-        { ...receipt, consumedNonceCheckpoint: receipt.consumedNonceCheckpoint + 1 },
-        new Set(['job-a']), 2, 1_002,
-      )).toBe(false);
+      expect(matchingOrigin.adoptTransfer({ ...receipt, authorityGeneration: 2 }, new Set(['job-a']), 2, 1_002)).toBe(
+        false,
+      );
+      expect(
+        matchingOrigin.adoptTransfer(
+          { ...receipt, consumedNonceCheckpoint: receipt.consumedNonceCheckpoint + 1 },
+          new Set(['job-a']),
+          2,
+          1_002,
+        ),
+      ).toBe(false);
       expect(ledger.generation()).toBe(1);
     } finally {
       rmSync(runDir, { recursive: true, force: true });
@@ -124,9 +139,10 @@ describe('ChildPrincipalRegistry', () => {
   it('replays a consumed nonce after the incumbent closes before a final delta', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-child-replay-'));
     try {
+      const projectRoot = projectIn(runDir);
       const ledger = new ChildPrincipalNonceLedger(runDir);
       const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
-      const credential = register(incumbent, testProjectPrincipal('/workspace/project'));
+      const credential = register(incumbent, testProjectPrincipal(projectRoot));
       const receipt = incumbent.prepareTransfer('attempt', 1_001);
       if (receipt === null) throw new Error('Expected a durable child transfer grant.');
       expect(incumbent.authenticate(childAuth(credential.handle), null, 1_002)).not.toBeNull();
@@ -151,10 +167,11 @@ describe('ChildPrincipalRegistry', () => {
   it('replays a committed successor receipt after that successor exits', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-child-successor-recovery-'));
     try {
+      const projectRoot = projectIn(runDir);
       const ledger = new ChildPrincipalNonceLedger(runDir);
       const originNamespace = () => 'ns-a';
       const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
-      const credential = register(incumbent, testProjectPrincipal('/workspace/project'));
+      const credential = register(incumbent, testProjectPrincipal(projectRoot));
       const receipt = incumbent.prepareTransfer('attempt', 1_001);
       if (receipt === null) throw new Error('Expected a durable child transfer grant.');
       const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });

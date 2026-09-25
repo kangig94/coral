@@ -13,9 +13,8 @@ import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
-import {
-  certifyRetiringEpochCustody, createEpochClosureRetryPlan, settleSupersededEpochClosures,
-} from '../services/recovery/epoch-closure.js';
+import { certifyRetiringEpochCustody, settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
+import { createEpochClosureRetryPlan } from '../services/recovery/epoch-closure-retry-plan.js';
 import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { pinRunningBuildRoot } from '../../infra/retained-build-root.js';
@@ -26,11 +25,10 @@ import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
-import { createJobLocationRecoveryRetryPlan } from '../../jobs/location-recovery.js';
-import { recoverJobLocations } from '../../jobs/location-recovery.js';
+import { createJobLocationRecoveryRetryPlan, recoverJobLocations } from '../../jobs/location-recovery.js';
 import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { recordRetirementDisposition, readRetirementDisposition } from '../succession/retirement-disposition.js';
-import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../succession/startup-retirement.js';
+import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
 import { controllerRecoveryTarget } from '../succession/retained-epoch-executor.js';
 import { readOrCreateEpochKey } from '../../store/epoch-key.js';
@@ -74,6 +72,7 @@ import {
   type CanonicalWorkDir,
 } from '../../runtime/canonical-work-dir.js';
 import type { Principal } from '../../security/principal.js';
+import type { TypedEventBus } from '../event-bus.js';
 import { principalToWire } from '../../security/principal-wire.js';
 import { CoralSetupError } from '../../runtime/errors.js';
 import { subscribeAll } from '../../transport/http/sse-subscribe.js';
@@ -132,8 +131,14 @@ import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import {
-  decodeResolvedStoreEpoch, discardUnservedRetirementMint, encodeResolvedStoreEpoch, inspectCurrentStore,
-  listStoreEpochs, resolveCurrentStoreEpoch, sweepStoreEpochsPostReady,
+  decodeResolvedStoreEpoch,
+  discardUnservedRetirementMint,
+  encodeResolvedStoreEpoch,
+  inspectCurrentStore,
+  listStoreEpochs,
+  resolveCurrentStoreEpoch,
+  sweepStoreEpochsPostReady,
+  type ResolvedStoreEpoch,
 } from '../../store/epoch.js';
 import {
   handbackSuccessionWriterGeneration,
@@ -144,9 +149,22 @@ import {
   type SuccessionWriterEntitlement,
   type SuccessionWriterGeneration,
 } from '../../store/succession-writer-generation.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent, upgradeIntentProblem, visibleUpgradeIntent, type UpgradeIntent } from '../../infra/upgrade-intent.js';
+import {
+  compareAndSwapUpgradeIntent,
+  readUpgradeIntent,
+  upgradeIntentProblem,
+  visibleUpgradeIntent,
+  type UpgradeIntent,
+} from '../../infra/upgrade-intent.js';
 import { probeProcessIncarnation } from '../../infra/node-process.js';
-import { currentSuccessionAttemptChild, startSuccessionAttempt, type SuccessionAttempt, type AttemptAcknowledgment } from '../succession/attempt-child.js';
+import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
+import { gracefulKillByPid } from '../../infra/process-supervision.js';
+import {
+  currentSuccessionAttemptChild,
+  startSuccessionAttempt,
+  type SuccessionAttempt,
+  type AttemptAcknowledgment,
+} from '../succession/attempt-child.js';
 import type { SuccessionPreparation } from '../succession/protocol.js';
 import {
   prepareDurableCliTransfer,
@@ -155,9 +173,10 @@ import {
   recordDurableCliControllerReceipts,
   verifyDurableCliTransfer,
   verifyDurableCliRecoveryGrant,
-} from '../succession/durable-cli-transfer.js';
+} from '../services/durable-cli-transfer.js';
 import { decodeChildPrincipalTransfer } from '../child-principal-registry.js';
 import type { Database } from '../../store/db.js';
+import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { createSuccessionCoordinator } from '../succession/index.js';
 import type { SuccessionOwner } from '../succession/obligations.js';
 import {
@@ -174,7 +193,11 @@ import type {
   LaunchReclamationProbeResult,
   LaunchReleaseDiagnostic,
 } from '../../jobs/contracts/admission.js';
-import { LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS, MAX_LAUNCH_RELEASE_DIAGNOSTICS, type LaunchCoordinator } from '../live/admission.js';
+import {
+  LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS,
+  MAX_LAUNCH_RELEASE_DIAGNOSTICS,
+  type LaunchCoordinator,
+} from '../live/admission.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
@@ -595,42 +618,47 @@ export type IncumbentWriterReclaim =
     }>
   | Readonly<{ kind: 'same-build-succession'; reason: string }>;
 
-export async function reclaimIncumbentWriter(options: Readonly<{
-  runtime: CoordinatorCoreOptions['runtime'];
-  writer: SuccessionWriterEntitlement;
-  failedGeneration?: SuccessionWriterGeneration;
-  storeDb: Database;
-  reopenStore?: () => void;
-  incumbentInstanceId: string;
-  deadlineMs: number;
-  reclaimKbDaemonWriter: (generation: SuccessionWriterGeneration, signal: AbortSignal) => Promise<void>;
-  startSameBuildSuccession: (reason: string) => void;
-}>): Promise<IncumbentWriterReclaim> {
+export async function reclaimIncumbentWriter(
+  options: Readonly<{
+    runtime: CoordinatorCoreOptions['runtime'];
+    writer: SuccessionWriterEntitlement;
+    failedGeneration?: SuccessionWriterGeneration;
+    storeDb: Database;
+    reopenStore?: () => void;
+    incumbentInstanceId: string;
+    deadlineMs: number;
+    reclaimKbDaemonWriter: (generation: SuccessionWriterGeneration, signal: AbortSignal) => Promise<void>;
+    startSameBuildSuccession: (reason: string) => void;
+  }>,
+): Promise<IncumbentWriterReclaim> {
   const controller = new AbortController();
   const expiresAt = options.runtime.time.monotonicNow() + BigInt(Math.max(0, Math.ceil(options.deadlineMs)));
   let timer: TimerHandle | null = null;
-  let admission: ProviderOperationMutationAdmission | null = null;
+  const admissionState: { current: ProviderOperationMutationAdmission | null } = { current: null };
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = options.runtime.time.setTimeout(() => reject(new Error('Incumbent writer reclaim deadline expired.')), options.deadlineMs);
+    timer = options.runtime.time.setTimeout(
+      () => reject(new Error('Incumbent writer reclaim deadline expired.')),
+      options.deadlineMs,
+    );
   });
   try {
     const reclaim = async (): Promise<IncumbentWriterReclaim> => {
       if (options.failedGeneration !== undefined) {
-        handbackSuccessionWriterGeneration(options.runtime, options.failedGeneration, options.writer.generation);
+        handbackSuccessionWriterGeneration(options.runtime, options.failedGeneration, {
+          storeRoot: options.writer.generation.storeRoot,
+          epoch: options.writer.generation.epoch,
+        });
       }
       options.writer.unpark();
       options.reopenStore?.();
       if (options.runtime.time.monotonicNow() >= expiresAt) {
         throw new Error('Incumbent writer reclaim deadline expired.');
       }
-      const acquired = acquireProviderOperationMutationAdmission(
-        options.storeDb,
-        options.incumbentInstanceId,
-      );
+      const acquired = acquireProviderOperationMutationAdmission(options.storeDb, options.incumbentInstanceId);
       if (acquired.kind !== 'acquired') {
         throw new Error(`Provider operation journal reclaim is holding: ${acquired.exit}.`);
       }
-      admission = acquired.admission;
+      admissionState.current = acquired.admission;
       await options.reclaimKbDaemonWriter(options.writer.generation, controller.signal);
       controller.signal.throwIfAborted();
       if (options.runtime.time.monotonicNow() >= expiresAt) {
@@ -646,7 +674,7 @@ export async function reclaimIncumbentWriter(options: Readonly<{
   } catch (error: unknown) {
     if (error instanceof SuccessionServingCommittedError) throw error;
     controller.abort();
-    if (admission !== null) void admission.close();
+    if (admissionState.current !== null) void admissionState.current.close();
     try {
       options.writer.park();
     } catch {
@@ -689,14 +717,15 @@ export function createCoordinatorCore(
     return storeServices;
   };
   const getProgressStore = () => getStoreServices().progressStore;
-  const jobLocationIndex = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+  const jobLocationIndex = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
   let selectedStoreEpochKey: string | null = null;
   let selectedJobEpochKey: string | null = null;
   let selectedStoreEpochPath: string | null = null;
+  let openedStoreEpoch: ResolvedStoreEpoch | null = null;
   const currentJobEpochKey = (): string | null => {
     if (selectedJobEpochKey !== null) return selectedJobEpochKey;
     const inspection = inspectCurrentStore(runtime);
-    return inspection.kind === 'current' ? encodeResolvedStoreEpoch(inspection.epoch) : null;
+    return inspection.kind === 'current' ? encodeResolvedStoreEpoch(runtime, inspection.epoch) : null;
   };
   const getRecoveryQuarantineStore = () => new RecoveryQuarantineStore(getProgressStore().getDb(), runtime.time);
   const recoveryQuarantineStore: RecoveryRetryQuarantinePort = {
@@ -914,7 +943,12 @@ export function createCoordinatorCore(
   });
   recoverySources.register(EPOCH_CLOSURE_BOUNDARY, (subject, signal) =>
     createEpochClosureRetryPlan(
-      runtime, jobLocationIndex, subject, signal, selectedStoreEpochKey, closeProxySetForEpochClosure,
+      runtime,
+      jobLocationIndex,
+      subject,
+      signal,
+      selectedStoreEpochKey,
+      closeProxySetForEpochClosure,
     ),
   );
   recoverySources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (subject, _signal, quarantine) =>
@@ -1063,6 +1097,7 @@ export function createCoordinatorCore(
     settlementRefusalRecorder,
     createExecutionService: defaults.createExecutionService,
     onProviderProxyLifecycleFatal,
+    onProviderProxySlotReleased: () => notifySuccessionObligationChange(),
   });
   adoptRepairedProviderOperation = services.adoptRepairedProviderOperation;
   releaseUnreadableProviderOperationStartupOwnership = services.releaseUnreadableProviderOperationStartupOwnership;
@@ -1450,13 +1485,21 @@ export function createCoordinatorCore(
     guardian: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
     signal: AbortSignal,
   ): Promise<boolean> => {
-    const set = world.providerProxyAuthority?.liveSets().find((candidate) =>
-      candidate.setIdentity.proxyInstanceId === proxyInstanceId &&
-      candidate.setIdentity.guardianPid === guardian.pid &&
-      candidate.setIdentity.guardianIncarnation === guardian.incarnation);
+    const set = world.providerProxyLifecycleRef
+      .get()
+      ?.liveSets()
+      .find(
+        (candidate) =>
+          candidate.setIdentity.proxyInstanceId === proxyInstanceId &&
+          candidate.setIdentity.guardianPid === guardian.pid &&
+          candidate.setIdentity.guardianIncarnation === guardian.incarnation,
+      );
     if (set === undefined) return false;
     const result = await containProviderProxySet(
-      { setIdentity: providerProxySetAddress(set.setIdentity), mode: 'contain' }, 'current', false, signal,
+      { setIdentity: providerProxySetAddress(set.setIdentity), mode: 'contain' },
+      'current',
+      false,
+      signal,
     );
     return 'effect' in result && result.effect.containmentAbsent;
   };
@@ -1472,26 +1515,23 @@ export function createCoordinatorCore(
       exit: detail.exit,
     };
   };
-  const jobAddressing = new JobAddressing(
-    jobLocationIndex,
-    {
-      epochKey: currentJobEpochKey,
-      detail: activeJobDetail,
-      abort: control.abortJobs,
-      waitStream: (request) =>
-        services
-          .getExecutionService(
-            createSystemInvocationContext(
-              request.projectRoot === undefined
-                ? readOnlyProjectRoot
-                : canonicalWorkDirWireSchema.parse(request.projectRoot),
-              'coordinator-readonly',
-              readOnlyInvocationContext.coralEnv,
-            ),
-          )
-          .waitStream(request),
-    },
-  );
+  const jobAddressing = new JobAddressing(jobLocationIndex, {
+    epochKey: currentJobEpochKey,
+    detail: activeJobDetail,
+    abort: control.abortJobs,
+    waitStream: (request) =>
+      services
+        .getExecutionService(
+          createSystemInvocationContext(
+            request.projectRoot === undefined
+              ? readOnlyProjectRoot
+              : canonicalWorkDirWireSchema.parse(request.projectRoot),
+            'coordinator-readonly',
+            readOnlyInvocationContext.coralEnv,
+          ),
+        )
+        .waitStream(request),
+  });
 
   const rpcPorts: RpcPorts = {
     sessions: {
@@ -1629,31 +1669,50 @@ export function createCoordinatorCore(
       ...readProviderOperations(db).records.map((record) => record.operation.jobId),
       ...world.operationRegistry.liveJobIds(),
     ];
-    const hostManager = world.providerHostManager as ProviderHostManager &
-      Partial<ProviderHostAdministrationAuthority>;
-    const hostIds = hostManager.listProviderHosts?.()
-      .filter((record) => record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed')
-      .map((record) => record.host.ownerJobId)
-      .filter((jobId): jobId is string => typeof jobId === 'string') ?? [];
+    const hostManager = world.providerHostManager as ProviderHostManager & Partial<ProviderHostAdministrationAuthority>;
+    const hostIds =
+      hostManager
+        .listProviderHosts?.()
+        .filter(
+          (record) =>
+            record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed',
+        )
+        .map((record) => record.host.ownerJobId)
+        .filter((jobId): jobId is string => typeof jobId === 'string') ?? [];
     const recoveryIds = [...(lifecycleController?.getRecoveryRegistry() ?? [])].map(([jobId]) => jobId);
-    return readSuccessionLiveJobIds(
-      db,
-      world.launchCoordinator.pendingLaunchJobIds(),
-      [...world.launchCoordinator.activeLaunchPermits().map((permit) => permit.jobId), ...operationIds, ...hostIds, ...recoveryIds],
-    );
+    return readSuccessionLiveJobIds(db, world.launchCoordinator.pendingLaunchJobIds(), [
+      ...world.launchCoordinator.activeLaunchPermits().map((permit) => permit.jobId),
+      ...operationIds,
+      ...hostIds,
+      ...recoveryIds,
+    ]);
+  };
+  const liveProviderHosts = () => {
+    const manager = world.providerHostManager as ProviderHostManager & Partial<ProviderHostAdministrationAuthority>;
+    if (manager.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
+    return manager
+      .listProviderHosts()
+      .filter(
+        (record) =>
+          record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed',
+      );
   };
   const successionOwners: readonly SuccessionOwner[] = [
     {
       id: 'launch-admission',
       classify: async () => {
         const pending = world.launchCoordinator.pendingLaunchJobIds();
-        const acquiring = world.launchCoordinator.activeLaunchPermits()
-          .filter((permit) => permit.holder.kind === 'local-execution' &&
-            getProgressStore().readRuntimeProjection(permit.jobId) === null)
+        const acquiring = world.launchCoordinator
+          .activeLaunchPermits()
+          .filter(
+            (permit) =>
+              permit.holder.kind === 'local-execution' &&
+              getProgressStore().readRuntimeProjection(permit.jobId) === null,
+          )
           .map((permit) => permit.jobId);
         const jobIds = [...new Set([...pending, ...acquiring])];
-        const unidentified = world.launchCoordinator.pendingDurableLaunchCount() >
-          world.launchCoordinator.pendingDurableJobIds().length;
+        const unidentified =
+          world.launchCoordinator.pendingDurableLaunchCount() > world.launchCoordinator.pendingDurableJobIds().length;
         return jobIds.length === 0 && !unidentified
           ? { kind: 'completed', reason: 'no queued or carrier-acquiring launches' }
           : { kind: 'blocking', reason: 'launch admission still owns queued or carrier-acquiring work', jobIds };
@@ -1671,15 +1730,22 @@ export function createCoordinatorCore(
           return { kind: 'blocking', reason: 'exact durable-cli epoch is unavailable', jobIds };
         }
         const transfer = prepareDurableCliTransfer(
-          getProgressStore().getDb(), getProgressStore(), runtime.paths.coral.coordinator.runDir,
-          inspected.epoch, jobIds,
+          runtime,
+          getProgressStore().getDb(),
+          getProgressStore(),
+          runtime.paths.coral.coordinator.runDir,
+          inspected.epoch,
+          jobIds,
         );
         if (transfer === null) {
           return { kind: 'blocking', reason: 'durable-cli runtime or custody evidence is incomplete', jobIds };
         }
-        const recoveryGrantId = prepareDurableCliRecoveryGrant(runtime.paths.coral.coordinator.runDir, {
-          version: 'v1', attemptId, epochKey: encodeResolvedStoreEpoch(inspected.epoch),
-          incumbentInstanceId: identity.instanceId, incumbentBuildSetId: identity.buildSetId,
+        const recoveryGrantId = prepareDurableCliRecoveryGrant(runtime, runtime.paths.coral.coordinator.runDir, {
+          version: 'v1',
+          attemptId,
+          epochKey: encodeResolvedStoreEpoch(runtime, inspected.epoch),
+          incumbentInstanceId: identity.instanceId,
+          incumbentBuildSetId: identity.buildSetId,
           transfer,
         });
         return {
@@ -1687,7 +1753,9 @@ export function createCoordinatorCore(
           reason: 'durable-cli runtime and custody evidence is recorded',
           jobIds,
           receipt: {
-            owner: 'durable-cli', generation: 1, attemptId,
+            owner: 'durable-cli',
+            generation: 1,
+            attemptId,
             receiptId: `durable-cli:${attemptId}`,
             recoveryGrantId,
             payload: JSON.parse(JSON.stringify(transfer)) as JsonValue,
@@ -1699,10 +1767,12 @@ export function createCoordinatorCore(
       id: 'provider-operations',
       classify: async () => {
         const scan = readProviderOperations(getProgressStore().getDb());
-        const jobIds = [...new Set([
-          ...scan.records.map((record) => record.operation.jobId),
-          ...world.operationRegistry.liveJobIds(),
-        ])];
+        const jobIds = [
+          ...new Set([
+            ...scan.records.map((record) => record.operation.jobId),
+            ...world.operationRegistry.liveJobIds(),
+          ]),
+        ];
         return jobIds.length === 0 && scan.unreadableKeys.length === 0
           ? { kind: 'completed', reason: 'no provider operation custody' }
           : { kind: 'blocking', reason: 'provider operation custody requires a control receipt', jobIds };
@@ -1710,18 +1780,25 @@ export function createCoordinatorCore(
     },
     {
       id: 'provider-proxy-sets',
-      classify: async () => world.providerProxyAuthority?.liveSets().length
-        ? { kind: 'blocking', reason: 'live provider proxy set lacks a fenced transfer receipt' }
-        : { kind: 'completed', reason: 'no live provider proxy set' },
+      classify: async () => {
+        const lifecycle = world.providerProxyLifecycleRef.get();
+        const sets = lifecycle?.liveSets() ?? [];
+        if (sets.length === 0) return { kind: 'completed', reason: 'no live provider proxy set' };
+        if (sets.some((set) => world.providerProxyClaims.claimsFor(set.setIdentity).length > 0)) {
+          return { kind: 'blocking', reason: 'live provider proxy set lacks a fenced transfer receipt' };
+        }
+        if (liveProviderHosts().length > 0) {
+          return { kind: 'blocking', reason: 'idle provider proxy set still backs a live provider host' };
+        }
+        // Idle retained capacity carries no obligation; retiring it is the event that ends this hold.
+        for (const set of sets) lifecycle?.beginGracefulDrain(set.setIdentity);
+        return { kind: 'blocking', reason: 'idle provider proxy set is retiring before succession' };
+      },
     },
     {
       id: 'provider-hosts',
       classify: async () => {
-        const manager = world.providerHostManager as ProviderHostManager & Partial<ProviderHostAdministrationAuthority>;
-        if (manager.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
-        const hosts = manager.listProviderHosts().filter((record) =>
-          record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed',
-        );
+        const hosts = liveProviderHosts();
         const jobIds = hosts
           .map((host) => host.host.ownerJobId)
           .filter((jobId): jobId is string => typeof jobId === 'string');
@@ -1756,15 +1833,17 @@ export function createCoordinatorCore(
       id: 'kb-daemon',
       classify: async () => {
         const daemon = kbDaemonSupervisor.read();
-        const active = daemon.phase === 'online'
-          ? await kbDaemonSupervisor.listActiveKbJobsForSuccession?.()
-          : { active: [] as string[] };
+        const active =
+          daemon.phase === 'online'
+            ? await kbDaemonSupervisor.listActiveKbJobsForSuccession?.()
+            : { active: [] as string[] };
         if (active === undefined) throw new Error('KB daemon work inventory is unavailable');
-        const jobIds = [...new Set([
-          ...readSuccessionJobIdsByKind(getProgressStore().getDb(), 'kb'),
-          ...active.active,
-        ])];
-        const daemonIdle = daemon.phase === 'disabled' || daemon.phase === 'stopped' ||
+        const jobIds = [
+          ...new Set([...readSuccessionJobIdsByKind(getProgressStore().getDb(), 'kb'), ...active.active]),
+        ];
+        const daemonIdle =
+          daemon.phase === 'disabled' ||
+          daemon.phase === 'stopped' ||
           (daemon.phase === 'online' && daemon.pendingRequests === 0);
         return jobIds.length === 0 && daemonIdle
           ? { kind: 'completed', reason: 'no KB daemon work' }
@@ -1786,10 +1865,11 @@ export function createCoordinatorCore(
       id: 'session-continuation',
       classify: async () => {
         const sessions = listProjectionSessionEntries(getProgressStore().getDb());
-        const held = sessions.filter((session) =>
-          session.continuationLease?.status === 'pending' ||
-          session.continuationLease?.status === 'claimed' ||
-          session.retentionDiscard.attempts.some((attempt) => attempt.status !== 'completed'),
+        const held = sessions.filter(
+          (session) =>
+            session.continuationLease?.status === 'pending' ||
+            session.continuationLease?.status === 'claimed' ||
+            session.retentionDiscard.attempts.some((attempt) => attempt.status !== 'completed'),
         );
         return held.length === 0
           ? { kind: 'completed', reason: 'no continuation lease or retention hold' }
@@ -1809,9 +1889,17 @@ export function createCoordinatorCore(
         if (transfer.entries.some((entry) => !liveJobs.has(entry.parentJobId))) {
           return { kind: 'blocking', reason: 'child handle has no accepted live parent job' };
         }
-        if (transfer.entries.some((entry) =>
-          readJobLaunchOriginNamespace(getProgressStore().getDb(), entry.parentJobId) !== entry.authorization.namespace
-        )) return { kind: 'blocking', reason: 'child origin launch evidence is missing or conflicting' };
+        if (
+          transfer.entries.some(
+            (entry) =>
+              readJobLaunchOriginNamespace(
+                getProgressStore().getDb(),
+                entry.parentJobId,
+                createDefaultStoreReadContext(),
+              ) !== entry.authorization.namespace,
+          )
+        )
+          return { kind: 'blocking', reason: 'child origin launch evidence is missing or conflicting' };
         return {
           kind: 'transferable',
           reason: 'handles and consumed nonces are recorded for fenced adoption',
@@ -1830,10 +1918,7 @@ export function createCoordinatorCore(
   let activeSuccessionAttempt: SuccessionAttempt | null = null;
   let successionCommitPromise: Promise<void> | null = null;
   let successionAbortRequested = false;
-  const updateAttempt = async (
-    attemptId: string,
-    change: (intent: UpgradeIntent) => UpgradeIntent,
-  ): Promise<void> => {
+  const updateAttempt = async (attemptId: string, change: (intent: UpgradeIntent) => UpgradeIntent): Promise<void> => {
     for (let retry = 0; retry < 8; retry++) {
       const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
       if (observed.kind !== 'readable' || observed.intent.attemptId !== attemptId) {
@@ -1850,11 +1935,16 @@ export function createCoordinatorCore(
     }
     throw new Error('Succession intent changed throughout its commit window.');
   };
-  const waitForAttemptReady = (attempt: SuccessionAttempt): Promise<Extract<AttemptAcknowledgment, { kind: 'ready' }>> =>
+  const waitForAttemptReady = (
+    attempt: SuccessionAttempt,
+  ): Promise<Extract<AttemptAcknowledgment, { kind: 'ready' }>> =>
     new Promise((resolve, reject) => {
       let settled = false;
       let unsubscribe = (): void => {};
-      const timeout = setTimeout(() => finish(new Error('Successor did not report read-only readiness.')), 10_000);
+      const timeout = runtime.time.setTimeout(
+        () => finish(new Error('Successor did not report read-only readiness.')),
+        10_000,
+      );
       const onExit = (): void => finish(new Error('Successor exited before readiness.'));
       attempt.child.once('exit', onExit);
       unsubscribe = attempt.onAcknowledgment((acknowledgment) => {
@@ -1865,14 +1955,17 @@ export function createCoordinatorCore(
       function finish(error: Error | null, ready?: Extract<AttemptAcknowledgment, { kind: 'ready' }>): void {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
+        runtime.time.clearTimeout(timeout);
         unsubscribe();
         attempt.child.off('exit', onExit);
         if (error !== null) reject(error);
         else if (ready !== undefined) resolve(ready);
       }
     });
-  const reapAttempt = async (attempt: SuccessionAttempt, requireDurableIdentity = true): Promise<void> => {
+  const reapAttempt = async (
+    attempt: SuccessionAttempt,
+    requireDurableIdentity = true,
+  ): Promise<Readonly<{ kind: 'observed-absent' }>> => {
     const recorded = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
     const identityRecord = recorded.kind === 'readable' ? recorded.intent.attemptChild : null;
     if (
@@ -1883,47 +1976,50 @@ export function createCoordinatorCore(
     ) {
       throw new Error('Failed successor identity does not match the durable attempt record.');
     }
-    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return;
+    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return { kind: 'observed-absent' };
     const { pid, incarnation } = attempt.childIdentity;
     if (probeProcessIncarnation(pid) !== incarnation) {
       throw new Error('Failed successor identity cannot be verified for reaping.');
     }
-    attempt.child.kill('SIGTERM');
-    await Promise.race([
-      new Promise<void>((resolve) => {
-        if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) resolve();
-        else attempt.child.once('exit', () => resolve());
-      }),
-      new Promise<void>((resolve) => setTimeout(resolve, 500)),
-    ]);
-    if (attempt.child.exitCode === null && attempt.child.signalCode === null) {
-      if (probeProcessIncarnation(pid) !== incarnation) {
-        throw new Error('Failed successor identity changed before forced reaping.');
-      }
-      attempt.child.kill('SIGKILL');
-      await new Promise<void>((resolve) => {
-        if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) resolve();
-        else attempt.child.once('exit', () => resolve());
-      });
+    // The owned child's exit is decisive absence evidence; reaping must not wait for the escalation deadline.
+    const exited = new Promise<Readonly<{ kind: 'observed-absent' }>>((resolve) => {
+      if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) resolve({ kind: 'observed-absent' });
+      else attempt.child.once('exit', () => resolve({ kind: 'observed-absent' }));
+    });
+    const termination = gracefulKillByPid(runtime, pid, incarnation);
+    if (termination.kind !== 'escalation-scheduled') {
+      throw new Error(`Failed successor reaping was ${termination.kind}.`);
     }
+    const settled = await Promise.race([termination.settlement, exited]);
+    if (settled.kind !== 'observed-absent') {
+      throw new Error(`Failed successor reaping remained ${settled.kind}.`);
+    }
+    return { kind: 'observed-absent' };
   };
   const retirementServes = (attemptId: string, incumbentEpochKey: string, servedEpochKey: string): boolean => {
     const disposition = readRetirementDisposition(runtime, attemptId);
     const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    const incumbent = decodeResolvedStoreEpoch(incumbentEpochKey);
-    const successor = decodeResolvedStoreEpoch(servedEpochKey);
+    const incumbent = decodeResolvedStoreEpoch(runtime, incumbentEpochKey);
+    const successor = decodeResolvedStoreEpoch(runtime, servedEpochKey);
     const certificate = jobLocationIndex.certificate(incumbentEpochKey);
     if (
-      disposition === null || disposition.incumbentEpochKey !== incumbentEpochKey ||
-      observed.kind !== 'readable' || observed.intent.attemptId !== attemptId ||
+      disposition === null ||
+      disposition.incumbentEpochKey !== incumbentEpochKey ||
+      observed.kind !== 'readable' ||
+      observed.intent.attemptId !== attemptId ||
       disposition.successorFingerprint !== observed.intent.target.build.storeFormatFingerprint ||
-      incumbent === undefined || successor === undefined || certificate === null ||
+      incumbent === undefined ||
+      successor === undefined ||
+      certificate === null ||
       certificate.revision !== disposition.certificateRevision ||
       JSON.stringify(certificate.jobIds) !== JSON.stringify(disposition.certificateJobIds) ||
       !jobLocationIndex.resultsReleased(incumbentEpochKey)
-    ) return false;
-    return successor.storeRoot === (incumbent.canonicalStoreRoot ?? incumbent.storeRoot) &&
-      BigInt(successor.epoch) === BigInt(incumbent.epoch) + 1n;
+    )
+      return false;
+    return (
+      successor.storeRoot === (incumbent.canonicalStoreRoot ?? incumbent.storeRoot) &&
+      BigInt(successor.epoch) === BigInt(incumbent.epoch) + 1n
+    );
   };
   const runSuccessionCommit = async (
     attempt: SuccessionAttempt,
@@ -1935,13 +2031,15 @@ export function createCoordinatorCore(
     if (intentAtStart.kind !== 'readable' || intentAtStart.intent.attemptId !== attempt.attemptId) {
       throw new Error('Succession intent changed before commit.');
     }
-    const formatChanging = !recovering &&
-      intentAtStart.intent.target.build.storeFormatFingerprint !== options.storeFormat.fingerprint;
+    const formatChanging =
+      !recovering && intentAtStart.intent.target.build.storeFormatFingerprint !== options.storeFormat.fingerprint;
     const transfersChildPrincipals = preparation.receipts.some((receipt) => receipt.owner === 'child-principals');
     const ready = await waitForAttemptReady(attempt);
-    if (ready.epochKey !== preparation.epochKey ||
-        JSON.stringify([...ready.receiptIds].sort()) !==
-          JSON.stringify(preparation.receipts.map((receipt) => receipt.receiptId).sort())) {
+    if (
+      ready.epochKey !== preparation.epochKey ||
+      JSON.stringify([...ready.receiptIds].sort()) !==
+        JSON.stringify(preparation.receipts.map((receipt) => receipt.receiptId).sort())
+    ) {
       throw new Error('Successor readiness does not match the prepared epoch and receipts.');
     }
     if (!recovering) {
@@ -1955,19 +2053,30 @@ export function createCoordinatorCore(
       });
       if (reported.kind !== 'ready') throw new Error(`Succession readiness was ${reported.kind}.`);
     }
-    await Promise.race([
-      attempt.transferListeners(ipcServer),
-      new Promise<never>((_resolve, reject) =>
-        setTimeout(() => reject(new Error('Successor did not accept every listening address.')), 10_000),
-      ),
-    ]);
+    let transferTimeout: ReturnType<typeof runtime.time.setTimeout> | null = null;
+    try {
+      await Promise.race([
+        attempt.transferListeners(ipcServer),
+        new Promise<never>((_resolve, reject) => {
+          transferTimeout = runtime.time.setTimeout(
+            () => reject(new Error('Successor did not accept every listening address.')),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      runtime.time.clearTimeout(transferTimeout);
+    }
     if (recoveryFromAttemptId !== undefined) world.launchCoordinator.endSuccessionCommitWindow(recoveryFromAttemptId);
-    const pause = world.launchCoordinator.beginSuccessionCommitWindow(
-      attempt.attemptId,
-      preparation.admissionRevision,
-    );
+    const pause = world.launchCoordinator.beginSuccessionCommitWindow(attempt.attemptId, preparation.admissionRevision);
     if (pause.kind !== 'paused') throw new Error(`Succession admission pause was ${pause.reason}.`);
-    const stopForwarding = attempt.forwardConnections(ipcServer);
+    const stopAttemptForwarding = attempt.forwardConnections(ipcServer);
+    let forwarding = true;
+    const stopForwarding = (): void => {
+      if (!forwarding) return;
+      forwarding = false;
+      stopAttemptForwarding();
+    };
     const deadlineAt = pause.deadlineAtMs - 2_500;
     let writer: SuccessionWriterEntitlement | null = null;
     let parked = false;
@@ -1985,7 +2094,7 @@ export function createCoordinatorCore(
       }));
       await attempt.setDeadline(deadlineAt);
       const inspected = inspectCurrentStore(runtime);
-      if (inspected.kind !== 'current' || encodeResolvedStoreEpoch(inspected.epoch) !== preparation.epochKey) {
+      if (inspected.kind !== 'current' || encodeResolvedStoreEpoch(runtime, inspected.epoch) !== preparation.epochKey) {
         throw new Error('Incumbent store epoch changed before writer park.');
       }
       writer = joinSuccessionWriterGeneration(runtime, inspected.epoch);
@@ -1999,8 +2108,10 @@ export function createCoordinatorCore(
         recoverJobLocations(jobLocationIndex, preparation.epochKey, getProgressStore());
       }
       const parkAbort = new AbortController();
-      const parkDeadline = setTimeout(() => parkAbort.abort(new Error('Writer park exceeded the commit deadline.')),
-        Math.max(0, deadlineAt - Date.now()));
+      const parkDeadline = runtime.time.setTimeout(
+        () => parkAbort.abort(new Error('Writer park exceeded the commit deadline.')),
+        Math.max(0, deadlineAt - runtime.time.now()),
+      );
       try {
         if (!recovering) {
           await lifecycleController.parkProviderOperationMutations(parkAbort.signal);
@@ -2008,7 +2119,7 @@ export function createCoordinatorCore(
         }
         parkAbort.signal.throwIfAborted();
       } finally {
-        clearTimeout(parkDeadline);
+        runtime.time.clearTimeout(parkDeadline);
       }
       if (!recovering) writer.park();
       parked = true;
@@ -2019,19 +2130,25 @@ export function createCoordinatorCore(
           throw new Error('Historical job inventory and result retention are not certified.');
         }
         const custodySettled = await certifyRetiringEpochCustody(
-          runtime, jobLocationIndex, preparation.epochKey,
+          runtime,
+          jobLocationIndex,
+          preparation.epochKey,
           AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
         );
         if (!custodySettled) throw new Error('Retiring epoch custody has not settled.');
         if (Date.now() >= deadlineAt) throw new Error('Retirement certification exceeded the commit deadline.');
-        if (runtime.env.get('NODE_ENV') === 'test' &&
-            runtime.env.get('CORAL_TEST_RETIREMENT_PROTECTION_FAILURE') === '1') {
+        if (
+          runtime.env.get('NODE_ENV') === 'test' &&
+          runtime.env.get('CORAL_TEST_RETIREMENT_PROTECTION_FAILURE') === '1'
+        ) {
           throw new Error('injected retirement protection failure');
         }
         retirementStoreParked = true;
         lifecycleController.protectRetiringStore(preparation.epochKey);
-        if (runtime.env.get('NODE_ENV') === 'test' &&
-            runtime.env.get('CORAL_TEST_RETIREMENT_AUTHORIZATION_FAILURE') === '1') {
+        if (
+          runtime.env.get('NODE_ENV') === 'test' &&
+          runtime.env.get('CORAL_TEST_RETIREMENT_AUTHORIZATION_FAILURE') === '1'
+        ) {
           throw new Error('injected retirement authorization failure');
         }
         recordRetirementDisposition(runtime, {
@@ -2049,9 +2166,11 @@ export function createCoordinatorCore(
       for (;;) {
         const serving = observeSuccessionServing(runtime, attempt.attemptId);
         if (serving !== null) {
-          if ((serving.epochKey !== preparation.epochKey &&
+          if (
+            (serving.epochKey !== preparation.epochKey &&
               !retirementServes(attempt.attemptId, preparation.epochKey, serving.epochKey)) ||
-              serving.controlGeneration <= writer.generation.generation) {
+            serving.controlGeneration <= writer.generation.generation
+          ) {
             throw new Error('Durable serving record does not match the prepared takeover.');
           }
           if (!recovering) {
@@ -2062,16 +2181,15 @@ export function createCoordinatorCore(
           }
           const releaseDelay = Number(runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS'));
           if (runtime.env.get('NODE_ENV') === 'test' && releaseDelay > 0) {
-            await new Promise<void>((resolve) => setTimeout(resolve, releaseDelay));
+            await runtime.time.sleep(releaseDelay);
           }
-          if (runtime.env.get('NODE_ENV') === 'test' &&
-              runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_FAILURE') === '1') {
+          if (
+            runtime.env.get('NODE_ENV') === 'test' &&
+            runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_FAILURE') === '1'
+          ) {
             throw new Error('injected succession release failure');
           }
-          await Promise.race([
-            attempt.drainIncumbentConnections(ipcServer),
-            new Promise<void>((resolve) => setTimeout(resolve, 500)),
-          ]);
+          await Promise.race([attempt.drainIncumbentConnections(ipcServer), runtime.time.sleep(500)]);
           process.exit(0);
         }
         if (hold !== null) throw new Error(hold);
@@ -2079,12 +2197,13 @@ export function createCoordinatorCore(
         if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) {
           throw new Error('Successor exited before durable serving.');
         }
-        if (Date.now() >= deadlineAt) throw new Error('Successor missed its serving deadline.');
-        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+        if (runtime.time.now() >= deadlineAt) throw new Error('Successor missed its serving deadline.');
+        await runtime.time.sleep(25);
       }
     } catch (error: unknown) {
       const serving = observeSuccessionServing(runtime, attempt.attemptId);
       if (serving !== null) process.exit(0);
+      stopForwarding();
       const reason = formatError(error);
       try {
         await updateAttempt(attempt.attemptId, (intent) => ({
@@ -2101,8 +2220,8 @@ export function createCoordinatorCore(
       if (formatChanging) discardUnservedRetirementMint(runtime, preparation.epochKey, attempt.attemptId);
       if (writer !== null) {
         const observed = observeSuccessionWriterGeneration(runtime);
-        const failedGeneration = observed !== null && observed.generation > writer.generation.generation
-          ? observed : undefined;
+        const failedGeneration =
+          observed !== null && observed.generation > writer.generation.generation ? observed : undefined;
         const reclaimed = await reclaimIncumbentWriter({
           runtime,
           writer,
@@ -2123,11 +2242,11 @@ export function createCoordinatorCore(
             }
             const reclaim = kbDaemonSupervisorWithTrackedShutdown.reclaimWriterTurn?.(generation, signal);
             if (reclaim === undefined) throw new Error('KB daemon writer reclaim capability is unavailable.');
-            let acknowledged = false;
+            let acknowledged: boolean;
             try {
               acknowledged = await Promise.race([
                 reclaim.then(() => true),
-                new Promise<false>((resolve) => setTimeout(() => resolve(false), 500)),
+                runtime.time.sleep(500).then(() => false as const),
               ]);
             } catch {
               acknowledged = false;
@@ -2140,12 +2259,23 @@ export function createCoordinatorCore(
         });
         if (reclaimed.kind === 'reclaimed') {
           if (strictHealthIdentity.ok) {
-            recordControllerOpen(runtime, preparation.epochKey, identity.instanceId, null,
-              identity.pluginRoot, strictHealthIdentity.manifest, reclaimed.generation.generation);
+            recordControllerOpen(
+              runtime,
+              preparation.epochKey,
+              identity.instanceId,
+              null,
+              identity.pluginRoot,
+              strictHealthIdentity.manifest,
+              reclaimed.generation.generation,
+            );
           }
-          if (transfersChildPrincipals &&
-              !world.childPrincipalRegistry.reclaimAuthentication(reclaimed.generation.generation)) {
-            throw new Error('Incumbent child authentication could not reclaim its consumed-nonce ledger.');
+          if (
+            transfersChildPrincipals &&
+            !world.childPrincipalRegistry.reclaimAuthentication(reclaimed.generation.generation)
+          ) {
+            throw new Error('Incumbent child authentication could not reclaim its consumed-nonce ledger.', {
+              cause: error,
+            });
           }
           lifecycleController?.adoptProviderOperationAdmission(reclaimed.providerOperationAdmission);
           if (recovering) runtimeState.setLaunchFenceActive(false);
@@ -2168,7 +2298,7 @@ export function createCoordinatorCore(
             world.log(`Same-build recovery child failed to serve: ${reclaimed.reason}\n`);
           } else {
             if (strictHealthBundleDir === null || !strictHealthIdentity.ok) {
-              throw new Error('Same-build recovery target is unavailable.');
+              throw new Error('Same-build recovery target is unavailable.', { cause: error });
             }
             runtimeState.setLaunchFenceActive(true);
             const recoveryAttemptId = runtime.ids.uuid();
@@ -2224,23 +2354,28 @@ export function createCoordinatorCore(
       let recoveryAttempt: SuccessionAttempt | null = null;
       try {
         const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-        if (observed.kind !== 'readable' || observed.intent.attemptId !== recoveryPreparation.attemptId ||
-            strictHealthBundleDir === null) {
+        if (
+          observed.kind !== 'readable' ||
+          observed.intent.attemptId !== recoveryPreparation.attemptId ||
+          strictHealthBundleDir === null
+        ) {
           throw new Error('Same-build recovery attempt changed before launch.');
         }
-        recoveryAttempt = await startSuccessionAttempt({
+        const started = await startSuccessionAttempt({
+          ports: createRealSuccessionAttemptPorts(),
           intent: observed.intent,
           preparation: recoveryPreparation,
           listener: ipcServer,
           bootToken: identity.bootToken,
           recoveryBundleDir: strictHealthBundleDir,
         });
-        await updateAttempt(recoveryAttempt.attemptId, (intent) => ({
+        recoveryAttempt = started;
+        await updateAttempt(started.attemptId, (intent) => ({
           ...intent,
           attemptChild: {
-            attemptId: recoveryAttempt.attemptId,
-            pid: recoveryAttempt.childIdentity.pid,
-            incarnation: recoveryAttempt.childIdentity.incarnation,
+            attemptId: started.attemptId,
+            pid: started.childIdentity.pid,
+            incarnation: started.childIdentity.incarnation,
           },
         }));
         activeSuccessionAttempt = recoveryAttempt;
@@ -2250,7 +2385,8 @@ export function createCoordinatorCore(
         if (recoveryAttempt !== null) {
           await recoveryAttempt.abort().catch(() => {});
           await reapAttempt(recoveryAttempt).catch((reapError: unknown) =>
-            world.log(`Same-build recovery reap failed: ${formatError(reapError)}\n`));
+            world.log(`Same-build recovery reap failed: ${formatError(reapError)}\n`),
+          );
         }
         world.launchCoordinator.endSuccessionCommitWindow(attempt.attemptId);
         world.log(`Same-build succession launch failed: ${formatError(error)}\n`);
@@ -2258,6 +2394,7 @@ export function createCoordinatorCore(
     }
   };
   const succession = createSuccessionCoordinator({
+    runtime,
     runDir: runtime.paths.coral.coordinator.runDir,
     incumbent: {
       instanceId: identity.instanceId,
@@ -2273,7 +2410,7 @@ export function createCoordinatorCore(
     epochKey: () => {
       if (storeServicesRef.tryGet() === null) return null;
       const inspection = inspectCurrentStore(runtime);
-      return inspection.kind === 'current' ? encodeResolvedStoreEpoch(inspection.epoch) : null;
+      return inspection.kind === 'current' ? encodeResolvedStoreEpoch(runtime, inspection.epoch) : null;
     },
     admissionRevision: () => world.launchCoordinator.admissionRevision(),
     observeServing: (attemptId) => observeSuccessionServing(runtime, attemptId),
@@ -2284,6 +2421,7 @@ export function createCoordinatorCore(
     launchPrepared: async (intent, preparation) => {
       if (activeSuccessionAttempt !== null) throw new Error('Another succession attempt is active.');
       const attempt = await startSuccessionAttempt({
+        ports: createRealSuccessionAttemptPorts(),
         intent,
         preparation,
         listener: ipcServer,
@@ -2662,30 +2800,53 @@ export function createCoordinatorCore(
         if (runningBuild.ok && runningBuild.manifest.buildSetId === identity.buildSetId) {
           pinRunningBuildRoot(runtime, identity.pluginRoot, runningBuild.manifest);
           const writerGeneration = observeSuccessionWriterGeneration(runtime);
-          const generation = writerGeneration !== null && writerGeneration.epoch === openStore.epoch &&
+          const generation =
+            writerGeneration !== null &&
+            writerGeneration.epoch === openStore.epoch &&
             writerGeneration.storeRoot === (openStore.canonicalStoreRoot ?? openStore.storeRoot)
-            ? writerGeneration.generation : 0;
-          recordControllerOpen(runtime, encodeResolvedStoreEpoch(openStore), identity.instanceId,
-            currentSuccessionAttemptChild()?.attemptId ?? null, identity.pluginRoot,
-            runningBuild.manifest, generation);
+              ? writerGeneration.generation
+              : 0;
+          recordControllerOpen(
+            runtime,
+            encodeResolvedStoreEpoch(runtime, openStore),
+            identity.instanceId,
+            currentSuccessionAttemptChild()?.attemptId ?? null,
+            identity.pluginRoot,
+            runningBuild.manifest,
+            generation,
+          );
         }
       }
-      selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(openStore);
-      selectedJobEpochKey = openStore.path === ':memory:' ? null : encodeResolvedStoreEpoch(openStore);
+      selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(runtime, openStore);
+      selectedJobEpochKey = openStore.path === ':memory:' ? null : encodeResolvedStoreEpoch(runtime, openStore);
       selectedStoreEpochPath = openStore.path === ':memory:' ? null : dirname(openStore.path);
+      openedStoreEpoch = openStore.path === ':memory:' ? null : openStore;
       if (selectedStoreEpochPath !== null) world.launchCoordinator.bindActiveEpochPath(selectedStoreEpochPath);
       if (openStore.path !== ':memory:') {
         for (const historical of listStoreEpochs(runtime)) {
-          if (historical.role !== 'protected' || historical.resolved === null ||
-              historical.epochKey === null || historical.epochKey === undefined) continue;
-          const historicalKey = encodeResolvedStoreEpoch(historical.resolved);
-          if (readEpochClosure(runtime.paths.coral.generation.dataRoot, historical.epochKey)?.disposition ===
-              'unrecoverable-retained') continue;
-          const fingerprint = historical.epochJson.kind === 'valid'
-            ? historical.epochJson.value.build.storeFormatFingerprint : '';
+          if (
+            historical.role !== 'protected' ||
+            historical.resolved === null ||
+            historical.epochKey === null ||
+            historical.epochKey === undefined
+          )
+            continue;
+          const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
+          if (
+            readEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey)?.disposition ===
+            'unrecoverable-retained'
+          )
+            continue;
+          const fingerprint =
+            historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
           void seedHistoricalEpoch(
-            jobLocationIndex, historical.resolved, historicalKey, fingerprint,
-            runtime.paths.coral.exports.jobsRoot, runtime.storage,
+            runtime,
+            jobLocationIndex,
+            historical.resolved,
+            historicalKey,
+            fingerprint,
+            runtime.paths.coral.exports.jobsRoot,
+            runtime.storage,
           );
         }
       }
@@ -2693,30 +2854,48 @@ export function createCoordinatorCore(
     onStoreServing: (attemptId, epochKey, instanceId, controlGeneration) =>
       recordControllerServing(runtime, attemptId, epochKey, instanceId, controlGeneration),
     authorizeStartupMint: createStartupMintAuthorizer(runtime, jobLocationIndex, identity.instanceId),
-    prepareNoIncumbentHandoff: () =>
-      prepareRetainedControllerHandoff(runtime, jobLocationIndex, options.storeFormat),
+    prepareNoIncumbentHandoff: () => prepareRetainedControllerHandoff(runtime, jobLocationIndex, options.storeFormat),
     prepareRecoveryGrantHandoff: (epochKey, incumbentInstanceId) =>
       controllerRecoveryTarget(runtime, epochKey, incumbentInstanceId),
     onRetiredEpochOpened: (epoch, disposition) => {
       const seeded = seedHistoricalEpoch(
-        jobLocationIndex, epoch, disposition.incumbentEpochKey, disposition.incumbentFingerprint,
-        runtime.paths.coral.exports.jobsRoot, runtime.storage, [], true,
+        runtime,
+        jobLocationIndex,
+        epoch,
+        disposition.incumbentEpochKey,
+        disposition.incumbentFingerprint,
+        runtime.paths.coral.exports.jobsRoot,
+        runtime.storage,
+        [],
+        true,
       );
       if (seeded.kind !== 'complete') throw new Error(`Retired epoch history is ${seeded.kind}.`);
     },
-    verifySuccessionReceipts: (preparation, epoch) => {
+    verifySuccessionReceipts: (preparation, epoch, committedSuccessorInstanceId) => {
       const accepted = new Set<string>();
       for (const receipt of preparation.receipts) {
         if (receipt.owner === 'durable-cli') {
           const transfer = verifyDurableCliTransfer(
-            receipt.payload, getProgressStore().getDb(), getProgressStore(),
-            runtime.paths.coral.coordinator.runDir, epoch,
+            runtime,
+            receipt.payload,
+            getProgressStore().getDb(),
+            getProgressStore(),
+            runtime.paths.coral.coordinator.runDir,
+            epoch,
           );
           if (transfer === null) throw new Error('Durable-cli receipt no longer matches runtime and custody.');
-          if (!verifyDurableCliRecoveryGrant(
-            runtime.paths.coral.coordinator.runDir, receipt.attemptId, receipt.recoveryGrantId,
-            preparation.epochKey, preparation.incumbentInstanceId, transfer,
-          )) throw new Error('Durable-cli recovery grant is unavailable or changed.');
+          if (
+            !verifyDurableCliRecoveryGrant(
+              runtime,
+              runtime.paths.coral.coordinator.runDir,
+              receipt.attemptId,
+              receipt.recoveryGrantId,
+              preparation.epochKey,
+              preparation.incumbentInstanceId,
+              transfer,
+            )
+          )
+            throw new Error('Durable-cli recovery grant is unavailable or changed.');
           for (const job of transfer.jobs) accepted.add(job.jobId);
         } else if (receipt.owner === 'child-principals') {
           if (decodeChildPrincipalTransfer(receipt.payload) === null) {
@@ -2727,7 +2906,14 @@ export function createCoordinatorCore(
         }
       }
       const live = readSuccessionJobs();
-      if (live.length !== accepted.size || live.some((jobId) => !accepted.has(jobId))) {
+      // A crashed committed successor's own admissions are ordinary recovery obligations of this same build.
+      const admittedByCommittedSuccessor = (jobId: string): boolean =>
+        committedSuccessorInstanceId !== null &&
+        jobLocationIndex.read(jobId)?.controller?.instanceId === committedSuccessorInstanceId;
+      if (
+        live.some((jobId) => !accepted.has(jobId) && !admittedByCommittedSuccessor(jobId)) ||
+        (committedSuccessorInstanceId === null && live.length !== accepted.size)
+      ) {
         throw new Error('Accepted durable-cli receipts do not cover every live job.');
       }
       return [...accepted];
@@ -2748,28 +2934,33 @@ export function createCoordinatorCore(
         if (transfer === null) throw new Error('Child-principal transfer receipt is invalid.');
         const adopted = recovery
           ? world.childPrincipalRegistry.adoptRecoveredTransfer(
-              transfer, accepted, preparation.attemptId, generation.generation, runtime.time.now(),
+              transfer,
+              accepted,
+              preparation.attemptId,
+              generation.generation,
+              runtime.time.now(),
             )
-          : world.childPrincipalRegistry.adoptTransfer(
-              transfer, accepted, generation.generation, runtime.time.now(),
-            );
+          : world.childPrincipalRegistry.adoptTransfer(transfer, accepted, generation.generation, runtime.time.now());
         if (!adopted) {
           throw new Error('Child-principal receipt could not be adopted.');
         }
       }
     },
     recordSuccessionControllerReceipts: (preparation, epochKey, generation, recordedAt) => {
-      const epoch = decodeResolvedStoreEpoch(epochKey);
+      const epoch = decodeResolvedStoreEpoch(runtime, epochKey);
       if (epoch === undefined) throw new Error('Committed epoch is invalid.');
       for (const receipt of preparation.receipts) {
         if (receipt.owner !== 'durable-cli') continue;
         const transfer = decodeDurableCliTransfer(receipt.payload, epoch);
         if (transfer === null) throw new Error('Durable-cli receipt is invalid at controller acknowledgment.');
-        recordDurableCliControllerReceipts(runtime.paths.coral.coordinator.runDir, transfer, {
-          epochKey, lineageEpochKey: readOrCreateEpochKey(epoch),
-          attemptId: preparation.attemptId, instanceId: identity.instanceId,
+        recordDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir, transfer, {
+          epochKey,
+          lineageEpochKey: readOrCreateEpochKey(runtime, epoch),
+          attemptId: preparation.attemptId,
+          instanceId: identity.instanceId,
           buildSetId: identity.buildSetId,
-          generation, nowMs: Date.parse(recordedAt),
+          generation,
+          nowMs: Date.parse(recordedAt),
         });
       }
     },
@@ -2792,13 +2983,16 @@ export function createCoordinatorCore(
         if (store === null) return;
         try {
           const dbDir = runtime.paths.coral.store.dbDir;
-          const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-          if (epoch === null) throw new Error('Custody reconciliation requires a selected store epoch.');
+          const epoch = selectedStoreEpochPath === null ? resolveCurrentStoreEpoch(runtime.storage, dbDir) : null;
+          if (selectedStoreEpochPath === null && epoch === null) {
+            throw new Error('Custody reconciliation requires a selected store epoch.');
+          }
           const entries = reconcileStartupCustody(
+            runtime,
             runtime.paths.coral.coordinator.runDir,
             runtime.time.now(),
             store.progressStore.getDb(),
-            join(dbDir, `epoch-${epoch}`),
+            selectedStoreEpochPath ?? join(dbDir, `epoch-${epoch}`),
             {
               readProcessIncarnation: (pid) =>
                 runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
@@ -2821,8 +3015,9 @@ export function createCoordinatorCore(
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: (openStore) => {
-      selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(openStore);
+      selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(runtime, openStore);
       selectedStoreEpochPath = openStore.path === ':memory:' ? null : dirname(openStore.path);
+      openedStoreEpoch = openStore.path === ':memory:' ? null : openStore;
       const controller = new AbortController();
       storeEpochSweepAbort = controller;
       const schedule = (delayMs: number): void => {
@@ -2833,16 +3028,25 @@ export function createCoordinatorCore(
           storeEpochSweepTimer = null;
           void (async () => {
             await settleSupersededEpochClosures(
-              runtime, jobLocationIndex, controller.signal, undefined, selectedStoreEpochKey ?? undefined,
+              runtime,
+              jobLocationIndex,
+              controller.signal,
+              undefined,
+              selectedStoreEpochKey ?? undefined,
               closeProxySetForEpochClosure,
             );
             if (!controller.signal.aborted) {
-              await sweepStoreEpochsPostReady(runtime, {
-                ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot,
-              }, {
-                signal: controller.signal,
-                resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
-              });
+              void (await sweepStoreEpochsPostReady(
+                runtime,
+                {
+                  ...openStore,
+                  storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot,
+                },
+                {
+                  signal: controller.signal,
+                  resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
+                },
+              ));
             }
           })()
             .catch((error: unknown) => {
@@ -2946,18 +3150,20 @@ export function createCoordinatorCore(
       for (let retry = 0; retry < 20; retry++) {
         const decision = await succession.reconciler.commit(attemptId);
         if (decision.kind === 'committed') return;
-        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        await runtime.time.sleep(50);
       }
       world.log('Durable succession serving could not publish its completion receipt.\n');
     },
-    beforeShutdown: async () => {
+    beforeShutdown: () => {
       const attempt = activeSuccessionAttempt;
       if (attempt === null) return 'continue';
       if (observeSuccessionServing(runtime, attempt.attemptId) !== null) return 'succession-release';
       successionAbortRequested = true;
-      await attempt.abort().catch(() => {});
-      await successionCommitPromise;
-      return observeSuccessionServing(runtime, attempt.attemptId) === null ? 'continue' : 'succession-release';
+      return (async () => {
+        await attempt.abort().catch(() => {});
+        await successionCommitPromise;
+        return observeSuccessionServing(runtime, attempt.attemptId) === null ? 'continue' : 'succession-release';
+      })();
     },
     ...(options.acceptProcessExitRemainder === undefined
       ? {}
@@ -2994,5 +3200,6 @@ export function createCoordinatorCore(
     requestDrain: control.requestDrain,
     getKbJobRecorder,
     hooks: discuss.hooks,
+    openedStoreEpoch: () => openedStoreEpoch,
   };
 }

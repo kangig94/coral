@@ -7,16 +7,26 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { strictBundleManifestSchema } from '#src/infra/bundle-manifest.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { protectStoreEpoch, protectedStoreEpochRoot, reconcileProtectedEpochs } from '#src/store/epoch-protection.js';
 import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
 import {
-  encodeResolvedStoreEpoch, epochDirectory, epochPath, observeResolvedStoreEpoch,
-  resolvedStoreEpoch, storeEpochLockPath,
+  encodeResolvedStoreEpoch,
+  epochDirectory,
+  epochPath,
+  observeResolvedStoreEpoch,
+  resolvedStoreEpoch,
+  storeEpochLockPath,
 } from '#src/store/epoch.js';
 import {
-  SHIPPED_RELEASE_TAGS, createShippedPluginFixture, spawnCoordinator, stopCoordinator, waitForDiscoveryRecord,
+  SHIPPED_RELEASE_TAGS,
+  createShippedPluginFixture,
+  spawnCoordinator,
+  stopCoordinator,
+  waitForDiscoveryRecord,
   type SpawnedCoordinator,
 } from '#tests/integration/coordinator/helpers.js';
 import { openSettledTestStoreDb, openTestStoreDatabase } from '#tests/helpers/store-db.js';
@@ -40,8 +50,8 @@ describe('D5 protected epochs against shipped selectors', () => {
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     openSettledTestStoreDb(runtime).close();
     const original = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1');
-    const key = encodeResolvedStoreEpoch(original);
-    const lineageKey = readOrCreateEpochKey(original);
+    const key = encodeResolvedStoreEpoch(runtime, original);
+    const lineageKey = readOrCreateEpochKey(runtime, original);
     const lineage = lineageKey.slice(0, lineageKey.lastIndexOf(':'));
     const protectedRoot = protectedStoreEpochRoot(original.storeRoot);
     const moved = join(protectedRoot, lineage, 'epoch-1');
@@ -50,7 +60,7 @@ describe('D5 protected epochs against shipped selectors', () => {
     renameSync(dirname(original.path), moved);
 
     expect(existsSync(address)).toBe(false);
-    expect(observeResolvedStoreEpoch(key)?.path).toBe(join(moved, 'store.db'));
+    expect(observeResolvedStoreEpoch(runtime, key)?.path).toBe(join(moved, 'store.db'));
     expect(existsSync(address)).toBe(false);
   });
 
@@ -62,20 +72,29 @@ describe('D5 protected epochs against shipped selectors', () => {
       const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
       openSettledTestStoreDb(runtime).close();
       const epoch = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1');
-      const address = protectStoreEpoch(epoch);
+      const address = protectStoreEpoch(runtime, epoch);
       const before = digest(join(address.protectedPath, 'store.db'));
       const shipped = createShippedPluginFixture(roots, tag);
-      const result = spawnSync(process.execPath, [
-        join(shipped.root, 'bridge', 'coral-backend.cjs'), '--probe-retained-epoch',
-        JSON.stringify({ storeRoot: runtime.paths.coral.store.dbDir, epoch: '1', path: epoch.path,
-          lineageKey: address.epochKey }),
-        'unproved-controller',
-      ], {
-        env: { ...process.env, HOME: home, TMPDIR: home },
-        timeout: 2_000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      });
+      const result = spawnSync(
+        process.execPath,
+        [
+          join(shipped.root, 'bridge', 'coral-backend.cjs'),
+          '--probe-retained-epoch',
+          JSON.stringify({
+            storeRoot: runtime.paths.coral.store.dbDir,
+            epoch: '1',
+            path: epoch.path,
+            lineageKey: address.epochKey,
+          }),
+          'unproved-controller',
+        ],
+        {
+          env: { ...process.env, HOME: home, TMPDIR: home },
+          timeout: 2_000,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        },
+      );
       expect(result.status === 0 && result.stdout.includes('"kind":"retained-epoch-open"')).toBe(false);
       expect(digest(join(address.protectedPath, 'store.db'))).toBe(before);
     },
@@ -88,13 +107,13 @@ describe('D5 protected epochs against shipped selectors', () => {
     const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
     const storeRoot = runtime.paths.coral.store.dbDir;
     openSettledTestStoreDb(runtime).close();
-    readOrCreateEpochKey(resolvedStoreEpoch(storeRoot, '1'));
-    expect(reconcileProtectedEpochs(storeRoot)).toEqual([]);
+    readOrCreateEpochKey(runtime, resolvedStoreEpoch(storeRoot, '1'));
+    expect(reconcileProtectedEpochs(runtime, storeRoot)).toEqual([]);
     const shipped = createShippedPluginFixture(roots, 'v0.10.13');
     const coordinator = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
     coordinators.push(coordinator);
     await waitForDiscoveryRecord(home, 'prod', 15_000);
-    expect(reconcileProtectedEpochs(storeRoot)).toEqual([]);
+    expect(reconcileProtectedEpochs(runtime, storeRoot)).toEqual([]);
   }, 30_000);
 
   it.each(['v0.10.0', 'v0.10.10', 'v0.10.11', 'v0.10.12', 'v0.10.13'] as const)(
@@ -106,7 +125,7 @@ describe('D5 protected epochs against shipped selectors', () => {
       const storeRoot = runtime.paths.coral.store.dbDir;
       openSettledTestStoreDb(runtime).close();
       const old = resolvedStoreEpoch(storeRoot, '1');
-      const oldKey = readOrCreateEpochKey(old);
+      const oldKey = readOrCreateEpochKey(runtime, old);
       const lineage = oldKey.slice(0, oldKey.lastIndexOf(':'));
       const moved = join(protectedStoreEpochRoot(storeRoot), lineage, 'epoch-1');
       mkdirSync(dirname(moved), { recursive: true });
@@ -124,14 +143,22 @@ describe('D5 protected epochs against shipped selectors', () => {
       const shipped = createShippedPluginFixture(roots, tag);
       const coordinator = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
       coordinators.push(coordinator);
-      await waitForDiscoveryRecord(home, 'prod', 15_000);
+      try {
+        await waitForDiscoveryRecord(home, 'prod', 15_000);
+      } catch (error) {
+        throw new Error(`Shipped coordinator did not publish discovery: ${coordinator.output()}`, { cause: error });
+      }
 
       expect(digest(join(moved, 'store.db'))).toBe(before);
-      expect(reconcileProtectedEpochs(storeRoot)).toMatchObject([{
-        epochKey: oldKey, originalPath: dirname(old.path), protectedPath: moved,
-      }]);
+      expect(reconcileProtectedEpochs(runtime, storeRoot)).toMatchObject([
+        {
+          epochKey: oldKey,
+          originalPath: dirname(old.path),
+          protectedPath: moved,
+        },
+      ]);
       if (existsSync(old.path)) {
-        expect(readOrCreateEpochKey(old)).not.toBe(oldKey);
+        expect(readOrCreateEpochKey(runtime, old)).not.toBe(oldKey);
       }
     },
     30_000,
@@ -146,8 +173,8 @@ describe('D5 protected epochs against shipped selectors', () => {
       const storeRoot = runtime.paths.coral.store.dbDir;
       openSettledTestStoreDb(runtime).close();
       const original = resolvedStoreEpoch(storeRoot, '1');
-      const key = readOrCreateEpochKey(original);
-      const address = protectStoreEpoch(original);
+      const key = readOrCreateEpochKey(runtime, original);
+      const address = protectStoreEpoch(runtime, original);
       const before = digest(join(address.protectedPath, 'store.db'));
       const storeFormat = currentCoralStoreFormat();
       for (const epoch of ['2', '3']) {
@@ -163,21 +190,45 @@ describe('D5 protected epochs against shipped selectors', () => {
       await once(waiter, 'spawn');
       try {
         if (waiter.pid === undefined) throw new Error('Waiter process did not start.');
-        const build = (JSON.parse(readFileSync(join(address.protectedPath, 'epoch.json'), 'utf8')) as {
-          build: UpgradeIntentChange['target']['build'];
-        }).build;
+        const incumbentBuild = (
+          JSON.parse(readFileSync(join(address.protectedPath, 'epoch.json'), 'utf8')) as {
+            build: UpgradeIntentChange['target']['build'];
+          }
+        ).build;
+        const currentBuild = strictBundleManifestSchema.parse(
+          JSON.parse(
+            readFileSync(join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+          ),
+        );
+        const targetBuild = strictBundleManifestSchema.parse(
+          tag === 'v0.10.0'
+            ? {
+                ...currentBuild,
+                ...incumbentBuild,
+                version: shipped.version,
+                bundleHash: shipped.bundleHash,
+                storeFormatFingerprint: shipped.storeFormatFingerprint,
+              }
+            : JSON.parse(readFileSync(join(shipped.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')),
+        );
         const pending: UpgradeIntentChange = {
           requestId: `rollback-${tag}`,
           incumbent: {
-            instanceId: 'retired-incumbent', pid: waiter.pid, incarnation: null,
-            version: build.version, bundleHash: build.bundleHash, flavor: 'prod',
+            instanceId: 'retired-incumbent',
+            pid: waiter.pid,
+            incarnation: null,
+            version: incumbentBuild.version,
+            bundleHash: incumbentBuild.bundleHash,
+            flavor: 'prod',
           },
-          target: { build, pluginRootLabel: shipped.root },
+          target: { build: targetBuild, pluginRootLabel: shipped.root },
           attemptId: `killed-waiter-${tag}`,
           attemptOwner: { kind: 'waiter', instanceId: 'killed-waiter', pid: waiter.pid, incarnation: null },
-          disposition: 'pending', blockers: [],
+          disposition: 'pending',
+          blockers: [],
           retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for retirement' },
-          attemptDeadline: new Date(Date.now() - 1_000).toISOString(), completionReceipt: null,
+          attemptDeadline: new Date(Date.now() - 1_000).toISOString(),
+          completionReceipt: null,
         };
         const recorded = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, pending);
         expect(recorded.kind).toBe('written');
@@ -186,7 +237,8 @@ describe('D5 protected epochs against shipped selectors', () => {
         await once(waiter, 'exit');
       }
       expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
-        kind: 'readable', intent: { disposition: 'pending', attemptOwner: { kind: 'waiter' } },
+        kind: 'readable',
+        intent: { disposition: 'pending', attemptOwner: { kind: 'waiter' } },
       });
       const coordinator = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
       coordinators.push(coordinator);

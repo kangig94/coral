@@ -1,5 +1,14 @@
 import { spawn } from 'node:child_process';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -132,9 +141,11 @@ describe('real-process incumbent self-escalation', () => {
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(() => {
       const observed = readUpgradeIntent(runDir);
-      return observed.kind === 'readable' &&
+      return (
+        observed.kind === 'readable' &&
         observed.intent.disposition === 'deferred' &&
-        observed.intent.blockers.length > 0;
+        observed.intent.blockers.length > 0
+      );
     }, 30_000);
 
     writeFileSync(join(state, 'release-job'), 'released');
@@ -143,9 +154,7 @@ describe('real-process incumbent self-escalation', () => {
     expect(readFileSync(result, 'utf8')).toContain('done');
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
-      return discovery !== null &&
-        discovery.pid !== initial.pid &&
-        discovery.bundleHash === newerFixture.bundleHash;
+      return discovery !== null && discovery.pid !== initial.pid && discovery.bundleHash === newerFixture.bundleHash;
     }, 60_000);
     const serving = readDiscoveryRecordForHome(home, 'prod');
     if (serving === null) throw new Error('Self-escalated successor did not publish discovery.');

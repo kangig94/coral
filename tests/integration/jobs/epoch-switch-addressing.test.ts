@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface, type Interface } from 'node:readline';
@@ -10,16 +10,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
-import type { StoragePort } from '../../../src/infra/port-types.js';
+import { createRealRuntime } from '../../../src/runtime/real.js';
 
 const fingerprint = 'sha256:f14ec2988abbf0fe125a6b0c9b50cbece7104d8a82a96da149392e2f44e53f52';
 const oldEpochKey = '00000000-0000-4000-8000-000000000007:7';
 const newEpochKey = '00000000-0000-4000-8000-000000000008:8';
 const roots: string[] = [];
-const storage: Pick<StoragePort, 'mkdirSync' | 'writeAtomicSync'> = {
-  mkdirSync: (path, options) => { mkdirSync(path, options); },
-  writeAtomicSync: (path, data) => { writeFileSync(path, data); return true; },
-};
+const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
+const storage = runtime.storage;
 
 const writer = `
 import { DatabaseSync } from 'node:sqlite';
@@ -124,16 +122,22 @@ describe('job addressing across a process-owned epoch switch', () => {
     const { root, epochDir, child, lines } = await liveOlderEpoch();
     try {
       await finish(child, lines);
-      const index = new JobLocationIndex(root);
+      const index = new JobLocationIndex(runtime, root);
       const seeded = seedHistoricalEpoch(
-        index, { storeRoot: join(root, 'db'), epoch: '7', path: epochDir },
-        oldEpochKey, fingerprint, join(root, 'results'), storage,
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        oldEpochKey,
+        fingerprint,
+        join(root, 'results'),
+        storage,
       );
       expect(seeded.kind).toBe('uncertified');
       expect(index.certificate(oldEpochKey)).toBeNull();
       let activeEpochKey = oldEpochKey;
       const addressing = new JobAddressing(index, {
-        epochKey: () => activeEpochKey, detail: () => null,
+        epochKey: () => activeEpochKey,
+        detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
         waitStream: async function* () {},
       });
@@ -142,7 +146,9 @@ describe('job addressing across a process-owned epoch switch', () => {
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
       const stream = addressing.waitStream({ jobIds: ['old-live'], supportsWaitV2: true });
       expect((await stream.next()).value).toMatchObject({
-        type: 'terminal', jobId: 'old-live', epochKey: oldEpochKey,
+        type: 'terminal',
+        jobId: 'old-live',
+        epochKey: oldEpochKey,
         cursor: { positions: { [oldEpochKey]: 3 } },
       });
       await stream.return(undefined);
@@ -155,20 +161,28 @@ describe('job addressing across a process-owned epoch switch', () => {
   it('refreshes a live WAL writer and resumes mixed waits with independent epoch positions', async () => {
     const { root, epochDir, child, lines } = await liveOlderEpoch();
     try {
-      const index = new JobLocationIndex(root);
+      const index = new JobLocationIndex(runtime, root);
       const seeded = seedHistoricalEpoch(
-        index, { storeRoot: join(root, 'db'), epoch: '7', path: epochDir },
-        oldEpochKey, fingerprint, join(root, 'results'), storage,
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        oldEpochKey,
+        fingerprint,
+        join(root, 'results'),
+        storage,
       );
       expect(seeded.kind).toBe('uncertified');
       expect(index.certificate(oldEpochKey)).toBeNull();
       expect(existsSync(join(epochDir, 'store.db-wal'))).toBe(true);
       index.register('new-live', newEpochKey, {
-        projectRoot: '/workspace/project', workDir: '/workspace/project', jobKind: 'provider',
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
       });
       createNewFormatEpoch(root);
       const addressing = new JobAddressing(index, {
-        epochKey: () => newEpochKey, detail: () => null,
+        epochKey: () => newEpochKey,
+        detail: () => null,
         abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
         waitStream: async function* () {},
       });
@@ -176,13 +190,14 @@ describe('job addressing across a process-owned epoch switch', () => {
         status: { jobId: 'old-live', phase: 'running' },
       });
       const jobIds = ['new-live', 'old-live'];
-      expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 1 } })?.code)
-        .toBe('wait_cursor_epoch_required');
+      expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 1 } })?.code).toBe('wait_cursor_epoch_required');
       const pending = addressing.waitStream({ jobIds, supportsWaitV2: true, timeoutSeconds: 5 });
       const nextProgress = pending.next();
       await progress(child, lines);
       expect((await nextProgress).value).toMatchObject({
-        type: 'progress', jobId: 'old-live', epochKey: oldEpochKey,
+        type: 'progress',
+        jobId: 'old-live',
+        epochKey: oldEpochKey,
         cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 2 } },
       });
       const next = pending.next();
@@ -190,20 +205,27 @@ describe('job addressing across a process-owned epoch switch', () => {
       const terminal = (await next).value;
       if (terminal === undefined || terminal.type !== 'terminal') throw new Error('Expected an old-epoch terminal');
       expect(terminal).toMatchObject({
-        type: 'terminal', jobId: 'old-live', epochKey: oldEpochKey,
+        type: 'terminal',
+        jobId: 'old-live',
+        epochKey: oldEpochKey,
         cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 3 } },
       });
       await pending.return(undefined);
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
       if (terminal.cursor === undefined) throw new Error('Expected a vector cursor');
       expect(addressing.validateWait({ jobIds, cursor: terminal.cursor })).toBeNull();
-      expect(addressing.validateWait({ jobIds: ['old-live'], cursor: terminal.cursor })?.code)
-        .toBe('wait_cursor_mismatch');
+      expect(addressing.validateWait({ jobIds: ['old-live'], cursor: terminal.cursor })?.code).toBe(
+        'wait_cursor_mismatch',
+      );
       const resumed = addressing.waitStream({
-        jobIds, cursor: terminal.cursor, supportsWaitV2: true, timeoutSeconds: 0.01,
+        jobIds,
+        cursor: terminal.cursor,
+        supportsWaitV2: true,
+        timeoutSeconds: 0.01,
       });
       expect((await resumed.next()).value).toMatchObject({
-        type: 'waiting', cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 3 } },
+        type: 'waiting',
+        cursor: { positions: { [newEpochKey]: 0, [oldEpochKey]: 3 } },
       });
       await resumed.return(undefined);
     } finally {

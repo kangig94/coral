@@ -584,16 +584,9 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
     expect(passesThrough('readProcessIncarnation')).toBe(true);
   });
 
-  it.each([
-    ['SIGTERM', 'gone'],
-    ['SIGTERM', 'alive'],
-    ['SIGTERM', 'unverifiable'],
-    ['SIGKILL', 'gone'],
-    ['SIGKILL', 'alive'],
-    ['SIGKILL', 'unverifiable'],
-  ] as const)(
-    'does not complete a bind after accepted %s until its target is gone (%s)',
-    async (signal, targetStatus) => {
+  it.each(['alive', 'absent', 'unknown'] as const)(
+    'does not signal an unresponsive incumbent when its process is %s',
+    async (targetStatus) => {
       const incumbent: IncumbentIdentity = {
         pid: 91_001,
         incarnation: testIncarnation(91_001_000),
@@ -605,7 +598,6 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       };
       const acceptedSignals: NodeJS.Signals[] = [];
       let now = 0;
-      let socketBound = false;
       const runtime: Pick<Runtime, 'time' | 'process' | 'env'> = {
         time: {
           now: () => now,
@@ -619,42 +611,34 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
             if (acceptedSignal !== 0) acceptedSignals.push(acceptedSignal);
             return true;
           },
-          readProcessIncarnation: () =>
-            socketBound && targetStatus === 'gone' ? null : (incumbent.incarnation ?? null),
-          observeLiveness: () => {
-            if (!socketBound) return 'alive';
-            if (targetStatus === 'gone') return 'absent';
-            return targetStatus === 'alive' ? 'alive' : 'unknown';
-          },
+          readProcessIncarnation: () => incumbent.incarnation ?? null,
+          observeLiveness: () => targetStatus,
         } as unknown as Runtime['process'],
         env: { platform: () => 'linux' } as unknown as Runtime['env'],
       };
       const options: HandoffOptions = {
         socketPath: '/tmp/coral-signal-settlement-invariant.sock',
         desired: { version: 'invariant', bundleHash: 'invariant', flavor: 'prod', namespace: 'invariant' },
-        bindAttempt: async () => {
-          if (acceptedSignals.includes(signal)) {
-            socketBound = true;
-            return { kind: 'bound' };
-          }
-          return { kind: 'incumbent', reason: 'signal-settlement-invariant' };
-        },
+        bindAttempt: async () => ({ kind: 'incumbent', reason: 'signal-settlement-invariant' }),
         runStartupRecovery: async () => [],
         runtime,
         readVerifiedIncumbentFromDiscovery: () => incumbent,
-        totalBudgetMs: 0,
+        totalBudgetMs: 1,
       };
 
       const outcome = await bindWithHandoff(options).catch((error: unknown) => error);
 
-      expect(acceptedSignals).toContain(signal);
-      if (targetStatus === 'gone') {
-        expect(outcome).toMatchObject({ acquiredViaHandoff: true });
-      } else {
-        expect(outcome).toBeInstanceOf(HandoffEscalationError);
-        expect(String((outcome as Error).message)).toContain(signal);
-        expect(String((outcome as Error).message)).toContain(`pid=${incumbent.pid}`);
-      }
+      expect(acceptedSignals).toEqual([]);
+      expect(outcome).toBeInstanceOf(HandoffEscalationError);
     },
   );
+
+  it('offers a concrete force-kill command only for a verified live unresponsive owner', () => {
+    const source = readFileSync(join(REPO_ROOT, 'src/transport/ipc/ensure.ts'), 'utf8');
+    expect(source).toMatch(
+      /verifiedUnresponsivePid\s*\([^)]*\)\s*:\s*number\s*\|\s*null\s*\{[^}]*info\.incarnation\s*!==\s*undefined[^}]*probeProcessIncarnation\s*\(\s*info\.pid\s*\)\s*===\s*info\.incarnation[^}]*observeProcessLiveness\s*\(\s*info\.pid\s*\)\s*===\s*'alive'/u,
+    );
+    expect(source).toMatch(/case\s*'unanswered'\s*:\s*\{\s*const pid = verifiedUnresponsivePid\(info\)/u);
+    expect(source).toMatch(/if\s*\(pid\s*!==\s*null\)\s*\{[\s\S]*?action=kill -9 \$\{pid\}/u);
+  });
 });

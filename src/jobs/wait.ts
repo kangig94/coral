@@ -64,16 +64,20 @@ export function serializeWaitCursor(cursor: WaitCursor): string {
 
 export function waitCursorForJobs(cursor: WaitCursor, jobIds: readonly string[]): WaitCursor {
   if (!isWaitCursorV2(cursor)) return cursor;
-  const locations = Object.fromEntries(jobIds.flatMap((jobId) => {
-    const epochKey = cursor.locations[jobId];
-    return epochKey === undefined ? [] : [[jobId, epochKey]];
-  }));
+  const locations = Object.fromEntries(
+    jobIds.flatMap((jobId) => {
+      const epochKey = cursor.locations[jobId];
+      return epochKey === undefined ? [] : [[jobId, epochKey]];
+    }),
+  );
   const requestedEpochs = new Set(Object.values(locations));
   const positions = Object.fromEntries(
     Object.entries(cursor.positions).filter(([epochKey]) => requestedEpochs.has(epochKey)),
   );
   return {
-    version: 'jobs.wait.v2', locations, positions,
+    version: 'jobs.wait.v2',
+    locations,
+    positions,
     ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds: [...cursor.deliveredJobIds] }),
   };
 }
@@ -114,9 +118,21 @@ export type WaitStreamEvent =
       epochKey?: string;
       cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
     }
-  | (QueuedWaitEventBase & { jobKind: 'provider'; sessionId: string; cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }> })
-  | (QueuedWaitEventBase & { jobKind: 'workflow'; workflowId: string; cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }> })
-  | (QueuedWaitEventBase & { jobKind: 'kb'; systemTaskId: string; cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }> })
+  | (QueuedWaitEventBase & {
+      jobKind: 'provider';
+      sessionId: string;
+      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+    })
+  | (QueuedWaitEventBase & {
+      jobKind: 'workflow';
+      workflowId: string;
+      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+    })
+  | (QueuedWaitEventBase & {
+      jobKind: 'kb';
+      systemTaskId: string;
+      cursor?: Extract<WaitCursor, { version: 'jobs.wait.v2' }>;
+    })
   | {
       type: 'terminal';
       jobId: string;

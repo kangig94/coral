@@ -813,6 +813,7 @@ describe('cli main routing', () => {
       ['recorded_process_absent', 0],
       ['unauthorized', 0],
       ['recent_failure', 0],
+      ['deferred_upgrade', 0],
       ['undecodable_record', 75],
       ['unreachable', 75],
       ['no_record_socket_present', 75],

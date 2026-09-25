@@ -1,6 +1,5 @@
 import type { ShutdownObligation } from '../shutdown-settlement.js';
 import type { JsonValue } from '../../infra/json-value.js';
-import { certifySuccessionJobCoverage } from '../../jobs/succession-coverage.js';
 import type { SuccessionCapabilities } from './protocol.js';
 
 export const REQUIRED_SUCCESSION_OWNERS = [
@@ -76,6 +75,19 @@ export type SuccessionOwner = Readonly<{
 export type ObligationPreparation =
   | Readonly<{ kind: 'prepared'; receipts: readonly TransferReceipt[] }>
   | Readonly<{ kind: 'blocking'; blockers: readonly { owner: SuccessionBlockerOwner; reason: string }[] }>;
+
+export function certifySuccessionJobCoverage(
+  liveJobIds: readonly string[],
+  claims: ReadonlyMap<string, readonly string[]>,
+): readonly string[] {
+  const failures: string[] = [];
+  for (const jobId of new Set([...liveJobIds, ...claims.keys()])) {
+    const owners = claims.get(jobId) ?? [];
+    if (owners.length === 0) failures.push(`unclaimed: ${jobId}`);
+    else if (owners.length !== 1) failures.push(`multiply claimed: ${jobId}`);
+  }
+  return failures;
+}
 
 /** An undeclared owner or contract generation cannot authorize a transfer. */
 export async function prepareOwnerObligations(

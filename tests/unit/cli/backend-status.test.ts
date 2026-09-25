@@ -47,7 +47,11 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { applyBundledStoreSchema } from '#src/store/db.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
-import { statusFromStartupDiagnostic, statusFromStartupSentinel, type BackendStatusFull } from '#src/cli/backend-status.js';
+import {
+  statusFromStartupDiagnostic,
+  statusFromStartupSentinel,
+  type BackendStatusFull,
+} from '#src/cli/backend-status.js';
 import type { HealthSnapshot } from '#src/transport/server-ports.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
@@ -151,22 +155,38 @@ const BASE_RUNNING_HEALTH = {
 } as const satisfies RunningBackendHealth;
 
 const UPGRADE_TARGET = {
-  version: '0.11.0', buildSetId: 'build-1', flavor: 'prod', storeFormatFingerprint: 'format-1',
-  bundleHash: 'hash-1', cliBundleHash: 'cli-1', claudeAppserverBundleHash: 'appserver-1',
-  durableWrapperBundleHash: 'wrapper-1', pluginRootLabel: '/installed/new',
+  version: '0.11.0',
+  buildSetId: 'build-1',
+  flavor: 'prod',
+  storeFormatFingerprint: 'format-1',
+  bundleHash: 'hash-1',
+  cliBundleHash: 'cli-1',
+  claudeAppserverBundleHash: 'appserver-1',
+  durableWrapperBundleHash: 'wrapper-1',
+  pluginRootLabel: '/installed/new',
 } as const;
 
 describe('pending upgrade visibility', () => {
   it('keeps the incumbent serving and states the legacy idle-retirement delay without an exit command', () => {
-    const rendered = formatBackendStatus(runningBackendStatus({}, {
-      succession: {
-        requestId: 'request-1', disposition: 'deferred', phase: 'pending',
-        target: UPGRADE_TARGET,
-        blockers: [{ owner: 'legacy-incumbent', reason: 'live job' }],
-        reason: 'waiting for natural retirement', since: '2026-09-25T00:00:00.000Z',
-        retryCondition: { kind: 'incumbent-retirement', evidence: 'idle exit' },
-      },
-    }), { kind: 'absent' }, null);
+    const rendered = formatBackendStatus(
+      runningBackendStatus(
+        {},
+        {
+          succession: {
+            requestId: 'request-1',
+            disposition: 'deferred',
+            phase: 'pending',
+            target: UPGRADE_TARGET,
+            blockers: [{ owner: 'legacy-incumbent', reason: 'live job' }],
+            reason: 'waiting for natural retirement',
+            since: '2026-09-25T00:00:00.000Z',
+            retryCondition: { kind: 'incumbent-retirement', evidence: 'idle exit' },
+          },
+        },
+      ),
+      { kind: 'absent' },
+      null,
+    );
     expect(rendered).toContain('Backend ok');
     expect(rendered).toContain('Pending upgrade:');
     expect(rendered).toContain('Since: 2026-09-25T00:00:00.000Z');
@@ -178,11 +198,18 @@ describe('pending upgrade visibility', () => {
   it('preserves serving health while accepting an additive succession projection', () => {
     const parsed = parseBackendHealth({
       ...BASE_RUNNING_HEALTH,
-      flavor: 'prod', namespace: 'serving_incumbent', pid: 4242,
+      flavor: 'prod',
+      namespace: 'serving_incumbent',
+      pid: 4242,
       succession: {
-        requestId: 'request-1', disposition: 'attempting', phase: 'committing',
+        requestId: 'request-1',
+        disposition: 'attempting',
+        phase: 'committing',
         target: UPGRADE_TARGET,
-        blockers: [], reason: 'commit in progress', since: '2026-09-25T00:00:00.000Z', retryCondition: null,
+        blockers: [],
+        reason: 'commit in progress',
+        since: '2026-09-25T00:00:00.000Z',
+        retryCondition: null,
       },
     });
     expect(parsed?.health.status).toBe('ok');
@@ -191,25 +218,42 @@ describe('pending upgrade visibility', () => {
   });
 
   it('renders a corrupt durable intent as a visible automatic hold', () => {
-    const rendered = formatBackendStatus(runningBackendStatus({}, { successionProblem: 'corrupt' }),
-      { kind: 'absent' }, null);
+    const rendered = formatBackendStatus(
+      runningBackendStatus({}, { successionProblem: 'corrupt' }),
+      { kind: 'absent' },
+      null,
+    );
     expect(rendered).toContain('Backend ok');
     expect(rendered).toContain('Upgrade intent record is corrupt');
     expect(rendered).toContain('Automatic succession is held');
   });
 
   it('classifies a legacy shutdown refusal as a deferred upgrade', () => {
-    const diagnostic = statusFromStartupDiagnostic({
-      schemaVersion: 1, state: 'stopped_with_diagnostic', phase: 'startup_failed',
-      retryable: false, recordedAt: '2026-08-03T00:00:00.000Z',
-      error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
-    }, TEST_TIME.now(), () => null);
+    const diagnostic = statusFromStartupDiagnostic(
+      {
+        schemaVersion: 1,
+        state: 'stopped_with_diagnostic',
+        phase: 'startup_failed',
+        retryable: false,
+        recordedAt: '2026-08-03T00:00:00.000Z',
+        error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
+      },
+      TEST_TIME.now(),
+      () => null,
+    );
     expect(diagnostic).toEqual({ status: 'deferred_upgrade' });
     expect(formatBackendStatus(diagnostic!, { kind: 'absent' }, null)).toContain('Upgrade deferred');
-    expect(statusFromStartupSentinel({
-      version: 1, state: 'stopped_with_diagnostic', recordedAt: TEST_TIME.now(),
-      error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
-    }, TEST_TIME.now())).toEqual({ status: 'deferred_upgrade' });
+    expect(
+      statusFromStartupSentinel(
+        {
+          version: 1,
+          state: 'stopped_with_diagnostic',
+          recordedAt: TEST_TIME.now(),
+          error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
+        },
+        TEST_TIME.now(),
+      ),
+    ).toEqual({ status: 'deferred_upgrade' });
   });
 });
 

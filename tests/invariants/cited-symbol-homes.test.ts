@@ -60,6 +60,7 @@
 // `index.ts`, or a mention in that file's own comment are all evidence the reader will be sent somewhere
 // useful, and tightening past that would fail on correct citations of a type used but not declared there.
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -115,7 +116,13 @@ function listFiles(root: string): string[] {
   return collected;
 }
 
-const ALL_FILES = SCANNED_ROOTS.flatMap(listFiles);
+const trackedFiles = new Set(
+  execFileSync('git', ['ls-files', '--cached', '-z'], { cwd: REPO_ROOT, timeout: 5_000 }).toString('utf-8').split('\0'),
+);
+const ALL_FILES = SCANNED_ROOTS.flatMap(listFiles).filter((file) => {
+  const relativePath = relative(REPO_ROOT, file);
+  return trackedFiles.has(relativePath) || relativePath.startsWith('src/');
+});
 
 function readCached(file: string, cache: Map<string, string>): string {
   const hit = cache.get(file);

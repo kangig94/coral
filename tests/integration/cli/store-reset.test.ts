@@ -27,7 +27,7 @@ import {
 } from '#src/store/epoch.js';
 import { releaseStoreReset as releaseStoreResetWithSocketGuard } from '#src/store/operator-store-reset.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
-import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
+import { authorizeFixtureStoreMint, openTestStoreDatabase } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -155,7 +155,7 @@ describe('store-reset operator epochs', () => {
 
   it('refuses only the current epoch', async () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
 
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: opened.store.epoch })).resolves.toMatchObject({
@@ -166,9 +166,13 @@ describe('store-reset operator epochs', () => {
 
   it('keeps a protected epoch outside numeric release selection', async () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
-    const discarded = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    const discarded = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
     discarded.db.close();
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
       kind: 'absent',
@@ -183,9 +187,13 @@ describe('store-reset operator epochs', () => {
 
   it('lists distinct protected and legacy-root lineages with the same epoch number and their holds', () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
-    const successor = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    const successor = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
     successor.db.close();
     publishEpoch(runtime.paths.coral.store.dbDir, '1');
     const dependencies: StoreResetCliDependencies = {
@@ -211,9 +219,13 @@ describe('store-reset operator epochs', () => {
 
   it('keeps mapped protected epochs visible when the legacy root is absent', () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
-    const successor = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    const successor = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
     successor.db.close();
     rmSync(runtime.paths.coral.store.dbDir, { recursive: true });
 
@@ -224,9 +236,13 @@ describe('store-reset operator epochs', () => {
 
   it('retains an unreadable mapped epoch under its full key', () => {
     const runtime = harness();
-    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
-    const successor = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    const successor = discardCurrentStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
     successor.db.close();
     const protectedEpoch = listStoreEpochs(runtime).find((entry) => entry.role === 'protected');
     expect(protectedEpoch?.resolved).not.toBeNull();
@@ -234,7 +250,9 @@ describe('store-reset operator epochs', () => {
     rmSync(dirname(protectedEpoch!.resolved!.path), { recursive: true });
 
     expect(listStoreEpochs(runtime).find((entry) => entry.epochKey === key)).toMatchObject({
-      role: 'unobservable', closureDisposition: 'unrecoverable-retained', custodyState: 'undecidable',
+      role: 'unobservable',
+      closureDisposition: 'unrecoverable-retained',
+      custodyState: 'undecidable',
     });
   });
 
@@ -242,13 +260,22 @@ describe('store-reset operator epochs', () => {
     const runtime = harness();
     const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
       requestId: 'upgrade-1',
-      incumbent: { instanceId: 'legacy-1', pid: 4242, incarnation: null,
-        version: '0.10.13', bundleHash: 'legacy-hash', flavor: 'prod' },
+      incumbent: {
+        instanceId: 'legacy-1',
+        pid: 4242,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'legacy-hash',
+        flavor: 'prod',
+      },
       target: { build, pluginRootLabel: '/installed/new' },
-      attemptId: null, attemptOwner: null, disposition: 'deferred',
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'deferred',
       blockers: [{ owner: 'jobs', reason: 'job-1 is still running' }],
       retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy idle exit' },
-      attemptDeadline: null, completionReceipt: null,
+      attemptDeadline: null,
+      completionReceipt: null,
     });
     expect(written.kind).toBe('written');
     const dependencies: StoreResetCliDependencies = {

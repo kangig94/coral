@@ -252,7 +252,11 @@ export function joinSuccessionWriterGeneration(
       }
       const release = exclusiveGuard(runtime, location.guard);
       release();
-      if (closeError !== undefined) throw closeError;
+      if (closeError !== undefined) {
+        throw closeError instanceof Error
+          ? closeError
+          : new Error('Writable handle close failed.', { cause: closeError });
+      }
     },
     rebind(next) {
       if (!state.parked) throw new Error('A live succession writer cannot rebind its generation.');
@@ -411,9 +415,14 @@ export function handbackSuccessionWriterGeneration(
       throw new Error(`Succession writer generation ${failed.generation} cannot hand back.`);
     }
     if (current.serving !== undefined) throw new SuccessionServingCommittedError();
-    const next = { ...current, generation: current.generation + 1, ...incumbentStore };
+    const next = {
+      ...current,
+      generation: current.generation + 1,
+      storeRoot: incumbentStore.storeRoot,
+      epoch: incumbentStore.epoch,
+    };
     writeGeneration(runtime, location.record, next);
-    for (const [key, state] of localParkStates) {
+    for (const [key, state] of [...localParkStates]) {
       if (
         key.startsWith(`${location.record}\0`) &&
         state.parked &&

@@ -58,8 +58,7 @@ describe('administrative drain handoff', () => {
     const bound = await bindWithHandoff({
       socketPath,
       desired: { version: '0.10.14', bundleHash: 'branch', flavor: 'prod', namespace: 'branch' },
-      bindAttempt: async () =>
-        server.listening ? { kind: 'incumbent', reason: 'live-listener' } : { kind: 'bound' },
+      bindAttempt: async () => (server.listening ? { kind: 'incumbent', reason: 'live-listener' } : { kind: 'bound' }),
       runStartupRecovery: async () => [],
       runtime,
       readVerifiedIncumbentFromDiscovery: () => null,

@@ -8,6 +8,9 @@ import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 export interface CoordinatorPaths {
   runDir: string;
+  legacyRunDir: string;
+  legacySocketPath: string;
+  legacyInfoFile: string;
   upgradeIntentFile: string;
   socketPath: string;
   infoFile: string;
@@ -116,11 +119,15 @@ export function v0109CoordinatorSocketGuardSetForRunDir(
 
 export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOptions): CoordinatorPaths {
   const runDir = generationRunDir(flavor, opts);
+  const legacyRunDir = join(dirname(generationRoot(opts)), flavor === 'dev' ? 'run-dev' : 'run');
   const platformName = platform();
   const socketPath = socketPathForRunDir(runDir, flavor, { platform: platformName });
 
   return {
     runDir,
+    legacyRunDir,
+    legacySocketPath: join(legacyRunDir, 'coordinator.sock'),
+    legacyInfoFile: join(legacyRunDir, 'coordinator.json'),
     upgradeIntentFile: upgradeIntentPath(runDir),
     socketPath,
     infoFile: join(runDir, 'coordinator.json'),

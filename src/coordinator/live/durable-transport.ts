@@ -810,7 +810,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     signalAuthority?: DurableLaunchSignalAuthority;
   }): void => {
     if (custodyIntent === null) throw new Error('Durable wrapper spawned without pre-effect custody intent.');
-    bindCustodyIdentity(runtime.paths.coral.coordinator.runDir, custodyIntent, {
+    bindCustodyIdentity(runtime, runtime.paths.coral.coordinator.runDir, custodyIntent, {
       process: { pid: launch.pid, incarnation: launch.leaderIncarnation, processGroupId: launch.pid },
       capsule: custodyIntent.capsule,
       observedAtMs: runtime.time.now(),
@@ -990,12 +990,14 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     let durable: DurableLaunchResult;
     try {
       const dbDir = runtime.paths.coral.store.dbDir;
-      const epoch = params.epochPath ?? (() => {
-        const selected = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-        if (selected === null) throw new Error('Durable wrapper custody requires a selected store epoch.');
-        return join(dbDir, `epoch-${selected}`);
-      })();
-      custodyIntent = recordCustodyIntent(runtime.paths.coral.coordinator.runDir, {
+      const epoch =
+        params.epochPath ??
+        (() => {
+          const selected = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+          if (selected === null) throw new Error('Durable wrapper custody requires a selected store epoch.');
+          return join(dbDir, `epoch-${selected}`);
+        })();
+      custodyIntent = recordCustodyIntent(runtime, runtime.paths.coral.coordinator.runDir, {
         effect: 'process-spawn',
         epoch,
         owner: 'durable-cli',

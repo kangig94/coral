@@ -17,7 +17,8 @@ import type { UnresolvedIncumbentCause } from './handoff-routing/policy.js';
 import type { handoffRoutingStatusExitContribution } from './handoff-routing/status.js';
 import { createCoordinatorServer } from './index.js';
 import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from './succession/attempt-child.js';
-import { probeRetainedEpochOpen, runRetainedEpochRecovery } from './succession/retained-epoch-executor.js';
+import { probeRetainedEpochOpen } from './succession/retained-epoch-executor.js';
+import { runRetainedEpochRecovery } from './services/retained-epoch-recovery.js';
 import { StartupStoreHandoffError, SuccessionAttemptStartupHoldError } from './lifecycle.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -25,6 +26,7 @@ import { assertNever } from '../infra/error-format.js';
 import { shedInheritedClaudeCodeEnv } from '../infra/env-sanitize.js';
 import { errorMessage } from '../infra/error-format.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { createRealSuccessionAttemptPorts } from '../runtime/succession-attempt.js';
 import { resolveBuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { parseProviderRoleArgv, type ProviderRole } from '../provider-proxy/role-argv.js';
@@ -293,10 +295,10 @@ export async function main(): Promise<number> {
   }
 
   if (process.argv.length === 4 && process.argv[2] === '--recover-retained-epoch') {
-    return runRetainedEpochRecovery(process.argv[3]!);
+    return runRetainedEpochRecovery(process.argv[3]);
   }
   if (process.argv.length === 5 && process.argv[2] === '--probe-retained-epoch') {
-    return probeRetainedEpochOpen(process.argv[3]!, process.argv[4]!);
+    return probeRetainedEpochOpen(process.argv[3], currentCoralStoreFormat(), process.argv[4]);
   }
 
   // Provider-proxy role dispatch runs before ordinary coordinator construction: a guardian, reaper, or proxy
@@ -333,7 +335,7 @@ export async function main(): Promise<number> {
     throw new Error('Coral backend bootstrap requires __PLUGIN_ROOT__ to be defined at build time.');
   }
 
-  const successionAttempt = await receiveSuccessionAttemptChild();
+  const successionAttempt = await receiveSuccessionAttemptChild(createRealSuccessionAttemptPorts());
   installSuccessionAttemptChild(successionAttempt);
 
   // Hold a ref'd keepalive for the duration of startup. Without it, a contender

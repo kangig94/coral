@@ -71,6 +71,7 @@ type WritableStoreOptions = {
   readonly flavor?: BuildFlavor;
   readonly readonly?: false;
   readonly busyTimeoutMs?: number;
+  readonly deferProductVersionRaise?: boolean;
   readonly writerEntitlement?: SuccessionWriterEntitlement;
   readonly busyTimeoutDeadline?: Readonly<{
     expiresAt: bigint;
@@ -150,7 +151,7 @@ function fenceWritableDatabase(db: Database, entitlement: SuccessionWriterEntitl
   Object.defineProperty(db, 'prepare', {
     configurable: true,
     value: <TParams extends unknown[] = unknown[], TRow = unknown>(sql: string): Statement<TParams, TRow> => {
-      const statement = prepare(sql) as Statement<TParams, TRow>;
+      const statement = prepare<TParams, TRow>(sql);
       return new Proxy(statement, {
         get(target, property) {
           const value: unknown = Reflect.get(target, property, target);
@@ -193,10 +194,7 @@ export type WritableStoreOpenDecision =
   | { readonly kind: 'opened'; readonly db: Database }
   | {
       readonly kind: 'incompatible';
-      readonly classification: Extract<
-        StoreFormatClassification,
-        { readonly kind: 'older-incompatible' | 'newer-incompatible' | 'corrupt-or-unsupported' }
-      >;
+      readonly classification: Exclude<StoreFormatClassification, { readonly kind: 'compatible' }>;
     };
 
 export type OpenStoreOptions = ReadonlyStoreOptions | WritableStoreOptions;
@@ -480,7 +478,7 @@ export class StoreFormatChangedDuringAdoptionError extends Error {
   }
 }
 
-function raiseStoredProductVersion(
+export function raiseStoredProductVersion(
   db: Database,
   currentProductVersion: string,
   beforeOperation?: BeforeDatabaseOperation,
@@ -538,7 +536,9 @@ function openPhysicalWritableStoreDatabase(
         },
         beforeOperation,
       );
-      raiseStoredProductVersion(db, options.storeFormat.productVersion, beforeOperation);
+      if (!options.deferProductVersionRaise) {
+        raiseStoredProductVersion(db, options.storeFormat.productVersion, beforeOperation);
+      }
       if (options.writerEntitlement === undefined) writeStoreFormatSidecar(options, db);
       else options.writerEntitlement.withWriteTurn(() => writeStoreFormatSidecar(options, db));
       return { kind: 'opened', db };
@@ -634,7 +634,10 @@ function reopenableWritableStoreDatabase(
 export function openWritableStoreDatabase(options: AuthorizedWritableStoreOptions): WritableStoreOpenDecision {
   const opened = openPhysicalWritableStoreDatabase(options, false);
   if (opened.kind !== 'opened' || options.writerEntitlement === undefined) return opened;
-  return { kind: 'opened', db: reopenableWritableStoreDatabase(opened.db, { ...options, writerEntitlement: options.writerEntitlement }) };
+  return {
+    kind: 'opened',
+    db: reopenableWritableStoreDatabase(opened.db, { ...options, writerEntitlement: options.writerEntitlement }),
+  };
 }
 
 export function openStoreDatabase(options: OpenStoreOptions): Database {

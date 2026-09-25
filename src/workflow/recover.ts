@@ -912,7 +912,7 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
       const epochKey = deps.jobEpochKey(slot.jobId);
       if (epochKey === null) throw new Error(`Workflow recovery has no epoch location for ${slot.jobId}`);
       locations[slot.jobId] = epochKey;
-      positions[epochKey] = Math.min(positions[epochKey] ?? (projection?.last_seq ?? 0), projection?.last_seq ?? 0);
+      positions[epochKey] = Math.min(positions[epochKey] ?? projection?.last_seq ?? 0, projection?.last_seq ?? 0);
     } else if (projection) {
       pendingCursorSeq =
         pendingCursorSeq === null ? projection.last_seq : Math.min(pendingCursorSeq, projection.last_seq);
@@ -922,9 +922,10 @@ function buildWaitRecoveryPlan(deps: ResumeWorkflowDeps, snapshot: RecoverySnaps
   const failure = firstTerminalFailure(snapshot.compiledSlots, drain, snapshot.slotDetailsByJob);
   const initialState: Partial<WaitInternalState> = {
     completedOutputs,
-    cursor: deps.jobEpochKey === undefined
-      ? { afterSeq: pendingCursorSeq ?? 0 }
-      : { version: 'jobs.wait.v2', positions, locations },
+    cursor:
+      deps.jobEpochKey === undefined
+        ? { afterSeq: pendingCursorSeq ?? 0 }
+        : { version: 'jobs.wait.v2', positions, locations },
     lastActivityAt: new Map<string, number>(),
     staleRetries: new Map<string, number>(),
     expectedStaleAborts: new Set<string>(),

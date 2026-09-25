@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { readSuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
 import type { SuccessionOwner } from '#src/coordinator/succession/obligations.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
@@ -17,6 +18,7 @@ import { compareAndSwapUpgradeIntent, readUpgradeIntent } from '#src/infra/upgra
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const roots: string[] = [];
+const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex').slice(0, 16);
@@ -68,10 +70,15 @@ describe('succession protocol', () => {
     const target = fixture();
     let liveJobs = ['job-in-old-epoch'];
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
-        instanceId: 'incumbent', pid: 100, incarnation: null,
-        version: '1.0.0', bundleHash: 'old-bundle', flavor: 'prod',
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
       },
       owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'idle' }) }],
       requiredOwners: ['launch-admission'],
@@ -82,14 +89,17 @@ describe('succession protocol', () => {
     });
     try {
       await service.reconciler.request({
-        requestId: 'format-change', target: { build: target.build, pluginRootLabel: target.pluginRoot },
+        requestId: 'format-change',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
       });
       expect(await service.reconciler.prepare('format-change')).toMatchObject({
-        kind: 'deferred', blockers: [{ owner: 'jobs', reason: 'blocking(format): job-in-old-epoch' }],
+        kind: 'deferred',
+        blockers: [{ owner: 'jobs', reason: 'blocking(format): job-in-old-epoch' }],
       });
       liveJobs = [];
       expect(await service.reconciler.prepare('format-change')).toMatchObject({
-        kind: 'prepared', preparation: { epochKey: 'old-epoch', receipts: [] },
+        kind: 'prepared',
+        preparation: { epochKey: 'old-epoch', receipts: [] },
       });
     } finally {
       service.reconciler.dispose();
@@ -102,15 +112,21 @@ describe('succession protocol', () => {
     const launchPrepared = vi.fn(async () => {});
     const owner: SuccessionOwner = {
       id: 'launch-admission',
-      classify: async () => blocked
-        ? { kind: 'blocking', reason: 'accepted job is running' }
-        : { kind: 'completed', reason: 'accepted job settled' },
+      classify: async () =>
+        blocked
+          ? { kind: 'blocking', reason: 'accepted job is running' }
+          : { kind: 'completed', reason: 'accepted job settled' },
     };
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
-        instanceId: 'incumbent', pid: 100, incarnation: null,
-        version: '1.0.0', bundleHash: 'old-bundle', flavor: 'prod',
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
       },
       owners: [owner],
       requiredOwners: [owner.id],
@@ -120,10 +136,12 @@ describe('succession protocol', () => {
       launchPrepared,
     });
     try {
-      expect(await service.reconciler.request({
-        requestId: 'request',
-        target: { build: target.build, pluginRootLabel: target.pluginRoot },
-      })).toMatchObject({ kind: 'registered' });
+      expect(
+        await service.reconciler.request({
+          requestId: 'request',
+          target: { build: target.build, pluginRootLabel: target.pluginRoot },
+        }),
+      ).toMatchObject({ kind: 'registered' });
       expect(await service.reconciler.reconcile()).toMatchObject({ kind: 'deferred' });
       expect(launchPrepared).not.toHaveBeenCalled();
 
@@ -143,6 +161,7 @@ describe('succession protocol', () => {
     const target = fixture();
     writeFileSync(target.declarationPath, JSON.stringify({ ...target.declaration, protocols: ['prepare'] }));
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
         instanceId: 'incumbent',
@@ -157,20 +176,28 @@ describe('succession protocol', () => {
       admissionRevision: () => 0,
       commitAvailable: true,
     });
-    expect(await service.dispatch('coordinator.succession.v1.request', {
-      requestId: 'request',
-      target: { build: target.build, pluginRootLabel: target.pluginRoot },
-    })).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
+    expect(
+      await service.dispatch('coordinator.succession.v1.request', {
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      }),
+    ).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
     service.reconciler.dispose();
   });
 
   it.each([
     ['blocking', async () => ({ kind: 'blocking' as const, reason: 'owner still holds work' })],
-    ['unavailable', async () => { throw new Error('owner inventory failed'); }],
+    [
+      'unavailable',
+      async () => {
+        throw new Error('owner inventory failed');
+      },
+    ],
   ])('refuses preparation when an owner is %s', async (_case, classify) => {
     const target = fixture();
     const owner: SuccessionOwner = { id: 'launch-admission', classify };
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
         instanceId: 'incumbent',
@@ -186,10 +213,12 @@ describe('succession protocol', () => {
       admissionRevision: () => 0,
       liveJobIds: () => ['external-without-status'],
     });
-    expect(await service.reconciler.request({
-      requestId: 'request',
-      target: { build: target.build, pluginRootLabel: target.pluginRoot },
-    })).toMatchObject({ kind: 'registered' });
+    expect(
+      await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      }),
+    ).toMatchObject({ kind: 'registered' });
     expect(await service.reconciler.prepare('request')).toMatchObject({
       kind: 'deferred',
       blockers: expect.arrayContaining([{ owner: 'jobs', reason: 'unclaimed: external-without-status' }]),
@@ -201,15 +230,21 @@ describe('succession protocol', () => {
     let blocked = false;
     const owner: SuccessionOwner = {
       id: 'launch-admission',
-      classify: async () => blocked
-        ? { kind: 'blocking', reason: 'new carrier acquisition' }
-        : { kind: 'completed', reason: 'no admission work' },
+      classify: async () =>
+        blocked
+          ? { kind: 'blocking', reason: 'new carrier acquisition' }
+          : { kind: 'completed', reason: 'no admission work' },
     };
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
-        instanceId: 'incumbent', pid: 100, incarnation: null,
-        version: '1.0.0', bundleHash: 'old-bundle', flavor: 'prod',
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
       },
       owners: [owner],
       requiredOwners: [owner.id],
@@ -217,7 +252,8 @@ describe('succession protocol', () => {
       admissionRevision: () => 0,
     });
     await service.reconciler.request({
-      requestId: 'request', target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      requestId: 'request',
+      target: { build: target.build, pluginRootLabel: target.pluginRoot },
     });
     expect(await service.reconciler.prepare('request')).toMatchObject({ kind: 'prepared' });
     blocked = true;
@@ -229,7 +265,7 @@ describe('succession protocol', () => {
 
   it('reads the separate declaration and treats its absence as an empty acceptance set', () => {
     const target = fixture();
-    expect(readSuccessionCapabilities(target.bridge, target.build)).toMatchObject({
+    expect(readSuccessionCapabilities(runtime, target.bridge, target.build)).toMatchObject({
       kind: 'declared',
       capabilities: { accepts: [{ owner: 'launch-admission', generation: 1 }] },
     });
@@ -244,11 +280,11 @@ describe('succession protocol', () => {
         accepts: [{ owner: 'launch-admission', generation: 1, futureField: true }],
       }),
     );
-    expect(readSuccessionCapabilities(target.bridge, target.build)).toMatchObject({ kind: 'declared' });
+    expect(readSuccessionCapabilities(runtime, target.bridge, target.build)).toMatchObject({ kind: 'declared' });
     writeFileSync(target.declarationPath, JSON.stringify({ ...target.declaration, buildSetId: 'another-build' }));
-    expect(readSuccessionCapabilities(target.bridge, target.build)).toEqual({ kind: 'invalid' });
+    expect(readSuccessionCapabilities(runtime, target.bridge, target.build)).toEqual({ kind: 'invalid' });
     unlinkSync(target.declarationPath);
-    expect(readSuccessionCapabilities(target.bridge, target.build)).toEqual({ kind: 'absent' });
+    expect(readSuccessionCapabilities(runtime, target.bridge, target.build)).toEqual({ kind: 'absent' });
   });
 
   it('converges concurrent requests and keeps a lost preparation reply bound to one attempt', async () => {
@@ -272,6 +308,7 @@ describe('succession protocol', () => {
       }),
     };
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
         instanceId: 'incumbent',
@@ -377,6 +414,7 @@ describe('succession protocol', () => {
     const target = fixture();
     unlinkSync(target.declarationPath);
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
         instanceId: 'incumbent',
@@ -404,6 +442,7 @@ describe('succession protocol', () => {
   it('does not record a rollback or equal-version request', async () => {
     const target = fixture();
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
         instanceId: 'incumbent',
@@ -442,6 +481,7 @@ describe('succession protocol', () => {
       recordedAt: string;
     } | null = null;
     const service = createSuccessionCoordinator({
+      runtime,
       runDir: target.runDir,
       incumbent: {
         instanceId: 'incumbent',
@@ -495,10 +535,12 @@ describe('succession protocol', () => {
       recordedAt: serving.recordedAt,
     };
     admissionRevision++;
-    expect(await service.reconciler.request({
-      requestId: 'later-contender',
-      target: { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot },
-    })).toMatchObject({ kind: 'registered', intent: { requestId: 'request' } });
+    expect(
+      await service.reconciler.request({
+        requestId: 'later-contender',
+        target: { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot },
+      }),
+    ).toMatchObject({ kind: 'registered', intent: { requestId: 'request' } });
     expect(await service.reconciler.abort('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.commit('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.commit('attempt')).toEqual({ kind: 'committed', receipt });

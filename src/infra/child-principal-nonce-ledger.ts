@@ -1,6 +1,38 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import type { StoragePort } from './port-types.js';
+
+export function verifyChildPrincipalRecoveryGrant(
+  storage: StoragePort,
+  runDir: string,
+  attemptId: string,
+  grantId: string,
+  generation: number,
+  checkpoint: number,
+): boolean {
+  if (grantId !== `child-principal-nonces:${attemptId}`) return false;
+  try {
+    const db = storage.openSqliteDatabaseSync(join(runDir, 'child-principal-nonces.v1.sqlite'), { readOnly: true });
+    try {
+      const row = db
+        .prepare('SELECT generation, checkpoint FROM child_principal_grant WHERE grant_id = ?')
+        .get(grantId);
+      return (
+        row !== null &&
+        typeof row === 'object' &&
+        'generation' in row &&
+        row.generation === generation &&
+        'checkpoint' in row &&
+        row.checkpoint === checkpoint
+      );
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
 
 export class ChildPrincipalNonceLedger {
   private readonly db: DatabaseSync;
@@ -33,17 +65,17 @@ export class ChildPrincipalNonceLedger {
   }
 
   generation(): number {
-    const row = this.db
-      .prepare('SELECT generation FROM child_principal_authority WHERE singleton = 1')
-      .get() as { generation: number } | undefined;
+    const row = this.db.prepare('SELECT generation FROM child_principal_authority WHERE singleton = 1').get() as
+      | { generation: number }
+      | undefined;
     if (row === undefined) throw new Error('Child principal authority is missing.');
     return row.generation;
   }
 
   checkpoint(): number {
-    const row = this.db
-      .prepare('SELECT count(*) AS count FROM child_principal_consumption')
-      .get() as { count: number } | undefined;
+    const row = this.db.prepare('SELECT count(*) AS count FROM child_principal_consumption').get() as
+      | { count: number }
+      | undefined;
     if (row === undefined) throw new Error('Child principal consumption ledger is unreadable.');
     return row.count;
   }
@@ -65,9 +97,9 @@ export class ChildPrincipalNonceLedger {
     if (successorGeneration <= expectedGeneration) return null;
     try {
       this.db.exec('BEGIN IMMEDIATE');
-      const grant = this.db.prepare(
-        'SELECT generation, checkpoint FROM child_principal_grant WHERE grant_id = ?',
-      ).get(grantId) as { generation: number; checkpoint: number } | undefined;
+      const grant = this.db
+        .prepare('SELECT generation, checkpoint FROM child_principal_grant WHERE grant_id = ?')
+        .get(grantId) as { generation: number; checkpoint: number } | undefined;
       const currentGeneration = this.generation();
       if (
         grant?.generation !== expectedGeneration ||
@@ -79,9 +111,9 @@ export class ChildPrincipalNonceLedger {
         return null;
       }
       if (currentGeneration === expectedGeneration) {
-        this.db.prepare(
-          'UPDATE child_principal_authority SET generation = ? WHERE singleton = 1 AND generation = ?',
-        ).run(successorGeneration, expectedGeneration);
+        this.db
+          .prepare('UPDATE child_principal_authority SET generation = ? WHERE singleton = 1 AND generation = ?')
+          .run(successorGeneration, expectedGeneration);
       }
       const consumed = new Map<string, readonly string[]>(
         handles.map((handle) => [handle, this.consumedTokens(handle)]),
@@ -107,12 +139,12 @@ export class ChildPrincipalNonceLedger {
         return null;
       }
       const checkpoint = this.checkpoint();
-      this.db.prepare(
-        'INSERT OR IGNORE INTO child_principal_grant (grant_id, generation, checkpoint) VALUES (?, ?, ?)',
-      ).run(grantId, generation, checkpoint);
-      const recorded = this.db.prepare(
-        'SELECT generation, checkpoint FROM child_principal_grant WHERE grant_id = ?',
-      ).get(grantId) as { generation: number; checkpoint: number } | undefined;
+      this.db
+        .prepare('INSERT OR IGNORE INTO child_principal_grant (grant_id, generation, checkpoint) VALUES (?, ?, ?)')
+        .run(grantId, generation, checkpoint);
+      const recorded = this.db
+        .prepare('SELECT generation, checkpoint FROM child_principal_grant WHERE grant_id = ?')
+        .get(grantId) as { generation: number; checkpoint: number } | undefined;
       if (recorded?.generation !== generation) {
         this.db.exec('ROLLBACK');
         return null;

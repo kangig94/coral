@@ -478,6 +478,10 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
   const controller = modules.lifecycleModule.createLifecycle(
     {
       storeFormat: currentCoralStoreFormat(),
+      authorizeStartupMint: (observation) =>
+        observation.incumbent === null && observation.observedEpochCount === 0
+          ? { kind: 'initial', incumbentEpochKey: null }
+          : null,
       identity: {
         pluginRoot,
         namespace,

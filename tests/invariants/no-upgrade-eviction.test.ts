@@ -23,7 +23,8 @@ const RULES: readonly Rule[] = [
   {
     id: 'contender-signal-escalation',
     appliesTo: (file) => file === 'src/coordinator/handoff.ts' || file === 'src/transport/ipc/handoff.ts',
-    pattern: /\b(?:SIGTERM|SIGKILL|requestIncumbentShutdown|signalIncumbent|signalTarget)\b|\b(?:process|runtime\.process)\.kill\s*\(/u,
+    pattern:
+      /\b(?:SIGTERM|SIGKILL|requestIncumbentShutdown|signalIncumbent|signalTarget)\b|\b(?:process|runtime\.process)\.kill\s*\(/u,
   },
   {
     id: 'handoff-signal-ledger',
@@ -38,7 +39,8 @@ const RULES: readonly Rule[] = [
   {
     id: 'handoff-signal-codes',
     appliesTo: () => true,
-    pattern: /\bhandoff_(?:fresh_discovery_|signal_|legacy_signal_|manual_policy\b|term_only_policy\b|process_identity_|process_liveness_|platform_identity_|published_incarnation_|pid_recycled\b|accepted_signal_|sigkill_grace_)/u,
+    pattern:
+      /\bhandoff_(?:fresh_discovery_|signal_|legacy_signal_|manual_policy\b|term_only_policy\b|process_identity_|process_liveness_|platform_identity_|published_incarnation_|pid_recycled\b|accepted_signal_|sigkill_grace_)/u,
   },
   {
     id: 'pre-routing-eviction',
@@ -48,7 +50,8 @@ const RULES: readonly Rule[] = [
   {
     id: 'store-live-work-enumeration',
     appliesTo: (file) => file.startsWith('src/store/'),
-    pattern: /\b(?:inspectStoreDirectoryLiveWork|inspectEpochLiveWork|isEpochLockReadable|EpochLiveWork|beforeRemoval)\b|['"](?:retained-work|live-work|unobservable-work)['"]/u,
+    pattern:
+      /\b(?:inspectStoreDirectoryLiveWork|inspectEpochLiveWork|isEpochLockReadable|EpochLiveWork|beforeRemoval)\b|['"](?:retained-work|live-work|unobservable-work)['"]/u,
   },
   {
     id: 'inspection-computed-store-role',

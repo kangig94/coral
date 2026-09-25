@@ -1,32 +1,31 @@
 import type { JobProgressStore } from './contracts/job-store.js';
 import { isTerminalPhase } from './phase.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
-import { JobLocationIndex } from './location-index.js';
+import { type JobLocationIndex } from './location-index.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
-import { defineRecoverySource, type RecoverySubject } from '../recovery/containment.js';
+import type { RecoverySubject } from '../recovery/containment.js';
 import type { RecoverySourceFactoryPlan } from '../recovery/source-registry.js';
+import { jobLocationRecoverySource } from './location-recovery-source.js';
 
 type LaunchIdentityRow = {
   stream_id: string;
   body: Uint8Array;
 };
 
-export function recoverJobLocations(
-  index: JobLocationIndex,
-  epochKey: string,
-  store: JobProgressStore,
-): void {
+export function recoverJobLocations(index: JobLocationIndex, epochKey: string, store: JobProgressStore): void {
   try {
     const db = store.getDb();
-    const launches = db.prepare<[], LaunchIdentityRow>(
-      `SELECT stream_id, body
+    const launches = db
+      .prepare<[], LaunchIdentityRow>(
+        `SELECT stream_id, body
          FROM events
         WHERE stream_kind = 'job' AND type = 'job.launch.requested'
         ORDER BY seq ASC`,
-    ).all();
-    const highWaterSeq = db.prepare<[], { seq: number }>(
-      "SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'",
-    ).get()?.seq ?? 0;
+      )
+      .all();
+    const highWaterSeq =
+      db.prepare<[], { seq: number }>("SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE stream_kind = 'job'").get()
+        ?.seq ?? 0;
     for (const row of launches) {
       const launch = jobLaunchRequestBodySchema.parse(JSON.parse(Buffer.from(row.body).toString('utf8')) as unknown);
       index.register(row.stream_id, epochKey, {
@@ -58,12 +57,17 @@ export function recoverJobLocations(
         continue;
       }
       const resultPath = store.ensureResultArtifact(row.stream_id);
-      index.recordTerminal(row.stream_id, {
-        status,
-        events,
-        readiness: deriveLaunchReadiness(detail),
-        exit: detail.exit,
-      }, resultPath, terminal.seq);
+      index.recordTerminal(
+        row.stream_id,
+        {
+          status,
+          events,
+          readiness: deriveLaunchReadiness(detail),
+          exit: detail.exit,
+        },
+        resultPath,
+        terminal.seq,
+      );
     }
     index.clearUnknownLocations(epochKey);
     void index.certify(epochKey, highWaterSeq);
@@ -81,12 +85,7 @@ export function createJobLocationRecoveryRetryPlan(
   subject: RecoverySubject,
 ): RecoverySourceFactoryPlan<{ epochKey: string }, { epochKey: string }> {
   return {
-    source: defineRecoverySource({
-      boundary: 'job-location-write-through',
-      scanSubject: subject,
-      scan: () => subject.key === epochKey ? [{ epochKey }] : [],
-      subject: (item) => ({ key: item.epochKey, revision: { kind: 'until-cleared' } }),
-    }),
+    source: jobLocationRecoverySource(epochKey, subject),
     policy: {
       processLocalCleanup: { kind: 'not-required' },
       hydrate: (raw) => raw,

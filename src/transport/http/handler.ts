@@ -780,7 +780,13 @@ async function handleJobsWaitSubscription(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: WaitCursor; supportsWaitV2?: boolean },
+  request: {
+    jobIds: string[];
+    projectRoot: string;
+    timeoutSeconds?: number;
+    cursor?: WaitCursor;
+    supportsWaitV2?: boolean;
+  },
 ): Promise<void> {
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
     return;

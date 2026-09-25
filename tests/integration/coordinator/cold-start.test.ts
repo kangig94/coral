@@ -58,7 +58,9 @@ describe('coordinator cold-start integration', () => {
     });
     coordinators.push(coordinator);
 
-    const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const discovery = await waitForDiscoveryRecord(home, 'prod', 15_000).catch((error: unknown) => {
+      throw new Error(`Coordinator startup failed: ${coordinator.output()}`, { cause: error });
+    });
     const elapsedMs = Date.now() - startedAt;
     expect(elapsedMs).toBeLessThan(STARTUP_HARD_BOUND_MS);
 

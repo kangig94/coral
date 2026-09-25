@@ -80,7 +80,10 @@ describe('succession admission pause', () => {
     const notify = vi.fn();
     const unsubscribe = coordinator.subscribeSuccessionObligationChanges(notify);
     const admitted = coordinator.requestLaunch(
-      'settled-job', 'claude', { kind: 'provider-session', id: 'session-1' }, 'default',
+      'settled-job',
+      'claude',
+      { kind: 'provider-session', id: 'session-1' },
+      'default',
     );
     expect(admitted).toMatchObject({ type: 'immediate' });
     if (typeof admitted !== 'object' || admitted.type !== 'immediate') throw new Error('launch was not admitted');
@@ -101,7 +104,12 @@ describe('succession admission pause', () => {
         deadlineAtMs: now + SUCCESSION_PAUSE_ATTEMPT_MS,
       });
       expect(() =>
-        coordinator.requestLaunch(`ordinary-${attemptId}`, 'claude', { kind: 'provider-session', id: attemptId }, 'default'),
+        coordinator.requestLaunch(
+          `ordinary-${attemptId}`,
+          'claude',
+          { kind: 'provider-session', id: attemptId },
+          'default',
+        ),
       ).toThrow(SuccessionAdmissionPausedError);
       advance(SUCCESSION_PAUSE_ATTEMPT_MS);
       expect(coordinator.successionAdmissionPaused()).toBe(false);
@@ -172,19 +180,43 @@ describe('succession admission pause', () => {
     expect(coordinator.beginSuccessionCommitWindow('failed-child', revision).kind).toBe('paused');
     advance(1_000);
     expect(coordinator.endSuccessionCommitWindow('failed-child')).toBe(true);
-    const admitted = coordinator.requestLaunch('ordinary', 'claude', { kind: 'provider-session', id: 'new' }, 'default');
+    const admitted = coordinator.requestLaunch(
+      'ordinary',
+      'claude',
+      { kind: 'provider-session', id: 'new' },
+      'default',
+    );
     expect(admitted).toMatchObject({ type: 'immediate' });
-    expect(coordinator.beginSuccessionCommitWindow('next-attempt', coordinator.admissionRevision()).kind).toBe('paused');
+    expect(coordinator.beginSuccessionCommitWindow('next-attempt', coordinator.admissionRevision()).kind).toBe(
+      'paused',
+    );
     expect(coordinator.endSuccessionCommitWindow('next-attempt')).toBe(true);
   });
 
   it('should settle cancellation of an accepted queued launch during a commit window', async () => {
+    const runtime = createRealRuntime('prod');
+    coordinator = new LaunchCoordinator({
+      runtime: {
+        ...runtime,
+        env: {
+          ...runtime.env,
+          get: (key) => (key === 'CORAL_MAX_WORKERS' ? '1' : runtime.env.get(key)),
+        },
+        time: { ...runtime.time, now: () => now, monotonicNow: () => BigInt(now) },
+      },
+    });
     const first = coordinator.requestLaunch(
-      'active', 'claude', { kind: 'provider-session', id: 'session-active' }, 'default',
+      'active',
+      'claude',
+      { kind: 'provider-session', id: 'session-active' },
+      'default',
     );
     if (typeof first !== 'object' || first.type !== 'immediate') throw new Error('active launch was not admitted');
     const queued = coordinator.requestLaunch(
-      'queued', 'claude', { kind: 'provider-session', id: 'session-queued' }, 'default',
+      'queued',
+      'claude',
+      { kind: 'provider-session', id: 'session-queued' },
+      'default',
     );
     if (typeof queued !== 'object' || queued.type !== 'queued') throw new Error('launch was not queued');
 

@@ -26,20 +26,14 @@ describe('incumbentOutranksContender', () => {
     ['0.10.15', true],
   ])('ranks incumbent version %s', (version, expected) => {
     expect(
-      incumbentOutranksContender(
-        { version, bundleHash: 'old', flavor: 'prod', namespace: 'old' },
-        contender,
-      ),
+      incumbentOutranksContender({ version, bundleHash: 'old', flavor: 'prod', namespace: 'old' }, contender),
     ).toBe(expected);
   });
 
   it('does not rank an unknown version or a different flavor', () => {
     expect(incumbentOutranksContender({ bundleHash: 'old', flavor: 'prod', namespace: 'old' }, contender)).toBe(false);
     expect(
-      incumbentOutranksContender(
-        { version: '0.10.15', bundleHash: 'old', flavor: 'dev', namespace: 'old' },
-        contender,
-      ),
+      incumbentOutranksContender({ version: '0.10.15', bundleHash: 'old', flavor: 'dev', namespace: 'old' }, contender),
     ).toBe(false);
   });
 });

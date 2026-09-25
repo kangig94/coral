@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE, SUCCESSION_CAPABILITIES_FILE } from '#src/infra/bundle-manifest-address.js';
+import {
+  CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+} from '#src/infra/bundle-manifest-address.js';
 import {
   assertLifecycleBundleSetFresh,
   lifecycleBundleSourceSha256,

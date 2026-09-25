@@ -520,7 +520,9 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
         client.request<TResult | null | undefined>(method, params, { timeoutMs, ...authOptions }),
       );
     const result =
-      method === 'sessions.create' || method === 'workflow.run' || method === 'discuss.session.create' ||
+      method === 'sessions.create' ||
+      method === 'workflow.run' ||
+      method === 'discuss.session.create' ||
       method === 'jobs.abort'
         ? await retrySuccessionPausedRequest(issue, TOOL_TIMEOUT_MS)
         : await issue(TOOL_TIMEOUT_MS);

@@ -60,7 +60,12 @@ import {
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
 import type { Database } from '../store/db.js';
-import { encodeResolvedStoreEpoch, openWritableStoreDbNoReset, resolveCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
+import {
+  encodeResolvedStoreEpoch,
+  openWritableStoreDbNoReset,
+  resolveCurrentStore,
+  type ResolvedStoreEpoch,
+} from '../store/epoch.js';
 import {
   fenceCorpusStorage,
   joinSuccessionWriterGeneration,
@@ -405,19 +410,23 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       cleanupSourceImportRuntimeArtifacts(runtimeDir, guardedRuntime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
-      const jobLocations = resolvedStore === null
-        ? null
-        : new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+      const jobLocations =
+        resolvedStore === null ? null : new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
       let observeTerminalExports: (appended: readonly AppendedEvent[]) => void = () => {};
       const progressStore = new JobStore(backendNamespace, guardedRuntime, createEventBodyCodec(), {
         db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
         providers: noProviderLookupPort,
-        beforeAppend: jobLocations === null || resolvedStore === null
-          ? undefined
-          : (input) => {
-              if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)) return;
-              jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(resolvedStore));
-            },
+        beforeAppend:
+          jobLocations === null || resolvedStore === null
+            ? undefined
+            : (input) => {
+                if (
+                  input.stream.kind !== 'job' ||
+                  !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)
+                )
+                  return;
+                jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, resolvedStore));
+              },
         observer: (appended) => {
           observeTerminalExports(appended);
           if (jobLocations !== null) {
@@ -446,12 +455,17 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           (jobId, resultPath, seq) => {
             const detail = progressStore.loadJobProjectionDetail(jobId);
             if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
-            jobLocations.recordTerminal(jobId, {
-              status: detail.status,
-              events: progressStore.readJobEvents(jobId),
-              readiness: deriveLaunchReadiness(detail),
-              exit: detail.exit,
-            }, resultPath, seq);
+            jobLocations.recordTerminal(
+              jobId,
+              {
+                status: detail.status,
+                events: progressStore.readJobEvents(jobId),
+                readiness: deriveLaunchReadiness(detail),
+                exit: detail.exit,
+              },
+              resultPath,
+              seq,
+            );
           },
         );
       }

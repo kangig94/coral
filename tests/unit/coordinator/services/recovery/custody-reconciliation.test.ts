@@ -10,6 +10,7 @@ import { insertProviderOperation } from '../../../../../src/store/provider-opera
 import { custodyLedgerDir, recordCustodyIntent } from '../../../../../src/store/custody-ledger.js';
 import { newRawDatabase } from '../../../../helpers/test-db.js';
 import { providerOperationRecord } from '../../../store/provider-operation-fixtures.js';
+import { createRealRuntime } from '../../../../../src/runtime/real.js';
 
 describe('startup custody reconciliation', () => {
   it('recovers publication after a crash between the database insert and identity binding', () => {
@@ -17,9 +18,10 @@ describe('startup custody reconciliation', () => {
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     const runDir = join(root, 'run');
+    const runtime = createRealRuntime('prod', { baseDir: root });
     const record = providerOperationRecord('prepare-pending');
     try {
-      const intent = recordCustodyIntent(runDir, {
+      const intent = recordCustodyIntent(runtime, runDir, {
         effect: 'provider-operation-publication',
         epoch: 'epoch-a',
         owner: 'provider-operation',
@@ -30,7 +32,7 @@ describe('startup custody reconciliation', () => {
       });
       insertProviderOperation(db, record);
       writeFileSync(join(custodyLedgerDir(runDir), intent.id, 'binding.v1.json'), '{"pid":');
-      expect(reconcileStartupCustody(runDir, 3_200, db, 'epoch-a')).toMatchObject([
+      expect(reconcileStartupCustody(runtime, runDir, 3_200, db, 'epoch-a')).toMatchObject([
         { kind: 'bound', binding: { process: null } },
       ]);
     } finally {
@@ -44,8 +46,9 @@ describe('startup custody reconciliation', () => {
     const db = newRawDatabase(':memory:');
     applyBundledStoreSchema(db, currentCoralStoreFormat());
     const runDir = join(root, 'run');
+    const runtime = createRealRuntime('prod', { baseDir: root });
     try {
-      recordCustodyIntent(runDir, {
+      recordCustodyIntent(runtime, runDir, {
         effect: 'provider-operation-publication',
         epoch: 'epoch-old',
         owner: 'provider-operation',
@@ -54,8 +57,8 @@ describe('startup custody reconciliation', () => {
         nowMs: 100,
         bindWithinMs: 1_000,
       });
-      expect(reconcileStartupCustody(runDir, 3_200, db, 'epoch-new')).toMatchObject([{ kind: 'holding' }]);
-      expect(reconcileStartupCustody(runDir, 3_200, db, 'epoch-old')).toMatchObject([{ kind: 'absent' }]);
+      expect(reconcileStartupCustody(runtime, runDir, 3_200, db, 'epoch-new')).toMatchObject([{ kind: 'holding' }]);
+      expect(reconcileStartupCustody(runtime, runDir, 3_200, db, 'epoch-old')).toMatchObject([{ kind: 'absent' }]);
     } finally {
       db.close();
       rmSync(root, { recursive: true, force: true });

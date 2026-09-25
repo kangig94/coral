@@ -4,9 +4,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSuccessionReconciler } from '#src/coordinator/succession/reconciler.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+
+const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 
 const build = {
   version: '0.11.0',
@@ -29,25 +32,34 @@ describe('succession reconciler', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
     directories.push(runDir);
     const reconciler = createSuccessionReconciler({
+      runtime,
       runDir,
       incumbent: {
-        instanceId: 'incumbent', pid: 1234, incarnation: null,
-        version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod',
+        instanceId: 'incumbent',
+        pid: 1234,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
       },
       owners: [],
       epochKey: () => null,
       admissionRevision: () => 0,
     });
     try {
-      expect(await reconciler.request({
-        requestId: 'legacy-request',
-        target: { build, pluginRootLabel: '/missing/target' },
-      })).toMatchObject({ kind: 'registered' });
+      expect(
+        await reconciler.request({
+          requestId: 'legacy-request',
+          target: { build, pluginRootLabel: '/missing/target' },
+        }),
+      ).toMatchObject({ kind: 'registered' });
       expect(await reconciler.reconcile()).toMatchObject({
-        kind: 'deferred', reason: 'incumbent needs a legacy retirement waiter',
+        kind: 'deferred',
+        reason: 'incumbent needs a legacy retirement waiter',
       });
       expect(readUpgradeIntent(runDir)).toMatchObject({
-        kind: 'readable', intent: { attemptOwner: null, attemptId: null },
+        kind: 'readable',
+        intent: { attemptOwner: null, attemptId: null },
       });
     } finally {
       reconciler.dispose();
@@ -58,20 +70,27 @@ describe('succession reconciler', () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
     directories.push(runDir);
     const coordinator = createSuccessionCoordinator({
+      runtime,
       runDir,
       incumbent: {
-        instanceId: 'incumbent', pid: 1234, incarnation: null,
-        version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod',
+        instanceId: 'incumbent',
+        pid: 1234,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
       },
       owners: [],
       epochKey: () => null,
       admissionRevision: () => 0,
     });
     try {
-      expect(await coordinator.dispatch(SUCCESSION_METHODS.request, {
-        requestId: 'request-1',
-        target: { build, pluginRootLabel: '/installed/target' },
-      })).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
+      expect(
+        await coordinator.dispatch(SUCCESSION_METHODS.request, {
+          requestId: 'request-1',
+          target: { build, pluginRootLabel: '/installed/target' },
+        }),
+      ).toMatchObject({ kind: 'registered', incumbentCanCommit: false });
     } finally {
       coordinator.reconciler.dispose();
     }
@@ -84,6 +103,7 @@ describe('succession reconciler', () => {
     const unsubscribe = vi.fn();
     let notify: (() => void) | undefined;
     const reconciler = createSuccessionReconciler({
+      runtime,
       runDir,
       incumbent: {
         instanceId: 'incumbent',

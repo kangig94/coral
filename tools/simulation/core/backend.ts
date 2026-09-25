@@ -62,6 +62,7 @@ import { ExecutionService } from '../../../src/coordinator/execution-service.js'
 import { createWorkflowRecoveryFinalizer } from '../../../src/coordinator/services/workflow-recovery-finalizer.js';
 import { createFailedWorkflowDescendantReleaser } from '../../../src/coordinator/services/workflow-recovery-descendants.js';
 import { openMemoryStoreDatabase } from '../../../src/store/db.js';
+import { epochDirectory, epochPath, storeEpochLockPath } from '../../../src/store/epoch.js';
 import { createEventBodyCodec } from '../../../src/store/event-body-codec.js';
 import { composeReducers } from '../../../src/store/reducers.js';
 import { workflowRecover } from '../../../src/workflow/recover.js';
@@ -592,7 +593,8 @@ export function createSimulationBackend(
       env: scenario.env,
       roots: { coralRoot: runtimeRoot },
     });
-  mkdirSync(runtime.paths.coral.store.dbDir, { recursive: true });
+  const dbDir = runtime.paths.coral.store.dbDir;
+  runtime.storage.mkdirSync(dbDir, { recursive: true });
   for (const spawnScript of scenario.spawn ?? []) {
     runtime.spawner.enqueueSpawn(spawnScript);
   }
@@ -609,6 +611,28 @@ export function createSimulationBackend(
   const fakeProvider = createFakeProvider(runtime, scenario.fakeProvider);
   providerRegistry.register(fakeProvider);
   const storeFormat = describeCoralStoreFormat(providerRegistry);
+  const epoch = '1';
+  const epochDir = epochDirectory(dbDir, epoch);
+  if (!runtime.storage.existsSync(epochDir)) {
+    runtime.storage.mkdirSync(epochDir, { recursive: true });
+    runtime.storage.writeFileSync(epochPath(dbDir, epoch), '');
+    runtime.storage.writeFileSync(storeEpochLockPath(dbDir, epoch), '');
+    runtime.storage.writeFileSync(
+      join(epochDir, 'epoch.json'),
+      JSON.stringify({
+        supersedes: null,
+        classification: { kind: 'absent' },
+        build: {
+          version: DEFAULT_VERSION,
+          buildSetId: DEFAULT_BUILD_SET_ID,
+          bundleHash: DEFAULT_BUNDLE_HASH,
+          flavor: runtime.flavor,
+          storeFormatFingerprint: storeFormat.fingerprint,
+        },
+        publishedAt: new Date(runtime.time.now()).toISOString(),
+      }),
+    );
+  }
   const providerScope = simulationProviderScope(fakeProvider.name);
   const storeDb = inherited?.storeDb ?? openMemoryStoreDatabase(storeFormat);
   const progressStore = new JobStore(namespace, runtime, createEventBodyCodec(), {

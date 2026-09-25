@@ -4,6 +4,7 @@ import { fixtureCanonicalWorkDir } from '../../../helpers/canonical-work-dir.js'
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { openSettledTestStoreDb } from '../../../helpers/store-db.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as NodeOs from 'node:os';
 import type * as AgentResolutionMod from '#src/jobs/agent-resolution.js';
@@ -66,6 +67,8 @@ import { EVENT_COLUMNS } from '#src/recovery/row-revision-fields.js';
 import type { EventsRow } from '#src/store/schema.js';
 import type { ProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import type { Runtime } from '#src/runtime/ports.js';
+import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
 import type { SessionManager } from '#src/sessions/shell.js';
 import type { InvocationContext } from '#src/runtime/invocation-context.js';
 import { ExecutionService } from '#src/coordinator/execution-service.js';
@@ -759,6 +762,12 @@ function _makeTerminalReplay(
   };
 }
 
+function prepareDurableStore(runtime: Runtime): void {
+  openSettledTestStoreDb(runtime).close();
+  const storeRoot = runtime.paths.coral.store.dbDir;
+  readOrCreateEpochKey(runtime, { storeRoot, epoch: '1', path: join(storeRoot, 'epoch-1', 'store.db') });
+}
+
 describe('ExecutionService launch', () => {
   let ctx: InvocationContext;
 
@@ -777,7 +786,7 @@ describe('ExecutionService launch', () => {
     };
     baselineJobIds = listJobDirs();
     eventBus = new TypedEventBus();
-    runtime = createRealRuntime('prod');
+    runtime = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
     JOBS_DIR = jobsDir(runtime.env);
     launchCoordinator = new LaunchCoordinator({ runtime });
     mockState.getNewProvider.mockReset();
@@ -1280,6 +1289,7 @@ describe('ExecutionService launch', () => {
   });
 
   it('runs provider CLI jobs through the durable runner and persists runtime artifacts', async () => {
+    prepareDurableStore(runtime);
     const provider: Provider = {
       name: 'codex',
       execute: (request, runtime) =>
@@ -1330,7 +1340,7 @@ describe('ExecutionService launch', () => {
     const runtimeRecord = progressStore.readRuntimeProjection(decision.jobId) as _DurableCliRuntimeRecord | null;
     const history = progressStore.readJobEvents(decision.jobId);
 
-    expect(terminal.result.content).toContain('final output');
+    expect(terminal.result.content, JSON.stringify(terminal)).toContain('final output');
     expect(existsSync(join(jobDir, 'runtime.json'))).toBe(false);
     expect(existsSync(join(jobDir, 'exit.json'))).toBe(false);
     expect(runtimeRecord?.pid).toBeGreaterThan(0);
@@ -1340,7 +1350,8 @@ describe('ExecutionService launch', () => {
   });
 
   it('keeps durable abandonment committed when its progress diagnostic fails', async () => {
-    const base = createRealRuntime('prod');
+    const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
+    prepareDurableStore(base);
     const retryHandle = {};
     let retryActive = false;
     const clearInterval = vi.fn(() => {
@@ -1457,7 +1468,8 @@ describe('ExecutionService launch', () => {
   });
 
   it('keeps the abandonment control when durable publication is temporarily unwritable', async () => {
-    const base = createRealRuntime('prod');
+    const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
+    prepareDurableStore(base);
     const retryHandle = {};
     const clearInterval = vi.fn();
     const exitRecord = { exitCode: 0, signal: null, endTime: new Date(1).toISOString() } as const;
@@ -1594,7 +1606,8 @@ describe('ExecutionService launch', () => {
   });
 
   it('keeps the abort hold when deleting the durable containment row fails', async () => {
-    const base = createRealRuntime('prod');
+    const base = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
+    prepareDurableStore(base);
     const retryHandle = {};
     let retryCleanup!: () => void;
     let processAbsent = false;
@@ -2230,7 +2243,7 @@ describe('ExecutionService launch', () => {
     terminateAll();
     const previousMaxQueueSize = process.env.CORAL_MAX_QUEUE_SIZE;
     process.env.CORAL_MAX_QUEUE_SIZE = '1';
-    runtime = createRealRuntime('prod');
+    runtime = createRealRuntime('prod', { baseDir: join(mockState.tmpHome, '.coral') });
     if (previousMaxQueueSize === undefined) {
       delete process.env.CORAL_MAX_QUEUE_SIZE;
     } else {

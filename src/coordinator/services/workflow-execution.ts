@@ -86,7 +86,10 @@ export class WorkflowExecutionService {
       plan = buildWorkflowPlan(jobId, ast, { defaultProvider: providerName });
       if (this.deps.admitTopLevelLaunch?.() === false) {
         this.deps.abortRegistry.remove(jobId);
-        return refuseLaunch('succession_admission_paused', 'Launch admission is paused during succession. Retry shortly.');
+        return refuseLaunch(
+          'succession_admission_paused',
+          'Launch admission is paused during succession. Retry shortly.',
+        );
       }
       this.deps.progressStore.commit((c) => {
         c.append(workflowPlanDeclaredEvent(jobId, plan, decodedScope.value));

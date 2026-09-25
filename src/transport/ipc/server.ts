@@ -1107,9 +1107,12 @@ function createTrackedIpcListener(
         if (forwardAccepted === forward) forwardAccepted = null;
       };
     },
-    drainConnections: () => openSockets.size === 0 ? Promise.resolve() : new Promise<void>((resolve) => {
-      drained.add(resolve);
-    }),
+    drainConnections: () =>
+      openSockets.size === 0
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            drained.add(resolve);
+          }),
     socketPath: null,
     onShutdownRecoveryAccepted: null,
   };

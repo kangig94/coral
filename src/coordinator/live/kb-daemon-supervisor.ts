@@ -865,9 +865,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
   };
 
-  const listActiveKbJobsForSuccession = async (
-    options: { signal?: AbortSignal } = {},
-  ): Promise<KbDaemonJobsResult> => {
+  const listActiveKbJobsForSuccession = async (options: { signal?: AbortSignal } = {}): Promise<KbDaemonJobsResult> => {
     const response = await sendRequest('kb.jobs', undefined, requestTimeoutMs, options.signal);
     if (!response.ok || !isKbDaemonJobsResult(response.result)) {
       throw new Error('KB daemon work inventory is unavailable.');
@@ -997,7 +995,9 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
           CORAL_KB_DAEMON_PARENT_PID: String(process.pid),
           CORAL_KB_DAEMON_BACKEND_NAMESPACE: backendNamespace,
           CORAL_KB_DAEMON_BUNDLE_HASH: bundleHash,
-          ...(openedStore === undefined ? {} : { CORAL_KB_DAEMON_STORE: encodeResolvedStoreEpoch(openedStore) }),
+          ...(openedStore === undefined
+            ? {}
+            : { CORAL_KB_DAEMON_STORE: encodeResolvedStoreEpoch(runtime, openedStore) }),
           ...(options.instanceId === undefined ? {} : { CORAL_KB_DAEMON_INSTANCE_ID: options.instanceId }),
         },
       });
@@ -1269,14 +1269,26 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     parkWriterTurn: async (signal) => {
       if (daemonProcess === null) return;
       const response = await sendRequest('writer.park', undefined, requestTimeoutMs, signal);
-      if (!response.ok || typeof response.result !== 'object' || response.result === null || !('kind' in response.result) || response.result.kind !== 'parked') {
+      if (
+        !response.ok ||
+        typeof response.result !== 'object' ||
+        response.result === null ||
+        !('kind' in response.result) ||
+        response.result.kind !== 'parked'
+      ) {
         throw new Error('KB daemon did not confirm its writer turn was parked.');
       }
     },
     reclaimWriterTurn: async (writerGeneration, signal) => {
       if (daemonProcess === null) return;
       const response = await sendRequest('writer.reclaim', writerGeneration, requestTimeoutMs, signal);
-      if (!response.ok || typeof response.result !== 'object' || response.result === null || !('kind' in response.result) || response.result.kind !== 'reclaimed') {
+      if (
+        !response.ok ||
+        typeof response.result !== 'object' ||
+        response.result === null ||
+        !('kind' in response.result) ||
+        response.result.kind !== 'reclaimed'
+      ) {
         throw new Error('KB daemon did not confirm its writer turn was reclaimed.');
       }
     },

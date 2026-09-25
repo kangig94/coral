@@ -711,13 +711,18 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
-  const upgrade = daemonStatus.status === 'ok' ? daemonStatus.health.succession ?? daemonStatus.upgrade : daemonStatus.upgrade;
+  const upgrade =
+    daemonStatus.status === 'ok' ? (daemonStatus.health.succession ?? daemonStatus.upgrade) : daemonStatus.upgrade;
   if (upgrade !== undefined) sections.push(formatPendingUpgrade(upgrade));
-  const upgradeProblem = daemonStatus.status === 'ok'
-    ? daemonStatus.health.successionProblem ?? daemonStatus.upgradeProblem : daemonStatus.upgradeProblem;
+  const upgradeProblem =
+    daemonStatus.status === 'ok'
+      ? (daemonStatus.health.successionProblem ?? daemonStatus.upgradeProblem)
+      : daemonStatus.upgradeProblem;
   if (upgradeProblem !== undefined) sections.push(formatUpgradeRecordProblem(upgradeProblem));
   if (upgrade === undefined && daemonStatus.legacyContenderDeferred) {
-    sections.push('An older contender was refused while this incumbent continues serving. Its attempted upgrade is deferred.');
+    sections.push(
+      'An older contender was refused while this incumbent continues serving. Its attempted upgrade is deferred.',
+    );
   }
   const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
   const routingStatusText = formatHandoffRoutingStatus(routingStatus, liveShutdownGuidance.routingCommandAvailability);
@@ -744,7 +749,8 @@ export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {
   } else {
     switch (upgrade.retryCondition?.kind) {
       case 'incumbent-retirement':
-        next = 'The legacy incumbent retires after its idle timeout (normally at least 6 hours after its last activity); each CLI reuse resets that timer. A live waiter then starts the target. If no waiter survives, the intent stays held until the next new-build trigger recovers it.';
+        next =
+          'The legacy incumbent retires after its idle timeout (normally at least 6 hours after its last activity); each CLI reuse resets that timer. A live waiter then starts the target. If no waiter survives, the intent stays held until the next new-build trigger recovers it.';
         break;
       case 'obligation-change':
         next = 'The incumbent retries when the held obligations change or settle.';

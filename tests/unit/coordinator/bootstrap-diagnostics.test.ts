@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type * as BundleManifestModule from '#src/infra/bundle-manifest.js';
+
 const storage = vi.hoisted(() => ({
   readFileSync: vi.fn(),
   mkdirSync: vi.fn(),
@@ -21,7 +23,10 @@ vi.mock('#src/runtime/real.js', () => ({
   }),
 }));
 vi.mock('#src/infra/build-flavor.js', () => ({ resolveBuildFlavor: () => 'prod' }));
-vi.mock('#src/infra/bundle-manifest.js', () => ({ readBundleHash: () => 'bundle-hash' }));
+vi.mock('#src/infra/bundle-manifest.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof BundleManifestModule>()),
+  readBundleHash: () => 'bundle-hash',
+}));
 vi.mock('#src/infra/plugin-identity.js', () => ({ pluginRootNamespace: () => 'namespace' }));
 
 import { serializeBootstrapError, writeBootstrapDiagnostic } from '#src/coordinator/bootstrap-diagnostics.js';

@@ -20,6 +20,7 @@ import {
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   SUCCESSION_CAPABILITIES_FILE,
   SUCCESSION_CAPABILITY_VERSION,
+  UPGRADE_WAITER_BUNDLE_FILE,
 } from '#src/infra/bundle-manifest-address.js';
 import { isNoEntryError } from '#src/infra/fs-errors.js';
 import type { CoordinatorDiscoveryRecord } from '#src/infra/backend-discovery.js';
@@ -31,6 +32,7 @@ const sourceBackendBundle = join(process.cwd(), 'clients', 'build', 'coral-backe
 const sourceCliBundle = join(process.cwd(), 'clients', 'build', 'coral-cli');
 const sourceClaudeAppserverBundle = join(process.cwd(), 'clients', 'build', 'coral-claude-appserver.cjs');
 const sourceDurableWrapperBundle = join(process.cwd(), 'clients', 'build', 'coral-durable-wrapper.cjs');
+const sourceUpgradeWaiterBundle = join(process.cwd(), 'clients', 'build', UPGRADE_WAITER_BUNDLE_FILE);
 const sourceManifestPath = join(process.cwd(), 'clients', 'build', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
 const sourceSuccessionCapabilitiesPath = join(process.cwd(), 'clients', 'build', SUCCESSION_CAPABILITIES_FILE);
 const requiredBuildArtifacts = [
@@ -38,6 +40,7 @@ const requiredBuildArtifacts = [
   sourceCliBundle,
   sourceClaudeAppserverBundle,
   sourceDurableWrapperBundle,
+  sourceUpgradeWaiterBundle,
   sourceManifestPath,
   sourceSuccessionCapabilitiesPath,
 ] as const;
@@ -122,6 +125,19 @@ export function createPluginFixture(
   },
 ): PluginFixture {
   const sourceManifest = readSourceManifest();
+  const variant = options.version !== undefined || options.bundleHash !== undefined;
+  const variantHash = createHash('sha256')
+    .update(
+      JSON.stringify([
+        sourceManifest.buildSetId,
+        options.version ?? sourceManifest.version,
+        options.bundleHash ?? null,
+      ]),
+    )
+    .digest('hex');
+  const buildSetId = variant
+    ? `${variantHash.slice(0, 8)}-${variantHash.slice(8, 12)}-4${variantHash.slice(13, 16)}-8${variantHash.slice(17, 20)}-${variantHash.slice(20, 32)}`
+    : sourceManifest.buildSetId;
   const root = mkdtempSync(join(tmpdir(), `coral-coordinator-${options.flavor}-`));
   tempRoots.push(root);
 
@@ -130,14 +146,17 @@ export function createPluginFixture(
   const cliPath = join(root, 'bridge', 'coral-cli');
   const claudeAppserverPath = join(root, 'bridge', 'coral-claude-appserver.cjs');
   const durableWrapperPath = join(root, 'bridge', 'coral-durable-wrapper.cjs');
+  const upgradeWaiterPath = join(root, 'bridge', UPGRADE_WAITER_BUNDLE_FILE);
   const copyBundle = (source: string, destination: string): void => {
-    if (options.version === undefined) {
+    if (!variant) {
       copyFileSync(source, destination);
       return;
     }
     writeFileSync(
       destination,
-      readFileSync(source, 'utf-8').replaceAll(sourceManifest.version, options.version),
+      readFileSync(source, 'utf-8')
+        .replaceAll(sourceManifest.buildSetId, buildSetId)
+        .replaceAll(sourceManifest.version, options.version ?? sourceManifest.version),
       'utf-8',
     );
   };
@@ -148,10 +167,11 @@ export function createPluginFixture(
   copyBundle(sourceCliBundle, cliPath);
   copyBundle(sourceClaudeAppserverBundle, claudeAppserverPath);
   copyBundle(sourceDurableWrapperBundle, durableWrapperPath);
+  copyBundle(sourceUpgradeWaiterBundle, upgradeWaiterPath);
   const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   const fixtureManifest = {
     version: options.version ?? sourceManifest.version,
-    buildSetId: sourceManifest.buildSetId,
+    buildSetId,
     bundleHash,
     cliBundleHash: createHash('sha256').update(readFileSync(cliPath)).digest('hex').slice(0, 16),
     claudeAppserverBundleHash: createHash('sha256')
@@ -207,10 +227,7 @@ export function createPluginFixture(
 }
 
 /** A shipped plugin root must retain its tag's files and manifest bytes. */
-export function createShippedPluginFixture(
-  tempRoots: string[],
-  tag: ShippedReleaseTag,
-): ShippedPluginFixture {
+export function createShippedPluginFixture(tempRoots: string[], tag: ShippedReleaseTag): ShippedPluginFixture {
   const cached = shippedPluginFixtures.get(tag);
   if (cached && existsSync(cached.root)) {
     return cached;
@@ -270,19 +287,16 @@ export function createShippedPluginFixture(
 }
 
 export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {
-  const sourceManifest = readSourceManifest();
+  const manifestPath = join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE);
+  const currentManifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as SourceManifest;
   const backendPath = join(fixture.root, 'bridge', 'coral-backend.cjs');
   appendFileSync(backendPath, `\n// fixture ${bundleHash}\n`);
   const effectiveBundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   const fixtureManifest = {
-    ...sourceManifest,
+    ...currentManifest,
     bundleHash: effectiveBundleHash,
-    flavor: fixture.flavor,
   };
-  writeFileSync(
-    join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE),
-    `${JSON.stringify(fixtureManifest)}\n`,
-  );
+  writeFileSync(manifestPath, `${JSON.stringify(fixtureManifest)}\n`);
   writeFileSync(
     join(fixture.root, 'bridge', SUCCESSION_CAPABILITIES_FILE),
     `${JSON.stringify({
@@ -318,15 +332,17 @@ export function storeDbPathForHome(home: string, flavor: BuildFlavor, epoch = '1
 }
 
 export function readDiscoveryRecordForHome(home: string, flavor: BuildFlavor): CoordinatorDiscoveryRecord | null {
-  const infoPath = coordinatorFilesForHome(home, flavor).infoFile;
-  try {
-    return JSON.parse(readFileSync(infoPath, 'utf-8')) as CoordinatorDiscoveryRecord;
-  } catch (error: unknown) {
-    if (isNoEntryError(error) || error instanceof SyntaxError) {
-      return null;
+  const paths = coordinatorFilesForHome(home, flavor);
+  for (const infoPath of [paths.infoFile, paths.legacyInfoFile]) {
+    try {
+      return JSON.parse(readFileSync(infoPath, 'utf-8')) as CoordinatorDiscoveryRecord;
+    } catch (error: unknown) {
+      if (isNoEntryError(error)) continue;
+      if (error instanceof SyntaxError) return null;
+      throw error;
     }
-    throw error;
   }
+  return null;
 }
 
 export async function waitForDiscoveryRecord(

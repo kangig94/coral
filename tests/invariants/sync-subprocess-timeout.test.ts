@@ -291,6 +291,7 @@ describe('synchronous subprocess timeout invariant', () => {
       'clients/hooks/lib/project-ignore/index.mjs',
       'clients/hooks/session-start.mjs',
       'src/cli/commands/kb.ts',
+      'src/infra/custody-process-ticket.ts',
       'src/infra/env-sanitize.ts',
       'src/infra/node-process.ts',
       'src/infra/project-source.ts',
@@ -306,6 +307,29 @@ describe('synchronous subprocess timeout invariant', () => {
         direct.size + namespaces.size,
         `${file} imports the primitives but the detector sees none`,
       ).toBeGreaterThan(0);
+    }
+  });
+
+  it('bounds both retained-epoch subprocesses through the runtime process port', () => {
+    const file = 'src/coordinator/succession/retained-epoch-executor.ts';
+    const source = ts.createSourceFile(
+      file,
+      readFileSync(join(REPO_ROOT, file), 'utf-8'),
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'runtime.process.execSync') calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const options = call.arguments.at(-1);
+      expect(options !== undefined && ts.isObjectLiteralExpression(options) && statesTimeout(options, new Map())).toBe(
+        true,
+      );
     }
   });
 

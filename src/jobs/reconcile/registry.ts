@@ -57,9 +57,11 @@ export class RecoveryRegistry {
   private readonly abortHandlers = new Map<string, () => RecoveryAbortDisposition>();
   private readonly abortDispositions = new Map<string, ActiveRecoveryAbortDisposition>();
   private readonly cancelledJobIds: Set<string>;
+  private readonly onSettlement?: (jobId: string) => void;
 
-  constructor(cancelledJobIds: Set<string> = new Set(), private readonly onSettlement?: (jobId: string) => void) {
+  constructor(cancelledJobIds: Set<string> = new Set(), onSettlement?: (jobId: string) => void) {
     this.cancelledJobIds = cancelledJobIds;
+    this.onSettlement = onSettlement;
   }
 
   register(

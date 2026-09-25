@@ -913,9 +913,10 @@ async function waitForExistingIncumbentReady(
     }
     if (!identityMatchesExistingIncumbent(health, incumbent)) {
       const observed = readUpgradeIntent(paths.runDir);
-      const receipt = observed.kind === 'readable' && observed.intent.disposition === 'completed'
-        ? observed.intent.completionReceipt
-        : null;
+      const receipt =
+        observed.kind === 'readable' && observed.intent.disposition === 'completed'
+          ? observed.intent.completionReceipt
+          : null;
       if (
         receipt === null ||
         observed.kind !== 'readable' ||

@@ -1,7 +1,11 @@
 import { isProcessIncarnation, type ProcessIncarnation } from '../../../infra/node-process.js';
 import { assertNever, serializedThrownIdentifierSchema } from '../../../infra/error-format.js';
 import { isRecord } from '../../../infra/json.js';
-import { parseVisibleUpgradeIntent, type UpgradeIntentProblem, type UpgradeIntentVisibility } from '../../../infra/upgrade-intent.js';
+import {
+  parseVisibleUpgradeIntent,
+  type UpgradeIntentProblem,
+  type UpgradeIntentVisibility,
+} from '../../../infra/upgrade-intent.js';
 import {
   shutdownRemainderEntrySchema,
   shutdownRemainderProjectionEnvelopeSchema,

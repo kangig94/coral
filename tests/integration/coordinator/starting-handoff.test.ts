@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { closeIpcServer, createIpcServer, listenIpcServer, type IpcListener } from '#src/transport/ipc/server.js';
 import { createIpcClient } from '#src/transport/ipc/client.js';
 import type { HttpHandlerPorts, HealthSnapshot } from '#src/transport/server-ports.js';
@@ -22,9 +23,20 @@ const liveChildren: ChildProcess[] = [];
 const contenders: SpawnedCoordinator[] = [];
 const shippedStateCases = (
   ['v0.10.0', 'v0.10.1', 'v0.10.4', 'v0.10.5', 'v0.10.9', 'v0.10.10', 'v0.10.13'] as const
-).flatMap((tag) => (
-  ['starting', 'idle', 'busy', 'preparing', 'committing'] as const
-).map((state) => ({ tag, state })));
+).flatMap((tag) => (['starting', 'idle', 'busy', 'preparing', 'committing'] as const).map((state) => ({ tag, state })));
+
+// Shipped v0.10.0-v0.10.8 contenders trust a discovery record only when its `processStartedAt` equals the
+// Linux start time they derive at a fixed 100 clock ticks per second.
+function shippedProcessStartedAtSeconds(pid: number): number {
+  const bootTime = /^btime (\d+)$/mu.exec(readFileSync('/proc/stat', 'utf-8'))?.[1];
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf-8');
+  const startTicks = stat
+    .slice(stat.lastIndexOf(')') + 2)
+    .trim()
+    .split(/\s+/u)[19];
+  if (bootTime === undefined || startTicks === undefined) throw new Error(`Cannot read the start time of pid ${pid}.`);
+  return Math.floor(Number(bootTime) + Number(startTicks) / 100);
+}
 
 function makeSocketPath(name: string): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-starting-handoff-test-'));
@@ -40,6 +52,7 @@ function buildPorts(opts: {
   isDrainRequested: () => boolean;
   onRequestDrain: (reason: string) => void;
   pid?: number;
+  namespace?: string;
 }): HttpHandlerPorts {
   const health: HealthSnapshot = {
     status: opts.isLifecycleRunning() ? 'ok' : 'starting',
@@ -47,7 +60,7 @@ function buildPorts(opts: {
     version: '0.11.0',
     bundleHash: 'new-incumbent',
     flavor: 'prod',
-    namespace: 'ns',
+    namespace: opts.namespace ?? 'ns',
     instanceId: 'i',
     pid: opts.pid ?? 1,
     uptimeMs: 0,
@@ -69,7 +82,7 @@ function buildPorts(opts: {
       version: '0.11.0',
       bundleHash: 'new-incumbent',
       flavor: 'prod',
-      namespace: 'ns',
+      namespace: opts.namespace ?? 'ns',
       instanceId: 'i',
       now: () => 0,
       log: () => undefined,
@@ -85,7 +98,13 @@ function buildPorts(opts: {
       endRequest: vi.fn(),
       requestDrain: opts.onRequestDrain,
     },
-    health: { read: () => health },
+    health: {
+      read: () => ({
+        ...health,
+        status: opts.isLifecycleRunning() ? 'ok' : 'starting',
+        kernel: opts.isLifecycleRunning() ? { phase: 'running', readyAt: 1 } : { phase: 'starting', readyAt: null },
+      }),
+    },
     events: {
       addResponse: vi.fn(),
       removeResponse: vi.fn(),
@@ -158,6 +177,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
     'refuses a shipped $tag contender and CLI while $state',
     async ({ tag, state }) => {
       const fixture = createShippedPluginFixture(tempDirs, tag);
+      const namespace = pluginRootNamespace(fixture.root);
       const home = mkdtempSync(join(tmpdir(), 'coral-legacy-arrival-'));
       tempDirs.push(home);
       const paths = coordinatorFilesForHome(home, 'prod');
@@ -166,54 +186,74 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       if (dummy.pid === undefined) throw new Error('incumbent pid was unavailable');
 
       const requestDrain = vi.fn();
+      const startingAt = Date.now();
       const decideLegacyShutdown = vi.fn(() => ({
         code: 'shutdown_unauthorized' as const,
         message: 'Manual shutdown required: incumbent rejected shutdown capability.',
       }));
       const ports = buildPorts({
         state,
-        isLifecycleRunning: () => state !== 'starting',
+        isLifecycleRunning: () => state !== 'starting' || Date.now() - startingAt >= 500,
         isDrainRequested: () => false,
         onRequestDrain: requestDrain,
         pid: dummy.pid,
+        namespace,
       });
       ports.admin.decideLegacyShutdown = decideLegacyShutdown;
       const listener = createIpcServer(ports);
       mkdirSync(paths.runDir, { recursive: true });
-      await listenIpcServer(listener, paths.socketPath);
+      await listenIpcServer(listener, paths.socketPath, [paths.legacySocketPath]);
       liveListeners.push(listener);
-      writeFileSync(
-        paths.infoFile,
-        JSON.stringify({
-          pid: dummy.pid,
-          port: 1,
-          socketPath: paths.socketPath,
-          bundleHash: 'new-incumbent',
-          flavor: 'prod',
-          namespace: 'ns',
-          startedAt: Date.now(),
-          token: 't',
-          bootToken: 'boot-token',
-          version: '0.11.0',
-          instanceId: 'i',
-        }),
-        { mode: 0o600 },
-      );
+      const discovery = {
+        pid: dummy.pid,
+        port: 1,
+        socketPath: paths.socketPath,
+        bundleHash: 'new-incumbent',
+        flavor: 'prod',
+        namespace,
+        startedAt: Date.now(),
+        processStartedAt: shippedProcessStartedAtSeconds(dummy.pid),
+        token: 't',
+        bootToken: 'boot-token',
+        version: '0.11.0',
+        instanceId: 'i',
+      };
+      writeFileSync(paths.infoFile, JSON.stringify(discovery), { mode: 0o600 });
+      mkdirSync(paths.legacyRunDir, { recursive: true });
+      writeFileSync(paths.legacyInfoFile, JSON.stringify({ ...discovery, socketPath: paths.legacySocketPath }), {
+        mode: 0o600,
+      });
 
       const contender = spawnCoordinator({ fixture, home, tempRoots: tempDirs });
       contenders.push(contender);
-      await waitForProcessExit(contender, 15_000);
-      expect(decideLegacyShutdown).toHaveBeenCalled();
+      try {
+        await waitForProcessExit(contender, 15_000);
+      } catch (error) {
+        console.error(`Shipped contender ${tag} output: ${contender.output()}`);
+        throw error;
+      }
+      if (['v0.10.0', 'v0.10.1', 'v0.10.4'].includes(tag)) {
+        expect(decideLegacyShutdown).toHaveBeenCalled();
+      } else {
+        expect(decideLegacyShutdown).not.toHaveBeenCalled();
+      }
       expect(dummy.exitCode).toBeNull();
       expect(dummy.signalCode).toBeNull();
       expect(requestDrain).not.toHaveBeenCalled();
       const shutdownsBeforeCli = decideLegacyShutdown.mock.calls.length;
 
-      const cli = spawn(process.execPath, [fixture.cliPath, 'backend', 'status'], {
+      const cli = spawn(process.execPath, [fixture.cliPath, 'jobs', 'detail', 'missing-job'], {
         env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       liveChildren.push(cli);
+      let cliOutput = '';
+      cli.stdout?.on('data', (chunk: Buffer) => {
+        cliOutput += chunk.toString();
+      });
+      cli.stderr?.on('data', (chunk: Buffer) => {
+        cliOutput += chunk.toString();
+      });
       cli.stdout?.resume();
       cli.stderr?.resume();
       await new Promise<void>((resolve, reject) => {
@@ -228,7 +268,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
         });
       });
       if (['v0.10.0', 'v0.10.1', 'v0.10.4'].includes(tag)) {
-        expect(decideLegacyShutdown.mock.calls.length).toBeGreaterThan(shutdownsBeforeCli);
+        expect(decideLegacyShutdown.mock.calls.length, cliOutput).toBeGreaterThan(shutdownsBeforeCli);
       } else {
         expect(decideLegacyShutdown.mock.calls.length).toBe(shutdownsBeforeCli);
       }

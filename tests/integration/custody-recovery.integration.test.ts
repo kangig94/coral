@@ -12,16 +12,18 @@ import {
   observeCustodyProcessToken,
 } from '../../src/infra/custody-process-ticket.js';
 import { durableWrapperEntrypoint } from '../../src/runtime/wrapper-entrypoint.js';
+import { createRealRuntime } from '../../src/runtime/real.js';
 import { readCustodyLedger, reconcileCustodyLedger, recordCustodyIntent } from '../../src/store/custody-ledger.js';
 
 describe('custody crash recovery', { retry: 2 }, () => {
   it('makes a provider host wrapper bind before provider work and self-fence on an expired ticket', async () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-custody-host-'));
     const runDir = join(root, 'run');
+    const runtime = createRealRuntime('prod', { baseDir: root });
     try {
       for (const expired of [false, true]) {
         const nowMs = Date.now();
-        const intent = recordCustodyIntent(runDir, {
+        const intent = recordCustodyIntent(runtime, runDir, {
           effect: 'process-spawn',
           epoch: 'epoch-8',
           owner: 'provider-host',
@@ -60,7 +62,7 @@ describe('custody crash recovery', { retry: 2 }, () => {
         expect(exitCode).toBe(expired ? 1 : 0);
       }
       expect(
-        readCustodyLedger(runDir)
+        readCustodyLedger(runtime, runDir)
           .map((entry) => entry.kind)
           .sort(),
       ).toEqual(['bound', 'holding']);
@@ -73,7 +75,8 @@ describe('custody crash recovery', { retry: 2 }, () => {
     if (process.platform !== 'linux') return;
     const root = mkdtempSync(join(tmpdir(), 'coral-custody-crash-'));
     const runDir = join(root, 'run');
-    const intent = recordCustodyIntent(runDir, {
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const intent = recordCustodyIntent(runtime, runDir, {
       effect: 'process-spawn',
       epoch: 'epoch-7',
       owner: 'durable-cli',
@@ -84,7 +87,7 @@ describe('custody crash recovery', { retry: 2 }, () => {
     });
     const child = spawn(
       process.execPath,
-      ['-e', 'setInterval(() => undefined, 1000)', custodyProcessArgument(intent.processToken)],
+      ['-e', 'setInterval(() => undefined, 1000)', '--', custodyProcessArgument(intent.processToken)],
       { stdio: 'ignore' },
     );
     try {
@@ -101,14 +104,14 @@ describe('custody crash recovery', { retry: 2 }, () => {
           ? { kind: 'absent' as const, processToken: intent.processToken, evidence: 'process token absent' }
           : { kind: process };
       };
-      expect(reconcileCustodyLedger(runDir, 1_199, 100, observe)).toMatchObject([{ kind: 'holding' }]);
-      expect(reconcileCustodyLedger(runDir, 1_200, 100, observe)).toMatchObject([{ kind: 'holding' }]);
+      expect(reconcileCustodyLedger(runtime, runDir, 1_199, 100, observe)).toMatchObject([{ kind: 'holding' }]);
+      expect(reconcileCustodyLedger(runtime, runDir, 1_200, 100, observe)).toMatchObject([{ kind: 'holding' }]);
       child.kill('SIGTERM');
       await once(child, 'exit');
       const finalObservation = observeCustodyProcessToken(intent.processToken);
       const expected = finalObservation === 'absent' ? 'absent' : 'holding';
-      expect(reconcileCustodyLedger(runDir, 1_201, 100, observe)).toMatchObject([{ kind: expected }]);
-      expect(readCustodyLedger(runDir)).toMatchObject([{ kind: expected }]);
+      expect(reconcileCustodyLedger(runtime, runDir, 1_201, 100, observe)).toMatchObject([{ kind: expected }]);
+      expect(readCustodyLedger(runtime, runDir)).toMatchObject([{ kind: expected }]);
     } finally {
       if (child.exitCode === null) child.kill('SIGKILL');
       rmSync(root, { recursive: true, force: true });

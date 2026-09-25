@@ -26,7 +26,7 @@ import type {
 } from '../../recovery/unreadable-provider-operation.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
-import type { JobDetailLookup, WaitCursorError } from '../../jobs/addressing.js';
+import type { JobDetailLookup, WaitCursorError } from '../../jobs/contracts/addressing.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,

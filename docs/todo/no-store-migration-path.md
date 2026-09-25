@@ -2,7 +2,7 @@
 
 **Status**: open, unscheduled. Store-format changes preserve job identity and retained results, but do not transform an older database into the active schema.
 
-`classifyStoreFormat` in `src/store/db.ts` compares the persisted product version and format fingerprint. A differing fingerprint is not accepted as the current writable format. `createStartupMintAuthorizer` in `src/coordinator/succession/startup-retirement.ts` can authorize a fresh epoch after custody and historical-location checks. A retained old-format build may continue live work in the protected old epoch, and `JobLocationIndex` in `src/jobs/location-index.ts` keeps known jobs addressable across the switch. The new database still begins with fresh SQL-owned state, including corpus and recovery tables.
+`classifyStoreFormat` in `src/store/db.ts` compares the persisted product version and format fingerprint. A differing fingerprint is not accepted as the current writable format. `createStartupMintAuthorizer` in `src/coordinator/services/startup-retirement.ts` can authorize a fresh epoch after custody and historical-location checks. A retained old-format build may continue live work in the protected old epoch, and `JobLocationIndex` in `src/jobs/location-index.ts` keeps known jobs addressable across the switch. The new database still begins with fresh SQL-owned state, including corpus and recovery tables.
 
 Retention, historical reads, and result artifacts are continuity for known jobs. They do not copy or transform old sessions, KB state, or other SQL rows into the new authority. The previous generation's flat store remains outside epoch discovery.
 

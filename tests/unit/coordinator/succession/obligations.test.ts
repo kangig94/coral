@@ -17,9 +17,10 @@ const capabilities: SuccessionCapabilities = {
 
 describe('succession owner preparation', () => {
   it.each(REQUIRED_SUCCESSION_OWNERS)('requires the %s owner contract', async (missing) => {
-    const owners: SuccessionOwner[] = REQUIRED_SUCCESSION_OWNERS
-      .filter((id) => id !== missing)
-      .map((id) => ({ id, classify: async () => ({ kind: 'completed', reason: 'no live work' }) }));
+    const owners: SuccessionOwner[] = REQUIRED_SUCCESSION_OWNERS.filter((id) => id !== missing).map((id) => ({
+      id,
+      classify: async () => ({ kind: 'completed', reason: 'no live work' }),
+    }));
     const accepts = REQUIRED_SUCCESSION_OWNERS.map((owner) => ({ owner, generation: 1 }));
 
     expect(await prepareOwnerObligations(owners, 'attempt', { ...capabilities, accepts })).toMatchObject({
@@ -59,9 +60,17 @@ describe('succession owner preparation', () => {
       kind: 'prepared',
       receipts: [{ receiptId: 'receipt', recoveryGrantId: 'grant' }],
     });
-    expect(await prepareOwnerObligations([owner], 'attempt', {
-      ...capabilities, accepts: [{ owner: owner.id, generation: 2 }],
-    }, [owner.id])).toMatchObject({
+    expect(
+      await prepareOwnerObligations(
+        [owner],
+        'attempt',
+        {
+          ...capabilities,
+          accepts: [{ owner: owner.id, generation: 2 }],
+        },
+        [owner.id],
+      ),
+    ).toMatchObject({
       kind: 'blocking',
       blockers: [{ owner: owner.id, reason: 'transfer receipt or recovery grant does not match the attempt' }],
     });
@@ -105,12 +114,16 @@ describe('succession owner preparation', () => {
     };
     const accepts = [{ owner: owner.id, generation: 1 }];
 
-    expect(await prepareOwnerObligations([owner], 'attempt', { ...capabilities, accepts }, [owner.id], () => [
-      'external-job',
-    ])).toMatchObject({ kind: 'prepared', receipts: [{ receiptId: 'external-receipt' }] });
-    expect(await prepareOwnerObligations([owner], 'attempt', { ...capabilities, accepts: [] }, [owner.id], () => [
-      'external-job',
-    ])).toMatchObject({ kind: 'blocking' });
+    expect(
+      await prepareOwnerObligations([owner], 'attempt', { ...capabilities, accepts }, [owner.id], () => [
+        'external-job',
+      ]),
+    ).toMatchObject({ kind: 'prepared', receipts: [{ receiptId: 'external-receipt' }] });
+    expect(
+      await prepareOwnerObligations([owner], 'attempt', { ...capabilities, accepts: [] }, [owner.id], () => [
+        'external-job',
+      ]),
+    ).toMatchObject({ kind: 'blocking' });
   });
 
   it('blocks when an owner cannot answer or another owner also claims the job', async () => {
@@ -125,9 +138,13 @@ describe('succession owner preparation', () => {
     const accepts = [...capabilities.accepts, { owner: durable.id, generation: 1 }];
 
     expect(
-      await prepareOwnerObligations([launch, durable], 'attempt', { ...capabilities, accepts }, [launch.id, durable.id], () => [
-        'job',
-      ]),
+      await prepareOwnerObligations(
+        [launch, durable],
+        'attempt',
+        { ...capabilities, accepts },
+        [launch.id, durable.id],
+        () => ['job'],
+      ),
     ).toMatchObject({
       kind: 'blocking',
       blockers: expect.arrayContaining([
@@ -137,7 +154,12 @@ describe('succession owner preparation', () => {
       ]),
     });
 
-    const unavailable: SuccessionOwner = { id: 'launch-admission', classify: async () => { throw new Error('lost'); } };
+    const unavailable: SuccessionOwner = {
+      id: 'launch-admission',
+      classify: async () => {
+        throw new Error('lost');
+      },
+    };
     expect(await prepareOwnerObligations([unavailable], 'attempt', capabilities, [unavailable.id])).toEqual({
       kind: 'blocking',
       blockers: [{ owner: unavailable.id, reason: 'owner disposition unavailable' }],

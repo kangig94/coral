@@ -50,6 +50,8 @@ function running(jobId: string, sessionId: string) {
   };
 }
 
+let terminalSeq = 0;
+
 function terminal(
   jobId: string,
   result: Omit<JobTerminal, 'outcome' | 'durationMs'> & { outcome?: JobTerminal['outcome'] },
@@ -57,7 +59,7 @@ function terminal(
   return {
     type: 'terminal',
     jobId,
-    seq: 0,
+    seq: ++terminalSeq,
     remainingJobIds: [],
     resultPath: `/tmp/coral-exports/jobs/${jobId}/result.md`,
     result:

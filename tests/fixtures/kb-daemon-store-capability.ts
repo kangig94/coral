@@ -3,8 +3,10 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import { decodeResolvedStoreEpoch } from '#src/store/epoch.js';
 
 const baseDir = process.env.CORAL_TEST_BASE_DIR;
-const store = decodeResolvedStoreEpoch(process.env.CORAL_KB_DAEMON_STORE);
-if (baseDir === undefined || store === undefined) throw new Error('store capability fixture input is unavailable');
+if (baseDir === undefined) throw new Error('store capability fixture input is unavailable');
+const runtime = createRealRuntime('prod', { baseDir });
+const store = decodeResolvedStoreEpoch(runtime, process.env.CORAL_KB_DAEMON_STORE);
+if (store === undefined) throw new Error('store capability fixture input is unavailable');
 
 async function main(): Promise<void> {
   const host = createKbDaemonWriteRuntimeHost({
@@ -12,7 +14,7 @@ async function main(): Promise<void> {
     backendNamespace: 'store-capability-fixture',
     bundleHash: 'store-capability-fixture',
     curateUsageBudget: { isExhausted: async () => false },
-    runtime: createRealRuntime('prod', { baseDir }),
+    runtime,
     store,
   });
 

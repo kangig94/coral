@@ -186,8 +186,8 @@ describe('cli errors', () => {
     it.each([
       [
         'invalid_store_reset_incident_id',
-        'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID.',
-        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
+        'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID.',
+        'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.',
         2,
       ],
       [
@@ -476,6 +476,7 @@ describe('cli errors', () => {
         'busy',
         'kb_disabled',
         'provider_preflight_undetermined',
+        'succession_admission_paused',
       ];
       const { DOCUMENTED_CORAL_SETUP_ERROR_CODES, LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } =
         await import('#src/runtime/errors.js');

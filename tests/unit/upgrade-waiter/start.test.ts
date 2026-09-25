@@ -57,27 +57,31 @@ describe('legacy upgrade request', () => {
   it('turns an incumbent-registered intent into a visible retirement wait', async () => {
     const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
     directories.push(runDir);
-    expect(await compareAndSwapUpgradeIntent(runDir, null, {
-      requestId: 'incumbent-request',
-      incumbent,
-      target: { build, pluginRootLabel: '/installed/target' },
-      attemptId: null,
-      attemptOwner: null,
-      disposition: 'pending',
-      blockers: [],
-      retryCondition: null,
-      attemptDeadline: null,
-      completionReceipt: null,
-    })).toMatchObject({ kind: 'written' });
+    expect(
+      await compareAndSwapUpgradeIntent(runDir, null, {
+        requestId: 'incumbent-request',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        attemptId: null,
+        attemptOwner: null,
+        disposition: 'pending',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        completionReceipt: null,
+      }),
+    ).toMatchObject({ kind: 'written' });
     const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
 
-    expect(await requestLegacyUpgrade({
-      runDir,
-      socketPath: '/legacy.sock',
-      incumbent,
-      target: { build, pluginRootLabel: '/installed/target' },
-      startWaiter,
-    })).toMatchObject({ kind: 'waiting', requestId: 'incumbent-request' });
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        startWaiter,
+      }),
+    ).toMatchObject({ kind: 'waiting', requestId: 'incumbent-request' });
     expect(readUpgradeIntent(runDir)).toMatchObject({
       kind: 'readable',
       intent: { retryCondition: { kind: 'incumbent-retirement' } },

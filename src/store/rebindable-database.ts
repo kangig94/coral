@@ -23,7 +23,8 @@ export function createRebindableStoreDatabase(initial: Database): RebindableStor
                 statement = current.prepare<TParams, TRow>(sql);
                 statementRevision = revision;
               }
-              const active = statement!;
+              const active = statement;
+              if (active === null) throw new Error('Store statement was not rebound.');
               const value: unknown = Reflect.get(active, statementProperty, active);
               return typeof value === 'function' ? value.bind(active) : value;
             },

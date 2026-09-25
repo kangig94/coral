@@ -3,7 +3,7 @@ import { compareProductVersions } from '../infra/product-version.js';
 import { readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.js';
 import { requestIpcMethod } from '../transport/ipc/client.js';
 import { SUCCESSION_METHODS } from '../infra/succession-address.js';
-import { requestLegacyUpgrade, type LegacyUpgradeStart } from '../upgrade-waiter/start.js';
+import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
 import { CoralSetupError, renderHandoffRefusal, type HandoffRefusalInit } from '../runtime/errors.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
 import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/startup.js';
@@ -87,17 +87,26 @@ export interface HandoffOptions {
 }
 
 /** An absent or failed capability response cannot authorize the contender to skip its waiter. */
-export async function requestUpgradeFromContender(options: Readonly<{
-  socketPath: string;
-  runDir: string;
-  incumbent: IncumbentIdentity;
-  health: IncumbentHealth;
-  target: UpgradeIntent['target'];
-  requestId: string;
-  time: Runtime['time'];
-  request?: (socketPath: string, method: string, params: unknown, options: unknown) => Promise<unknown>;
-  startLegacy?: typeof requestLegacyUpgrade;
-}>): Promise<LegacyUpgradeStart | Readonly<{ kind: 'incumbent-commit-capable' }>> {
+export async function requestUpgradeFromContender(
+  options: Readonly<{
+    socketPath: string;
+    runDir: string;
+    incumbent: IncumbentIdentity;
+    health: IncumbentHealth;
+    target: UpgradeIntent['target'];
+    requestId: string;
+    time: Runtime['time'];
+    request?: (socketPath: string, method: string, params: unknown, options: unknown) => Promise<unknown>;
+    startLegacy: (
+      options: Readonly<{
+        runDir: string;
+        socketPath: string;
+        incumbent: UpgradeIntent['incumbent'];
+        target: UpgradeIntent['target'];
+      }>,
+    ) => Promise<LegacyUpgradeStart>;
+  }>,
+): Promise<LegacyUpgradeStart | Readonly<{ kind: 'incumbent-commit-capable' }>> {
   const { health, incumbent, target } = options;
   const instanceId = health.instanceId ?? incumbent.instanceId;
   if (health.version === undefined || instanceId === undefined) {
@@ -119,24 +128,29 @@ export async function requestUpgradeFromContender(options: Readonly<{
         { auth: { kind: 'boot', token: incumbent.bootToken }, timeoutMs: 1_000, time: options.time },
       );
       if (
-        typeof response === 'object' && response !== null &&
-        'kind' in response && response.kind === 'registered' &&
-        'incumbentCanCommit' in response && response.incumbentCanCommit === true
-      ) return { kind: 'incumbent-commit-capable' };
+        typeof response === 'object' &&
+        response !== null &&
+        'kind' in response &&
+        response.kind === 'registered' &&
+        'incumbentCanCommit' in response &&
+        response.incumbentCanCommit === true
+      )
+        return { kind: 'incumbent-commit-capable' };
     } catch {
       // A failed negotiation cannot prove the incumbent can commit.
     }
   }
   const observed = readUpgradeIntent(options.runDir);
-  const recordedIncumbent = observed.kind === 'readable' &&
+  const recordedIncumbent =
+    observed.kind === 'readable' &&
     observed.intent.incumbent.instanceId === instanceId &&
     observed.intent.incumbent.pid === incumbent.pid &&
     observed.intent.incumbent.version === health.version &&
     observed.intent.incumbent.bundleHash === health.bundleHash &&
     observed.intent.incumbent.flavor === health.flavor
-    ? observed.intent.incumbent
-    : null;
-  return (options.startLegacy ?? requestLegacyUpgrade)({
+      ? observed.intent.incumbent
+      : null;
+  return options.startLegacy({
     runDir: options.runDir,
     socketPath: options.socketPath,
     incumbent: recordedIncumbent ?? {

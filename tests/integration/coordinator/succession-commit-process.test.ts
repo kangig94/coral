@@ -1,6 +1,15 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -39,7 +48,8 @@ afterEach(async () => {
       successor.incarnation !== null &&
       probeProcessIncarnation(successor.pid) === successor.incarnation &&
       observeProcessLiveness(successor.pid) === 'alive'
-    ) process.kill(successor.pid, 'SIGTERM');
+    )
+      process.kill(successor.pid, 'SIGTERM');
   }
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
@@ -90,7 +100,14 @@ describe('real-process succession commit', () => {
 
     try {
       await waitForProcessExit(contender, 30_000);
-      await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.pid !== initial.pid, 60_000);
+      try {
+        await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.pid !== initial.pid, 60_000);
+      } catch (error) {
+        throw new Error(
+          `Successor discovery did not replace the incumbent: ${JSON.stringify(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir))}\nincumbent: ${old.output()}\ncontender: ${contender.output()}`,
+          { cause: error },
+        );
+      }
     } finally {
       sampleAddress = false;
       await addressSamples;
@@ -105,36 +122,41 @@ describe('real-process succession commit', () => {
     await assertAddressClaimed(successor.socketPath);
   });
 
-  it.each(commitFailures)('records a %s hold, reclaims the advanced generation, and retains the incumbent epoch', async (_failure, env) => {
-    assertBuildArtifactsAvailable();
-    const home = mkdtempSync(join(tmpdir(), 'coral-succession-open-hold-'));
-    roots.push(home);
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
-    const old = spawnCoordinator({
-      fixture: oldFixture,
-      home,
-      tempRoots: roots,
-      env,
-    });
-    coordinators.push(old);
-    const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
-    coordinators.push(contender);
-    await waitForProcessExit(contender, 30_000);
+  it.each(commitFailures)(
+    'records a %s hold, reclaims the advanced generation, and retains the incumbent epoch',
+    async (_failure, env) => {
+      assertBuildArtifactsAvailable();
+      const home = mkdtempSync(join(tmpdir(), 'coral-succession-open-hold-'));
+      roots.push(home);
+      const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+      const old = spawnCoordinator({
+        fixture: oldFixture,
+        home,
+        tempRoots: roots,
+        env,
+      });
+      coordinators.push(old);
+      const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+      coordinators.push(contender);
+      await waitForProcessExit(contender, 30_000);
 
-    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
-    await waitForCondition(() => {
-      const observed = readUpgradeIntent(runDir);
-      return observed.kind === 'readable' &&
-        observed.intent.disposition === 'deferred' &&
-        observed.intent.blockers.some((blocker) => blocker.reason.includes('incumbent reclaimed'));
-    }, 60_000);
-    expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
-    expect(observeProcessLiveness(initial.pid)).toBe('alive');
-    expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
-    await assertAddressClaimed(initial.socketPath);
-  });
+      const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return (
+          observed.kind === 'readable' &&
+          observed.intent.disposition === 'deferred' &&
+          observed.intent.blockers.some((blocker) => blocker.reason.includes('incumbent reclaimed'))
+        );
+      }, 60_000);
+      expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
+      expect(observeProcessLiveness(initial.pid)).toBe('alive');
+      expect(existsSync(storeDbPathForHome(home, 'prod', '2'))).toBe(false);
+      await assertAddressClaimed(initial.socketPath);
+    },
+  );
 
   it('serves through a same-build recovery child when in-place writer reclaim fails', async () => {
     assertBuildArtifactsAvailable();
@@ -268,21 +290,31 @@ describe('real-process succession commit', () => {
     await waitForCondition(() => {
       const observed = readUpgradeIntent(runDir);
       const writer = observeSuccessionWriterGeneration(runtime);
-      return observed.kind === 'readable' &&
+      return (
+        observed.kind === 'readable' &&
         typeof observed.intent.recoveryAttemptId === 'string' &&
         observed.intent.attemptChild !== null &&
         observed.intent.attemptChild !== undefined &&
-        writer !== null && writer.generation >= 4;
+        writer !== null &&
+        writer.generation >= 4
+      );
     }, 60_000);
     const recovering = readUpgradeIntent(runDir);
-    if (recovering.kind !== 'readable' || recovering.intent.attemptChild == null) {
+    if (
+      recovering.kind !== 'readable' ||
+      recovering.intent.attemptChild === null ||
+      recovering.intent.attemptChild === undefined
+    ) {
       throw new Error('Recovery child identity was not recorded.');
     }
     process.kill(recovering.intent.attemptChild.pid, 'SIGKILL');
     await waitForCondition(() => {
       const observed = readUpgradeIntent(runDir);
-      return observed.kind === 'readable' && observed.intent.attemptId === null &&
-        observed.intent.blockers.some((blocker) => blocker.reason.includes('incumbent reclaimed'));
+      return (
+        observed.kind === 'readable' &&
+        observed.intent.attemptId === null &&
+        observed.intent.blockers.some((blocker) => blocker.reason.includes('incumbent reclaimed'))
+      );
     }, 60_000);
     expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
     expect(observeProcessLiveness(initial.pid)).toBe('alive');

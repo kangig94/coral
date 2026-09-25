@@ -21,7 +21,8 @@ describe('immutable SQLite open', () => {
     db.exec('CREATE TABLE history (id INTEGER PRIMARY KEY)');
     db.close();
     writeFileSync(`${path}${sidecar}`, 'journal bytes');
-    expect(() => runtime.storage.openSqliteDatabaseSync(path, { readOnly: true, immutable: true }))
-      .toThrow('journal sidecar');
+    expect(() => runtime.storage.openSqliteDatabaseSync(path, { readOnly: true, immutable: true })).toThrow(
+      'journal sidecar',
+    );
   });
 });

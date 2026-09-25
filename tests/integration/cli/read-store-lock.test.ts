@@ -21,6 +21,7 @@ vi.mock('#src/runtime/real.js', async (importOriginal) => {
 });
 
 import { closeSharedReadCoralStore, getSharedReadCoralStore, openReadCoralStore } from '#src/cli/read-store.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
 import { resolvedStoreEpoch, sweepStoreEpochs, sweepStoreEpochsPostReady } from '#src/store/epoch.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
@@ -75,7 +76,8 @@ it('keeps the cached CLI reader shared lock until its cached SQLite handle close
   expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '5'))).toBe('complete');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
 
-  expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('live-holder');
+  expect(attemptExclusiveFileLockSync(join(dbDir, 'epoch-1', '.lock')).kind).toBe('contended');
+  expect(sweepStoreEpochs(runtime, dbDir, null, { releaseEpoch: '1' })).toBe('closure-required');
   expect(existsSync(join(dbDir, 'epoch-1'))).toBe(true);
 });
 

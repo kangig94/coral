@@ -60,7 +60,9 @@ describe('succession writer generation', () => {
       const corpusPath = join(root, 'corpus.txt');
       corpusStorage.writeFileSync(corpusPath, 'daemon', { mode: 0o600 });
 
-      expect(coordinator.prepare<[], { total: number }>('SELECT count(*) AS total FROM succession_test').get()?.total).toBe(2);
+      expect(
+        coordinator.prepare<[], { total: number }>('SELECT count(*) AS total FROM succession_test').get()?.total,
+      ).toBe(2);
       expect(readFileSync(corpusPath, 'utf-8')).toBe('daemon');
     } finally {
       daemon.close();
@@ -156,6 +158,17 @@ describe('succession writer generation', () => {
     insert.run('reclaimed');
     expect(db.prepare<[], { value: string }>('SELECT value FROM succession_handback').get()?.value).toBe('reclaimed');
     db.close();
+  });
+
+  it('hands back monotonically when the incumbent store is named by its own older generation', () => {
+    const { runtime, store } = fixture();
+    const incumbent = joinSuccessionWriterGeneration(runtime, store);
+    incumbent.park();
+    const failed = advanceSuccessionWriterGeneration(runtime, incumbent.generation, store);
+
+    const recovered = handbackSuccessionWriterGeneration(runtime, failed, incumbent.generation);
+    expect(recovered.generation).toBe(failed.generation + 1);
+    expect(incumbent.generation).toEqual(recovered);
   });
 
   it('commits serving once against the current generation and full epoch key', () => {

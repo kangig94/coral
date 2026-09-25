@@ -83,27 +83,36 @@ export type ChildPrincipalSnapshot = Readonly<{
   consumedNonceCheckpoint: number;
 }>;
 
-export type ChildPrincipalTransfer = ChildPrincipalSnapshot & Readonly<{
-  recoveryGrantId: string;
-  authorityGeneration: number;
-}>;
+export type ChildPrincipalTransfer = ChildPrincipalSnapshot &
+  Readonly<{
+    recoveryGrantId: string;
+    authorityGeneration: number;
+  }>;
 
-const childPrincipalTransferSchema = z.object({
-  entries: z.array(z.object({
-    handle: z.string().min(1),
-    issuer: z.string().min(1),
-    authorization: z.object({
-      principalWire: principalWireSchema,
-      namespace: z.string().min(1),
-      expiresAtMs: z.number().int().positive(),
-    }).strict(),
-    parentJobId: z.string().min(1),
-    parentSessionId: z.string().min(1),
-  }).strict()),
-  consumedNonceCheckpoint: z.number().int().nonnegative(),
-  recoveryGrantId: z.string().min(1),
-  authorityGeneration: z.number().int().positive(),
-}).strict();
+const childPrincipalTransferSchema = z
+  .object({
+    entries: z.array(
+      z
+        .object({
+          handle: z.string().min(1),
+          issuer: z.string().min(1),
+          authorization: z
+            .object({
+              principalWire: principalWireSchema,
+              namespace: z.string().min(1),
+              expiresAtMs: z.number().int().positive(),
+            })
+            .strict(),
+          parentJobId: z.string().min(1),
+          parentSessionId: z.string().min(1),
+        })
+        .strict(),
+    ),
+    consumedNonceCheckpoint: z.number().int().nonnegative(),
+    recoveryGrantId: z.string().min(1),
+    authorityGeneration: z.number().int().positive(),
+  })
+  .strict();
 
 export function decodeChildPrincipalTransfer(payload: unknown): ChildPrincipalTransfer | null {
   const parsed = childPrincipalTransferSchema.safeParse(payload);
@@ -203,7 +212,8 @@ export class ChildPrincipalRegistry {
         entry.authorization.expiresAtMs <= nowMs ||
         !acceptedJobIds.has(entry.parentJobId) ||
         !this.matchesOrigin(entry.parentJobId, entry.authorization.namespace)
-      ) return false;
+      )
+        return false;
       try {
         adopted.set(entry.handle, {
           issuer: entry.issuer,
@@ -251,16 +261,25 @@ export class ChildPrincipalRegistry {
   ): boolean {
     if (this.ledger === null) return false;
     let current: number;
-    try { current = this.ledger.generation(); } catch { return false; }
+    try {
+      current = this.ledger.generation();
+    } catch {
+      return false;
+    }
     if (generation <= current) return false;
     const grant = this.ledger.prepareGrant(`${attemptId}:recovery:${generation}`, current);
     if (grant === null) return false;
-    return this.adoptTransfer({
-      ...transfer,
-      authorityGeneration: current,
-      recoveryGrantId: grant.grantId,
-      consumedNonceCheckpoint: grant.checkpoint,
-    }, acceptedJobIds, generation, nowMs);
+    return this.adoptTransfer(
+      {
+        ...transfer,
+        authorityGeneration: current,
+        recoveryGrantId: grant.grantId,
+        consumedNonceCheckpoint: grant.checkpoint,
+      },
+      acceptedJobIds,
+      generation,
+      nowMs,
+    );
   }
 
   fenceAuthentication(): void {
@@ -273,8 +292,7 @@ export class ChildPrincipalRegistry {
     try {
       const current = this.ledger.generation();
       const target = generation ?? current + 1;
-      if (current > target ||
-        (current < target && !this.ledger.advanceGeneration(current, target))) return false;
+      if (current > target || (current < target && !this.ledger.advanceGeneration(current, target))) return false;
       reclaimedGeneration = target;
     } catch {
       return false;

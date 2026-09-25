@@ -68,8 +68,7 @@ const HANDOFF_REFUSAL_CASES = [
     },
     userMessage:
       'Handoff refused for socket /run/coral/coordinator.sock: the address remained bound without an answering coordinator.',
-    remediation:
-      'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
+    remediation: 'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
     exitCode: 75,
     observation: 'not_observed',
     retryable: false,

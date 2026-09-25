@@ -57,7 +57,7 @@ import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
 import { recoverJobLocations } from '../jobs/location-recovery.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
-import { encodeResolvedStoreEpoch, inspectCurrentStore } from '../store/epoch.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
 import { observeSuccessionWriterGeneration } from '../store/succession-writer-generation.js';
 import { createJobsStartupRunner } from '../jobs/startup.js';
 import { TypedEventBus } from './event-bus.js';
@@ -234,21 +234,31 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   } = options;
   const flavor = deriveCoordinatorFlavor(options);
   const runtime = providedRuntime ?? createRealRuntime(flavor);
-  const jobLocations = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+  const jobLocations = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
   let core: CoordinatorCoreResult | null = null;
+  const activeStoreEpoch = (): ResolvedStoreEpoch | null => {
+    const opened = core?.openedStoreEpoch() ?? null;
+    if (opened !== null) return opened;
+    const inspected = inspectCurrentStore(runtime);
+    return inspected.kind === 'current' ? inspected.epoch : null;
+  };
   const beforeJobAppend = (input: Parameters<JobLocationIndex['beforeAppend']>[0]): void => {
     if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)) return;
-    const active = inspectCurrentStore(runtime);
-    if (active.kind !== 'current') throw new Error('Job append requires an active store epoch');
+    const active = activeStoreEpoch();
+    if (active === null) throw new Error('Job append requires an active store epoch');
     const generation = observeSuccessionWriterGeneration(runtime);
-    const controller = core === null || generation === null ||
-      generation.storeRoot !== (active.epoch.canonicalStoreRoot ?? active.epoch.storeRoot) ||
-      generation.epoch !== active.epoch.epoch ? undefined : {
-        buildSetId: core.identity.buildSetId,
-        instanceId: core.identity.instanceId,
-        controlGeneration: generation.generation,
-      };
-    jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(active.epoch), controller);
+    const controller =
+      core === null ||
+      generation === null ||
+      generation.storeRoot !== (active.canonicalStoreRoot ?? active.storeRoot) ||
+      generation.epoch !== active.epoch
+        ? undefined
+        : {
+            buildSetId: core.identity.buildSetId,
+            instanceId: core.identity.instanceId,
+            controlGeneration: generation.generation,
+          };
+    jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(runtime, active), controller);
   };
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
@@ -366,12 +376,17 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       const progressStore = getStoreServices().progressStore;
       const detail = progressStore.loadJobProjectionDetail(jobId);
       if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
-      jobLocations.recordTerminal(jobId, {
-        status: detail.status,
-        events: progressStore.readJobEvents(jobId),
-        readiness: deriveLaunchReadiness(detail),
-        exit: detail.exit,
-      }, resultPath, seq);
+      jobLocations.recordTerminal(
+        jobId,
+        {
+          status: detail.status,
+          events: progressStore.readJobEvents(jobId),
+          readiness: deriveLaunchReadiness(detail),
+          exit: detail.exit,
+        },
+        resultPath,
+        seq,
+      );
     },
   );
   // Every commit path that can record a job terminal ends here, so the export is owed by the commit
@@ -585,9 +600,9 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       const runJobsStartup = createJobsStartupRunner(runCoordinatorStartupRecovery);
       const db = getStoreDb();
       const driver = getConsumerDriver();
-      const activeEpoch = inspectCurrentStore(runtime);
-      if (activeEpoch.kind !== 'current') throw new Error('Job recovery requires an active store epoch');
-      recoverJobLocations(jobLocations, encodeResolvedStoreEpoch(activeEpoch.epoch), progressStore);
+      const activeEpoch = activeStoreEpoch();
+      if (activeEpoch === null) throw new Error('Job recovery requires an active store epoch');
+      recoverJobLocations(jobLocations, encodeResolvedStoreEpoch(runtime, activeEpoch), progressStore);
 
       // Base journal projection consumers register cursor-only — projection
       // state is written by the commit-time reducer (spec §3.3); the cursor

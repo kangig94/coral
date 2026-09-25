@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import {
   coordinatorFilesForHome,
   createPluginFixture,
@@ -25,7 +26,7 @@ afterEach(async () => {
 });
 
 describe('AC1 consent gate against shipped v0.10.13', () => {
-  it('exits zero while the shipped incumbent keeps serving and leaves no signal or upgrade intent', async () => {
+  it('exits zero while the shipped incumbent keeps serving, sends no signal, and records the outranking intent', async () => {
     const home = mkdtempSync(join(tmpdir(), 'coral-consent-home-'));
     roots.push(home);
     const shipped = createShippedPluginFixture(roots, 'v0.10.13');
@@ -45,6 +46,9 @@ describe('AC1 consent gate against shipped v0.10.13', () => {
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     expect(existsSync(join(runDir, 'handoff-signal.json'))).toBe(false);
     expect(existsSync(join(runDir, 'handoff-signal.v2.json'))).toBe(false);
-    expect(existsSync(join(runDir, 'upgrade.v1.json'))).toBe(false);
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      kind: 'readable',
+      intent: { incumbent: { version: '0.10.13' }, target: { build: { version: '0.10.14' } } },
+    });
   }, 30_000);
 });

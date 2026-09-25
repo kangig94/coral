@@ -48,6 +48,7 @@ import { createStoreServicesRef, type StoreServicesRef } from './store-services-
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
 import { ChildPrincipalNonceLedger } from '../../infra/child-principal-nonce-ledger.js';
 import { readJobLaunchOriginNamespace } from '../../jobs/succession-coverage.js';
+import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { isLivePhase } from '../../jobs/phase.js';
 import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
@@ -409,7 +410,9 @@ export function createCoordinatorWorld(
     ...(childNonceLedger === undefined ? {} : { ledger: childNonceLedger }),
     originNamespace: (jobId) => {
       const services = storeServicesRef.tryGet();
-      return services === null ? null : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId);
+      return services === null
+        ? null
+        : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId, createDefaultStoreReadContext());
     },
   });
   const pluginRegistry = createPluginRegistry({
@@ -451,12 +454,15 @@ export function createCoordinatorWorld(
         recordContainment,
         acceptFailedSpawnCleanup,
       ) => {
+        const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
         const dbDir = runtime.paths.coral.store.dbDir;
-        const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-        if (epoch === null) throw new Error('Provider host custody requires a selected store epoch.');
+        const epoch = activeEpoch === null ? resolveCurrentStoreEpoch(runtime.storage, dbDir) : null;
+        if (activeEpoch === null && epoch === null) {
+          throw new Error('Provider host custody requires a selected store epoch.');
+        }
         const ticket = recordChildRoleCustodyIntent({
           runDir: runtime.paths.coral.coordinator.runDir,
-          epoch: join(dbDir, `epoch-${epoch}`),
+          epoch: activeEpoch ?? join(dbDir, `epoch-${epoch}`),
           owner: 'provider-host',
           operationId: `${spawnOptions.provider}:${generation}`,
           capsule: null,

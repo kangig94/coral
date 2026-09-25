@@ -47,6 +47,7 @@ const DOMAIN_BUCKET_PREFIXES = [
   'testing',
   'simulation',
   'expansion',
+  'upgrade-waiter',
 ] as const;
 
 type DomainBucket = (typeof DOMAIN_BUCKET_PREFIXES)[number];

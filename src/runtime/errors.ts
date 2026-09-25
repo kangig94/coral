@@ -746,8 +746,7 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   handoff_socket_holder_unverified: {
     userMessage: (context) =>
       `Handoff refused for socket ${context.socketPath}: the address remained bound without an answering coordinator.`,
-    remediation:
-      'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
+    remediation: 'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
     exitCode: 75,
     observation: 'not_observed',
   },
@@ -947,10 +946,7 @@ const OPERATOR_FACING_FILESYSTEM_CONTEXT_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 const OPERATOR_FACING_CLOSED_CONTEXT_VALUES: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
-  stage: new Set<HandoffRefusalContextByCode[HandoffRefusalCode]['stage']>([
-    'shutdown-request',
-    'handoff-deadline',
-  ]),
+  stage: new Set<HandoffRefusalContextByCode[HandoffRefusalCode]['stage']>(['shutdown-request', 'handoff-deadline']),
 });
 
 function parseSetupErrorIdentifier(value: unknown): string | null {

@@ -46,9 +46,7 @@ function formatEpochMetadata(disposition: StoreEpochMetadataDisposition): string
 }
 
 function retentionInstruction(target: 'legacy' | 'gen2'): readonly string[] {
-  return target === 'gen2'
-    ? ['Closed epochs are reclaimed after their historical results are retained.']
-    : [];
+  return target === 'gen2' ? ['Closed epochs are reclaimed after their historical results are retained.'] : [];
 }
 
 export function formatStoreResetReport(report: StoreResetPublicReport): string {
@@ -104,9 +102,10 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
   result = constrainStoreResetRendererInput(result);
   const epoch = result.epoch;
   const lineage = epoch.epochKey?.split(':')[0] ?? 'unobservable';
-  const relativeDatabase = epoch.role === 'protected'
-    ? `<protected-store-root>/${lineage}/epoch-${epoch.epoch}/store.db`
-    : `epoch-${epoch.epoch}/store.db`;
+  const relativeDatabase =
+    epoch.role === 'protected'
+      ? `<protected-store-root>/${lineage}/epoch-${epoch.epoch}/store.db`
+      : `epoch-${epoch.epoch}/store.db`;
   const inspectionDatabase = epoch.role === 'protected' ? relativeDatabase : `<store-root>/${relativeDatabase}`;
   return [
     '# Coral store epoch report',
@@ -149,14 +148,19 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     ...(result.upgradeProblem === undefined ? [] : [formatUpgradeRecordProblem(result.upgradeProblem), '']),
     'Epoch key | Epoch | Address | Role | Closure | Custody | Result retention | Data outcome | Next automatic action or hold | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
     ...result.epochs.map((epoch) => {
-      const address = epoch.role === 'protected' || (epoch.role === 'unobservable' && epoch.epochKey != null)
-        ? `<protected-store-root>/${epoch.epochKey?.split(':')[0] ?? 'unobservable'}/epoch-${epoch.epoch}`
-        : `epoch-${epoch.epoch}`;
+      const address =
+        epoch.role === 'protected' ||
+        (epoch.role === 'unobservable' && epoch.epochKey !== null && epoch.epochKey !== undefined)
+          ? `<protected-store-root>/${epoch.epochKey?.split(':')[0] ?? 'unobservable'}/epoch-${epoch.epoch}`
+          : `epoch-${epoch.epoch}`;
       let next: string;
       if (epoch.role === 'current') {
         next = 'serving current epoch';
-      } else if (epoch.role === 'unobservable' && epoch.closureDisposition === 'closed' &&
-          epoch.resultRetention === 'retained') {
+      } else if (
+        epoch.role === 'unobservable' &&
+        epoch.closureDisposition === 'closed' &&
+        epoch.resultRetention === 'retained'
+      ) {
         next = 'closed epoch address is absent; retained historical results remain addressable';
       } else if (epoch.role === 'unobservable') {
         next = 'hold: epoch address cannot be verified; retained for reconciliation';
@@ -212,7 +216,8 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
         ]
       : []),
     ...(result.epochs.some((epoch) => epoch.role !== 'current' && epoch.closureDisposition !== 'closed')
-      ? [] : retentionInstruction(target)),
+      ? []
+      : retentionInstruction(target)),
   ].join('\n');
 }
 

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { withImmediate, type Database } from './db.js';
 import { sha256Hex } from '../infra/hash.js';
 import { bindCustodyIdentity, recordCustodyIntent } from './custody-ledger.js';
+import type { Runtime } from '../runtime/ports.js';
 import {
   decodeProviderOperationRecord,
   encodeProviderOperationRecord,
@@ -838,9 +839,9 @@ export function insertProviderOperation(db: Database, record: ProviderOperationR
 export function insertProviderOperationWithCustody(
   db: Database,
   record: ProviderOperationRecord,
-  custody: Readonly<{ runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>,
+  custody: Readonly<{ runtime: Runtime; runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>,
 ): void {
-  const intent = recordCustodyIntent(custody.runDir, {
+  const intent = recordCustodyIntent(custody.runtime, custody.runDir, {
     effect: 'provider-operation-publication',
     epoch: custody.epoch,
     owner: 'provider-operation',
@@ -851,7 +852,7 @@ export function insertProviderOperationWithCustody(
     bindWithinMs: custody.bindWithinMs,
   });
   insertProviderOperation(db, record);
-  bindCustodyIdentity(custody.runDir, intent, {
+  bindCustodyIdentity(custody.runtime, custody.runDir, intent, {
     process: null,
     capsule: null,
     observedAtMs: custody.nowMs,

@@ -34,9 +34,8 @@ Darwin therefore sends no signal. A live durable launch is different: `DurableLa
 (`src/runtime/ports.ts`) retains an exact wrapper-scoped signal authority, and durable cleanup supplies it to
 `reapRecordedContainment` for as long as the wrapper has not exited.
 
-`verifySignalTarget` (`src/coordinator/handoff.ts`) refuses on Darwin before it reaches the anchor check. That
-was the dangerous half: a durable handoff record can be arbitrarily old and can name a pid this build never
-spawned, so the recorded identity is the _only_ thing standing between the coordinator and a stranger.
+The handoff path in `src/coordinator/handoff.ts` no longer signals a live incumbent. A durable handoff
+record can be arbitrarily old and name a pid this build never spawned, so it cannot authorize termination.
 
 ## Resolution
 

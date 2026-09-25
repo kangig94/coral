@@ -6,6 +6,7 @@
     "src/coordinator/bootstrap.ts",
     "src/cli/bootstrap.ts",
     "src/providers/claude/appserver/server.ts",
+    "src/upgrade-waiter/main.ts",
     // Engine expansions are loaded dynamically by string specifier via src/expansion/bundled.ts,
     // which knip's static graph cannot follow — declare them as entrypoints.
     "src/engines/*/expansion.ts",

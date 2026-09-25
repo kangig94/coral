@@ -2,6 +2,7 @@ import type { ProcessIncarnation } from '../../infra/node-process.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 import type { TimePort, TimerHandle } from '../../infra/port-types.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { assertNever, errorMessage } from '../../infra/error-format.js';
 import type { AppServerProxyPlacementResult } from '../../jobs/contracts/app-server-proxy-route.js';
 import type { ProviderOperationBindingPort } from '../../jobs/contracts/provider-operation-lifecycle.js';
@@ -334,7 +335,7 @@ function isTemporarilyUnavailableAcquisition(
 
 type ProviderOperationReconcilerDeps = Readonly<{
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
-  custody?: () => Readonly<{ runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
+  custody?: () => Readonly<{ runtime: Runtime; runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
   acquireAuthority?: (
     record: ProviderOperationRecord,

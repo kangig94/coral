@@ -26,6 +26,7 @@ export interface CoordinatorDiscoveryRecord {
   host?: string;
   version?: string;
   instanceId?: string;
+  processStartedAt?: number;
   incarnation?: ProcessIncarnation;
   storeEpoch?: string;
 }
@@ -74,6 +75,7 @@ const coordinatorDiscoveryRecordSchema = z
     host: nonEmptyStringSchema.optional(),
     version: nonEmptyStringSchema.optional(),
     instanceId: nonEmptyStringSchema.optional(),
+    processStartedAt: positiveIntegerSchema.optional(),
     incarnation: durableProcessIncarnationSchema.optional(),
     storeEpoch: z
       .string()
@@ -95,7 +97,14 @@ function discoveryFilePath(runtime: DiscoveryRuntime): string {
 }
 
 export function writeDiscoveryRecord(record: CoordinatorDiscoveryRecord, runtime: DiscoveryWriterRuntime): boolean {
-  const infoPath = discoveryFilePath(runtime);
+  return writeDiscoveryRecordAtPath(record, runtime, discoveryFilePath(runtime));
+}
+
+function writeDiscoveryRecordAtPath(
+  record: CoordinatorDiscoveryRecord,
+  runtime: DiscoveryWriterRuntime,
+  infoPath: string,
+): boolean {
   const incarnation =
     record.incarnation ??
     runtime.process.readProcessIncarnation(record.pid, runtime.env.platform() as NodeJS.Platform) ??
@@ -143,10 +152,13 @@ export type DiscoveryRead =
   | Readonly<{ kind: 'missing' }>
   | Readonly<{ kind: 'undecodable'; reason: 'corrupt-json' | 'shape-rejected' }>;
 
-export function readDiscoveryRecordDisposition(runtime: DiscoveryRuntime): DiscoveryRead {
+export function readDiscoveryRecordDisposition(
+  runtime: DiscoveryRuntime,
+  infoPath = discoveryFilePath(runtime),
+): DiscoveryRead {
   let raw: string;
   try {
-    raw = runtime.storage.readFileSync(discoveryFilePath(runtime), 'utf-8');
+    raw = runtime.storage.readFileSync(infoPath, 'utf-8');
   } catch (error: unknown) {
     if (isNoEntryError(error)) return { kind: 'missing' };
     throw error;
@@ -169,7 +181,11 @@ export function readDiscoveryRecordDisposition(runtime: DiscoveryRuntime): Disco
  * wants `readDiscoveryRecordDisposition`, and keeping this private is what makes that the only door.
  */
 function readDiscoveryRecord(runtime: DiscoveryRuntime): CoordinatorDiscoveryRecord | null {
-  const read = readDiscoveryRecordDisposition(runtime);
+  const primary = readDiscoveryRecordDisposition(runtime);
+  const read =
+    primary.kind === 'missing'
+      ? readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile)
+      : primary;
   return read.kind === 'record' ? read.record : null;
 }
 
@@ -202,7 +218,11 @@ export type CoordinatorProbe =
  * subprocesses to derive a token this function discards.
  */
 export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
-  const read = readDiscoveryRecordDisposition(runtime);
+  const primary = readDiscoveryRecordDisposition(runtime);
+  const read =
+    primary.kind === 'missing'
+      ? readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile)
+      : primary;
   if (read.kind === 'missing') return { kind: 'absent' };
   if (read.kind === 'undecodable') {
     // Said out loud because it is otherwise invisible and its consequence arrives elsewhere: a contender that
@@ -226,7 +246,12 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
 }
 
 export function writeBackendInfo(info: BackendInfo, runtime: DiscoveryWriterRuntime): boolean {
-  return writeDiscoveryRecord(info, runtime);
+  if (!writeDiscoveryRecord(info, runtime)) return false;
+  return writeDiscoveryRecordAtPath(
+    { ...info, socketPath: runtime.paths.coral.coordinator.legacySocketPath },
+    runtime,
+    runtime.paths.coral.coordinator.legacyInfoFile,
+  );
 }
 
 export function readBackendInfo(runtime: DiscoveryRuntime): BackendInfo | null {
@@ -276,9 +301,21 @@ function backendInfoRemovalRefusal(
  * remain in place. Operational failures are returned because shutdown must still release its other authority.
  */
 export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntime): BackendInfoRemovalResult {
+  const primary = removeBackendInfoAtPathIfOwner(owner, runtime, discoveryFilePath(runtime));
+  const legacy = removeBackendInfoAtPathIfOwner(owner, runtime, runtime.paths.coral.coordinator.legacyInfoFile);
+  if (primary.kind === 'refused') return primary;
+  if (legacy.kind === 'refused') return legacy;
+  return primary.kind === 'removed' || legacy.kind === 'removed' ? { kind: 'removed' } : { kind: 'unchanged' };
+}
+
+function removeBackendInfoAtPathIfOwner(
+  owner: string,
+  runtime: DiscoveryRuntime,
+  infoPath: string,
+): BackendInfoRemovalResult {
   let read: DiscoveryRead;
   try {
-    read = readDiscoveryRecordDisposition(runtime);
+    read = readDiscoveryRecordDisposition(runtime, infoPath);
   } catch (error: unknown) {
     return backendInfoRemovalRefusal('read', 'filesystem-operation-failed', error);
   }
@@ -298,7 +335,7 @@ export function removeBackendInfoIfOwner(owner: string, runtime: DiscoveryRuntim
   }
 
   try {
-    runtime.storage.unlinkSync(discoveryFilePath(runtime));
+    runtime.storage.unlinkSync(infoPath);
   } catch (error: unknown) {
     if (isNoEntryError(error)) {
       return { kind: 'unchanged' };

@@ -100,7 +100,10 @@ describe('upgrade intent', () => {
       blockers: [{ owner: 'legacy-incumbent', reason: 'incumbent still serving' }],
       retryCondition: { kind: 'incumbent-retirement' },
     });
-    expect(visibleUpgradeIntent({ ...deferred.intent, disposition: 'pending', successionPreparation: { stage: 'prepared' } })?.phase).toBe('prepared');
+    expect(
+      visibleUpgradeIntent({ ...deferred.intent, disposition: 'pending', successionPreparation: { stage: 'prepared' } })
+        ?.phase,
+    ).toBe('prepared');
   });
 
   it('emits one audit event for each visible status change', async () => {
@@ -114,7 +117,9 @@ describe('upgrade intent', () => {
     const unchanged = await compareAndSwapUpgradeIntent(dir, initial.intent.revision, pendingIntent('first'));
     if (unchanged.kind !== 'written') throw new Error('intent not rewritten');
     await compareAndSwapUpgradeIntent(dir, unchanged.intent.revision, {
-      ...pendingIntent('first'), disposition: 'deferred', blockers: [{ owner: 'jobs', reason: 'job-1' }],
+      ...pendingIntent('first'),
+      disposition: 'deferred',
+      blockers: [{ owner: 'jobs', reason: 'job-1' }],
     });
     expect(events).toHaveLength(2);
   });
@@ -130,7 +135,7 @@ describe('upgrade intent', () => {
     stored.futureField = 'keep';
     (stored.target as Record<string, unknown>).futureTargetField = 'keep';
     ((stored.target as Record<string, unknown>).build as Record<string, unknown>).futureBuildField = 'keep';
-    (stored.blockers as Record<string, unknown>[])[0]!.futureBlockerField = 'keep';
+    (stored.blockers as Record<string, unknown>[])[0].futureBlockerField = 'keep';
     writeFileSync(path, JSON.stringify(stored));
 
     const written = await compareAndSwapUpgradeIntent(dir, 0, {
@@ -142,7 +147,7 @@ describe('upgrade intent', () => {
     expect(result.futureField).toBe('keep');
     expect((result.target as Record<string, unknown>).futureTargetField).toBe('keep');
     expect(((result.target as Record<string, unknown>).build as Record<string, unknown>).futureBuildField).toBe('keep');
-    expect((result.blockers as Record<string, unknown>[])[0]!.futureBlockerField).toBe('keep');
+    expect((result.blockers as Record<string, unknown>[])[0].futureBlockerField).toBe('keep');
 
     writeFileSync(path, JSON.stringify({ ...result, version: 'v2' }));
     expect(readUpgradeIntent(dir)).toEqual({ kind: 'unsupported', version: 'v2' });
@@ -174,9 +179,9 @@ describe('upgrade intent', () => {
       kind: 'readable',
       intent: { disposition: 'attempting', attemptId: 'attempt-1', completionReceipt: null },
     });
-    await expect(
-      compareAndSwapUpgradeIntent(dir, 1, { ...spawned, disposition: 'completed' }),
-    ).rejects.toThrow('Completion requires a serving receipt');
+    await expect(compareAndSwapUpgradeIntent(dir, 1, { ...spawned, disposition: 'completed' })).rejects.toThrow(
+      'Completion requires a serving receipt',
+    );
     expect(readUpgradeIntent(dir)).toMatchObject({
       kind: 'readable',
       intent: { disposition: 'attempting', completionReceipt: null },

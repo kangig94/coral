@@ -200,7 +200,7 @@ describe('workflow handoff (cross-domain integration)', () => {
             waitRequests.push({
               ...req,
               jobIds: [...req.jobIds],
-              ...(req.cursor ? { cursor: { afterSeq: req.cursor.afterSeq } } : {}),
+              ...(req.cursor ? { cursor: structuredClone(req.cursor) } : {}),
             });
             return emitOnce(req.jobIds.map((jobId) => terminalEvent(jobId, `result:${jobId}`)));
           }),

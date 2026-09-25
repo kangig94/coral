@@ -464,9 +464,12 @@ export async function coordinateActiveStoreSelection(
     if (normalized.kind === 'selected-newer') {
       return await handoffOrRecoverSelectedStore(runtime, options, normalized.selection, adoption);
     }
-    return { kind: 'opened', ...(normalized.publishCurrent
-      ? await settleThenPublishCurrent(runtime, options, null, adoption)
-      : await settleActiveStore(runtime, options, null, adoption)) };
+    return {
+      kind: 'opened',
+      ...(normalized.publishCurrent
+        ? await settleThenPublishCurrent(runtime, options, null, adoption)
+        : await settleActiveStore(runtime, options, null, adoption)),
+    };
   } finally {
     adoption();
   }

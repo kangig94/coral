@@ -200,9 +200,12 @@ describe('continuation lease retention integration', () => {
   it('allows a successor to claim a session opened under the incumbent namespace', async () => {
     const { runtime, db, coordinatorCommit, sessionManager, reactor } = createHarness();
     const original = await openClaimedSession(sessionManager, 'incumbent-job');
-    expect(await sessionManager.releaseJobClaimAtomic(original.sessionId, {
-      expectedActiveJobId: 'incumbent-job', expectedVersion: original.version,
-    })).toBe(true);
+    expect(
+      await sessionManager.releaseJobClaimAtomic(original.sessionId, {
+        expectedActiveJobId: 'incumbent-job',
+        expectedVersion: original.version,
+      }),
+    ).toBe(true);
 
     const successor = new SessionManager('/tmp/project', runtime, coordinatorCommit, undefined, db);
     successor.allocate({
@@ -214,7 +217,8 @@ describe('continuation lease retention integration', () => {
     });
     expect(await successor.claimForJobAtomic(original.sessionId, 'successor-job')).toBe(true);
     expect(successor.get('claude', original.sessionId)).toMatchObject({
-      backendNamespace: 'test-ns', activeJobId: 'successor-job',
+      backendNamespace: 'test-ns',
+      activeJobId: 'successor-job',
     });
     await reactor.dispose();
     db.close();

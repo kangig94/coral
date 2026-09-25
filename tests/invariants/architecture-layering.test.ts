@@ -65,6 +65,7 @@ const SECURITY_ALLOWED = new Set([
 ]);
 const TRANSPORT_ALLOWED = new Set([
   'src/expansion/rpc-contract.ts',
+  'src/jobs/contracts/addressing.ts',
   'src/jobs/contracts/abort-registry.ts',
   'src/jobs/contracts/event-stream.ts',
   'src/jobs/launch.ts',

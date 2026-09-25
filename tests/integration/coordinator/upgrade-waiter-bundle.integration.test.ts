@@ -9,6 +9,7 @@ import {
 } from '#src/infra/bundle-manifest-address.js';
 import { strictBundleManifestSchema } from '#src/infra/bundle-manifest.js';
 import { readSuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { assertLifecycleBundleSetFresh } from '#tests/support/bundle-build-freshness.js';
 
 describe('upgrade waiter bundle', () => {
@@ -22,7 +23,7 @@ describe('upgrade waiter bundle', () => {
     const packageFiles = JSON.parse(readFileSync('package.json', 'utf8')).files as string[];
 
     expect(waiter.length).toBeGreaterThan(0);
-    expect(readSuccessionCapabilities(bundleDir, manifest)).toMatchObject({
+    expect(readSuccessionCapabilities(createRealRuntime('prod'), bundleDir, manifest)).toMatchObject({
       kind: 'declared',
       capabilities: { protocols: ['prepare', 'commit'] },
     });

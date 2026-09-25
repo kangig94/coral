@@ -3,6 +3,7 @@ const { Server } = require('node:net');
 
 const boundary = process.env.CORAL_TEST_SHIPPED_IPC_BOUNDARY;
 const marker = process.env.CORAL_TEST_SHIPPED_IPC_MARKER;
+const matchingSocket = process.env.CORAL_TEST_SHIPPED_IPC_SOCKET;
 const delayMs = Number(process.env.CORAL_TEST_SHIPPED_IPC_DELAY_MS);
 let held = false;
 
@@ -10,7 +11,12 @@ if (marker && Number.isFinite(delayMs) && delayMs > 0) {
   if (boundary === 'starting') {
     const emit = Server.prototype.emit;
     Server.prototype.emit = function (event, ...args) {
-      if (!held && event === 'listening' && typeof this.address() === 'string') {
+      if (
+        !held &&
+        event === 'listening' &&
+        typeof this.address() === 'string' &&
+        (matchingSocket === undefined || this.address() === matchingSocket)
+      ) {
         held = true;
         writeFileSync(marker, 'bound');
         setTimeout(() => emit.call(this, event, ...args), delayMs);

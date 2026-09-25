@@ -31,7 +31,7 @@ import {
   listStoreEpochHolders,
   listStoreEpochResidues,
   listStoreEpochs,
-  encodeResolvedStoreEpoch,
+  inspectResolvedStoreEpochKey,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
   type StoreEpochResidueListEntry,
@@ -160,20 +160,26 @@ export function listStoreResetIncidentsLocal(
       expectedBuild: manifest,
     });
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
-    const index = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     const upgradeRead = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
     const upgrade = upgradeRead.kind === 'readable' ? visibleUpgradeIntent(upgradeRead.intent) : null;
     const upgradeProblem = upgradeIntentProblem(upgradeRead);
     return {
-      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime).map((epoch) => {
-        if (epoch.resolved === null) return { ...epoch, resultRetention: 'unobservable' as const };
-        try {
-          return { ...epoch, resultRetention: index.resultsReleased(encodeResolvedStoreEpoch(epoch.resolved))
-            ? 'retained' as const : 'held' as const };
-        } catch {
-          return { ...epoch, resultRetention: 'unreadable' as const };
-        }
-      }),
+      epochs:
+        target === 'legacy'
+          ? []
+          : listStoreEpochs(runtime).map((epoch) => {
+              const epochKey = epoch.resolved === null ? null : inspectResolvedStoreEpochKey(runtime, epoch.resolved);
+              if (epochKey === null) return { ...epoch, resultRetention: 'unobservable' as const };
+              try {
+                return {
+                  ...epoch,
+                  resultRetention: index.resultsReleased(epochKey) ? ('retained' as const) : ('held' as const),
+                };
+              } catch {
+                return { ...epoch, resultRetention: 'unreadable' as const };
+              }
+            }),
       ...(upgrade === null ? {} : { upgrade }),
       ...(upgradeProblem === null ? {} : { upgradeProblem }),
       holders: target === 'legacy' ? [] : listStoreEpochHolders(runtime),
@@ -220,8 +226,9 @@ export async function reportStoreResetLocal(
     const manifest = requireCurrentBuild(dependencies);
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     const epochs = listStoreEpochs(runtime);
-    const matches = epochs.filter((candidate) =>
-      candidate.epochKey === reference || (isCanonicalEpoch(reference) && candidate.epoch === reference));
+    const matches = epochs.filter(
+      (candidate) => candidate.epochKey === reference || (isCanonicalEpoch(reference) && candidate.epoch === reference),
+    );
     if (matches.length > 1) throw new StoreResetCliError('store_reset_reporting_failed');
     const epoch = matches[0];
     if (epoch === undefined) {

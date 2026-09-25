@@ -276,7 +276,7 @@ describe('real backend-startup delegation', () => {
         expect(status).toBe(75);
         expect(run.stderr()).toContain('[code=handoff_socket_holder_unverified]');
         expect(run.stderr()).toContain(
-          `Handoff refused at the startup deadline for socket ${files.socketPath}: the socket remained bound but no verified holder pid was available.`,
+          `Handoff refused for socket ${files.socketPath}: the address remained bound without an answering coordinator.`,
         );
       } else {
         // The delegated child's own terminal is not a fact about why the coordinator is unreachable: 23 is
@@ -383,7 +383,7 @@ describe('real backend-startup delegation', () => {
     expect(status).toBe(75);
     expect(run.stderr()).toContain('[code=handoff_socket_holder_unverified]');
     expect(run.stderr()).toContain(
-      `Handoff refused at the startup deadline for socket ${files.socketPath}: the socket remained bound but no verified holder pid was available.`,
+      `Handoff refused for socket ${files.socketPath}: the address remained bound without an answering coordinator.`,
     );
 
     // The first hop is published by the detached backend the CLI spawned, which outlives it, so the CLI's

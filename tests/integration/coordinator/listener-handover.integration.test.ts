@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createSuccessionAttemptChannel } from '#src/coordinator/succession/attempt-child.js';
+import { createRealSuccessionAttemptPorts } from '#src/runtime/succession-attempt.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
 
 const fixture = fileURLToPath(new URL('./fixtures/listener-handover-child.cjs', import.meta.url));
@@ -107,7 +108,7 @@ describe('succession listening-handle handover', () => {
         },
       });
     }
-    const primary: IpcListener = { ...listeners[0]!, compatibilityListeners: [listeners[1]!] };
+    const primary: IpcListener = { ...listeners[0], compatibilityListeners: [listeners[1]] };
     const child = spawn(process.execPath, [fixture, 'successor', 'attempt-1'], {
       stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
     });
@@ -116,14 +117,21 @@ describe('succession listening-handle handover', () => {
       child.once('spawn', resolve);
       child.once('error', reject);
     });
-    const attempt = await createSuccessionAttemptChannel(child, 'attempt-1', primary, 'boot-token', {
-      epochKey: 'fixture-epoch',
-      receipts: [],
-    });
+    const attempt = await createSuccessionAttemptChannel(
+      createRealSuccessionAttemptPorts(),
+      child,
+      'attempt-1',
+      primary,
+      'boot-token',
+      {
+        epochKey: 'fixture-epoch',
+        receipts: [],
+      },
+    );
     expect(attempt.childIdentity.pid).toBe(child.pid);
     expect(attempt.childIdentity.incarnation.length).toBeGreaterThan(0);
     const overlapAccepted = new Promise<void>((resolve) => primary.server.once('connection', () => resolve()));
-    const overlapSocket = createConnection(paths[0]!);
+    const overlapSocket = createConnection(paths[0]);
     const overlapResponse = new Promise<string>((resolve, reject) => {
       let body = '';
       overlapSocket.on('data', (chunk) => {
@@ -145,7 +153,7 @@ describe('succession listening-handle handover', () => {
     await transfer;
     const stopForwarding = attempt.forwardConnections(primary);
     expect(await overlapResponse).toBe('forwarded\n');
-    expect(['forwarded\n', 'successor\n']).toContain(await responseAt(paths[1]!));
+    expect(['forwarded\n', 'successor\n']).toContain(await responseAt(paths[1]));
     stopForwarding();
     for (const path of paths) await expectBusy(path);
   });
@@ -163,10 +171,17 @@ describe('succession listening-handle handover', () => {
       child.once('spawn', resolve);
       child.once('error', reject);
     });
-    const attempt = await createSuccessionAttemptChannel(child, 'attempt-2', listener, 'boot-token', {
-      epochKey: 'fixture-epoch',
-      receipts: [],
-    });
+    const attempt = await createSuccessionAttemptChannel(
+      createRealSuccessionAttemptPorts(),
+      child,
+      'attempt-2',
+      listener,
+      'boot-token',
+      {
+        epochKey: 'fixture-epoch',
+        receipts: [],
+      },
+    );
     await expect(attempt.transferListeners(listener)).rejects.toThrow();
     await expectBusy(path);
     expect(await responseAt(path)).toBe('incumbent\n');
@@ -185,10 +200,17 @@ describe('succession listening-handle handover', () => {
       child.once('spawn', resolve);
       child.once('error', reject);
     });
-    const attempt = await createSuccessionAttemptChannel(child, 'attempt-hold', listener, 'boot-token', {
-      epochKey: 'agreed-epoch',
-      receipts: [],
-    });
+    const attempt = await createSuccessionAttemptChannel(
+      createRealSuccessionAttemptPorts(),
+      child,
+      'attempt-hold',
+      listener,
+      'boot-token',
+      {
+        epochKey: 'agreed-epoch',
+        receipts: [],
+      },
+    );
     const observedAck = messageFrom(child, 'ack');
     await attempt.allowCommittedOpen();
     await observedAck;

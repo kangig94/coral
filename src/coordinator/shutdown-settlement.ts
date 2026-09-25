@@ -70,7 +70,8 @@ export type ShutdownObligation<Label extends string = ShutdownObligationLabel> =
   UndischargedRemainder,
   ShutdownRetainedAuthorityContribution,
   ShutdownRemainderSubject
-> & Readonly<{ label: Label }>;
+> &
+  Readonly<{ label: Label }>;
 
 export type ShutdownAuthorityReleaseBoundary = SettlementAuthorityReleaseBoundary<
   ShutdownRetainedAuthorityContribution,
@@ -92,9 +93,10 @@ type BaseShutdownSettlementLedger = SettlementLedger<
 export type ShutdownSettlementLedger<Label extends string = ShutdownObligationLabel> = Omit<
   BaseShutdownSettlementLedger,
   'run'
-> & Readonly<{
-  run: (obligation: ShutdownObligation<Label>) => ReturnType<BaseShutdownSettlementLedger['run']>;
-}>;
+> &
+  Readonly<{
+    run: (obligation: ShutdownObligation<Label>) => ReturnType<BaseShutdownSettlementLedger['run']>;
+  }>;
 
 export type ShutdownSettlementLedgerOptions = Readonly<{
   budgetMs: number;

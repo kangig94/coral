@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CAPABILITIES, type Capability } from '#src/security/capability.js';
 import { rpcCatalog } from '#src/transport/rpc/catalog.js';
 import { operationalRouteSpecs } from '#src/transport/rpc/operational-catalog.js';
+import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
 
 const capabilitySet = new Set<Capability>(CAPABILITIES);
 
@@ -76,6 +77,7 @@ type ExpectedOperationalRouteId =
   | 'ipc.transport.health'
   | 'ipc.transport.shutdown'
   | 'ipc.transport.kb.restart'
+  | `ipc.${(typeof SUCCESSION_METHODS)[keyof typeof SUCCESSION_METHODS]}`
   | 'ipc.jobs.abort.drain-recovery'
   | 'ipc.provider-host.list.drain-observation'
   | 'ipc.provider-host.list-v2.drain-observation'
@@ -97,6 +99,7 @@ type OperationalRouteSummary = {
     | 'event-stream'
     | 'shutdown'
     | 'shutdown-abandon'
+    | 'succession'
     | 'kb-restart'
     | 'catalog';
   readonly onRefusal?: 'spawn-successor' | 'report-refusal';
@@ -181,6 +184,46 @@ const expectedOperationalSpecs = {
     requires: 'system:shutdown',
     requiresRunningLifecycle: true,
     dispatchKind: 'kb-restart',
+    authentication: 'principal',
+  },
+  'ipc.coordinator.succession.v1.request': {
+    transport: 'ipc',
+    method: SUCCESSION_METHODS.request,
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'succession',
+    authentication: 'principal',
+  },
+  'ipc.coordinator.succession.v1.prepare': {
+    transport: 'ipc',
+    method: SUCCESSION_METHODS.prepare,
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'succession',
+    authentication: 'principal',
+  },
+  'ipc.coordinator.succession.v1.commit': {
+    transport: 'ipc',
+    method: SUCCESSION_METHODS.commit,
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'succession',
+    authentication: 'principal',
+  },
+  'ipc.coordinator.succession.v1.abort': {
+    transport: 'ipc',
+    method: SUCCESSION_METHODS.abort,
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'succession',
+    authentication: 'principal',
+  },
+  'ipc.coordinator.succession.v1.status': {
+    transport: 'ipc',
+    method: SUCCESSION_METHODS.status,
+    requires: 'system:shutdown',
+    requiresRunningLifecycle: false,
+    dispatchKind: 'succession',
     authentication: 'principal',
   },
   'ipc.jobs.abort.drain-recovery': {

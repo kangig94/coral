@@ -53,7 +53,7 @@ import { createRealTimePort } from '#src/infra/time.js';
 import { domainSuccess } from '#src/transport/tool-result.js';
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
 import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
-import { testProjectPrincipal } from '#tests/helpers/principal.js';
+import { testPrincipal } from '#tests/helpers/principal.js';
 
 const tempDirs: string[] = [];
 
@@ -781,7 +781,7 @@ describe('ipc server', () => {
     const incumbent = new ChildPrincipalRegistry(ids, { ledger: incumbentLedger, originNamespace });
     const credential = incumbent.register({
       issuer: 'durable-job',
-      parentPrincipal: testProjectPrincipal('/project-root'),
+      parentPrincipal: testPrincipal(),
       childCaps: ['kb:read'],
       namespace: 'incumbent-namespace',
       parentJobId: 'job-a',
@@ -790,9 +790,19 @@ describe('ipc server', () => {
     });
     const receipt = incumbent.prepareTransfer('attempt', 0);
     if (receipt === null) throw new Error('Expected child transfer receipt.');
-    expect(incumbent.authenticate({
-      kind: 'child', handle: credential.handle, token: 'consumed', jobId: 'job-a', sessionId: 'session-a',
-    }, null, 1)).not.toBeNull();
+    expect(
+      incumbent.authenticate(
+        {
+          kind: 'child',
+          handle: credential.handle,
+          token: 'consumed',
+          jobId: 'job-a',
+          sessionId: 'session-a',
+        },
+        null,
+        1,
+      ),
+    ).not.toBeNull();
     incumbent.fenceAuthentication();
 
     const successor = new ChildPrincipalRegistry(ids, { ledger: successorLedger, originNamespace });
@@ -809,13 +819,33 @@ describe('ipc server', () => {
     const socketPath = makeSocketPath();
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'kb.entries.search', { q: 'carried work' }, {
-        auth: { kind: 'child', handle: credential.handle, token: 'fresh', jobId: 'job-a', sessionId: 'session-a' },
-      })).resolves.toEqual({ results: [] });
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'kb.entries.search',
+          { q: 'carried work' },
+          {
+            auth: { kind: 'child', handle: credential.handle, token: 'fresh', jobId: 'job-a', sessionId: 'session-a' },
+          },
+        ),
+      ).resolves.toEqual({ results: [] });
       expect(readSearch).toHaveBeenCalledOnce();
-      await expect(requestIpcMethod(socketPath, 'kb.entries.search', { q: 'replay' }, {
-        auth: { kind: 'child', handle: credential.handle, token: 'consumed', jobId: 'job-a', sessionId: 'session-a' },
-      })).rejects.toThrow();
+      await expect(
+        requestIpcMethod(
+          socketPath,
+          'kb.entries.search',
+          { q: 'replay' },
+          {
+            auth: {
+              kind: 'child',
+              handle: credential.handle,
+              token: 'consumed',
+              jobId: 'job-a',
+              sessionId: 'session-a',
+            },
+          },
+        ),
+      ).rejects.toThrow();
     } finally {
       await closeIpcServer(listener);
       incumbentLedger.close();

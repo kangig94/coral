@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -7,7 +7,7 @@ import { acquireDirectoryLock } from './fs-lock.js';
 import { writeAuditEvent } from './audit-log.js';
 import { createForeignTargetValidator, type ForeignTargetValidationResult } from './handoff-target.js';
 import { processIncarnationSchema } from './node-process.js';
-import { upgradeIntentPath } from './path/coordinator.js';
+import { upgradeIntentPath } from './path/index.js';
 
 const buildIdentitySchema = z
   .object({
@@ -132,7 +132,8 @@ const upgradeIntentSchema = z
         intent.completionReceipt.successor.build.buildSetId !== intent.target.build.buildSetId ||
         intent.completionReceipt.successor.build.version !== intent.target.build.version ||
         intent.completionReceipt.successor.build.flavor !== intent.target.build.flavor ||
-        intent.completionReceipt.successor.build.storeFormatFingerprint !== intent.target.build.storeFormatFingerprint ||
+        intent.completionReceipt.successor.build.storeFormatFingerprint !==
+          intent.target.build.storeFormatFingerprint ||
         intent.completionReceipt.successor.build.bundleHash !== intent.target.build.bundleHash ||
         intent.completionReceipt.successor.build.cliBundleHash !== intent.target.build.cliBundleHash ||
         intent.completionReceipt.successor.build.claudeAppserverBundleHash !==
@@ -175,15 +176,36 @@ const upgradeIntentSchema = z
   });
 
 export type UpgradeIntent = z.infer<typeof upgradeIntentSchema>;
-export type UpgradeIntentChange = Omit<UpgradeIntent, 'version' | 'revision'>;
+export type UpgradeIntentChange = Pick<
+  UpgradeIntent,
+  | 'requestId'
+  | 'requestedAt'
+  | 'incumbent'
+  | 'target'
+  | 'attemptId'
+  | 'attemptChild'
+  | 'attemptOwner'
+  | 'disposition'
+  | 'blockers'
+  | 'retryCondition'
+  | 'attemptDeadline'
+  | 'completionReceipt'
+> &
+  Record<string, unknown>;
 export type UpgradeIntentVisibility = Readonly<{
   requestId: string;
   disposition: UpgradeIntent['disposition'];
   phase: 'pending' | 'prepared' | 'ready' | 'committing';
   target: Readonly<{
-    version: string; buildSetId: string; flavor: 'dev' | 'prod'; storeFormatFingerprint: string;
-    bundleHash: string; cliBundleHash: string; claudeAppserverBundleHash: string;
-    durableWrapperBundleHash: string; pluginRootLabel: string;
+    version: string;
+    buildSetId: string;
+    flavor: 'dev' | 'prod';
+    storeFormatFingerprint: string;
+    bundleHash: string;
+    cliBundleHash: string;
+    claudeAppserverBundleHash: string;
+    durableWrapperBundleHash: string;
+    pluginRootLabel: string;
   }>;
   blockers: readonly Readonly<{ owner: string; reason: string }>[];
   reason: string;
@@ -196,9 +218,13 @@ const upgradeIntentVisibilitySchema = z.object({
   disposition: z.enum(['pending', 'deferred', 'attempting', 'completed', 'closed']),
   phase: z.enum(['pending', 'prepared', 'ready', 'committing']),
   target: z.object({
-    version: z.string().min(1), buildSetId: z.string().min(1), flavor: z.enum(['dev', 'prod']),
-    storeFormatFingerprint: z.string().min(1), bundleHash: z.string().min(1),
-    cliBundleHash: z.string().min(1), claudeAppserverBundleHash: z.string().min(1),
+    version: z.string().min(1),
+    buildSetId: z.string().min(1),
+    flavor: z.enum(['dev', 'prod']),
+    storeFormatFingerprint: z.string().min(1),
+    bundleHash: z.string().min(1),
+    cliBundleHash: z.string().min(1),
+    claudeAppserverBundleHash: z.string().min(1),
     durableWrapperBundleHash: z.string().min(1),
     pluginRootLabel: z.string().min(1),
   }),
@@ -216,11 +242,16 @@ export function parseVisibleUpgradeIntent(value: unknown): UpgradeIntentVisibili
 export function visibleUpgradeIntent(intent: UpgradeIntent): UpgradeIntentVisibility | null {
   if (intent.disposition === 'closed' || intent.disposition === 'completed') return null;
   const preparation = intent.successionPreparation;
-  const stage = typeof preparation === 'object' && preparation !== null && 'stage' in preparation
-    ? preparation.stage : null;
-  const phase = intent.disposition === 'attempting' ? 'committing'
-    : intent.disposition === 'deferred' ? 'pending'
-      : stage === 'prepared' || stage === 'ready' || stage === 'committing' ? stage : 'pending';
+  const stage =
+    typeof preparation === 'object' && preparation !== null && 'stage' in preparation ? preparation.stage : null;
+  const phase =
+    intent.disposition === 'attempting'
+      ? 'committing'
+      : intent.disposition === 'deferred'
+        ? 'pending'
+        : stage === 'prepared' || stage === 'ready' || stage === 'committing'
+          ? stage
+          : 'pending';
   return {
     requestId: intent.requestId,
     disposition: intent.disposition,
@@ -290,7 +321,10 @@ export function readUpgradeIntent(runDir: string): UpgradeIntentRead {
 }
 
 /** A persisted root label is never a launch capability; validate its current manifest at launch. */
-export function revalidateUpgradeIntentTarget(intent: UpgradeIntent): ForeignTargetValidationResult {
+export function revalidateUpgradeIntentTarget(
+  intent: UpgradeIntent,
+  pluginRoot: string = intent.target.pluginRootLabel,
+): ForeignTargetValidationResult {
   const {
     version,
     buildSetId,
@@ -311,7 +345,7 @@ export function revalidateUpgradeIntentTarget(intent: UpgradeIntent): ForeignTar
     claudeAppserverBundleHash,
     durableWrapperBundleHash,
   };
-  return createForeignTargetValidator()(join(intent.target.pluginRootLabel, 'bridge'), manifest);
+  return createForeignTargetValidator()(join(pluginRoot, 'bridge'), manifest);
 }
 
 function mergeUnknownKeys(oldValue: unknown, newValue: unknown): unknown {
@@ -364,11 +398,7 @@ function writeAtomic(path: string, value: UpgradeIntent): void {
     }
   } finally {
     if (fd !== null) closeSync(fd);
-    try {
-      unlinkSync(stage);
-    } catch (error: unknown) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-    }
+    rmSync(stage, { force: true });
   }
 }
 
@@ -391,15 +421,22 @@ export async function compareAndSwapUpgradeIntent(
     const next = upgradeIntentSchema.parse(
       mergeUnknownKeys(current, {
         ...change,
-        requestedAt: current?.requestId === change.requestId ? current.requestedAt ?? new Date().toISOString() : new Date().toISOString(),
+        requestedAt:
+          current !== null && current.requestId === change.requestId
+            ? (current.requestedAt ?? new Date().toISOString())
+            : new Date().toISOString(),
         version: 'v1',
         revision: (current?.revision ?? -1) + 1,
       }),
     );
     lease.assertOwned();
     writeAtomic(path, next);
-    if (current === null || current.requestId !== next.requestId || current.disposition !== next.disposition ||
-        JSON.stringify(visibleUpgradeIntent(current)) !== JSON.stringify(visibleUpgradeIntent(next))) {
+    if (
+      current === null ||
+      current.requestId !== next.requestId ||
+      current.disposition !== next.disposition ||
+      JSON.stringify(visibleUpgradeIntent(current)) !== JSON.stringify(visibleUpgradeIntent(next))
+    ) {
       writeAuditEvent('upgrade_intent_status_changed', {
         requestId: next.requestId,
         revision: next.revision,

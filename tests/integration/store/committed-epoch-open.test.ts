@@ -19,6 +19,7 @@ import {
   prepareCommittedBackendStoreAtStartup,
 } from '#src/store/startup-store-routing.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const format = currentCoralStoreFormat();
@@ -33,6 +34,10 @@ const build: StrictBundleManifest = {
   storeFormatFingerprint: format.fingerprint,
 };
 
+function settleInitialEpoch(runtime: ReturnType<typeof createRealRuntime>) {
+  return settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint });
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -42,7 +47,7 @@ describe('committed epoch open', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-committed-open-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
-    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    const initial = settleInitialEpoch(runtime);
     initial.db.close();
 
     const incompatibleFormat = {
@@ -63,7 +68,7 @@ describe('committed epoch open', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-committed-open-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
-    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    const initial = settleInitialEpoch(runtime);
     initial.db.close();
 
     const wrong = openCommittedBackendStoreAtStartup(
@@ -92,7 +97,7 @@ describe('committed epoch open', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-committed-open-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
-    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    const initial = settleInitialEpoch(runtime);
     initial.db.close();
     writeFileSync(initial.store.path, '');
     rmSync(`${initial.store.path}-wal`, { force: true });
@@ -109,9 +114,9 @@ describe('committed epoch open', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-committed-open-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
-    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    const initial = settleInitialEpoch(runtime);
     initial.db.close();
-    const epochKey = encodeResolvedStoreEpoch(initial.store);
+    const epochKey = encodeResolvedStoreEpoch(runtime, initial.store);
     const prepared = prepareCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, epochKey);
     expect(prepared).toMatchObject({ kind: 'prepared', store: { path: initial.store.path } });
     if (prepared.kind !== 'prepared') return;
@@ -130,7 +135,7 @@ describe('committed epoch open', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-committed-open-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
-    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    const initial = settleInitialEpoch(runtime);
     initial.db.close();
     const newerDirectory = join(initial.store.storeRoot, 'epoch-2');
     mkdirSync(newerDirectory);
@@ -142,7 +147,7 @@ describe('committed epoch open', () => {
     const prepared = prepareCommittedBackendStoreAtStartup(
       runtime,
       { storeFormat: format, build },
-      encodeResolvedStoreEpoch(initial.store),
+      encodeResolvedStoreEpoch(runtime, initial.store),
     );
     expect(prepared).toMatchObject({ kind: 'prepared', store: { path: initial.store.path } });
     if (prepared.kind !== 'prepared') return;
@@ -152,23 +157,31 @@ describe('committed epoch open', () => {
       expect(opened.store).toEqual(initial.store);
       opened.db.close();
     }
-    expect(listStoreEpochs(runtime).map(({ epoch }) => epoch).sort()).toEqual(['1', '2']);
+    expect(
+      listStoreEpochs(runtime)
+        .map(({ epoch }) => epoch)
+        .sort(),
+    ).toEqual(['1', '2']);
   });
 
   it('prepares and opens the mapped protected epoch without restoring its legacy address', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-protected-committed-open-'));
     roots.push(root);
     const runtime = createRealRuntime('prod', { baseDir: root });
-    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    const initial = settleInitialEpoch(runtime);
     initial.db.close();
-    const epochKey = encodeResolvedStoreEpoch(initial.store);
-    const protectedAddress = protectStoreEpoch(initial.store);
+    const epochKey = encodeResolvedStoreEpoch(runtime, initial.store);
+    const protectedAddress = protectStoreEpoch(runtime, initial.store);
 
     const prepared = prepareCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, epochKey);
-    expect(prepared).toMatchObject({ kind: 'prepared', store: {
-      path: join(protectedAddress.protectedPath, 'store.db'), canonicalStoreRoot: initial.store.storeRoot,
-      lineageKey: protectedAddress.epochKey,
-    } });
+    expect(prepared).toMatchObject({
+      kind: 'prepared',
+      store: {
+        path: join(protectedAddress.protectedPath, 'store.db'),
+        canonicalStoreRoot: initial.store.storeRoot,
+        lineageKey: protectedAddress.epochKey,
+      },
+    });
     if (prepared.kind !== 'prepared') return;
     expect(existsSync(initial.store.path)).toBe(false);
     const opened = openCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, prepared.store);

@@ -187,23 +187,30 @@ describe('session-start.mjs startup failure notice', () => {
     WARM_START_TIMEOUT_MS,
   );
 
-  it('reports a legacy contender refusal as a deferred upgrade', async () => {
-    const fixture = setupFixture();
-    writeDiagnostic(fixture, {
-      ...documentedFailure(new Date().toISOString()),
-      error: {
-        kind: 'coral_setup_error',
-        code: 'handoff_shutdown_capability_rejected',
-        userMessage: 'The new incumbent refused an old shutdown request.',
-        remediation: 'Wait for automatic succession.',
-      },
-    });
-    writeFileSync(join(fixture.root, '.coral', 'gen2', 'run', 'coordinator.json'), JSON.stringify({ pid: process.pid }));
-    const context = await contextFor(fixture, 'test-session-deferred-upgrade');
-    expect(context).toContain('deferred its upgrade');
-    expect(context).not.toContain('start attempt failed');
-    expect(context).not.toContain('coral-cli');
-  }, WARM_START_TIMEOUT_MS);
+  it(
+    'reports a legacy contender refusal as a deferred upgrade',
+    async () => {
+      const fixture = setupFixture();
+      writeDiagnostic(fixture, {
+        ...documentedFailure(new Date().toISOString()),
+        error: {
+          kind: 'coral_setup_error',
+          code: 'handoff_shutdown_capability_rejected',
+          userMessage: 'The new incumbent refused an old shutdown request.',
+          remediation: 'Wait for automatic succession.',
+        },
+      });
+      writeFileSync(
+        join(fixture.root, '.coral', 'gen2', 'run', 'coordinator.json'),
+        JSON.stringify({ pid: process.pid }),
+      );
+      const context = await contextFor(fixture, 'test-session-deferred-upgrade');
+      expect(context).toContain('deferred its upgrade');
+      expect(context).not.toContain('start attempt failed');
+      expect(context).not.toContain('coral-cli');
+    },
+    WARM_START_TIMEOUT_MS,
+  );
 
   it(
     'stays silent when the setup error code is not a bounded identifier',

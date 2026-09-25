@@ -23,6 +23,9 @@ import {
 } from './protocol.js';
 import { createKbDaemonRequestService } from './request-service.js';
 import { createKbDaemonWriteRuntimeHost } from './runtime-host.js';
+import { readBuildFlavor } from '../infra/bundle-manifest.js';
+import { createRealRuntime } from '../runtime/real.js';
+import type { Runtime } from '../runtime/ports.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import { errorMessage } from '../infra/error-format.js';
 import { rehydrateCoralSetupError, serializeCoralSetupError } from '../runtime/errors.js';
@@ -99,8 +102,8 @@ export function resolveKbDaemonParentPid(value: string | undefined, selfPid = pr
   return pid;
 }
 
-export function resolveKbDaemonStore(value: string | undefined): ResolvedStoreEpoch | undefined {
-  return decodeResolvedStoreEpoch(value);
+export function resolveKbDaemonStore(runtime: Runtime, value: string | undefined): ResolvedStoreEpoch | undefined {
+  return decodeResolvedStoreEpoch(runtime, value);
 }
 
 export async function handleKbDaemonExpansionRpcRequest(
@@ -400,13 +403,15 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
       pending.reject(new Error(message));
     }
   };
+  const runtime = createRealRuntime(readBuildFlavor(pluginRoot));
   const kbWriteHost = createKbDaemonWriteRuntimeHost({
     pluginRoot,
+    runtime,
     curateAssistant: parentCurateAssistant,
     curateUsageBudget: parentCurateUsageBudget,
     backendNamespace: process.env.CORAL_KB_DAEMON_BACKEND_NAMESPACE,
     bundleHash: process.env.CORAL_KB_DAEMON_BUNDLE_HASH,
-    store: resolveKbDaemonStore(process.env.CORAL_KB_DAEMON_STORE),
+    store: resolveKbDaemonStore(runtime, process.env.CORAL_KB_DAEMON_STORE),
     onJournalEvents: (appended) =>
       writeControlMessage({
         type: KB_DAEMON_EVENT_MESSAGE,
@@ -563,9 +568,17 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
           !Number.isSafeInteger(generation.generation) ||
           typeof generation.storeRoot !== 'string' ||
           typeof generation.epoch !== 'string'
-        ) throw new Error('Invalid KB daemon writer generation.');
-        await runWriterTurn(() => kbWriteHost.reclaimWriterTurn(generation as { generation: number; storeRoot: string; epoch: string }));
-        writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: { kind: 'reclaimed' } });
+        )
+          throw new Error('Invalid KB daemon writer generation.');
+        await runWriterTurn(() =>
+          kbWriteHost.reclaimWriterTurn(generation as { generation: number; storeRoot: string; epoch: string }),
+        );
+        writeControlMessage({
+          type: KB_DAEMON_RESPONSE_MESSAGE,
+          id: request.id,
+          ok: true,
+          result: { kind: 'reclaimed' },
+        });
         return;
       }
       case 'expansion.rpc':

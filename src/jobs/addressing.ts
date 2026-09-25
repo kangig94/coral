@@ -1,22 +1,11 @@
-import { setTimeout as delay } from 'node:timers/promises';
-
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
+import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
 import { refreshHistoricalEpoch } from './historical-reader.js';
-import { JobLocationIndex, type JobLocation } from './location-index.js';
+import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse, JobProgressEvent } from './records.js';
 import { isWaitCursorV2, type WaitCursor, type WaitStreamEvent, type WaitStreamRequest } from './wait.js';
-
-export type WaitCursorError = Readonly<{
-  code: 'wait_cursor_epoch_required' | 'wait_cursor_mismatch';
-  message: string;
-}>;
-export type JobDetailLookup = JobDetailResponse | Readonly<{
-  kind: 'unresolved';
-  jobId: string;
-  epochKey: string;
-}> | null;
 
 export interface ActiveJobAccess {
   epochKey(): string | null;
@@ -28,10 +17,13 @@ export interface ActiveJobAccess {
 const HISTORICAL_POLL_MS = 250;
 
 export class JobAddressing {
-  constructor(
-    private readonly locations: JobLocationIndex,
-    private readonly active: ActiveJobAccess,
-  ) {}
+  private readonly locations: JobLocationIndex;
+  private readonly active: ActiveJobAccess;
+
+  constructor(locations: JobLocationIndex, active: ActiveJobAccess) {
+    this.locations = locations;
+    this.active = active;
+  }
 
   private location(jobId: string): JobLocation | null {
     const existing = this.locations.read(jobId);
@@ -53,10 +45,17 @@ export class JobAddressing {
       if (location === null) {
         result.valid.push(jobId);
         result.missing.push(jobId);
-      } else if (jobInCallerScope({
-        jobKind: location.subject.jobKind,
-        workDir: location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
-      }, callerRoot, relation)) {
+      } else if (
+        jobInCallerScope(
+          {
+            jobKind: location.subject.jobKind,
+            workDir:
+              location.subject.workDir === null ? null : canonicalWorkDirWireSchema.parse(location.subject.workDir),
+          },
+          callerRoot,
+          relation,
+        )
+      ) {
         result.valid.push(jobId);
       } else {
         result.mismatch.push(jobId);
@@ -86,31 +85,38 @@ export class JobAddressing {
     const activeEpochKey = this.active.epochKey();
     const activeIds = jobIds.filter((jobId) => this.location(jobId)?.epochKey === activeEpochKey);
     const historicalIds = jobIds.filter((jobId) => !activeIds.includes(jobId) && this.location(jobId) !== null);
-    const active = activeIds.length > 0
-      ? this.active.abort(activeIds)
-      : { kind: 'answered' as const, result: { aborted: [], notFound: [] } };
+    const active =
+      activeIds.length > 0
+        ? this.active.abort(activeIds)
+        : { kind: 'answered' as const, result: { aborted: [], notFound: [] } };
     if (active.kind !== 'answered') return active;
+    const refused = [
+      ...(active.result.refused ?? []),
+      ...historicalIds
+        .filter((jobId) => this.location(jobId)?.disposition === 'terminal')
+        .map((jobId) => ({
+          jobId,
+          reason: 'already_terminal',
+          nextStep: 'The job has already reached a terminal outcome.',
+        })),
+    ];
+    const held = [
+      ...(active.result.held ?? []),
+      ...historicalIds
+        .filter((jobId) => this.location(jobId)?.disposition !== 'terminal')
+        .map((jobId) => ({
+          jobId,
+          reason: 'historical_owner_unresolved',
+          nextStep: 'Custody recovery will retry the retained epoch automatically.',
+        })),
+    ];
     return {
       kind: 'answered',
       result: {
         ...active.result,
         notFound: [...active.result.notFound, ...jobIds.filter((jobId) => this.location(jobId) === null)],
-        refused: [
-          ...(active.result.refused ?? []),
-          ...historicalIds.filter((jobId) => this.location(jobId)?.disposition === 'terminal').map((jobId) => ({
-            jobId,
-            reason: 'already_terminal',
-            nextStep: 'The job has already reached a terminal outcome.',
-          })),
-        ],
-        held: [
-          ...(active.result.held ?? []),
-          ...historicalIds.filter((jobId) => this.location(jobId)?.disposition !== 'terminal').map((jobId) => ({
-            jobId,
-            reason: 'historical_owner_unresolved',
-            nextStep: 'Custody recovery will retry the retained epoch automatically.',
-          })),
-        ],
+        ...(refused.length === 0 ? {} : { refused }),
+        ...(held.length === 0 ? {} : { held }),
       },
     };
   }
@@ -128,9 +134,9 @@ export class JobAddressing {
             message: 'The legacy wait cursor cannot identify historical epochs; retry without a cursor.',
           };
     }
-    const requestedLocations = Object.fromEntries(locations.flatMap((location) =>
-      location === null ? [] : [[location.jobId, location.epochKey]],
-    ));
+    const requestedLocations = Object.fromEntries(
+      locations.flatMap((location) => (location === null ? [] : [[location.jobId, location.epochKey]])),
+    );
     const requestedEpochs = [...new Set(Object.values(requestedLocations))].sort();
     const cursorEpochs = Object.keys(cursor.positions).sort();
     if (
@@ -143,8 +149,13 @@ export class JobAddressing {
     return null;
   }
 
-  private cursorFor(request: WaitStreamRequest, locations: readonly JobLocation[]): Extract<WaitCursor, { version: 'jobs.wait.v2' }> {
-    const positions = Object.fromEntries([...new Set(locations.map((location) => location.epochKey))].map((key) => [key, 0]));
+  private cursorFor(
+    request: WaitStreamRequest,
+    locations: readonly JobLocation[],
+  ): Extract<WaitCursor, { version: 'jobs.wait.v2' }> {
+    const positions = Object.fromEntries(
+      [...new Set(locations.map((location) => location.epochKey))].map((key) => [key, 0]),
+    );
     if (request.cursor && isWaitCursorV2(request.cursor)) Object.assign(positions, request.cursor.positions);
     if (request.cursor && !isWaitCursorV2(request.cursor)) {
       const activeEpoch = this.active.epochKey();
@@ -154,12 +165,14 @@ export class JobAddressing {
       version: 'jobs.wait.v2',
       positions,
       locations: Object.fromEntries(locations.map((location) => [location.jobId, location.epochKey])),
-      deliveredJobIds: request.cursor && isWaitCursorV2(request.cursor)
-        ? [...(request.cursor.deliveredJobIds ?? [])] : [],
+      deliveredJobIds:
+        request.cursor && isWaitCursorV2(request.cursor) ? [...(request.cursor.deliveredJobIds ?? [])] : [],
     };
   }
 
-  private snapshotCursor(cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>): Extract<WaitCursor, { version: 'jobs.wait.v2' }> {
+  private snapshotCursor(
+    cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
+  ): Extract<WaitCursor, { version: 'jobs.wait.v2' }> {
     return {
       ...cursor,
       positions: { ...cursor.positions },
@@ -173,9 +186,14 @@ export class JobAddressing {
     requested: readonly string[],
     cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
   ): Extract<WaitStreamEvent, { type: 'terminal' }> | null {
-    if (location.disposition !== 'terminal' || location.terminalSeq === undefined ||
-      location.resultPath === undefined || !location.detail?.exit ||
-      cursor.deliveredJobIds?.includes(location.jobId)) return null;
+    if (
+      location.disposition !== 'terminal' ||
+      location.terminalSeq === undefined ||
+      location.resultPath === undefined ||
+      !location.detail?.exit ||
+      cursor.deliveredJobIds?.includes(location.jobId)
+    )
+      return null;
     cursor.positions[location.epochKey] = Math.max(cursor.positions[location.epochKey] ?? 0, location.terminalSeq);
     cursor.deliveredJobIds = [...(cursor.deliveredJobIds ?? []), location.jobId];
     const { content, outcome, durationMs } = location.detail.exit;
@@ -199,8 +217,8 @@ export class JobAddressing {
     cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
   ): JobProgressEvent | null {
     if (location.disposition === 'terminal') return null;
-    const progress = location.detail?.events.find((event) =>
-      event.type === 'progress' && event.seq > (cursor.positions[location.epochKey] ?? 0),
+    const progress = location.detail?.events.find(
+      (event) => event.type === 'progress' && event.seq > (cursor.positions[location.epochKey] ?? 0),
     );
     return progress?.type === 'progress' ? progress : null;
   }
@@ -208,10 +226,12 @@ export class JobAddressing {
   async *waitStream(request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
     const error = this.validateWait(request);
     if (error !== null) throw new Error(`${error.code}: ${error.message}`);
-    const locations = request.jobIds.map((jobId) => this.location(jobId)).filter((location): location is JobLocation => location !== null);
+    const locations = request.jobIds
+      .map((jobId) => this.location(jobId))
+      .filter((location): location is JobLocation => location !== null);
     const activeEpochKey = this.active.epochKey();
+    // An id with no durable location was never accepted by any epoch, so only the active store can answer it.
     if (
-      locations.length === request.jobIds.length &&
       locations.every((location) => location.epochKey === activeEpochKey) &&
       request.supportsWaitV2 !== true &&
       (request.cursor === undefined || !isWaitCursorV2(request.cursor))
@@ -221,17 +241,25 @@ export class JobAddressing {
     }
 
     const cursor = this.cursorFor(request, locations);
-    const activeIds = locations.filter((location) => location.epochKey === activeEpochKey).map((location) => location.jobId);
-    const deadline = Date.now() + (request.timeoutSeconds ?? 600) * 1000;
+    const activeIds = locations
+      .filter((location) => location.epochKey === activeEpochKey)
+      .map((location) => location.jobId);
+    const time = this.locations.time;
+    const deadline = time.now() + (request.timeoutSeconds ?? 600) * 1000;
     const activeController = new AbortController();
     const onAbort = () => activeController.abort();
     request.abortSignal?.addEventListener('abort', onAbort, { once: true });
-    const activeIterator = activeIds.length === 0 ? null : this.active.waitStream({
-      ...request,
-      jobIds: activeIds,
-      cursor: { afterSeq: cursor.positions[activeEpochKey ?? ''] ?? 0 },
-      abortSignal: activeController.signal,
-    })[Symbol.asyncIterator]();
+    const activeIterator =
+      activeIds.length === 0
+        ? null
+        : this.active
+            .waitStream({
+              ...request,
+              jobIds: activeIds,
+              cursor: { afterSeq: cursor.positions[activeEpochKey ?? ''] ?? 0 },
+              abortSignal: activeController.signal,
+            })
+            [Symbol.asyncIterator]();
     let pendingActive = activeIterator?.next() ?? null;
     const historicalGroups = new Map<string, string[]>();
     for (const location of locations) {
@@ -241,13 +269,14 @@ export class JobAddressing {
       historicalGroups.set(location.epochKey, ids);
     }
     try {
-      while (!request.abortSignal?.aborted && Date.now() < deadline) {
+      while (!request.abortSignal?.aborted && time.now() < deadline) {
         for (const [epochKey, jobIds] of historicalGroups) {
           refreshHistoricalEpoch(this.locations, epochKey, jobIds);
         }
         for (const jobId of request.jobIds) {
           const location = locations.find((candidate) => candidate.jobId === jobId);
-          if (location === undefined) continue;
+          // The active epoch's own stream replays its jobs' progress before their terminals.
+          if (location === undefined || location.epochKey === activeEpochKey) continue;
           const latest = this.locations.read(jobId);
           if (latest === null) continue;
           const terminal = this.terminalFromLocation(latest, request.jobIds, cursor);
@@ -271,24 +300,32 @@ export class JobAddressing {
         for (const [epochKey, progress] of pendingProgress) {
           cursor.positions[epochKey] = progress.seq;
           yield {
-            type: 'progress', version: 'jobs.wait.v2',
-            jobId: progress.jobId, seq: progress.seq, epochKey,
-            message: progress.message, timing: progress.timing,
+            type: 'progress',
+            version: 'jobs.wait.v2',
+            jobId: progress.jobId,
+            seq: progress.seq,
+            epochKey,
+            message: progress.message,
+            timing: progress.timing,
             cursor: this.snapshotCursor(cursor),
           };
         }
 
         if (pendingActive === null) {
-          await delay(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - Date.now())), undefined, {
-            signal: request.abortSignal,
-          }).catch(() => undefined);
+          await time
+            .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - time.now())), {
+              signal: request.abortSignal,
+            })
+            .catch(() => undefined);
           continue;
         }
         const next = await Promise.race([
           pendingActive,
-          delay(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - Date.now())), null, {
-            signal: request.abortSignal,
-          }),
+          time
+            .sleep(Math.min(HISTORICAL_POLL_MS, Math.max(0, deadline - time.now())), {
+              signal: request.abortSignal,
+            })
+            .then(() => null),
         ]);
         if (next === null) continue;
         if (next.done) {
@@ -299,8 +336,12 @@ export class JobAddressing {
         const event = next.value;
         if (event.type === 'waiting') continue;
         if (event.type === 'progress' || event.type === 'terminal') {
-          if (activeEpochKey === null || event.seq <= (cursor.positions[activeEpochKey] ?? 0) ||
-            (event.type === 'terminal' && cursor.deliveredJobIds?.includes(event.jobId))) continue;
+          if (
+            activeEpochKey === null ||
+            event.seq <= (cursor.positions[activeEpochKey] ?? 0) ||
+            (event.type === 'terminal' && cursor.deliveredJobIds?.includes(event.jobId))
+          )
+            continue;
           cursor.positions[activeEpochKey] = event.seq;
           if (event.type === 'terminal') cursor.deliveredJobIds = [...(cursor.deliveredJobIds ?? []), event.jobId];
           yield {
@@ -325,7 +366,7 @@ export class JobAddressing {
     } finally {
       request.abortSignal?.removeEventListener('abort', onAbort);
       activeController.abort();
-      await activeIterator?.return?.();
+      await activeIterator?.return?.(undefined);
     }
   }
 }

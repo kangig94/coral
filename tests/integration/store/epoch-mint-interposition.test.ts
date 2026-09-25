@@ -19,6 +19,7 @@ const interposition = vi.hoisted(() => ({
   lockOpenObserved: false,
   nullReadLockAttempts: 0,
   publishEpochTwoOnSweep: false,
+  onEpochTwoPublished: null as (() => void) | null,
   readLockBusyTimeouts: [] as Array<number | undefined>,
   rejectZeroEpochTwoReadLock: false,
   releaseFailure: false,
@@ -88,6 +89,7 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
         fs.cpSync(path.join(interposition.dbDir, 'epoch-1'), path.join(interposition.dbDir, 'epoch-2'), {
           recursive: true,
         });
+        interposition.onEpochTwoPublished?.();
       }
       if (
         interposition.dbDir !== null &&
@@ -180,6 +182,11 @@ import {
 } from '#src/store/epoch.js';
 import { STORE_FORMAT_FINGERPRINT_META_KEY } from '#src/store/format-fingerprint.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import {
+  advanceSuccessionWriterGeneration,
+  observeSuccessionWriterGeneration,
+} from '#src/store/succession-writer-generation.js';
+import { authorizeFixtureStoreMint } from '../../helpers/store-db.js';
 
 const roots: string[] = [];
 const storeFormat = currentCoralStoreFormat();
@@ -193,6 +200,7 @@ const build: StrictBundleManifest = {
   flavor: 'prod',
   storeFormatFingerprint: storeFormat.fingerprint,
 };
+const mintOptions = { storeFormat, build, authorizeMint: authorizeFixtureStoreMint };
 
 afterEach(() => {
   interposition.aggregateRetryElapsedMs = null;
@@ -202,6 +210,7 @@ afterEach(() => {
   interposition.lockOpenObserved = false;
   interposition.nullReadLockAttempts = 0;
   interposition.publishEpochTwoOnSweep = false;
+  interposition.onEpochTwoPublished = null;
   interposition.readLockBusyTimeouts = [];
   interposition.rejectZeroEpochTwoReadLock = false;
   interposition.releaseFailure = false;
@@ -223,7 +232,7 @@ function harness(prefix = 'coral-epoch-open-cause-'): Runtime {
 }
 
 function publishInitialEpoch(runtime: Runtime): void {
-  const settled = settleStoreEpoch(runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(runtime, mintOptions);
   expect(settled.store.epoch).toBe('1');
   settled.db
     .prepare(
@@ -300,7 +309,7 @@ it('does not expose a sweepable preparation directory before constructing its SQ
   let failure: unknown = null;
 
   try {
-    const settled = settleStoreEpoch(runtime, { storeFormat, build });
+    const settled = settleStoreEpoch(runtime, mintOptions);
     epoch = settled.store.epoch;
     settled.db.close();
   } catch (error: unknown) {
@@ -321,7 +330,7 @@ it('settles after a sweep removes the construction directory before the lock ope
   interposition.dbDir = runtime.paths.coral.store.dbDir;
   interposition.sweepConstruction = true;
 
-  const settled = settleStoreEpoch(runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(runtime, mintOptions);
 
   expect(interposition.lockOpenObserved).toBe(true);
   expect(interposition.swept).toBe(true);
@@ -335,7 +344,7 @@ it('retries transient read-lock failures without stranding the current epoch', (
   const clock = withVirtualRetryClock(runtime);
   interposition.failReadLockAttempts = 2;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(interposition.failReadLockAttempts).toBe(0);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -349,7 +358,7 @@ it('gives the deciding lock attempt a full timeout after the retry window expire
   const clock = withVirtualRetryClock(runtime);
   interposition.failReadLockAttempts = Number.MAX_SAFE_INTEGER;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(clock.sleptMs()).toBe(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
@@ -370,7 +379,7 @@ it('keeps sequential lock and store SQLite waits inside the total retry budget',
     },
   };
 
-  const settled = settleStoreEpoch(timedRuntime, { storeFormat, build });
+  const settled = settleStoreEpoch(timedRuntime, mintOptions);
 
   expect(settled.store.epoch).toBe('1');
   expect(interposition.aggregateRetryElapsedMs).toBeLessThanOrEqual(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
@@ -383,7 +392,7 @@ it('retries a current epoch that fails re-proof before opening', () => {
   const clock = withVirtualRetryClock(runtime);
   interposition.nullReadLockAttempts = 2;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(interposition.nullReadLockAttempts).toBe(0);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -412,7 +421,7 @@ it('retries transient errno failures from the openable probe', () => {
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(failuresRemaining).toBe(0);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -426,7 +435,7 @@ it('retries transient non-decisive writable-open failures', () => {
   const clock = withVirtualRetryClock(runtime);
   interposition.writableOpenFailures = 2;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(interposition.writableOpenAttempts).toBe(3);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -441,7 +450,7 @@ it('treats a lease-release failure after a non-decisive open failure as retryabl
   interposition.writableOpenFailures = 1;
   interposition.releaseFailure = true;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(clock.sleptMs()).toBeGreaterThan(0);
   expectInitialEpochAndJob(settled);
@@ -454,7 +463,7 @@ it('mints after persistent non-decisive failures exhaust the retry budget', () =
   const clock = withVirtualRetryClock(runtime);
   interposition.writableOpenFailures = Number.MAX_SAFE_INTEGER;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(clock.sleptMs()).toBe(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
@@ -494,7 +503,7 @@ it('records the first non-decisive open failure after the retry window is exhaus
   });
   interposition.writableOpenFailures = Number.MAX_SAFE_INTEGER;
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(classification(runtime, '2')).toMatchObject({
@@ -511,10 +520,15 @@ it('resets retry state after a swept mint reveals a different current epoch', ()
   const clock = withVirtualRetryClock(runtime);
   interposition.dbDir = runtime.paths.coral.store.dbDir;
   interposition.publishEpochTwoOnSweep = true;
+  interposition.onEpochTwoPublished = () => {
+    const current = observeSuccessionWriterGeneration(runtime);
+    if (current === null) throw new Error('The simulated publisher has no writer generation.');
+    advanceSuccessionWriterGeneration(runtime, current, { storeRoot: runtime.paths.coral.store.dbDir, epoch: '2' });
+  };
   interposition.rejectZeroEpochTwoReadLock = true;
   interposition.writableOpenFailures = Number.MAX_SAFE_INTEGER;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(interposition.epochTwoReadLockBusyTimeouts).toHaveLength(1);
@@ -528,7 +542,7 @@ it('replaces a decisively incompatible current epoch without retrying', () => {
   const clock = withVirtualRetryClock(runtime);
   interposition.incompatibleOpen = true;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(interposition.writableOpenAttempts).toBe(1);
@@ -547,7 +561,7 @@ it.each([
   interposition.writableOpenFailures = 1;
   interposition.writableOpenErrcode = errcode;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(interposition.writableOpenAttempts).toBe(1);
@@ -582,7 +596,7 @@ it('opens the current epoch when a real SQLite classification lock clears within
   await once(holder, 'message');
 
   try {
-    const settled = settleStoreEpoch(runtime, { storeFormat, build, startupBusyTimeoutMs: 1_000 });
+    const settled = settleStoreEpoch(runtime, { ...mintOptions, startupBusyTimeoutMs: 1_000 });
 
     expectInitialEpochAndJob(settled);
     settled.db.close();
@@ -613,7 +627,7 @@ it('re-observes an unobservable current candidate and opens it once proven', () 
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(observationFailures).toBe(0);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -623,9 +637,9 @@ it('re-observes an unobservable current candidate and opens it once proven', () 
 
 it('does not fall back to an older proven epoch while the newest epoch is transiently unobservable', () => {
   const runtime = harness('coral-unobservable-latest-');
-  const first = settleStoreEpoch(runtime, { storeFormat, build });
+  const first = settleStoreEpoch(runtime, mintOptions);
   first.db.close();
-  const second = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+  const second = discardCurrentStoreEpoch(runtime, mintOptions);
   second.db.exec('CREATE TABLE latest_epoch_jobs (id TEXT PRIMARY KEY)');
   second.db.prepare('INSERT INTO latest_epoch_jobs (id) VALUES (?)').run('latest-epoch-job');
   second.db.close();
@@ -647,7 +661,7 @@ it('does not fall back to an older proven epoch while the newest epoch is transi
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(observationFailures).toBe(0);
   expect(clock.sleptMs()).toBeGreaterThan(0);
@@ -658,9 +672,9 @@ it('does not fall back to an older proven epoch while the newest epoch is transi
 
 it('falls back to an older proven epoch only after an unobservable newer epoch exhausts the budget', () => {
   const runtime = harness('coral-persistently-unobservable-latest-');
-  const first = settleStoreEpoch(runtime, { storeFormat, build });
+  const first = settleStoreEpoch(runtime, mintOptions);
   first.db.close();
-  const second = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+  const second = discardCurrentStoreEpoch(runtime, mintOptions);
   second.db.close();
   const clock = withVirtualRetryClock(runtime);
   const newestDirectory = epochDirectory(runtime.paths.coral.store.dbDir, '2');
@@ -678,7 +692,7 @@ it('falls back to an older proven epoch only after an unobservable newer epoch e
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(clock.sleptMs()).toBe(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
   expect(settled.store.epoch).toBe('1');
@@ -704,7 +718,7 @@ it('adopts a proven current epoch under contention after a newer candidate stays
   });
   interposition.writableOpenFailures = 1;
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build, startupBusyTimeoutMs: 750 });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { ...mintOptions, startupBusyTimeoutMs: 750 });
 
   expectInitialEpochAndJob(settled);
   expect(interposition.readLockBusyTimeouts.every((timeout) => timeout !== undefined && timeout >= 750)).toBe(true);
@@ -732,7 +746,7 @@ it('records every persistently unproven epoch candidate and the observation atte
     },
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(settled.store.epoch).toBe('3');
   expect(clock.sleptMs()).toBe(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);
@@ -757,7 +771,7 @@ it('bounds unproven candidate metadata and adopts the successor on restart', () 
   }
   vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-  const first = settleStoreEpoch(runtime, { storeFormat, build });
+  const first = settleStoreEpoch(runtime, mintOptions);
   const metadataPath = join(epochDirectory(dbDir, first.store.epoch), STORE_EPOCH_METADATA_FILE_NAME);
   const metadata = JSON.parse(readFileSync(metadataPath, 'utf-8')) as unknown;
 
@@ -774,7 +788,7 @@ it('bounds unproven candidate metadata and adopts the successor on restart', () 
   expect((metadata as { classification: { candidates: unknown[] } }).classification.candidates).toHaveLength(16);
   first.db.close();
 
-  const second = settleStoreEpoch(runtime, { storeFormat, build });
+  const second = settleStoreEpoch(runtime, mintOptions);
 
   expect(second.store.epoch).toBe('1601');
   second.db.close();
@@ -782,13 +796,13 @@ it('bounds unproven candidate metadata and adopts the successor on restart', () 
 
 it('bounds an oversized incompatible classification and adopts the successor on restart', () => {
   const runtime = harness('coral-incompatible-classification-bound-');
-  const first = settleStoreEpoch(runtime, { storeFormat, build });
+  const first = settleStoreEpoch(runtime, mintOptions);
   first.db
     .prepare('UPDATE meta SET value = ? WHERE key = ?')
     .run('x'.repeat(MAX_STORE_EPOCH_METADATA_BYTES), STORE_FORMAT_FINGERPRINT_META_KEY);
   first.db.close();
 
-  const replacement = settleStoreEpoch(runtime, { storeFormat, build });
+  const replacement = settleStoreEpoch(runtime, mintOptions);
   const dbDir = runtime.paths.coral.store.dbDir;
   const successor = epochDirectory(dbDir, '2');
   const metadataPath = join(successor, STORE_EPOCH_METADATA_FILE_NAME);
@@ -806,7 +820,7 @@ it('bounds an oversized incompatible classification and adopts the successor on 
   expect(resolveCurrentStoreDbPath(dbDir)).toBe(join(successor, 'store.db'));
   replacement.db.close();
 
-  const restarted = settleStoreEpoch(runtime, { storeFormat, build });
+  const restarted = settleStoreEpoch(runtime, mintOptions);
 
   expect(restarted.store.epoch).toBe('2');
   restarted.db.close();
@@ -819,7 +833,7 @@ it('preserves replacement when releasing an incompatible epoch fails', () => {
   interposition.incompatibleOpen = true;
   interposition.releaseFailure = true;
 
-  const settled = settleStoreEpoch(clock.runtime, { storeFormat, build });
+  const settled = settleStoreEpoch(clock.runtime, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(clock.sleptMs()).toBe(0);
@@ -852,7 +866,7 @@ it('settles after replacement logging fails', () => {
     throw new Error('injected logging failure');
   });
 
-  const settled = settleStoreEpoch({ ...clock.runtime, storage }, { storeFormat, build });
+  const settled = settleStoreEpoch({ ...clock.runtime, storage }, mintOptions);
 
   expect(settled.store.epoch).toBe('2');
   expect(clock.sleptMs()).toBe(STORE_EPOCH_OPEN_RETRY_BUDGET_MS);

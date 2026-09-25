@@ -418,12 +418,14 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   pendingLaunchJobIds(): readonly string[] {
-    return [...new Set([
-      ...Object.values(this.pools).flatMap((state) => state.queued.map((entry) => entry.jobId)),
-      ...[...this.pendingDurableLaunches]
-        .map((launch) => launch.retainedIdentity().jobId)
-        .filter((jobId): jobId is string => jobId !== undefined),
-    ])];
+    return [
+      ...new Set([
+        ...Object.values(this.pools).flatMap((state) => state.queued.map((entry) => entry.jobId)),
+        ...[...this.pendingDurableLaunches]
+          .map((launch) => launch.retainedIdentity().jobId)
+          .filter((jobId): jobId is string => jobId !== undefined),
+      ]),
+    ];
   }
 
   queuedLaunchJobIds(): readonly string[] {

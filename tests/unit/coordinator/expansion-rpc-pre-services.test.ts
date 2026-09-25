@@ -51,6 +51,12 @@ function makeRuntime(): Runtime {
     paths: {
       projectSource: (projectRoot: string) => projectRoot,
       coral: {
+        generation: {
+          root: '/tmp/coral-expansion-pre-services',
+          dataRoot: '/tmp/coral-expansion-pre-services/data',
+          legacyDataRoot: '/tmp/coral-expansion-pre-services/legacy',
+          adoptionLock: '/tmp/coral-expansion-pre-services/adoption.lock',
+        },
         coordinator: {
           socketPath: '/tmp/coral-expansion-pre-services.sock',
           runDir: '/tmp',

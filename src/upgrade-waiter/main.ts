@@ -1,5 +1,5 @@
 import { runUpgradeWaiter } from './index.js';
-import { socketPathForRunDir } from '../infra/path/coordinator.js';
+import { socketPathForRunDir } from '../infra/path/index.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
 
 const [runDir, socketPath, targetRoot] = process.argv.slice(2);

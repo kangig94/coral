@@ -53,7 +53,9 @@ describe('shipped release plugin fixtures', () => {
 
     const paths = execFileSync('git', ['ls-tree', '-r', '--name-only', tag, 'clients'], {
       encoding: 'utf-8',
-    }).trim().split('\n');
+    })
+      .trim()
+      .split('\n');
     for (const path of paths) {
       expect(existsSync(join(fixture.root, path.slice('clients/'.length))), path).toBe(true);
     }

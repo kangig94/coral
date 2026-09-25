@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import { compareProductVersions } from '../../infra/product-version.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { SUCCESSION_CAPABILITY_VERSION } from '../../infra/bundle-manifest-address.js';
 import { SUCCESSION_PROTOCOL_VERSION } from '../../infra/succession-address.js';
 import {
@@ -23,6 +23,7 @@ type IncumbentIdentity = UpgradeIntent['incumbent'];
 type Target = UpgradeIntent['target'];
 
 export type SuccessionReconcilerOptions = Readonly<{
+  runtime: Pick<Runtime, 'time' | 'ids' | 'storage'>;
   runDir: string;
   incumbent: IncumbentIdentity;
   owners: readonly SuccessionOwner[];
@@ -140,7 +141,11 @@ function currentPreparation(
   options: SuccessionReconcilerOptions,
 ): boolean {
   if (revalidateUpgradeIntentTarget(intent).kind !== 'validated') return false;
-  const declaration = readSuccessionCapabilities(join(intent.target.pluginRootLabel, 'bridge'), intent.target.build);
+  const declaration = readSuccessionCapabilities(
+    options.runtime,
+    join(intent.target.pluginRootLabel, 'bridge'),
+    intent.target.build,
+  );
   if (declaration.kind === 'invalid') return false;
   const capabilities = declaration.kind === 'declared' ? declaration.capabilities : emptyCapabilities(intent);
   return (
@@ -167,7 +172,7 @@ function emptyCapabilities(intent: UpgradeIntent): SuccessionCapabilities {
 
 /** Preparation cannot release an owner until its receipt and recovery grant are durably bound to the attempt. */
 export function createSuccessionReconciler(options: SuccessionReconcilerOptions): SuccessionReconciler {
-  const newAttemptId = options.newAttemptId ?? randomUUID;
+  const newAttemptId = options.newAttemptId ?? (() => options.runtime.ids.uuid());
   let disposed = false;
   let reconciling: Promise<SuccessionDecision> | null = null;
   const launchedAttempts = new Set<string>();
@@ -178,8 +183,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     });
   };
   const unsubscribe = options.subscribeObligationChanges?.(notifyObligationChange);
-  const retryTimer = setInterval(notifyObligationChange, options.retryIntervalMs ?? 30_000);
-  retryTimer.unref();
+  const retryTimer = options.runtime.time.setInterval(notifyObligationChange, options.retryIntervalMs ?? 30_000);
+  retryTimer.unref?.();
   queueMicrotask(notifyObligationChange);
 
   function reconcile(): Promise<SuccessionDecision> {
@@ -204,21 +209,23 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     if (
       intent.disposition === 'deferred' &&
       intent.retryCondition?.kind === 'target-change' &&
-      intent.blockers.some((blocker) =>
-        blocker.owner === 'succession-commit' || blocker.owner === 'succession-prepare'
-      )
+      intent.blockers.some((blocker) => blocker.owner === 'succession-commit' || blocker.owner === 'succession-prepare')
     ) {
       return { kind: 'deferred', reason: 'successor target must change after failed attempt' };
     }
     if (options.commitAvailable !== true) {
       return { kind: 'deferred', reason: 'incumbent needs a legacy retirement waiter' };
     }
-    if (intent.attemptId !== null && options.observeServing?.(intent.attemptId) != null) {
+    if (intent.attemptId !== null && (options.observeServing?.(intent.attemptId) ?? null) !== null) {
       return commit(intent.attemptId);
     }
     const prepared = await prepare(intent.requestId);
     if (prepared.kind !== 'prepared') return prepared;
-    const declaration = readSuccessionCapabilities(join(intent.target.pluginRootLabel, 'bridge'), intent.target.build);
+    const declaration = readSuccessionCapabilities(
+      options.runtime,
+      join(intent.target.pluginRootLabel, 'bridge'),
+      intent.target.build,
+    );
     if (declaration.kind !== 'declared' || !declaration.capabilities.protocols.includes('commit')) {
       return { kind: 'deferred', reason: 'target needs a legacy retirement waiter' };
     }
@@ -227,7 +234,10 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       return { kind: 'deferred', reason: 'prepared attempt changed before launch' };
     }
     if (current.preparation.stage === 'ready') return commit(current.preparation.attemptId);
-    if (current.intent.attemptDeadline !== null && Date.parse(current.intent.attemptDeadline) <= Date.now()) {
+    if (
+      current.intent.attemptDeadline !== null &&
+      Date.parse(current.intent.attemptDeadline) <= options.runtime.time.now()
+    ) {
       launchedAttempts.delete(current.preparation.attemptId);
       return abort(current.preparation.attemptId);
     }
@@ -255,7 +265,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    clearInterval(retryTimer);
+    options.runtime.time.clearInterval(retryTimer);
     unsubscribe?.();
   }
 
@@ -277,7 +287,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       }
       const current = observed.kind === 'readable' ? observed.intent : null;
       if (current !== null && current.disposition !== 'closed' && current.disposition !== 'completed') {
-        if (current.attemptId !== null && options.observeServing?.(current.attemptId) != null) {
+        if (current.attemptId !== null && (options.observeServing?.(current.attemptId) ?? null) !== null) {
           notifyObligationChange();
           return { kind: 'registered', intent: current };
         }
@@ -331,13 +341,17 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (incumbentKey(intent.incumbent) !== incumbentKey(options.incumbent)) {
         return { kind: 'refused', reason: 'incumbent identity changed' };
       }
-      if (intent.attemptId !== null && options.observeServing?.(intent.attemptId) != null) {
+      if (intent.attemptId !== null && (options.observeServing?.(intent.attemptId) ?? null) !== null) {
         return commit(intent.attemptId);
       }
       const validated = revalidateUpgradeIntentTarget(intent);
       const declared =
         validated.kind === 'validated'
-          ? readSuccessionCapabilities(join(intent.target.pluginRootLabel, 'bridge'), intent.target.build)
+          ? readSuccessionCapabilities(
+              options.runtime,
+              join(intent.target.pluginRootLabel, 'bridge'),
+              intent.target.build,
+            )
           : null;
       const targetFailure =
         validated.kind !== 'validated'
@@ -374,9 +388,10 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const capabilities = declared.kind === 'declared' ? declared.capabilities : emptyCapabilities(intent);
       const epochKey = options.epochKey();
       if (epochKey === null) return { kind: 'deferred', reason: 'exact store epoch is unavailable' };
-      const formatChanges = options.storeFormatFingerprint !== undefined &&
+      const formatChanges =
+        options.storeFormatFingerprint !== undefined &&
         intent.target.build.storeFormatFingerprint !== options.storeFormatFingerprint;
-      const liveJobs = formatChanges ? options.liveJobIds?.() ?? [] : [];
+      const liveJobs = formatChanges ? (options.liveJobIds?.() ?? []) : [];
       if (liveJobs.length > 0) {
         const blockers = liveJobs.map((jobId) => ({ owner: 'jobs', reason: `blocking(format): ${jobId}` }));
         const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
@@ -403,9 +418,11 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           options.requiredOwners,
           options.liveJobIds,
         );
-        if (current.kind === 'prepared' &&
-            (!formatChanges || current.receipts.length === 0) &&
-            JSON.stringify(current.receipts) === JSON.stringify(existing.receipts)) {
+        if (
+          current.kind === 'prepared' &&
+          (!formatChanges || current.receipts.length === 0) &&
+          JSON.stringify(current.receipts) === JSON.stringify(existing.receipts)
+        ) {
           return { kind: 'prepared', preparation: existing };
         }
       }
@@ -419,13 +436,17 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       );
       if (formatChanges && obligations.kind === 'prepared' && obligations.receipts.length > 0) {
         const blockers = obligations.receipts.map((receipt) => ({
-          owner: receipt.owner, reason: 'blocking(format): obligation requires exact epoch transfer',
+          owner: receipt.owner,
+          reason: 'blocking(format): obligation requires exact epoch transfer',
         }));
         const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
           ...intent,
           disposition: 'deferred',
           blockers,
-          retryCondition: { kind: 'obligation-change', evidence: 'format-changing succession awaits obligation settlement' },
+          retryCondition: {
+            kind: 'obligation-change',
+            evidence: 'format-changing succession awaits obligation settlement',
+          },
           successionPreparation: null,
           attemptId: null,
           attemptOwner: null,
@@ -440,7 +461,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           obligations.kind === 'blocking'
             ? formatChanges
               ? obligations.blockers.map((blocker) => ({
-                  ...blocker, reason: `blocking(format): ${blocker.reason}`,
+                  ...blocker,
+                  reason: `blocking(format): ${blocker.reason}`,
                 }))
               : obligations.blockers
             : [{ owner: 'protocol', reason: 'target cannot prepare succession' }];
@@ -528,6 +550,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         return { kind: 'refused', reason: 'preparation is stale' };
       }
       const declaration = readSuccessionCapabilities(
+        options.runtime,
         join(intent.target.pluginRootLabel, 'bridge'),
         intent.target.build,
       );
@@ -570,7 +593,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const intent = observed.intent;
       if (intent.attemptId !== attemptId) return { kind: 'refused', reason: 'attempt is not current' };
       if (intent.disposition === 'completed') return { kind: 'refused', reason: 'attempt already serves' };
-      if (options.observeServing?.(attemptId) != null) return commit(attemptId);
+      if ((options.observeServing?.(attemptId) ?? null) !== null) return commit(attemptId);
       const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
         disposition: 'pending',
@@ -609,7 +632,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         return { kind: 'refused', reason: 'attempt is not prepared' };
       }
       const serving = options.observeServing?.(attemptId);
-      if (serving != null) {
+      if (serving !== null && serving !== undefined) {
         if (
           preparation.ready === null ||
           preparation.targetKey !== targetKey(intent.target) ||
@@ -619,8 +642,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           !Number.isSafeInteger(serving.controlGeneration) ||
           serving.controlGeneration < 1 ||
           !Number.isFinite(Date.parse(serving.recordedAt)) ||
-          (intent.attemptDeadline !== null &&
-            Date.parse(serving.recordedAt) > Date.parse(intent.attemptDeadline))
+          (intent.attemptDeadline !== null && Date.parse(serving.recordedAt) > Date.parse(intent.attemptDeadline))
         ) {
           return { kind: 'deferred', reason: 'durable serving record does not match the prepared attempt' };
         }
@@ -631,8 +653,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
             instanceId: serving.successorInstanceId,
             pid: preparation.ready.successorPid,
             incarnation:
-              intent.attemptChild?.attemptId === attemptId &&
-              intent.attemptChild.pid === preparation.ready.successorPid
+              intent.attemptChild?.attemptId === attemptId && intent.attemptChild.pid === preparation.ready.successorPid
                 ? intent.attemptChild.incarnation
                 : null,
             build: intent.target.build,
@@ -657,7 +678,11 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         return { kind: 'committed', receipt };
       }
       if (!currentPreparation(intent, preparation, options)) {
-        const declared = readSuccessionCapabilities(join(intent.target.pluginRootLabel, 'bridge'), intent.target.build);
+        const declared = readSuccessionCapabilities(
+          options.runtime,
+          join(intent.target.pluginRootLabel, 'bridge'),
+          intent.target.build,
+        );
         const targetChanged =
           preparation.targetKey !== targetKey(intent.target) ||
           revalidateUpgradeIntentTarget(intent).kind !== 'validated' ||

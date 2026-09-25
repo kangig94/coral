@@ -165,8 +165,8 @@ export function createProviderOperationJobRecovery(
     }
 
     const plan = planRecovery(buildRecoverySnapshot([item], runtime.process));
-    const recoveryRegistry = state.recoveryRegistry ??
-      new RecoveryRegistry(state.cancelledRecoveryJobIds, state.onRecoverySettlement);
+    const recoveryRegistry =
+      state.recoveryRegistry ?? new RecoveryRegistry(state.cancelledRecoveryJobIds, state.onRecoverySettlement);
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];

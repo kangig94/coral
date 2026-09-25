@@ -19,7 +19,7 @@ import {
   type Server as HttpServer,
 } from 'node:http';
 import { join } from 'node:path';
-import type { WaitStreamEvent } from '#src/jobs/wait.js';
+import type { WaitStreamEvent, WaitStreamRequest } from '#src/jobs/wait.js';
 import type * as NodeOs from 'node:os';
 import type * as ServerMod from '#src/coordinator/index.js';
 import type * as BackendDiscoveryMod from '#src/infra/backend-discovery.js';
@@ -4677,43 +4677,60 @@ describe('execution backend server', () => {
   });
 
   it('carries the full v2 cursor through Last-Event-ID and SSE event ids', async () => {
+    const progressStore = createProgressStore();
     createdJobIds.add('job-1');
-    createdJobIds.add('job-2');
-    const cursor = {
-      version: 'jobs.wait.v2' as const,
-      locations: { 'job-1': 'lineage-a:7', 'job-2': 'lineage-b:8' },
-      positions: { 'lineage-a:7': 4, 'lineage-b:8': 5 },
-    };
+    initTestJob(progressStore, {
+      jobId: 'job-1',
+      sessionId: 'session-1',
+      provider: 'codex',
+      projectRoot: DEFAULT_PROJECT_ROOT,
+      backendNamespace: testBackendNamespace,
+    });
     const fakeService = createFakeExecutionService({
-      waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
-        yield {
-          type: 'progress', version: 'jobs.wait.v2', jobId: 'job-1', seq: 7,
-          message: 'working', timing: waitTiming, epochKey: 'lineage-a:7',
-          cursor: { ...cursor, positions: { 'lineage-a:7': 7, 'lineage-b:8': 5 } },
-        };
+      waitStream: vi.fn(async function* (request: WaitStreamRequest): AsyncGenerator<WaitStreamEvent> {
+        const afterSeq = request.cursor !== undefined && 'afterSeq' in request.cursor ? request.cursor.afterSeq : 0;
+        yield { type: 'progress', jobId: 'job-1', seq: afterSeq + 4, message: 'working', timing: waitTiming };
       }),
     });
     const backend = await startBackendServer({ createExecutionService: () => fakeService as never });
-    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Last-Event-ID': Buffer.from(JSON.stringify(cursor)).toString('base64url'),
-        'X-Coral-Backend-Token': backend.token,
-      },
-      body: JSON.stringify({
-        jobIds: ['job-1', 'job-2'], projectRoot: DEFAULT_PROJECT_ROOT,
-        timeoutSeconds: 1, supportsWaitV2: true,
-      }),
-    });
-    expect(response.status).toBe(200);
-    const body = await response.text();
-    const eventId = body.split('\n').find((line) => line.startsWith('id: '))?.slice(4);
-    expect(eventId).toBeTruthy();
-    expect(JSON.parse(Buffer.from(eventId!, 'base64url').toString('utf8'))).toEqual({
-      ...cursor, positions: { 'lineage-a:7': 7, 'lineage-b:8': 5 },
-    });
-    expect(fakeService.waitStream).toHaveBeenCalledWith(expect.objectContaining({ cursor }));
+    const firstEventId = async (lastEventId?: string): Promise<string> => {
+      const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Coral-Backend-Token': backend.token,
+          ...(lastEventId === undefined ? {} : { 'Last-Event-ID': lastEventId }),
+        },
+        body: JSON.stringify({
+          jobIds: ['job-1'],
+          projectRoot: DEFAULT_PROJECT_ROOT,
+          timeoutSeconds: 1,
+          supportsWaitV2: true,
+        }),
+      });
+      expect(response.status).toBe(200);
+      const eventId = (await response.text())
+        .split('\n')
+        .find((line) => line.startsWith('id: '))
+        ?.slice(4);
+      if (eventId === undefined) throw new Error('Expected an SSE event id.');
+      return eventId;
+    };
+    const decode = (eventId: string): { locations: Record<string, string>; positions: Record<string, number> } =>
+      JSON.parse(Buffer.from(eventId, 'base64url').toString('utf8')) as {
+        locations: Record<string, string>;
+        positions: Record<string, number>;
+      };
+
+    const firstId = await firstEventId();
+    const first = decode(firstId);
+    expect(first).toMatchObject({ version: 'jobs.wait.v2', locations: { 'job-1': expect.any(String) } });
+    const epochKey = first.locations['job-1'];
+    expect(first.positions).toEqual({ [epochKey]: 4 });
+
+    const second = decode(await firstEventId(firstId));
+    expect(fakeService.waitStream).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: { afterSeq: 4 } }));
+    expect(second).toEqual({ ...first, positions: { [epochKey]: 8 } });
   });
 
   it('withholds interrupted wait events from a subscriber that never declared it can render them', async () => {

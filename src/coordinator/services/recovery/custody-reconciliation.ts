@@ -10,10 +10,12 @@ import {
 } from '../../../store/custody-ledger.js';
 import { readProviderOperations } from '../../../store/provider-operation-journal.js';
 import type { Database } from '../../../store/db.js';
+import type { Runtime } from '../../../runtime/ports.js';
 
 const CUSTODY_ABSENCE_GRACE_MS = 2_000;
 
 export function reconcileStartupCustody(
+  runtime: Runtime,
   runDir: string,
   nowMs: number,
   db: Database,
@@ -29,11 +31,12 @@ export function reconcileStartupCustody(
   } catch {
     operations = null;
   }
-  for (const entry of readCustodyLedger(runDir)) {
+  for (const entry of readCustodyLedger(runtime, runDir)) {
     if (entry.kind !== 'holding' || entry.intent.epoch !== currentEpoch) continue;
     if (entry.intent.effect === 'provider-operation-publication') {
       if (operations?.records.some((record) => record.operation.operationId === entry.intent.operationId)) {
         bindCustodyIdentity(
+          runtime,
           runDir,
           entry.intent,
           {
@@ -49,9 +52,9 @@ export function reconcileStartupCustody(
     if (entry.intent.owner !== 'durable-cli' || evidence === undefined || nowMs > entry.intent.bindDeadlineMs) continue;
     const token = findCustodyProcessToken(entry.intent.processToken);
     if (token.kind !== 'alive') continue;
-    let runtime: ReturnType<typeof readDurableCliPreReadyOwnershipEvidence>;
+    let runtimeEvidence: ReturnType<typeof readDurableCliPreReadyOwnershipEvidence>;
     try {
-      runtime = readDurableCliPreReadyOwnershipEvidence(db, entry.intent.operationId);
+      runtimeEvidence = readDurableCliPreReadyOwnershipEvidence(db, entry.intent.operationId);
     } catch {
       continue;
     }
@@ -62,18 +65,19 @@ export function reconcileStartupCustody(
       continue;
     }
     if (
-      (runtime.kind === 'current' || runtime.kind === 'provisional') &&
-      runtime.record.pid === token.pid &&
-      incarnation === runtime.record.incarnation
+      (runtimeEvidence.kind === 'current' || runtimeEvidence.kind === 'provisional') &&
+      runtimeEvidence.record.pid === token.pid &&
+      incarnation === runtimeEvidence.record.incarnation
     ) {
       bindCustodyIdentity(
+        runtime,
         runDir,
         entry.intent,
         {
           process: {
             pid: token.pid,
-            incarnation: runtime.record.incarnation,
-            processGroupId: runtime.record.processGroupId,
+            incarnation: runtimeEvidence.record.incarnation,
+            processGroupId: runtimeEvidence.record.processGroupId,
           },
           capsule: entry.intent.capsule,
           observedAtMs: nowMs,
@@ -109,5 +113,5 @@ export function reconcileStartupCustody(
       evidence: `complete same-user process-token scan found no process; capsule=${capsule}`,
     };
   };
-  return reconcileCustodyLedger(runDir, nowMs, CUSTODY_ABSENCE_GRACE_MS, observe);
+  return reconcileCustodyLedger(runtime, runDir, nowMs, CUSTODY_ABSENCE_GRACE_MS, observe);
 }

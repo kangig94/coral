@@ -1,4 +1,7 @@
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -12,6 +15,9 @@ import { CORAL_KB_EXTRA_LANGS_ENV } from '#src/kb/extra-langs.js';
 import { VirtualTime, flushMicrotasks } from '#tools/simulation/core/virtual-time.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch.js';
+import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
 
 class FakeStdin extends EventEmitter {
   destroyed = false;
@@ -61,6 +67,7 @@ function createRuntime(
   daemonProcesses: FakeDaemonProcess[],
   time = new VirtualTime(),
   envVars: Record<string, string | undefined> = {},
+  backing?: Runtime,
 ) {
   const spawnCalls: RuntimeSpawnOptions[] = [];
   const runtime = {
@@ -76,8 +83,9 @@ function createRuntime(
       }),
       observeLiveness: () => 'alive' as const,
     },
-    storage: {},
+    storage: backing?.storage ?? {},
     env: {
+      ...(backing?.env ?? {}),
       get: (key: string): string | undefined => envVars[key],
       coralSnapshot: (): Readonly<Record<string, string>> =>
         Object.fromEntries(
@@ -86,7 +94,7 @@ function createRuntime(
           ),
         ),
     },
-    ids: {},
+    ids: backing?.ids ?? {},
     paths: {},
   } as unknown as Runtime;
 
@@ -199,7 +207,9 @@ describe('KB daemon supervisor', () => {
 
   it('passes the coordinator-opened store epoch to the KB daemon', async () => {
     const daemonProcess = new FakeDaemonProcess(115);
-    const { runtime, spawnCalls } = createRuntime([daemonProcess]);
+    const root = mkdtempSync(join(tmpdir(), 'coral-kb-opened-store-'));
+    const storeRuntime = createRealRuntime('prod', { baseDir: join(root, '.coral') });
+    const { runtime, spawnCalls } = createRuntime([daemonProcess], new VirtualTime(), {}, storeRuntime);
     const supervisor = createKbDaemonSupervisor({
       runtime,
       pluginRoot: '/plugin',
@@ -207,16 +217,22 @@ describe('KB daemon supervisor', () => {
       command: '/node',
     });
 
-    void supervisor.start({ storeRoot: '/store', epoch: '7', path: '/store/epoch-7/store.db' });
-    await flushMicrotasks();
+    try {
+      openSettledTestStoreDb(storeRuntime).close();
+      const openedStore = resolveCurrentStore(storeRuntime).epoch;
+      if (openedStore === null) {
+        throw new Error('Expected a settled store epoch');
+      }
 
-    expect(spawnCalls[0]?.envAdditions).toMatchObject({
-      CORAL_KB_DAEMON_STORE: JSON.stringify({
-        storeRoot: '/store',
-        epoch: '7',
-        path: '/store/epoch-7/store.db',
-      }),
-    });
+      void supervisor.start(openedStore);
+      await vi.waitFor(() => expect(spawnCalls).toHaveLength(1));
+
+      expect(spawnCalls[0]?.envAdditions).toMatchObject({
+        CORAL_KB_DAEMON_STORE: encodeResolvedStoreEpoch(storeRuntime, openedStore),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('forwards every inherited CORAL_KB_* config var into the spawn env (composeChildEnv strips inherited CORAL_*)', async () => {

@@ -21,7 +21,7 @@ import { sessionContinuationLeaseRecoverySource } from '#src/sessions/continuati
 import { sessionProjectionRecoverySource } from '#src/sessions/projection-recovery-source.js';
 import { terminalRetentionOutcomeRecoverySource } from '#src/sessions/terminal-retention-outcome-recovery-source.js';
 import { workflowRecoverySource } from '#src/workflow/recovery-source.js';
-import { createEpochClosureRetryPlan } from '#src/coordinator/services/recovery/epoch-closure.js';
+import { createEpochClosureRetryPlan } from '#src/coordinator/services/recovery/epoch-closure-retry-plan.js';
 import { createJobLocationRecoveryRetryPlan } from '#src/jobs/location-recovery.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import type { JobProgressStore } from '#src/jobs/contracts/job-store.js';
@@ -182,7 +182,7 @@ describe('recovery quarantine retry service', () => {
   it('should keep the runtime registry equal to every manifest boundary', () => {
     boundaryRoot = mkdtempSync(join(tmpdir(), 'coral-recovery-boundaries-'));
     const runtime = createRealRuntime('prod', { baseDir: boundaryRoot });
-    const index = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     const signal = new AbortController().signal;
     expect(repeatableRecoveryBoundaryIds).toEqual([
       'coordinator-job-recovery',
@@ -279,9 +279,11 @@ describe('recovery quarantine retry service', () => {
       policy: passThroughPolicy(),
     }));
     runtimeRegistry.register('job-location-write-through', (retrySubject) =>
-      createJobLocationRecoveryRetryPlan(index, 'epoch-key', {} as JobProgressStore, retrySubject));
+      createJobLocationRecoveryRetryPlan(index, 'epoch-key', {} as JobProgressStore, retrySubject),
+    );
     runtimeRegistry.register(EPOCH_CLOSURE_BOUNDARY, (retrySubject) =>
-      createEpochClosureRetryPlan(runtime, index, retrySubject, signal, null));
+      createEpochClosureRetryPlan(runtime, index, retrySubject, signal, null),
+    );
     runtimeRegistry.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (retrySubject) =>
       createSettledUnboundStatusRetryPlan(db, retrySubject, quarantine, () => true),
     );

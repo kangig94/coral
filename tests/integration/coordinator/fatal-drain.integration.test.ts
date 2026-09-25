@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,9 +84,11 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
   }
 
   const backendPath = join(bundleDir, 'coral-backend.cjs');
+  // A differently built backend is a different build set; sharing the bridge's id would make both claim one retained root.
+  const buildSetId = randomUUID();
   const embeddedIdentity = {
     version: manifest.version,
-    buildSetId: manifest.buildSetId,
+    buildSetId,
     flavor: manifest.flavor,
     storeFormatFingerprint: manifest.storeFormatFingerprint,
   };
@@ -109,7 +111,7 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
     },
     define: {
       __VERSION__: JSON.stringify(manifest.version),
-      __BUILD_SET_ID__: JSON.stringify(manifest.buildSetId),
+      __BUILD_SET_ID__: JSON.stringify(buildSetId),
       __BUILD_FLAVOR__: JSON.stringify(manifest.flavor),
       __STORE_FORMAT_FINGERPRINT__: JSON.stringify(manifest.storeFormatFingerprint),
       __IS_CORAL_BACKEND_MAIN__: 'false',
@@ -119,6 +121,7 @@ async function buildFatalDrainBackend(fixture: PluginFixture): Promise<string> {
 
   const testManifest: StrictBundleManifest = {
     ...manifest,
+    buildSetId,
     bundleHash: createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16),
   };
   writeFileSync(join(bundleDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), `${JSON.stringify(testManifest)}\n`, 'utf-8');

@@ -2,16 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { compareProductVersions } from '../infra/product-version.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.js';
-import { startUpgradeWaiter, type UpgradeWaiterStart } from './index.js';
-
-export type LegacyUpgradeStart =
-  | Readonly<{
-      kind: 'waiting';
-      requestId: string;
-      waiter: Extract<UpgradeWaiterStart, { kind: 'started' | 'existing' }>;
-    }>
-  | Readonly<{ kind: 'deferred'; requestId: string; reason: string }>
-  | Readonly<{ kind: 'refused'; reason: string }>;
+import { startUpgradeWaiter } from './index.js';
+import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
 
 /** A legacy incumbent cannot record the newer target's intent for itself. */
 export async function requestLegacyUpgrade(

@@ -308,9 +308,7 @@ describe('createCoordinatorControl.abortJobs', () => {
       getLifecycleController: () => null,
       getProgressStore: () => ({}) as never,
       internalJobAbortRegistry: registry,
-      requestStops: (jobIds) => parked
-        ? { kind: 'admission-closed', jobIds }
-        : noProviderStops(jobIds),
+      requestStops: (jobIds) => (parked ? { kind: 'admission-closed', jobIds } : noProviderStops(jobIds)),
     });
 
     expect(control.abortJobs([jobId])).toEqual({

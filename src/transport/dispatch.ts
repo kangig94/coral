@@ -1038,11 +1038,14 @@ async function executeJobsDetailCatalogRequest({
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
   }
   if ('kind' in detail && detail.kind === 'unresolved') {
-    return unary({
-      code: 'job_unresolved',
-      message: `Job ${parsed.jobId} remains addressable while its retained epoch is recovered.`,
-      detail: { epochKey: detail.epochKey },
-    }, 409);
+    return unary(
+      {
+        code: 'job_unresolved',
+        message: `Job ${parsed.jobId} remains addressable while its retained epoch is recovered.`,
+        detail: { epochKey: detail.epochKey },
+      },
+      409,
+    );
   }
   return unary(detail);
 }
@@ -1122,7 +1125,9 @@ async function executeDiscussSessionCreateCatalogRequest({
 
   if (rpcPorts.admin.admitTopLevelLaunch?.() === false) {
     return unaryHttp(
-      domainResultToHttp(domainError('succession_admission_paused', 'Launch admission is paused during succession. Retry shortly.')),
+      domainResultToHttp(
+        domainError('succession_admission_paused', 'Launch admission is paused during succession. Retry shortly.'),
+      ),
     );
   }
 

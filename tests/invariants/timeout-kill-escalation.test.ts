@@ -56,6 +56,7 @@ const RECORDED_CONTAINMENT_OWNER_FILES = [
   'src/provider-proxy/role-main.ts',
   'src/coordinator/live/provider-hosts/drain.ts',
   'src/coordinator/services/recovery/actions.ts',
+  'src/coordinator/services/recovery/epoch-closure.ts',
   'src/coordinator/services/recovery/interrupted-performer.ts',
   'src/coordinator/services/provider-proxy-set/index.ts',
   'src/coordinator/services/provider-proxy-set/inheritance.ts',
@@ -200,12 +201,6 @@ describe('process kills escalate SIGTERM→SIGKILL', () => {
 // is recorded as known debt or a target-shape exception with its own reason, not silenced as a false positive.
 // Migrating one to a sanctioned helper removes its entry.
 const HAND_ROLLED_ESCALATION_ALLOWLIST = new Map<string, string>([
-  [
-    'src/coordinator/handoff.ts',
-    // Handoff targets a separately discovered incumbent, not a child or recorded containment. Each signal
-    // requires a fresh pid/start-time check and its own capability, policy, cooldown, and audit handling.
-    'verified incumbent handoff escalation has no child handle or recorded containment and revalidates policy and identity before each audited signal',
-  ],
   [
     'src/providers/claude/appserver/controller.ts',
     'pre-existing Claude appserver child-shutdown escalation (two call sites: shutdown() and the replacement-child path), not yet migrated to gracefulKill',

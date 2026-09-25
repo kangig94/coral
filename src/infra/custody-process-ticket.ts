@@ -11,7 +11,6 @@ import {
   renameSync,
   rmSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -268,10 +267,6 @@ export function bindCustodyProcessTicket(
     }
   } finally {
     if (fd !== null) closeSync(fd);
-    try {
-      unlinkSync(stage);
-    } catch (error: unknown) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-    }
+    rmSync(stage, { force: true });
   }
 }

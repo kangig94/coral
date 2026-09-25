@@ -1,6 +1,6 @@
-import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
+import type { Runtime } from '../../runtime/ports.js';
 
 import { strictBundleManifestSchema, type StrictBundleManifest } from '../../infra/bundle-manifest.js';
 import { SUCCESSION_CAPABILITIES_FILE, SUCCESSION_CAPABILITY_VERSION } from '../../infra/bundle-manifest-address.js';
@@ -84,15 +84,17 @@ export const successionPreparationSchema = z
 export type SuccessionPreparation = z.infer<typeof successionPreparationSchema>;
 
 export function readSuccessionCapabilities(
+  runtime: Pick<Runtime, 'storage'>,
   bundleDir: string,
   manifest: StrictBundleManifest,
 ): { kind: 'declared'; capabilities: SuccessionCapabilities } | { kind: 'absent' | 'invalid' } {
   const path = join(bundleDir, SUCCESSION_CAPABILITIES_FILE);
   let raw: string;
   try {
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16 * 1024) return { kind: 'invalid' };
-    raw = readFileSync(path, 'utf8');
+    const stat = runtime.storage.lstatSync(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || runtime.storage.statSync(path).size > 16 * 1024)
+      return { kind: 'invalid' };
+    raw = runtime.storage.readFileSync(path, 'utf-8');
   } catch (error: unknown) {
     return error instanceof Error && 'code' in error && error.code === 'ENOENT'
       ? { kind: 'absent' }

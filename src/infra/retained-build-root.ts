@@ -1,8 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, renameSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import {
+  closeSync,
+  cpSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
-import type { StrictBundleManifest } from './bundle-manifest.js';
+import { resolveRunningBundleDir, type StrictBundleManifest } from './bundle-manifest.js';
 import { createForeignTargetValidator } from './handoff-target.js';
 import type { Runtime } from '../runtime/ports.js';
 
@@ -15,7 +27,11 @@ function syncTree(path: string): void {
     throw new Error('A retained build root contains a non-file entry.');
   }
   const fd = openSync(path, 'r');
-  try { fsyncSync(fd); } finally { closeSync(fd); }
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export function retainedBuildRoot(runtime: Runtime, buildSetId: string): string {
@@ -23,11 +39,14 @@ export function retainedBuildRoot(runtime: Runtime, buildSetId: string): string 
   return join(dirname(runtime.paths.coral.coordinator.runDir), 'builds', buildSetId);
 }
 
-export function pinRunningBuildRoot(
-  runtime: Runtime,
-  pluginRoot: string,
-  manifest: StrictBundleManifest,
-): string {
+/** Retains the running build as a whole plugin root whose `bridge/` is the bundle directory this process runs from. */
+export function pinRunningBuildRoot(runtime: Runtime, pluginRoot: string, manifest: StrictBundleManifest): string {
+  const runningBundleDir = resolveRunningBundleDir(pluginRoot);
+  if (runningBundleDir === null) throw new Error('Running bundle directory is unobservable.');
+  const runningBundle = relative(realpathSync(pluginRoot), runningBundleDir);
+  if (runningBundle.length === 0 || runningBundle.startsWith('..') || isAbsolute(runningBundle)) {
+    throw new Error('Running bundle directory is outside its plugin root.');
+  }
   const target = retainedBuildRoot(runtime, manifest.buildSetId);
   const validate = createForeignTargetValidator();
   if (existsSync(target)) {
@@ -39,20 +58,35 @@ export function pinRunningBuildRoot(
   const parent = dirname(target);
   mkdirSync(parent, { recursive: true, mode: 0o700 });
   const parentOfBuilds = openSync(dirname(parent), 'r');
-  try { fsyncSync(parentOfBuilds); } finally { closeSync(parentOfBuilds); }
+  try {
+    fsyncSync(parentOfBuilds);
+  } finally {
+    closeSync(parentOfBuilds);
+  }
   const stage = join(parent, `.preparing-${randomUUID()}`);
   try {
     cpSync(resolve(pluginRoot), stage, {
-      recursive: true, dereference: true, force: false, errorOnExist: true,
+      recursive: true,
+      dereference: true,
+      force: false,
+      errorOnExist: true,
       filter: (source) => !lstatSync(source).isSymbolicLink() || existsSync(source),
     });
+    if (runningBundle !== 'bridge') {
+      rmSync(join(stage, 'bridge'), { recursive: true, force: true });
+      renameSync(join(stage, runningBundle), join(stage, 'bridge'));
+    }
     syncTree(stage);
     if (validate(join(stage, 'bridge'), manifest).kind !== 'validated') {
       throw new Error('Retained build copy does not validate.');
     }
     renameSync(stage, target);
     const fd = openSync(parent, 'r');
-    try { fsyncSync(fd); } finally { closeSync(fd); }
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     return target;
   } finally {
     if (existsSync(stage)) rmSync(stage, { recursive: true, force: true });

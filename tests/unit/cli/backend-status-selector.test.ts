@@ -301,14 +301,14 @@ describe('getBackendStatusFull record disposition', () => {
   });
 
   // The writer publishes through `<record>.stage.<pid>.<incarnation>`, and nothing discovers files: the reader
-  // opens one derived address. A stage a crashed writer left behind can therefore never be read as a record.
-  it('opens the one derived record address and never a writer-owned stage', async () => {
+  // opens the derived remainder address after checking the fixed startup evidence addresses.
+  it('opens only the derived evidence addresses and never a writer-owned stage', async () => {
     mockState.remainder = { value: shutdownRemainder('current', NOW - 10_000) };
 
     const { getBackendStatusFull } = await import('#src/cli/backend-status.js');
     await getBackendStatusFull('/plugin-root');
 
-    expect(mockState.readPaths.filter((path) => path !== '/tmp/coral-startup.json')).toEqual([REMAINDER_PATH]);
+    expect(mockState.readPaths).toEqual(['/tmp/coral-startup.json', '/tmp/startup-error.json', REMAINDER_PATH]);
   });
 
   // A target-following ENOENT alone does not prove absence: the lexical entry may still be there (a dangling

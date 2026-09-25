@@ -300,7 +300,7 @@ export function createProviderProxyAcquisitionSteps(
         readProcessIncarnation,
       };
       if (options.custody !== undefined) {
-        guardianCustodyIntent = recordCustodyIntent(options.custody.runDir, {
+        guardianCustodyIntent = recordCustodyIntent(runtime, options.custody.runDir, {
           effect: 'process-spawn',
           epoch: options.custody.epoch,
           owner: 'provider-proxy-set',
@@ -394,7 +394,7 @@ export function createProviderProxyAcquisitionSteps(
       }
       guardianSpawn = spawned;
       if (guardianCustodyIntent !== null && options.custody !== undefined) {
-        bindCustodyIdentity(options.custody.runDir, guardianCustodyIntent, {
+        bindCustodyIdentity(runtime, options.custody.runDir, guardianCustodyIntent, {
           process: { pid: spawned.pid, incarnation: spawned.incarnation, processGroupId: spawned.pid },
           capsule: guardianCustodyIntent.capsule,
           observedAtMs: runtime.time.now(),

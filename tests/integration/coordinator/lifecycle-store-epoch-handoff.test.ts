@@ -82,6 +82,8 @@ function lifecycleHarness(
       storeFormat,
       identity,
       runtime,
+      authorizeStartupMint: ({ incumbent, observedEpochCount }) =>
+        incumbent === null && observedEpochCount === 0 ? { kind: 'initial', incumbentEpochKey: null } : null,
       backendPid: process.pid,
       runtimeState,
       idleTimer: {
@@ -180,6 +182,7 @@ describe('lifecycle store epoch handoff', () => {
       bootToken: 'test-boot-token',
       epochKey: '',
       receiptIds: [],
+      recovery: false,
       adoptListeners: vi.fn(async () => {}),
       acknowledge: vi.fn(async () => {}),
       waitForWritersParked: vi.fn(async () => {
@@ -203,10 +206,15 @@ describe('lifecycle store epoch handoff', () => {
       flavor: identity.flavor,
       storeFormatFingerprint: storeFormat.fingerprint,
     };
-    const initial = settleStoreEpoch(runtime, { storeFormat, build });
+    const initial = settleStoreEpoch(runtime, {
+      storeFormat,
+      build,
+      authorizeMint: ({ incumbent, observedEpochCount }) =>
+        incumbent === null && observedEpochCount === 0 ? { kind: 'initial', incumbentEpochKey: null } : null,
+    });
     initial.db.close();
     agreedPath = initial.store.path;
-    const epochKey = encodeResolvedStoreEpoch(initial.store);
+    const epochKey = encodeResolvedStoreEpoch(runtime, initial.store);
     const targetKey = JSON.stringify([
       identity.pluginRoot,
       identity.version,

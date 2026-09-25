@@ -91,7 +91,9 @@ function cloneCursor(cursor?: WaitCursor): WaitCursor {
   if (cursor === undefined) return { afterSeq: 0 };
   return isWaitCursorV2(cursor)
     ? {
-        version: 'jobs.wait.v2', positions: { ...cursor.positions }, locations: { ...cursor.locations },
+        version: 'jobs.wait.v2',
+        positions: { ...cursor.positions },
+        locations: { ...cursor.locations },
         ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds: [...cursor.deliveredJobIds] }),
       }
     : { afterSeq: cursor.afterSeq };
@@ -232,9 +234,8 @@ function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
 
-      const advanced = advanceWaitRenderCursor(state.cursor, event);
-      state.cursor = advanced.cursor;
-      if (!advanced.shouldRender) return 'handled';
+      // A render decision may advance the cursor but may not withhold a pending atom's terminal.
+      state.cursor = advanceWaitRenderCursor(state.cursor, event).cursor;
       state.pending.delete(event.jobId);
       state.cursor = waitCursorForJobs(state.cursor, [...state.pending.keys()]);
       state.observedIdleMs.delete(atom.atomKey);

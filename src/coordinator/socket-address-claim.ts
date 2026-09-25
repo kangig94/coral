@@ -48,7 +48,27 @@ export function createCoordinatorSocketAddressClaim(
     );
   }
 
-  const computedSocketPaths = new Set(v0109SocketGuards.paths);
+  const legacySocketGuards = v0109CoordinatorSocketGuardSetForRunDir(
+    runtime.paths.coral.coordinator.legacyRunDir,
+    runtime.flavor,
+    {
+      platform,
+      configuredTempDirectory: runtime.env.get('TMPDIR'),
+      systemTempDirectory: runtime.env.tmpdir(),
+    },
+  );
+  if (legacySocketGuards.kind === 'address-unenumerable') {
+    throw new Error(
+      `Cannot enumerate the shipped v0.10.0 coordinator socket from ${legacySocketGuards.source}=${JSON.stringify(legacySocketGuards.value)}.`,
+    );
+  }
+
+  const computedSocketPaths = new Set([
+    ...v0109SocketGuards.paths,
+    ...(legacySocketGuards.kind === 'primary-address'
+      ? [runtime.paths.coral.coordinator.legacySocketPath]
+      : legacySocketGuards.paths),
+  ]);
   const publishedSocketAddresses = new Map<string, PublishedIpcSocketAddress>();
   const asPublishedSocketAddress = (socketPath: string): PublishedIpcSocketAddress => {
     const path = platform === 'win32' ? win32 : posix;

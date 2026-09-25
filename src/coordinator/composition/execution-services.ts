@@ -90,6 +90,7 @@ type CreateExecutionServicesDeps = {
   onProviderProxyLifecycleFatal(
     error: ProviderProxySetLifecycleFatalError | ProviderOperationReconcilerFatalError,
   ): void;
+  onProviderProxySlotReleased?(): void;
 };
 
 function listInstantiatedExecutionServices(services: ReadonlyMap<string, ProjectRequestPort>): ProjectRequestPort[] {
@@ -105,6 +106,7 @@ export function createExecutionServices({
   settlementRefusalRecorder,
   createExecutionService,
   onProviderProxyLifecycleFatal,
+  onProviderProxySlotReleased,
 }: CreateExecutionServicesDeps): {
   getExecutionService: (ctx: InvocationContext) => ProjectRequestPort;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
@@ -270,13 +272,15 @@ export function createExecutionServices({
     custody: () => {
       const activeEpochPath = getActiveEpochPath?.();
       const dbDir = runtime.paths.coral.store.dbDir;
-      const epoch = activeEpochPath === undefined || activeEpochPath === null
-        ? resolveCurrentStoreEpoch(runtime.storage, dbDir)
-        : null;
-      if (activeEpochPath == null && epoch === null) {
+      const epoch =
+        activeEpochPath === undefined || activeEpochPath === null
+          ? resolveCurrentStoreEpoch(runtime.storage, dbDir)
+          : null;
+      if ((activeEpochPath === null || activeEpochPath === undefined) && epoch === null) {
         throw new Error('Provider operation custody requires a selected store epoch.');
       }
       return {
+        runtime,
         runDir: runtime.paths.coral.coordinator.runDir,
         epoch: activeEpochPath ?? join(dbDir, `epoch-${epoch}`),
         nowMs: runtime.time.now(),
@@ -401,7 +405,10 @@ export function createExecutionServices({
       ),
     reportLifecycle: (severity, message) => backendLog[severity](message),
     onError: (message) => backendLog.warn(message),
-    onSlotReleased: (routeKey) => world.providerHostManager.providerProxySlotReleased?.(routeKey),
+    onSlotReleased: (routeKey) => {
+      world.providerHostManager.providerProxySlotReleased?.(routeKey);
+      onProviderProxySlotReleased?.();
+    },
   });
   world.providerProxyLifecycleRef.connect(providerProxyLifecycle);
   const unsubscribeProviderProxyControlEstablished = subscribeProviderProxyControlEstablished((authority) =>

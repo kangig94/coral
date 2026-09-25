@@ -70,10 +70,11 @@ describe('LocalOperationRegistry', () => {
 
   it('exposes live carrier identities before a job has a status row', () => {
     const { registry } = registryWithCleanup();
-    const m = meta({ jobId: 'external-without-status' });
+    const externalJobId = '123e4567-e89b-42d3-a456-426614174000';
+    const m = meta({ jobId: externalJobId });
     registry.activate(m, fakeControl().control, cleanupFor(m));
 
-    expect(registry.liveJobIds()).toEqual(['external-without-status']);
+    expect(registry.liveJobIds()).toEqual([externalJobId]);
     registry.settled(identityFor(m));
     expect(registry.liveJobIds()).toEqual([]);
   });

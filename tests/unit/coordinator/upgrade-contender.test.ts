@@ -30,7 +30,8 @@ describe('contender upgrade request', () => {
     directories.push(runDir);
     const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
     const startLegacy = vi.fn((options: Parameters<typeof requestLegacyUpgrade>[0]) =>
-      requestLegacyUpgrade({ ...options, startWaiter }));
+      requestLegacyUpgrade({ ...options, startWaiter }),
+    );
     const options = {
       runDir,
       socketPath: '/incumbent.sock',
@@ -55,7 +56,9 @@ describe('contender upgrade request', () => {
     const { options, startWaiter, runDir } = fixture();
     const result = await requestUpgradeFromContender({
       ...options,
-      request: vi.fn(async () => { throw new Error('method absent'); }),
+      request: vi.fn(async () => {
+        throw new Error('method absent');
+      }),
     });
 
     expect(result).toMatchObject({ kind: 'waiting', waiter: { kind: 'started', pid: 5678 } });

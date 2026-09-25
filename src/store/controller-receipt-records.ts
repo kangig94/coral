@@ -1,65 +1,86 @@
-import { randomUUID } from 'node:crypto';
-import {
-  closeSync,
-  fsyncSync,
-  linkSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
 import { join } from 'node:path';
+import type { Runtime } from '../runtime/ports.js';
 
 function receiptDir(runDir: string): string {
   return join(runDir, 'controller-receipts.v1');
 }
 
-function appendRecord(runDir: string, key: string, suffix: string, record: string): void {
+function appendRecord(
+  runtime: Pick<Runtime, 'storage' | 'ids'>,
+  runDir: string,
+  key: string,
+  suffix: string,
+  record: string,
+): void {
+  const { storage } = runtime;
   const dir = receiptDir(runDir);
-  mkdirSync(dir, { recursive: true });
+  storage.mkdirSync(dir, { recursive: true });
   const path = join(dir, `${key}.${suffix}.json`);
-  const temporary = join(dir, `.${randomUUID()}.stage`);
+  const temporary = join(dir, `.${runtime.ids.uuid()}.stage`);
   try {
-    writeFileSync(temporary, `${record}\n`, { flag: 'wx' });
-    const file = openSync(temporary, 'r');
-    try { fsyncSync(file); } finally { closeSync(file); }
+    storage.writeFileSync(temporary, `${record}\n`, { flag: 'wx' });
+    const file = storage.openSync(temporary, 'r');
     try {
-      linkSync(temporary, path);
-    } catch (error: unknown) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST') ||
-          readFileSync(path, 'utf8') !== `${record}\n`) throw error;
+      storage.fdatasyncSync(file);
+    } finally {
+      storage.closeSync(file);
     }
-    const directory = openSync(dir, 'r');
-    try { fsyncSync(directory); } finally { closeSync(directory); }
+    try {
+      storage.linkSync(temporary, path);
+    } catch (error: unknown) {
+      if (
+        !(error instanceof Error && 'code' in error && error.code === 'EEXIST') ||
+        storage.readFileSync(path, 'utf-8') !== `${record}\n`
+      )
+        throw error;
+    }
+    if (!storage.syncDirectoryDurableSync(dir)) throw new Error('Controller receipt directory was not persisted.');
   } finally {
-    rmSync(temporary, { force: true });
+    storage.rmSync(temporary, { force: true });
   }
 }
 
-export function appendControllerReceipt(runDir: string, key: string, record: string): void {
-  appendRecord(runDir, key, 'receipt', record);
+export function appendControllerReceipt(
+  runtime: Pick<Runtime, 'storage' | 'ids'>,
+  runDir: string,
+  key: string,
+  record: string,
+): void {
+  appendRecord(runtime, runDir, key, 'receipt', record);
 }
 
-export function appendControllerRecoveryGrant(runDir: string, key: string, record: string): void {
-  appendRecord(runDir, key, 'grant', record);
+export function appendControllerRecoveryGrant(
+  runtime: Pick<Runtime, 'storage' | 'ids'>,
+  runDir: string,
+  key: string,
+  record: string,
+): void {
+  appendRecord(runtime, runDir, key, 'grant', record);
 }
 
-export function readControllerRecoveryGrant(runDir: string, key: string): string | null {
-  try { return readFileSync(join(receiptDir(runDir), `${key}.grant.json`), 'utf8'); }
-  catch (error: unknown) {
+export function readControllerRecoveryGrant(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+  key: string,
+): string | null {
+  try {
+    return runtime.storage.readFileSync(join(receiptDir(runDir), `${key}.grant.json`), 'utf-8');
+  } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
     throw error;
   }
 }
 
-export function readControllerReceipts(runDir: string): readonly string[] {
+export function readControllerReceipts(runtime: Pick<Runtime, 'storage'>, runDir: string): readonly string[] {
   const dir = receiptDir(runDir);
   let names: string[];
-  try { names = readdirSync(dir); } catch (error: unknown) {
+  try {
+    names = runtime.storage.readdirSync(dir);
+  } catch (error: unknown) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return [];
     throw error;
   }
-  return names.filter((name) => name.endsWith('.receipt.json')).map((name) => readFileSync(join(dir, name), 'utf8'));
+  return names
+    .filter((name) => name.endsWith('.receipt.json'))
+    .map((name) => runtime.storage.readFileSync(join(dir, name), 'utf-8'));
 }

@@ -27,12 +27,14 @@ export function createSuccessionCoordinator(options: SuccessionReconcilerOptions
         const parsed = successionRequestSchema.safeParse(params);
         if (!parsed.success) return { kind: 'refused', reason: 'invalid succession request' };
         const decision = await reconciler.request(parsed.data);
-        const targetCapabilities = decision.kind === 'registered'
-          ? readSuccessionCapabilities(
-              join(decision.intent.target.pluginRootLabel, 'bridge'),
-              decision.intent.target.build,
-            )
-          : null;
+        const targetCapabilities =
+          decision.kind === 'registered'
+            ? readSuccessionCapabilities(
+                options.runtime,
+                join(decision.intent.target.pluginRootLabel, 'bridge'),
+                decision.intent.target.build,
+              )
+            : null;
         return decision.kind === 'registered'
           ? {
               ...decision,

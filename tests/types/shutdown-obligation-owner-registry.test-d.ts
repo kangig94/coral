@@ -3,7 +3,7 @@ import {
   type ShutdownObligation,
   type ShutdownSettlementLedgerOptions,
 } from '../../src/coordinator/shutdown-settlement.js';
-import { SHUTDOWN_OBLIGATION_OWNERS } from '../../src/coordinator/succession/obligations.js';
+import { type SHUTDOWN_OBLIGATION_OWNERS } from '../../src/coordinator/succession/obligations.js';
 
 type AssertNever<Value extends never> = Value;
 type ClosedLabels = AssertNever<string extends ShutdownObligation['label'] ? string : never>;
@@ -21,7 +21,7 @@ void (0 as UnknownRegistryKeys);
 
 // @ts-expect-error a new obligation requires an owner registry entry.
 type AddedObligationIsCovered = AssertNever<Exclude<'new', keyof typeof SHUTDOWN_OBLIGATION_OWNERS>>;
-void (0 as AddedObligationIsCovered);
+void ('' as AddedObligationIsCovered);
 
 declare const options: ShutdownSettlementLedgerOptions;
 declare const obligation: Omit<ShutdownObligation, 'label'>;

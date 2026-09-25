@@ -17,6 +17,7 @@ import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { workflowRegistry } from '#src/workflow/events.js';
 import { readJobLaunchOriginNamespace } from '#src/jobs/succession-coverage.js';
+import { createDefaultStoreReadContext } from '#src/read-model/read-context.js';
 
 const NOW = new Date('2026-04-19T00:00:00.000Z');
 
@@ -232,9 +233,18 @@ describe('jobs append invariants', () => {
       });
 
       expect(() => appendJobEvents(db, [input])).not.toThrow();
-      expect((db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'job.launch.requested'").get() as { count: number }).count).toBe(1);
-      db.prepare('UPDATE projection_jobs SET backend_namespace = ? WHERE job_id = ?').run('successor-projection', jobId);
-      expect(readJobLaunchOriginNamespace(db, jobId)).toBe(launch.backendNamespace);
+      expect(
+        (
+          db.prepare("SELECT COUNT(*) AS count FROM events WHERE type = 'job.launch.requested'").get() as {
+            count: number;
+          }
+        ).count,
+      ).toBe(1);
+      db.prepare('UPDATE projection_jobs SET backend_namespace = ? WHERE job_id = ?').run(
+        'successor-projection',
+        jobId,
+      );
+      expect(readJobLaunchOriginNamespace(db, jobId, createDefaultStoreReadContext())).toBe(launch.backendNamespace);
     } finally {
       db.close();
     }

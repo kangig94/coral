@@ -27,17 +27,19 @@ export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEve
   if (event.type === 'progress' || event.type === 'terminal') {
     if (event.epochKey !== undefined && event.cursor !== undefined) {
       const previous = isWaitCursorV2(cursor) ? (cursor.positions[event.epochKey] ?? 0) : 0;
-      if (event.type === 'terminal' && isWaitCursorV2(cursor) &&
-        cursor.deliveredJobIds?.includes(event.jobId)) return { cursor, shouldRender: false };
+      if (event.type === 'terminal' && isWaitCursorV2(cursor) && cursor.deliveredJobIds?.includes(event.jobId))
+        return { cursor, shouldRender: false };
       if (event.type === 'progress' && event.seq <= previous) return { cursor, shouldRender: false };
       return {
         cursor: {
           version: 'jobs.wait.v2',
           locations: { ...event.cursor.locations },
-          deliveredJobIds: [...new Set([
-            ...(isWaitCursorV2(cursor) ? (cursor.deliveredJobIds ?? []) : []),
-            ...(event.cursor.deliveredJobIds ?? []),
-          ])],
+          deliveredJobIds: [
+            ...new Set([
+              ...(isWaitCursorV2(cursor) ? (cursor.deliveredJobIds ?? []) : []),
+              ...(event.cursor.deliveredJobIds ?? []),
+            ]),
+          ],
           positions: Object.fromEntries(
             Object.entries(event.cursor.positions).map(([key, seq]) => [
               key,
