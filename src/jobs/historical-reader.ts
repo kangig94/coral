@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { z } from 'zod';
 
@@ -7,7 +7,8 @@ import { acquireSharedFileLockSync } from '../infra/fs-lock.js';
 import type { StoragePort } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
-import { STORE_DATABASE_FILE_NAME, STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { resolveProtectedEpoch } from '../store/epoch-protection.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { JobLocationIndex, type JobLocationSubject } from './location-index.js';
 import { describeTerminalOutcome } from './outcome.js';
@@ -184,14 +185,26 @@ export function seedHistoricalEpoch(
   knownJobs: readonly KnownHistoricalJob[] = [],
   certifyRetiredEpoch = false,
 ): HistoricalSeedResult {
+  let addressedEpoch: ResolvedStoreEpoch;
+  try {
+    addressedEpoch = resolveProtectedEpoch(epoch.canonicalStoreRoot ?? epoch.storeRoot, epochKey) ?? epoch;
+  } catch (error: unknown) {
+    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error));
+    for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
+    return {
+      kind: 'unrecoverable-retained',
+      knownJobIds: index.locationsFor(epochKey).map((location) => location.jobId),
+      reason: 'protected-epoch-address-unreadable',
+    };
+  }
   const sources = historicalSources.get(index) ?? new Map<string, HistoricalEpochSource>();
-  sources.set(epochKey, { epoch, fingerprint, jobsRoot, storage });
+  sources.set(epochKey, { epoch: addressedEpoch, fingerprint, jobsRoot, storage });
   historicalSources.set(index, sources);
   for (const known of knownJobs) {
     index.register(known.jobId, epochKey, known.subject);
   }
   const reader = readers[fingerprint];
-  const dbPath = join(epoch.path, STORE_DATABASE_FILE_NAME);
+  const dbPath = addressedEpoch.path;
   if (reader === undefined || !existsSync(dbPath)) {
     index.holdUnknownLocations(epochKey, reader === undefined ? 'unsupported-store-fingerprint' : 'retained-store-root-missing');
     for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);
@@ -204,7 +217,7 @@ export function seedHistoricalEpoch(
   let releaseLock: (() => void) | null = null;
   let db: DatabaseSync | null = null;
   try {
-    releaseLock = acquireSharedFileLockSync(join(epoch.path, STORE_LOCK_FILE_NAME));
+    releaseLock = acquireSharedFileLockSync(join(dirname(addressedEpoch.path), STORE_LOCK_FILE_NAME));
     db = new DatabaseSync(dbPath, { readOnly: true });
     const rows = reader(db);
     const highWaterSeq = (db.prepare(
@@ -284,13 +297,13 @@ export function refreshHistoricalEpoch(index: JobLocationIndex, epochKey: string
   const source = historicalSources.get(index)?.get(epochKey);
   if (source === undefined) return;
   const reader = readers[source.fingerprint];
-  const dbPath = join(source.epoch.path, STORE_DATABASE_FILE_NAME);
+  const dbPath = source.epoch.path;
   if (reader === undefined || !existsSync(dbPath)) return;
 
   let releaseLock: (() => void) | null = null;
   let db: DatabaseSync | null = null;
   try {
-    releaseLock = acquireSharedFileLockSync(join(source.epoch.path, STORE_LOCK_FILE_NAME));
+    releaseLock = acquireSharedFileLockSync(join(dirname(source.epoch.path), STORE_LOCK_FILE_NAME));
     db = new DatabaseSync(dbPath, { readOnly: true });
     const requested = new Set(jobIds);
     for (const row of reader(db)) {

@@ -9,10 +9,12 @@
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
+import { createEpochClosureRetryPlan, settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
+import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
@@ -164,6 +166,7 @@ import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
+  EPOCH_CLOSURE_BOUNDARY,
   createRecoveryQuarantineRetryService,
   createRecoverySourceRegistry,
   SETTLED_UNBOUND_STATUS_BOUNDARY,
@@ -672,7 +675,10 @@ export function createCoordinatorCore(
   };
   const getProgressStore = () => getStoreServices().progressStore;
   const jobLocationIndex = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+  let selectedStoreEpochKey: string | null = null;
+  let selectedStoreEpochPath: string | null = null;
   const currentJobEpochKey = (): string | null => {
+    if (selectedStoreEpochKey !== null) return selectedStoreEpochKey;
     const inspection = inspectCurrentStore(runtime);
     return inspection.kind === 'current' ? readOrCreateEpochKey(inspection.epoch) : null;
   };
@@ -890,6 +896,11 @@ export function createCoordinatorCore(
     if (epochKey === null) throw storeServicesStartupNotReadyError();
     return createJobLocationRecoveryRetryPlan(jobLocationIndex, epochKey, getProgressStore(), subject);
   });
+  recoverySources.register(EPOCH_CLOSURE_BOUNDARY, (subject, signal) =>
+    createEpochClosureRetryPlan(
+      runtime, jobLocationIndex, subject, signal, selectedStoreEpochKey, closeProxySetForEpochClosure,
+    ),
+  );
   recoverySources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (subject, _signal, quarantine) =>
     createSettledUnboundStatusRetryPlan(recoveryDb(), subject, quarantine, (absence) =>
       world.launchCoordinator.releaseSettledUnboundStatusAfterObservedAbsence(absence),
@@ -1030,6 +1041,7 @@ export function createCoordinatorCore(
   const services = createExecutionServices({
     world,
     runtime,
+    getActiveEpochPath: () => selectedStoreEpochPath,
     bundleHash: world.identity.bundleHash,
     backendNamespace: world.namespace,
     settlementRefusalRecorder,
@@ -1415,6 +1427,22 @@ export function createCoordinatorCore(
         authorization.capability.handback();
       }
     }
+  };
+
+  const closeProxySetForEpochClosure = async (
+    proxyInstanceId: string,
+    guardian: Readonly<{ pid: number; incarnation: ProcessIncarnation }>,
+    signal: AbortSignal,
+  ): Promise<boolean> => {
+    const set = world.providerProxyAuthority?.liveSets().find((candidate) =>
+      candidate.setIdentity.proxyInstanceId === proxyInstanceId &&
+      candidate.setIdentity.guardianPid === guardian.pid &&
+      candidate.setIdentity.guardianIncarnation === guardian.incarnation);
+    if (set === undefined) return false;
+    const result = await containProviderProxySet(
+      { setIdentity: providerProxySetAddress(set.setIdentity), mode: 'contain' }, 'current', false, signal,
+    );
+    return 'effect' in result && result.effect.containmentAbsent;
   };
 
   const activeJobDetail = (jobId: string) => {
@@ -2533,6 +2561,11 @@ export function createCoordinatorCore(
     idleTimer: world.idleTimer,
     storeServicesRef,
     createStoreServicesFromDbFn,
+    onStoreOpened: (openStore) => {
+      selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(openStore);
+      selectedStoreEpochPath = openStore.path === ':memory:' ? null : dirname(openStore.path);
+      if (selectedStoreEpochPath !== null) world.launchCoordinator.bindActiveEpochPath(selectedStoreEpochPath);
+    },
     verifySuccessionReceipts: (preparation, epoch) => {
       const accepted = new Set<string>();
       for (const receipt of preparation.receipts) {
@@ -2595,7 +2628,8 @@ export function createCoordinatorCore(
         const transfer = decodeDurableCliTransfer(receipt.payload, epoch);
         if (transfer === null) throw new Error('Durable-cli receipt is invalid at controller acknowledgment.');
         recordDurableCliControllerReceipts(runtime.paths.coral.coordinator.runDir, transfer, {
-          epochKey, attemptId: preparation.attemptId, instanceId: identity.instanceId,
+          epochKey, lineageEpochKey: readOrCreateEpochKey(epoch),
+          attemptId: preparation.attemptId, instanceId: identity.instanceId,
           buildSetId: identity.buildSetId,
           generation, nowMs: Date.parse(recordedAt),
         });
@@ -2649,23 +2683,42 @@ export function createCoordinatorCore(
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
     scheduleStoreEpochSweepFn: (openStore) => {
+      selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(openStore);
+      selectedStoreEpochPath = openStore.path === ':memory:' ? null : dirname(openStore.path);
       const controller = new AbortController();
       storeEpochSweepAbort = controller;
-      storeEpochSweepSettlement = new Promise<void>((resolveSweep) => {
-        settleScheduledStoreEpochSweep = resolveSweep;
-      });
-      storeEpochSweepTimer = runtime.time.setTimeout(() => {
-        storeEpochSweepTimer = null;
-        void sweepStoreEpochsPostReady(runtime, openStore, { signal: controller.signal })
-          .catch((error: unknown) => {
-            world.log(`Store epoch retention sweep could not start: ${formatError(error)}\n`);
-          })
-          .finally(() => {
-            settleScheduledStoreEpochSweep?.();
-            settleScheduledStoreEpochSweep = null;
-          });
-      }, 0);
-      storeEpochSweepTimer.unref?.();
+      const schedule = (delayMs: number): void => {
+        storeEpochSweepSettlement = new Promise<void>((resolveSweep) => {
+          settleScheduledStoreEpochSweep = resolveSweep;
+        });
+        storeEpochSweepTimer = runtime.time.setTimeout(() => {
+          storeEpochSweepTimer = null;
+          void (async () => {
+            await settleSupersededEpochClosures(
+              runtime, jobLocationIndex, controller.signal, undefined, selectedStoreEpochKey ?? undefined,
+              closeProxySetForEpochClosure,
+            );
+            if (!controller.signal.aborted) {
+              await sweepStoreEpochsPostReady(runtime, {
+                ...openStore, storeRoot: openStore.canonicalStoreRoot ?? openStore.storeRoot,
+              }, {
+                signal: controller.signal,
+                resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
+              });
+            }
+          })()
+            .catch((error: unknown) => {
+              world.log(`Store epoch closure or retention sweep could not complete: ${formatError(error)}\n`);
+            })
+            .finally(() => {
+              settleScheduledStoreEpochSweep?.();
+              settleScheduledStoreEpochSweep = null;
+              if (!controller.signal.aborted) schedule(5_000);
+            });
+        }, delayMs);
+        storeEpochSweepTimer.unref?.();
+      };
+      schedule(0);
     },
     stopStoreEpochSweepFn: async () => {
       storeEpochSweepAbort?.abort();

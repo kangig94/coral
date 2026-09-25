@@ -845,6 +845,7 @@ export function insertProviderOperationWithCustody(
     epoch: custody.epoch,
     owner: 'provider-operation',
     operationId: record.operation.operationId,
+    jobId: record.operation.jobId,
     capsule: null,
     nowMs: custody.nowMs,
     bindWithinMs: custody.bindWithinMs,

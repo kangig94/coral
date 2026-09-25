@@ -44,12 +44,9 @@ function formatEpochMetadata(disposition: StoreEpochMetadataDisposition): string
   }
 }
 
-function releaseInstruction(target: 'legacy' | 'gen2'): readonly string[] {
+function retentionInstruction(target: 'legacy' | 'gen2'): readonly string[] {
   return target === 'gen2'
-    ? [
-        'To permanently remove a non-current epoch:',
-        'command=coral-cli backend store-reset release --target gen2 --flavor <prod|dev> <epoch>',
-      ]
+    ? ['Closed epochs are reclaimed after their historical results are retained.']
     : [];
 }
 
@@ -104,20 +101,29 @@ export function formatStoreResetReport(report: StoreResetPublicReport): string {
 
 export function formatStoreEpochReport(result: Extract<StoreResetReportResult, { readonly kind: 'epoch' }>): string {
   result = constrainStoreResetRendererInput(result);
+  const epoch = result.epoch;
+  const lineage = epoch.epochKey?.split(':')[0] ?? 'unobservable';
+  const relativeDatabase = epoch.role === 'protected'
+    ? `<protected-store-root>/${lineage}/epoch-${epoch.epoch}/store.db`
+    : `epoch-${epoch.epoch}/store.db`;
+  const inspectionDatabase = epoch.role === 'protected' ? relativeDatabase : `<store-root>/${relativeDatabase}`;
   return [
     '# Coral store epoch report',
     '',
     `- Epoch: ${code(String(result.epoch.epoch))}`,
+    `- Epoch key: ${result.epoch.epochKey === null || result.epoch.epochKey === undefined ? 'unobservable' : code(result.epoch.epochKey)}`,
     `- Role: ${code(result.epoch.role)}`,
+    `- Closure: ${code(result.epoch.closureDisposition ?? 'pending')}`,
+    `- Data outcome: ${code(result.epoch.dataOutcome ?? 'unknown')}`,
     `- Bytes: ${result.epoch.bytes ?? 'unknown'}`,
     `- Publication reason: ${code(result.epoch.publicationReason.kind)}`,
     `- Superseded store Coral version: ${result.epoch.supersededStoreVersion === null ? 'not observed' : code(result.epoch.supersededStoreVersion)}`,
     `- Epoch metadata: ${code(formatEpochMetadata(result.epoch.epochJson))}`,
-    `- Database: ${code(`epoch-${result.epoch.epoch}/store.db`)}`,
+    `- Database: ${code(relativeDatabase)}`,
     '',
     '## SQLite inspection',
     '',
-    `command=sqlite3 ${code(`<store-root>/epoch-${result.epoch.epoch}/store.db`)} ${code('PRAGMA quick_check(1)')}`,
+    `command=sqlite3 ${code(inspectionDatabase)} ${code('PRAGMA quick_check(1)')}`,
     '',
     'No file was uploaded. Do not attach DB, WAL, SHM, raw logs, credentials, settings, or environment files.',
     '',
@@ -133,14 +139,16 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     result.residues.length === 0 &&
     result.legacyIncidents.length === 0
   ) {
-    return [`No ${target} store epochs or legacy store-reset incidents.`, ...releaseInstruction(target)].join('\n');
+    return [`No ${target} store epochs or legacy store-reset incidents.`, ...retentionInstruction(target)].join('\n');
   }
   return [
-    'Epoch | Role | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
-    ...result.epochs.map(
-      (epoch) =>
-        `${epoch.epoch} | ${epoch.role} | ${epoch.bytes ?? 'unknown'} | ${epoch.publicationReason.kind} | ${epoch.supersededStoreVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`,
-    ),
+    'Epoch key | Epoch | Address | Role | Closure | Data outcome | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
+    ...result.epochs.map((epoch) => {
+      const address = epoch.role === 'protected'
+        ? `<protected-store-root>/${epoch.epochKey?.split(':')[0] ?? 'unobservable'}/epoch-${epoch.epoch}`
+        : `epoch-${epoch.epoch}`;
+      return `${epoch.epochKey ?? 'unobservable'} | ${epoch.epoch} | ${address} | ${epoch.role} | ${epoch.closureDisposition ?? 'pending'} | ${epoch.dataOutcome ?? 'unknown'} | ${epoch.bytes ?? 'unknown'} | ${epoch.publicationReason.kind} | ${epoch.supersededStoreVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`;
+    }),
     ...(result.holders.length === 0
       ? []
       : [
@@ -178,10 +186,11 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     ...(target === 'gen2' && result.epochs.length > 0
       ? [
           'To report an epoch without opening SQLite:',
-          'command=coral-cli backend store-reset report --target gen2 <epoch>',
+          'command=coral-cli backend store-reset report --target gen2 <epoch-key>',
         ]
       : []),
-    ...releaseInstruction(target),
+    ...(result.epochs.some((epoch) => epoch.role !== 'current' && epoch.closureDisposition !== 'closed')
+      ? [] : retentionInstruction(target)),
   ].join('\n');
 }
 
@@ -200,6 +209,8 @@ export function formatStoreResetRelease(result: StoreResetReleasePresentation): 
       return `Store epoch ${result.epoch} was not released from ${result.target} ${result.flavor} because earlier holder cleanup failed; target deletion was not attempted. Check store-directory permissions and retry.`;
     case 'release-deletion-failed':
       return `Store epoch ${result.epoch} deletion failed in ${result.target} ${result.flavor}; check store-directory permissions and retry.`;
+    case 'release-closure-required':
+      return `Store epoch ${result.epoch} was retained in ${result.target} ${result.flavor}; automatic reclamation requires exact-epoch closure and retained historical results.`;
     case 'release-lock-release-failed':
       return `Store epoch ${result.epoch} was removed from ${result.target} ${result.flavor}, but releasing its exclusive epoch lock failed; the store-directory durability barrier completed. Check store-directory permissions and retry.`;
     case 'release-pre-deletion-durability-sync-failed':

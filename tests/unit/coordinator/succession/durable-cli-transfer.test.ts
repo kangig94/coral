@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -16,6 +16,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { deleteDurableCliProcessRuntimeMeta, writeDurableCliProcessRuntimeMeta } from '#src/jobs/runtime-meta-store.js';
 import type { ResolvedStoreEpoch } from '#src/store/epoch.js';
+import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
 import type { JobStore } from '#src/jobs/store.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
@@ -33,7 +34,13 @@ function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'coral-durable-transfer-'));
   roots.push(root);
   const runDir = join(root, 'run');
-  const epoch = { storeRoot: root, epoch: '1', path: join(root, 'epoch-1') } as ResolvedStoreEpoch;
+  const epochPath = join(root, 'epoch-1', 'store.db');
+  mkdirSync(dirname(epochPath));
+  writeFileSync(join(dirname(epochPath), '.lock'), '');
+  const epoch = {
+    storeRoot: root, epoch: '1', path: epochPath,
+    lineageKey: readOrCreateEpochKey({ storeRoot: root, epoch: '1', path: epochPath }),
+  } satisfies ResolvedStoreEpoch;
   const db = newRawDatabase(':memory:');
   applyBundledStoreSchema(db, currentCoralStoreFormat());
   const meta = {
@@ -62,7 +69,7 @@ describe('durable-cli succession transfer', () => {
     expect(prepareDurableCliTransfer(db, progressStore, runDir, epoch, [JOB_ID])).toBeNull();
 
     const intent = recordCustodyIntent(runDir, {
-      effect: 'process-spawn', epoch: epoch.path, owner: 'durable-cli', operationId: JOB_ID,
+      effect: 'process-spawn', epoch: dirname(epoch.path), owner: 'durable-cli', operationId: JOB_ID,
       capsule: null, nowMs: 100, bindWithinMs: 1_000,
     });
     expect(prepareDurableCliTransfer(db, progressStore, runDir, epoch, [JOB_ID])).toBeNull();
@@ -82,14 +89,14 @@ describe('durable-cli succession transfer', () => {
     expect(verifyDurableCliRecoveryGrant(runDir, ATTEMPT_ID, grantId, epochKey, 'incumbent', transfer)).toBe(true);
     expect(verifyDurableCliRecoveryGrant(runDir, ATTEMPT_ID, grantId, 'other-epoch', 'incumbent', transfer)).toBe(false);
     expect(verifyDurableCliTransfer(transfer, db, progressStore, runDir,
-      { ...epoch, path: join(epoch.storeRoot, 'epoch-2') })).toBeNull();
+      { ...epoch, path: join(epoch.storeRoot, 'epoch-2', 'store.db') })).toBeNull();
     db.close();
   });
 
   it('should retain an epoch-bound acknowledged controller receipt for each accepted job', () => {
     const { runDir, epoch, db, meta, progressStore } = fixture();
     const intent = recordCustodyIntent(runDir, {
-      effect: 'process-spawn', epoch: epoch.path, owner: 'durable-cli', operationId: JOB_ID,
+      effect: 'process-spawn', epoch: dirname(epoch.path), owner: 'durable-cli', operationId: JOB_ID,
       capsule: null, nowMs: 100, bindWithinMs: 1_000,
     });
     bindCustodyIdentity(runDir, intent, {
@@ -111,10 +118,29 @@ describe('durable-cli succession transfer', () => {
     db.close();
   });
 
+  it('verifies a committed transfer after its epoch moved to a protected address', () => {
+    const { root, runDir, epoch, db, meta, progressStore } = fixture();
+    const intent = recordCustodyIntent(runDir, {
+      effect: 'process-spawn', epoch: dirname(epoch.path), owner: 'durable-cli', operationId: JOB_ID,
+      capsule: null, nowMs: 100, bindWithinMs: 1_000,
+    });
+    bindCustodyIdentity(runDir, intent, {
+      process: { pid: meta.pid, incarnation: meta.incarnation, processGroupId: meta.processGroupId },
+      capsule: null, observedAtMs: 200,
+    });
+    const transfer = prepareDurableCliTransfer(db, progressStore, runDir, epoch, [JOB_ID]);
+    const protectedEpoch: ResolvedStoreEpoch = {
+      storeRoot: join(root, '.protected', 'lineage'), canonicalStoreRoot: root, epoch: '1',
+      path: join(root, '.protected', 'lineage', 'epoch-1', 'store.db'), lineageKey: epoch.lineageKey,
+    };
+    expect(verifyDurableCliTransfer(transfer, db, progressStore, runDir, protectedEpoch)).toEqual(transfer);
+    db.close();
+  });
+
   it('should block predecessor runtime records even when a process identity is bound', () => {
     const { runDir, epoch, db, meta, progressStore } = fixture();
     const intent = recordCustodyIntent(runDir, {
-      effect: 'process-spawn', epoch: epoch.path, owner: 'durable-cli', operationId: JOB_ID,
+      effect: 'process-spawn', epoch: dirname(epoch.path), owner: 'durable-cli', operationId: JOB_ID,
       capsule: null, nowMs: 100, bindWithinMs: 1_000,
     });
     bindCustodyIdentity(runDir, intent, {

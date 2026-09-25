@@ -82,6 +82,7 @@ import {
 type CreateExecutionServicesDeps = {
   world: CoordinatorWorld;
   runtime: Runtime;
+  getActiveEpochPath?: () => string | null;
   bundleHash: string;
   backendNamespace: string;
   settlementRefusalRecorder: SettlementRefusalRecorder;
@@ -98,6 +99,7 @@ function listInstantiatedExecutionServices(services: ReadonlyMap<string, Project
 export function createExecutionServices({
   world,
   runtime,
+  getActiveEpochPath,
   bundleHash,
   backendNamespace,
   settlementRefusalRecorder,
@@ -266,12 +268,17 @@ export function createExecutionServices({
   const providerOperationReconciler = new ProviderOperationReconciler({
     getProgressStore,
     custody: () => {
+      const activeEpochPath = getActiveEpochPath?.();
       const dbDir = runtime.paths.coral.store.dbDir;
-      const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-      if (epoch === null) throw new Error('Provider operation custody requires a selected store epoch.');
+      const epoch = activeEpochPath === undefined || activeEpochPath === null
+        ? resolveCurrentStoreEpoch(runtime.storage, dbDir)
+        : null;
+      if (activeEpochPath == null && epoch === null) {
+        throw new Error('Provider operation custody requires a selected store epoch.');
+      }
       return {
         runDir: runtime.paths.coral.coordinator.runDir,
-        epoch: join(dbDir, `epoch-${epoch}`),
+        epoch: activeEpochPath ?? join(dbDir, `epoch-${epoch}`),
         nowMs: runtime.time.now(),
         bindWithinMs: 10_000,
       };

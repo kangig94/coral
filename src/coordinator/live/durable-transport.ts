@@ -297,6 +297,7 @@ export type SpawnDurableJobOptions = SpawnCliOptions & {
 
 type SpawnDurableJobTransportParams = {
   runtime: Runtime;
+  epochPath?: string;
   options: SpawnDurableJobOptions;
   pool: LaunchPool;
   cleanupHandles: Map<symbol, DurableProcessCleanup>;
@@ -989,11 +990,14 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     let durable: DurableLaunchResult;
     try {
       const dbDir = runtime.paths.coral.store.dbDir;
-      const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
-      if (epoch === null) throw new Error('Durable wrapper custody requires a selected store epoch.');
+      const epoch = params.epochPath ?? (() => {
+        const selected = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+        if (selected === null) throw new Error('Durable wrapper custody requires a selected store epoch.');
+        return join(dbDir, `epoch-${selected}`);
+      })();
       custodyIntent = recordCustodyIntent(runtime.paths.coral.coordinator.runDir, {
         effect: 'process-spawn',
-        epoch: join(dbDir, `epoch-${epoch}`),
+        epoch,
         owner: 'durable-cli',
         operationId: options.jobId ?? permit.jobId,
         capsule: join(options.jobDir, 'launch.v1.json'),

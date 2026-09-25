@@ -485,6 +485,10 @@ export function createCoordinatorWorld(
         identity: { instanceId, buildSetId, flavor },
         operationRegistry,
         custody: () => {
+          const activeEpoch = launchCoordinator.activeStoreEpochDirectory();
+          if (activeEpoch !== null) {
+            return { runDir: runtime.paths.coral.coordinator.runDir, epoch: activeEpoch };
+          }
           const dbDir = runtime.paths.coral.store.dbDir;
           const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
           if (epoch === null) throw new Error('Provider proxy custody requires a selected store epoch.');

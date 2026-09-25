@@ -1,10 +1,12 @@
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Database } from '../../store/db.js';
 import type { JobStore } from '../../jobs/store.js';
 import { durableCliProcessRuntimeMetaSchema } from '../../jobs/runtime-meta.js';
 import { readDurableCliProcessRuntimeEvidence } from '../../jobs/runtime-meta-store.js';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
-import type { ResolvedStoreEpoch } from '../../store/epoch.js';
+import { epochPath, type ResolvedStoreEpoch } from '../../store/epoch.js';
+import { readOrCreateEpochKey } from '../../store/epoch-key.js';
 import {
   appendControllerReceipt,
   appendControllerRecoveryGrant,
@@ -25,7 +27,10 @@ export type DurableCliTransfer = z.infer<typeof durableCliTransferSchema>;
 
 export function decodeDurableCliTransfer(payload: unknown, epoch: ResolvedStoreEpoch): DurableCliTransfer | null {
   const parsed = durableCliTransferSchema.safeParse(payload);
-  return parsed.success && parsed.data.epochPath === epoch.path ? parsed.data : null;
+  const canonicalPath = epochPath(epoch.canonicalStoreRoot ?? epoch.storeRoot, epoch.epoch);
+  return parsed.success && (parsed.data.epochPath === epoch.path ||
+    (epoch.canonicalStoreRoot !== undefined && parsed.data.epochPath === canonicalPath))
+    ? parsed.data : null;
 }
 
 const durableCliRecoveryGrantSchema = z.object({
@@ -75,6 +80,9 @@ function collectDurableCliTransfer(
   jobIds: readonly string[],
 ): DurableCliTransfer | null {
   const custody = readCustodyLedger(runDir);
+  let lineageKey: string;
+  try { lineageKey = epoch.lineageKey ?? readOrCreateEpochKey(epoch); } catch { return null; }
+  const canonicalDirectory = join(epoch.canonicalStoreRoot ?? epoch.storeRoot, `epoch-${epoch.epoch}`);
   const jobs: DurableCliTransfer['jobs'][number][] = [];
   for (const jobId of jobIds) {
     const runtime = progressStore.readRuntimeProjection(jobId);
@@ -85,7 +93,10 @@ function collectDurableCliTransfer(
       entry.kind === 'bound' &&
       entry.intent.owner === 'durable-cli' &&
       entry.intent.operationId === jobId &&
-      entry.intent.epoch === epoch.path &&
+      entry.intent.epochKey === lineageKey &&
+      (entry.intent.epoch === dirname(epoch.path) ||
+        entry.intent.epoch === canonicalDirectory ||
+        entry.intent.epoch === epoch.lineageKey) &&
       entry.binding.process !== null &&
       entry.binding.process.pid === evidence.record.pid &&
       entry.binding.process.incarnation === evidence.record.incarnation &&
@@ -131,6 +142,7 @@ const durableCliControllerReceiptSchema = z.object({
   version: z.literal('v1'),
   jobId: z.string().min(1),
   epochKey: z.string().min(1),
+  lineageEpochKey: z.string().min(1).optional(),
   attemptId: z.string().uuid(),
   controllerInstanceId: z.string().min(1),
   controllerBuildSetId: z.string().min(1),
@@ -148,6 +160,7 @@ export function recordDurableCliControllerReceipts(
   transfer: DurableCliTransfer,
   controller: Readonly<{
     epochKey: string;
+    lineageEpochKey?: string;
     attemptId: string;
     instanceId: string;
     buildSetId: string;
@@ -160,6 +173,7 @@ export function recordDurableCliControllerReceipts(
       version: 'v1',
       jobId: job.jobId,
       epochKey: controller.epochKey,
+      ...(controller.lineageEpochKey === undefined ? {} : { lineageEpochKey: controller.lineageEpochKey }),
       attemptId: controller.attemptId,
       controllerInstanceId: controller.instanceId,
       controllerBuildSetId: controller.buildSetId,

@@ -825,6 +825,7 @@ export type LifecycleDeps = {
    */
   readonly startupRecoveryBarrierPublisher?: Readonly<{ publish(): void }>;
   readonly scheduleStoreEpochSweepFn?: (openStore: ResolvedStoreEpoch) => void;
+  readonly onStoreOpened?: (openStore: ResolvedStoreEpoch) => void;
   readonly stopStoreEpochSweepFn?: () => Promise<void>;
   readonly getDiscussStoreForSource: (source: string) => DiscussSessionStore;
   readonly knownDiscussSources: () => Set<string>;
@@ -1536,6 +1537,7 @@ async function runLifecycleStartup({
       }
     }
     let storeServices: CoordinatorStoreServices;
+    if (openedStore !== null) deps.onStoreOpened?.(openedStore);
     try {
       storeServices = createStoreServicesFromDbFn(storeDb);
     } catch (error) {

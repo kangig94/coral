@@ -25,9 +25,9 @@ export type StoreResetCliErrorCode =
 
 const STORE_RESET_ERRORS = {
   invalid_store_reset_incident_id: {
-    message: 'Report target must be a positive numeric epoch or canonical lowercase legacy incident UUID.',
+    message: 'Report target must be a full epoch key, an unambiguous positive epoch number, or a canonical lowercase legacy incident UUID.',
     remediation:
-      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch or the ID of a legacy incident in the `ready` state.',
+      'Run `coral-cli backend store-reset list --target <legacy|gen2>` and use a listed epoch key or the ID of a legacy incident in the `ready` state.',
     exitCode: 2,
   },
   invalid_store_reset_release_incident_id: {

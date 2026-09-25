@@ -191,18 +191,24 @@ export async function reportStoreResetLocal(
   reference: string,
   dependencies: StoreResetCliDependencies = defaultDependencies(),
 ): Promise<StoreResetReportResult> {
-  if (target === 'gen2' && isCanonicalEpoch(reference)) {
+  if (target === 'gen2') {
     const manifest = requireCurrentBuild(dependencies);
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
     const epochs = listStoreEpochs(runtime);
-    const epoch = epochs.find((candidate) => candidate.epoch === reference);
+    const matches = epochs.filter((candidate) =>
+      candidate.epochKey === reference || (isCanonicalEpoch(reference) && candidate.epoch === reference));
+    if (matches.length > 1) throw new StoreResetCliError('store_reset_reporting_failed');
+    const epoch = matches[0];
     if (epoch === undefined) {
-      if (epochs.some((candidate) => candidate.role === 'unobservable')) {
+      if (isCanonicalEpoch(reference) && epochs.some((candidate) => candidate.role === 'unobservable')) {
         throw new StoreResetCliError('store_reset_reporting_failed');
       }
-      throw new StoreResetCliError('store_reset_incident_not_found');
+      if (isCanonicalEpoch(reference) || reference.includes(':')) {
+        throw new StoreResetCliError('store_reset_incident_not_found');
+      }
+    } else {
+      return { kind: 'epoch', epoch };
     }
-    return { kind: 'epoch', epoch };
   }
   if (!isCanonicalStoreResetIncidentId(reference)) {
     throw new StoreResetCliError('invalid_store_reset_incident_id');

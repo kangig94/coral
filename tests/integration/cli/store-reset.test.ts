@@ -18,6 +18,7 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import {
   discardCurrentStoreEpoch,
   epochPath,
+  listStoreEpochs,
   listStoreEpochHolders,
   settleStoreEpoch,
   storeEpochHolderPath,
@@ -162,16 +163,17 @@ describe('store-reset operator epochs', () => {
     });
   });
 
-  it('releases a preserved epoch and reports an absent epoch', async () => {
+  it('keeps a protected epoch outside numeric release selection', async () => {
     const runtime = harness();
     const opened = settleStoreEpoch(runtime, { storeFormat, build });
     opened.db.close();
     const discarded = discardCurrentStoreEpoch(runtime, { storeFormat, build });
     discarded.db.close();
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-      kind: 'released',
+      kind: 'absent',
       epoch: '1',
     });
+    expect(listStoreEpochs(runtime).find((entry) => entry.epoch === '1')?.role).toBe('protected');
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '99' })).resolves.toMatchObject({
       kind: 'absent',
       epoch: '99',
@@ -332,7 +334,7 @@ describe('store-reset operator epochs', () => {
     expect(sweepStoreEpochs(reusedRuntime, dbDir, '5')).toBe('complete');
     expect(observations).toBe(0);
     expect(existsSync(holderPath)).toBe(false);
-    expect(existsSync(epochPath(dbDir, '1'))).toBe(false);
+    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
   });
 
   it('clears a malformed holder through release and succeeds on retry', async () => {
@@ -348,7 +350,7 @@ describe('store-reset operator epochs', () => {
     });
     expect(existsSync(holderPath)).toBe(false);
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-      kind: 'released',
+      kind: 'release-closure-required',
     });
   });
 });

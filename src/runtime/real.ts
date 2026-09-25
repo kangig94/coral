@@ -38,6 +38,7 @@ import {
 } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { composeCoralPaths } from '../infra/path/index.js';
 import { durableWrapperEntrypoint } from './wrapper-entrypoint.js';
@@ -202,8 +203,19 @@ export async function observeProcessIdentitiesWithoutSubprocesses(
   }
 }
 
-function openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort {
-  const database = new DatabaseSync(path, { readOnly: options?.readOnly ?? false });
+function openSqliteDatabaseSync(
+  path: string,
+  options?: { readOnly?: boolean; immutable?: boolean },
+): SqliteDatabasePort {
+  if (options?.immutable) {
+    if (!options.readOnly) throw new Error('Immutable SQLite opens require read-only mode.');
+    if (['-wal', '-shm', '-journal'].some((suffix) => existsSync(`${path}${suffix}`))) {
+      throw new Error('Immutable SQLite open refused while a journal sidecar exists.');
+    }
+  }
+  const location = options?.immutable ? pathToFileURL(path) : path;
+  if (location instanceof URL) location.searchParams.set('immutable', '1');
+  const database = new DatabaseSync(location, { readOnly: options?.readOnly ?? false });
   return {
     exec: (sql) => database.exec(sql),
     prepare: (sql) => {

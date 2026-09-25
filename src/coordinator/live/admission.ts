@@ -198,10 +198,19 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     | null = null;
   private settledUnboundStatus: SettledUnboundStatusPort | null = null;
   private readonly runtime: Runtime;
+  private activeEpochPath: string | null = null;
 
   constructor(options: { runtime: Runtime }) {
     this.runtime = options.runtime;
     this.internalAbortRegistry = new AbortRegistry(options.runtime.ids);
+  }
+
+  bindActiveEpochPath(path: string): void {
+    this.activeEpochPath = path;
+  }
+
+  activeStoreEpochDirectory(): string | null {
+    return this.activeEpochPath;
   }
 
   getInternalAbortRegistry(): AbortRegistry {
@@ -524,6 +533,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const transport = {
       runtime: this.runtime,
       options,
+      ...(this.activeEpochPath === null ? {} : { epochPath: this.activeEpochPath }),
       pool,
       cleanupHandles: this.cleanupHandles,
       cleanupRetentions: this.cleanupRetentions,

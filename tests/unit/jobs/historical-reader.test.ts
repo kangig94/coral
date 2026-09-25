@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
+import { readOrCreateEpochKey } from '../../../src/store/epoch-key.js';
+import { protectStoreEpoch } from '../../../src/store/epoch-protection.js';
 import type { StoragePort } from '../../../src/infra/port-types.js';
 
 const fingerprints = [
@@ -47,6 +49,49 @@ afterEach(() => {
 });
 
 describe('historical job readers', () => {
+  it('reads a retained epoch with a WAL sidecar under its shared lock', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]!);
+    db.exec("PRAGMA journal_mode=WAL; INSERT INTO events VALUES (1, '2026-09-25T00:00:00.000Z', 'test', 'job', 'job-1', '{}')");
+    expect(existsSync(join(epochDir, 'store.db-wal'))).toBe(true);
+    const result = seedHistoricalEpoch(
+      new JobLocationIndex(root),
+      { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+      'lineage:7', fingerprints[0]!, join(root, 'results'), storage,
+    );
+    expect(result.kind).toBe('uncertified');
+    db.close();
+  });
+
+  it('resolves a protected lineage address before reading historical rows', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]!);
+    db.close();
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    const epochKey = readOrCreateEpochKey(epoch);
+    const address = protectStoreEpoch(epoch);
+    const result = seedHistoricalEpoch(
+      new JobLocationIndex(root), epoch, epochKey, fingerprints[0]!, join(root, 'results'), storage,
+    );
+    expect(result.kind).toBe('uncertified');
+    expect(address.protectedPath).not.toBe(epochDir);
+  });
+
+  it('never rebinds a deleted protected lineage to a new epoch with the same number', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]!);
+    db.close();
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    const epochKey = readOrCreateEpochKey(epoch);
+    const address = protectStoreEpoch(epoch);
+    rmSync(address.protectedPath, { recursive: true });
+    mkdirSync(epochDir);
+    const replacement = new DatabaseSync(join(epochDir, 'store.db'));
+    replacement.exec('CREATE TABLE replacement (id INTEGER PRIMARY KEY)');
+    replacement.close();
+    const result = seedHistoricalEpoch(
+      new JobLocationIndex(root), epoch, epochKey, fingerprints[0]!, join(root, 'results'), storage,
+    );
+    expect(result).toMatchObject({ kind: 'unrecoverable-retained', reason: 'retained-store-root-missing' });
+  });
+
   for (const fingerprint of fingerprints) {
     it(`seeds terminal and live identities for ${fingerprint.slice(0, 19)}`, () => {
       const { root, epochDir, db } = fixture(fingerprint);
@@ -77,7 +122,7 @@ describe('historical job readers', () => {
       const index = new JobLocationIndex(root);
       const result = seedHistoricalEpoch(
         index,
-        { storeRoot: join(root, 'db'), epoch: '7', path: epochDir },
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
         'lineage-old:7', fingerprint, join(root, 'results'),
         storage,
       );
@@ -96,7 +141,7 @@ describe('historical job readers', () => {
     const index = new JobLocationIndex(root);
     const result = seedHistoricalEpoch(
       index,
-      { storeRoot: join(root, 'db'), epoch: '7', path: epochDir },
+      { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
       'lineage-old:7', fingerprints[0]!, join(root, 'results'),
       storage,
       [{ jobId: 'known-live', subject: {
@@ -120,7 +165,7 @@ describe('historical job readers', () => {
     db.close();
     const index = new JobLocationIndex(root);
     const result = seedHistoricalEpoch(
-      index, { storeRoot: join(root, 'db'), epoch: '7', path: epochDir },
+      index, { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
       'lineage-old:7', fingerprints[0]!, join(root, 'results'), storage,
     );
     expect(result).toMatchObject({ kind: 'uncertified' });
@@ -146,7 +191,7 @@ describe('historical job readers', () => {
     db.close();
     const index = new JobLocationIndex(root);
     expect(seedHistoricalEpoch(
-      index, { storeRoot: join(root, 'db'), epoch: '7', path: epochDir },
+      index, { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
       'lineage-old:7', fingerprints[0]!, join(root, 'results'), storage, [], true,
     ).kind).toBe('complete');
     expect(index.resultsReleased('lineage-old:7')).toBe(true);

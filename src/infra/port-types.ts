@@ -154,7 +154,7 @@ export interface StoragePort extends StorageWholeFilePort, StorageMutationPort {
   rm(path: string, options?: { recursive?: boolean; force?: boolean }): Promise<void>;
   unlink(path: string): Promise<void>;
   syncDirectoryDurable(path: string): Promise<boolean>;
-  openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }): SqliteDatabasePort;
+  openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean; immutable?: boolean }): SqliteDatabasePort;
 }
 
 export interface EnvPort {

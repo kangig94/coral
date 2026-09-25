@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   linkSync,
   mkdirSync,
@@ -12,8 +13,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
+import { readEpochKey } from './epoch-key.js';
 
 const processIdentitySchema = z
   .object({
@@ -29,8 +31,10 @@ const custodyIntentSchema = z
     id: z.string().uuid(),
     effect: z.enum(['process-spawn', 'provider-operation-publication']),
     epoch: z.string().min(1),
+    epochKey: z.string().min(1).optional(),
     owner: z.string().min(1),
     operationId: z.string().min(1),
+    jobId: z.string().min(1).optional(),
     processToken: z.string().uuid(),
     capsule: z.string().nullable(),
     createdAtMs: z.number().int().nonnegative(),
@@ -77,6 +81,34 @@ export type CustodyObservation =
 
 export function custodyLedgerDir(runDir: string): string {
   return join(runDir, 'custody.v1');
+}
+
+const custodyRootSchema = z.object({ version: z.literal('v1'), id: z.string().uuid() }).passthrough();
+
+export function initializeCustodyLedger(runDir: string): string {
+  mkdirSync(runDir, { recursive: true, mode: 0o700 });
+  mkdirSync(custodyLedgerDir(runDir), { recursive: true, mode: 0o700 });
+  syncDirectory(runDir);
+  const marker = join(custodyLedgerDir(runDir), 'root.v1.json');
+  let root = readRecord(marker, custodyRootSchema);
+  if (root === null) {
+    try {
+      writeOnce(marker, { version: 'v1', id: randomUUID() });
+    } catch (error: unknown) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    }
+    root = readRecord(marker, custodyRootSchema);
+  }
+  if (root === null) throw new Error('Custody ledger root marker was not persisted.');
+  return root.id;
+}
+
+export function readCustodyLedgerId(runDir: string): string | null {
+  try {
+    return readRecord(join(custodyLedgerDir(runDir), 'root.v1.json'), custodyRootSchema)?.id ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function intentDir(runDir: string, id: string): string {
@@ -140,8 +172,19 @@ export function recordCustodyIntent(
     throw new RangeError('Custody binding deadline is outside the clock range.');
   }
   const { bindWithinMs, nowMs, ...fields } = input;
+  const epochNumber = /^epoch-([1-9]\d*)$/.exec(basename(input.epoch))?.[1];
+  const observedEpochKey = epochNumber === undefined ? null : readEpochKey({
+    storeRoot: dirname(input.epoch), epoch: epochNumber, path: join(input.epoch, 'store.db'),
+  });
+  if (input.epochKey !== undefined && observedEpochKey !== null && input.epochKey !== observedEpochKey) {
+    throw new Error('Custody epoch key does not match its directory lineage.');
+  }
+  if (observedEpochKey === null && existsSync(join(input.epoch, '.coral-custody-coverage.v1.json'))) {
+    throw new Error('Covered epoch lineage is unreadable before the external effect.');
+  }
   const intent = custodyIntentSchema.parse({
     ...fields,
+    ...(observedEpochKey === null ? {} : { epochKey: observedEpochKey }),
     version: 'v1',
     id: randomUUID(),
     processToken: randomUUID(),
@@ -149,9 +192,7 @@ export function recordCustodyIntent(
     bindDeadlineMs: nowMs + bindWithinMs,
   });
   const ledgerDir = custodyLedgerDir(runDir);
-  mkdirSync(runDir, { recursive: true, mode: 0o700 });
-  mkdirSync(ledgerDir, { recursive: true, mode: 0o700 });
-  syncDirectory(runDir);
+  initializeCustodyLedger(runDir);
   const dir = intentDir(runDir, intent.id);
   const stageDir = join(ledgerDir, `.stage.${intent.id}.${randomUUID()}`);
   mkdirSync(stageDir, { mode: 0o700 });
@@ -274,7 +315,7 @@ export function readCustodyLedger(runDir: string): CustodyEntry[] {
     return [{ kind: 'unreadable', path: custodyLedgerDir(runDir), reason: String(error) }];
   }
   return names
-    .filter((name) => !name.includes('.stage.'))
+    .filter((name) => name !== 'root.v1.json' && !name.includes('.stage.'))
     .map((name): CustodyEntry => {
       const dir = join(custodyLedgerDir(runDir), name);
       try {

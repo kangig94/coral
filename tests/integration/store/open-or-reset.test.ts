@@ -481,10 +481,10 @@ describe('write-once store epochs', () => {
           kind === 'synchronous'
             ? sweepStoreEpochs(withStorage(runtime, storage), dbDir, '5')
             : await sweepStoreEpochsPostReady(withStorage(runtime, storage), resolvedStoreEpoch(dbDir, '5'));
-        expect(result).toBe(kind === 'post-ready' ? 'complete' : 'live-holder');
-        expect(existsSync(epochPath(dbDir, '1'))).toBe(kind === 'post-ready');
+        expect(result).toBe('complete');
+        expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
         expect(existsSync(epochPath(dbDir, '2'))).toBe(true);
-        expect(existsSync(epochPath(dbDir, '3'))).toBe(kind === 'post-ready');
+        expect(existsSync(epochPath(dbDir, '3'))).toBe(true);
         if (kind === 'synchronous') expect(rootSyncs).toBeGreaterThan(0);
       } finally {
         held();
@@ -749,7 +749,7 @@ describe('write-once store epochs', () => {
           : await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
 
       expect(result).toBe('complete');
-      expect(existsSync(invalid)).toBe(kind === 'post-ready');
+      expect(existsSync(invalid)).toBe(true);
     },
   );
 
@@ -764,7 +764,7 @@ describe('write-once store epochs', () => {
 
     const entries = readdirSync(dbDir);
     expect(entries.filter((entry) => entry.startsWith('.epoch-lock-'))).toEqual([]);
-    expect(entries).toEqual(['epoch-9']);
+    expect(entries).toEqual(expect.arrayContaining(Array.from({ length: 9 }, (_, index) => `epoch-${index + 1}`)));
   });
 
   it.each(['post-ready sweep', 'release'] as const)(
@@ -838,9 +838,9 @@ describe('write-once store epochs', () => {
     expect(replacement?.publicationReason.kind).toBe('newer-incompatible');
     expect(replacement?.supersededStoreVersion).toBe('0.0.1');
     expect(rendered).toContain(
-      'Epoch | Role | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
+      'Epoch key | Epoch | Address | Role | Closure | Data outcome | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
     );
-    expect(rendered).toContain('2 | current |');
+    expect(rendered).toContain('2 | epoch-2 | current |');
     expect(rendered).toContain('| newer-incompatible | 0.0.1 |');
   });
   it('does not treat an epoch symlink to the store root as a published epoch', () => {
@@ -1021,11 +1021,10 @@ describe('write-once store epochs', () => {
       current: string | null;
       blocker: string;
       successor: string;
-      survivors: string[];
     }> = [
-      { retained: [], current: null, blocker: '1', successor: '2', survivors: ['2'] },
-      { retained: [], current: '2', blocker: '3', successor: '4', survivors: ['2', '4'] },
-      { retained: ['1'], current: '3', blocker: '4', successor: '5', survivors: ['3', '5'] },
+      { retained: [], current: null, blocker: '1', successor: '2' },
+      { retained: [], current: '2', blocker: '3', successor: '4' },
+      { retained: ['1'], current: '3', blocker: '4', successor: '5' },
     ];
     for (const scenario of scenarios) {
       const runtime = harness();
@@ -1049,9 +1048,9 @@ describe('write-once store epochs', () => {
       if (_description === 'symlink') expect(existsSync(externalSentinel)).toBe(true);
       publishLiveCoordinator(runtime, runtime.env.pid());
       expect(sweepStoreEpochs(runtime, dbDir, scenario.successor)).toBe('complete');
-      expect(existsSync(blockerPath)).toBe(false);
+      expect(existsSync(blockerPath)).toBe(true);
       const survivors = ['1', '2', '3', '4', '5'].filter((epoch) => existsSync(epochPath(dbDir, epoch)));
-      expect(survivors).toEqual(scenario.survivors);
+      expect(survivors).toEqual([scenario.successor]);
       expect(existsSync(flatStorePath(dbDir))).toBe(true);
       if (_description === 'symlink') expect(existsSync(externalSentinel)).toBe(true);
     }
@@ -1199,7 +1198,7 @@ describe('write-once store epochs', () => {
     expect(readdirSync(runtime.paths.coral.store.dbDir).filter((name) => name.startsWith('.mint-'))).toEqual([]);
   });
 
-  it.each(['EACCES', 'EIO'])('does not delete an epoch whose metadata read returns %s', (code) => {
+  it.each(['EACCES', 'EIO'])('protects an epoch whose metadata read returns %s', (code) => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
@@ -1218,7 +1217,7 @@ describe('write-once store epochs', () => {
 
     expect(settled.store.epoch).toBe('2');
     settled.db.close();
-    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+    expect(listStoreEpochs(runtime).find(({ epoch }) => epoch === '1')?.role).toBe('protected');
   });
 
   it('steps over an unobservable successor while replacing an incompatible current epoch', () => {
@@ -1240,7 +1239,7 @@ describe('write-once store epochs', () => {
 
     expect(settled.store.epoch).toBe('2');
     settled.db.close();
-    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+    expect(listStoreEpochs(runtime).find(({ epoch }) => epoch === '1')?.role).toBe('protected');
   });
 
   it('inventories every file recursively removed with a directory epoch', () => {
@@ -1387,7 +1386,7 @@ describe('write-once store epochs', () => {
     expect(swept).toBe(true);
   });
 
-  it.each([2, 3, 6])('keeps exactly two epoch directories plus the flat store after %i publications', (count) => {
+  it.each([2, 3, 6])('protects each earlier epoch outside the legacy root after %i publications', (count) => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     createCompatibleStore(flatStorePath(dbDir), 'v0.10.9-data');
@@ -1408,15 +1407,15 @@ describe('write-once store epochs', () => {
     settled.db.close();
     expect(sweepStoreEpochs(runtime, dbDir, settled.store.epoch)).toBe('complete');
     const rows = listStoreEpochs(runtime);
-    expect(rows.map((row) => [row.epoch, row.role])).toEqual([
+    expect(rows.map((row) => [row.epoch, row.role])).toEqual(expect.arrayContaining([
       [String(count), 'current'],
-      [String(count - 1), 'preserved'],
-    ]);
+      ...Array.from({ length: count - 1 }, (_, index) => [String(index + 1), 'protected']),
+    ]));
     expect(
       readdirSync(dbDir)
         .filter((entry) => entry === 'store.db' || /^epoch-[1-9]\d*$/u.test(entry))
         .sort(),
-    ).toEqual([`epoch-${count - 1}`, `epoch-${count}`, 'store.db'].sort());
+    ).toEqual([`epoch-${count}`, 'store.db'].sort());
   });
 
   it.each(['empty-mint', 'opened-mint', 'described-mint'])(
@@ -1551,7 +1550,7 @@ describe('write-once store epochs', () => {
 
     held.close();
     await expect(releaseStoreReset({ target: 'gen2', runtime, epoch: '1' })).resolves.toMatchObject({
-      kind: 'released',
+      kind: 'release-closure-required',
     });
   });
 
@@ -1660,8 +1659,8 @@ describe('write-once store epochs', () => {
 
     const released = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: '1' });
 
-    expect(released.kind).toBe('release-durability-sync-failed');
-    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
+    expect(released.kind).toBe('release-closure-required');
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(true);
 
     let retrySyncs = 0;
     const retryStorage = new Proxy(runtime.storage, {
@@ -1679,8 +1678,8 @@ describe('write-once store epochs', () => {
       epoch: '1',
     });
 
-    expect(retried.kind).toBe('absent');
-    expect(retrySyncs).toBe(1);
+    expect(retried.kind).toBe('release-closure-required');
+    expect(retrySyncs).toBe(0);
   });
 
   it('surfaces a persistent successor lstat refusal once with its errno', () => {
@@ -2417,9 +2416,9 @@ describe('write-once store epochs', () => {
 
     const released = await releaseStoreReset({ target: 'gen2', runtime: withStorage(runtime, storage), epoch: '1' });
 
-    expect(released.kind).toBe('release-deletion-failed');
-    expect(existsSync(target)).toBe(false);
-    expect(listStoreEpochResidues(runtime).map(({ state }) => state)).toEqual(['unobservable']);
+    expect(released.kind).toBe('release-closure-required');
+    expect(existsSync(target)).toBe(true);
+    expect(listStoreEpochResidues(runtime)).toEqual([]);
   });
 
   it('durably syncs an epoch adopted after its publisher died following rename', () => {
@@ -2510,7 +2509,7 @@ describe('write-once store epochs', () => {
     expect(existsSync(flatStorePath(runtime.paths.coral.store.dbDir))).toBe(true);
   });
 
-  it('syncs the epoch root after post-publication sweep removals', () => {
+  it('retains old epochs during the synchronous sweep', () => {
     const runtime = harness();
     const dbDir = runtime.paths.coral.store.dbDir;
     publishAdversarialEpoch(join(dbDir, 'epoch-1'), true);
@@ -2545,14 +2544,8 @@ describe('write-once store epochs', () => {
     settled.db.close();
     expect(sweepStoreEpochs(withStorage(runtime, storage), dbDir, settled.store.epoch)).toBe('complete');
 
-    let lastRemoval = -1;
-    let lastRootSync = -1;
-    events.forEach((event, index) => {
-      if (event.startsWith('remove:')) lastRemoval = index;
-      if (event === `sync:${dbDir}`) lastRootSync = index;
-    });
-    expect(lastRemoval).toBeGreaterThanOrEqual(0);
-    expect(lastRootSync).toBeGreaterThan(lastRemoval);
+    expect(existsSync(epochPath(dbDir, '1'))).toBe(true);
+    expect(events).toContain(`sync:${dbDir}`);
   });
 
   it('prevents K crash-resurrected sweep removals from accumulating', () => {

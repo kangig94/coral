@@ -16,6 +16,7 @@ export const SETTLED_UNBOUND_STATUS_REMEDIATION = {
 } as const;
 export const SETTLED_UNBOUND_STATUS_BOUNDARY = SETTLED_UNBOUND_STATUS_REMEDIATION.boundary;
 export const COORDINATOR_JOB_RECOVERY_BOUNDARY = 'coordinator-job-recovery';
+export const EPOCH_CLOSURE_BOUNDARY = 'epoch-closure';
 
 export const repeatableRecoveryBoundaryIds = [
   COORDINATOR_JOB_RECOVERY_BOUNDARY,
@@ -30,6 +31,7 @@ export const repeatableRecoveryBoundaryIds = [
   'stale-job-cleanup',
   'crashed-job-terminalization',
   'job-location-write-through',
+  EPOCH_CLOSURE_BOUNDARY,
   SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 ] as const;

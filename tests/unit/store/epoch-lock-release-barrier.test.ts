@@ -106,7 +106,7 @@ afterEach(() => {
 });
 
 describe('store epoch lock-release durability barriers', () => {
-  it('syncs a removed positive release target when its lock release throws', () => {
+  it('retains a positive release target before closure without touching its lock', () => {
     const base = harness();
     publishEpoch(base, '1');
     publishEpoch(base, '3');
@@ -115,9 +115,8 @@ describe('store epoch lock-release durability barriers', () => {
     const tracked = trackingRootSync(base);
     lockReleaseFault.paths.add(storeEpochLockPath(dbDir, '1'));
 
-    expect(sweepStoreEpochs(tracked.runtime, dbDir, null, { releaseEpoch: '1' })).toBe('lock-release-failed');
-    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(false);
-    expect(tracked.syncs()).toBeGreaterThan(0);
+    expect(sweepStoreEpochs(tracked.runtime, dbDir, null, { releaseEpoch: '1' })).toBe('closure-required');
+    expect(existsSync(epochDirectory(dbDir, '1'))).toBe(true);
   });
 
   it('syncs a post-ready residue removal when its lock release throws', async () => {

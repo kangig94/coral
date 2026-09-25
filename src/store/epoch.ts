@@ -20,6 +20,13 @@ import type { StoreFormatClassification, StoreFormatDescription } from './format
 import { observeStorePath } from './path-observation.js';
 import { joinSuccessionWriterGeneration } from './succession-writer-generation.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
+import { readOrCreateEpochKey } from './epoch-key.js';
+import { closureCapability, readEpochClosure, recordEpochCustodyCoverage } from './epoch-closure.js';
+import { initializeCustodyLedger } from './custody-ledger.js';
+import {
+  protectStoreEpoch, protectedDeletionResidues, reconcileProtectedEpochs, removeClosedProtectedEpoch,
+  resolveProtectedEpoch, unrecognizedProtectedEpochs,
+} from './epoch-protection.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
 export const STORE_EPOCH_METADATA_FILE_NAME = 'epoch.json';
@@ -59,6 +66,7 @@ type StoreEpochOpenFailureStage = 'lock' | 'openable-probe' | 'writable-open' | 
 
 type StoreEpochUnprovenCandidate = Readonly<{
   epoch: StoreEpoch;
+  address?: string;
   proof: Readonly<{ kind: 'disproven'; cause?: string }> | Readonly<{ kind: 'unobservable'; cause: string }>;
 }>;
 
@@ -102,7 +110,10 @@ export type ExactStoreEpochOpen =
 
 export type StoreEpochListEntry = Readonly<{
   epoch: StoreEpoch;
-  role: 'current' | 'preserved' | 'garbage' | 'unobservable';
+  role: 'current' | 'preserved' | 'garbage' | 'protected' | 'unobservable';
+  epochKey?: string | null;
+  closureDisposition?: 'closed' | 'unrecoverable-retained' | 'pending';
+  dataOutcome?: 'retained' | 'unreadable' | 'unknown';
   bytes: number | null;
   publicationReason: StoreEpochClassification;
   supersededStoreVersion: string | null;
@@ -133,6 +144,7 @@ export type StoreEpochSweepResult =
   | 'unobservable-holder'
   | 'holder-cleanup-failed'
   | 'deletion-failed'
+  | 'closure-required'
   | 'lock-release-failed'
   | 'pre-deletion-durability-sync-failed'
   | 'absent-durability-sync-failed'
@@ -158,6 +170,8 @@ export type ResolvedStoreEpoch = Readonly<{
   storeRoot: string;
   epoch: StoreEpoch;
   path: string;
+  lineageKey?: string;
+  canonicalStoreRoot?: string;
 }>;
 
 export type ResolvedStorePath = Readonly<{
@@ -383,7 +397,12 @@ export function resolvedStoreEpoch(storeRoot: string, epoch: StoreEpoch): Resolv
 }
 
 export function encodeResolvedStoreEpoch(resolved: ResolvedStoreEpoch): string {
-  return JSON.stringify(resolved);
+  if (resolved.path === ':memory:') return JSON.stringify(resolved);
+  const storeRoot = resolved.canonicalStoreRoot ?? resolved.storeRoot;
+  return JSON.stringify({
+    storeRoot, epoch: resolved.epoch, path: epochPath(storeRoot, resolved.epoch),
+    lineageKey: readOrCreateEpochKey(resolved),
+  });
 }
 
 export function decodeResolvedStoreEpoch(value: string | undefined): ResolvedStoreEpoch | undefined {
@@ -399,11 +418,18 @@ export function decodeResolvedStoreEpoch(value: string | undefined): ResolvedSto
       typeof decoded.storeRoot !== 'string' ||
       typeof decoded.epoch !== 'string' ||
       typeof decoded.path !== 'string' ||
+      ('lineageKey' in decoded && typeof decoded.lineageKey !== 'string') ||
       resolve(decoded.storeRoot) !== decoded.storeRoot ||
       epochNumber(`epoch-${decoded.epoch}`) !== decoded.epoch ||
-      epochPath(decoded.storeRoot, decoded.epoch) !== decoded.path
+      epochPath(decoded.storeRoot, decoded.epoch) !== decoded.path ||
+      ('lineageKey' in decoded && !decoded.lineageKey.endsWith(`:${decoded.epoch}`))
     ) {
       return undefined;
+    }
+    if ('lineageKey' in decoded && typeof decoded.lineageKey === 'string') {
+      const mapped = resolveProtectedEpoch(decoded.storeRoot, decoded.lineageKey);
+      if (mapped !== null) return { ...mapped, lineageKey: decoded.lineageKey };
+      return { storeRoot: decoded.storeRoot, epoch: decoded.epoch, path: decoded.path, lineageKey: decoded.lineageKey };
     }
     return { storeRoot: decoded.storeRoot, epoch: decoded.epoch, path: decoded.path };
   } catch {
@@ -464,7 +490,9 @@ export function openWritableStoreDbNoReset(
           ? undefined
           : joinSuccessionWriterGeneration(
               runtime,
-              resolved.epoch ?? { storeRoot: dirname(resolved.path), epoch: 'legacy' },
+              resolved.epoch === null
+                ? { storeRoot: dirname(resolved.path), epoch: 'legacy' }
+                : { storeRoot: resolved.epoch.canonicalStoreRoot ?? resolved.epoch.storeRoot, epoch: resolved.epoch.epoch },
             );
       const db = openStoreDatabase({
         path: resolved.path,
@@ -1140,65 +1168,7 @@ function releaseStoreEpochDuringSweep(
     return syncStoreEpochSweepDirectory(runtime.storage, dbDir) ? 'absent' : 'absent-durability-sync-failed';
   }
 
-  const removal = removeEpochEntry(runtime, dbDir, releaseEpoch);
-  if (removal === 'locked') return 'live-holder';
-  if (!syncStoreEpochSweepDirectory(runtime.storage, dbDir)) return 'durability-sync-failed';
-  if (removal === 'lock-release-failed') return 'lock-release-failed';
-  return removal === 'removed' ? 'complete' : 'deletion-failed';
-}
-
-type StoreEpochRetentionSelection = Readonly<{
-  byEpoch: ReadonlyMap<StoreEpoch, StoreEpochObservation>;
-  garbageEpochs: ReadonlySet<StoreEpoch>;
-}>;
-
-function selectStoreEpochRetention(observations: readonly StoreEpochObservation[]): StoreEpochRetentionSelection {
-  return {
-    byEpoch: new Map(observations.map((observation) => [observation.epoch, observation])),
-    garbageEpochs: garbageStoreEpochs(
-      observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
-    ),
-  };
-}
-
-type StoreEpochReapingResult = Readonly<{
-  complete: boolean;
-  liveHolder: boolean;
-  lockReleaseFailed: boolean;
-}>;
-
-function reapStoreEpochEntries(
-  runtime: Runtime,
-  dbDir: string,
-  current: StoreEpoch,
-  entries: readonly string[],
-  retention: StoreEpochRetentionSelection,
-): StoreEpochReapingResult {
-  let complete = true;
-  let liveHolder = false;
-  let lockReleaseFailed = false;
-  for (const entry of entries) {
-    const epoch = epochNumber(entry);
-    const observation = epoch === null ? undefined : retention.byEpoch.get(epoch);
-    const invalidEpochEntry = entry.startsWith('epoch-') && epoch === null;
-    const disprovenEpochEntry = observation?.proof.kind === 'disproven';
-    const garbageEpoch = observation?.proof.kind === 'proven' && retention.garbageEpochs.has(observation.epoch);
-    if (!invalidEpochEntry && (epoch === current || (!disprovenEpochEntry && !garbageEpoch))) continue;
-
-    if (epoch === null) {
-      complete = removeDuringSweep(runtime.storage, dbDir, join(dbDir, entry)) && complete;
-      continue;
-    }
-    const removal = removeEpochEntry(runtime, dbDir, epoch);
-    if (removal === 'locked') {
-      liveHolder = true;
-      auditSweepSkip(join(dbDir, entry));
-      continue;
-    }
-    lockReleaseFailed ||= removal === 'lock-release-failed';
-    complete = removal === 'removed' && complete;
-  }
-  return { complete, liveHolder, lockReleaseFailed };
+  return 'closure-required';
 }
 
 export function sweepStoreEpochs(
@@ -1238,26 +1208,13 @@ export function sweepStoreEpochs(
 
   if (current === null) return 'unobservable-metadata';
 
-  let entries: readonly string[];
-  try {
-    entries = storage.readdirSync(dbDir);
-  } catch (error: unknown) {
-    auditSweepFailure(dbDir, error);
-    return 'unobservable-metadata';
-  }
-
-  const observations = observeStoreEpochs(storage, dbDir, entries);
-  const retention = selectStoreEpochRetention(observations);
-  const reaping = reapStoreEpochEntries(runtime, dbDir, current, entries, retention);
-
-  let complete = reaping.complete;
+  let complete = true;
   if (compareEpoch(current, '1') >= 0) {
     complete = removeDuringSweep(storage, dbDir, join(dbDir, STORE_RESET_QUARANTINE_DIRECTORY)) && complete;
   }
   if (!syncStoreEpochSweepDirectory(storage, dbDir)) return 'durability-sync-failed';
-  if (reaping.lockReleaseFailed) return 'lock-release-failed';
   if (!complete) return 'deletion-failed';
-  return reaping.liveHolder ? 'live-holder' : 'complete';
+  return 'complete';
 }
 
 async function yieldSweepTurn(): Promise<void> {
@@ -1636,7 +1593,7 @@ async function finishPostReadyStoreEpochSweep(
 export async function sweepStoreEpochsPostReady(
   runtime: Runtime,
   openStore: ResolvedStoreEpoch,
-  options: { readonly signal?: AbortSignal } = {},
+  options: { readonly signal?: AbortSignal; readonly resultsReleased?: (epochKey: string) => boolean } = {},
 ): Promise<StoreEpochSweepResult> {
   const context: PostReadyStoreEpochSweepContext = {
     runtime,
@@ -1666,7 +1623,8 @@ export async function sweepStoreEpochsPostReady(
   if (holderCleanup.deletionFailed) return 'deletion-failed';
   if (holderCleanup.unobservableHolder) return 'unobservable-holder';
 
-  const residueEntries = new Set(entries.filter((entry) => isStoreEpochResidue(entry)));
+  const residueEntries = new Set(entries.filter((entry) =>
+    isStoreEpochResidue(entry) && !entry.startsWith(REAPING_DIRECTORY_PREFIX)));
   const reaping = await reapPostReadyStoreEpochEntries(context, entries, residueEntries, mutations);
   if (reaping.kind === 'cancelled') {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
@@ -1676,6 +1634,53 @@ export async function sweepStoreEpochsPostReady(
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
   let complete = reaping.complete;
+  if (options.resultsReleased !== undefined) {
+    let observations: readonly StoreEpochObservation[];
+    try {
+      observations = observeStoreEpochs(runtime.storage, dbDir);
+    } catch {
+      return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'unobservable-metadata');
+    }
+    const proven = observations.filter((entry) => entry.proof.kind === 'proven').map((entry) => entry.epoch);
+    for (const epoch of garbageStoreEpochs(proven)) {
+      if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+      const resolved = resolvedStoreEpoch(dbDir, epoch);
+      const epochKey = readOrCreateEpochKey(resolved);
+      if (closureCapability(runtime.paths.coral.generation.dataRoot, epochKey) === null ||
+          !options.resultsReleased(epochKey)) continue;
+      mutations.pending = true;
+      const removal = removeEpochEntry(runtime, dbDir, epoch);
+      complete = removal === 'removed' && complete;
+      await yieldSweepTurn();
+    }
+    const protectedAddresses = reconcileProtectedEpochs(dbDir);
+    const allPublishedAt = [
+      ...proven.map((epoch) => readEpochMetadata(runtime.storage, epochDirectory(dbDir, epoch))),
+      ...protectedAddresses.map((address) => readEpochMetadata(runtime.storage, address.protectedPath)),
+    ].map((metadata) => metadata.kind === 'valid' ? Date.parse(metadata.value.publishedAt) : NaN);
+    const protectedRetentionReady = allPublishedAt.length >= 3 && allPublishedAt.every(Number.isFinite);
+    if (protectedRetentionReady) {
+      const latestTwo = [...allPublishedAt].sort((left, right) => right - left).slice(0, 2);
+      const retentionBoundary = Math.min(...latestTwo);
+      for (const address of protectedAddresses) {
+        if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+        const metadata = readEpochMetadata(runtime.storage, address.protectedPath);
+        if (metadata.kind !== 'valid' || Date.parse(metadata.value.publishedAt) >= retentionBoundary) continue;
+        if (closureCapability(runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||
+            !options.resultsReleased(address.epochKey)) continue;
+        const removal = removeClosedProtectedEpoch(runtime, address);
+        complete = removal === 'removed' && complete;
+        await yieldSweepTurn();
+      }
+    }
+    for (const address of protectedDeletionResidues(dbDir)) {
+      if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
+      if (closureCapability(runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||
+          !options.resultsReleased(address.epochKey)) continue;
+      complete = removeClosedProtectedEpoch(runtime, address) === 'removed' && complete;
+      await yieldSweepTurn();
+    }
+  }
   if (compareEpoch(openEpoch, '1') >= 0) {
     mutations.pending = true;
     const removed = await removeDuringPostReadySweep(
@@ -1756,6 +1761,19 @@ function mintNextEpoch(
   successor: StoreEpoch,
   classification: StoreEpochClassification,
 ): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
+  reconcileProtectedEpochs(dbDir);
+  for (const observation of observeStoreEpochs(runtime.storage, dbDir)) {
+    const directory = epochDirectory(dbDir, observation.epoch);
+    const directoryProof = observeContainedDirectory(runtime.storage, dbDir, directory);
+    if (directoryProof.kind === 'unobservable') {
+      throw new Error(`Epoch ${observation.epoch} cannot be protected without observable directory evidence.`);
+    }
+    if (directoryProof.kind !== 'proven') continue;
+    if (observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, directoryProof).kind !== 'proven') {
+      throw new Error(`Epoch ${observation.epoch} cannot be protected without a proven epoch lock.`);
+    }
+    protectStoreEpoch(resolvedStoreEpoch(dbDir, observation.epoch));
+  }
   const id = runtime.ids.uuid();
   const construction = join(dbDir, `${PRIVATE_MINT_CONSTRUCTION_PREFIX}${id}`);
   const preparation = join(dbDir, `${MINT_PREPARATION_DIRECTORY_PREFIX}${id}`);
@@ -1802,6 +1820,8 @@ function mintNextEpoch(
       mint,
       metadataFor(supersedes, classification, options.build, new Date(runtime.time.now()).toISOString()),
     );
+    const ledgerId = initializeCustodyLedger(runtime.paths.coral.coordinator.runDir);
+    recordEpochCustodyCoverage(mint, ledgerId);
     try {
       runtime.storage.renameSync(mint, epochDirectory(dbDir, successor));
       if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
@@ -1839,7 +1859,9 @@ function openPublishedEpoch(
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: options.startupBusyTimeoutMs,
-      writerEntitlement: joinSuccessionWriterGeneration(runtime, resolved),
+      writerEntitlement: joinSuccessionWriterGeneration(runtime, {
+        storeRoot: resolved.canonicalStoreRoot ?? resolved.storeRoot, epoch: resolved.epoch,
+      }),
     });
     db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
     return { db: registerStoreEpochHolder(runtime, resolved, db, lease), store: resolved };
@@ -1925,7 +1947,9 @@ function tryOpenCurrentEpoch(
       storeFormat: options.storeFormat,
       flavor: runtime.flavor,
       busyTimeoutMs: Math.max(1, options.startupBusyTimeoutMs ?? STORE_EPOCH_OPEN_RETRY_BUDGET_MS),
-      writerEntitlement: joinSuccessionWriterGeneration(runtime, resolved),
+      writerEntitlement: joinSuccessionWriterGeneration(runtime, {
+        storeRoot: resolved.canonicalStoreRoot ?? resolved.storeRoot, epoch: resolved.epoch,
+      }),
       ...(deadline === null
         ? {}
         : {
@@ -1958,13 +1982,30 @@ export function openExactStoreEpoch(
   expected: ResolvedStoreEpoch,
 ): ExactStoreEpochOpen {
   let proven: ResolvedStoreEpoch | null;
+  let mapped: ResolvedStoreEpoch | null;
   try {
-    proven = resolveProvenStoreEpochAtPath(runtime.storage, expected.storeRoot, expected.path);
+    mapped = expected.lineageKey === undefined
+      ? null
+      : resolveProtectedEpoch(expected.canonicalStoreRoot ?? expected.storeRoot, expected.lineageKey);
+    const target = mapped ?? expected;
+    proven = resolveProvenStoreEpochAtPath(runtime.storage, target.storeRoot, target.path);
   } catch {
     return { kind: 'holding', reason: 'epoch-unproven' };
   }
-  if (proven === null || encodeResolvedStoreEpoch(proven) !== encodeResolvedStoreEpoch(expected)) {
+  if (proven === null) return { kind: 'holding', reason: 'epoch-unproven' };
+  let identityMatches: boolean;
+  try {
+    identityMatches = expected.lineageKey !== undefined
+      ? readOrCreateEpochKey(proven) === expected.lineageKey
+      : proven.storeRoot === expected.storeRoot && proven.path === expected.path;
+  } catch {
+    identityMatches = false;
+  }
+  if (!identityMatches) {
     return { kind: 'holding', reason: 'epoch-unproven' };
+  }
+  if (mapped !== null) {
+    proven = { ...proven, canonicalStoreRoot: expected.canonicalStoreRoot ?? expected.storeRoot };
   }
   const opened = tryOpenCurrentEpoch(runtime, options, proven, null, true);
   if (opened.kind !== 'opened') {
@@ -1977,7 +2018,9 @@ export function openExactStoreEpoch(
     }
     opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
     adopted = true;
-    return { kind: 'opened', db: opened.db, store: proven };
+    return { kind: 'opened', db: opened.db, store: mapped === null ? proven : {
+      ...proven, lineageKey: expected.lineageKey, canonicalStoreRoot: expected.canonicalStoreRoot ?? expected.storeRoot,
+    } };
   } catch {
     return { kind: 'holding', reason: 'open-failed' };
   } finally {
@@ -2001,6 +2044,7 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
 
   runtime.storage.mkdirSync(configuredDbDir, { recursive: true, mode: 0o700 });
   const dbDir = runtime.storage.realpathSync(configuredDbDir);
+  reconcileProtectedEpochs(dbDir);
   let retryDeadline: bigint | null = null;
   let retryAttempts = 0;
   let lastRetryableFailure: Readonly<{
@@ -2268,7 +2312,7 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
     observations.filter(({ proof }) => proof.kind === 'proven').map(({ epoch }) => epoch),
   );
 
-  return [...observations]
+  const canonical = [...observations]
     .sort((left, right) => compareEpoch(right.epoch, left.epoch))
     .map((observation) => {
       const { epoch } = observation;
@@ -2276,8 +2320,22 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
         observation.epochJson.kind === 'valid'
           ? observation.epochJson.value.classification
           : unavailableClassification();
+      const resolved = observation.proof.kind === 'proven' ? resolvedStoreEpoch(dbDir, epoch) : null;
+      let epochKey: string | null = null;
+      try { epochKey = resolved === null ? null : readOrCreateEpochKey(resolved); } catch { epochKey = null; }
+      let closure: ReturnType<typeof readEpochClosure> = null;
+      let closureUnreadable = false;
+      try {
+        closure = epochKey === null ? null : readEpochClosure(runtime.paths.coral.generation.dataRoot, epochKey);
+      } catch {
+        closureUnreadable = true;
+      }
       return {
         epoch,
+        address: resolved?.path ?? epochDirectory(dbDir, epoch),
+        epochKey,
+        closureDisposition: closure?.disposition ?? (resolved === null || closureUnreadable ? 'unrecoverable-retained' : 'pending'),
+        dataOutcome: closure?.dataOutcome ?? (closureUnreadable ? 'unreadable' : 'unknown'),
         role:
           observation.proof.kind === 'unobservable'
             ? 'unobservable'
@@ -2291,9 +2349,53 @@ export function listStoreEpochs(runtime: Pick<Runtime, 'paths' | 'storage'>): re
         supersededStoreVersion:
           'storedProductVersion' in publicationReason ? publicationReason.storedProductVersion : null,
         epochJson: observation.epochJson,
-        resolved: observation.proof.kind === 'proven' ? resolvedStoreEpoch(dbDir, epoch) : null,
+        resolved,
       };
     });
+  const protectedAddresses = reconcileProtectedEpochs(dbDir);
+  const protectedEpochs: StoreEpochListEntry[] = protectedAddresses.map((address) => {
+    const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
+    const protectedStoreRoot = dirname(address.protectedPath);
+    const metadata = readEpochMetadata(runtime.storage, address.protectedPath);
+    const publicationReason = metadata.kind === 'valid' ? metadata.value.classification : unavailableClassification();
+    let closure: ReturnType<typeof readEpochClosure> = null;
+    let closureUnreadable = false;
+    try {
+      closure = readEpochClosure(runtime.paths.coral.generation.dataRoot, address.epochKey);
+    } catch {
+      closureUnreadable = true;
+    }
+    return {
+      epoch,
+      address: address.protectedPath,
+      epochKey: address.epochKey,
+      role: 'protected',
+      closureDisposition: closure?.disposition ?? (closureUnreadable ? 'unrecoverable-retained' : 'pending'),
+      dataOutcome: closure?.dataOutcome ?? (closureUnreadable ? 'unreadable' : 'unknown'),
+      bytes: epochBytes(runtime.storage, protectedStoreRoot, epoch),
+      publicationReason,
+      supersededStoreVersion: 'storedProductVersion' in publicationReason ? publicationReason.storedProductVersion : null,
+      epochJson: metadata,
+      resolved: {
+        storeRoot: protectedStoreRoot, epoch, path: join(address.protectedPath, STORE_DATABASE_FILE_NAME),
+        lineageKey: address.epochKey, canonicalStoreRoot: dbDir,
+      },
+    };
+  });
+  const unrecognized: StoreEpochListEntry[] = unrecognizedProtectedEpochs(dbDir, protectedAddresses).map((entry) => ({
+    epoch: entry.epoch,
+    address: entry.path,
+    epochKey: null,
+    role: 'unobservable',
+    closureDisposition: 'unrecoverable-retained',
+    dataOutcome: 'unreadable',
+    bytes: null,
+    publicationReason: unavailableClassification(),
+    supersededStoreVersion: null,
+    epochJson: { kind: 'unreadable' },
+    resolved: null,
+  }));
+  return [...canonical, ...protectedEpochs, ...unrecognized];
 }
 
 export function storeEpochHookSource(): string {
