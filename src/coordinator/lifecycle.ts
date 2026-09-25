@@ -99,6 +99,7 @@ import { inspectValidatedHandoffTarget, type ValidatedHandoffTarget } from '../i
 import type { Database } from '../store/db.js';
 import {
   decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, inspectCurrentStore, mintRetiredStoreEpoch,
+  observeResolvedStoreEpoch, observeResolvedStoreEpochKey,
   discardUnservedRetirementMint,
   type ResolvedStoreEpoch, type StoreEpochOptions,
 } from '../store/epoch.js';
@@ -193,17 +194,6 @@ function handBackDeadAttemptGeneration(runtime: Runtime, epochKey: string, force
     throw new SuccessionAttemptStartupHoldError('unserved writer generation is not the retiring successor');
   }
   handbackSuccessionWriterGeneration(runtime, generation, { storeRoot, epoch: oldEpoch.epoch });
-}
-
-function restoreProtectedHandoffEpoch(runtime: Runtime, epochKey: string): void {
-  const epoch = decodeResolvedStoreEpoch(epochKey);
-  if (epoch === undefined || epoch.lineageKey === undefined) {
-    throw new SuccessionAttemptStartupHoldError('handoff epoch is unproven');
-  }
-  const storeRoot = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
-  if (resolveProtectedEpoch(storeRoot, epoch.lineageKey) !== null) {
-    restoreProtectedEpoch(storeRoot, epoch.lineageKey);
-  }
 }
 
 export type CoordinatorServerInfo = {
@@ -868,7 +858,7 @@ export type LifecycleDeps = {
     controlGeneration: number) => void;
   readonly authorizeStartupMint?: StoreEpochOptions['authorizeMint'];
   readonly prepareNoIncumbentHandoff?: () =>
-    Readonly<{ target: ValidatedHandoffTarget; epochKey: string; compatible: boolean }> | null;
+    Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null;
   readonly prepareRecoveryGrantHandoff?: (epochKey: string, incumbentInstanceId: string) =>
     ValidatedHandoffTarget | null;
   readonly onRetiredEpochOpened?: (epoch: ResolvedStoreEpoch, disposition: RetirementDisposition) => void;
@@ -1163,7 +1153,7 @@ function prepareCommittedSuccessorRecovery(
   const receipt = intent.completionReceipt;
   if (receipt === null) return null;
   const current = inspectCurrentStore(runtime);
-  if (current.kind !== 'current' || encodeResolvedStoreEpoch(current.epoch) !== receipt.epochKey) return null;
+  if (current.kind !== 'current' || observeResolvedStoreEpochKey(current.epoch) !== receipt.epochKey) return null;
   const serving = observeSuccessionServing(runtime, receipt.attemptId);
   const writer = observeSuccessionWriterGeneration(runtime);
   if (
@@ -1399,6 +1389,7 @@ async function runLifecycleStartup({
       ? prepareCommittedSuccessorRecovery(runtime, identity, deps.storeFormat, currentBuild)
       : null;
     let preferredStoreEpochKey: string | null = null;
+    let pendingDeadAttempt: Readonly<{ epochKey: string; force: boolean; discardAttemptId?: string }> | null = null;
     if (successionAttemptChild === null && committedRecovery === null && preinjectedStoreServices === null) {
       const coordinator = probeCoordinator(runtime);
       if (coordinator.kind === 'absent' ||
@@ -1426,14 +1417,12 @@ async function runLifecycleStartup({
           if (recoveryTarget === undefined || recoveryTarget === null) {
             throw new SuccessionAttemptStartupHoldError('prepared recovery grant has no validated old controller');
           }
-          handBackDeadAttemptGeneration(runtime, preparation.data.epochKey,
-            preparation.data.receipts.length > 0);
-          restoreProtectedHandoffEpoch(runtime, preparation.data.epochKey);
           recoveredGrant = true;
           const targetBuild = inspectValidatedHandoffTarget(recoveryTarget).build;
           if (targetBuild.buildSetId !== currentBuild.buildSetId || targetBuild.bundleHash !== currentBuild.bundleHash) {
             throw new StartupStoreHandoffError(recoveryTarget);
           }
+          pendingDeadAttempt = { epochKey: preparation.data.epochKey, force: preparation.data.receipts.length > 0 };
           preferredStoreEpochKey = preparation.data.epochKey;
         }
         if (!recoveredGrant && observed.kind === 'readable' && observed.intent.disposition === 'attempting' &&
@@ -1450,7 +1439,7 @@ async function runLifecycleStartup({
             throw new SuccessionAttemptStartupHoldError('unserved attempt has unproven process deaths');
           }
           if (preparation.data.receipts.length > 0) {
-            const oldEpoch = decodeResolvedStoreEpoch(preparation.data.epochKey);
+            const oldEpoch = observeResolvedStoreEpoch(preparation.data.epochKey);
             const grantsValid = oldEpoch !== undefined && preparation.data.receipts.every((receipt) => {
               if (receipt.owner !== 'durable-cli' || receipt.attemptId !== observed.intent.attemptId) return false;
               const transfer = decodeDurableCliTransfer(receipt.payload, oldEpoch);
@@ -1468,18 +1457,14 @@ async function runLifecycleStartup({
             if (recoveryTarget === undefined || recoveryTarget === null) {
               throw new SuccessionAttemptStartupHoldError('grant-authorized old controller is unavailable');
             }
-            handBackDeadAttemptGeneration(runtime, preparation.data.epochKey, true);
-            restoreProtectedHandoffEpoch(runtime, preparation.data.epochKey);
             const targetBuild = inspectValidatedHandoffTarget(recoveryTarget).build;
             if (targetBuild.buildSetId !== currentBuild.buildSetId || targetBuild.bundleHash !== currentBuild.bundleHash) {
               throw new StartupStoreHandoffError(recoveryTarget);
             }
+            pendingDeadAttempt = { epochKey: preparation.data.epochKey, force: true };
             preferredStoreEpochKey = preparation.data.epochKey;
           }
           if (readRetirementDisposition(runtime, observed.intent.attemptId) !== null) {
-            discardUnservedRetirementMint(runtime, preparation.data.epochKey, observed.intent.attemptId);
-            handBackDeadAttemptGeneration(runtime, preparation.data.epochKey);
-            restoreProtectedHandoffEpoch(runtime, preparation.data.epochKey);
             const recoveryTarget = deps.prepareRecoveryGrantHandoff?.(
               preparation.data.epochKey, preparation.data.incumbentInstanceId);
             if (recoveryTarget !== undefined && recoveryTarget !== null) {
@@ -1490,20 +1475,25 @@ async function runLifecycleStartup({
               }
               preferredStoreEpochKey = preparation.data.epochKey;
             }
+            pendingDeadAttempt = {
+              epochKey: preparation.data.epochKey,
+              force: pendingDeadAttempt?.force ?? false,
+              discardAttemptId: observed.intent.attemptId,
+            };
           }
         }
-        const target = deps.prepareNoIncumbentHandoff?.();
-        if (target !== undefined && target !== null) {
-          const targetBuild = inspectValidatedHandoffTarget(target.target).build;
-          const sameBuild = targetBuild.buildSetId === currentBuild.buildSetId &&
-            targetBuild.bundleHash === currentBuild.bundleHash;
-          if (!sameBuild && !target.compatible) {
-            restoreProtectedHandoffEpoch(runtime, target.epochKey);
-            throw new StartupStoreHandoffError(target.target);
-          }
-          if (sameBuild) {
-            restoreProtectedHandoffEpoch(runtime, target.epochKey);
-            preferredStoreEpochKey = target.epochKey;
+        if (pendingDeadAttempt === null) {
+          const target = deps.prepareNoIncumbentHandoff?.();
+          if (target !== undefined && target !== null) {
+            const targetBuild = inspectValidatedHandoffTarget(target.target).build;
+            const sameBuild = targetBuild.buildSetId === currentBuild.buildSetId &&
+              targetBuild.bundleHash === currentBuild.bundleHash;
+            if (!sameBuild) {
+              throw new StartupStoreHandoffError(target.target);
+            }
+            if (sameBuild) {
+              preferredStoreEpochKey = target.epochKey;
+            }
           }
         }
       }
@@ -1574,6 +1564,12 @@ async function runLifecycleStartup({
           reason: decodedScope.failure.reason,
         });
       }
+    }
+    if (pendingDeadAttempt !== null) {
+      if (pendingDeadAttempt.discardAttemptId !== undefined) {
+        discardUnservedRetirementMint(runtime, pendingDeadAttempt.epochKey, pendingDeadAttempt.discardAttemptId);
+      }
+      handBackDeadAttemptGeneration(runtime, pendingDeadAttempt.epochKey, pendingDeadAttempt.force);
     }
 
     if (successionAttemptChild !== null && preinjectedStoreServices !== null) {

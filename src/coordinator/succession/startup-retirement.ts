@@ -9,9 +9,12 @@ import { readCustodyLedger } from '../../store/custody-ledger.js';
 import { classifyStoreFile } from '../../store/db.js';
 import {
   decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, inspectCurrentStore, listStoreEpochs,
-  type StoreMintDisposition, type StoreMintObservation,
+  observeResolvedStoreEpoch, observeResolvedStoreEpochKey,
+  type ResolvedStoreEpoch, type StoreMintDisposition, type StoreMintObservation,
 } from '../../store/epoch.js';
 import { readEpochClosure, recordEpochClosure } from '../../store/epoch-closure.js';
+import { readEpochKey } from '../../store/epoch-key.js';
+import { observeProtectedEpoch } from '../../store/epoch-protection.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import { latestControllerOpen } from './controller-open.js';
 import { readDurableCliControllerReceipts } from './durable-cli-transfer.js';
@@ -23,50 +26,108 @@ export function prepareRetainedControllerHandoff(
   runtime: Runtime,
   index: JobLocationIndex,
   format: StoreFormatDescription,
-): Readonly<{ target: ValidatedHandoffTarget; epochKey: string; compatible: boolean }> | null {
-  const observed = inspectCurrentStore(runtime);
-  const protectedEpochs = observed.kind === 'current' ? [] : listStoreEpochs(runtime)
-    .filter((entry) => entry.role === 'protected' && entry.resolved !== null)
-    .sort((left, right) => {
-      const leftEpoch = BigInt(left.epoch);
-      const rightEpoch = BigInt(right.epoch);
-      return leftEpoch < rightEpoch ? 1 : leftEpoch > rightEpoch ? -1 : 0;
-    });
-  const epoch = observed.kind === 'current' ? observed.epoch : protectedEpochs[0]?.resolved;
-  if (epoch === undefined || epoch === null) return null;
-  if (protectedEpochs.length > 1 && protectedEpochs[0]?.epoch === protectedEpochs[1]?.epoch) return null;
-  const classification = classifyStoreFile(epoch.path, runtime.storage, format);
-  if (classification.kind !== 'compatible' && classification.kind !== 'older-incompatible' &&
-      classification.kind !== 'newer-incompatible') return null;
-  const epochKey = encodeResolvedStoreEpoch(epoch);
-  const lineageKey = decodeResolvedStoreEpoch(epochKey)?.lineageKey;
-  if (lineageKey === undefined) return null;
-  const seeded = seedHistoricalEpoch(index, epoch, epochKey, classification.storedFingerprint,
-    runtime.paths.coral.exports.jobsRoot, runtime.storage, [], false);
-  if (seeded.kind !== 'uncertified') return null;
-  const unresolved = index.locationsFor(epochKey).filter((location) => location.disposition !== 'terminal');
-  if (unresolved.length === 0) return null;
-  const controller = latestControllerOpen(runtime, epochKey);
-  const receipts = readDurableCliControllerReceipts(runtime.paths.coral.coordinator.runDir);
-  if (controller === null || receipts === null) return null;
+): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
   const custody = readCustodyLedger(runtime.paths.coral.coordinator.runDir);
-  const allControlled = unresolved.every((location) => {
-    const latest = receipts.filter((receipt) => receipt.jobId === location.jobId &&
+  const live = new Map<string, Set<string>>();
+  for (const entry of custody) {
+    if (entry.kind === 'unreadable' || entry.kind === 'holding') return null;
+    if (entry.kind !== 'bound') continue;
+    if (entry.binding.process === null) return null;
+    const observation = observeRecordedContainment(
+      { ...entry.binding.process, childRoot: null },
+      {
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+      },
+    );
+    if (observation.kind === 'unobservable') return null;
+    if (observation.kind !== 'alive') continue;
+    if (entry.intent.epochKey === undefined) return null;
+    const jobs = live.get(entry.intent.epochKey) ?? new Set<string>();
+    jobs.add(entry.intent.jobId ?? entry.intent.operationId);
+    live.set(entry.intent.epochKey, jobs);
+  }
+  const activeLineages = new Set(live.keys());
+  for (const location of index.locations()) {
+    if (location.disposition !== 'active-owner') continue;
+    const lineageKey = observeResolvedStoreEpoch(location.epochKey)?.lineageKey;
+    if (lineageKey === undefined) return null;
+    activeLineages.add(lineageKey);
+  }
+  if (activeLineages.size !== 1) return null;
+  const lineageKey = [...activeLineages][0]!;
+  const liveJobIds = live.get(lineageKey) ?? new Set<string>();
+  return prepareRetainedControllerHandoffForLineage(runtime, index, format, custody, lineageKey, liveJobIds);
+}
+
+function prepareRetainedControllerHandoffForLineage(
+  runtime: Runtime,
+  index: JobLocationIndex,
+  format: StoreFormatDescription,
+  custody: ReturnType<typeof readCustodyLedger>,
+  lineageKey: string,
+  liveJobIds: ReadonlySet<string>,
+): Readonly<{ target: ValidatedHandoffTarget; epochKey: string }> | null {
+  const current = inspectCurrentStore(runtime);
+  const currentEpoch = current.kind === 'current' && readEpochKey(current.epoch) === lineageKey
+    ? current.epoch : null;
+  let epoch: ResolvedStoreEpoch | null;
+  try {
+    epoch = currentEpoch ?? observeProtectedEpoch(runtime.storage.realpathSync(runtime.paths.coral.store.dbDir),
+      lineageKey);
+  } catch {
+    return null;
+  }
+  if (epoch === null) return null;
+  let classification: ReturnType<typeof classifyStoreFile>;
+  try { classification = classifyStoreFile(epoch.path, runtime.storage, format); } catch { return null; }
+  if (classification.kind !== 'older-incompatible' && classification.kind !== 'newer-incompatible') return null;
+  const epochKey = observeResolvedStoreEpochKey(epoch);
+  if (epochKey === null || observeResolvedStoreEpoch(epochKey)?.lineageKey !== lineageKey) return null;
+  const unresolved = index.locationsFor(epochKey).filter((location) => location.disposition !== 'terminal');
+  if (unresolved.length === 0 || [...liveJobIds].some((jobId) =>
+    !unresolved.some((location) => location.jobId === jobId))) return null;
+  const receipts = readDurableCliControllerReceipts(runtime.paths.coral.coordinator.runDir);
+  if (receipts === null) return null;
+  let selectedController: Readonly<{ instanceId: string; buildSetId: string; controlGeneration: number }> | null = null;
+  for (const location of unresolved) {
+    const jobReceipts = receipts.filter((receipt) => receipt.jobId === location.jobId &&
       receipt.epochKey === epochKey).sort((left, right) =>
-      right.controlGeneration - left.controlGeneration || right.acknowledgedAtMs - left.acknowledgedAtMs)[0];
-    const controlled = latest === undefined
-      ? location.controller?.buildSetId === controller.build.buildSetId &&
-        location.controller.instanceId === controller.instanceId &&
-        location.controller.controlGeneration <= controller.controlGeneration
-      : latest.controllerBuildSetId === controller.build.buildSetId &&
-        latest.controllerInstanceId === controller.instanceId &&
-        latest.controlGeneration === controller.controlGeneration;
-    if (!controlled) return false;
-    return custody.some((entry) => {
+      right.controlGeneration - left.controlGeneration || right.acknowledgedAtMs - left.acknowledgedAtMs);
+    const latest = jobReceipts[0];
+    const tied = jobReceipts[1];
+    if (latest !== undefined && tied !== undefined &&
+        latest.controlGeneration === tied.controlGeneration &&
+        latest.acknowledgedAtMs === tied.acknowledgedAtMs &&
+        JSON.stringify(latest) !== JSON.stringify(tied)) return null;
+    const controller = latest === undefined ? location.controller : {
+      instanceId: latest.controllerInstanceId,
+      buildSetId: latest.controllerBuildSetId,
+      controlGeneration: latest.controlGeneration,
+    };
+    if (controller === undefined) return null;
+    let opened: ReturnType<typeof latestControllerOpen>;
+    try { opened = latestControllerOpen(runtime, epochKey, controller.instanceId); } catch { return null; }
+    if (opened === null || opened.build.buildSetId !== controller.buildSetId ||
+        opened.controlGeneration !== controller.controlGeneration ||
+        (selectedController !== null && (selectedController.instanceId !== controller.instanceId ||
+          selectedController.buildSetId !== controller.buildSetId ||
+          selectedController.controlGeneration !== controller.controlGeneration))) return null;
+    selectedController = controller;
+    if (!liveJobIds.has(location.jobId)) {
+      if (location.detail?.status?.phase !== 'queued') return null;
+      continue;
+    }
+    const bound = custody.some((entry) => {
       if (entry.kind !== 'bound' || entry.intent.epochKey !== lineageKey ||
           (entry.intent.jobId ?? entry.intent.operationId) !== location.jobId ||
-          entry.binding.process === null) return false;
+          entry.binding.process === null ||
+          (latest !== undefined && entry.intent.id !== latest.custodyIntentId)) return false;
       const process = entry.binding.process;
+      if (latest !== undefined && (process.pid !== latest.runtimeMeta.pid ||
+          process.incarnation !== latest.runtimeMeta.incarnation ||
+          process.processGroupId !== latest.runtimeMeta.processGroupId)) return false;
       return observeRecordedContainment(
         { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId, childRoot: null },
         {
@@ -76,9 +137,14 @@ export function prepareRetainedControllerHandoff(
         },
       ).kind === 'alive';
     });
-  });
-  const target = allControlled ? controllerRecoveryTarget(runtime, epochKey) : null;
-  return target === null ? null : { target, epochKey, compatible: classification.kind === 'compatible' };
+    if (!bound) return null;
+  }
+  let target: ValidatedHandoffTarget | null;
+  try {
+    target = selectedController === null ? null
+      : controllerRecoveryTarget(runtime, epochKey, selectedController.instanceId);
+  } catch { return null; }
+  return target === null ? null : { target, epochKey };
 }
 
 export function createStartupMintAuthorizer(

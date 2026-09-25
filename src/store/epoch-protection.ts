@@ -8,9 +8,10 @@ import { readEpochKey, readOrCreateEpochKey } from './epoch-key.js';
 import type { ResolvedStoreEpoch } from './epoch.js';
 import type { Runtime } from '../runtime/ports.js';
 
+const PROTECTED_EPOCH_KEY_PATTERN = /^[0-9a-f-]{36}:[1-9]\d*$/;
 const addressSchema = z.object({
   version: z.literal('v1'),
-  epochKey: z.string().regex(/^[0-9a-f-]{36}:[1-9]\d*$/),
+  epochKey: z.string().regex(PROTECTED_EPOCH_KEY_PATTERN),
   originalPath: z.string().min(1),
   protectedPath: z.string().min(1),
 }).passthrough();
@@ -168,10 +169,7 @@ export function knownProtectedEpochAddresses(storeRoot: string): readonly Protec
   });
 }
 
-export function resolveProtectedEpoch(storeRoot: string, epochKey: string): ResolvedStoreEpoch | null {
-  const address = observedAddress(storeRoot, epochKey) ??
-    reconcileProtectedEpochs(storeRoot).find((entry) => entry.epochKey === epochKey) ?? null;
-  if (address === null) return null;
+function resolvedProtectedAddress(storeRoot: string, epochKey: string, address: ProtectedEpochAddress): ResolvedStoreEpoch {
   const epoch = epochKey.slice(epochKey.lastIndexOf(':') + 1);
   const lineage = epochKey.slice(0, epochKey.lastIndexOf(':'));
   if (address.originalPath !== join(storeRoot, `epoch-${epoch}`) ||
@@ -182,6 +180,40 @@ export function resolveProtectedEpoch(storeRoot: string, epochKey: string): Reso
     storeRoot: dirname(address.protectedPath), epoch, path: join(address.protectedPath, 'store.db'),
     lineageKey: epochKey, canonicalStoreRoot: storeRoot,
   };
+}
+
+/** Pre-bind selection may not publish a missing address while deciding whether to delegate. */
+export function observeProtectedEpoch(storeRoot: string, epochKey: string): ResolvedStoreEpoch | null {
+  const published = observedAddress(storeRoot, epochKey);
+  if (published !== null) return resolvedProtectedAddress(storeRoot, epochKey, published);
+  if (!PROTECTED_EPOCH_KEY_PATTERN.test(epochKey)) return null;
+  const separator = epochKey.lastIndexOf(':');
+  if (separator < 0) return null;
+  const lineage = epochKey.slice(0, separator);
+  const epoch = epochKey.slice(separator + 1);
+  const protectedRoot = protectedStoreEpochRoot(storeRoot);
+  const protectedPath = join(protectedRoot, lineage, `epoch-${epoch}`);
+  try {
+    for (const directory of [protectedRoot, dirname(protectedPath), protectedPath]) {
+      const entry = lstatSync(directory);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) return null;
+    }
+    if (readEpochKey({ storeRoot: dirname(protectedPath), epoch, path: join(protectedPath, 'store.db') }) !== epochKey)
+      return null;
+  } catch {
+    return null;
+  }
+  const address = addressSchema.parse({
+    version: 'v1', epochKey, originalPath: join(storeRoot, `epoch-${epoch}`), protectedPath,
+  });
+  return resolvedProtectedAddress(storeRoot, epochKey, address);
+}
+
+export function resolveProtectedEpoch(storeRoot: string, epochKey: string): ResolvedStoreEpoch | null {
+  const published = observedAddress(storeRoot, epochKey);
+  if (published !== null) return resolvedProtectedAddress(storeRoot, epochKey, published);
+  const address = reconcileProtectedEpochs(storeRoot).find((entry) => entry.epochKey === epochKey);
+  return address === undefined ? null : resolvedProtectedAddress(storeRoot, epochKey, address);
 }
 
 export function removeClosedProtectedEpoch(

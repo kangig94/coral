@@ -149,7 +149,7 @@ function recordsCauseAndNextStep(error) {
 function readRecentStartupFailureNotice(runDir) {
   const diagnosticFile = join(runDir, 'startup-diagnostic.json');
   try {
-    if (isCoordinatorAlive(runDir) !== false) return null;
+    const coordinatorAlive = isCoordinatorAlive(runDir);
     const diagnostic = JSON.parse(readFileSync(diagnosticFile, 'utf-8'));
     if (diagnostic?.schemaVersion !== 1) return null;
     if (diagnostic.state !== 'stopped_with_diagnostic' || diagnostic.retryable !== false) return null;
@@ -167,6 +167,10 @@ function readRecentStartupFailureNotice(runDir) {
       !STARTUP_FAILURE_CODE_PATTERN.test(code)
     ) {
       return null;
+    }
+    if (coordinatorAlive !== false && code !== 'handoff_shutdown_capability_rejected') return null;
+    if (code === 'handoff_shutdown_capability_rejected') {
+      return 'Coral backend: an older contender deferred its upgrade while the incumbent continues serving. Coral will retry the upgrade automatically when its recorded conditions change.';
     }
     if (!recordsCauseAndNextStep(error)) return null;
     return `Coral backend: the most recent start attempt failed, and a fresh attempt was just issued. It may already be resolved.\nError code: ${code}\nThe failed attempt recorded the cause and the next step at ${diagnosticFile}.`;

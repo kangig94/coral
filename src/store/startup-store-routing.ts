@@ -6,8 +6,8 @@ import {
 } from './active-store-selection-coordination.js';
 import { classifyStoreFile, type Database } from './db.js';
 import {
-  decodeResolvedStoreEpoch,
-  encodeResolvedStoreEpoch,
+  observeResolvedStoreEpoch,
+  observeResolvedStoreEpochKey,
   openExactStoreEpoch,
   resolveProvenStoreEpochAtPath,
   type ExactStoreEpochOpen,
@@ -44,19 +44,25 @@ export function prepareCommittedBackendStoreAtStartup(
   options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
   epochKey: string,
 ): CommittedBackendStorePreparation {
-  const expected = decodeResolvedStoreEpoch(epochKey);
+  const expected = observeResolvedStoreEpoch(epochKey);
   if (expected === undefined) return { kind: 'holding', reason: 'epoch-unproven' };
   try {
-    if (runtime.storage.realpathSync(runtime.paths.coral.store.dbDir) !== expected.storeRoot) {
+    if (runtime.storage.realpathSync(runtime.paths.coral.store.dbDir) !==
+        (expected.canonicalStoreRoot ?? expected.storeRoot)) {
       return { kind: 'holding', reason: 'epoch-unproven' };
     }
     const proven = resolveProvenStoreEpochAtPath(runtime.storage, expected.storeRoot, expected.path);
-    if (proven === null || encodeResolvedStoreEpoch(proven) !== epochKey) {
+    const addressed = proven === null ? null : {
+      ...proven,
+      ...(expected.lineageKey === undefined ? {} : { lineageKey: expected.lineageKey }),
+      ...(expected.canonicalStoreRoot === undefined ? {} : { canonicalStoreRoot: expected.canonicalStoreRoot }),
+    };
+    if (addressed === null || observeResolvedStoreEpochKey(addressed) !== epochKey) {
       return { kind: 'holding', reason: 'epoch-unproven' };
     }
-    const classification = classifyStoreFile(proven.path, runtime.storage, options.storeFormat);
+    const classification = classifyStoreFile(addressed.path, runtime.storage, options.storeFormat);
     return classification.kind === 'compatible'
-      ? { kind: 'prepared', store: proven }
+      ? { kind: 'prepared', store: addressed }
       : { kind: 'holding', reason: 'format-incompatible' };
   } catch {
     return { kind: 'holding', reason: 'probe-failed' };

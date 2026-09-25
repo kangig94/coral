@@ -1,4 +1,5 @@
 import { assertNever } from '../../infra/error-format.js';
+import type { UpgradeIntentProblem, UpgradeIntentVisibility } from '../../infra/upgrade-intent.js';
 import type { HandoffRoutingBasis } from '../../coordinator/handoff-routing/policy.js';
 import {
   HANDOFF_ROUTING_STATUS_CLASSIFICATION_POLICY,
@@ -710,6 +711,14 @@ export function formatBackendStatus(
       ? formatLiveShutdownGuidance(daemonStatus.health)
       : ({ lines: [], routingCommandAvailability: 'available' } satisfies LiveShutdownGuidance);
   const sections = [formatDaemonStatus(daemonStatus, liveShutdownGuidance.lines)];
+  const upgrade = daemonStatus.status === 'ok' ? daemonStatus.health.succession ?? daemonStatus.upgrade : daemonStatus.upgrade;
+  if (upgrade !== undefined) sections.push(formatPendingUpgrade(upgrade));
+  const upgradeProblem = daemonStatus.status === 'ok'
+    ? daemonStatus.health.successionProblem ?? daemonStatus.upgradeProblem : daemonStatus.upgradeProblem;
+  if (upgradeProblem !== undefined) sections.push(formatUpgradeRecordProblem(upgradeProblem));
+  if (upgrade === undefined && daemonStatus.legacyContenderDeferred) {
+    sections.push('An older contender was refused while this incumbent continues serving. Its attempted upgrade is deferred.');
+  }
   const draining = daemonStatus.status === 'ok' && daemonStatus.health.status === 'draining';
   const routingStatusText = formatHandoffRoutingStatus(routingStatus, liveShutdownGuidance.routingCommandAvailability);
   if (routingStatusText !== null) sections.push(routingStatusText);
@@ -718,6 +727,52 @@ export function formatBackendStatus(
     if (liveHandoffText !== null) sections.push(liveHandoffText);
   }
   return sections.join('\n');
+}
+
+export function formatUpgradeRecordProblem(problem: UpgradeIntentProblem): string {
+  return `Upgrade intent record is ${problem}. Automatic succession is held until the durable record can be read and reconciled.`;
+}
+
+export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {
+  let next: string;
+  if (upgrade.phase === 'committing') {
+    next = 'The incumbent finishes or recovers the bounded commit, then verifies that the successor is serving.';
+  } else if (upgrade.phase === 'ready') {
+    next = 'The incumbent starts the bounded commit after verifying the ready successor.';
+  } else if (upgrade.phase === 'prepared') {
+    next = 'The incumbent launches the prepared successor for read-only readiness verification.';
+  } else {
+    switch (upgrade.retryCondition?.kind) {
+      case 'incumbent-retirement':
+        next = 'The legacy incumbent retires after its idle timeout (normally at least 6 hours after its last activity); each CLI reuse resets that timer. A live waiter then starts the target. If no waiter survives, the intent stays held until the next new-build trigger recovers it.';
+        break;
+      case 'obligation-change':
+        next = 'The incumbent retries when the held obligations change or settle.';
+        break;
+      case 'target-change':
+        next = 'The incumbent retries when target evidence changes.';
+        break;
+      case 'attempt-expiry':
+        next = 'The incumbent retries after the current attempt expires and recovers.';
+        break;
+      default:
+        next = 'The incumbent reconciles the pending request automatically.';
+    }
+  }
+  return [
+    'Pending upgrade:',
+    `  Request: ${upgrade.requestId}`,
+    `  Status: ${upgrade.disposition}`,
+    `  Phase: ${upgrade.phase}`,
+    `  Target: ${upgrade.target.version} (${upgrade.target.flavor}, build set ${upgrade.target.buildSetId}, store format ${upgrade.target.storeFormatFingerprint})`,
+    `  Target bundles: backend=${upgrade.target.bundleHash}, cli=${upgrade.target.cliBundleHash}, appserver=${upgrade.target.claudeAppserverBundleHash}, durable wrapper=${upgrade.target.durableWrapperBundleHash}`,
+    `  Installed root: ${JSON.stringify(upgrade.target.pluginRootLabel)}`,
+    `  Since: ${upgrade.since ?? 'unknown'}`,
+    `  Reason: ${JSON.stringify(upgrade.reason)}`,
+    `  Blockers: ${upgrade.blockers.length}`,
+    ...upgrade.blockers.map((blocker) => `    ${JSON.stringify(blocker.owner)}: ${JSON.stringify(blocker.reason)}`),
+    `  Next automatic action: ${next}`,
+  ].join('\n');
 }
 
 function withShutdownRemainderSection(base: string, shutdownRemainder: ShutdownRemainderReport | undefined): string {
@@ -756,6 +811,11 @@ function formatDaemonStatus(result: BackendStatusFull, liveShutdownGuidance: rea
       return withShutdownRemainderSection(formatNoRecordSocketPresentStatus(result), result.shutdownRemainder);
     case 'recent_failure':
       return withShutdownRemainderSection(formatRecentFailureStatus(result), result.shutdownRemainder);
+    case 'deferred_upgrade':
+      return withShutdownRemainderSection(
+        'An older contender was refused while the incumbent continues serving. Upgrade deferred; Coral will retry automatically when its recorded conditions change.',
+        result.shutdownRemainder,
+      );
     case 'unauthorized':
       return withShutdownRemainderSection(
         [

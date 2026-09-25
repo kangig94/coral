@@ -13,6 +13,7 @@ import {
 import { formatStoreEpochReport, formatStoreResetList } from '#src/cli/format/store-reset.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
 import { writeDiscoveryRecord } from '#src/infra/backend-discovery.js';
+import { compareAndSwapUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
@@ -178,6 +179,105 @@ describe('store-reset operator epochs', () => {
       kind: 'absent',
       epoch: '99',
     });
+  });
+
+  it('lists distinct protected and legacy-root lineages with the same epoch number and their holds', () => {
+    const runtime = harness();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    opened.db.close();
+    const successor = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    successor.db.close();
+    publishEpoch(runtime.paths.coral.store.dbDir, '1');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(runtime.paths.coral.store.dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+
+    const listed = listStoreResetIncidentsLocal('gen2', dependencies);
+    const twins = listed.epochs.filter((epoch) => epoch.epoch === '1');
+    expect(twins).toHaveLength(2);
+    expect(new Set(twins.map((epoch) => epoch.epochKey)).size).toBe(2);
+    expect(twins.map((epoch) => epoch.role).sort()).toEqual(['preserved', 'protected']);
+    const rendered = formatStoreResetList(listed, 'gen2');
+    for (const epoch of twins) {
+      expect(rendered).toContain(epoch.epochKey);
+    }
+    expect(rendered).toContain('Result retention');
+    expect(rendered).toContain('automatic custody reconciliation and closure retry');
+    expect(rendered).not.toContain('store-reset release');
+  });
+
+  it('keeps mapped protected epochs visible when the legacy root is absent', () => {
+    const runtime = harness();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    opened.db.close();
+    const successor = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    successor.db.close();
+    rmSync(runtime.paths.coral.store.dbDir, { recursive: true });
+
+    const protectedEpoch = listStoreEpochs(runtime).find((entry) => entry.role === 'protected');
+    expect(protectedEpoch).toMatchObject({ epoch: '1', closureDisposition: 'pending' });
+    expect(protectedEpoch?.epochKey).toMatch(/^[0-9a-f-]{36}:1$/);
+  });
+
+  it('retains an unreadable mapped epoch under its full key', () => {
+    const runtime = harness();
+    const opened = settleStoreEpoch(runtime, { storeFormat, build });
+    opened.db.close();
+    const successor = discardCurrentStoreEpoch(runtime, { storeFormat, build });
+    successor.db.close();
+    const protectedEpoch = listStoreEpochs(runtime).find((entry) => entry.role === 'protected');
+    expect(protectedEpoch?.resolved).not.toBeNull();
+    const key = protectedEpoch!.epochKey;
+    rmSync(dirname(protectedEpoch!.resolved!.path), { recursive: true });
+
+    expect(listStoreEpochs(runtime).find((entry) => entry.epochKey === key)).toMatchObject({
+      role: 'unobservable', closureDisposition: 'unrecoverable-retained', custodyState: 'undecidable',
+    });
+  });
+
+  it('shows the durable pending upgrade in the store listing without offering a release', async () => {
+    const runtime = harness();
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'upgrade-1',
+      incumbent: { instanceId: 'legacy-1', pid: 4242, incarnation: null,
+        version: '0.10.13', bundleHash: 'legacy-hash', flavor: 'prod' },
+      target: { build, pluginRootLabel: '/installed/new' },
+      attemptId: null, attemptOwner: null, disposition: 'deferred',
+      blockers: [{ owner: 'jobs', reason: 'job-1 is still running' }],
+      retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy idle exit' },
+      attemptDeadline: null, completionReceipt: null,
+    });
+    expect(written.kind).toBe('written');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(runtime.paths.coral.store.dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+    const rendered = formatStoreResetList(listStoreResetIncidentsLocal('gen2', dependencies), 'gen2');
+    expect(rendered).toContain('Pending upgrade:');
+    expect(rendered).toContain('Target:');
+    expect(rendered).toContain('job-1 is still running');
+    expect(rendered).toContain('normally at least 6 hours');
+    expect(rendered).not.toContain('store-reset release');
+  });
+
+  it('shows an unreadable upgrade intent as a hold', () => {
+    const runtime = harness();
+    mkdirSync(runtime.paths.coral.coordinator.runDir, { recursive: true });
+    writeFileSync(join(runtime.paths.coral.coordinator.runDir, 'upgrade.v1.json'), '{invalid');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(runtime.paths.coral.store.dbDir, 'store-reset-quarantine'),
+      runtime: () => runtime,
+    };
+    const rendered = formatStoreResetList(listStoreResetIncidentsLocal('gen2', dependencies), 'gen2');
+    expect(rendered).toContain('Upgrade intent record is corrupt');
+    expect(rendered).toContain('Automatic succession is held');
   });
 
   it('reports current, preserved, garbage, and malformed epochs without opening SQLite', async () => {

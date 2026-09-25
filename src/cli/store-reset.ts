@@ -2,6 +2,14 @@ import type { BuildFlavor } from '../infra/build-flavor.js';
 import { resolveStrictBundleIdentity, type StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { createStoreResetInspectionFs } from '../infra/store-reset-inspection-fs.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { JobLocationIndex } from '../jobs/location-index.js';
+import {
+  readUpgradeIntent,
+  upgradeIntentProblem,
+  visibleUpgradeIntent,
+  type UpgradeIntentProblem,
+  type UpgradeIntentVisibility,
+} from '../infra/upgrade-intent.js';
 import { CoralSetupError } from '../runtime/errors.js';
 import {
   discardStoreReset,
@@ -23,6 +31,7 @@ import {
   listStoreEpochHolders,
   listStoreEpochResidues,
   listStoreEpochs,
+  encodeResolvedStoreEpoch,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
   type StoreEpochResidueListEntry,
@@ -40,7 +49,9 @@ export interface StoreResetCliDependencies {
 }
 
 export type StoreResetListResult = Readonly<{
-  epochs: readonly StoreEpochListEntry[];
+  epochs: readonly (StoreEpochListEntry & { resultRetention?: 'retained' | 'held' | 'unreadable' | 'unobservable' })[];
+  upgrade?: UpgradeIntentVisibility;
+  upgradeProblem?: UpgradeIntentProblem;
   holders: readonly StoreEpochHolderListEntry[];
   residues: readonly StoreEpochResidueListEntry[];
   legacyIncidents: readonly LegacyStoreResetIncidentListEntry[];
@@ -149,8 +160,22 @@ export function listStoreResetIncidentsLocal(
       expectedBuild: manifest,
     });
     const runtime = dependencies.runtime?.(manifest) ?? createRealRuntime(manifest.flavor);
+    const index = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+    const upgradeRead = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    const upgrade = upgradeRead.kind === 'readable' ? visibleUpgradeIntent(upgradeRead.intent) : null;
+    const upgradeProblem = upgradeIntentProblem(upgradeRead);
     return {
-      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime),
+      epochs: target === 'legacy' ? [] : listStoreEpochs(runtime).map((epoch) => {
+        if (epoch.resolved === null) return { ...epoch, resultRetention: 'unobservable' as const };
+        try {
+          return { ...epoch, resultRetention: index.resultsReleased(encodeResolvedStoreEpoch(epoch.resolved))
+            ? 'retained' as const : 'held' as const };
+        } catch {
+          return { ...epoch, resultRetention: 'unreadable' as const };
+        }
+      }),
+      ...(upgrade === null ? {} : { upgrade }),
+      ...(upgradeProblem === null ? {} : { upgradeProblem }),
       holders: target === 'legacy' ? [] : listStoreEpochHolders(runtime),
       residues: target === 'legacy' ? [] : listStoreEpochResidues(runtime),
       legacyIncidents: legacy.incidents,

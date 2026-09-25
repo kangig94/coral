@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,6 +13,7 @@ import {
   resolvedStoreEpoch,
   settleStoreEpoch,
 } from '#src/store/epoch.js';
+import { protectStoreEpoch } from '#src/store/epoch-protection.js';
 import {
   openCommittedBackendStoreAtStartup,
   prepareCommittedBackendStoreAtStartup,
@@ -112,7 +113,7 @@ describe('committed epoch open', () => {
     initial.db.close();
     const epochKey = encodeResolvedStoreEpoch(initial.store);
     const prepared = prepareCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, epochKey);
-    expect(prepared).toEqual({ kind: 'prepared', store: initial.store });
+    expect(prepared).toMatchObject({ kind: 'prepared', store: { path: initial.store.path } });
     if (prepared.kind !== 'prepared') return;
 
     writeFileSync(initial.store.path, '');
@@ -143,7 +144,7 @@ describe('committed epoch open', () => {
       { storeFormat: format, build },
       encodeResolvedStoreEpoch(initial.store),
     );
-    expect(prepared).toEqual({ kind: 'prepared', store: initial.store });
+    expect(prepared).toMatchObject({ kind: 'prepared', store: { path: initial.store.path } });
     if (prepared.kind !== 'prepared') return;
     const opened = openCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, prepared.store);
     expect(opened.kind).toBe('opened');
@@ -152,5 +153,27 @@ describe('committed epoch open', () => {
       opened.db.close();
     }
     expect(listStoreEpochs(runtime).map(({ epoch }) => epoch).sort()).toEqual(['1', '2']);
+  });
+
+  it('prepares and opens the mapped protected epoch without restoring its legacy address', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-protected-committed-open-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const initial = settleStoreEpoch(runtime, { storeFormat: format, build });
+    initial.db.close();
+    const epochKey = encodeResolvedStoreEpoch(initial.store);
+    const protectedAddress = protectStoreEpoch(initial.store);
+
+    const prepared = prepareCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, epochKey);
+    expect(prepared).toMatchObject({ kind: 'prepared', store: {
+      path: join(protectedAddress.protectedPath, 'store.db'), canonicalStoreRoot: initial.store.storeRoot,
+      lineageKey: protectedAddress.epochKey,
+    } });
+    if (prepared.kind !== 'prepared') return;
+    expect(existsSync(initial.store.path)).toBe(false);
+    const opened = openCommittedBackendStoreAtStartup(runtime, { storeFormat: format, build }, prepared.store);
+    expect(opened.kind).toBe('opened');
+    if (opened.kind === 'opened') opened.db.close();
+    expect(existsSync(initial.store.path)).toBe(false);
   });
 });

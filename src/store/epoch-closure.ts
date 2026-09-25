@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
+import { writeAuditEvent } from '../infra/audit-log.js';
 import { readCustodyLedgerId } from './custody-ledger.js';
 
 const obligationSchema = z.object({
@@ -89,6 +90,17 @@ export function recordEpochClosure(stateRoot: string, input: EpochClosureEvidenc
   renameSync(stage, path);
   const parentFd = openSync(parent, 'r');
   try { fsyncSync(parentFd); } finally { closeSync(parentFd); }
+  if (existing === null || existing.disposition !== evidence.disposition ||
+      existing.executionDischarge !== evidence.executionDischarge || existing.dataOutcome !== evidence.dataOutcome ||
+      existing.reason !== evidence.reason || JSON.stringify(existing.obligations) !== JSON.stringify(evidence.obligations)) {
+    writeAuditEvent('epoch_closure_status_changed', {
+      epochKey: evidence.epochKey,
+      previous: existing?.disposition ?? 'pending',
+      disposition: evidence.disposition,
+      custody: evidence.executionDischarge,
+      resultRetention: evidence.dataOutcome,
+    });
+  }
   return evidence;
 }
 

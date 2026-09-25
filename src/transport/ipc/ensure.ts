@@ -729,17 +729,16 @@ function endedStartupMessage(
   reading: CoordinatorHealthReading,
   info: VerifiedBackendInfo | null,
 ): string {
-  const inspect = 'Run `coral-cli backend status` to inspect the recorded startup outcome.';
   if (terminal.kind === 'never-started') {
-    return `The Coral coordinator process could not be started (${terminal.reason}). ${inspect}`;
+    return `The Coral coordinator process could not be started (${terminal.reason}). Its startup outcome is recorded for inspection.`;
   }
   switch (reading.kind) {
     case 'answered':
-      return `The spawned Coral coordinator stopped, and the coordinator holding this address is draining. ${inspect}`;
+      return 'The spawned Coral coordinator stopped, and the coordinator holding this address is draining.';
     case 'unusable':
       return (
         'The spawned Coral coordinator stopped, and this address answered something this Coral build cannot read ' +
-        `as coordinator health. ${inspect}`
+        'as coordinator health.'
       );
     case 'unanswered': {
       const pid = verifiedUnresponsivePid(info);

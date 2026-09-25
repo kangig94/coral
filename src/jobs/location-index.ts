@@ -231,14 +231,18 @@ export class JobLocationIndex {
     return optionalJson(this.epochPath(epochKey, 'unknown-locations.v1.json'), unknownHoldSchema)?.reason ?? null;
   }
 
-  locationsFor(epochKey: string): JobLocation[] {
+  locations(): JobLocation[] {
     const dir = join(this.root, 'jobs');
     if (!existsSync(dir)) return [];
     return readdirSync(dir)
       .filter((name) => name.endsWith('.json'))
       .map((name) => optionalJson(join(dir, name), locationSchema))
-      .filter((value): value is z.infer<typeof locationSchema> => value !== null && value.epochKey === epochKey)
+      .filter((value): value is z.infer<typeof locationSchema> => value !== null)
       .map((value) => value as JobLocation);
+  }
+
+  locationsFor(epochKey: string): JobLocation[] {
+    return this.locations().filter((location) => location.epochKey === epochKey);
   }
 
   certify(epochKey: string, terminalHighWaterSeq: number): JobLocationCertificate | null {

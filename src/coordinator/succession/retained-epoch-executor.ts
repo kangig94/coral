@@ -9,11 +9,18 @@ import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import { createRealRuntime } from '../../runtime/real.js';
 import type { Runtime } from '../../runtime/ports.js';
-import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch } from '../../store/epoch.js';
-import { resolveProtectedEpoch } from '../../store/epoch-protection.js';
+import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, observeResolvedStoreEpoch } from '../../store/epoch.js';
+import { readEpochKey } from '../../store/epoch-key.js';
 import { openReadOnlyStoreDatabase } from '../../store/read-port.js';
 import { currentCoralStoreFormat } from '../../store-format.js';
-import { latestControllerOpen } from './controller-open.js';
+import { latestControllerOpen, type ControllerOpen } from './controller-open.js';
+
+function retainedEpochOpenProof(epochKey: string, opened: ControllerOpen): string {
+  return `${JSON.stringify({
+    kind: 'retained-epoch-open', version: 'v1', epochKey, instanceId: opened.instanceId,
+    buildSetId: opened.build.buildSetId, bundleHash: opened.build.bundleHash,
+  })}\n`;
+}
 
 export function runRetainedEpochRecovery(epochKey: string): number {
   const identity = resolveStrictBundleIdentity();
@@ -43,16 +50,16 @@ export function probeRetainedEpochOpen(epochKey: string, instanceId?: string): n
   if (!identity.ok || identity.manifest.storeFormatFingerprint !== currentCoralStoreFormat().fingerprint) return 70;
   const runtime = createRealRuntime(identity.manifest.flavor);
   const opened = latestControllerOpen(runtime, epochKey, instanceId);
-  const epoch = decodeResolvedStoreEpoch(epochKey);
+  const epoch = observeResolvedStoreEpoch(epochKey);
   if (opened === null || epoch === undefined || opened.build.buildSetId !== identity.manifest.buildSetId) return 71;
   try {
-    const addressed = epoch.lineageKey === undefined ? epoch :
-      resolveProtectedEpoch(epoch.canonicalStoreRoot ?? epoch.storeRoot, epoch.lineageKey) ?? epoch;
+    if (epoch.lineageKey === undefined || readEpochKey(epoch) !== epoch.lineageKey) return 72;
     const db = openReadOnlyStoreDatabase(runtime, {
       storeFormat: currentCoralStoreFormat(),
-      resolved: { path: addressed.path, epoch: addressed, epochCandidate: true },
+      resolved: { path: epoch.path, epoch, epochCandidate: true },
     });
     db.close();
+    process.stdout.write(retainedEpochOpenProof(epochKey, opened));
     return 0;
   } catch { return 72; }
 }
@@ -64,15 +71,14 @@ export function controllerRecoveryTarget(
 ): ValidatedHandoffTarget | null {
   const opened = latestControllerOpen(runtime, epochKey, instanceId);
   if (opened === null) return null;
-  for (const root of new Set([opened.pluginRoot, retainedBuildRoot(runtime, opened.build.buildSetId)])) {
-    const validated = createForeignTargetValidator()(join(root, 'bridge'), opened.build);
-    if (validated.kind !== 'validated') continue;
-    const probe = spawnSync(process.execPath, [join(root, 'bridge', 'coral-backend.cjs'),
-      '--probe-retained-epoch', epochKey, opened.instanceId],
-    { timeout: 20_000, env: process.env, stdio: 'ignore' });
-    if (probe.status === 0) return validated.target;
-  }
-  return null;
+  const root = retainedBuildRoot(runtime, opened.build.buildSetId);
+  const validated = createForeignTargetValidator()(join(root, 'bridge'), opened.build);
+  if (validated.kind !== 'validated') return null;
+  const probe = spawnSync(process.execPath, [join(root, 'bridge', 'coral-backend.cjs'),
+    '--probe-retained-epoch', epochKey, opened.instanceId],
+  { timeout: 20_000, env: process.env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+  return probe.status === 0 && probe.stdout === retainedEpochOpenProof(epochKey, opened)
+    ? validated.target : null;
 }
 
 export function settleWithRetainedExecutor(runtime: Runtime, epochKey: string): boolean {

@@ -1,12 +1,14 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { backendLog } from '#src/infra/backend-log.js';
 
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
   revalidateUpgradeIntentTarget,
+  visibleUpgradeIntent,
   type UpgradeIntentChange,
 } from '#src/infra/upgrade-intent.js';
 import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
@@ -55,6 +57,7 @@ describe('upgrade intent', () => {
 
   afterEach(() => {
     for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
   });
 
   it('allows exactly one writer from a revision and retains the losing request on retry', async () => {
@@ -76,6 +79,44 @@ describe('upgrade intent', () => {
     if (latest.kind !== 'readable') throw new Error('intent not readable');
     const retried = await compareAndSwapUpgradeIntent(dir, latest.intent.revision, loser);
     expect(retried).toMatchObject({ kind: 'written', intent: { requestId: loser.requestId, revision: 2 } });
+  });
+
+  it('keeps the request start time across status changes and exposes the automatic retry condition', async () => {
+    const dir = runDir();
+    const initial = await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+    if (initial.kind !== 'written') throw new Error('intent not written');
+    const deferred = await compareAndSwapUpgradeIntent(dir, initial.intent.revision, {
+      ...pendingIntent('first'),
+      disposition: 'deferred',
+      blockers: [{ owner: 'legacy-incumbent', reason: 'incumbent still serving' }],
+      retryCondition: { kind: 'incumbent-retirement', evidence: 'legacy idle exit' },
+    });
+    if (deferred.kind !== 'written') throw new Error('deferred intent not written');
+    expect(deferred.intent.requestedAt).toBe(initial.intent.requestedAt);
+    expect(visibleUpgradeIntent(deferred.intent)).toMatchObject({
+      disposition: 'deferred',
+      since: initial.intent.requestedAt,
+      reason: 'legacy idle exit',
+      blockers: [{ owner: 'legacy-incumbent', reason: 'incumbent still serving' }],
+      retryCondition: { kind: 'incumbent-retirement' },
+    });
+    expect(visibleUpgradeIntent({ ...deferred.intent, disposition: 'pending', successionPreparation: { stage: 'prepared' } })?.phase).toBe('prepared');
+  });
+
+  it('emits one audit event for each visible status change', async () => {
+    const events: string[] = [];
+    vi.spyOn(backendLog, 'info').mockImplementation((message) => {
+      if (message.includes('upgrade_intent_status_changed')) events.push(message);
+    });
+    const dir = runDir();
+    const initial = await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+    if (initial.kind !== 'written') throw new Error('intent not written');
+    const unchanged = await compareAndSwapUpgradeIntent(dir, initial.intent.revision, pendingIntent('first'));
+    if (unchanged.kind !== 'written') throw new Error('intent not rewritten');
+    await compareAndSwapUpgradeIntent(dir, unchanged.intent.revision, {
+      ...pendingIntent('first'), disposition: 'deferred', blockers: [{ owner: 'jobs', reason: 'job-1' }],
+    });
+    expect(events).toHaveLength(2);
   });
 
   it('preserves unknown keys at every object level and refuses unknown generations', async () => {

@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { build, type PluginBuild } from 'esbuild';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,11 +18,12 @@ import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
 import { readDurableCliControllerReceipts } from '#src/coordinator/succession/durable-cli-transfer.js';
 import { readDurableCliProcessRuntimeEvidence } from '#src/jobs/runtime-meta-store.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
+import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { readCustodyLedger } from '#src/store/custody-ledger.js';
 import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch.js';
-import { resolveProtectedEpoch } from '#src/store/epoch-protection.js';
+import { protectStoreEpoch, protectedStoreEpochRoot, resolveProtectedEpoch } from '#src/store/epoch-protection.js';
 import { readEpochClosure } from '#src/store/epoch-closure.js';
 import { observeSuccessionServing, observeSuccessionWriterGeneration } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
@@ -273,47 +274,150 @@ describe('real-process durable-cli succession', () => {
     expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(jobId)).not.toBeNull();
   }, 180_000);
 
-  it('hands a live old-format job back to its proven controller before minting', async () => {
+  it.each(['canonical', 'protected-published', 'protected-unpublished'] as const)(
+    'hands a live old-format job back to its proven controller before minting (%s)',
+    async (address) => {
+      assertBuildArtifactsAvailable();
+      const home = mkdtempSync(join(tmpdir(), 'coral-schema-handback-home-'));
+      const projectRoot = mkdtempSync(join(tmpdir(), 'coral-schema-handback-work-'));
+      roots.push(home, projectRoot);
+      mkdirSync(join(home, '.claude'));
+      const prompt = join(projectRoot, 'prompt.txt');
+      writeFileSync(prompt, 'Keep working while the controller restarts.');
+      const oldFixture = await createDurableFixture('0.0.1');
+      const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
+      coordinators.push(old);
+      const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
+      const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
+      const jobState = join(projectRoot, '.durable-state', jobId);
+      await waitForCondition(() => existsSync(join(jobState, 'running')), 30_000);
+      const providerPid = Number(readFileSync(join(jobState, 'running'), 'utf8'));
+      providerChildren.push({ pid: providerPid, incarnation: probeProcessIncarnation(providerPid) });
+      const activeRuntime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+      const admitted = new JobLocationIndex(activeRuntime.paths.coral.generation.dataRoot).read(jobId);
+      const originalEpoch = resolveCurrentStore(activeRuntime).epoch;
+      if (originalEpoch === null) throw new Error('The old controller did not open an epoch.');
+      const originalKey = encodeResolvedStoreEpoch(originalEpoch);
+      expect(admitted?.epochKey).toBe(originalKey);
+      expect(admitted?.controller?.instanceId).toBe(incumbent.instanceId);
+      old.child.kill('SIGKILL');
+      await waitForProcessExit(old, 15_000);
+      let protectedPath: string | null = null;
+      if (address === 'protected-published') {
+        protectedPath = protectStoreEpoch(originalEpoch).protectedPath;
+      } else if (address === 'protected-unpublished') {
+        const lineageKey = decodeResolvedStoreEpoch(originalKey)!.lineageKey!;
+        const lineage = lineageKey.slice(0, lineageKey.lastIndexOf(':'));
+        protectedPath = join(protectedStoreEpochRoot(originalEpoch.storeRoot), lineage,
+          `epoch-${originalEpoch.epoch}`);
+        mkdirSync(dirname(protectedPath), { recursive: true });
+        renameSync(dirname(originalEpoch.path), protectedPath);
+      }
+
+      const newerFixture = await createDurableFixture('0.0.2',
+        'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);');
+      const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+      coordinators.push(contender);
+      expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
+      await waitForCondition(() => {
+        const discovery = readDiscoveryRecordForHome(home, 'prod');
+        return discovery?.version === '0.0.1' && discovery.pid !== incumbent.pid;
+      }, 30_000);
+      const recovered = readDiscoveryRecordForHome(home, 'prod');
+      if (recovered === null) throw new Error('Retained controller did not publish discovery.');
+      successors.push({ pid: recovered.pid, incarnation: probeProcessIncarnation(recovered.pid) });
+      const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+      const oldBuild = JSON.parse(readFileSync(join(oldFixture.root, 'bridge',
+        CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')) as { buildSetId: string };
+      expect(recovered.namespace).toBe(pluginRootNamespace(retainedBuildRoot(runtime, oldBuild.buildSetId)));
+      if (protectedPath === null) {
+        expect(resolveCurrentStore(runtime).epoch?.epoch).toBe('1');
+      } else {
+        expect(existsSync(protectedPath)).toBe(true);
+        const lineageKey = decodeResolvedStoreEpoch(originalKey)!.lineageKey!;
+        expect(existsSync(join(protectedStoreEpochRoot(originalEpoch.storeRoot), 'addresses',
+          `${Buffer.from(lineageKey).toString('base64url')}.json`))).toBe(true);
+        expect(resolveProtectedEpoch(runtime.paths.coral.store.dbDir,
+          lineageKey)?.path).toBe(
+          join(protectedPath, 'store.db'),
+        );
+      }
+      expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(jobId)?.epochKey).toBe(originalKey);
+    }, 180_000);
+
+  it('uses the job receipt after a later controller reopens the minting build\'s epoch', async () => {
     assertBuildArtifactsAvailable();
-    const home = mkdtempSync(join(tmpdir(), 'coral-schema-handback-home-'));
-    const projectRoot = mkdtempSync(join(tmpdir(), 'coral-schema-handback-work-'));
+    const home = mkdtempSync(join(tmpdir(), 'coral-controller-reopen-home-'));
+    const projectRoot = mkdtempSync(join(tmpdir(), 'coral-controller-reopen-work-'));
     roots.push(home, projectRoot);
     mkdirSync(join(home, '.claude'));
     const prompt = join(projectRoot, 'prompt.txt');
-    writeFileSync(prompt, 'Keep working while the controller restarts.');
-    const oldFixture = await createDurableFixture('0.0.1');
-    const old = spawnCoordinator({ fixture: oldFixture, home, tempRoots: roots });
-    coordinators.push(old);
-    const incumbent = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const jobId = launchedJobId(await runCli(oldFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']));
-    const jobState = join(projectRoot, '.durable-state', jobId);
-    await waitForCondition(() => existsSync(join(jobState, 'running')), 30_000);
-    const providerPid = Number(readFileSync(join(jobState, 'running'), 'utf8'));
+    writeFileSync(prompt, 'Keep the durable job live across two controller crashes.');
+    const mintingFixture = await createDurableFixture('0.0.1');
+    const minting = spawnCoordinator({ fixture: mintingFixture, home, tempRoots: roots,
+      env: { CORAL_MAX_WORKERS: '2' } });
+    coordinators.push(minting);
+    const first = await waitForDiscoveryRecord(home, 'prod', 15_000);
+    const jobId = launchedJobId(await runCli(mintingFixture, home, projectRoot,
+      ['claude', '-i', prompt, '--detach']));
+    const running = join(projectRoot, '.durable-state', jobId, 'running');
+    await waitForCondition(() => existsSync(running), 30_000);
+    const providerPid = Number(readFileSync(running, 'utf8'));
     providerChildren.push({ pid: providerPid, incarnation: probeProcessIncarnation(providerPid) });
-    const activeRuntime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
-    const admitted = new JobLocationIndex(activeRuntime.paths.coral.generation.dataRoot).read(jobId);
-    expect(admitted?.epochKey).toBe(encodeResolvedStoreEpoch(resolveCurrentStore(activeRuntime).epoch!));
-    expect(admitted?.controller?.instanceId).toBe(incumbent.instanceId);
-    old.child.kill('SIGKILL');
-    await waitForProcessExit(old, 15_000);
+    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
+    const originalEpoch = resolveCurrentStore(runtime).epoch;
+    if (originalEpoch === null) throw new Error('Minting controller has no epoch.');
+    const originalKey = encodeResolvedStoreEpoch(originalEpoch);
 
-    const newerFixture = await createDurableFixture('0.0.2',
-      'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);');
-    const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    const reopeningFixture = await createDurableFixture('0.0.2');
+    const reopeningContender = spawnCoordinator({ fixture: reopeningFixture, home, tempRoots: roots });
+    coordinators.push(reopeningContender);
+    expect(await waitForProcessExit(reopeningContender, 30_000)).toMatchObject({ code: 0 });
+    await waitForCondition(() => {
+      const discovery = readDiscoveryRecordForHome(home, 'prod');
+      return discovery?.version === '0.0.2' && discovery.pid !== first.pid;
+    }, 60_000);
+    const reopened = readDiscoveryRecordForHome(home, 'prod');
+    if (reopened === null) throw new Error('Reopening controller did not serve.');
+    successors.push({ pid: reopened.pid, incarnation: probeProcessIncarnation(reopened.pid) });
+    await waitForProcessExit(minting, 30_000);
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    await waitForCondition(() => readDurableCliControllerReceipts(runDir)?.some((receipt) =>
+      receipt.jobId === jobId && receipt.controllerInstanceId === reopened.instanceId) ?? false, 30_000);
+    expect(resolveCurrentStore(runtime).epoch?.epoch).toBe(originalEpoch.epoch);
+    expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(jobId)?.controller?.instanceId)
+      .toBe(first.instanceId);
+    const reopenedJobId = launchedJobId(await runCli(reopeningFixture, home, projectRoot,
+      ['claude', '-i', prompt, '--detach']));
+    const reopenedRunning = join(projectRoot, '.durable-state', reopenedJobId, 'running');
+    await waitForCondition(() => existsSync(reopenedRunning), 30_000);
+    const reopenedProviderPid = Number(readFileSync(reopenedRunning, 'utf8'));
+    providerChildren.push({ pid: reopenedProviderPid, incarnation: probeProcessIncarnation(reopenedProviderPid) });
+    expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(reopenedJobId)?.controller?.instanceId)
+      .toBe(reopened.instanceId);
+    const reopeningBuild = JSON.parse(readFileSync(join(reopeningFixture.root, 'bridge',
+      CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')) as { buildSetId: string };
+    expect(existsSync(retainedBuildRoot(runtime, reopeningBuild.buildSetId))).toBe(true);
+    process.kill(reopened.pid, 'SIGKILL');
+    await waitForCondition(() => observeProcessLiveness(reopened.pid) === 'absent', 15_000);
+    rmSync(reopeningFixture.root, { recursive: true, force: true });
+
+    const incompatibleFixture = await createDurableFixture('0.0.3',
+      'CREATE TABLE ac10_second_schema_generation (id INTEGER PRIMARY KEY);');
+    const contender = spawnCoordinator({ fixture: incompatibleFixture, home, tempRoots: roots });
     coordinators.push(contender);
     expect(await waitForProcessExit(contender, 30_000)).toMatchObject({ code: 0 });
     await waitForCondition(() => {
       const discovery = readDiscoveryRecordForHome(home, 'prod');
-      return discovery?.version === '0.0.1' && discovery.pid !== incumbent.pid;
-    }, 30_000);
+      return discovery?.version === '0.0.2' && discovery.pid !== reopened.pid;
+    }, 60_000);
     const recovered = readDiscoveryRecordForHome(home, 'prod');
-    if (recovered === null) throw new Error('Retained controller did not publish discovery.');
+    if (recovered === null) throw new Error('Receipt-selected retained controller did not serve.');
     successors.push({ pid: recovered.pid, incarnation: probeProcessIncarnation(recovered.pid) });
-    const runtime = createRealRuntime('prod', { baseDir: join(home, '.coral') });
-    expect(resolveCurrentStore(runtime).epoch?.epoch).toBe('1');
-    expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(jobId)?.epochKey).toBe(
-      encodeResolvedStoreEpoch(resolveCurrentStore(runtime).epoch!),
-    );
+    expect(recovered.namespace).toBe(pluginRootNamespace(retainedBuildRoot(runtime, reopeningBuild.buildSetId)));
+    expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(jobId)?.epochKey).toBe(originalKey);
+    expect(new JobLocationIndex(runtime.paths.coral.generation.dataRoot).read(reopenedJobId)?.epochKey).toBe(originalKey);
+    expect(resolveCurrentStore(runtime).epoch?.epoch).toBe(originalEpoch.epoch);
   }, 180_000);
 
   it('indexes an old-format terminal before a no-incumbent mint', async () => {
@@ -408,7 +512,7 @@ describe('real-process durable-cli succession', () => {
       .toBe('unrecoverable-retained');
   }, 180_000);
 
-  it('serves a new format while a known live old job has no validating controller root', async () => {
+  it.each([false, true])('serves a new format with no retained root (installed=%s)', async (keepInstalledRoot) => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-schema-live-unopenable-home-'));
     const projectRoot = mkdtempSync(join(tmpdir(), 'coral-schema-live-unopenable-work-'));
@@ -435,7 +539,7 @@ describe('real-process durable-cli succession', () => {
     const oldBuild = JSON.parse(readFileSync(join(oldFixture.root, 'bridge',
       CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8')) as { buildSetId: string };
     rmSync(retainedBuildRoot(runtime, oldBuild.buildSetId), { recursive: true, force: true });
-    rmSync(oldFixture.root, { recursive: true, force: true });
+    if (!keepInstalledRoot) rmSync(oldFixture.root, { recursive: true, force: true });
 
     const newerFixture = await createDurableFixture('0.0.2',
       'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);');

@@ -2280,7 +2280,7 @@ describe('ipc ensure', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe(
-      `The Coral coordinator process could not be started (${spawnFailure}). Run \`coral-cli backend status\` to inspect the recorded startup outcome.`,
+      `The Coral coordinator process could not be started (${spawnFailure}). Its startup outcome is recorded for inspection.`,
     );
   });
 

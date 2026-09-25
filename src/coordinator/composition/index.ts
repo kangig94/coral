@@ -144,7 +144,7 @@ import {
   type SuccessionWriterEntitlement,
   type SuccessionWriterGeneration,
 } from '../../store/succession-writer-generation.js';
-import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '../../infra/upgrade-intent.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent, upgradeIntentProblem, visibleUpgradeIntent, type UpgradeIntent } from '../../infra/upgrade-intent.js';
 import { probeProcessIncarnation } from '../../infra/node-process.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt, type SuccessionAttempt, type AttemptAcknowledgment } from '../succession/attempt-child.js';
 import type { SuccessionPreparation } from '../succession/protocol.js';
@@ -2379,6 +2379,9 @@ export function createCoordinatorCore(
         const storeServices = storeServicesRef.tryGet();
         const lifecycleState = runtimeState.getLifecycle();
         const shutdownObservation = lifecycleController?.observeShutdown();
+        const upgrade = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+        const succession = upgrade.kind === 'readable' ? visibleUpgradeIntent(upgrade.intent) : null;
+        const successionProblem = upgradeIntentProblem(upgrade);
         // Coarse `status` field for clients that validate the strict
         // `'starting' | 'ok' | 'draining'` enum. Consumers that need the full
         // lifecycle read `kernel.phase`.
@@ -2535,6 +2538,8 @@ export function createCoordinatorCore(
 
         return {
           status: coarseStatus,
+          ...(succession === null ? {} : { succession }),
+          ...(successionProblem === null ? {} : { successionProblem }),
           kernel: {
             phase: lifecycleState,
             readyAt: lifecycleState === 'starting' ? null : runtimeState.getStartedAt(),

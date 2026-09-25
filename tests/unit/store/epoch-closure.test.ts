@@ -3,7 +3,8 @@ import { once } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { backendLog } from '#src/infra/backend-log.js';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { formatStoreResetList } from '#src/cli/format/store-reset.js';
@@ -58,9 +59,28 @@ function publish(runtime: Runtime, epoch: string, publishedAt = '2026-09-25T00:0
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  vi.restoreAllMocks();
 });
 
 describe('epoch closure and protected addressing', () => {
+  it('audits each closure or retention status change once', () => {
+    const runtime = harness();
+    const stateRoot = runtime.paths.coral.generation.dataRoot;
+    mkdirSync(stateRoot, { recursive: true });
+    const events: string[] = [];
+    vi.spyOn(backendLog, 'info').mockImplementation((message) => {
+      if (message.includes('epoch_closure_status_changed')) events.push(message);
+    });
+    const evidence = {
+      version: 'v1' as const, epochKey: 'lineage:1', disposition: 'unrecoverable-retained' as const,
+      dataOutcome: 'unknown' as const, executionDischarge: 'undecidable' as const,
+      obligations: [], reason: 'custody undecidable', observedAtMs: 1,
+    };
+    recordEpochClosure(stateRoot, evidence);
+    recordEpochClosure(stateRoot, { ...evidence, observedAtMs: 2 });
+    recordEpochClosure(stateRoot, { ...evidence, dataOutcome: 'retained' as const, observedAtMs: 3 });
+    expect(events).toHaveLength(2);
+  });
   it('does not publish a successor while an earlier epoch lacks a provable lock', () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;

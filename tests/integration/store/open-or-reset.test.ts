@@ -838,7 +838,7 @@ describe('write-once store epochs', () => {
     expect(replacement?.publicationReason.kind).toBe('newer-incompatible');
     expect(replacement?.supersededStoreVersion).toBe('0.0.1');
     expect(rendered).toContain(
-      'Epoch key | Epoch | Address | Role | Closure | Data outcome | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
+      'Epoch key | Epoch | Address | Role | Closure | Custody | Result retention | Data outcome | Next automatic action or hold | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
     );
     expect(rendered).toContain('2 | epoch-2 | current |');
     expect(rendered).toContain('| newer-incompatible | 0.0.1 |');

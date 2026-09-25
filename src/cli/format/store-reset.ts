@@ -3,6 +3,7 @@ import type { StoreResetReleasePresentation } from '../../store/operator-store-r
 import type { StoreEpochMetadataDisposition } from '../../store/epoch.js';
 import type { StoreResetListResult, StoreResetReportResult } from '../store-reset.js';
 import { assertNever } from '../../infra/error-format.js';
+import { formatPendingUpgrade, formatUpgradeRecordProblem } from './backend.js';
 
 export function constrainStoreResetRendererInput<Value>(value: Value): Value {
   if (typeof value === 'string') {
@@ -137,17 +138,38 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     result.epochs.length === 0 &&
     result.holders.length === 0 &&
     result.residues.length === 0 &&
-    result.legacyIncidents.length === 0
+    result.legacyIncidents.length === 0 &&
+    result.upgrade === undefined &&
+    result.upgradeProblem === undefined
   ) {
     return [`No ${target} store epochs or legacy store-reset incidents.`, ...retentionInstruction(target)].join('\n');
   }
   return [
-    'Epoch key | Epoch | Address | Role | Closure | Data outcome | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
+    ...(result.upgrade === undefined ? [] : [formatPendingUpgrade(result.upgrade), '']),
+    ...(result.upgradeProblem === undefined ? [] : [formatUpgradeRecordProblem(result.upgradeProblem), '']),
+    'Epoch key | Epoch | Address | Role | Closure | Custody | Result retention | Data outcome | Next automatic action or hold | Bytes | Publication reason | Superseded store Coral version | Epoch metadata',
     ...result.epochs.map((epoch) => {
-      const address = epoch.role === 'protected'
+      const address = epoch.role === 'protected' || (epoch.role === 'unobservable' && epoch.epochKey != null)
         ? `<protected-store-root>/${epoch.epochKey?.split(':')[0] ?? 'unobservable'}/epoch-${epoch.epoch}`
         : `epoch-${epoch.epoch}`;
-      return `${epoch.epochKey ?? 'unobservable'} | ${epoch.epoch} | ${address} | ${epoch.role} | ${epoch.closureDisposition ?? 'pending'} | ${epoch.dataOutcome ?? 'unknown'} | ${epoch.bytes ?? 'unknown'} | ${epoch.publicationReason.kind} | ${epoch.supersededStoreVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`;
+      let next: string;
+      if (epoch.role === 'current') {
+        next = 'serving current epoch';
+      } else if (epoch.role === 'unobservable' && epoch.closureDisposition === 'closed' &&
+          epoch.resultRetention === 'retained') {
+        next = 'closed epoch address is absent; retained historical results remain addressable';
+      } else if (epoch.role === 'unobservable') {
+        next = 'hold: epoch address cannot be verified; retained for reconciliation';
+      } else if (epoch.closureDisposition === 'unrecoverable-retained') {
+        next = `hold: ${epoch.closureReason ?? 'custody cannot be certified; retained for investigation'}`;
+      } else if (epoch.closureDisposition !== 'closed') {
+        next = 'automatic custody reconciliation and closure retry; hold until certified';
+      } else if (epoch.resultRetention !== 'retained') {
+        next = 'automatic result-retention reconciliation; hold until historical results are retained';
+      } else {
+        next = 'retained until sweep eligibility, then automatic reclamation';
+      }
+      return `${epoch.epochKey ?? 'unobservable'} | ${epoch.epoch} | ${address} | ${epoch.role} | ${epoch.closureDisposition ?? 'pending'} | ${epoch.custodyState ?? 'unobserved'} | ${epoch.resultRetention ?? 'unknown'} | ${epoch.dataOutcome ?? 'unknown'} | ${next} | ${epoch.bytes ?? 'unknown'} | ${epoch.publicationReason.kind} | ${epoch.supersededStoreVersion ?? 'none'} | ${formatEpochMetadata(epoch.epochJson)}`;
     }),
     ...(result.holders.length === 0
       ? []

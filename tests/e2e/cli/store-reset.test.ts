@@ -430,7 +430,7 @@ describe('bundled store-reset CLI', () => {
     expect(list.status, list.stderr).toBe(0);
     expect(list.stderr).toBe('');
     expect(list.stdout).toContain(
-      'Epoch key | Epoch | Address | Role | Closure | Data outcome | Bytes | Publication reason | Superseded store Coral version | Epoch metadata\n',
+      'Epoch key | Epoch | Address | Role | Closure | Custody | Result retention | Data outcome | Next automatic action or hold | Bytes | Publication reason | Superseded store Coral version | Epoch metadata\n',
     );
     expect(list.stdout).toContain('Legacy incident ID | State | Reset at | Reason | Files | Bytes\n');
     expect(list.stdout).toContain(`${INCIDENT_ID} | ready | 2026-07-23T01:02:03.004Z | mismatch | 1 |`);

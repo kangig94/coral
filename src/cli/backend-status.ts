@@ -1,4 +1,12 @@
 import { observeCoordinator, type CoordinatorObservation } from '../transport/http/backend/coordinator-observation.js';
+import { dirname, join } from 'node:path';
+import {
+  readUpgradeIntent,
+  upgradeIntentProblem,
+  visibleUpgradeIntent,
+  type UpgradeIntentProblem,
+  type UpgradeIntentVisibility,
+} from '../infra/upgrade-intent.js';
 import { readBuildFlavor, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import { errorMessage, isSystemErrorCode, thrownErrnoCode, type SystemErrorCode } from '../infra/error-format.js';
@@ -306,6 +314,8 @@ type BackendStatus = {
   systemProviderScope?: BackendHealth['systemProviderScope'];
   diagnostics?: BackendHealth['diagnostics'];
   shutdown?: OperatorFacingLiveShutdown;
+  succession?: BackendHealth['succession'];
+  successionProblem?: BackendHealth['successionProblem'];
   skippedProviderProxySetRows: number;
   skippedProviderProxySetTokens: readonly string[];
 };
@@ -342,7 +352,7 @@ export type ShutdownRemainderReport =
       skippedEntries: readonly OperatorFacingShutdownSkippedEntry[];
     }>;
 
-export type BackendStatusFull =
+type BackendStatusFullBase =
   | { status: 'ok'; health: BackendStatus; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'unauthorized'; shutdownRemainder?: ShutdownRemainderReport }
   | { status: 'no_record_no_socket'; shutdownRemainder?: ShutdownRemainderReport }
@@ -404,6 +414,7 @@ export type BackendStatusFull =
    * be a stale leftover.
    */
   | { status: 'no_record_socket_present'; socketPath: string; shutdownRemainder?: ShutdownRemainderReport }
+  | { status: 'deferred_upgrade'; shutdownRemainder?: ShutdownRemainderReport }
   | {
       status: 'recent_failure';
       phase: PublicDiagnosticPhase;
@@ -416,6 +427,12 @@ export type BackendStatusFull =
       setupError?: OperatorFacingCoralSetupError;
       shutdownRemainder?: ShutdownRemainderReport;
     };
+
+export type BackendStatusFull = BackendStatusFullBase & {
+  upgrade?: UpgradeIntentVisibility;
+  upgradeProblem?: UpgradeIntentProblem;
+  legacyContenderDeferred?: boolean;
+};
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
 type AddressedAmbiguityStatus = Extract<BackendStatusFull, { status: 'unreachable' | 'unauthorized' }>;
@@ -611,7 +628,7 @@ export function statusFromStartupDiagnostic(
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt = Number.NEGATIVE_INFINITY,
   expectedPid?: number,
-): RecentFailureStatus | null {
+): RecentFailureStatus | Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
   if (
     !isRecord(value) ||
     value.schemaVersion !== 1 ||
@@ -640,6 +657,7 @@ export function statusFromStartupDiagnostic(
   }
 
   const error = value.error;
+  if (error.code === 'handoff_shutdown_capability_rejected') return { status: 'deferred_upgrade' };
   const setupError: OperatorFacingCoralSetupError | null =
     error.kind === 'coral_setup_error'
       ? readOperatorFacingCoralSetupError(
@@ -722,13 +740,28 @@ function readRecentFailureDiagnostic(
   provenSelfIdentity: () => SetupErrorAuthorIdentity | null,
   earliestRecordedAt?: number,
   expectedPid?: number,
-): RecentFailureStatus | null {
+): RecentFailureStatus | Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
   try {
     const value: unknown = JSON.parse(storage.readFileSync(diagnosticFile, 'utf-8'));
-    return statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
-  } catch {
-    return null;
-  }
+    const diagnostic = statusFromStartupDiagnostic(value, now, provenSelfIdentity, earliestRecordedAt, expectedPid);
+    if (diagnostic !== null) return diagnostic;
+  } catch {}
+  try {
+    const value: unknown = JSON.parse(storage.readFileSync(join(dirname(diagnosticFile), 'startup-error.json'), 'utf-8'));
+    return statusFromStartupSentinel(value, now);
+  } catch { return null; }
+}
+
+export function statusFromStartupSentinel(
+  value: unknown,
+  now: number,
+): Extract<BackendStatusFull, { status: 'deferred_upgrade' }> | null {
+  if (!isRecord(value) || value.version !== 1 || value.state !== 'stopped_with_diagnostic' ||
+      !isRecord(value.error) || value.error.kind !== 'coral_setup_error' ||
+      value.error.code !== 'handoff_shutdown_capability_rejected' ||
+      typeof value.recordedAt !== 'number' || value.recordedAt > now ||
+      now - value.recordedAt > RECENT_COORDINATOR_RECORD_MS) return null;
+  return { status: 'deferred_upgrade' };
 }
 
 function statusWithRecentCoordinatorEvidence(
@@ -770,8 +803,17 @@ function statusWithShutdownRemainder<Status extends BackendStatusFull>(
   scope: ShutdownRemainderEvidenceScope,
 ): Status {
   const shutdownRemainder = readRecentShutdownRemainder(storage, runDir, now, scope);
+  const intent = readUpgradeIntent(runDir);
+  const upgrade = intent.kind === 'readable' ? visibleUpgradeIntent(intent.intent) : null;
+  const upgradeProblem = upgradeIntentProblem(intent);
+  const legacyContenderDeferred = fallback.status === 'ok' &&
+    readRecentFailureDiagnostic(storage, join(runDir, 'startup-diagnostic.json'), now, () => null)?.status === 'deferred_upgrade';
   // A shutdown remainder must never replace the independently observed coordinator lifecycle status.
-  return shutdownRemainder === null ? fallback : Object.assign({}, fallback, { shutdownRemainder });
+  return Object.assign({}, fallback,
+    shutdownRemainder === null ? {} : { shutdownRemainder },
+    upgrade === null ? {} : { upgrade },
+    upgradeProblem === null ? {} : { upgradeProblem },
+    legacyContenderDeferred ? { legacyContenderDeferred: true } : {}) as Status;
 }
 
 type PingProbeObservation = Readonly<{
