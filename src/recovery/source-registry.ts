@@ -29,6 +29,7 @@ export const repeatableRecoveryBoundaryIds = [
   'workflow-recovery',
   'stale-job-cleanup',
   'crashed-job-terminalization',
+  'job-location-write-through',
   SETTLED_UNBOUND_STATUS_BOUNDARY,
   UNREADABLE_PROVIDER_OPERATION_BOUNDARY,
 ] as const;

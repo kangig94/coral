@@ -341,7 +341,7 @@ describe('succession protocol', () => {
     });
   });
 
-  it('blocks every undeclared owner without a capability file', async () => {
+  it('blocks preparation without a capability file', async () => {
     const target = fixture();
     unlinkSync(target.declarationPath);
     const service = createSuccessionCoordinator({
@@ -365,7 +365,7 @@ describe('succession protocol', () => {
     });
     expect(await service.reconciler.prepare('request')).toMatchObject({
       kind: 'deferred',
-      blockers: [{ owner: 'launch-admission', reason: 'target does not declare this owner contract' }],
+      blockers: [{ owner: 'protocol', reason: 'target cannot prepare succession' }],
     });
   });
 

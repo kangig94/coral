@@ -29,6 +29,7 @@ const coordinators: SpawnedCoordinator[] = [];
 const successorPids: { pid: number; incarnation: ProcessIncarnation | null }[] = [];
 const commitFailures: [string, Record<string, string>][] = [
   ['open failure', { CORAL_TEST_SUCCESSION_OPEN_FAILURE: '1' }],
+  ['fence failure', { CORAL_TEST_SUCCESSION_FENCE_FAILURE: '1' }],
   ['successor crash before serving', { CORAL_TEST_SUCCESSION_CRASH_BEFORE_SERVING: '1' }],
 ];
 
@@ -59,7 +60,11 @@ async function assertAddressClaimed(socketPath: string): Promise<void> {
 }
 
 describe('real-process succession commit', () => {
-  it.each([false, true])('hands an empty same-format epoch to the incumbent-launched successor with dropped serving ack=%s', async (dropServingAck) => {
+  it.each([
+    ['ordinary', {}],
+    ['dropped serving acknowledgment', { CORAL_TEST_SUCCESSION_DROP_SERVING_ACK: '1' }],
+    ['failed incumbent release', { CORAL_TEST_SUCCESSION_RELEASE_FAILURE: '1' }],
+  ] as const)('hands an empty same-format epoch to the incumbent-launched successor after %s', async (_case, env) => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-succession-commit-'));
     roots.push(home);
@@ -68,7 +73,7 @@ describe('real-process succession commit', () => {
       fixture: oldFixture,
       home,
       tempRoots: roots,
-      env: dropServingAck ? { CORAL_TEST_SUCCESSION_DROP_SERVING_ACK: '1' } : {},
+      env,
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);

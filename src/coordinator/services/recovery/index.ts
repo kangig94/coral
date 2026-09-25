@@ -32,7 +32,7 @@ import {
   createProviderOperationJobRecovery,
   type ProviderOperationRecoveryAcceptance,
 } from './provider-operation-job-recovery.js';
-import { createCoordinatorStartupRecovery } from './startup.js';
+import { createCoordinatorStartupRecovery, type RunCoordinatorStartupRecoveryFn } from './startup.js';
 import {
   createCoordinatorJobRecoveryRetryPolicy,
   createCoordinatorJobSettlementRefusalRecorderImplementation,
@@ -125,6 +125,7 @@ export function createCoordinatorJobRecoveryRetryPlan(
 }
 
 export interface RecoveryCoordinator {
+  runStartupRecovery: RunCoordinatorStartupRecoveryFn;
   retireAbsentSupersededProviderOperations(): SupersededProviderOperationRetirementSummary;
   snapshotProviderOperationStartupOwnership(): ProviderOperationStartupSnapshot;
   hydrateProviderOperationStartupOwnership(
@@ -288,6 +289,7 @@ export function createRecoveryCoordinator(
     registerCoordinatorStartupRecovery(bound, runStartupRecovery);
   }
   return {
+    runStartupRecovery,
     retireAbsentSupersededProviderOperations:
       providerOperationStartupOwnership.retireAbsentSupersededProviderOperations,
     snapshotProviderOperationStartupOwnership: providerOperationStartupOwnership.snapshot,

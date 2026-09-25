@@ -31,6 +31,7 @@ export interface AppendContext {
   now(): Date;
   reducers: ComposedReducers;
   bodyCodec: EventBodyCodec;
+  beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
   /**
    * Required. Production composes the port from `providers/catalog.ts`
    * (`providerLookupPortFromCatalog`). Tests that don't exercise provider
@@ -428,6 +429,7 @@ export function commitWithinOpenTransaction(
   const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
   const c: CommitContext<unknown> = {
     append(input) {
+      ctx.beforeAppend?.(input);
       const slot = collectedInputs.length;
       const token = makeCauseRefToken<unknown>(slot);
       collectedInputs.push(input);
@@ -449,6 +451,7 @@ export function commitUnreadableJobStatusRecovery(
     const collectedInputs: Array<ResolvableCoralEventInput<unknown, unknown>> = [];
     const commit: CommitContext<unknown> = {
       append(input) {
+        ctx.beforeAppend?.(input);
         const slot = collectedInputs.length;
         collectedInputs.push(input);
         return makeCauseRefToken(slot);

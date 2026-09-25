@@ -3,6 +3,7 @@ declare const __VERSION__: string;
 import { dirname } from 'node:path';
 import { readBuildFlavor, readBundleHash } from '../infra/bundle-manifest.js';
 import { errorMessage } from '../infra/error-format.js';
+import { backendLog } from '../infra/backend-log.js';
 import { nowDate } from '../infra/time.js';
 import { pluginRootNamespace } from '../infra/plugin-identity.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -22,6 +23,10 @@ import { persistCorpusState } from '../kb/state/corpus-state.js';
 import type { KbDaemonKbReadHealth } from './protocol.js';
 import type { AppendedEvent } from '../store/append.js';
 import { JobStore } from '../jobs/store.js';
+import { JobLocationIndex } from '../jobs/location-index.js';
+import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
+import { observeTerminalResultExports } from '../jobs/terminal/export.js';
+import { readOrCreateEpochKey } from '../store/epoch-key.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
@@ -401,11 +406,56 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       cleanupSourceImportRuntimeArtifacts(runtimeDir, guardedRuntime);
       const curateAssistant = options.curateAssistant ?? createUnavailableCurateAssistant();
       const abortRegistry = new AbortRegistry(runtime.ids);
+      const jobLocations = resolvedStore === null
+        ? null
+        : new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+      let observeTerminalExports: (appended: readonly AppendedEvent[]) => void = () => {};
       const progressStore = new JobStore(backendNamespace, guardedRuntime, createEventBodyCodec(), {
         db: activeDb as ConstructorParameters<typeof JobStore>[3]['db'],
         providers: noProviderLookupPort,
-        observer: (appended) => options.onJournalEvents?.(appended),
+        beforeAppend: jobLocations === null || resolvedStore === null
+          ? undefined
+          : (input) => {
+              if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)) return;
+              jobLocations.beforeAppend(input, readOrCreateEpochKey(resolvedStore));
+            },
+        observer: (appended) => {
+          observeTerminalExports(appended);
+          if (jobLocations !== null) {
+            for (const event of appended) {
+              if (event.stream.kind !== 'job' || event.type !== 'job.progress.emitted') continue;
+              try {
+                const detail = progressStore.loadJobProjectionDetail(event.stream.id);
+                if (detail.status === null) continue;
+                jobLocations.recordObserved(event.stream.id, {
+                  status: detail.status,
+                  events: progressStore.readJobEvents(event.stream.id),
+                  readiness: deriveLaunchReadiness(detail),
+                  exit: detail.exit,
+                });
+              } catch (error: unknown) {
+                backendLog.warn(`Writing job progress address failed for ${event.stream.id}: ${errorMessage(error)}`);
+              }
+            }
+          }
+          options.onJournalEvents?.(appended);
+        },
       });
+      if (jobLocations !== null) {
+        observeTerminalExports = observeTerminalResultExports(
+          (jobId) => progressStore.ensureResultArtifact(jobId),
+          (jobId, resultPath, seq) => {
+            const detail = progressStore.loadJobProjectionDetail(jobId);
+            if (detail.status === null) throw new Error(`Terminal has no job status: ${jobId}`);
+            jobLocations.recordTerminal(jobId, {
+              status: detail.status,
+              events: progressStore.readJobEvents(jobId),
+              readiness: deriveLaunchReadiness(detail),
+              exit: detail.exit,
+            }, resultPath, seq);
+          },
+        );
+      }
       let kbRef: KbRuntime | null = null;
       const kb = createKbRuntime({
         flavor: runtime.flavor,

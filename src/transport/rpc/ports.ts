@@ -1,7 +1,7 @@
 import type { DiscussDetailResponse, DiscussSummaryDto, DiscussView } from '../../discuss/read-contract.js';
 import type { ExpansionRequestPort } from '../../expansion/rpc-contract.js';
 import type { JobLaunchRequest, ProviderSessionLaunchDecision, WorkflowLaunchDecision } from '../../jobs/launch.js';
-import type { JobDetailResponse, JobStatus } from '../../jobs/records.js';
+import type { JobStatus } from '../../jobs/records.js';
 import type { WaitStreamEvent, WaitStreamRequest } from '../../jobs/wait.js';
 import type { InvocationContext } from '../../runtime/invocation-context.js';
 import type { Principal } from '../../security/principal.js';
@@ -26,6 +26,7 @@ import type {
 } from '../../recovery/unreadable-provider-operation.js';
 import type { JobScopeRelation, ScopeCheckResult } from '../../jobs/scope.js';
 import type { JobsListFilters } from '../../jobs/read-queries.js';
+import type { JobDetailLookup, WaitCursorError } from '../../jobs/addressing.js';
 
 type SessionStartInput = Pick<
   JobLaunchRequest,
@@ -52,9 +53,10 @@ interface SessionRequestPort {
 interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
+  validateWait?(req: WaitStreamRequest): WaitCursorError | null;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
-  detail(jobId: string): JobDetailResponse | null;
+  detail(jobId: string): JobDetailLookup;
 }
 
 interface WorkflowRequestPort {

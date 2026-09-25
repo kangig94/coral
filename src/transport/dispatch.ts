@@ -1,7 +1,7 @@
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
-import type { WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
@@ -1037,6 +1037,13 @@ async function executeJobsDetailCatalogRequest({
   if (!detail) {
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
   }
+  if ('kind' in detail && detail.kind === 'unresolved') {
+    return unary({
+      code: 'job_unresolved',
+      message: `Job ${parsed.jobId} remains addressable while its retained epoch is recovered.`,
+      detail: { epochKey: detail.epochKey },
+    }, 409);
+  }
   return unary(detail);
 }
 
@@ -1050,8 +1057,9 @@ async function executeJobsWaitCatalogRequest({
     jobIds: string[];
     projectRoot: string;
     timeoutSeconds?: number;
-    cursor?: { afterSeq: number };
+    cursor?: WaitCursor;
     supportsInterrupted?: boolean;
+    supportsWaitV2?: boolean;
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
@@ -1072,6 +1080,8 @@ async function executeJobsWaitCatalogRequest({
 
   const { supportsInterrupted, ...waitFields } = parsed;
   const waitRequest: WaitStreamRequest = waitFields;
+  const cursorError = rpcPorts.jobs.validateWait?.(waitRequest);
+  if (cursorError) return unary(cursorError, 400);
   return {
     kind: 'subscription',
     notifications: withInterruptedGate(

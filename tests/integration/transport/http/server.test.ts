@@ -4625,7 +4625,6 @@ describe('execution backend server', () => {
     expect(fakeService.waitStream).toHaveBeenCalledWith({
       jobIds: ['job-1', 'missing-job'],
       timeoutSeconds: 1,
-      cursor: { afterSeq: 0 },
       projectRoot: DEFAULT_PROJECT_ROOT,
     });
   });
@@ -4675,6 +4674,46 @@ describe('execution backend server', () => {
       },
       projectRoot: DEFAULT_PROJECT_ROOT,
     });
+  });
+
+  it('carries the full v2 cursor through Last-Event-ID and SSE event ids', async () => {
+    createdJobIds.add('job-1');
+    createdJobIds.add('job-2');
+    const cursor = {
+      version: 'jobs.wait.v2' as const,
+      locations: { 'job-1': 'lineage-a:7', 'job-2': 'lineage-b:8' },
+      positions: { 'lineage-a:7': 4, 'lineage-b:8': 5 },
+    };
+    const fakeService = createFakeExecutionService({
+      waitStream: vi.fn(async function* (): AsyncGenerator<WaitStreamEvent> {
+        yield {
+          type: 'progress', version: 'jobs.wait.v2', jobId: 'job-1', seq: 7,
+          message: 'working', timing: waitTiming, epochKey: 'lineage-a:7',
+          cursor: { ...cursor, positions: { 'lineage-a:7': 7, 'lineage-b:8': 5 } },
+        };
+      }),
+    });
+    const backend = await startBackendServer({ createExecutionService: () => fakeService as never });
+    const response = await fetch(`${backend.baseUrl}/jobs/wait`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Last-Event-ID': Buffer.from(JSON.stringify(cursor)).toString('base64url'),
+        'X-Coral-Backend-Token': backend.token,
+      },
+      body: JSON.stringify({
+        jobIds: ['job-1', 'job-2'], projectRoot: DEFAULT_PROJECT_ROOT,
+        timeoutSeconds: 1, supportsWaitV2: true,
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    const eventId = body.split('\n').find((line) => line.startsWith('id: '))?.slice(4);
+    expect(eventId).toBeTruthy();
+    expect(JSON.parse(Buffer.from(eventId!, 'base64url').toString('utf8'))).toEqual({
+      ...cursor, positions: { 'lineage-a:7': 7, 'lineage-b:8': 5 },
+    });
+    expect(fakeService.waitStream).toHaveBeenCalledWith(expect.objectContaining({ cursor }));
   });
 
   it('withholds interrupted wait events from a subscriber that never declared it can render them', async () => {

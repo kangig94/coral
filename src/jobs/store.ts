@@ -68,6 +68,7 @@ export type JobStoreOptions = {
    */
   providers: ProviderLookupPort;
   observer?: PostCommitObserver;
+  beforeAppend?: (input: ResolvableCoralEventInput<unknown, unknown>) => void;
 };
 
 export type RawJobRecoveryProjection = {
@@ -433,6 +434,7 @@ export class JobStore implements JobProgressStore {
       reducers,
       bodyCodec: this.bodyCodec,
       providers: options.providers,
+      beforeAppend: options.beforeAppend,
     };
     this.commitEvents = (cb) => commitJournalEvents(this.db, cb, appendContext);
     this.commitUnreadableStatusRecoveryEvents = (jobId, cb) =>

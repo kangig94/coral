@@ -168,24 +168,20 @@ export function ensureResultMarkdownArtifact(
   return targetPath;
 }
 
-/**
- * Renders the result export for every job terminal in a committed batch.
- *
- * Composed onto the post-commit observer the coordinator hands to each commit path, so a terminal owes
- * its export by virtue of being committed rather than by the committing site remembering to ask. A
- * failed render is reported and dropped: the terminal is already durable and the export is rebuildable,
- * so a storage failure may not fail the job.
- */
-export function observeTerminalResultExports(ensureResultArtifact: (jobId: string) => string): PostCommitObserver {
+export function observeTerminalResultExports(
+  ensureResultArtifact: (jobId: string) => string,
+  recordTerminal?: (jobId: string, resultPath: string, seq: number) => void,
+): PostCommitObserver {
   return (appended: readonly AppendedEvent[]): void => {
     for (const event of appended) {
       if (event.stream.kind !== 'job' || event.type !== 'job.terminal.recorded') {
         continue;
       }
       try {
-        ensureResultArtifact(event.stream.id);
+        const resultPath = ensureResultArtifact(event.stream.id);
+        recordTerminal?.(event.stream.id, resultPath, event.seq);
       } catch (error: unknown) {
-        backendLog.warn(`Writing terminal artifact failed for ${event.stream.id}: ${errorMessage(error)}`);
+        backendLog.warn(`Writing terminal export failed for ${event.stream.id}: ${errorMessage(error)}`);
       }
     }
   };

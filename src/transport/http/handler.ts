@@ -5,9 +5,11 @@ import { z, type ZodError } from 'zod';
 import {
   parseSerializedWaitCursor,
   serializeWaitCursor,
+  type WaitCursor,
   type WaitStreamEvent,
   type WaitStreamRequest,
 } from '../../jobs/wait.js';
+import { advanceWaitRenderCursor } from '../../jobs/wait-stream-event.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { isRecord } from '../../infra/json.js';
 import { isLoopbackRemoteAddress, normalizeRemoteAddressLiteral } from '../../infra/remote-address.js';
@@ -778,7 +780,7 @@ async function handleJobsWaitSubscription(
   req: IncomingMessage,
   res: ServerResponse,
   deps: HttpHandlerPorts,
-  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: { afterSeq: number } },
+  request: { jobIds: string[]; projectRoot: string; timeoutSeconds?: number; cursor?: WaitCursor; supportsWaitV2?: boolean },
 ): Promise<void> {
   if (rejectRestrictedRemoteTransportOption(req, res, deps, request)) {
     return;
@@ -798,12 +800,11 @@ async function handleJobsWaitSubscription(
     return;
   }
 
-  const inputCursor = headerCursor ?? { afterSeq: 0 };
-  const currentCursor = { afterSeq: inputCursor.afterSeq };
+  let currentCursor: WaitCursor = headerCursor ?? { afterSeq: 0 };
   const controller = new AbortController();
   const waitRequest: WaitStreamRequest = {
     ...request,
-    cursor: inputCursor,
+    ...(headerCursor === null ? {} : { cursor: headerCursor }),
   };
   const principal = authenticateCatalogPrincipal(req, deps);
   if (principal === null) {
@@ -858,7 +859,7 @@ async function handleJobsWaitSubscription(
 
       const event = next.value as WaitStreamEvent;
       if (event.type === 'progress') {
-        currentCursor.afterSeq = event.seq;
+        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
         if (!writeSseEvent(res, 'progress', event, serializeWaitCursor(currentCursor))) {
           break;
         }
@@ -866,7 +867,7 @@ async function handleJobsWaitSubscription(
       }
 
       if (event.type === 'terminal') {
-        currentCursor.afterSeq = event.seq;
+        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
         if (!writeSseEvent(res, 'terminal', event, serializeWaitCursor(currentCursor))) {
           break;
         }
@@ -874,8 +875,8 @@ async function handleJobsWaitSubscription(
       }
 
       if (event.type === 'queued') {
-        // No cursor update: queued events are synthetic and not Journal events.
-        if (!writeSseEvent(res, 'queued', event)) {
+        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
+        if (!writeSseEvent(res, 'queued', event, event.cursor && serializeWaitCursor(currentCursor))) {
           break;
         }
         continue;
@@ -885,13 +886,15 @@ async function handleJobsWaitSubscription(
         // Named on the wire, never folded into `waiting`: a client that cannot tell the two apart cannot
         // report what was observed. No cursor update either — a derived observation is not a Journal event
         // and carries no `seq`, so advancing here would let a reconnect resume past events never delivered.
-        if (!writeSseEvent(res, 'interrupted', event)) {
+        currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
+        if (!writeSseEvent(res, 'interrupted', event, event.cursor && serializeWaitCursor(currentCursor))) {
           break;
         }
         continue;
       }
 
-      if (!writeSseEvent(res, 'waiting', event)) {
+      currentCursor = advanceWaitRenderCursor(currentCursor, event).cursor;
+      if (!writeSseEvent(res, 'waiting', event, event.cursor && serializeWaitCursor(currentCursor))) {
         break;
       }
     }

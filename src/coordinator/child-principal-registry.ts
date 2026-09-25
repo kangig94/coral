@@ -1,10 +1,12 @@
 import { attenuate } from '../security/attenuate.js';
+import { z } from 'zod';
 import type { Capability } from '../security/capability.js';
 import type { Principal } from '../security/principal.js';
 import {
   canonicalizePrincipalWire,
   principalFromWire,
   principalToWire,
+  principalWireSchema,
   type PrincipalWire,
   type RawPrincipalWire,
 } from '../security/principal-wire.js';
@@ -85,6 +87,42 @@ export type ChildPrincipalTransfer = ChildPrincipalSnapshot & Readonly<{
   recoveryGrantId: string;
   authorityGeneration: number;
 }>;
+
+const childPrincipalTransferSchema = z.object({
+  entries: z.array(z.object({
+    handle: z.string().min(1),
+    issuer: z.string().min(1),
+    authorization: z.object({
+      principalWire: principalWireSchema,
+      namespace: z.string().min(1),
+      expiresAtMs: z.number().int().positive(),
+    }).strict(),
+    parentJobId: z.string().min(1),
+    parentSessionId: z.string().min(1),
+  }).strict()),
+  consumedNonceCheckpoint: z.number().int().nonnegative(),
+  recoveryGrantId: z.string().min(1),
+  authorityGeneration: z.number().int().positive(),
+}).strict();
+
+export function decodeChildPrincipalTransfer(payload: unknown): ChildPrincipalTransfer | null {
+  const parsed = childPrincipalTransferSchema.safeParse(payload);
+  if (!parsed.success) return null;
+  try {
+    return {
+      ...parsed.data,
+      entries: parsed.data.entries.map((entry) => ({
+        ...entry,
+        authorization: {
+          ...entry.authorization,
+          principalWire: canonicalizePrincipalWire(entry.authorization.principalWire),
+        },
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
 
 type ChildAuthMetadata = {
   readonly kind: 'child';
@@ -204,16 +242,40 @@ export class ChildPrincipalRegistry {
     return true;
   }
 
+  adoptRecoveredTransfer(
+    transfer: ChildPrincipalTransfer,
+    acceptedJobIds: ReadonlySet<string>,
+    attemptId: string,
+    generation: number,
+    nowMs: number,
+  ): boolean {
+    if (this.ledger === null) return false;
+    let current: number;
+    try { current = this.ledger.generation(); } catch { return false; }
+    if (generation <= current) return false;
+    const grant = this.ledger.prepareGrant(`${attemptId}:recovery:${generation}`, current);
+    if (grant === null) return false;
+    return this.adoptTransfer({
+      ...transfer,
+      authorityGeneration: current,
+      recoveryGrantId: grant.grantId,
+      consumedNonceCheckpoint: grant.checkpoint,
+    }, acceptedJobIds, generation, nowMs);
+  }
+
   fenceAuthentication(): void {
     this.fenced = true;
   }
 
-  reclaimAuthentication(generation: number): boolean {
+  reclaimAuthentication(generation?: number): boolean {
     if (this.ledger === null) return false;
+    let reclaimedGeneration: number;
     try {
       const current = this.ledger.generation();
-      if (current > generation ||
-        (current < generation && !this.ledger.advanceGeneration(current, generation))) return false;
+      const target = generation ?? current + 1;
+      if (current > target ||
+        (current < target && !this.ledger.advanceGeneration(current, target))) return false;
+      reclaimedGeneration = target;
     } catch {
       return false;
     }
@@ -226,11 +288,11 @@ export class ChildPrincipalRegistry {
       return false;
     }
     try {
-      if (this.ledger.generation() !== generation) return false;
+      if (this.ledger.generation() !== reclaimedGeneration) return false;
     } catch {
       return false;
     }
-    this.generation = generation;
+    this.generation = reclaimedGeneration;
     this.fenced = false;
     return true;
   }

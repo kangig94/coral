@@ -6,9 +6,15 @@ import { jobPhaseSchema } from './phase.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobTerminalSchema } from './terminal/result.js';
 import { usageSummarySchema } from '../providers/contract.js';
-import type { WaitCursor, WaitStreamEvent } from './wait.js';
+import { isWaitCursorV2, type WaitCursor, type WaitStreamEvent } from './wait.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'interrupted', 'waiting']);
+const waitCursorV2Schema = z.object({
+  version: z.literal('jobs.wait.v2'),
+  positions: z.record(z.string(), z.number().int().nonnegative()),
+  locations: z.record(z.string(), z.string().min(1)),
+  deliveredJobIds: z.array(z.string().min(1)).optional(),
+});
 
 export const MAX_WAIT_JOB_IDS = 128;
 
@@ -19,13 +25,39 @@ export type WaitRenderDecision = Readonly<{
 
 export function advanceWaitRenderCursor(cursor: WaitCursor, event: WaitStreamEvent): WaitRenderDecision {
   if (event.type === 'progress' || event.type === 'terminal') {
+    if (event.epochKey !== undefined && event.cursor !== undefined) {
+      const previous = isWaitCursorV2(cursor) ? (cursor.positions[event.epochKey] ?? 0) : 0;
+      if (event.type === 'terminal' && isWaitCursorV2(cursor) &&
+        cursor.deliveredJobIds?.includes(event.jobId)) return { cursor, shouldRender: false };
+      if (event.type === 'progress' && event.seq <= previous) return { cursor, shouldRender: false };
+      return {
+        cursor: {
+          version: 'jobs.wait.v2',
+          locations: { ...event.cursor.locations },
+          deliveredJobIds: [...new Set([
+            ...(isWaitCursorV2(cursor) ? (cursor.deliveredJobIds ?? []) : []),
+            ...(event.cursor.deliveredJobIds ?? []),
+          ])],
+          positions: Object.fromEntries(
+            Object.entries(event.cursor.positions).map(([key, seq]) => [
+              key,
+              Math.max(seq, isWaitCursorV2(cursor) ? (cursor.positions[key] ?? 0) : 0),
+            ]),
+          ),
+        },
+        shouldRender: true,
+      };
+    }
+    if (isWaitCursorV2(cursor)) {
+      return { cursor, shouldRender: true };
+    }
     if (event.seq <= cursor.afterSeq) {
       return { cursor, shouldRender: false };
     }
     return { cursor: { afterSeq: event.seq }, shouldRender: true };
   }
 
-  return { cursor, shouldRender: true };
+  return { cursor: 'cursor' in event && event.cursor ? event.cursor : cursor, shouldRender: true };
 }
 
 // Every variant below but `interrupted` is `.passthrough()`, not `.strict()`: a coordinator newer than
@@ -38,6 +70,9 @@ const waitProgressEventSchema = z
     seq: z.number().int().nonnegative(),
     message: z.string(),
     timing: jobProgressTimingSchema,
+    version: z.literal('jobs.wait.v2').optional(),
+    epochKey: z.string().min(1).optional(),
+    cursor: waitCursorV2Schema.optional(),
   })
   .passthrough();
 
@@ -47,6 +82,7 @@ const waitQueuedEventBaseSchema = z.object({
   queuePosition: z.number(),
   runningJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS),
   timing: jobProgressTimingSchema,
+  cursor: waitCursorV2Schema.optional(),
 });
 
 const waitQueuedProviderEventSchema = waitQueuedEventBaseSchema
@@ -78,8 +114,11 @@ const waitTerminalEventSchema = z
     remainingJobIds: z.array(z.string()).max(MAX_WAIT_JOB_IDS),
     resultPath: z.string(),
     result: jobTerminalSchema,
+    version: z.literal('jobs.wait.v2').optional(),
     continuity: continuitySnapshotSchema.nullable().optional(),
     usage: usageSummarySchema.optional(),
+    epochKey: z.string().min(1).optional(),
+    cursor: waitCursorV2Schema.optional(),
   })
   .passthrough();
 
@@ -98,6 +137,7 @@ const waitCarrierInterruptedEventSchema = z
     observation: z.object({ kind: z.literal('carrier_interrupted'), reason: z.literal('carrier_absent') }).strict(),
     continuity: z.literal('unavailable'),
     outcome: z.literal('unknown'),
+    cursor: waitCursorV2Schema.optional(),
   })
   .strict();
 
@@ -108,6 +148,7 @@ const waitWaitingEventSchema = z
     // Omitted rather than empty: a renderer distinguishes "no unknowns" from "this build does not report
     // unknowns" by the field's absence, and an always-present empty array erases that distinction.
     carrierUnknownJobIds: z.array(z.string().min(1)).max(MAX_WAIT_JOB_IDS).nonempty().optional(),
+    cursor: waitCursorV2Schema.optional(),
   })
   .passthrough();
 

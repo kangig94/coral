@@ -1,7 +1,8 @@
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import type { CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { TimePort } from '../infra/port-types.js';
-import type { WaitCursor, WaitStreamEvent } from '../jobs/wait.js';
+import { isWaitCursorV2, waitCursorForJobs, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
+import { advanceWaitRenderCursor } from '../jobs/wait-stream-event.js';
 import { phaseForOutcome } from '../jobs/outcome.js';
 import {
   buildStepDetailsForAtoms,
@@ -87,7 +88,13 @@ function waitTimeoutSeconds(staleTimeoutMs: number, staleCheckIntervalMs: number
 }
 
 function cloneCursor(cursor?: WaitCursor): WaitCursor {
-  return { afterSeq: cursor?.afterSeq ?? 0 };
+  if (cursor === undefined) return { afterSeq: 0 };
+  return isWaitCursorV2(cursor)
+    ? {
+        version: 'jobs.wait.v2', positions: { ...cursor.positions }, locations: { ...cursor.locations },
+        ...(cursor.deliveredJobIds === undefined ? {} : { deliveredJobIds: [...cursor.deliveredJobIds] }),
+      }
+    : { afterSeq: cursor.afterSeq };
 }
 
 function cloneMap<K, V>(value?: Map<K, V>): Map<K, V> {
@@ -155,7 +162,7 @@ function snapshotWaitState(state: AwaitStepState): WaitInternalState {
   return {
     atoms: [...state.pending.values()],
     completedOutputs: new Map(state.results),
-    cursor: cloneCursor(state.cursor),
+    cursor: cloneCursor(waitCursorForJobs(state.cursor, [...state.pending.keys()])),
     lastActivityAt: new Map(state.lastActivityAt),
     staleRetries: new Map(state.staleRetries),
     expectedStaleAborts: new Set(state.expectedStaleAborts),
@@ -212,7 +219,9 @@ function handleWaitEvent(
     }
 
     case 'progress': {
-      state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
+      const advanced = advanceWaitRenderCursor(state.cursor, event);
+      state.cursor = advanced.cursor;
+      if (!advanced.shouldRender) return 'handled';
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
       recordWaitActivity(state, atom, stripElapsedPrefix(event.message), options);
@@ -223,8 +232,11 @@ function handleWaitEvent(
       const atom = state.pending.get(event.jobId);
       if (!atom) return 'handled';
 
-      state.cursor.afterSeq = Math.max(state.cursor.afterSeq, event.seq);
+      const advanced = advanceWaitRenderCursor(state.cursor, event);
+      state.cursor = advanced.cursor;
+      if (!advanced.shouldRender) return 'handled';
       state.pending.delete(event.jobId);
+      state.cursor = waitCursorForJobs(state.cursor, [...state.pending.keys()]);
       state.observedIdleMs.delete(atom.atomKey);
 
       const outcomePhase = phaseForOutcome(event.result.outcome);
@@ -289,7 +301,7 @@ async function awaitWaitCycle(
   for await (const event of executionSvc.waitStream({
     jobIds: [...state.pending.keys()],
     timeoutSeconds,
-    cursor: state.cursor,
+    cursor: waitCursorForJobs(state.cursor, [...state.pending.keys()]),
   })) {
     advanceObservedWaitTime(state, options.time.monotonicNow(), observedCadenceMs);
     const eventOutcome = handleWaitEvent(event, state, executionSvc, options);

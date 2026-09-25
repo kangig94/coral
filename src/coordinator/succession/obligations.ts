@@ -96,10 +96,6 @@ export async function prepareOwnerObligations(
       continue;
     }
     seen.add(owner.id);
-    if (!capabilities.accepts.some((entry) => entry.owner === owner.id)) {
-      blockers.push({ owner: owner.id, reason: 'target does not declare this owner contract' });
-      continue;
-    }
     try {
       const disposition = await owner.classify(attemptId, capabilities);
       for (const jobId of new Set(disposition.jobIds ?? [])) {

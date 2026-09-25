@@ -255,7 +255,10 @@ writeFileSync(
     buildSetId,
     bundleHash: backendHash,
     protocols: ['prepare', 'commit'],
-    accepts: [],
+    accepts: [
+      { owner: 'durable-cli', generation: 1 },
+      { owner: 'child-principals', generation: 1 },
+    ],
   }) + '\n',
 );
 renameSync(`${successionCapabilitiesPath}.tmp`, successionCapabilitiesPath);

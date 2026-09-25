@@ -212,6 +212,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             // `interrupted` from anyone who does not say this, which is how an already-installed CLI — whose
             // wait switch has no arm for an unknown type — keeps working against a newer backend.
             supportsInterrupted: true,
+            supportsWaitV2: true,
             ...(cursor ? { cursor } : {}),
           },
           { signal },

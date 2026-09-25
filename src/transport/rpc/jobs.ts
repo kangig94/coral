@@ -29,6 +29,7 @@ export const jobWaitSchema = z
     // to render it. Never inferred from version or bundle identity: a client that predates the field and one
     // that sends `false` are indistinguishable to the coordinator, and both get the pre-`interrupted` stream.
     supportsInterrupted: z.boolean().optional(),
+    supportsWaitV2: z.boolean().optional(),
   })
   .strict();
 

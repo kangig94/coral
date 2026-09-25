@@ -28,17 +28,14 @@ describe('succession owner preparation', () => {
     });
   });
 
-  it('blocks owners missing from the target declaration without asking them to transfer', async () => {
+  it('allows a completed owner without declaring a transfer contract', async () => {
     const classify = vi.fn(async () => ({ kind: 'completed' as const, reason: 'settled' }));
     const owner: SuccessionOwner = { id: 'launch-admission', classify };
 
     const result = await prepareOwnerObligations([owner], 'attempt', { ...capabilities, accepts: [] }, [owner.id]);
 
-    expect(result).toEqual({
-      kind: 'blocking',
-      blockers: [{ owner: owner.id, reason: 'target does not declare this owner contract' }],
-    });
-    expect(classify).not.toHaveBeenCalled();
+    expect(result).toEqual({ kind: 'prepared', receipts: [] });
+    expect(classify).toHaveBeenCalledOnce();
   });
 
   it('requires a matching receipt and an attempt-scoped recovery grant', async () => {

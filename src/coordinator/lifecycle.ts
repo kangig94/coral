@@ -136,7 +136,7 @@ import {
   recordSuccessionServing,
   type SuccessionWriterGeneration,
 } from '../store/succession-writer-generation.js';
-import { readSuccessionCapabilities, successionPreparationSchema } from './succession/protocol.js';
+import { readSuccessionCapabilities, successionPreparationSchema, type SuccessionPreparation } from './succession/protocol.js';
 import {
   crashedJobTerminalizationSource,
   type RawCrashedJobRow,
@@ -862,6 +862,19 @@ export type LifecycleDeps = {
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: (exitCode: number) => void;
   readonly onSuccessionServing?: (attemptId: string) => Promise<void>;
+  readonly verifySuccessionReceipts?: (preparation: SuccessionPreparation, epoch: ResolvedStoreEpoch) => readonly string[];
+  readonly adoptSuccessionReceipts?: (
+    preparation: SuccessionPreparation,
+    acceptedJobIds: readonly string[],
+    generation: SuccessionWriterGeneration,
+    recovery: boolean,
+  ) => void;
+  readonly recordSuccessionControllerReceipts?: (
+    preparation: SuccessionPreparation,
+    epochKey: string,
+    generation: number,
+    recordedAt: string,
+  ) => void;
   readonly beforeShutdown?: (reason: ShutdownReason) => Promise<'continue' | 'succession-release'>;
   readonly acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
   readonly onFatalShutdownError: (error: unknown) => void;
@@ -1404,6 +1417,8 @@ async function runLifecycleStartup({
     let storeDb: Database;
     let openedStore: ResolvedStoreEpoch | null = null;
     let successionGeneration: SuccessionWriterGeneration | null = null;
+    let acceptedSuccessionPreparation: SuccessionPreparation | null = null;
+    let acceptedSuccessionJobs: readonly string[] = [];
     let recoveryGeneration: SuccessionWriterGeneration | null = null;
     let recoveryIncarnation: ProcessIncarnation | null = null;
     if (preinjectedStoreServices !== null) {
@@ -1442,16 +1457,34 @@ async function runLifecycleStartup({
         if (committed.kind === 'holding') throw new SuccessionAttemptStartupHoldError(committed.reason);
         storeDb = committed.db;
         openedStore = committed.store;
+        const preparation = successionPreparationSchema.safeParse(committedRecovery.intent.successionPreparation);
+        const completionReceipt = committedRecovery.intent.completionReceipt;
+        if (!preparation.success || completionReceipt === null ||
+            preparation.data.attemptId !== completionReceipt.attemptId ||
+            preparation.data.epochKey !== completionReceipt.epochKey) {
+          throw new SuccessionAttemptStartupHoldError('committed recovery has no matching accepted receipts');
+        }
+        acceptedSuccessionPreparation = preparation.data;
       } else if (successionAttemptChild !== null) {
         await successionAttemptChild.waitForWritersParked();
         if (preparedCommittedStore === null) {
           throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
         }
-        if (successionAttemptChild.receiptIds.length > 0) {
-          throw new SuccessionAttemptStartupHoldError('accepted obligation adoption is unavailable');
+        const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+        const preparation = observed.kind === 'readable'
+          ? successionPreparationSchema.safeParse(observed.intent.successionPreparation)
+          : null;
+        if (preparation === null || !preparation.success ||
+            preparation.data.attemptId !== successionAttemptChild.attemptId) {
+          throw new SuccessionAttemptStartupHoldError('accepted receipts changed before committed open');
         }
         const priorGeneration = joinSuccessionWriterGeneration(runtime, preparedCommittedStore).generation;
         successionGeneration = advanceSuccessionWriterGeneration(runtime, priorGeneration, preparedCommittedStore);
+        if (runtime.env.get('NODE_ENV') === 'test' &&
+            runtime.env.get('CORAL_TEST_SUCCESSION_FENCE_FAILURE') === '1' &&
+            !successionAttemptChild.recovery) {
+          throw new SuccessionAttemptStartupHoldError('injected succession fence failure');
+        }
         if (
           runtime.env.get('NODE_ENV') === 'test' &&
           runtime.env.get('CORAL_TEST_SUCCESSION_OPEN_FAILURE') === '1' &&
@@ -1467,6 +1500,7 @@ async function runLifecycleStartup({
         if (committed.kind === 'holding') throw new SuccessionAttemptStartupHoldError(committed.reason);
         storeDb = committed.db;
         openedStore = committed.store;
+        acceptedSuccessionPreparation = preparation.data;
       } else {
         const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
         if (currentBundleDir === null) {
@@ -1514,6 +1548,12 @@ async function runLifecycleStartup({
     // bugs while permitting the legitimate explicit reset pattern.
     storeServicesRef.clear();
     storeServicesRef.set(storeServices);
+    if (acceptedSuccessionPreparation !== null && openedStore !== null) {
+      if (acceptedSuccessionPreparation.receipts.length > 0 && deps.verifySuccessionReceipts === undefined) {
+        throw new SuccessionAttemptStartupHoldError('accepted receipt verifier is unavailable');
+      }
+      acceptedSuccessionJobs = deps.verifySuccessionReceipts?.(acceptedSuccessionPreparation, openedStore) ?? [];
+    }
     const mutationAdmission = acquireProviderOperationMutationAdmission(storeDb, instanceId);
     if (mutationAdmission.kind === 'holding') {
       throw new Error(
@@ -1618,28 +1658,37 @@ async function runLifecycleStartup({
     // because its budget is bounded by the daemon-side
     // `bootFreshnessTimeoutMs` (default 90s), not by either CLI-facing
     // deadline — the CLI has already returned by now.
-    // A startup without an IPC listener never bound the coordinator socket, so it holds no bind
-    // authority and there is no incumbent's work to recover — it was never the canonical coordinator.
-    // This is the absence of a recovery obligation, not a skipped one.
-    const recoveredDiscussResumes =
-      bound === null
-        ? []
-        : await bound.runStartupRecovery({
-            identity,
-            runtime,
-            progressStore,
-            providerRegistry,
-            getExecutionService: deps.getExecutionService,
-            getRecoveryService,
-            knownDiscussSources,
-            getDiscussStoreForSource,
-            getDiscussContext,
-            createInvocationContext,
-            recoveryCoordinator,
-            signal,
-            recoverPersistedDiscussFn,
-            interruptedAppServerReason: bound.acquiredViaHandoff ? 'handoff' : 'restart',
-          });
+    const recoveryInputs: StartupRecoveryInputs = {
+      identity,
+      runtime,
+      progressStore,
+      providerRegistry,
+      getExecutionService: deps.getExecutionService,
+      getRecoveryService,
+      knownDiscussSources,
+      getDiscussStoreForSource,
+      getDiscussContext,
+      createInvocationContext,
+      recoveryCoordinator,
+      signal,
+      recoverPersistedDiscussFn,
+      interruptedAppServerReason: bound?.acquiredViaHandoff ? 'handoff' : 'restart',
+    };
+    const recoveredDiscussResumes = bound !== null
+      ? await bound.runStartupRecovery(recoveryInputs)
+      : (acceptedSuccessionPreparation?.receipts.length ?? 0) > 0
+        ? await runStartupRecovery({ ...recoveryInputs, interruptedAppServerReason: 'restart' },
+            recoveryCoordinator.runStartupRecovery)
+        : [];
+    if (acceptedSuccessionPreparation !== null && (successionGeneration !== null || recoveryGeneration !== null)) {
+      if (deps.adoptSuccessionReceipts === undefined) {
+        throw new SuccessionAttemptStartupHoldError('accepted receipt adoption is unavailable');
+      }
+      deps.adoptSuccessionReceipts(
+        acceptedSuccessionPreparation, acceptedSuccessionJobs, successionGeneration ?? recoveryGeneration!,
+        successionAttemptChild?.recovery === true || committedRecovery !== null,
+      );
+    }
     startupRecoveryBarrierPublisher?.publish();
     startProviderOperationReconciler?.();
     await Promise.resolve(cleanupStaleJobsFn(bundleHash, signal));
@@ -1679,6 +1728,15 @@ async function runLifecycleStartup({
         controlGeneration: successionGeneration.generation,
         recordedAt: new Date(runtime.time.now()).toISOString(),
       });
+      if (acceptedSuccessionPreparation !== null) {
+        if (acceptedSuccessionPreparation.receipts.some((receipt) => receipt.owner === 'durable-cli') &&
+            deps.recordSuccessionControllerReceipts === undefined) {
+          throw new SuccessionAttemptStartupHoldError('durable-cli controller receipt writer is unavailable');
+        }
+        deps.recordSuccessionControllerReceipts?.(
+          acceptedSuccessionPreparation, committed.epochKey, committed.controlGeneration, committed.recordedAt,
+        );
+      }
       successionAttemptChild.markServing(ipcServer, committed);
       publishDiscovery();
       await deps.onSuccessionServing?.(successionAttemptChild.attemptId);
@@ -1694,13 +1752,21 @@ async function runLifecycleStartup({
       }
       const receipt = committedRecovery.intent.completionReceipt;
       if (receipt === null) throw new Error('Committed successor recovery lost its receipt.');
-      recordSuccessionServing(runtime, recoveryGeneration, {
+      const recoveredServing = recordSuccessionServing(runtime, recoveryGeneration, {
         attemptId: receipt.attemptId,
         epochKey: receipt.epochKey,
         successorInstanceId: instanceId,
         controlGeneration: recoveryGeneration.generation,
         recordedAt: new Date(runtime.time.now()).toISOString(),
       });
+      if (acceptedSuccessionPreparation !== null) {
+        deps.recordSuccessionControllerReceipts?.(
+          acceptedSuccessionPreparation,
+          recoveredServing.epochKey,
+          recoveredServing.controlGeneration,
+          recoveredServing.recordedAt,
+        );
+      }
       await publishRecoveredServing(runtime, committedRecovery.intent, instanceId, backendPid, recoveryIncarnation, recoveryGeneration);
       runtimeState.setLifecycle('kernel-ready');
       publishDiscovery();

@@ -6,7 +6,14 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import type { CauseRef } from '../causality/cause-ref.js';
 import type { TerminalOutcome } from '../jobs/outcome.js';
 import type { JobStatus, JobTerminal } from '../jobs/records.js';
-import { parseSerializedWaitCursor, serializeWaitCursor, type WaitCursor, type WaitStreamEvent } from '../jobs/wait.js';
+import {
+  isWaitCursorV2,
+  parseSerializedWaitCursor,
+  serializeWaitCursor,
+  waitCursorForJobs,
+  type WaitCursor,
+  type WaitStreamEvent,
+} from '../jobs/wait.js';
 import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
@@ -113,7 +120,7 @@ function writeStdout(text: string): void {
 }
 
 function serializedCursor(cursor: WaitCursor): string | undefined {
-  if (cursor.afterSeq === 0) {
+  if (!isWaitCursorV2(cursor) && cursor.afterSeq === 0) {
     return undefined;
   }
   return serializeWaitCursor(cursor);
@@ -323,7 +330,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
     return fallbackExitCode();
   }
 
-  const currentCursor: WaitCursor = parsedCursor ?? { afterSeq: 0 };
+  let currentCursor: WaitCursor = parsedCursor ?? { afterSeq: 0 };
   const controller = new AbortController();
   const jobLabels = jobLabelsFor(options.projectRoot, allJobIds);
   const deadlineMs = Date.now() + FOLLOW_TIMEOUT_SECONDS * 1_000;
@@ -389,7 +396,9 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
       try {
         connection = await options.connect({
           jobIds: remainingJobIds,
-          ...(sendCursor || currentCursor.afterSeq > 0 ? { cursor: { afterSeq: currentCursor.afterSeq } } : {}),
+          ...(sendCursor || serializedCursor(currentCursor) !== undefined
+            ? { cursor: waitCursorForJobs(currentCursor, remainingJobIds) }
+            : {}),
           timeoutSeconds:
             options.reconnectPolicy === 'bounded' ? boundedTimeoutSeconds(deadlineMs) : FOLLOW_TIMEOUT_SECONDS,
           signal: controller.signal,
@@ -400,6 +409,15 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
         }
 
         const handledError = mapWaitSubscriptionError(error);
+        if (
+          handledError instanceof BackendToolHttpError &&
+          isRecord(handledError.body) &&
+          handledError.body.code === 'wait_cursor_epoch_required'
+        ) {
+          currentCursor = { afterSeq: 0 };
+          sendCursor = false;
+          continue;
+        }
         if (!(handledError instanceof Error) || !isTransientStreamError(handledError)) {
           options.emitError(withWaitRecovery(handledError, remainingJobIds));
           return fallbackExitCode();
@@ -481,14 +499,16 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
           }
 
           const decision = advanceWaitRenderCursor(currentCursor, event);
-          currentCursor.afterSeq = decision.cursor.afterSeq;
-          sendCursor ||= currentCursor.afterSeq > 0;
+          currentCursor = decision.cursor;
+          sendCursor ||= serializedCursor(currentCursor) !== undefined;
 
           if (decision.shouldRender) {
+            const renderCursor =
+              event.type === 'terminal' ? waitCursorForJobs(currentCursor, event.remainingJobIds) : currentCursor;
             const cursor =
-              serializedCursor(currentCursor) ??
+              serializedCursor(renderCursor) ??
               (event.type === 'waiting' && options.reconnectPolicy === 'bounded'
-                ? serializeWaitCursor(currentCursor)
+                ? serializeWaitCursor(renderCursor)
                 : null);
             emitWaitEvent(
               event,
@@ -506,6 +526,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
               return exitCode;
             }
             remainingJobIds = [...event.remainingJobIds];
+            currentCursor = waitCursorForJobs(currentCursor, remainingJobIds);
             if (remainingJobIds.length === 0) {
               return 0;
             }
@@ -514,6 +535,7 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
 
           if (event.type === 'waiting') {
             remainingJobIds = [...event.waitingJobIds];
+            currentCursor = waitCursorForJobs(currentCursor, remainingJobIds);
             if (remainingJobIds.length === 0) {
               return 0;
             }
@@ -644,6 +666,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
             // `emitWaitEvent` above has a case for `interrupted`; declaring that here is what lets a
             // coordinator new enough to derive it actually put one on the wire.
             supportsInterrupted: true,
+            supportsWaitV2: true,
           },
           {
             timeoutMs: HEALTH_TIMEOUT_MS,

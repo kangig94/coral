@@ -80,7 +80,12 @@ describe('ChildPrincipalRegistry', () => {
       expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_003)).toBe(true);
       expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-3' }), null, 1_003)).toBeNull();
       expect(successor.authenticate(childAuth(credential.handle), null, 1_004)).toBeNull();
-      expect(successor.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_004)).not.toBeNull();
+      const transferredChild = successor.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_004);
+      expect(transferredChild).not.toBeNull();
+      if (transferredChild === null) throw new Error('Transferred child authentication failed.');
+      expect(authorize(transferredChild, 'kb:read', {
+        kind: 'project', root: fixtureCanonicalWorkDir('/workspace/project'),
+      })).toEqual({ ok: true });
 
       expect(incumbent.reclaimAuthentication(3)).toBe(true);
       expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).toBeNull();
@@ -138,6 +143,29 @@ describe('ChildPrincipalRegistry', () => {
       } finally {
         recoveredLedger.close();
       }
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('replays a committed successor receipt after that successor exits', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-successor-recovery-'));
+    try {
+      const ledger = new ChildPrincipalNonceLedger(runDir);
+      const originNamespace = () => 'ns-a';
+      const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
+      const credential = register(incumbent, testProjectPrincipal('/workspace/project'));
+      const receipt = incumbent.prepareTransfer('attempt', 1_001);
+      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+      const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
+      expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_002)).toBe(true);
+      expect(successor.authenticate(childAuth(credential.handle), null, 1_003)).not.toBeNull();
+
+      const recovered = new ChildPrincipalRegistry(ids(), { ledger, originNamespace });
+      expect(recovered.adoptRecoveredTransfer(receipt, new Set(['job-a']), 'recovery', 3, 1_004)).toBe(true);
+      expect(recovered.authenticate(childAuth(credential.handle), null, 1_005)).toBeNull();
+      expect(recovered.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).not.toBeNull();
+      ledger.close();
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }

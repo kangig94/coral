@@ -19,6 +19,10 @@ import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
 import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
+import { JobAddressing } from '../../jobs/addressing.js';
+import { JobLocationIndex } from '../../jobs/location-index.js';
+import { createJobLocationRecoveryRetryPlan } from '../../jobs/location-recovery.js';
+import { readOrCreateEpochKey } from '../../store/epoch-key.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
 import type { StoragePort, TimerHandle } from '../../infra/port-types.js';
 import {
@@ -115,7 +119,7 @@ import {
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
-import { encodeResolvedStoreEpoch, inspectCurrentStore, resolveCurrentStoreEpoch, sweepStoreEpochsPostReady } from '../../store/epoch.js';
+import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, inspectCurrentStore, resolveCurrentStoreEpoch, sweepStoreEpochsPostReady } from '../../store/epoch.js';
 import {
   handbackSuccessionWriterGeneration,
   observeSuccessionServing,
@@ -129,6 +133,15 @@ import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } fr
 import { probeProcessIncarnation } from '../../infra/node-process.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt, type SuccessionAttempt, type AttemptAcknowledgment } from '../succession/attempt-child.js';
 import type { SuccessionPreparation } from '../succession/protocol.js';
+import {
+  prepareDurableCliTransfer,
+  prepareDurableCliRecoveryGrant,
+  decodeDurableCliTransfer,
+  recordDurableCliControllerReceipts,
+  verifyDurableCliTransfer,
+  verifyDurableCliRecoveryGrant,
+} from '../succession/durable-cli-transfer.js';
+import { decodeChildPrincipalTransfer } from '../child-principal-registry.js';
 import type { Database } from '../../store/db.js';
 import { createSuccessionCoordinator } from '../succession/index.js';
 import type { SuccessionOwner } from '../succession/obligations.js';
@@ -658,6 +671,11 @@ export function createCoordinatorCore(
     return storeServices;
   };
   const getProgressStore = () => getStoreServices().progressStore;
+  const jobLocationIndex = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+  const currentJobEpochKey = (): string | null => {
+    const inspection = inspectCurrentStore(runtime);
+    return inspection.kind === 'current' ? readOrCreateEpochKey(inspection.epoch) : null;
+  };
   const getRecoveryQuarantineStore = () => new RecoveryQuarantineStore(getProgressStore().getDb(), runtime.time);
   const recoveryQuarantineStore: RecoveryRetryQuarantinePort = {
     read: (boundary, subjectKey) => getRecoveryQuarantineStore().read(boundary, subjectKey),
@@ -867,6 +885,11 @@ export function createCoordinatorCore(
   recoverySources.register('crashed-job-terminalization', (subject) =>
     createCrashedJobTerminalizationRetryPlan(recoveryDb(), subject),
   );
+  recoverySources.register('job-location-write-through', (subject) => {
+    const epochKey = currentJobEpochKey();
+    if (epochKey === null) throw storeServicesStartupNotReadyError();
+    return createJobLocationRecoveryRetryPlan(jobLocationIndex, epochKey, getProgressStore(), subject);
+  });
   recoverySources.register(SETTLED_UNBOUND_STATUS_BOUNDARY, (subject, _signal, quarantine) =>
     createSettledUnboundStatusRetryPlan(recoveryDb(), subject, quarantine, (absence) =>
       world.launchCoordinator.releaseSettledUnboundStatusAfterObservedAbsence(absence),
@@ -1394,12 +1417,22 @@ export function createCoordinatorCore(
     }
   };
 
-  const rpcPorts: RpcPorts = {
-    sessions: {
-      start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
-    },
-    jobs: {
-      scopeCheck: control.scopeCheckJobs,
+  const activeJobDetail = (jobId: string) => {
+    const progressStore = getProgressStore();
+    const detail = progressStore.loadJobProjectionDetail(jobId);
+    if (!detail.status) return null;
+    return {
+      status: detail.status,
+      events: progressStore.readJobEvents(jobId),
+      readiness: deriveLaunchReadiness(detail),
+      exit: detail.exit,
+    };
+  };
+  const jobAddressing = new JobAddressing(
+    jobLocationIndex,
+    {
+      epochKey: currentJobEpochKey,
+      detail: activeJobDetail,
       abort: control.abortJobs,
       waitStream: (request) =>
         services
@@ -1413,6 +1446,18 @@ export function createCoordinatorCore(
             ),
           )
           .waitStream(request),
+    },
+  );
+
+  const rpcPorts: RpcPorts = {
+    sessions: {
+      start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
+    },
+    jobs: {
+      scopeCheck: (jobIds, callerRoot, relation) => jobAddressing.scopeCheck(jobIds, callerRoot, relation),
+      abort: (jobIds) => jobAddressing.abort(jobIds),
+      validateWait: (request) => jobAddressing.validateWait(request),
+      waitStream: (request) => jobAddressing.waitStream(request),
       list: (filters) => {
         const progressStore = getProgressStore();
         const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
@@ -1434,21 +1479,7 @@ export function createCoordinatorCore(
 
         return jobs;
       },
-      detail: (jobId) => {
-        const progressStore = getProgressStore();
-        const detail = progressStore.loadJobProjectionDetail(jobId);
-        const status = detail.status;
-        if (!status) {
-          return null;
-        }
-        const events = progressStore.readJobEvents(jobId);
-        return {
-          status,
-          events,
-          readiness: deriveLaunchReadiness(detail),
-          exit: detail.exit,
-        };
-      },
+      detail: (jobId) => jobAddressing.detail(jobId),
     },
     workflows: {
       execute: async (request, ctx) => {
@@ -1586,13 +1617,38 @@ export function createCoordinatorCore(
     },
     {
       id: 'durable-cli',
-      classify: async () => {
+      classify: async (attemptId) => {
         const jobIds = readSuccessionJobs().filter(
           (jobId) => getProgressStore().readRuntimeProjection(jobId)?.transport === 'durable-cli',
         );
-        return jobIds.length === 0
-          ? { kind: 'completed', reason: 'no live durable-cli carrier' }
-          : { kind: 'blocking', reason: 'durable-cli carrier transfer awaits fenced adoption', jobIds };
+        if (jobIds.length === 0) return { kind: 'completed', reason: 'no live durable-cli carrier' };
+        const inspected = inspectCurrentStore(runtime);
+        if (inspected.kind !== 'current') {
+          return { kind: 'blocking', reason: 'exact durable-cli epoch is unavailable', jobIds };
+        }
+        const transfer = prepareDurableCliTransfer(
+          getProgressStore().getDb(), getProgressStore(), runtime.paths.coral.coordinator.runDir,
+          inspected.epoch, jobIds,
+        );
+        if (transfer === null) {
+          return { kind: 'blocking', reason: 'durable-cli runtime or custody evidence is incomplete', jobIds };
+        }
+        const recoveryGrantId = prepareDurableCliRecoveryGrant(runtime.paths.coral.coordinator.runDir, {
+          version: 'v1', attemptId, epochKey: encodeResolvedStoreEpoch(inspected.epoch),
+          incumbentInstanceId: identity.instanceId, incumbentBuildSetId: identity.buildSetId,
+          transfer,
+        });
+        return {
+          kind: 'transferable',
+          reason: 'durable-cli runtime and custody evidence is recorded',
+          jobIds,
+          receipt: {
+            owner: 'durable-cli', generation: 1, attemptId,
+            receiptId: `durable-cli:${attemptId}`,
+            recoveryGrantId,
+            payload: JSON.parse(JSON.stringify(transfer)) as JsonValue,
+          },
+        };
       },
     },
     {
@@ -1705,6 +1761,10 @@ export function createCoordinatorCore(
         if (transfer?.recoveryGrantId === undefined) {
           return { kind: 'blocking', reason: 'child nonce recovery grant could not be recorded' };
         }
+        const liveJobs = new Set(readSuccessionJobs());
+        if (transfer.entries.some((entry) => !liveJobs.has(entry.parentJobId))) {
+          return { kind: 'blocking', reason: 'child handle has no accepted live parent job' };
+        }
         if (transfer.entries.some((entry) =>
           readJobLaunchOriginNamespace(getProgressStore().getDb(), entry.parentJobId) !== entry.authorization.namespace
         )) return { kind: 'blocking', reason: 'child origin launch evidence is missing or conflicting' };
@@ -1809,6 +1869,7 @@ export function createCoordinatorCore(
     recoveryFromAttemptId?: string,
   ): Promise<void> => {
     const recovering = recoveryFromAttemptId !== undefined;
+    const transfersChildPrincipals = preparation.receipts.some((receipt) => receipt.owner === 'child-principals');
     const ready = await waitForAttemptReady(attempt);
     if (ready.epochKey !== preparation.epochKey ||
         JSON.stringify([...ready.receiptIds].sort()) !==
@@ -1876,6 +1937,7 @@ export function createCoordinatorCore(
       }
       if (!recovering) writer.park();
       parked = true;
+      if (transfersChildPrincipals) world.childPrincipalRegistry.fenceAuthentication();
       await attempt.allowCommittedOpen();
       for (;;) {
         const serving = observeSuccessionServing(runtime, attempt.attemptId);
@@ -1893,6 +1955,10 @@ export function createCoordinatorCore(
           const releaseDelay = Number(runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS'));
           if (runtime.env.get('NODE_ENV') === 'test' && releaseDelay > 0) {
             await new Promise<void>((resolve) => setTimeout(resolve, releaseDelay));
+          }
+          if (runtime.env.get('NODE_ENV') === 'test' &&
+              runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_FAILURE') === '1') {
+            throw new Error('injected succession release failure');
           }
           await Promise.race([
             attempt.drainIncumbentConnections(ipcServer),
@@ -1961,6 +2027,10 @@ export function createCoordinatorCore(
           startSameBuildSuccession: (failure) => world.log(`Same-build writer recovery required: ${failure}\n`),
         });
         if (reclaimed.kind === 'reclaimed') {
+          if (transfersChildPrincipals &&
+              !world.childPrincipalRegistry.reclaimAuthentication(reclaimed.generation.generation)) {
+            throw new Error('Incumbent child authentication could not reclaim its consumed-nonce ledger.');
+          }
           lifecycleController?.adoptProviderOperationAdmission(reclaimed.providerOperationAdmission);
           if (recovering) runtimeState.setLaunchFenceActive(false);
           await updateAttempt(attempt.attemptId, (intent) => ({
@@ -2463,6 +2533,74 @@ export function createCoordinatorCore(
     idleTimer: world.idleTimer,
     storeServicesRef,
     createStoreServicesFromDbFn,
+    verifySuccessionReceipts: (preparation, epoch) => {
+      const accepted = new Set<string>();
+      for (const receipt of preparation.receipts) {
+        if (receipt.owner === 'durable-cli') {
+          const transfer = verifyDurableCliTransfer(
+            receipt.payload, getProgressStore().getDb(), getProgressStore(),
+            runtime.paths.coral.coordinator.runDir, epoch,
+          );
+          if (transfer === null) throw new Error('Durable-cli receipt no longer matches runtime and custody.');
+          if (!verifyDurableCliRecoveryGrant(
+            runtime.paths.coral.coordinator.runDir, receipt.attemptId, receipt.recoveryGrantId,
+            preparation.epochKey, preparation.incumbentInstanceId, transfer,
+          )) throw new Error('Durable-cli recovery grant is unavailable or changed.');
+          for (const job of transfer.jobs) accepted.add(job.jobId);
+        } else if (receipt.owner === 'child-principals') {
+          if (decodeChildPrincipalTransfer(receipt.payload) === null) {
+            throw new Error('Child-principal transfer receipt is invalid.');
+          }
+        } else {
+          throw new Error(`Unsupported succession receipt owner: ${receipt.owner}`);
+        }
+      }
+      const live = readSuccessionJobs();
+      if (live.length !== accepted.size || live.some((jobId) => !accepted.has(jobId))) {
+        throw new Error('Accepted durable-cli receipts do not cover every live job.');
+      }
+      return [...accepted];
+    },
+    adoptSuccessionReceipts: (preparation, acceptedJobIds, generation, recovery) => {
+      const accepted = new Set(acceptedJobIds);
+      for (const jobId of accepted) {
+        const status = getProgressStore().readStatus(jobId);
+        if (status !== null && isTerminalPhase(status.phase)) continue;
+        const permit = world.launchCoordinator.activeLaunchPermits().find((entry) => entry.jobId === jobId);
+        if (permit?.holder.kind !== 'recovery') {
+          throw new Error(`Durable-cli job ${jobId} was not adopted with a launch permit.`);
+        }
+      }
+      for (const receipt of preparation.receipts) {
+        if (receipt.owner !== 'child-principals') continue;
+        const transfer = decodeChildPrincipalTransfer(receipt.payload);
+        if (transfer === null) throw new Error('Child-principal transfer receipt is invalid.');
+        const adopted = recovery
+          ? world.childPrincipalRegistry.adoptRecoveredTransfer(
+              transfer, accepted, preparation.attemptId, generation.generation, runtime.time.now(),
+            )
+          : world.childPrincipalRegistry.adoptTransfer(
+              transfer, accepted, generation.generation, runtime.time.now(),
+            );
+        if (!adopted) {
+          throw new Error('Child-principal receipt could not be adopted.');
+        }
+      }
+    },
+    recordSuccessionControllerReceipts: (preparation, epochKey, generation, recordedAt) => {
+      const epoch = decodeResolvedStoreEpoch(epochKey);
+      if (epoch === undefined) throw new Error('Committed epoch is invalid.');
+      for (const receipt of preparation.receipts) {
+        if (receipt.owner !== 'durable-cli') continue;
+        const transfer = decodeDurableCliTransfer(receipt.payload, epoch);
+        if (transfer === null) throw new Error('Durable-cli receipt is invalid at controller acknowledgment.');
+        recordDurableCliControllerReceipts(runtime.paths.coral.coordinator.runDir, transfer, {
+          epochKey, attemptId: preparation.attemptId, instanceId: identity.instanceId,
+          buildSetId: identity.buildSetId,
+          generation, nowMs: Date.parse(recordedAt),
+        });
+      }
+    },
     streamResponses,
     discussStores: discuss.discussStores,
     eventBus: world.eventBus,
