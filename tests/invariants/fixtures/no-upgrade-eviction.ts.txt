@@ -1,0 +1,31 @@
+// @mutation ipc-replacement-drain src/transport/ipc/server.ts
+requestDrain('replaced');
+// @end
+
+// @mutation contender-signal-escalation src/coordinator/handoff.ts
+process.kill(incumbent.pid, 'SIGTERM');
+// @end
+
+// @mutation handoff-signal-ledger src/infra/handoff-signal.ts
+writeFileSync('handoff-signal.json', record);
+// @end
+
+// @mutation handoff-signal-policy src/infra/process-constants.ts
+export const HANDOFF_SIGNAL_POLICY_ENV = 'CORAL_HANDOFF_SIGNAL_POLICY';
+// @end
+
+// @mutation handoff-signal-codes src/runtime/errors.ts
+const refusalCode = 'handoff_signal_cooldown_active';
+// @end
+
+// @mutation pre-routing-eviction src/coordinator/lifecycle.ts
+await requestIncumbentShutdown(incumbent);
+// @end
+
+// @mutation store-live-work-enumeration src/store/epoch.ts
+function inspectStoreDirectoryLiveWork() { return 'retained-work'; }
+// @end
+
+// @mutation inspection-computed-store-role src/store/epoch.ts
+type StoreEpochListEntry = { role: 'current' | 'retained' | 'garbage' };
+// @end

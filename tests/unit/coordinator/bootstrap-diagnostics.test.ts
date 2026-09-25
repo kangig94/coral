@@ -26,7 +26,7 @@ vi.mock('#src/infra/plugin-identity.js', () => ({ pluginRootNamespace: () => 'na
 
 import { serializeBootstrapError, writeBootstrapDiagnostic } from '#src/coordinator/bootstrap-diagnostics.js';
 import { HandoffEscalationError } from '#src/coordinator/handoff.js';
-import { documentedCoralSetupError, serializeCoralSetupError } from '#src/runtime/errors.js';
+import { serializeCoralSetupError } from '#src/runtime/errors.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -50,7 +50,7 @@ function recordedSetupRefusal(overrides: Readonly<Record<string, unknown>> = {})
     recordedAt: new Date().toISOString(),
     error: {
       kind: 'coral_setup_error',
-      code: 'handoff_manual_policy',
+      code: 'handoff_socket_holder_unverified',
       userMessage: 'authored refusal',
       remediation: 'authored recovery',
     },
@@ -63,15 +63,15 @@ describe('serializeBootstrapError', () => {
     const secret = 'private bind failure';
     const error = new HandoffEscalationError(
       {
-        code: 'handoff_accepted_signal_target_alive_after_failure',
-        context: { stage: 'after-accepted-signal-failure', pid: 4242, signal: 'SIGTERM' },
+        code: 'handoff_socket_holder_unverified',
+        context: { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' },
       },
       { cause: new Error(secret) },
     );
 
     expect(serializeBootstrapError(error)).toMatchObject({
       kind: 'coral_setup_error',
-      code: 'handoff_accepted_signal_target_alive_after_failure',
+      code: 'handoff_socket_holder_unverified',
       cause: { kind: 'error', message: secret },
     });
     const publicProjection = serializeCoralSetupError(error);
@@ -131,21 +131,6 @@ describe('serializeBootstrapError', () => {
 });
 
 describe('writeBootstrapDiagnostic', () => {
-  it('derives retryability from the documented setup-error code', () => {
-    writeBootstrapDiagnostic(
-      '/plugin',
-      'startup_failed',
-      documentedCoralSetupError('handoff_fresh_discovery_changed', { stage: 'before-signal', pid: 42 }),
-      75,
-    );
-    writeBootstrapDiagnostic('/plugin', 'startup_failed', documentedCoralSetupError('store_schema_outdated'), 1);
-
-    const retryable = JSON.parse(String(storage.writeFileSync.mock.calls[0]?.[1])) as Record<string, unknown>;
-    const nonRetryable = JSON.parse(String(storage.writeFileSync.mock.calls[1]?.[1])) as Record<string, unknown>;
-    expect(retryable.retryable).toBe(true);
-    expect(nonRetryable.retryable).toBe(false);
-  });
-
   // The guard may not depend on CORAL_STARTUP_ATTEMPT_ID: an ancestor and the build it delegates to carry the
   // same one, so it separates neither of them from the other, and a spawn exporting none leaves both sides
   // absent. Either way the refusal the delegated build recorded keeps its code and remediation.

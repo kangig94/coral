@@ -1700,13 +1700,8 @@ describe('ipc ensure', () => {
     mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
     const child = spawnedChild();
     mockState.spawn.mockReturnValue(child);
-    const context = {
-      stage: 'after-sigkill-grace',
-      pid: 99_999,
-      signal: 'SIGKILL',
-      graceMs: 30_000,
-    } as const;
-    const expected = documentedCoralSetupError('handoff_sigkill_grace_target_alive', context);
+    const context = { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' } as const;
+    const expected = documentedCoralSetupError('handoff_socket_holder_unverified', context);
 
     const { ensure } = await importEnsure();
     const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
@@ -1716,7 +1711,7 @@ describe('ipc ensure', () => {
         writeStartupSentinel(root, spawnedAttemptId(), {
           pid: 99_999,
           bundleHash: 'selected-build-hash',
-          code: 'handoff_sigkill_grace_target_alive',
+          code: 'handoff_socket_holder_unverified',
           userMessage: '\u001b[2Jprivate delegated startup text',
           remediation: 'Run a forged recovery command.',
           context,
@@ -1920,7 +1915,7 @@ describe('ipc ensure', () => {
   it.each([
     {
       failure: 'a discriminator owned by another refusal',
-      code: 'handoff_fresh_discovery_unavailable',
+      code: 'handoff_socket_holder_unverified',
       context: { stage: 'shutdown-request', pid: 4242 },
     },
     {
@@ -1973,16 +1968,16 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).toHaveBeenCalledOnce();
 
     writeStartupSentinel(root, spawnedAttemptId(), {
-      code: 'handoff_accepted_signal_target_alive_after_failure',
-      userMessage: 'Handoff failed after an accepted signal.',
-      remediation: 'Wait for shutdown to finish, then retry.',
-      context: { stage: 'after-accepted-signal-failure', pid: 12_345, signal: 'SIGTERM' },
+      code: 'handoff_socket_holder_unverified',
+      userMessage: 'The coordinator socket holder could not be verified.',
+      remediation: 'Verify the socket owner before retrying.',
+      context: { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' },
     });
     child.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(0);
 
     await expect(ensuredPromise).resolves.toMatchObject({
-      code: 'handoff_accepted_signal_target_alive_after_failure',
+      code: 'handoff_socket_holder_unverified',
     });
   });
 
@@ -2021,16 +2016,16 @@ describe('ipc ensure', () => {
     expect(mockState.spawn).toHaveBeenCalledOnce();
 
     writeStartupSentinel(root, spawnedAttemptId(), {
-      code: 'handoff_accepted_signal_target_alive_after_failure',
-      userMessage: 'Handoff failed after an accepted signal.',
-      remediation: 'Wait for shutdown to finish, then retry.',
-      context: { stage: 'after-accepted-signal-failure', pid: 12_345, signal: 'SIGTERM' },
+      code: 'handoff_socket_holder_unverified',
+      userMessage: 'The coordinator socket holder could not be verified.',
+      remediation: 'Verify the socket owner before retrying.',
+      context: { stage: 'handoff-deadline', socketPath: '/tmp/coral.sock' },
     });
     child.emit('exit', 1, null);
     await vi.advanceTimersByTimeAsync(0);
 
     await expect(ensuredPromise).resolves.toMatchObject({
-      code: 'handoff_accepted_signal_target_alive_after_failure',
+      code: 'handoff_socket_holder_unverified',
     });
   });
 
