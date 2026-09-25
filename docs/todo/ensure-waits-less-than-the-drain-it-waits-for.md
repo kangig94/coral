@@ -1,12 +1,10 @@
 # TODO — ensure waits less than the drain it waits for
 
-**Status**: open. This work is not implemented. It was split from Track B of kangig94/coral#357 after both
-final-round reviewers independently recommended separating coordinator reporting from later-invocation
-replacement behavior, and the owner accepted that recommendation.
+**Status**: open for administrative drain address turnover. Upgrade succession now transfers listening handles under its own protocol; it does not use this release wait to evict a serving incumbent.
 
 ## The mismatch
 
-`prepareTopLevelSpawn` calls `waitForSocketRelease` with the transport-local
+`prepareTopLevelSpawn` in `src/transport/ipc/ensure.ts` still calls `waitForSocketRelease` with the transport-local
 `HANDOFF_DRAIN_TIMEOUT_MS` (`src/transport/ipc/ensure.ts`), so a draining incumbent gets 30,000 ms to release
 the address before `CoordinatorSocketReleaseTimeout`. Phase 1 measured the production handoff drain's own
 scheduled boundary at approximately 60 seconds — **60,100 ms** at that boundary. The waiter can therefore
@@ -16,9 +14,7 @@ That 30-second constant is copied for more than one purpose. `drainBoundedClient
 as a request cap for a command already issued to a draining coordinator; that cap is not the socket-release
 wait and must not be changed accidentally with it. Separately, `createLifecycle`
 (`src/coordinator/lifecycle.ts`) passes the coordinator's `HANDOFF_DRAIN_TIMEOUT_MS`
-(`src/coordinator/shutdown.ts`) to `bindWithHandoff` (`src/coordinator/handoff.ts`) as `totalBudgetMs`, so the
-successor also has a copied handoff budget that must be assessed explicitly rather than assumed equivalent to
-the drain's terminal bound.
+(`src/coordinator/shutdown.ts`) to `bindWithHandoff` (`src/coordinator/handoff.ts`) as `totalBudgetMs`. That binding budget must be assessed separately from the drain's terminal bound.
 
 ## Why consuming `boundMs` naively is wrong
 

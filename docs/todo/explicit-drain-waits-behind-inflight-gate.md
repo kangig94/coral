@@ -1,6 +1,6 @@
 # An explicit drain can wait behind the pre-sequence in-flight gate forever
 
-**Status**: open. Removing the unary gate is an owner decision.
+**Status**: open for explicit administrative shutdown. Succession commit has a separate bounded admission pause and listening-handle transfer; it does not resolve this pre-sequence shutdown gate.
 
 ## What is wrong
 

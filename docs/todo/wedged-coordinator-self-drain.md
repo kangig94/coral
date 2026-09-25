@@ -1,6 +1,6 @@
 # TODO — every way Coral ends a process runs on that process's own event loop
 
-**Status**: open. **Observed 2026-08-23** — see "The observation" below. Originally recorded on
+**Status**: open. Upgrade succession does not signal or evict an unanswerable live coordinator; an external supervisor is still owed if it must be recovered without an operator. **Observed 2026-08-23** — see "The observation" below. Originally recorded on
 `refactor/process-incarnation-token` because it was noticed while reasoning about macOS containment, not
 because anything failed. Its own start condition asked for exactly this before either half is built.
 

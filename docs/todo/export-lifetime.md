@@ -1,8 +1,6 @@
 # TODO — `~/.coral/exports/jobs/` has no lifecycle owner
 
-**Status**: open. Consolidated 2026-08-15 from `persistent-job-export-retention.md` and
-`archived-session-restore.md`. Those two documents asserted **opposite facts about the same directory**;
-the merge exists so that cannot happen again.
+**Status**: open, two parts. The epoch deletion gate now requires an independently readable result artifact through `JobLocationIndex.resultsReleased` in `src/jobs/location-index.ts`. That gate does not assign an expiry or prune `~/.coral/exports/jobs/`. Retention authority for the export tree and archived-session restore remain owed.
 
 ## The fact both documents disagreed about
 
@@ -12,8 +10,7 @@ Nothing prunes `~/.coral/exports/jobs/<id>/`. Ever.
 `<tmpdir>/coral-jobs/<id>` — temporary scratch — plus the job's durable CLI-process metadata row
 (`src/coordinator/lifecycle.ts` → `src/jobs/runtime-meta-store.ts`, a `DELETE FROM meta`).
 
-The export tree is `runtime.paths.coral.exports.jobsRoot`, a different root. A repository-wide search
-found no removal targeting it. The only prune that exists is
+The export tree is `runtime.paths.coral.exports.jobsRoot`, a different root. No removal targets it. The scratch prune is
 `STALE_ARTIFACT_PRUNE_OBLIGATION` (`src/coordinator/lifecycle.ts`), and it removes exactly
 `progressStore.jobDir(jobId)` and the `meta` row — never the export.
 
@@ -46,6 +43,8 @@ The error was applying a true fact about the scratch directory to the export tre
 the incorrect claim `build-identity-and-upgrade.md` had to retract. Two documents describing two
 different roots with one name is what produced the contradiction, and it is why this merge names the
 root every time it makes a claim.
+
+The retained-result gate for store epoch deletion protects result availability while an old epoch may be reclaimed. It does not retire the exported tree or provider artifacts, and it does not decide whether `CORAL_JOBS_RETENTION_DAYS` should apply to either.
 
 The preserved provider artifacts live **inside** the export tree —
 `exports.jobsRoot/<jobId>/provider-artifacts/<provider>/actions/<archiveActionId>/`

@@ -53,10 +53,7 @@ from an unexpected result on its own. Both halves live in
 than wait on them. The decision leaves one constraint in its place: a CLI surface may not be changed so
 that a stale reader's existing expectation silently becomes wrong.
 
-**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for enforcement of
-additive-only durable records, not a policy choice. `jobs-read-contract-schema-first` and
-`result-artifact-availability` consume that rule. `cli-machine-channel` must give `wait` a new result
-shape that an old skill cannot silently misread; the output direction will not be defended.
+**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` and `result-artifact-availability` consume that rule. Phase 6 host transfer remains in [`cross-build-provider-host-succession.md`](./cross-build-provider-host-succession.md).
 
 **Relationships that matter before starting.** `legacy-v1-capsule-retirement` and
 `foreign-capsule-retirement-terminal-recovery`
@@ -88,12 +85,11 @@ release and code-warmth ordering above remains the record of why the previous ta
 
 | Order | Entry | Why here |
 | --- | --- | --- |
-| 1 | `store-epoch-replaced-on-undeterminable-open` (member 2) | `reapPostReadyStoreEpochEntries` in `src/store/epoch.ts` can delete an older epoch with running jobs. Check for live rows before reaping; this member can ship without the persistent-unknown design. |
-| 2 | `unauthorized-status-remedy-cannot-act` | `formatDaemonStatus` in `src/cli/format/backend.ts` prints `backend shutdown` for a token mismatch, although that command is rejected. First stop offering a known failing remedy; then decide a proven, unattended way to act. |
-| 3 | `local-app-server-stream-has-no-inactivity-bound` | A stalled Codex/local stream can hold a launch permit indefinitely. Instrument the idle case and choose a provider-safe inactivity disposition. |
-| 4 | `provider-operation-startup-reconciliation-unbounded` | `awaitStartup` in `src/coordinator/services/provider-operation-reconciler.ts` has no elapsed-time bound, so one unsettled recovery can keep the whole coordinator in `starting`. Give expiry a retry owner. |
-| 5 | `coordinator-process-disposition` | `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` can release custody before process absence. Audit runtime-bearing terminal paths and retain custody until absence or transfer is proved. |
-| 6 | `hook-unit-tests-reach-the-real-coral-home` | `runHook` in `tests/unit/hooks/_helpers.ts` inherits the developer's `HOME`; a test spawn can reach a live coordinator. Isolate the fixture home. |
+| 1 | `unauthorized-status-remedy-cannot-act` | `formatDaemonStatus` in `src/cli/format/backend.ts` prints `backend shutdown` for a token mismatch, although that command is rejected. First stop offering a known failing remedy; then decide a proven, unattended way to act. |
+| 2 | `local-app-server-stream-has-no-inactivity-bound` | A stalled Codex/local stream can hold a launch permit indefinitely. Instrument the idle case and choose a provider-safe inactivity disposition. |
+| 3 | `provider-operation-startup-reconciliation-unbounded` | `awaitStartup` in `src/coordinator/services/provider-operation-reconciler.ts` has no elapsed-time bound, so one unsettled recovery can keep the whole coordinator in `starting`. Give expiry a retry owner. |
+| 4 | `coordinator-process-disposition` | `RecoveryRegistry.abort` in `src/jobs/reconcile/registry.ts` can release custody before process absence. Audit runtime-bearing terminal paths and retain custody until absence or transfer is proved. |
+| 5 | `hook-unit-tests-reach-the-real-coral-home` | `runHook` in `tests/unit/hooks/_helpers.ts` inherits the developer's `HOME`; a test spawn can reach a live coordinator. Isolate the fixture home. |
 
 **Not yet, and why it is not laziness.** `wedged-coordinator-self-drain` **was observed on 2026-08-23** and
 its start condition is met — a coordinator held in uninterruptible sleep on an ext4 journal commit, long
@@ -120,11 +116,12 @@ provider-socket lifecycle remains open.
 
 |                                                                                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | **Installed-to-installed takeover shipped in #386 (issue #385); the output direction is a deliberate non-goal.** What remains is enforcement that durable records are additive-only and unknown-key tolerant for mixed-build readers. The historical single-build continuity correction stays in the entry. |
+| [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md) | Enforce additive, unknown-key-tolerant durable records against supported shipped readers; the succession shapes alone do not cover all records. |
 | [`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md) | The counted rows are from the retired flat store, not the active epoch. Automatic re-evaluation of stale quarantine rows is absent; `LifecycleReactor.enforceRetention` in `src/sessions/lifecycle-reactor.ts` still retries a changed-login binding refusal. Per-row operator clear is not an unattended exit under principle 12. |
 | [`legacy-v1-capsule-retirement.md`](./legacy-v1-capsule-retirement.md) | V1, recycled-pid V2 and persistently unknown observations still cannot prove absence. The proposed operator-command exit is withdrawn by principle 12; decide another exit or an explicit bounded-residue policy. |
 | [`foreign-capsule-retirement-terminal-recovery.md`](./foreign-capsule-retirement-terminal-recovery.md) | A crash-exact retirement receipt remains unbuilt; G3 instead keeps bounded, non-capacity-consuming residue for a later boot to rescan. The registry now has thirteen boundaries including `provider-operation-unreadable`; a capsule boundary would be a separate addition. Admission-hold's operator clear is no longer a settled unattended exit. |
-| [`no-store-migration-path.md`](./no-store-migration-path.md) | An incompatible epoch still starts a successor without carrying rows forward. Retention is not migration, and `reapPostReadyStoreEpochEntries` in `src/store/epoch.ts` can delete an older epoch with running rows; see `store-epoch-replaced-on-undeterminable-open`. |
+| [`cross-build-provider-host-succession.md`](./cross-build-provider-host-succession.md) | Phase 6: transfer live provider hosts across compatible builds with authenticated receipts, recovery grants, and continuous output/cancellation. |
+| [`no-store-migration-path.md`](./no-store-migration-path.md) | Store data migration across formats remains unbuilt. Historical readers and retained results preserve job access without copying old rows into a new store. |
 | [`store-format-routing.md`](./store-format-routing.md) | **Dormant:** fingerprint-keyed multi-format routing remains unbuilt. Its flat `formats/<fingerprint>/store.db` layout predates write-once epochs and needs redesign. `routeOrOpenBackendStoreAtStartup` in `src/store/startup-store-routing.ts` owns startup routing, the pre-compact hook uses `resolveCurrentStoreDbPath` in `clients/hooks/lib/store-epoch.mjs`, and `recovery_quarantine` is already in the current format. |
 
 The two capsule rows are what G3 left open, and they are not one entry. `legacy-v1-capsule-retirement` is an
@@ -135,18 +132,7 @@ terminal-recovery entry could use a registry shape introduced by another recover
 receipt is a separate decision. Admission-hold's operator clear is no longer an unattended exit under
 principle 12.
 
-`build-identity`'s first half — a record this build cannot parse must not become a job this build
-destroys — shipped as #316. Installed-to-installed takeover shipped as #386. What remains is the
-**record** direction: enforcing the settled additive-only policy shared with
-[`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) and
-[`result-artifact-availability.md`](./result-artifact-availability.md). The **output** direction — a live
-session holding old skill text driving a new CLI — is closed as a deliberate non-goal: resuming the session
-replaces that text and a model recovers from an unexpected result on its own. What it leaves is a rule the
-`wait` change below has to satisfy rather than wait out.
-
-Read its status block before citing it. The document has now been wrong **three times** about this
-subject — a cause inferred from a bundle-string diff, a trigger declared missing that fires every
-session, and a mixed window called "permitted by design" — so its corrections are kept in place.
+Mixed-build record enforcement is still owed in [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md). A newer installed build can leave durable data for an older retained reader, so an additive contract test remains necessary even though succession shapes already tolerate unknown fields. Provider hosts that cannot transfer across builds block immediate upgrade until Phase 6.
 
 ---
 
@@ -157,13 +143,12 @@ session, and a mixed window called "permitted by design" — so its corrections 
 | [`partially-erased-store-epoch-reaping-residue.md`](./partially-erased-store-epoch-reaping-residue.md) | A partially erased `.reaping-<uuid>` directory without its lock cannot be recursively removed under the current ownership proof. It shares a missing pre-lock fence with `store-epoch-minting-under-sustained-external-interference`, but needs a distinct reclamation outcome. |
 | [`store-epoch-minting-under-sustained-external-interference.md`](./store-epoch-minting-under-sustained-external-interference.md) | Repeated external removal can still starve minting before a writer has an artifact to lock. It shares the pre-lock ownership gap with `partially-erased-store-epoch-reaping-residue`, but concerns writer progress. |
 | [`write-atomic-durable-sync-result-overloads-two-dispositions.md`](./write-atomic-durable-sync-result-overloads-two-dispositions.md) | `writeAtomicDurableSyncNode` returns one `false` for a lost private-artifact race and for a post-rename directory-sync failure. Replace the boolean with dispositions without turning unproven durability into a retry. This shares the result-shape class with the ProcessPort and provider-operation last-error entries. |
-| [`store-epoch-replaced-on-undeterminable-open.md`](./store-epoch-replaced-on-undeterminable-open.md) | Transient failures to open or observe an epoch get a bounded window, but a persistent unknown still replaces it and abandons its `running` jobs. Member 2 can ship alone: `reapPostReadyStoreEpochEntries` in `src/store/epoch.ts` must not delete an older epoch with live rows. Member 1 still needs a boot-safe design; member 3 needs rejection causes. |
+| [`store-epoch-replaced-on-undeterminable-open.md`](./store-epoch-replaced-on-undeterminable-open.md) | Only the rejection-cause member remains: `StoreEpochProof` in `src/store/epoch.ts` still gives `disproven` no cause. |
 
 The first two share a missing pre-lock fence but need different outcomes: reclamation of residue whose
 lock is gone and writer progress before its first artifact. The third changes the storage-port result
 every caller consumes.
-The fourth is a decision about when opening may give up on an epoch it cannot prove unopenable, and it owns
-none of the others' mechanisms.
+The fourth is a diagnostic gap in disproven epoch proofs. Mint authorization and epoch deletion are now governed by separate custody and result evidence.
 
 ---
 
@@ -347,7 +332,7 @@ can ship independently, but only as the whole-directory move its start condition
 |                                                                        |                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`superseded-routing-generation-has-no-owner.md`](./superseded-routing-generation-has-no-owner.md) | Superseded routing-status addresses accumulate and a time-based sweep cannot prove they hold no obligation. The proposed operator quarantine-clear exit is withdrawn under principle 12; re-decide the lifetime design, including finite generation-address collisions and quarantine capacity. |
-| [`export-lifetime.md`](./export-lifetime.md)                           | Nothing prunes `~/.coral/exports/jobs/`. Ever — the retention setting's own doc comment says otherwise. Part 1 gives it a retention authority; part 2 is archived-session restore, whose real question is answerable only once part 1 exists.                                                                                                                                                                                        |
+| [`export-lifetime.md`](./export-lifetime.md) | Epoch deletion now checks independent result availability, but nothing owns expiry or pruning of `~/.coral/exports/jobs/`; archived-session restore remains second. |
 | [`provider-session-residue-has-no-owner.md`](./provider-session-residue-has-no-owner.md) | **Retention discard shipped; on-demand discard remains.** `LifecycleReactor.enforceRetention` in `src/sessions/lifecycle-reactor.ts` now calls `discardSessionResidue`, backed by Codex fork and Claude `tool-results` discard contracts. `discardSessionArtifacts` in that module still omits residue because a concurrent resume can add a descendant while it scans. Establish resume exclusion before extending it. Remove the temporary backlog sweep at 0.11.0. |
 | [`socket-address-ownership.md`](./socket-address-ownership.md)         | **Current-build installation identity closed; shipped-selector compatibility blocked.** Relocated current paths derive from the state root, so caller uid and `TMPDIR` cannot split two current builds; a caller that cannot own the shared installation directory refuses. The v0.10.9 guard now rejects an empty or relative selector as unenumerable, but that build also accepts arbitrary absolute `TMPDIR` values, so no finite compatibility-listener set can guarantee collision with every later shipped invocation. The three provider role binders still inherit an assertion made in another process, and the owner/mode assertion still cannot observe macOS ACL grants. |
 | [`shared-tmp-ownership.md`](./shared-tmp-ownership.md)                 | **Partly closed.** The three files in a job directory are now `0600`; the Bash hook spill and community-summary output use unguessable exclusive temp names; the KB curate corpus asks for a mode; and simulation project state lives below its per-run temp root. What remains is the mode and rename for literal `/tmp/coral-jobs`, including whether job scratch inherits the socket's now-decided installation identity, plus the harness-owned `/tmp/claude-<uid>`. The file-level privacy policy itself still has no decided owner. |
@@ -360,7 +345,7 @@ can ship independently, but only as the whole-directory move its start condition
 |                                                                              |                                                                                                                                                                                                  |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`jobs-read-contract-schema-first.md`](./jobs-read-contract-schema-first.md) | `jobs.list` and `jobs.detail` still lack `responseSchema`; seven other catalog specs now carry one. The jobs conversion remains open, with job scope settled and the consumer inventory ready to audit. |
-| [`result-artifact-availability.md`](./result-artifact-availability.md)       | **Ordinary-operation symptom closed 2026-09-24; two members left.** Every job-terminal commit path now reaches one post-commit export observer. What it cannot reach is a terminal separated from its observer by a failure — a kb daemon dying between commit and journal message, a failed render — where only `wait` renders the file; closing that needs a startup backstop bounded independently of the unpruned export tree. The wait event still carries an unverified path, now reachable only through those failure cases. |
+| [`result-artifact-availability.md`](./result-artifact-availability.md) | Crash-gap recovery now materializes known terminal results; the remaining gap is a wait event that reports an unverified result path after materialization failure. |
 
 ---
 

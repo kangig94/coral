@@ -155,7 +155,7 @@ Evidence whose filename and decoded target do not agree is moved to `~/.coral/st
 
 ## Backend Warm-start
 
-`clients/hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). A contender exits quietly when an incumbent answers health, regardless of their build identities. During an administrative drain it waits briefly for socket release. It does not request shutdown or signal the incumbent. The hook stays free of bundle/flavor comparison. Startup failures are ignored and the CLI can start the backend lazily later.
+`clients/hooks/session-start.mjs` unconditionally spawns `bridge/coral-backend.cjs` near the top of its body (logic absorbed from the former `backend-warm-start.mjs`). The contender checks the serving incumbent's build. When its own same-flavor version strictly outranks that build, it registers upgrade intent; it does not request shutdown or signal the incumbent. A capable incumbent can launch the successor after its obligations allow transfer. For a shipped incumbent without commit support, the contender starts a detached waiter that observes natural idle retirement and starts the target then, without another hook or CLI call. During an administrative drain the contender waits briefly for socket release. The hook stays free of upgrade policy. It renders a recent legacy `handoff_shutdown_capability_rejected` diagnostic as a deferred upgrade while that incumbent remains live. Startup failures are ignored and the CLI can start the backend lazily later.
 
 ## Compact Recovery
 
