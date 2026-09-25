@@ -748,6 +748,22 @@ async function dispatchFrame(
       return;
     }
 
+    if (operationalSpec.dispatch.kind === 'succession') {
+      startRequest();
+      try {
+        const result = rpcPorts.admin.succession
+          ? await rpcPorts.admin.succession(request.method, request.params ?? {})
+          : { kind: 'refused', reason: 'succession protocol unavailable' };
+        await finishUnaryResponse({ kind: 'response', id: request.id, result });
+      } catch (error: unknown) {
+        const response = buildTransportErrorResponse(error);
+        await finishUnaryResponse(requestErrorResponse(request.id, response.message, response.data));
+      } finally {
+        finishRequest();
+      }
+      return;
+    }
+
     if (operationalSpec.dispatch.kind === 'kb-restart') {
       if (!rpcPorts.admin.restartKbDaemon) {
         await finishUnaryResponse(

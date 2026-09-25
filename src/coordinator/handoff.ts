@@ -4,6 +4,7 @@ import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './l
 import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/startup.js';
 import {
   IncumbentMatchesError,
+  incumbentOutranksContender,
   probeIncumbent,
   type DesiredIncumbentIdentity,
   type IncumbentHealth,
@@ -68,6 +69,7 @@ export interface HandoffOptions {
     desired: DesiredIncumbentIdentity;
     lastHealth: IncumbentHealth | null;
   }) => IncumbentIdentity | null;
+  requestSuccession?: (socketPath: string, incumbent: IncumbentIdentity) => Promise<void>;
   signal?: AbortSignal;
   totalBudgetMs: number;
 }
@@ -123,6 +125,24 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
       timePort: opts.runtime.time,
     });
     if (health !== null && health.status !== 'draining') {
+      if (
+        health.version !== undefined &&
+        health.flavor === opts.desired.flavor &&
+        !incumbentOutranksContender(health, opts.desired)
+      ) {
+        const incumbent = opts.readVerifiedIncumbentFromDiscovery({
+          socketPath: opts.socketPath,
+          desired: opts.desired,
+          lastHealth: health,
+        });
+        if (incumbent !== null) {
+          try {
+            await opts.requestSuccession?.(opts.socketPath, incumbent);
+          } catch {
+            // Failed negotiation never grants a contender replacement authority.
+          }
+        }
+      }
       throw new IncumbentMatchesError(opts.desired);
     }
 

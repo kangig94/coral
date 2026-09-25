@@ -9,6 +9,7 @@
 // Adding any of those here turns this file from "orchestrator" into "magnet".
 
 import type { ServerResponse } from 'node:http';
+import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
@@ -111,7 +112,8 @@ import {
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
-import { sweepStoreEpochsPostReady } from '../../store/epoch.js';
+import { resolveCurrentStoreEpoch, sweepStoreEpochsPostReady } from '../../store/epoch.js';
+import { createSuccessionCoordinator } from '../succession/index.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type {
@@ -1425,6 +1427,31 @@ export function createCoordinatorCore(
     return rememberedSelfIncarnation;
   };
 
+  const succession = createSuccessionCoordinator({
+    runDir: runtime.paths.coral.coordinator.runDir,
+    incumbent: {
+      instanceId: identity.instanceId,
+      pid: world.backendPid,
+      incarnation: readSelfIncarnation(),
+      version: identity.version,
+      bundleHash: identity.bundleHash,
+      flavor: identity.flavor,
+    },
+    owners: [],
+    epochKey: () => {
+      if (storeServicesRef.tryGet() === null) return null;
+      try {
+        const dbDir = runtime.paths.coral.store.dbDir;
+        const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+        return epoch === null ? null : join(dbDir, `epoch-${epoch}`);
+      } catch {
+        return null;
+      }
+    },
+    admissionRevision: () => world.launchCoordinator.admissionRevision(),
+    onReconcileError: (error) => world.log(`Succession reconciliation failed: ${formatError(error)}\n`),
+  });
+
   const httpHandlerDeps: HttpHandlerPorts = {
     identity,
     time: runtime.time,
@@ -1433,6 +1460,7 @@ export function createCoordinatorCore(
     remoteAccess: world.remoteAccess,
     childPrincipals: world.childPrincipalRegistry,
     admin: {
+      succession: succession.dispatch,
       getLifecycleState: () => runtimeState.getLifecycle(),
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
       isDrainRequested: control.isDrainRequested,

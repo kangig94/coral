@@ -3,6 +3,9 @@ export const CURRENT_STRICT_BUNDLE_MANIFEST_GENERATION = 2 as const;
 export const CURRENT_STRICT_BUNDLE_MANIFEST_FILE =
   `manifest.v${CURRENT_STRICT_BUNDLE_MANIFEST_GENERATION}.json` as const;
 
+export const SUCCESSION_CAPABILITY_VERSION = 'v1' as const;
+export const SUCCESSION_CAPABILITIES_FILE = `succession-capabilities.${SUCCESSION_CAPABILITY_VERSION}.json` as const;
+
 /**
  * The CLI bundle's file name inside the bundle directory. Extensionless so the bundle directory can
  * sit on PATH and the file answers as the `coral-cli` command itself.

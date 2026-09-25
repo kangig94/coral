@@ -12,6 +12,8 @@ import {
   CLI_BUNDLE_FILE,
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   LEGACY_CLI_BUNDLE_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+  SUCCESSION_CAPABILITY_VERSION,
 } from '../src/infra/bundle-manifest-address.ts';
 
 const { storeEpochHookSource } = await import('../dist/store/epoch.js');
@@ -236,6 +238,18 @@ writeFileSync(
   }) + '\n',
 );
 renameSync(`${strictManifestPath}.tmp`, strictManifestPath);
+const successionCapabilitiesPath = join('clients/build', SUCCESSION_CAPABILITIES_FILE);
+writeFileSync(
+  `${successionCapabilitiesPath}.tmp`,
+  JSON.stringify({
+    version: SUCCESSION_CAPABILITY_VERSION,
+    buildSetId,
+    bundleHash: backendHash,
+    protocols: ['prepare'],
+    accepts: [],
+  }) + '\n',
+);
+renameSync(`${successionCapabilitiesPath}.tmp`, successionCapabilitiesPath);
 execFileSync(process.execPath, ['scripts/verify-kiwi-runtime-build-contract.mjs', 'clients/build'], {
   stdio: 'inherit',
 });

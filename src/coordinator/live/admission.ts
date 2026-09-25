@@ -174,6 +174,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly launchReclamationOracles = new Map<ReclaimablePermitHolderKind, LaunchReclamationOracle>();
   private readonly internalAbortRegistry: AbortRegistry;
   private shutdownRequested = false;
+  private successionAdmissionRevision = 0;
   private providerOperationJournalProbe:
     | ((identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult)
     | null = null;
@@ -218,6 +219,10 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return total;
   }
 
+  admissionRevision(): number {
+    return this.successionAdmissionRevision;
+  }
+
   requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
     const activeLaunches = this.getActiveMap(pool);
@@ -260,6 +265,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       cancellation: null,
     };
     queuedLaunches.push(entry);
+    this.successionAdmissionRevision++;
     return this.queuedHandle(entry, pool);
   }
 
@@ -277,6 +283,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       });
     }
     activeLaunches.delete(permit.jobId);
+    this.successionAdmissionRevision++;
     this.cancelPreparedBindingsForPermit(permit);
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
   }
@@ -577,6 +584,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       cancellation: null,
     };
     queuedLaunches.push(entry);
+    this.successionAdmissionRevision++;
 
     return this.queuedHandle(entry, pool);
   }
@@ -1189,6 +1197,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     const index = queuedLaunches.indexOf(entry);
     if (index !== -1) {
       queuedLaunches.splice(index, 1);
+      this.successionAdmissionRevision++;
       entry.cancellation = { kind: 'cancelled' };
       entry.reject(new Error(QUEUE_CANCELED_MESSAGE));
       this.admitQueueHead(pool);
@@ -1262,6 +1271,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   }
 
   private createPermit(input: Omit<LaunchPermit, 'acquiredAt'>): LaunchPermit {
+    this.successionAdmissionRevision++;
     return { ...input, acquiredAt: this.runtime.time.now() };
   }
 

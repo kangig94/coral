@@ -19,6 +19,7 @@ import type {
 } from '../provider-proxy/operator-disposition-vocabulary.js';
 
 interface AdminControlPort {
+  succession?(method: string, params: unknown): Promise<unknown>;
   decideLegacyShutdown?(): { code: 'shutdown_unauthorized'; message: string };
   getLifecycleState?(): 'starting' | 'kernel-ready' | 'running' | 'draining' | 'stopped';
   isLifecycleRunning(): boolean;

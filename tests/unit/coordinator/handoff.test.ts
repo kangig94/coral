@@ -78,6 +78,37 @@ describe('bindWithHandoff', () => {
     expect(kill).not.toHaveBeenCalled();
   });
 
+  it('requests succession only for a strictly older answering incumbent of the same flavor', async () => {
+    const requestSuccession = vi.fn(async () => undefined);
+    for (const [version, flavor] of [
+      ['0.10.13', 'prod'],
+      ['0.10.14', 'prod'],
+      ['0.10.13', 'dev'],
+    ] as const) {
+      healthProbe.mockResolvedValueOnce({
+        version,
+        flavor,
+        bundleHash: 'incumbent',
+        namespace: 'incumbent',
+        status: 'ok',
+      });
+      const { handoff } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));
+      await expect(
+        bindWithHandoff({
+          ...handoff,
+          readVerifiedIncumbentFromDiscovery: () => ({ pid: 100, source: 'discovery', bootToken: 'boot' }),
+          requestSuccession,
+        }),
+      ).rejects.toBeInstanceOf(IncumbentMatchesError);
+    }
+    expect(requestSuccession).toHaveBeenCalledTimes(1);
+    expect(requestSuccession).toHaveBeenCalledWith('/tmp/coral-consent-test.sock', {
+      pid: 100,
+      source: 'discovery',
+      bootToken: 'boot',
+    });
+  });
+
   it('waits for an administrative drain to release the socket', async () => {
     healthProbe.mockResolvedValue({
       version: '0.10.13',

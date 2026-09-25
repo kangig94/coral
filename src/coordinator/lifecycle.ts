@@ -77,6 +77,8 @@ import {
   type IncumbentHealth,
   type IncumbentIdentity,
 } from '../transport/ipc/handoff.js';
+import { requestIpcMethod } from '../transport/ipc/client.js';
+import { SUCCESSION_METHODS } from '../infra/succession-address.js';
 import {
   probeCoordinator,
   type CoordinatorDiscoveryRecord,
@@ -87,7 +89,7 @@ import type { RecoveryCapableService } from '../jobs/reconcile/contracts.js';
 import type { ProjectRequestPort } from './contracts.js';
 import type { TypedEventBus } from './event-bus.js';
 import type { IpcListener, ListenIpcServerResult, PublishedIpcSocketAddress } from '../transport/ipc/server.js';
-import { resolveRunningBundleDir } from '../infra/bundle-manifest.js';
+import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../infra/bundle-manifest.js';
 import type { ValidatedHandoffTarget } from '../infra/handoff-target.js';
 import type { Database } from '../store/db.js';
 import type { ResolvedStoreEpoch } from '../store/epoch.js';
@@ -1039,6 +1041,20 @@ async function runLifecycleStartup({
             { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
             evidence,
           ),
+        requestSuccession: async (incumbentSocketPath, incumbent) => {
+          if (incumbent.bootToken === undefined) return;
+          const target = resolveStrictBundleIdentity();
+          if (!target.ok) return;
+          await requestIpcMethod(
+            incumbentSocketPath,
+            SUCCESSION_METHODS.request,
+            {
+              requestId: runtime.ids.uuid(),
+              target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
+            },
+            { auth: { kind: 'boot', token: incumbent.bootToken }, timeoutMs: 1_000, time: runtime.time },
+          );
+        },
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
       });
