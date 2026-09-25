@@ -69,6 +69,8 @@ import {
   bindWithHandoff,
   BackendAlreadyRunningError,
   HandoffEscalationError,
+  requestUpgradeFromContender,
+  UpgradeWaiterUnavailableError,
   type BoundCoordinator,
 } from './handoff.js';
 import {
@@ -77,8 +79,6 @@ import {
   type IncumbentHealth,
   type IncumbentIdentity,
 } from '../transport/ipc/handoff.js';
-import { requestIpcMethod } from '../transport/ipc/client.js';
-import { SUCCESSION_METHODS } from '../infra/succession-address.js';
 import {
   probeCoordinator,
   type CoordinatorDiscoveryRecord,
@@ -777,6 +777,7 @@ export type LifecycleDeps = {
   readonly streamResponses: Set<ServerResponse>;
   readonly discussStores: Map<string, DiscussSessionStore>;
   readonly eventBus: TypedEventBus;
+  readonly onRecoverySettlement?: (jobId: string) => void;
   readonly launchCoordinator: LaunchCoordinator;
   readonly providerRegistry: ProviderRegistry;
   readonly systemProviderScope?: SystemProviderScope;
@@ -789,6 +790,7 @@ export type LifecycleDeps = {
     ownership: ProviderOperationStartupOwnership,
     signal: AbortSignal,
   ) => Promise<StartupReconciliationReport>;
+  readonly reconcileCustodyAtStartup?: () => void;
   readonly startProviderOperationReconciler?: () => void;
   readonly stopProviderOperationReconciler?: () => ProviderOperationReconcilerStopDisposition;
   /**
@@ -969,6 +971,7 @@ async function runLifecycleStartup({
     getRecoveryService,
     connectProviderOperationRecovery,
     reconcileProviderOperationsAtStartup,
+    reconcileCustodyAtStartup,
     startProviderOperationReconciler,
     startupRecoveryBarrierPublisher,
     getDiscussStoreForSource,
@@ -1041,19 +1044,21 @@ async function runLifecycleStartup({
             { storage: runtime.storage, env: runtime.env, paths: runtime.paths },
             evidence,
           ),
-        requestSuccession: async (incumbentSocketPath, incumbent) => {
-          if (incumbent.bootToken === undefined) return;
+        requestSuccession: async (incumbentSocketPath, incumbent, health) => {
           const target = resolveStrictBundleIdentity();
           if (!target.ok) return;
-          await requestIpcMethod(
-            incumbentSocketPath,
-            SUCCESSION_METHODS.request,
-            {
-              requestId: runtime.ids.uuid(),
-              target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
-            },
-            { auth: { kind: 'boot', token: incumbent.bootToken }, timeoutMs: 1_000, time: runtime.time },
-          );
+          const waiting = await requestUpgradeFromContender({
+            runDir: runtime.paths.coral.coordinator.runDir,
+            socketPath: incumbentSocketPath,
+            incumbent,
+            health,
+            target: { build: target.manifest, pluginRootLabel: identity.pluginRoot },
+            requestId: runtime.ids.uuid(),
+            time: runtime.time,
+          });
+          if (waiting.kind === 'refused' || waiting.kind === 'deferred') {
+            throw new UpgradeWaiterUnavailableError(waiting.reason);
+          }
         },
         signal,
         totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
@@ -1158,6 +1163,7 @@ async function runLifecycleStartup({
         runtime,
         runtimeState,
         eventBus: deps.eventBus,
+        onRecoverySettlement: deps.onRecoverySettlement,
         getRecoveryService,
         createInvocationContext,
         log: identity.log,
@@ -1218,6 +1224,7 @@ async function runLifecycleStartup({
 
     // ===== Era II (recovery) =====
     await yieldPastKernelReadyResponse();
+    reconcileCustodyAtStartup?.();
     // This order is load-bearing: a pending publication contains remote facts that the generic job walk
     // cannot see, so allowing that walk to classify the job first could authorize a contradictory execution.
     const providerOperationStartupSnapshot = recoveryCoordinator.snapshotProviderOperationStartupOwnership();

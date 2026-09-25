@@ -1,4 +1,12 @@
 import { z } from 'zod';
+import {
+  bindCustodyProcessTicket,
+  CUSTODY_PROCESS_TICKET_ENV,
+  custodyProcessArgument,
+  parseCustodyProcessTicket,
+  recordChildRoleCustodyIntent,
+  type CustodyProcessTicket,
+} from '../infra/custody-process-ticket.js';
 
 import { BUILD_FLAVOR_ENV_KEY, resolveBuildFlavor } from '../infra/build-flavor.js';
 import { backendLog } from '../infra/backend-log.js';
@@ -117,6 +125,7 @@ export type ProviderRoleMainPorts = Readonly<{
   /** Overrides the capsule/endpoint path base directory; defaults to the real `~/.coral` tree. Tests pass a
    *  scoped temp directory so they never touch real user state. */
   baseDir?: string;
+  custody?: Pick<CustodyProcessTicket, 'runDir' | 'epoch'>;
   /** Injected for tests; defaults to the real embedded-vs-adjacent-manifest strict identity check. */
   resolveStrictIdentity?(): StrictBundleIdentityResult;
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
@@ -792,6 +801,22 @@ export async function startProviderGuardianRole(
     [BUILD_FLAVOR_ENV_KEY]: capsule.flavor,
     [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
   };
+  const recordRole = (
+    role: 'reaper' | 'proxy',
+    capsulePath: string,
+    processGroupId: number | null,
+  ): CustodyProcessTicket | null =>
+    ports.custody === undefined
+      ? null
+      : recordChildRoleCustodyIntent({
+          ...ports.custody,
+          owner: 'provider-proxy-set',
+          operationId: `${capsule.proxyInstanceId}:${role}`,
+          capsule: capsulePath,
+          nowMs: ports.runtime.time.now(),
+          bindWithinMs: 10_000,
+          processGroupId,
+        });
   const exitProcess = ports.exitProcess ?? ((code: number): void => process.exit(code));
   const schedule = realRoleOutcomeScheduler(ports);
   const self = readSelfIdentity(ports);
@@ -802,11 +827,14 @@ export async function startProviderGuardianRole(
   let failedRoleSpawn: HeldRoleSpawn | null = null;
 
   try {
+    const reaperCapsule = reaperCapsulePathFrom(capsule, ports.baseDir);
+    const reaperTicket = recordRole('reaper', reaperCapsule, self.pid);
     const reaperDisposition = await requireSpawnedRole(
-      spawnRoleProcess('reaper', reaperCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
+      spawnRoleProcess('reaper', reaperCapsule, spawnPorts, {
         pluginRoot: ports.pluginRoot,
         detached: false,
         envAdditions: roleEnv,
+        ...(reaperTicket === null ? {} : { custodyTicket: JSON.stringify(reaperTicket) }),
       }),
     );
     if (reaperDisposition.kind === 'held') {
@@ -814,6 +842,13 @@ export async function startProviderGuardianRole(
       throw reaperDisposition.error;
     }
     reaperSpawn = reaperDisposition;
+    if (reaperTicket !== null)
+      bindCustodyProcessTicket(
+        reaperTicket,
+        { pid: reaperSpawn.pid, incarnation: reaperSpawn.incarnation },
+        ports.runtime.time.now(),
+        true,
+      );
 
     const reaperConnected = connectRoleControlWithRetry(capsule.reaperControlEndpoint, timer, {
       connectTimeoutMs: ROLE_CONNECT_TIMEOUT_MS,
@@ -877,11 +912,14 @@ export async function startProviderGuardianRole(
     await guardian.listen();
     ports.onGuardianListening?.();
 
+    const proxyCapsule = proxyCapsulePathFrom(capsule, ports.baseDir);
+    const proxyTicket = recordRole('proxy', proxyCapsule, null);
     const proxyDisposition = await requireSpawnedRole(
-      spawnRoleProcess('proxy', proxyCapsulePathFrom(capsule, ports.baseDir), spawnPorts, {
+      spawnRoleProcess('proxy', proxyCapsule, spawnPorts, {
         pluginRoot: ports.pluginRoot,
         detached: true,
         envAdditions: roleEnv,
+        ...(proxyTicket === null ? {} : { custodyTicket: JSON.stringify(proxyTicket) }),
       }),
     );
     if (proxyDisposition.kind === 'held') {
@@ -889,6 +927,13 @@ export async function startProviderGuardianRole(
       throw proxyDisposition.error;
     }
     proxySpawn = proxyDisposition;
+    if (proxyTicket !== null)
+      bindCustodyProcessTicket(
+        proxyTicket,
+        { pid: proxySpawn.pid, incarnation: proxySpawn.incarnation },
+        ports.runtime.time.now(),
+        true,
+      );
 
     const containmentRecorded = guardian.recordContainment({
       pid: proxySpawn.pid,
@@ -1348,7 +1393,21 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
   process.stdout.on('error', guardParentPipe);
   process.stderr.on('error', guardParentPipe);
 
+  const custodyTicketValue = process.env[CUSTODY_PROCESS_TICKET_ENV];
+  const custodyTicket = custodyTicketValue === undefined ? null : parseCustodyProcessTicket(custodyTicketValue);
+  if (custodyTicket !== null && process.argv.at(-1) !== custodyProcessArgument(custodyTicket.processToken)) {
+    throw new Error('Provider role process token does not match its ticket.');
+  }
+  if (custodyTicket === null) delete process.env.CORAL_CUSTODY_EPOCH;
+  else process.env.CORAL_CUSTODY_EPOCH = custodyTicket.epoch;
   const runtime = options.runtime ?? createRealRuntime(resolveBuildFlavor(process.env));
+  if (custodyTicket !== null) {
+    const pid = runtime.env.pid();
+    const incarnation = runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform);
+    if (incarnation === null) throw new Error('Provider role could not bind its custody incarnation.');
+    bindCustodyProcessTicket(custodyTicket, { pid, incarnation }, runtime.time.now());
+    delete process.env[CUSTODY_PROCESS_TICKET_ENV];
+  }
   activeRoleShutdownDispose?.();
   let removeRoleSignalHandlers = (): void => undefined;
   let disposeRoleLifecycle = (): void => undefined;
@@ -1369,6 +1428,7 @@ export async function runProviderRoleMain(mode: ProviderRoleArgv, options: Provi
     runtime,
     pluginRoot: options.pluginRoot,
     exitProcess: probeGate.requestExit,
+    ...(custodyTicket === null ? {} : { custody: custodyTicket }),
   };
 
   let handle: ProviderRoleHandle;

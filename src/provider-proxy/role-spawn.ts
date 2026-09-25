@@ -18,6 +18,11 @@ import {
 } from './control-client.js';
 import type { ControlEndpointTimer } from './control-endpoint.js';
 import { PROVIDER_ROLE_FLAGS, type ProviderRole } from './role-argv.js';
+import {
+  CUSTODY_PROCESS_TICKET_ENV,
+  custodyProcessArgument,
+  parseCustodyProcessTicket,
+} from '../infra/custody-process-ticket.js';
 
 /**
  * The shared mechanics every role-spawning caller needs: launching one role process from the existing
@@ -63,6 +68,7 @@ export type RoleSpawnOptions = Readonly<{
    *  parent's group. */
   detached: boolean;
   envAdditions?: Record<string, string>;
+  custodyTicket?: string;
   /** Overrides "am I already running as the backend artifact"; defaults to `process.argv[1]`. */
   currentEntrypoint?: string;
   /** Overrides the node executable used to re-invoke the artifact; defaults to `process.execPath`. */
@@ -186,9 +192,19 @@ export function spawnRoleProcess(
   const command = options.command ?? process.execPath;
   const child = ports.process.spawn({
     command,
-    args: [entrypoint, ROLE_FLAG_BY_ROLE[role], capsulePath],
+    args: [
+      entrypoint,
+      ROLE_FLAG_BY_ROLE[role],
+      capsulePath,
+      ...(options.custodyTicket === undefined
+        ? []
+        : [custodyProcessArgument(parseCustodyProcessTicket(options.custodyTicket).processToken)]),
+    ],
     cwd: options.pluginRoot,
-    envAdditions: options.envAdditions ?? {},
+    envAdditions: {
+      ...options.envAdditions,
+      ...(options.custodyTicket === undefined ? {} : { [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket }),
+    },
     detached: options.detached,
   });
 

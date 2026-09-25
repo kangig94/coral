@@ -21,22 +21,23 @@ import {
 } from '../../providers/app-server-transport.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { getActiveLimit, parsePositiveInt } from './worker-limits.js';
-import type {
-  AdmissionResult,
-  LaunchCoordinatorPort,
-  LaunchPermit,
-  LaunchPermitDiagnostic,
-  LaunchPermitReclamationDiagnostic,
-  LaunchPermitReclamationEvidence,
-  LaunchReclamationProbeResult,
-  LaunchPool,
-  LaunchRelease,
-  LaunchReleaseDiagnostic,
-  LaunchReservationView,
-  PermitHolder,
-  QueueCancellation,
-  QueuedHandle,
-  ReclaimablePermitHolderKind,
+import {
+  SuccessionAdmissionPausedError,
+  type AdmissionResult,
+  type LaunchCoordinatorPort,
+  type LaunchPermit,
+  type LaunchPermitDiagnostic,
+  type LaunchPermitReclamationDiagnostic,
+  type LaunchPermitReclamationEvidence,
+  type LaunchReclamationProbeResult,
+  type LaunchPool,
+  type LaunchRelease,
+  type LaunchReleaseDiagnostic,
+  type LaunchReservationView,
+  type PermitHolder,
+  type QueueCancellation,
+  type QueuedHandle,
+  type ReclaimablePermitHolderKind,
 } from '../../jobs/contracts/admission.js';
 import type {
   ProviderOperationCancellationResult,
@@ -102,6 +103,9 @@ const QUEUE_CANCELED_MESSAGE = 'Launch canceled while queued';
 const QUEUE_DRAINED_MESSAGE = 'Launch canceled while queue was drained';
 const SHUTDOWN_LAUNCH_REJECTED_MESSAGE = 'Launch rejected because shutdown has begun';
 const TERMINATION_RETRY_INTERVAL_MS = 50;
+export const SUCCESSION_PAUSE_ATTEMPT_MS = 5_000;
+export const SUCCESSION_PAUSE_TOTAL_MS = 15_000;
+export const SUCCESSION_PAUSE_ROLLING_WINDOW_MS = 60_000;
 export const MAX_LAUNCH_RELEASE_DIAGNOSTICS = 100;
 export const MAX_LAUNCH_RECLAMATION_DIAGNOSTICS = 100;
 // Admission precedes the first job journal append, so journal absence cannot authorize release inside this window.
@@ -130,6 +134,17 @@ export type PendingLaunchSettlementDisposition =
       retainedLaunches: readonly PendingDurableLaunchIdentity[];
       owner: 'launch-coordinator';
     }>;
+
+export type SuccessionPauseDecision =
+  | Readonly<{ kind: 'paused'; attemptId: string; deadlineAtMs: number }>
+  | Readonly<{ kind: 'refused'; reason: 'stale-preparation' | 'pause-active' | 'aggregate-budget-exhausted' }>;
+
+type PauseInterval = Readonly<{ startedAtMs: number; endedAtMs: number }>;
+type ActiveSuccessionPause = Readonly<{
+  attemptId: string;
+  startedAtMs: number;
+  timer: TimerHandle;
+}>;
 
 export type ChildTerminationDisposition =
   | Readonly<{ kind: 'all-children-observed-absent' }>
@@ -175,6 +190,9 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
   private readonly internalAbortRegistry: AbortRegistry;
   private shutdownRequested = false;
   private successionAdmissionRevision = 0;
+  private readonly successionObligationListeners = new Set<() => void>();
+  private successionPause: ActiveSuccessionPause | null = null;
+  private readonly successionPauseIntervals: PauseInterval[] = [];
   private providerOperationJournalProbe:
     | ((identity: ProviderOperationBindingIdentity) => ProviderOperationJournalProbeResult)
     | null = null;
@@ -223,8 +241,81 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     return this.successionAdmissionRevision;
   }
 
-  requestLaunch(jobId: string, provider: string, executionOwner: ExecutionOwner, pool: LaunchPool): AdmissionResult {
+  subscribeSuccessionObligationChanges(listener: () => void): () => void {
+    this.successionObligationListeners.add(listener);
+    return () => this.successionObligationListeners.delete(listener);
+  }
+
+  private notifySuccessionObligationChange(): void {
+    for (const listener of this.successionObligationListeners) listener();
+  }
+
+  beginSuccessionCommitWindow(attemptId: string, expectedRevision: number): SuccessionPauseDecision {
+    if (this.successionAdmissionRevision !== expectedRevision) {
+      return { kind: 'refused', reason: 'stale-preparation' };
+    }
+    if (this.successionPause !== null) {
+      return { kind: 'refused', reason: 'pause-active' };
+    }
+
+    const now = this.successionClockMs();
+    const windowStart = now - SUCCESSION_PAUSE_ROLLING_WINDOW_MS;
+    let spentMs = 0;
+    for (const interval of this.successionPauseIntervals) {
+      spentMs += Math.max(0, interval.endedAtMs - Math.max(interval.startedAtMs, windowStart));
+    }
+    if (spentMs + SUCCESSION_PAUSE_ATTEMPT_MS > SUCCESSION_PAUSE_TOTAL_MS) {
+      return { kind: 'refused', reason: 'aggregate-budget-exhausted' };
+    }
+
+    const deadlineAtMs = this.runtime.time.now() + SUCCESSION_PAUSE_ATTEMPT_MS;
+    const timer = this.runtime.time.setTimeout(() => {
+      this.endSuccessionCommitWindow(attemptId);
+    }, SUCCESSION_PAUSE_ATTEMPT_MS);
+    this.successionPause = { attemptId, startedAtMs: now, timer };
+    return { kind: 'paused', attemptId, deadlineAtMs };
+  }
+
+  endSuccessionCommitWindow(attemptId: string): boolean {
+    const pause = this.successionPause;
+    if (pause === null || pause.attemptId !== attemptId) return false;
+    this.runtime.time.clearTimeout(pause.timer);
+    this.successionPause = null;
+    const now = this.successionClockMs();
+    this.successionPauseIntervals.push({ startedAtMs: pause.startedAtMs, endedAtMs: now });
+    const windowStart = now - SUCCESSION_PAUSE_ROLLING_WINDOW_MS;
+    while (this.successionPauseIntervals[0]?.endedAtMs <= windowStart) {
+      this.successionPauseIntervals.shift();
+    }
+    return true;
+  }
+
+  successionAdmissionPaused(): boolean {
+    return this.successionPause !== null;
+  }
+
+  admitTopLevelLaunch(): boolean {
+    if (this.successionPause !== null) return false;
+    this.successionAdmissionRevision++;
+    return true;
+  }
+
+  private successionClockMs(): number {
+    return Number(this.runtime.time.monotonicNow());
+  }
+
+  requestLaunch(
+    jobId: string,
+    provider: string,
+    executionOwner: ExecutionOwner,
+    pool: LaunchPool,
+    acceptedWork = false,
+  ): AdmissionResult {
     if (this.shutdownRequested) throw new Error(SHUTDOWN_LAUNCH_REJECTED_MESSAGE);
+    if (this.successionPause !== null) {
+      if (!acceptedWork) throw new SuccessionAdmissionPausedError();
+      this.successionAdmissionRevision++;
+    }
     const activeLaunches = this.getActiveMap(pool);
     const queuedLaunches = this.getQueue(pool);
     this.rejectDuplicateReservation(jobId);
@@ -285,6 +376,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
     activeLaunches.delete(permit.jobId);
     this.successionAdmissionRevision++;
     this.cancelPreparedBindingsForPermit(permit);
+    this.notifySuccessionObligationChange();
     return { kind: 'released', pool: permit.pool, admittedNext: this.admitQueueHead(permit.pool) };
   }
 
@@ -525,6 +617,7 @@ export class LaunchCoordinator implements LaunchCoordinatorPort, ProviderOperati
       reclaimedAtMs,
     });
     this.admitQueueHead(permit.pool);
+    this.notifySuccessionObligationChange();
     return true;
   }
 

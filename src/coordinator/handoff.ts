@@ -1,4 +1,9 @@
 import type { Runtime } from '../runtime/ports.js';
+import { compareProductVersions } from '../infra/product-version.js';
+import { readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.js';
+import { requestIpcMethod } from '../transport/ipc/client.js';
+import { SUCCESSION_METHODS } from '../infra/succession-address.js';
+import { requestLegacyUpgrade, type LegacyUpgradeStart } from '../upgrade-waiter/start.js';
 import { CoralSetupError, renderHandoffRefusal, type HandoffRefusalInit } from '../runtime/errors.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
 import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/startup.js';
@@ -25,6 +30,13 @@ export class BackendAlreadyRunningError extends Error {
   constructor() {
     super('Coral backend already running');
     this.name = 'BackendAlreadyRunningError';
+  }
+}
+
+export class UpgradeWaiterUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`Upgrade waiter unavailable: ${reason}`);
+    this.name = 'UpgradeWaiterUnavailableError';
   }
 }
 
@@ -69,9 +81,74 @@ export interface HandoffOptions {
     desired: DesiredIncumbentIdentity;
     lastHealth: IncumbentHealth | null;
   }) => IncumbentIdentity | null;
-  requestSuccession?: (socketPath: string, incumbent: IncumbentIdentity) => Promise<void>;
+  requestSuccession?: (socketPath: string, incumbent: IncumbentIdentity, health: IncumbentHealth) => Promise<void>;
   signal?: AbortSignal;
   totalBudgetMs: number;
+}
+
+/** An absent or failed capability response cannot authorize the contender to skip its waiter. */
+export async function requestUpgradeFromContender(options: Readonly<{
+  socketPath: string;
+  runDir: string;
+  incumbent: IncumbentIdentity;
+  health: IncumbentHealth;
+  target: UpgradeIntent['target'];
+  requestId: string;
+  time: Runtime['time'];
+  request?: (socketPath: string, method: string, params: unknown, options: unknown) => Promise<unknown>;
+  startLegacy?: typeof requestLegacyUpgrade;
+}>): Promise<LegacyUpgradeStart | Readonly<{ kind: 'incumbent-commit-capable' }>> {
+  const { health, incumbent, target } = options;
+  const instanceId = health.instanceId ?? incumbent.instanceId;
+  if (health.version === undefined || instanceId === undefined) {
+    return { kind: 'refused', reason: 'verified incumbent identity is incomplete' };
+  }
+  try {
+    if (health.flavor !== target.build.flavor || compareProductVersions(target.build.version, health.version) <= 0) {
+      return { kind: 'refused', reason: 'target does not strictly outrank the incumbent' };
+    }
+  } catch {
+    return { kind: 'refused', reason: 'build version is invalid' };
+  }
+  if (incumbent.bootToken !== undefined) {
+    try {
+      const response = await (options.request ?? requestIpcMethod<unknown>)(
+        options.socketPath,
+        SUCCESSION_METHODS.request,
+        { requestId: options.requestId, target },
+        { auth: { kind: 'boot', token: incumbent.bootToken }, timeoutMs: 1_000, time: options.time },
+      );
+      if (
+        typeof response === 'object' && response !== null &&
+        'kind' in response && response.kind === 'registered' &&
+        'incumbentCanCommit' in response && response.incumbentCanCommit === true
+      ) return { kind: 'incumbent-commit-capable' };
+    } catch {
+      // A failed negotiation cannot prove the incumbent can commit.
+    }
+  }
+  const observed = readUpgradeIntent(options.runDir);
+  const recordedIncumbent = observed.kind === 'readable' &&
+    observed.intent.incumbent.instanceId === instanceId &&
+    observed.intent.incumbent.pid === incumbent.pid &&
+    observed.intent.incumbent.version === health.version &&
+    observed.intent.incumbent.bundleHash === health.bundleHash &&
+    observed.intent.incumbent.flavor === health.flavor
+    ? observed.intent.incumbent
+    : null;
+  return (options.startLegacy ?? requestLegacyUpgrade)({
+    runDir: options.runDir,
+    socketPath: options.socketPath,
+    incumbent: recordedIncumbent ?? {
+      instanceId,
+      pid: incumbent.pid,
+      incarnation: incumbent.incarnation ?? null,
+      version: health.version,
+      bundleHash: health.bundleHash,
+      flavor: health.flavor,
+    },
+    target,
+  });
 }
 
 function createBoundCoordinator(sawIncumbent: boolean, opts: HandoffOptions): BoundCoordinator {
@@ -137,8 +214,9 @@ export async function bindWithHandoff(initialOptions: HandoffOptions): Promise<B
         });
         if (incumbent !== null) {
           try {
-            await opts.requestSuccession?.(opts.socketPath, incumbent);
-          } catch {
+            await opts.requestSuccession?.(opts.socketPath, incumbent, health);
+          } catch (error: unknown) {
+            if (error instanceof UpgradeWaiterUnavailableError) throw error;
             // Failed negotiation never grants a contender replacement authority.
           }
         }

@@ -62,7 +62,7 @@ export interface ListResult {
 type CoordinatorLaunchCoordinator = LaunchCoordinatorPort &
   ProviderOperationBindingPort &
   SettledUnboundStatusHydrationPort &
-  ProviderDurableSpawner;
+  ProviderDurableSpawner & { admitTopLevelLaunch?: () => boolean };
 
 export type ExecutionServiceDeps = {
   runtime: Runtime;

@@ -14,6 +14,8 @@ import {
   CLI_BUNDLE_FILE,
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
   LEGACY_CLI_BUNDLE_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
+  UPGRADE_WAITER_BUNDLE_FILE,
 } from '../src/infra/bundle-manifest-address.ts';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
@@ -24,9 +26,11 @@ const expectedBuildFiles = new Set([
   LEGACY_CLI_BUNDLE_FILE,
   'coral-claude-appserver.cjs',
   'coral-durable-wrapper.cjs',
+  UPGRADE_WAITER_BUNDLE_FILE,
   'package.json',
   'manifest.json',
   CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+  SUCCESSION_CAPABILITIES_FILE,
 ]);
 if (!existsSync(buildDir)) {
   throw new Error(`Kiwi build contract is missing ${buildDir}; run \`npm run build\` before this verifier.`);

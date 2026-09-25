@@ -38,6 +38,10 @@ export type SuccessionReconcilerOptions = Readonly<{
   }> | null;
   onIntentChanged?: () => void;
   onReconcileError?: (error: unknown) => void;
+  commitAvailable?: boolean;
+  subscribeObligationChanges?: (notify: () => void) => () => void;
+  launchPrepared?: (intent: UpgradeIntent, preparation: SuccessionPreparation) => Promise<void>;
+  retryIntervalMs?: number;
 }>;
 
 export type SuccessionDecision =
@@ -60,6 +64,9 @@ export type SuccessionReconciler = Readonly<{
   commit: (attemptId: string) => Promise<SuccessionDecision>;
   abort: (attemptId: string) => Promise<SuccessionDecision>;
   status: (requestId?: string) => SuccessionStatus;
+  reconcile: () => Promise<SuccessionDecision>;
+  notifyObligationChange: () => void;
+  dispose: () => void;
 }>;
 
 function sameTarget(left: Target, right: Target): boolean {
@@ -158,11 +165,84 @@ function emptyCapabilities(intent: UpgradeIntent): SuccessionCapabilities {
 /** Preparation cannot release an owner until its receipt and recovery grant are durably bound to the attempt. */
 export function createSuccessionReconciler(options: SuccessionReconcilerOptions): SuccessionReconciler {
   const newAttemptId = options.newAttemptId ?? randomUUID;
-  const schedulePreparation = (requestId: string): void => {
+  let disposed = false;
+  let reconciling: Promise<SuccessionDecision> | null = null;
+  const launchedAttempts = new Set<string>();
+  const notifyObligationChange = (): void => {
+    if (disposed) return;
     queueMicrotask(() => {
-      void prepare(requestId).catch((error: unknown) => options.onReconcileError?.(error));
+      void reconcile().catch((error: unknown) => options.onReconcileError?.(error));
     });
   };
+  const unsubscribe = options.subscribeObligationChanges?.(notifyObligationChange);
+  const retryTimer = setInterval(notifyObligationChange, options.retryIntervalMs ?? 30_000);
+  retryTimer.unref();
+  queueMicrotask(notifyObligationChange);
+
+  function reconcile(): Promise<SuccessionDecision> {
+    if (reconciling !== null) return reconciling;
+    const pending = reconcilePending().finally(() => {
+      reconciling = null;
+    });
+    reconciling = pending;
+    return pending;
+  }
+
+  async function reconcilePending(): Promise<SuccessionDecision> {
+    const observed = status();
+    if (disposed || observed.kind !== 'readable') return { kind: 'deferred', reason: 'no active upgrade intent' };
+    const { intent } = observed;
+    if (intent.disposition === 'closed' || intent.disposition === 'completed') {
+      return { kind: 'deferred', reason: 'upgrade intent has ended' };
+    }
+    if (incumbentKey(intent.incumbent) !== incumbentKey(options.incumbent)) {
+      return { kind: 'deferred', reason: 'upgrade intent names another incumbent' };
+    }
+    if (options.commitAvailable !== true) {
+      return { kind: 'deferred', reason: 'incumbent needs a legacy retirement waiter' };
+    }
+    const prepared = await prepare(intent.requestId);
+    if (prepared.kind !== 'prepared') return prepared;
+    const declaration = readSuccessionCapabilities(join(intent.target.pluginRootLabel, 'bridge'), intent.target.build);
+    if (declaration.kind !== 'declared' || !declaration.capabilities.protocols.includes('commit')) {
+      return { kind: 'deferred', reason: 'target needs a legacy retirement waiter' };
+    }
+    const current = status(intent.requestId);
+    if (current.kind !== 'readable' || current.preparation?.attemptId !== prepared.preparation.attemptId) {
+      return { kind: 'deferred', reason: 'prepared attempt changed before launch' };
+    }
+    if (current.preparation.stage === 'ready') return commit(current.preparation.attemptId);
+    if (current.intent.attemptDeadline !== null && Date.parse(current.intent.attemptDeadline) <= Date.now()) {
+      launchedAttempts.delete(current.preparation.attemptId);
+      return abort(current.preparation.attemptId);
+    }
+    if (options.launchPrepared === undefined) {
+      return { kind: 'deferred', reason: 'succession launch capability is not installed' };
+    }
+    if (launchedAttempts.has(current.preparation.attemptId)) {
+      return { kind: 'deferred', reason: 'successor launch is awaiting readiness' };
+    }
+    if (revalidateUpgradeIntentTarget(current.intent).kind !== 'validated') {
+      return { kind: 'deferred', reason: 'target build no longer validates at launch' };
+    }
+    launchedAttempts.add(current.preparation.attemptId);
+    try {
+      await options.launchPrepared(current.intent, current.preparation);
+    } catch (error: unknown) {
+      launchedAttempts.delete(current.preparation.attemptId);
+      const aborted = await abort(current.preparation.attemptId);
+      if (aborted.kind !== 'aborted') return aborted;
+      throw error;
+    }
+    return { kind: 'deferred', reason: 'successor launch is awaiting readiness' };
+  }
+
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    clearInterval(retryTimer);
+    unsubscribe?.();
+  }
 
   async function request(input: { requestId: string; target: Target }): Promise<SuccessionDecision> {
     try {
@@ -192,7 +272,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           sameTarget(current.target, input.target) ||
           (current.target.build.flavor === input.target.build.flavor && comparison <= 0)
         ) {
-          schedulePreparation(current.requestId);
+          notifyObligationChange();
           return { kind: 'registered', intent: current };
         }
         if (current.target.build.flavor !== input.target.build.flavor) {
@@ -215,7 +295,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (written.kind === 'conflict') continue;
       if (written.kind !== 'written') return { kind: 'refused', reason: `upgrade intent is ${written.kind}` };
       options.onIntentChanged?.();
-      schedulePreparation(input.requestId);
+      notifyObligationChange();
       return { kind: 'registered', intent: written.intent };
     }
     return { kind: 'deferred', reason: 'upgrade intent changed concurrently' };
@@ -244,6 +324,16 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
             ? 'target succession declaration is invalid'
             : null;
       if (targetFailure !== null) {
+        if (
+          intent.disposition === 'deferred' &&
+          intent.attemptId === null &&
+          intent.blockers.length === 1 &&
+          intent.blockers[0]?.owner === 'target' &&
+          intent.blockers[0].reason === targetFailure &&
+          intent.retryCondition?.kind === 'target-change'
+        ) {
+          return { kind: 'refused', reason: targetFailure };
+        }
         const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
           ...intent,
           disposition: 'deferred',
@@ -289,14 +379,23 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           obligations.kind === 'blocking'
             ? obligations.blockers
             : [{ owner: 'protocol', reason: 'target cannot prepare succession' }];
+        const retryCondition =
+          declared.kind === 'absent' || !capabilities.protocols.includes('prepare')
+            ? { kind: 'target-change' as const, evidence: 'target succession declaration changes' }
+            : { kind: 'obligation-change' as const, evidence: 'owner disposition changes' };
+        if (
+          intent.disposition === 'deferred' &&
+          intent.attemptId === null &&
+          JSON.stringify(intent.blockers) === JSON.stringify(blockers) &&
+          JSON.stringify(intent.retryCondition) === JSON.stringify(retryCondition)
+        ) {
+          return { kind: 'deferred', reason: 'succession obligations block preparation', blockers };
+        }
         const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
           ...intent,
           disposition: 'deferred',
           blockers: [...blockers],
-          retryCondition:
-            declared.kind === 'absent' || !capabilities.protocols.includes('prepare')
-              ? { kind: 'target-change', evidence: 'target succession declaration changes' }
-              : { kind: 'obligation-change', evidence: 'owner disposition changes' },
+          retryCondition,
           successionPreparation: null,
           attemptId: null,
           attemptOwner: null,
@@ -393,6 +492,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (written.kind === 'conflict') continue;
       if (written.kind !== 'written') return { kind: 'refused', reason: `upgrade intent is ${written.kind}` };
       options.onIntentChanged?.();
+      notifyObligationChange();
       return { kind: 'ready', preparation: next };
     }
     return { kind: 'deferred', reason: 'upgrade intent changed concurrently' };
@@ -470,5 +570,5 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     return { kind: 'deferred', reason: 'upgrade intent changed concurrently' };
   }
 
-  return { request, prepare, reportReady, commit, abort, status };
+  return { request, prepare, reportReady, commit, abort, status, reconcile, notifyObligationChange, dispose };
 }

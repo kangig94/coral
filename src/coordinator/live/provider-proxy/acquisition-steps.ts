@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { bindCustodyIdentity, recordCustodyIntent, type CustodyIntent } from '../../../store/custody-ledger.js';
 
 import { BUILD_FLAVOR_ENV_KEY } from '../../../infra/build-flavor.js';
 import type { ProcessIncarnation } from '../../../infra/node-process.js';
@@ -111,6 +112,7 @@ export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   /** Overrides the capsule/endpoint path base directory; defaults to the real `~/.coral` tree. Tests pass a
    *  scoped temp directory so they never touch real user state. */
   baseDir?: string;
+  custody?: Readonly<{ runDir: string; epoch: string }>;
   /** Injected for tests; defaults to the real per-platform `/proc` or `ps` probe. This file only spawns the
    *  guardian — it never consumes a capsule itself, so it has no strict-identity check to inject. */
   readProcessIncarnation?(pid: number, platform: NodeJS.Platform): ProcessIncarnation | null;
@@ -179,6 +181,7 @@ export function createProviderProxyAcquisitionSteps(
   let minted: MintedSet | null = null;
   let guardianSpawn: SpawnedRoleProcess | null = null;
   let guardianSpawnUndo: GuardianSpawnUndo | null = null;
+  let guardianCustodyIntent: CustodyIntent | null = null;
 
   return {
     async createCapsules(): Promise<AcquisitionUndo> {
@@ -296,6 +299,17 @@ export function createProviderProxyAcquisitionSteps(
         platform,
         readProcessIncarnation,
       };
+      if (options.custody !== undefined) {
+        guardianCustodyIntent = recordCustodyIntent(options.custody.runDir, {
+          effect: 'process-spawn',
+          epoch: options.custody.epoch,
+          owner: 'provider-proxy-set',
+          operationId: `${setMinted.proxyInstanceId}:guardian`,
+          capsule: setMinted.guardianCapsulePath,
+          nowMs: runtime.time.now(),
+          bindWithinMs: 10_000,
+        });
+      }
       const spawned = await requireSpawnedRole(
         spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
           pluginRoot: options.pluginRoot,
@@ -304,6 +318,17 @@ export function createProviderProxyAcquisitionSteps(
             [BUILD_FLAVOR_ENV_KEY]: flavor,
             [CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV]: String(deadlineConfiguration.orphanTimeoutMs),
           },
+          ...(guardianCustodyIntent === null
+            ? {}
+            : {
+                custodyTicket: JSON.stringify({
+                  runDir: options.custody?.runDir,
+                  epoch: options.custody?.epoch,
+                  intentId: guardianCustodyIntent.id,
+                  processToken: guardianCustodyIntent.processToken,
+                  processGroupId: null,
+                }),
+              }),
         }),
       );
       if (spawned.kind === 'held') {
@@ -368,6 +393,13 @@ export function createProviderProxyAcquisitionSteps(
         };
       }
       guardianSpawn = spawned;
+      if (guardianCustodyIntent !== null && options.custody !== undefined) {
+        bindCustodyIdentity(options.custody.runDir, guardianCustodyIntent, {
+          process: { pid: spawned.pid, incarnation: spawned.incarnation, processGroupId: spawned.pid },
+          capsule: guardianCustodyIntent.capsule,
+          observedAtMs: runtime.time.now(),
+        });
+      }
       guardianSpawnUndo = buildGuardianSpawnUndo(runtime, spawned, platform, readProcessIncarnation);
       guardianSpawnUndo.retainPossibleProxy();
       return {

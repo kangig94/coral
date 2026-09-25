@@ -64,15 +64,16 @@ import type { JobQueueAdmittedBody, JobQueueQueuedBody } from '../event-bodies.j
 import { type AbortRegistry } from './abort-registry.js';
 import { CliBusyError } from '../../runtime/cli-busy.js';
 import { isAbortError } from '../../runtime/abort.js';
-import type {
-  AcceptedAdmission,
-  AdmissionResult,
-  JobAdmissionPort,
-  LaunchPermit,
-  LaunchPool,
-  QueuedHandle,
-  SettlementRefusal,
-  SettlementRefusalRecorder,
+import {
+  SuccessionAdmissionPausedError,
+  type AcceptedAdmission,
+  type AdmissionResult,
+  type JobAdmissionPort,
+  type LaunchPermit,
+  type LaunchPool,
+  type QueuedHandle,
+  type SettlementRefusal,
+  type SettlementRefusalRecorder,
 } from '../contracts/admission.js';
 import type { ExecutionOwner } from '../../runtime/execution-owner.js';
 import type { DiscussionRunDescriptor } from '../discussion-run.js';
@@ -447,9 +448,18 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): ProviderSessionLaunchDecision {
     const pool = opts.pool ?? 'default';
     const jobId = opts.requestedJobId ?? this.deps.runtime.ids.uuid();
-    const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool);
+    const admission = this.reserveAdmission(
+      jobId,
+      provider.name,
+      opts.owner,
+      pool,
+      opts.parentWorkflowJobId !== undefined || opts.owner.kind === 'workflow' || opts.owner.kind === 'discussion',
+    );
     if (admission === 'queue_full') {
       return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
+    }
+    if (admission instanceof SuccessionAdmissionPausedError) {
+      return refuseLaunch('succession_admission_paused', admission.message);
     }
 
     try {
@@ -501,8 +511,19 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
     };
   }
 
-  private reserveAdmission(jobId: string, provider: string, owner: ExecutionOwner, pool: LaunchPool): AdmissionResult {
-    return this.deps.launchAdmission.requestLaunch(jobId, provider, owner, pool);
+  private reserveAdmission(
+    jobId: string,
+    provider: string,
+    owner: ExecutionOwner,
+    pool: LaunchPool,
+    acceptedWork = false,
+  ): AdmissionResult | SuccessionAdmissionPausedError {
+    try {
+      return this.deps.launchAdmission.requestLaunch(jobId, provider, owner, pool, acceptedWork);
+    } catch (error: unknown) {
+      if (error instanceof SuccessionAdmissionPausedError) return error;
+      throw error;
+    }
   }
 
   private releaseAdmissionReservation(admission: AcceptedAdmission): void {
@@ -583,9 +604,18 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): ProviderSessionLaunchDecision {
     const pool = opts.pool ?? 'default';
     const jobId = opts.requestedJobId ?? this.deps.runtime.ids.uuid();
-    const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool);
+    const admission = this.reserveAdmission(
+      jobId,
+      provider.name,
+      opts.owner,
+      pool,
+      opts.parentWorkflowJobId !== undefined || opts.owner.kind === 'workflow' || opts.owner.kind === 'discussion',
+    );
     if (admission === 'queue_full') {
       return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
+    }
+    if (admission instanceof SuccessionAdmissionPausedError) {
+      return refuseLaunch('succession_admission_paused', admission.message);
     }
 
     let claimedSession: ProviderSession | undefined;
@@ -667,9 +697,12 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
   ): ProviderSessionLaunchDecision {
     const pool = opts.pool ?? 'default';
     const jobId = this.deps.runtime.ids.uuid();
-    const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool);
+    const admission = this.reserveAdmission(jobId, provider.name, opts.owner, pool, true);
     if (admission === 'queue_full') {
       return refuseLaunch('busy', QUEUE_FULL_MESSAGE);
+    }
+    if (admission instanceof SuccessionAdmissionPausedError) {
+      return refuseLaunch('succession_admission_paused', admission.message);
     }
     let claimedSession: ProviderSession | undefined;
     try {

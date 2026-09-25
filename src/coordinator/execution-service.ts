@@ -169,6 +169,7 @@ export class ExecutionService implements RecoveryCapableService, ProjectRequestP
       providerRegistry: deps.providerRegistry,
       coordinatorCommit,
       launchOrchestrator: this.launchOrchestrator,
+      admitTopLevelLaunch: () => deps.launchCoordinator.admitTopLevelLaunch?.() ?? true,
       executionPort: {
         coralDispatch: (providerName, coralName, input, requestCtx) =>
           this.runWithInvocationScope(requestCtx, () =>

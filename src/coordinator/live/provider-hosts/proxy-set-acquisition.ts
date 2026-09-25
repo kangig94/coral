@@ -44,6 +44,7 @@ export type ProviderProxySetAcquisitionConfig = Readonly<{
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
+  custody?: () => Readonly<{ runDir: string; epoch: string }>;
   /** Invocation is permitted only after provider-proxy control is established. */
   onProviderEvent?: () => ProviderEventHandler;
 }>;
@@ -191,6 +192,7 @@ export function ensureProviderProxySet(
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
     operationRegistry: env.operationRegistry,
+    ...(env.custody === undefined ? {} : { custody: env.custody() }),
     ...(env.onProviderEvent === undefined ? {} : { onProviderEvent: env.onProviderEvent }),
   });
   return acquireProviderProxySet({

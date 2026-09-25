@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { bindWithHandoff, HandoffEscalationError } from '#src/coordinator/handoff.js';
+import { bindWithHandoff, HandoffEscalationError, UpgradeWaiterUnavailableError } from '#src/coordinator/handoff.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { IncumbentMatchesError, probeIncumbent } from '#src/transport/ipc/handoff.js';
@@ -106,7 +106,25 @@ describe('bindWithHandoff', () => {
       pid: 100,
       source: 'discovery',
       bootToken: 'boot',
+    }, {
+      version: '0.10.13',
+      flavor: 'prod',
+      bundleHash: 'incumbent',
+      namespace: 'incumbent',
+      status: 'ok',
     });
+  });
+
+  it('surfaces a missing waiter instead of exiting as an ordinary redundant contender', async () => {
+    healthProbe.mockResolvedValueOnce({
+      version: '0.10.13', bundleHash: 'incumbent', flavor: 'prod', namespace: 'incumbent', status: 'ok',
+    });
+    const { handoff } = options(async () => ({ kind: 'incumbent', reason: 'live-listener' }));
+    await expect(bindWithHandoff({
+      ...handoff,
+      readVerifiedIncumbentFromDiscovery: () => ({ pid: 100, source: 'discovery', instanceId: 'incumbent' }),
+      requestSuccession: async () => { throw new UpgradeWaiterUnavailableError('claim failed'); },
+    })).rejects.toBeInstanceOf(UpgradeWaiterUnavailableError);
   });
 
   it('waits for an administrative drain to release the socket', async () => {

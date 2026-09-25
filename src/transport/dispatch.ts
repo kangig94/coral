@@ -1108,6 +1108,12 @@ async function executeDiscussSessionCreateCatalogRequest({
   const ctx = buildBodyInvocationContext(parsed, canonicalRequest.projectRoot, rpcPorts, principal);
   if (!ctx) return unaryHttp(domainResultToHttp(invalidRequestResult()));
 
+  if (rpcPorts.admin.admitTopLevelLaunch?.() === false) {
+    return unaryHttp(
+      domainResultToHttp(domainError('succession_admission_paused', 'Launch admission is paused during succession. Retry shortly.')),
+    );
+  }
+
   return unaryDomain(await rpcPorts.discuss.start(stripTransportContextKeys(parsed), ctx), 201);
 }
 

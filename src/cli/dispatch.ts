@@ -69,6 +69,7 @@ import type { AbortResult } from '../jobs/contracts/abort-registry.js';
 import { TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
+import { retrySuccessionPausedLaunch } from './launch-retry.js';
 import { ensure, issueWithSuccessorAfterLifecycleRefusal, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
@@ -514,12 +515,14 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     // A response envelope with no `result` key decodes rather than failing, so an absent result reaches this
     // as `undefined` as well as `null`, and both must refuse — neither is a value a caller may dereference.
     // see jsonRpcResponseEnvelopeSchema in src/transport/ipc/json-rpc.ts
-    const result = await issueWithSuccessorAfterLifecycleRefusal<TResult | null | undefined>(
-      method,
-      resolvePluginRoot(),
-      (client) =>
-        client.request<TResult | null | undefined>(method, params, { timeoutMs: TOOL_TIMEOUT_MS, ...authOptions }),
-    );
+    const issue = (timeoutMs: number) =>
+      issueWithSuccessorAfterLifecycleRefusal<TResult | null | undefined>(method, resolvePluginRoot(), (client) =>
+        client.request<TResult | null | undefined>(method, params, { timeoutMs, ...authOptions }),
+      );
+    const result =
+      method === 'sessions.create' || method === 'workflow.run' || method === 'discuss.session.create'
+        ? await retrySuccessionPausedLaunch(issue, TOOL_TIMEOUT_MS)
+        : await issue(TOOL_TIMEOUT_MS);
     if (result === null || result === undefined) {
       throw new BackendUnreachableError(
         `Coral coordinator did not answer ${method}. Run \`coral-cli backend status\` and retry.`,

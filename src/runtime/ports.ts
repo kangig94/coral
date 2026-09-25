@@ -64,6 +64,7 @@ export type DurableLaunchOptions = {
   prompt?: string;
   cwd?: string;
   jobDir: string;
+  custodyTicket?: string;
   envAdditions?: Record<string, string>;
   /** Complete child environment; when present, envAdditions is ignored. */
   env?: Record<string, string>;

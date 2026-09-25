@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'v
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   LaunchCoordinator,
+  SUCCESSION_PAUSE_ATTEMPT_MS,
+  SUCCESSION_PAUSE_ROLLING_WINDOW_MS,
   LAUNCH_RECLAMATION_AGE_FLOOR_MS,
   MAX_LAUNCH_RELEASE_DIAGNOSTICS,
   MAX_SETTLED_UNBOUND_BINDINGS,
@@ -15,7 +17,12 @@ import {
 import type { DurableProcessCleanup } from '#src/coordinator/live/durable-transport.js';
 import type { DurableContainmentOperatorControl } from '#src/providers/cli-runner.js';
 import { DefaultProviderHostManager } from '#src/coordinator/live/provider-hosts/index.js';
-import type { LaunchPermit, LaunchPool, LaunchReclamationProbeResult } from '#src/jobs/contracts/admission.js';
+import {
+  SuccessionAdmissionPausedError,
+  type LaunchPermit,
+  type LaunchPool,
+  type LaunchReclamationProbeResult,
+} from '#src/jobs/contracts/admission.js';
 import type {
   ProviderOperationBindingIdentity,
   SettledUnboundStatusOwnership,
@@ -45,6 +52,132 @@ const ORIGINAL_MAX_CHILDREN = process.env.CORAL_MAX_WORKERS;
 const ORIGINAL_DISCUSS_MAX_CHILDREN = process.env.CORAL_DISCUSS_MAX_WORKERS;
 const TEST_PROVIDER_PID = 20_000;
 const TEST_PROVIDER_INCARNATION = testIncarnation(1_700_000_000);
+
+describe('succession admission pause', () => {
+  let now: number;
+  let coordinator: LaunchCoordinator;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    now = 0;
+    const runtime = createRealRuntime('prod');
+    coordinator = new LaunchCoordinator({
+      runtime: {
+        ...runtime,
+        time: { ...runtime.time, now: () => now, monotonicNow: () => BigInt(now) },
+      },
+    });
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  function advance(ms: number): void {
+    now += ms;
+    vi.advanceTimersByTime(ms);
+  }
+
+  it('notifies succession when a launch permit settles', () => {
+    const notify = vi.fn();
+    const unsubscribe = coordinator.subscribeSuccessionObligationChanges(notify);
+    const admitted = coordinator.requestLaunch(
+      'settled-job', 'claude', { kind: 'provider-session', id: 'session-1' }, 'default',
+    );
+    expect(admitted).toMatchObject({ type: 'immediate' });
+    if (typeof admitted !== 'object' || admitted.type !== 'immediate') throw new Error('launch was not admitted');
+
+    expect(coordinator.releaseLaunch(admitted.permit).kind).toBe('released');
+    expect(notify).toHaveBeenCalledOnce();
+    unsubscribe();
+    expect(coordinator.releaseLaunch(admitted.permit).kind).toBe('already-released');
+    expect(notify).toHaveBeenCalledOnce();
+  });
+
+  it('should total failed commit windows across attempt restarts and target churn', () => {
+    for (const attemptId of ['target-a', 'target-b', 'target-a-retry']) {
+      const revision = coordinator.admissionRevision();
+      expect(coordinator.beginSuccessionCommitWindow(attemptId, revision)).toEqual({
+        kind: 'paused',
+        attemptId,
+        deadlineAtMs: now + SUCCESSION_PAUSE_ATTEMPT_MS,
+      });
+      expect(() =>
+        coordinator.requestLaunch(`ordinary-${attemptId}`, 'claude', { kind: 'provider-session', id: attemptId }, 'default'),
+      ).toThrow(SuccessionAdmissionPausedError);
+      advance(SUCCESSION_PAUSE_ATTEMPT_MS);
+      expect(coordinator.successionAdmissionPaused()).toBe(false);
+      const admitted = coordinator.requestLaunch(
+        `after-${attemptId}`,
+        'claude',
+        { kind: 'provider-session', id: attemptId },
+        'default',
+      );
+      expect(admitted).toMatchObject({ type: 'immediate' });
+      if (typeof admitted === 'object' && admitted.type === 'immediate') {
+        expect(coordinator.releaseLaunch(admitted.permit).kind).toBe('released');
+      }
+    }
+
+    expect(coordinator.beginSuccessionCommitWindow('target-c', coordinator.admissionRevision())).toEqual({
+      kind: 'refused',
+      reason: 'aggregate-budget-exhausted',
+    });
+    expect(coordinator.successionAdmissionPaused()).toBe(false);
+    advance(SUCCESSION_PAUSE_ROLLING_WINDOW_MS);
+    expect(coordinator.beginSuccessionCommitWindow('target-c', coordinator.admissionRevision()).kind).toBe('paused');
+    expect(coordinator.endSuccessionCommitWindow('target-c')).toBe(true);
+  });
+
+  it('should admit accepted descendants and invalidate a prepared attempt', () => {
+    const revision = coordinator.admissionRevision();
+    const child = coordinator.requestLaunch('child', 'claude', { kind: 'workflow', id: 'parent' }, 'default', true);
+    expect(child).toMatchObject({ type: 'immediate' });
+    expect(coordinator.admissionRevision()).toBeGreaterThan(revision);
+    expect(coordinator.beginSuccessionCommitWindow('stale', revision)).toEqual({
+      kind: 'refused',
+      reason: 'stale-preparation',
+    });
+
+    const currentRevision = coordinator.admissionRevision();
+    expect(coordinator.beginSuccessionCommitWindow('attempt', currentRevision).kind).toBe('paused');
+    expect(coordinator.admitTopLevelLaunch()).toBe(false);
+    const round = coordinator.requestLaunch('round', 'claude', { kind: 'discussion', id: 'accepted' }, 'discuss', true);
+    expect(round).toMatchObject({ type: 'immediate' });
+    expect(coordinator.successionAdmissionPaused()).toBe(true);
+    expect(coordinator.admissionRevision()).toBeGreaterThan(currentRevision);
+    expect(coordinator.endSuccessionCommitWindow('attempt')).toBe(true);
+    expect(coordinator.beginSuccessionCommitWindow('stale', currentRevision)).toEqual({
+      kind: 'refused',
+      reason: 'stale-preparation',
+    });
+  });
+
+  it('should count partially used windows toward the rolling budget', () => {
+    for (const [attemptId, durationMs] of [
+      ['first', 4_000],
+      ['second', 4_000],
+      ['third', 4_000],
+    ] as const) {
+      expect(coordinator.beginSuccessionCommitWindow(attemptId, coordinator.admissionRevision()).kind).toBe('paused');
+      advance(durationMs);
+      expect(coordinator.endSuccessionCommitWindow(attemptId)).toBe(true);
+    }
+    expect(coordinator.beginSuccessionCommitWindow('fourth', coordinator.admissionRevision())).toEqual({
+      kind: 'refused',
+      reason: 'aggregate-budget-exhausted',
+    });
+  });
+
+  it('should restore admission when a failed attempt ends the commit window', () => {
+    const revision = coordinator.admissionRevision();
+    expect(coordinator.beginSuccessionCommitWindow('failed-child', revision).kind).toBe('paused');
+    advance(1_000);
+    expect(coordinator.endSuccessionCommitWindow('failed-child')).toBe(true);
+    const admitted = coordinator.requestLaunch('ordinary', 'claude', { kind: 'provider-session', id: 'new' }, 'default');
+    expect(admitted).toMatchObject({ type: 'immediate' });
+    expect(coordinator.beginSuccessionCommitWindow('next-attempt', coordinator.admissionRevision()).kind).toBe('paused');
+    expect(coordinator.endSuccessionCommitWindow('next-attempt')).toBe(true);
+  });
+});
 
 const PLATFORM_CAPABILITIES = {
   aix: { canProbeStartTime: false, canSignalProcessGroup: true },

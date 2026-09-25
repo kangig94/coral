@@ -1,4 +1,6 @@
 import type { InvocationContext } from '../../runtime/invocation-context.js';
+import { join } from 'node:path';
+import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
 import type { ProjectRequestPort, ExecutionServiceDeps } from '../contracts.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { SettlementRefusalRecorder } from '../../jobs/contracts/admission.js';
@@ -263,6 +265,17 @@ export function createExecutionServices({
   });
   const providerOperationReconciler = new ProviderOperationReconciler({
     getProgressStore,
+    custody: () => {
+      const dbDir = runtime.paths.coral.store.dbDir;
+      const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+      if (epoch === null) throw new Error('Provider operation custody requires a selected store epoch.');
+      return {
+        runDir: runtime.paths.coral.coordinator.runDir,
+        epoch: join(dbDir, `epoch-${epoch}`),
+        nowMs: runtime.time.now(),
+        bindWithinMs: 10_000,
+      };
+    },
     authorityFor,
     acquireAuthority: async (record, signal) => {
       const live = authorityFor(record);

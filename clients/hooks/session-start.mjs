@@ -29,16 +29,9 @@ import {
 import { fitAdditionalContext, truncateUtf8 } from './lib/additional-context.mjs';
 import { resolveEquippedTools } from './lib/equip-tools.mjs';
 import { renderInject } from './lib/inject-render.mjs';
-import {
-  projectIgnoreOutcomeNotice,
-  renderProjectIgnoreResultNotices,
-} from './lib/project-ignore/notices.mjs';
+import { projectIgnoreOutcomeNotice, renderProjectIgnoreResultNotices } from './lib/project-ignore/notices.mjs';
 import { isProjectIgnoreResult } from './lib/project-ignore/result.mjs';
-import {
-  LOCK_CONFLICT_EXIT_CODE,
-  LOCK_UNAVAILABLE_EXIT_CODE,
-  SPAWN_TIMEOUT_MS,
-} from './lib/project-ignore/arena.mjs';
+import { LOCK_CONFLICT_EXIT_CODE, LOCK_UNAVAILABLE_EXIT_CODE, SPAWN_TIMEOUT_MS } from './lib/project-ignore/arena.mjs';
 
 const LOG_ROTATE_THRESHOLD_BYTES = 2 * 1024 * 1024;
 const MAX_REPORTED_FLAVOR_BYTES = 160;
@@ -92,6 +85,25 @@ function spawnBackend(pluginRoot) {
       detached: true,
       stdio: ['ignore', 'ignore', stderr],
       env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID() },
+    });
+    child.unref();
+  } catch {}
+}
+
+function recoverExpiredUpgradeWaiter(pluginRoot) {
+  const runDir = coordinatorRunDir();
+  const waiterBin = join(pluginRoot, 'bridge', 'coral-upgrade-waiter.cjs');
+  if (!existsSync(waiterBin)) return;
+  try {
+    const intent = JSON.parse(readFileSync(join(runDir, 'upgrade.v1.json'), 'utf-8'));
+    if (intent?.version !== 'v1' || intent.target?.pluginRootLabel !== pluginRoot) return;
+    if (!['pending', 'deferred'].includes(intent.disposition)) return;
+    if (intent.retryCondition?.kind !== 'incumbent-retirement') return;
+    if (intent.attemptOwner !== null && intent.attemptOwner?.kind !== 'waiter') return;
+    if (intent.attemptDeadline !== null && Date.parse(intent.attemptDeadline) > Date.now()) return;
+    const child = spawn(process.execPath, [waiterBin, runDir, '', pluginRoot], {
+      detached: true,
+      stdio: 'ignore',
     });
     child.unref();
   } catch {}
@@ -192,6 +204,7 @@ try {
   if (!PLUGIN_ROOT || !existsSync(PLUGIN_ROOT)) process.exit(0);
 
   spawnBackend(PLUGIN_ROOT);
+  recoverExpiredUpgradeWaiter(PLUGIN_ROOT);
 
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   ensureCliPermission();
@@ -210,8 +223,7 @@ try {
 
   const host = hostKind();
 
-  const scopedDiscarded =
-    ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction?.state === 'removed';
+  const scopedDiscarded = ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction?.state === 'removed';
   const migrationPublished = [
     ignoreOutcome.maintenance?.artifacts.scopedIgnoreRetraction,
     ignoreOutcome.maintenance?.artifacts.rootIgnoreRetraction,
@@ -240,12 +252,9 @@ try {
         : null;
   const startupFailureNotice = readRecentStartupFailureNotice(coordinatorRunDir());
   const fixedContent = `SessionStart:session_id=${sessionId}\nCurrent host: ${host}\nClaude config dir: ${claudeConfigDir()}\n\n${injectContent}`;
-  const variableContent = [
-    startupFailureNotice,
-    migrationNotice,
-    legacySweepNotice,
-    ignoreNotice,
-  ].filter(Boolean).join('\n\n');
+  const variableContent = [startupFailureNotice, migrationNotice, legacySweepNotice, ignoreNotice]
+    .filter(Boolean)
+    .join('\n\n');
   const additionalContext = fitAdditionalContext({
     fixedContent,
     variableContent,
@@ -286,10 +295,7 @@ function runProjectIgnoreMaintenance(projectDir, createSymlink) {
     if (result.status === LOCK_CONFLICT_EXIT_CODE) {
       return { outcome: 'maintenance-busy', maintenance: null };
     }
-    if (
-      !result.stdout &&
-      [LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)
-    ) {
+    if (!result.stdout && [LOCK_UNAVAILABLE_EXIT_CODE, 126, 127].includes(result.status)) {
       return { outcome: 'maintenance-lock-unavailable', maintenance: null };
     }
     if (!result.stdout) return { outcome: 'no-output', maintenance: null };

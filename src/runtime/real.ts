@@ -38,9 +38,14 @@ import {
 } from 'node:fs/promises';
 import { homedir as osHomedir, tmpdir as osTmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { composeCoralPaths } from '../infra/path/index.js';
+import { durableWrapperEntrypoint } from './wrapper-entrypoint.js';
+import {
+  CUSTODY_PROCESS_TICKET_ENV,
+  custodyProcessArgument,
+  parseCustodyProcessTicket,
+} from '../infra/custody-process-ticket.js';
 import { resolveProjectSource } from '../infra/project-source.js';
 import type { BuildFlavor } from '../infra/build-flavor.js';
 import type {
@@ -95,14 +100,11 @@ import {
   type GracefulKillPendingDisposition,
 } from '../infra/process-supervision.js';
 
-declare const __BUNDLE_DIR__: string | undefined;
-
 const DURABLE_POLL_INTERVAL_MS = 100;
 const DURABLE_POLL_TIMEOUT_MS = 5_000;
 const DURABLE_EXIT_GRACE_MS = 5_000;
 const ENV_RECORD_FILE = 'env.json';
 const LAUNCH_PAYLOAD_FILE = 'launch.v1.json';
-const DURABLE_WRAPPER_BUNDLE_FILE = 'coral-durable-wrapper.cjs';
 
 type ProcessIdentityObservationEnvironment = Readonly<{
   platform: string;
@@ -217,13 +219,6 @@ function openSqliteDatabaseSync(path: string, options?: { readOnly?: boolean }):
     },
     close: () => database.close(),
   };
-}
-
-function durableWrapperEntrypoint(): string {
-  if (typeof __BUNDLE_DIR__ === 'string') {
-    return join(__BUNDLE_DIR__, DURABLE_WRAPPER_BUNDLE_FILE);
-  }
-  return fileURLToPath(new URL('../../dist/runtime/durable-cli-wrapper.js', import.meta.url));
 }
 
 export async function waitForRecordedDurableExit(
@@ -490,11 +485,27 @@ export function createRealRuntime(flavor: BuildFlavor, opts?: CreateRealRuntimeO
         { mode: 0o600 },
       );
 
-      const wrapper = spawnChild(process.execPath, [durableWrapperEntrypoint(), launchPayloadPath], {
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-        env: buildSpawnEnv(),
-      });
+      const wrapper = spawnChild(
+        process.execPath,
+        [
+          durableWrapperEntrypoint(),
+          launchPayloadPath,
+          ...(options.custodyTicket === undefined
+            ? []
+            : [custodyProcessArgument(parseCustodyProcessTicket(options.custodyTicket).processToken)]),
+        ],
+        {
+          detached: true,
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+          env: buildSpawnEnv(
+            options.custodyTicket === undefined
+              ? undefined
+              : {
+                  [CUSTODY_PROCESS_TICKET_ENV]: options.custodyTicket,
+                },
+          ),
+        },
+      );
       let wrapperUnreferenced = false;
       const unrefWrapper = (): void => {
         if (wrapperUnreferenced) return;

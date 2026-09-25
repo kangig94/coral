@@ -14,6 +14,7 @@ import {
   LEGACY_CLI_BUNDLE_FILE,
   SUCCESSION_CAPABILITIES_FILE,
   SUCCESSION_CAPABILITY_VERSION,
+  UPGRADE_WAITER_BUNDLE_FILE,
 } from '../src/infra/bundle-manifest-address.ts';
 
 const { storeEpochHookSource } = await import('../dist/store/epoch.js');
@@ -203,6 +204,14 @@ const durableWrapperBuild = await esbuild.build({
 });
 console.log('Built clients/build/coral-durable-wrapper.cjs');
 
+const upgradeWaiterBuild = await esbuild.build({
+  ...sharedOpts,
+  entryPoints: ['src/upgrade-waiter/main.ts'],
+  outfile: `clients/build/${UPGRADE_WAITER_BUNDLE_FILE}`,
+  metafile: true,
+});
+console.log(`Built clients/build/${UPGRADE_WAITER_BUNDLE_FILE}`);
+
 const backendHash = createHash('sha256').update(backendBundle).digest('hex').slice(0, 16);
 const cliHash = createHash('sha256')
   .update(readFileSync(`clients/build/${CLI_BUNDLE_FILE}`))
@@ -299,6 +308,7 @@ const receiptInputs = [
       ...Object.keys(cliBuild.metafile.inputs),
       ...Object.keys(claudeAppserverBuild.metafile.inputs),
       ...Object.keys(durableWrapperBuild.metafile.inputs),
+      ...Object.keys(upgradeWaiterBuild.metafile.inputs),
       ...requiredReceiptInputs,
     ].map(canonicalReceiptInput),
   ),
@@ -308,8 +318,10 @@ const receiptOutputs = {
   cli: { path: `clients/build/${CLI_BUNDLE_FILE}` },
   claudeAppserver: { path: 'clients/build/coral-claude-appserver.cjs' },
   durableWrapper: { path: 'clients/build/coral-durable-wrapper.cjs' },
+  upgradeWaiter: { path: `clients/build/${UPGRADE_WAITER_BUNDLE_FILE}` },
   legacyManifest: { path: legacyManifestPath },
   strictManifest: { path: strictManifestPath },
+  successionCapabilities: { path: successionCapabilitiesPath },
 };
 for (const output of Object.values(receiptOutputs)) {
   output.sha256 = createHash('sha256').update(readFileSync(output.path)).digest('hex');
@@ -342,9 +354,11 @@ if (release) {
     LEGACY_CLI_BUNDLE_FILE,
     'coral-claude-appserver.cjs',
     'coral-durable-wrapper.cjs',
+    UPGRADE_WAITER_BUNDLE_FILE,
     'package.json',
     'manifest.json',
     CURRENT_STRICT_BUNDLE_MANIFEST_FILE,
+    SUCCESSION_CAPABILITIES_FILE,
   ];
   // Sweep stale leftovers from prior releases so bridge contains only the current bundle surface.
   const expected = new Set(bridgeFiles);

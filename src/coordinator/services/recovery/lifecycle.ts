@@ -14,6 +14,7 @@ type HeldRecoveryReapAttempt = Readonly<{ abort: AbortController; settlement: Pr
 
 export type RecoveryCoordinatorState = {
   recoveryRegistry: RecoveryRegistry | null;
+  onRecoverySettlement?: (jobId: string) => void;
   cancelledRecoveryJobIds: Set<string>;
   adoptedRunningPids: Map<string, { pid: number; pool: string }>;
   unansweredAdoptionProbes: Map<string, number>;
@@ -48,11 +49,13 @@ export function createRecoveryLifecycle(
     eventBus: JobEventBus;
     onPhaseChanged(input: Readonly<{ jobId: string; phase: JobPhase; previousPhase: JobPhase }>): void;
     releaseStartupOwnership(): void;
+    onRecoverySettlement?: (jobId: string) => void;
   }>,
 ) {
   const { progressStore, runtime, runtimeState, eventBus, onPhaseChanged, releaseStartupOwnership } = deps;
   const state: RecoveryCoordinatorState = {
     recoveryRegistry: null,
+    onRecoverySettlement: deps.onRecoverySettlement,
     cancelledRecoveryJobIds: new Set<string>(),
     adoptedRunningPids: new Map<string, { pid: number; pool: string }>(),
     unansweredAdoptionProbes: new Map<string, number>(),

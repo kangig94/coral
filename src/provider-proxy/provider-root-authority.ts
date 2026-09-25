@@ -1,4 +1,5 @@
 import { backendLog } from '../infra/backend-log.js';
+import { bindCustodyProcessTicket, recordChildRoleCustodyIntent } from '../infra/custody-process-ticket.js';
 import type { JsonValue } from '../infra/json-value.js';
 import type { ProcessIncarnation } from '../infra/node-process.js';
 import type { Runtime } from '../runtime/ports.js';
@@ -508,10 +509,36 @@ class ProxyProviderRootPool {
     const { spec, options, placement } = request;
     const { reservedRef } = transaction;
     const admission = this.admission;
+    const epoch = this.runtime.env.get('CORAL_CUSTODY_EPOCH');
     try {
+      if (process.argv.includes('--provider-proxy') && epoch === undefined) {
+        throw new Error('Provider proxy host custody requires a bound epoch.');
+      }
+      const ticket =
+        epoch === undefined
+          ? null
+          : recordChildRoleCustodyIntent({
+              runDir: this.runtime.paths.coral.coordinator.runDir,
+              epoch,
+              owner: 'provider-host',
+              operationId: `${spec.provider}:${transaction.generation}`,
+              capsule: null,
+              nowMs: this.runtime.time.now(),
+              bindWithinMs: 10_000,
+              processGroupId: this.runtime.env.pid(),
+            });
       const handle = await spawnProviderServerTransport({
         runtime: this.runtime,
-        options: spawnOptionsFor(spec, options?.signal),
+        options: {
+          ...spawnOptionsFor(spec, options?.signal),
+          ...(ticket === null
+            ? {}
+            : {
+                custodyTicket: JSON.stringify(ticket),
+                onCustodyIdentified: (pid, incarnation) =>
+                  bindCustodyProcessTicket(ticket, { pid, incarnation }, this.runtime.time.now(), true),
+              }),
+        },
         generation: transaction.generation,
         observeProviderResponse: (fact) => admission.observe(placement.slot, reservedRef, fact),
         acceptFailedSpawnCleanup: (hold) => this.acceptFailedSpawnCleanup(transaction, hold),

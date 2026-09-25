@@ -1,8 +1,11 @@
 import { MAX_BUFFER } from '../../infra/process-constants.js';
+import { join } from 'node:path';
 import { backendLog } from '../../infra/backend-log.js';
 import { errorMessage } from '../../infra/error-format.js';
 import { readAppendedLines } from '../../infra/file-tail.js';
 import type { ProcessIncarnation } from '../../infra/node-process.js';
+import { recordCustodyIntent, bindCustodyIdentity, type CustodyIntent } from '../../store/custody-ledger.js';
+import { resolveCurrentStoreEpoch } from '../../store/epoch.js';
 import type { DurableCliRuntimePublicationEvidence } from '../../infra/durable-cli-runtime-evidence.js';
 import type { JobRuntime } from '../../jobs/records.js';
 import type { LaunchPermit, LaunchPool, LaunchRelease } from '../../jobs/contracts/admission.js';
@@ -13,6 +16,7 @@ import type { StoragePort } from '../../infra/port-types.js';
 import type {
   DurableCliProcessSubject,
   DurableContainmentStatus,
+  DurableLaunchOptions,
   DurableLaunchResult,
   DurableLaunchSignalAuthority,
   DurablePendingLaunchObligation,
@@ -342,6 +346,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
   let lastUnsettledDetail: string | null = null;
   let lastPublishedStatus: string | null = null;
   let publishedPid: number | null = null;
+  let custodyIntent: CustodyIntent | null = null;
   let publishedSubject: DurableCliProcessSubject | null = null;
   let provisionalSubject: DurableProvisionalProcessSubject | null = null;
   let signalAuthority: DurableLaunchSignalAuthority | undefined;
@@ -803,6 +808,12 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     leaderIncarnation: ProcessIncarnation;
     signalAuthority?: DurableLaunchSignalAuthority;
   }): void => {
+    if (custodyIntent === null) throw new Error('Durable wrapper spawned without pre-effect custody intent.');
+    bindCustodyIdentity(runtime.paths.coral.coordinator.runDir, custodyIntent, {
+      process: { pid: launch.pid, incarnation: launch.leaderIncarnation, processGroupId: launch.pid },
+      capsule: custodyIntent.capsule,
+      observedAtMs: runtime.time.now(),
+    });
     if (publishedPid !== null) {
       if (publishedPid !== launch.pid) {
         throw new Error('Durable launch changed process identity after provisional publication.');
@@ -947,7 +958,7 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
       return { stdout: '', stderr: '', code: null, aborted: true };
     }
 
-    const launchOptions = {
+    const launchOptions: DurableLaunchOptions = {
       provider: options.provider,
       command: options.command,
       args: options.args,
@@ -977,6 +988,25 @@ export async function spawnDurableJobTransport(params: SpawnDurableJobTransportP
     }
     let durable: DurableLaunchResult;
     try {
+      const dbDir = runtime.paths.coral.store.dbDir;
+      const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+      if (epoch === null) throw new Error('Durable wrapper custody requires a selected store epoch.');
+      custodyIntent = recordCustodyIntent(runtime.paths.coral.coordinator.runDir, {
+        effect: 'process-spawn',
+        epoch: join(dbDir, `epoch-${epoch}`),
+        owner: 'durable-cli',
+        operationId: options.jobId ?? permit.jobId,
+        capsule: join(options.jobDir, 'launch.v1.json'),
+        nowMs: runtime.time.now(),
+        bindWithinMs: 10_000,
+      });
+      launchOptions.custodyTicket = JSON.stringify({
+        runDir: runtime.paths.coral.coordinator.runDir,
+        intentId: custodyIntent.id,
+        processToken: custodyIntent.processToken,
+        processGroupId: null,
+        epoch: custodyIntent.epoch,
+      });
       let launchDisposition = await runtime.process.durable.launch(launchOptions);
       if (launchDisposition.disposition === 'held') {
         const reason = launchDisposition.reason;

@@ -82,7 +82,7 @@ export function createCoordinatorStartupRecovery(
     const interruptedAppServerReason: InterruptedAppServerReason = ctx.interruptedAppServerReason ?? 'restart';
     state.teardownRequested = false;
     runtimeState.setLaunchFenceActive(true);
-    const recoveryRegistry = new RecoveryRegistry(state.cancelledRecoveryJobIds);
+    const recoveryRegistry = new RecoveryRegistry(state.cancelledRecoveryJobIds, state.onRecoverySettlement);
     state.recoveryRegistry = recoveryRegistry;
     const queuedRecoverable: QueuedRecoverableJob[] = [];
     const runningRecoverable: RunningRecoverableJob[] = [];

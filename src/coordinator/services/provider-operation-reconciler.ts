@@ -29,6 +29,7 @@ import {
   deleteProviderOperation,
   finishProviderOperationDueSelection,
   insertProviderOperation,
+  insertProviderOperationWithCustody,
   providerOperationMutationAdmission,
   readProviderOperation,
   readProviderOperationDueSelections,
@@ -333,6 +334,7 @@ function isTemporarilyUnavailableAcquisition(
 
 type ProviderOperationReconcilerDeps = Readonly<{
   getProgressStore: () => Pick<JobProgressStore, 'getDb' | 'commit' | 'readStatus' | 'readLaunchProjection'>;
+  custody?: () => Readonly<{ runDir: string; epoch: string; nowMs: number; bindWithinMs: number }>;
   authorityFor: (record: ProviderOperationRecord) => DurableProviderProxyOperationAuthority | null;
   acquireAuthority?: (
     record: ProviderOperationRecord,
@@ -819,7 +821,10 @@ export class ProviderOperationReconciler
       });
       if (input.signal.aborted) onAbort();
       try {
-        insertProviderOperation(this.#deps.getProgressStore().getDb(), input.record);
+        const db = this.#deps.getProgressStore().getDb();
+        const custody = this.#deps.custody?.();
+        if (custody === undefined) insertProviderOperation(db, input.record);
+        else insertProviderOperationWithCustody(db, input.record, custody);
       } catch (error: unknown) {
         this.#failPublication(
           input.record.operation,

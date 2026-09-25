@@ -95,6 +95,17 @@ describe('RecoveryRegistry', () => {
     expect(reg.size).toBe(0);
   });
 
+  it('notifies succession when a recovery hold settles', () => {
+    const onSettlement = vi.fn();
+    const reg = new RecoveryRegistry(new Set(), onSettlement);
+    reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));
+    reg.remove('j1');
+    reg.remove('j1');
+
+    expect(onSettlement).toHaveBeenCalledOnce();
+    expect(onSettlement).toHaveBeenCalledWith('j1');
+  });
+
   it('remove is a no-op for unknown jobId', () => {
     const reg = new RecoveryRegistry();
     reg.register('j1', makeLaunchRecord({ jobId: 'j1' }));

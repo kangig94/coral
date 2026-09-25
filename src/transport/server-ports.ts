@@ -25,6 +25,7 @@ interface AdminControlPort {
   isLifecycleRunning(): boolean;
   isDrainRequested(): boolean;
   isLaunchFenceActive(): boolean;
+  admitTopLevelLaunch?(): boolean;
   beginRequest(): void;
   endRequest(): void;
   requestDrain(reason: 'replaced'): void;

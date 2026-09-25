@@ -22,9 +22,11 @@ export function createSuccessionCoordinator(options: SuccessionReconcilerOptions
     switch (method) {
       case SUCCESSION_METHODS.request: {
         const parsed = successionRequestSchema.safeParse(params);
-        return parsed.success
-          ? reconciler.request(parsed.data)
-          : { kind: 'refused', reason: 'invalid succession request' };
+        if (!parsed.success) return { kind: 'refused', reason: 'invalid succession request' };
+        const decision = await reconciler.request(parsed.data);
+        return decision.kind === 'registered'
+          ? { ...decision, incumbentCanCommit: options.commitAvailable === true }
+          : decision;
       }
       case SUCCESSION_METHODS.prepare: {
         const parsed = successionPrepareSchema.safeParse(params);

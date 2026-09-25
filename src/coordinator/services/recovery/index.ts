@@ -154,6 +154,7 @@ type RecoveryCoordinatorContext = {
   runtime: Runtime;
   runtimeState: { setLaunchFenceActive(active: boolean): void };
   eventBus: JobEventBus;
+  onRecoverySettlement?: (jobId: string) => void;
   getRecoveryService: (ctx: InvocationContext) => RecoveryCapableService;
   createInvocationContext: (projectRoot: string) => InvocationContext;
   log: (message: string) => void;
@@ -172,6 +173,7 @@ export function createRecoveryCoordinator(
     runtime,
     runtimeState,
     eventBus,
+    onRecoverySettlement,
     getRecoveryService,
     createInvocationContext,
     log,
@@ -190,6 +192,7 @@ export function createRecoveryCoordinator(
     runtime,
     runtimeState,
     eventBus,
+    onRecoverySettlement,
     onPhaseChanged: providerOperationStartupOwnership.reclaimTerminalUndecided,
     releaseStartupOwnership: providerOperationStartupOwnership.releaseAll,
   });

@@ -58,7 +58,7 @@ export class RecoveryRegistry {
   private readonly abortDispositions = new Map<string, ActiveRecoveryAbortDisposition>();
   private readonly cancelledJobIds: Set<string>;
 
-  constructor(cancelledJobIds: Set<string> = new Set()) {
+  constructor(cancelledJobIds: Set<string> = new Set(), private readonly onSettlement?: (jobId: string) => void) {
     this.cancelledJobIds = cancelledJobIds;
   }
 
@@ -197,9 +197,10 @@ export class RecoveryRegistry {
   }
 
   remove(jobId: string): void {
-    this.entries.delete(jobId);
+    const removed = this.entries.delete(jobId);
     this.abortHandlers.delete(jobId);
     this.abortDispositions.delete(jobId);
+    if (removed) this.onSettlement?.(jobId);
   }
 
   [Symbol.iterator](): IterableIterator<[string, RecoveryEntry]> {

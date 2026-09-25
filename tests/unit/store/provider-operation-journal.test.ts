@@ -1,5 +1,9 @@
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { applyBundledStoreSchema, type Database } from '#src/store/db.js';
+import { readCustodyLedger } from '#src/store/custody-ledger.js';
 import {
   acquireProviderOperationMutationAdmission,
   attributeUnreadableProviderOperations,
@@ -9,6 +13,7 @@ import {
   discardUnreadableProviderOperationWithRecoveryAuthority,
   finishProviderOperationDueSelection,
   insertProviderOperation,
+  insertProviderOperationWithCustody,
   readProviderOperation,
   readProviderOperationDueSelections,
   providerOperationJobIdFromRecordKey,
@@ -81,6 +86,30 @@ function recordKey(record: ProviderOperationRecord): string {
 }
 
 describe('provider operation journal', () => {
+  it('records custody before publishing an operation and binds the committed identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-operation-custody-'));
+    const db = createDb();
+    const record = providerOperationRecord('prepare-pending');
+    try {
+      insertProviderOperationWithCustody(db, record, {
+        runDir: join(root, 'run'), epoch: 'epoch-2', nowMs: 100, bindWithinMs: 1_000,
+      });
+      expect(readProviderOperation(db, record.operation)).not.toBeNull();
+      expect(readCustodyLedger(join(root, 'run'))).toMatchObject([{
+        kind: 'bound', intent: { epoch: 'epoch-2', operationId: record.operation.operationId },
+        binding: { process: null },
+      }]);
+      expect(() => insertProviderOperationWithCustody(db, record, {
+        runDir: join(root, 'run'), epoch: 'epoch-2', nowMs: 200, bindWithinMs: 1_000,
+      })).toThrow();
+      expect(readCustodyLedger(join(root, 'run')).map((entry) => entry.kind).sort())
+        .toEqual(['bound', 'holding']);
+    } finally {
+      db.close();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   const discardUnreadable = (db: Database, key: string, revision: string) =>
     discardUnreadableProviderOperationWithRecoveryAuthority(db, key, revision, {
       claim: () => ({ kind: 'claimed' as const, settle: () => true }),

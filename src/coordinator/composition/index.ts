@@ -12,6 +12,7 @@ import type { ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
+import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
@@ -88,7 +89,7 @@ import { createExecutionServices } from './execution-services.js';
 import { createCoordinatorWorld, createStartupRecoveryBarrier } from './world.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { storeServicesStartupNotReadyError } from './store-services-ref.js';
-import { isLivePhase, isTerminalPhase } from '../../jobs/phase.js';
+import { isLivePhase, isTerminalPhase, type JobPhase } from '../../jobs/phase.js';
 import type {
   EquipExpansionRequest,
   EquipExpansionResult,
@@ -129,7 +130,7 @@ import type {
   LaunchReclamationProbeResult,
   LaunchReleaseDiagnostic,
 } from '../../jobs/contracts/admission.js';
-import { LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS, MAX_LAUNCH_RELEASE_DIAGNOSTICS } from '../live/admission.js';
+import { LAUNCH_RECLAMATION_SWEEP_INTERVAL_MS, MAX_LAUNCH_RELEASE_DIAGNOSTICS, type LaunchCoordinator } from '../live/admission.js';
 import { RecoveryQuarantineStore } from '../../recovery/quarantine.js';
 import {
   assertRecoverySourceRegistryComplete,
@@ -188,6 +189,26 @@ const EVENT_STREAM_CAPACITY_RESPONSE = {
 };
 
 const TERMINAL_DISCUSS_STATUSES = new Set(['ended', 'completed', 'aborted', 'error', 'failed', 'closed']);
+
+/** Every installed listener must be released with the reconciler's lifetime. */
+export function subscribeSuccessionObligationChanges(
+  eventBus: Pick<TypedEventBus, 'on' | 'off'>,
+  launchCoordinator: Pick<LaunchCoordinator, 'subscribeSuccessionObligationChanges'>,
+  notify: () => void,
+): () => void {
+  const onCompleted = (): void => notify();
+  const onPhaseChanged = ({ phase }: { phase: JobPhase }): void => {
+    if (isTerminalPhase(phase)) notify();
+  };
+  eventBus.on('job:completed', onCompleted);
+  eventBus.on('job:phase_changed', onPhaseChanged);
+  const unsubscribeLaunch = launchCoordinator.subscribeSuccessionObligationChanges(notify);
+  return () => {
+    unsubscribeLaunch();
+    eventBus.off('job:completed', onCompleted);
+    eventBus.off('job:phase_changed', onPhaseChanged);
+  };
+}
 
 type ProviderProxySetContainSuccess = Extract<ProviderProxySetContainResponse, { kind: 'contained' | 'abandoned' }>;
 type ProviderProxySetContainBooleanSuccess = Extract<
@@ -803,6 +824,7 @@ export function createCoordinatorCore(
       }
     },
   };
+  let notifySuccessionObligationChange = (): void => {};
   const recoveryQuarantineRetry = createRecoveryQuarantineRetryService({
     instanceId: world.identity.instanceId,
     ids: runtime.ids,
@@ -810,7 +832,11 @@ export function createCoordinatorCore(
     sources: recoverySources,
   });
   const recoveryQuarantine: RpcPorts['recoveryQuarantine'] = {
-    clear: (request, signal) => recoveryQuarantineRetry.clear(request, signal),
+    clear: async (request, signal) => {
+      const result = await recoveryQuarantineRetry.clear(request, signal);
+      notifySuccessionObligationChange();
+      return result;
+    },
     discardProviderOperation: async (request) => {
       if (runtimeState.getLaunchFenceActive()) {
         return unreadableProviderOperationDiscardResultSchema.parse({
@@ -1633,6 +1659,14 @@ export function createCoordinatorCore(
       }
     },
     admissionRevision: () => world.launchCoordinator.admissionRevision(),
+    subscribeObligationChanges: (notify) => {
+      notifySuccessionObligationChange = notify;
+      const unsubscribe = subscribeSuccessionObligationChanges(world.eventBus, world.launchCoordinator, notify);
+      return () => {
+        notifySuccessionObligationChange = () => {};
+        unsubscribe();
+      };
+    },
     onReconcileError: (error) => world.log(`Succession reconciliation failed: ${formatError(error)}\n`),
   });
 
@@ -1649,6 +1683,7 @@ export function createCoordinatorCore(
       isLifecycleRunning: () => runtimeState.getLifecycle() === 'running',
       isDrainRequested: control.isDrainRequested,
       isLaunchFenceActive: () => runtimeState.getLaunchFenceActive(),
+      admitTopLevelLaunch: () => world.launchCoordinator.admitTopLevelLaunch(),
       beginRequest: () => {
         world.idleTimer.beginRequest();
       },
@@ -1951,6 +1986,38 @@ export function createCoordinatorCore(
     listExecutionServices: services.listExecutionServices,
     connectProviderOperationRecovery: services.connectProviderOperationRecovery,
     reconcileProviderOperationsAtStartup: services.reconcileProviderOperationsAtStartup,
+    reconcileCustodyAtStartup: () => {
+      let lastError: string | null = null;
+      const reconcile = (): void => {
+        const store = world.storeServicesRef.tryGet();
+        if (store === null) return;
+        try {
+          const dbDir = runtime.paths.coral.store.dbDir;
+          const epoch = resolveCurrentStoreEpoch(runtime.storage, dbDir);
+          if (epoch === null) throw new Error('Custody reconciliation requires a selected store epoch.');
+          const entries = reconcileStartupCustody(
+            runtime.paths.coral.coordinator.runDir,
+            runtime.time.now(),
+            store.progressStore.getDb(),
+            join(dbDir, `epoch-${epoch}`),
+            {
+              readProcessIncarnation: (pid) =>
+                runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
+              capsuleExists: (path) => runtime.storage.existsSync(path),
+            },
+          );
+          lastError = null;
+          if (!entries.some((entry) => entry.kind === 'holding' || entry.kind === 'unreadable')) return;
+        } catch (error: unknown) {
+          const reason = formatError(error);
+          if (reason !== lastError) world.log(`Custody reconciliation remains undecidable: ${reason}\n`);
+          lastError = reason;
+        }
+        const timer = runtime.time.setTimeout(reconcile, 1_000);
+        timer.unref?.();
+      };
+      reconcile();
+    },
     startProviderOperationReconciler: services.startProviderOperationReconciler,
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,
@@ -1994,9 +2061,11 @@ export function createCoordinatorCore(
     settlePendingLaunchesFn: defaults.settlePendingLaunchesFn,
     terminateRegisteredChildrenFn: defaults.terminateRegisteredChildrenFn,
     providerHostManager: world.providerHostManager,
+    onRecoverySettlement: () => notifySuccessionObligationChange(),
     ...(world.providerProxyAuthority === undefined ? {} : { providerProxyAuthority: world.providerProxyAuthority }),
     kbDaemonSupervisor: kbDaemonSupervisorWithTrackedShutdown,
     disposeLifecycleReactor: async () => {
+      succession.reconciler.dispose();
       runtime.time.clearInterval(launchReclamationTimer);
       disposeChildPrincipalTerminalListeners();
       disposeKbDaemonExitListener();
