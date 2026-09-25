@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
 import { authorize } from '#src/security/policy/authorize.js';
 import type { Capability } from '#src/security/capability.js';
 import type { Principal } from '#src/security/principal.js';
@@ -63,6 +64,98 @@ function childAuth(
 }
 
 describe('ChildPrincipalRegistry', () => {
+  it('keeps a transferred handle and rejects a nonce consumed after its receipt was prepared', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-ledger-'));
+    try {
+      const incumbentLedger = new ChildPrincipalNonceLedger(runDir);
+      const successorLedger = new ChildPrincipalNonceLedger(runDir);
+      const originNamespace = () => 'ns-a';
+      const incumbent = new ChildPrincipalRegistry(ids(), { ledger: incumbentLedger, originNamespace });
+      const credential = register(incumbent, testProjectPrincipal('/workspace/project'));
+      const receipt = incumbent.prepareTransfer('attempt', 1_001);
+      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+
+      expect(incumbent.authenticate(childAuth(credential.handle), null, 1_002)).not.toBeNull();
+      incumbent.fenceAuthentication();
+      expect(incumbentLedger.advanceGeneration(1, 2)).toBe(true);
+
+      const successor = new ChildPrincipalRegistry(ids(), { ledger: successorLedger, originNamespace });
+      expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_003)).toBe(true);
+      expect(successor.authenticate(childAuth(credential.handle), null, 1_004)).toBeNull();
+      expect(successor.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_004)).not.toBeNull();
+
+      expect(successorLedger.advanceGeneration(2, 3)).toBe(true);
+      expect(incumbent.reclaimAuthentication(3)).toBe(true);
+      expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).toBeNull();
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a transferred handle without its accepted job and persisted origin', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-origin-'));
+    try {
+      const ledger = new ChildPrincipalNonceLedger(runDir);
+      const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
+      register(incumbent, testProjectPrincipal('/workspace/project'));
+      const receipt = incumbent.prepareTransfer('attempt', 1_001);
+      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+      expect(ledger.advanceGeneration(1, 2)).toBe(true);
+
+      const successor = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-b' });
+      expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_002)).toBe(false);
+      expect(successor.adoptTransfer(receipt, new Set(), 2, 1_002)).toBe(false);
+      const matchingOrigin = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
+      expect(matchingOrigin.adoptTransfer(
+        { ...receipt, consumedNonceCheckpoint: receipt.consumedNonceCheckpoint + 1 },
+        new Set(['job-a']), 2, 1_002,
+      )).toBe(false);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('replays a consumed nonce after the incumbent closes before a final delta', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-replay-'));
+    try {
+      const ledger = new ChildPrincipalNonceLedger(runDir);
+      const incumbent = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
+      const credential = register(incumbent, testProjectPrincipal('/workspace/project'));
+      const receipt = incumbent.prepareTransfer('attempt', 1_001);
+      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+      expect(incumbent.authenticate(childAuth(credential.handle), null, 1_002)).not.toBeNull();
+      ledger.close();
+
+      const recoveredLedger = new ChildPrincipalNonceLedger(runDir);
+      try {
+        expect(recoveredLedger.advanceGeneration(1, 2)).toBe(true);
+        const successor = new ChildPrincipalRegistry(ids(), {
+          ledger: recoveredLedger,
+          originNamespace: () => 'ns-a',
+        });
+        expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 1_003)).toBe(true);
+        expect(successor.authenticate(childAuth(credential.handle), null, 1_004)).toBeNull();
+      } finally {
+        recoveredLedger.close();
+      }
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses authentication when nonce consumption cannot be durably recorded', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-ledger-failure-'));
+    try {
+      const ledger = new ChildPrincipalNonceLedger(runDir);
+      const registry = new ChildPrincipalRegistry(ids(), { ledger, originNamespace: () => 'ns-a' });
+      const credential = register(registry, testProjectPrincipal('/workspace/project'));
+      ledger.close();
+
+      expect(registry.authenticate(childAuth(credential.handle), null, 1_001)).toBeNull();
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
   it('keeps a nested canonical descendant authorized while denying a symlink target outside the parent root', () => {
     const root = mkdtempSync(join(tmpdir(), 'coral-child-principal-canonical-'));
     const allowed = join(root, 'allowed');

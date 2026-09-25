@@ -114,6 +114,14 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import { resolveCurrentStoreEpoch, sweepStoreEpochsPostReady } from '../../store/epoch.js';
 import { createSuccessionCoordinator } from '../succession/index.js';
+import type { SuccessionOwner } from '../succession/obligations.js';
+import {
+  readSuccessionJobIdsByKind,
+  readSuccessionLiveJobIds,
+  readJobLaunchOriginNamespace,
+} from '../../jobs/succession-coverage.js';
+import { listProjectionSessionEntries } from '../../sessions/projections.js';
+import type { JsonValue } from '../../infra/json-value.js';
 import { markJobAsError } from '../../jobs/reconcile/recovery-effects.js';
 import type { JobProgressStore } from '../../jobs/contracts/job-store.js';
 import type {
@@ -1427,6 +1435,181 @@ export function createCoordinatorCore(
     return rememberedSelfIncarnation;
   };
 
+  const readSuccessionJobs = () => {
+    const db = getProgressStore().getDb();
+    const operationIds = [
+      ...readProviderOperations(db).records.map((record) => record.operation.jobId),
+      ...world.operationRegistry.liveJobIds(),
+    ];
+    const hostManager = world.providerHostManager as ProviderHostManager &
+      Partial<ProviderHostAdministrationAuthority>;
+    const hostIds = hostManager.listProviderHosts?.()
+      .filter((record) => record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed')
+      .map((record) => record.host.ownerJobId)
+      .filter((jobId): jobId is string => typeof jobId === 'string') ?? [];
+    const recoveryIds = [...(lifecycleController?.getRecoveryRegistry() ?? [])].map(([jobId]) => jobId);
+    return readSuccessionLiveJobIds(
+      db,
+      world.launchCoordinator.pendingLaunchJobIds(),
+      [...world.launchCoordinator.activeLaunchPermits().map((permit) => permit.jobId), ...operationIds, ...hostIds, ...recoveryIds],
+    );
+  };
+  const successionOwners: readonly SuccessionOwner[] = [
+    {
+      id: 'launch-admission',
+      classify: async () => {
+        const pending = world.launchCoordinator.pendingLaunchJobIds();
+        const acquiring = world.launchCoordinator.activeLaunchPermits()
+          .filter((permit) => permit.holder.kind === 'local-execution' &&
+            getProgressStore().readRuntimeProjection(permit.jobId) === null)
+          .map((permit) => permit.jobId);
+        const jobIds = [...new Set([...pending, ...acquiring])];
+        const unidentified = world.launchCoordinator.pendingDurableLaunchCount() >
+          world.launchCoordinator.pendingDurableJobIds().length;
+        return jobIds.length === 0 && !unidentified
+          ? { kind: 'completed', reason: 'no queued or carrier-acquiring launches' }
+          : { kind: 'blocking', reason: 'launch admission still owns queued or carrier-acquiring work', jobIds };
+      },
+    },
+    {
+      id: 'durable-cli',
+      classify: async () => {
+        const jobIds = readSuccessionJobs().filter(
+          (jobId) => getProgressStore().readRuntimeProjection(jobId)?.transport === 'durable-cli',
+        );
+        return jobIds.length === 0
+          ? { kind: 'completed', reason: 'no live durable-cli carrier' }
+          : { kind: 'blocking', reason: 'durable-cli carrier transfer awaits fenced adoption', jobIds };
+      },
+    },
+    {
+      id: 'provider-operations',
+      classify: async () => {
+        const scan = readProviderOperations(getProgressStore().getDb());
+        const jobIds = [...new Set([
+          ...scan.records.map((record) => record.operation.jobId),
+          ...world.operationRegistry.liveJobIds(),
+        ])];
+        return jobIds.length === 0 && scan.unreadableKeys.length === 0
+          ? { kind: 'completed', reason: 'no provider operation custody' }
+          : { kind: 'blocking', reason: 'provider operation custody requires a control receipt', jobIds };
+      },
+    },
+    {
+      id: 'provider-proxy-sets',
+      classify: async () => world.providerProxyAuthority?.liveSets().length
+        ? { kind: 'blocking', reason: 'live provider proxy set lacks a fenced transfer receipt' }
+        : { kind: 'completed', reason: 'no live provider proxy set' },
+    },
+    {
+      id: 'provider-hosts',
+      classify: async () => {
+        const manager = world.providerHostManager as ProviderHostManager & Partial<ProviderHostAdministrationAuthority>;
+        if (manager.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
+        const hosts = manager.listProviderHosts().filter((record) =>
+          record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed',
+        );
+        const jobIds = hosts
+          .map((host) => host.host.ownerJobId)
+          .filter((jobId): jobId is string => typeof jobId === 'string');
+        return hosts.length === 0
+          ? { kind: 'completed', reason: 'no live local provider host' }
+          : { kind: 'blocking', reason: 'local provider host cannot survive coordinator exit', jobIds };
+      },
+    },
+    {
+      id: 'recovery',
+      classify: async () => {
+        const quarantines = getRecoveryQuarantineStore().list();
+        const registry = lifecycleController?.getRecoveryRegistry();
+        const jobIds = [...(registry ?? [])]
+          .map(([jobId]) => jobId)
+          .filter((jobId) => getProgressStore().readRuntimeProjection(jobId) === null);
+        return quarantines.length === 0 && jobIds.length === 0
+          ? { kind: 'completed', reason: 'no recovery hold' }
+          : { kind: 'blocking', reason: 'recovery registry or quarantine retains authority', jobIds };
+      },
+    },
+    {
+      id: 'workflow',
+      classify: async () => {
+        const jobIds = readSuccessionJobIdsByKind(getProgressStore().getDb(), 'workflow');
+        return jobIds.length === 0
+          ? { kind: 'completed', reason: 'no live workflow execution' }
+          : { kind: 'blocking', reason: 'workflow execution is coordinator-local', jobIds };
+      },
+    },
+    {
+      id: 'kb-daemon',
+      classify: async () => {
+        const daemon = kbDaemonSupervisor.read();
+        const active = daemon.phase === 'online'
+          ? await kbDaemonSupervisor.listActiveKbJobsForSuccession?.()
+          : { active: [] as string[] };
+        if (active === undefined) throw new Error('KB daemon work inventory is unavailable');
+        const jobIds = [...new Set([
+          ...readSuccessionJobIdsByKind(getProgressStore().getDb(), 'kb'),
+          ...active.active,
+        ])];
+        const daemonIdle = daemon.phase === 'disabled' || daemon.phase === 'stopped' ||
+          (daemon.phase === 'online' && daemon.pendingRequests === 0);
+        return jobIds.length === 0 && daemonIdle
+          ? { kind: 'completed', reason: 'no KB daemon work' }
+          : { kind: 'blocking', reason: 'KB daemon work has not been transferred', jobIds };
+      },
+    },
+    {
+      id: 'discuss',
+      classify: async () => {
+        const liveSnapshots = [...knownDiscussSources(discuss.readHelpersDeps)]
+          .flatMap((source) => discuss.getDiscussStoreForSource(source).listSummaries())
+          .filter((summary) => !TERMINAL_DISCUSS_STATUSES.has(summary.status));
+        return discuss.hooks.onIdleCheck() || liveSnapshots.length > 0
+          ? { kind: 'blocking', reason: 'live discuss session retains coordinator-local state' }
+          : { kind: 'completed', reason: 'no live discuss session' };
+      },
+    },
+    {
+      id: 'session-continuation',
+      classify: async () => {
+        const sessions = listProjectionSessionEntries(getProgressStore().getDb());
+        const held = sessions.filter((session) =>
+          session.continuationLease?.status === 'pending' ||
+          session.continuationLease?.status === 'claimed' ||
+          session.retentionDiscard.attempts.some((attempt) => attempt.status !== 'completed'),
+        );
+        return held.length === 0
+          ? { kind: 'completed', reason: 'no continuation lease or retention hold' }
+          : { kind: 'blocking', reason: 'session continuation or retention work needs an accepted receipt' };
+      },
+    },
+    {
+      id: 'child-principals',
+      classify: async (attemptId) => {
+        const snapshot = world.childPrincipalRegistry.transferSnapshot(runtime.time.now());
+        if (snapshot.entries.length === 0) return { kind: 'completed', reason: 'no live child handle' };
+        const transfer = world.childPrincipalRegistry.prepareTransfer(attemptId, runtime.time.now());
+        if (transfer?.recoveryGrantId === undefined) {
+          return { kind: 'blocking', reason: 'child nonce recovery grant could not be recorded' };
+        }
+        if (transfer.entries.some((entry) =>
+          readJobLaunchOriginNamespace(getProgressStore().getDb(), entry.parentJobId) !== entry.authorization.namespace
+        )) return { kind: 'blocking', reason: 'child origin launch evidence is missing or conflicting' };
+        return {
+          kind: 'transferable',
+          reason: 'handles and consumed nonces are recorded for fenced adoption',
+          receipt: {
+            owner: 'child-principals',
+            generation: 1,
+            attemptId,
+            receiptId: `child-principals:${attemptId}`,
+            recoveryGrantId: transfer.recoveryGrantId,
+            payload: JSON.parse(JSON.stringify(transfer)) as JsonValue,
+          },
+        };
+      },
+    },
+  ];
   const succession = createSuccessionCoordinator({
     runDir: runtime.paths.coral.coordinator.runDir,
     incumbent: {
@@ -1437,7 +1620,8 @@ export function createCoordinatorCore(
       bundleHash: identity.bundleHash,
       flavor: identity.flavor,
     },
-    owners: [],
+    owners: successionOwners,
+    liveJobIds: readSuccessionJobs,
     epochKey: () => {
       if (storeServicesRef.tryGet() === null) return null;
       try {

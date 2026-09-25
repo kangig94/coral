@@ -35,6 +35,7 @@ import {
   type ProcessExitRemainderAcceptance,
   type ShutdownAuthorityReleaseBoundary,
   type ShutdownObligation,
+  type ShutdownObligationLabel,
   type ShutdownRetainedAuthorityContribution,
   type ShutdownSequenceDisposition,
   type ShutdownSettlementLedger,
@@ -57,9 +58,13 @@ export type ShutdownIncidentOccurrence = Readonly<{
 export function shutdownIncidentUndischarged({
   incident,
   occurrence,
-}: ShutdownIncidentOccurrence): ShutdownUndischarged {
+}: ShutdownIncidentOccurrence): ShutdownUndischarged & Pick<ShutdownObligation, 'label'> {
+  const label: ShutdownObligation['label'] =
+    occurrence === 1
+      ? 'provider proxy lifecycle fatal incident'
+      : `provider proxy lifecycle fatal incident ${occurrence}`;
   return {
-    label: `provider proxy lifecycle fatal incident${occurrence === 1 ? '' : ` ${occurrence}`}`,
+    label,
     remainder: { owner: 'process-exit' },
     settlement: { cause: 'rejected', error: serializeThrown(incident.error) },
   };
@@ -375,7 +380,7 @@ function buildOpeningShutdownObligations({
     let ownershipCheckerTeardownCaptured = false;
     const obligations: ShutdownObligation[] = [
       ...[...streamResponses].map((stream, index): ShutdownObligation => {
-        const label = `stream response close ${index + 1}`;
+        const label: ShutdownObligation['label'] = `stream response close ${index + 1}`;
         return {
           label,
           task: () => confirmedTask(() => stream.end()),
@@ -1042,7 +1047,7 @@ export async function runShutdownSequence({
   const initialMode = shutdownModeFromReason(initialReason);
   const budgetMs =
     initialMode === 'handoff' ? (handoffDrainBudgetMs ?? HANDOFF_DRAIN_TIMEOUT_MS) : SHUTDOWN_DRAIN_TIMEOUT_MS;
-  const ledger = createShutdownSettlementLedger({
+  const ledger = createShutdownSettlementLedger<ShutdownObligationLabel>({
     budgetMs,
     time: runtime.time,
     log,

@@ -27,6 +27,7 @@ export type SuccessionReconcilerOptions = Readonly<{
   incumbent: IncumbentIdentity;
   owners: readonly SuccessionOwner[];
   requiredOwners?: readonly SuccessionOwnerId[];
+  liveJobIds?: () => readonly string[];
   epochKey: () => string | null;
   admissionRevision: () => number;
   newAttemptId?: () => string;
@@ -264,7 +265,16 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const admissionRevision = options.admissionRevision();
       const existing = readPreparation(intent);
       if (existing !== null && currentPreparation(intent, existing, options)) {
-        return { kind: 'prepared', preparation: existing };
+        const current = await prepareOwnerObligations(
+          options.owners,
+          existing.attemptId,
+          capabilities,
+          options.requiredOwners,
+          options.liveJobIds,
+        );
+        if (current.kind === 'prepared' && JSON.stringify(current.receipts) === JSON.stringify(existing.receipts)) {
+          return { kind: 'prepared', preparation: existing };
+        }
       }
       const attemptId = newAttemptId();
       const obligations = await prepareOwnerObligations(
@@ -272,6 +282,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         attemptId,
         capabilities,
         options.requiredOwners,
+        options.liveJobIds,
       );
       if (obligations.kind === 'blocking' || !capabilities.protocols.includes('prepare')) {
         const blockers =

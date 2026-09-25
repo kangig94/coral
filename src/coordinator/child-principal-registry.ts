@@ -9,6 +9,7 @@ import {
   type RawPrincipalWire,
 } from '../security/principal-wire.js';
 import type { IdPort } from '../runtime/ports.js';
+import type { ChildPrincipalNonceLedger } from '../infra/child-principal-nonce-ledger.js';
 
 const CHILD_PRINCIPAL_TTL_MS = 24 * 60 * 60 * 1000;
 export const CHILD_PRINCIPAL_CAPABILITIES = [
@@ -67,6 +68,21 @@ type ChildPrincipalEntry = {
   readonly usedNonces: Set<string>;
 };
 
+export type TransferredChildPrincipal = Readonly<{
+  handle: string;
+  issuer: string;
+  authorization: ChildPrincipalAuthorization;
+  parentJobId: string;
+  parentSessionId: string;
+}>;
+
+export type ChildPrincipalSnapshot = Readonly<{
+  entries: readonly TransferredChildPrincipal[];
+  consumedNonceCheckpoint: number;
+}>;
+
+export type ChildPrincipalTransfer = ChildPrincipalSnapshot & Readonly<{ recoveryGrantId: string }>;
+
 type ChildAuthMetadata = {
   readonly kind: 'child';
   readonly handle: string;
@@ -78,9 +94,134 @@ type ChildAuthMetadata = {
 export class ChildPrincipalRegistry {
   private readonly entries = new Map<string, ChildPrincipalEntry>();
   private readonly ids: Pick<IdPort, 'randomBytes'>;
+  private readonly ledger: ChildPrincipalNonceLedger | null;
+  private readonly originNamespace: ((jobId: string) => string | null) | null;
+  private generation: number;
+  private fenced = false;
 
-  constructor(ids: Pick<IdPort, 'randomBytes'>) {
+  constructor(
+    ids: Pick<IdPort, 'randomBytes'>,
+    options: {
+      ledger?: ChildPrincipalNonceLedger;
+      originNamespace?: (jobId: string) => string | null;
+    } = {},
+  ) {
     this.ids = ids;
+    this.ledger = options.ledger ?? null;
+    this.originNamespace = options.originNamespace ?? null;
+    this.generation = this.ledger?.generation() ?? 1;
+  }
+
+  transferSnapshot(nowMs: number): ChildPrincipalSnapshot {
+    this.pruneExpired(nowMs);
+    return {
+      entries: [...this.entries].map(([handle, entry]) => ({
+        handle,
+        issuer: entry.issuer,
+        authorization: {
+          principalWire: entry.wire,
+          namespace: entry.namespace,
+          expiresAtMs: entry.expiresAt,
+        },
+        parentJobId: entry.parentJobId,
+        parentSessionId: entry.parentSessionId,
+      })),
+      consumedNonceCheckpoint: this.ledger?.checkpoint() ?? 0,
+    };
+  }
+
+  prepareTransfer(attemptId: string, nowMs: number): ChildPrincipalTransfer | null {
+    if (this.ledger === null) return null;
+    const grant = this.ledger.prepareGrant(attemptId, this.generation);
+    if (grant === null) return null;
+    return {
+      ...this.transferSnapshot(nowMs),
+      consumedNonceCheckpoint: grant.checkpoint,
+      recoveryGrantId: grant.grantId,
+    };
+  }
+
+  adoptTransfer(
+    transfer: ChildPrincipalTransfer,
+    acceptedJobIds: ReadonlySet<string>,
+    generation: number,
+    nowMs: number,
+  ): boolean {
+    if (this.ledger === null) return false;
+    try {
+      if (this.ledger.generation() !== generation ||
+        this.ledger.checkpoint() < transfer.consumedNonceCheckpoint) return false;
+    } catch {
+      return false;
+    }
+    if (!this.ledger.hasGrant(transfer.recoveryGrantId, generation, transfer.consumedNonceCheckpoint)) {
+      return false;
+    }
+    if (this.originNamespace === null) return false;
+    if (new Set(transfer.entries.map((entry) => entry.handle)).size !== transfer.entries.length) return false;
+    const adopted = new Map<string, ChildPrincipalEntry>();
+    for (const entry of transfer.entries) {
+      if (
+        entry.authorization.expiresAtMs <= nowMs ||
+        !acceptedJobIds.has(entry.parentJobId) ||
+        !this.matchesOrigin(entry.parentJobId, entry.authorization.namespace)
+      ) {
+        return false;
+      }
+      try {
+        adopted.set(entry.handle, {
+          issuer: entry.issuer,
+          wire: canonicalizePrincipalWire(entry.authorization.principalWire),
+          namespace: entry.authorization.namespace,
+          parentJobId: entry.parentJobId,
+          parentSessionId: entry.parentSessionId,
+          expiresAt: entry.authorization.expiresAtMs,
+          usedNonces: new Set(this.ledger.consumedTokens(entry.handle)),
+        });
+      } catch {
+        return false;
+      }
+    }
+    try {
+      if (this.ledger.generation() !== generation) return false;
+    } catch {
+      return false;
+    }
+    for (const [handle, entry] of adopted) {
+      this.entries.set(handle, entry);
+    }
+    this.generation = generation;
+    this.fenced = false;
+    return true;
+  }
+
+  fenceAuthentication(): void {
+    this.fenced = true;
+  }
+
+  reclaimAuthentication(generation: number): boolean {
+    if (this.ledger === null) return false;
+    try {
+      if (this.ledger.generation() !== generation) return false;
+    } catch {
+      return false;
+    }
+    try {
+      for (const [handle, entry] of this.entries) {
+        entry.usedNonces.clear();
+        for (const token of this.ledger.consumedTokens(handle)) entry.usedNonces.add(token);
+      }
+    } catch {
+      return false;
+    }
+    try {
+      if (this.ledger.generation() !== generation) return false;
+    } catch {
+      return false;
+    }
+    this.generation = generation;
+    this.fenced = false;
+    return true;
   }
 
   register(registration: ChildPrincipalRegistration): ChildPrincipalCredential {
@@ -152,9 +293,9 @@ export class ChildPrincipalRegistry {
     };
   }
 
-  authenticate(auth: ChildAuthMetadata, namespace: string, nowMs: number): Principal | null {
+  authenticate(auth: ChildAuthMetadata, namespace: string | null, nowMs: number): Principal | null {
     const entry = this.entries.get(auth.handle);
-    if (entry === undefined) {
+    if (entry === undefined || this.fenced || (this.originNamespace !== null && this.ledger === null)) {
       return null;
     }
     if (entry.expiresAt <= nowMs) {
@@ -162,7 +303,8 @@ export class ChildPrincipalRegistry {
       return null;
     }
     if (
-      entry.namespace !== namespace ||
+      (namespace !== null && entry.namespace !== namespace) ||
+      (this.originNamespace !== null && !this.matchesOrigin(entry.parentJobId, entry.namespace)) ||
       entry.parentJobId !== auth.jobId ||
       entry.parentSessionId !== auth.sessionId ||
       entry.usedNonces.has(auth.token)
@@ -170,6 +312,7 @@ export class ChildPrincipalRegistry {
       return null;
     }
 
+    if (this.ledger !== null && !this.ledger.consume(auth.handle, auth.token, this.generation)) return null;
     entry.usedNonces.add(auth.token);
     return principalFromWire(entry.wire, {
       transport: 'ipc',
@@ -178,6 +321,14 @@ export class ChildPrincipalRegistry {
         id: `${entry.parentJobId}:${entry.parentSessionId}`,
       },
     });
+  }
+
+  private matchesOrigin(jobId: string, namespace: string): boolean {
+    try {
+      return this.originNamespace?.(jobId) === namespace;
+    } catch {
+      return false;
+    }
   }
 
   revokeParentJob(parentJobId: string): void {

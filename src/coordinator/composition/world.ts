@@ -45,6 +45,8 @@ import { CoralSetupError, documentedCoralSetupError } from '../../runtime/errors
 import type { BackendDefaultsPlan } from './defaults.js';
 import { createStoreServicesRef, type StoreServicesRef } from './store-services-ref.js';
 import { ChildPrincipalRegistry } from '../child-principal-registry.js';
+import { ChildPrincipalNonceLedger } from '../../infra/child-principal-nonce-ledger.js';
+import { readJobLaunchOriginNamespace } from '../../jobs/succession-coverage.js';
 import { admittedByThisCoordinator, classifyLocalCarriers } from './carrier-observation.js';
 import { isLivePhase } from '../../jobs/phase.js';
 
@@ -391,7 +393,22 @@ export function createCoordinatorWorld(
   const launchCoordinator = options.launchCoordinator ?? new LaunchCoordinator({ runtime });
   const eventBus = options.eventBus ?? new TypedEventBus();
   const providerRegistry = options.providerRegistry ?? new ProviderRegistry();
-  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids);
+  const childNonceRunDir = runtime.paths.coral.coordinator?.runDir;
+  let childNonceLedger: ChildPrincipalNonceLedger | undefined;
+  if (typeof childNonceRunDir === 'string' && childNonceRunDir.length > 0) {
+    try {
+      childNonceLedger = new ChildPrincipalNonceLedger(childNonceRunDir);
+    } catch (error: unknown) {
+      log(`Child principal nonce ledger is unavailable: ${errorMessage(error)}\n`);
+    }
+  }
+  const childPrincipalRegistry = new ChildPrincipalRegistry(runtime.ids, {
+    ...(childNonceLedger === undefined ? {} : { ledger: childNonceLedger }),
+    originNamespace: (jobId) => {
+      const services = storeServicesRef.tryGet();
+      return services === null ? null : readJobLaunchOriginNamespace(services.progressStore.getDb(), jobId);
+    },
+  });
   const pluginRegistry = createPluginRegistry({
     storage: runtime.storage,
     env: runtime.env,

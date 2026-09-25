@@ -265,7 +265,7 @@ function armShutdownRecoveryContinuation(socket: Socket, continuation: () => voi
 
 function authenticateIpcRequest(auth: IpcAuthMetadata | undefined, rpcPorts: HttpHandlerPorts): Principal | null {
   if (auth?.kind === 'child') {
-    return rpcPorts.childPrincipals?.authenticate(auth, rpcPorts.identity.namespace, rpcPorts.identity.now()) ?? null;
+    return rpcPorts.childPrincipals?.authenticate(auth, null, rpcPorts.identity.now()) ?? null;
   }
 
   if (auth?.kind !== 'boot') {

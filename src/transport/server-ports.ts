@@ -453,7 +453,7 @@ type HandlerIdentity = {
 };
 
 interface ChildPrincipalRegistryPort {
-  authenticate(auth: Extract<IpcAuthMetadata, { kind: 'child' }>, namespace: string, nowMs: number): Principal | null;
+  authenticate(auth: Extract<IpcAuthMetadata, { kind: 'child' }>, namespace: string | null, nowMs: number): Principal | null;
 }
 
 export interface HttpHandlerPorts extends RpcPorts {

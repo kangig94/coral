@@ -107,6 +107,7 @@ export interface KbDaemonSupervisor {
   expansionRpc(request: KbDaemonExpansionRequest): Promise<KbDaemonExpansionResult>;
   abortKbJobs?(jobIds: string[]): Promise<KbDaemonAbortResult>;
   listActiveKbJobs?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
+  listActiveKbJobsForSuccession?(options?: { signal?: AbortSignal }): Promise<KbDaemonJobsResult>;
   stop(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonHealthSnapshot>;
   restart(reason?: string): Promise<KbDaemonHealthSnapshot>;
   dispose(reason?: string, options?: { signal?: AbortSignal }): Promise<KbDaemonDisposalSettlement>;
@@ -859,6 +860,16 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     }
   };
 
+  const listActiveKbJobsForSuccession = async (
+    options: { signal?: AbortSignal } = {},
+  ): Promise<KbDaemonJobsResult> => {
+    const response = await sendRequest('kb.jobs', undefined, requestTimeoutMs, options.signal);
+    if (!response.ok || !isKbDaemonJobsResult(response.result)) {
+      throw new Error('KB daemon work inventory is unavailable.');
+    }
+    return response.result;
+  };
+
   const readKbNow = async (
     request: KbDaemonKbReadRequest,
     options: { signal?: AbortSignal } = {},
@@ -1249,6 +1260,7 @@ export function createKbDaemonSupervisor(options: KbDaemonSupervisorOptions): Kb
     expansionRpc: expansionRpcNow,
     abortKbJobs: abortKbJobsNow,
     listActiveKbJobs: listActiveKbJobsNow,
+    listActiveKbJobsForSuccession,
     stop: async (reason, stopOptions) => (await runExclusive(() => stopNow(reason, stopOptions?.signal))).snapshot,
     restart: (reason = 'restart') =>
       runExclusive(async () => {

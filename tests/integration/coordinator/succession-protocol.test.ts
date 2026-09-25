@@ -63,6 +63,69 @@ afterEach(() => {
 });
 
 describe('succession protocol', () => {
+  it.each([
+    ['blocking', async () => ({ kind: 'blocking' as const, reason: 'owner still holds work' })],
+    ['unavailable', async () => { throw new Error('owner inventory failed'); }],
+  ])('refuses preparation when an owner is %s', async (_case, classify) => {
+    const target = fixture();
+    const owner: SuccessionOwner = { id: 'launch-admission', classify };
+    const service = createSuccessionCoordinator({
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      },
+      owners: [owner],
+      requiredOwners: [owner.id],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      liveJobIds: () => ['external-without-status'],
+    });
+    expect(await service.reconciler.request({
+      requestId: 'request',
+      target: { build: target.build, pluginRootLabel: target.pluginRoot },
+    })).toMatchObject({ kind: 'registered' });
+    expect(await service.reconciler.prepare('request')).toMatchObject({
+      kind: 'deferred',
+      blockers: expect.arrayContaining([{ owner: 'jobs', reason: 'unclaimed: external-without-status' }]),
+    });
+  });
+
+  it('rechecks owner dispositions before reusing a prepared attempt', async () => {
+    const target = fixture();
+    let blocked = false;
+    const owner: SuccessionOwner = {
+      id: 'launch-admission',
+      classify: async () => blocked
+        ? { kind: 'blocking', reason: 'new carrier acquisition' }
+        : { kind: 'completed', reason: 'no admission work' },
+    };
+    const service = createSuccessionCoordinator({
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent', pid: 100, incarnation: null,
+        version: '1.0.0', bundleHash: 'old-bundle', flavor: 'prod',
+      },
+      owners: [owner],
+      requiredOwners: [owner.id],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+    });
+    await service.reconciler.request({
+      requestId: 'request', target: { build: target.build, pluginRootLabel: target.pluginRoot },
+    });
+    expect(await service.reconciler.prepare('request')).toMatchObject({ kind: 'prepared' });
+    blocked = true;
+    expect(await service.reconciler.prepare('request')).toMatchObject({
+      kind: 'deferred',
+      blockers: [{ owner: 'launch-admission', reason: 'new carrier acquisition' }],
+    });
+  });
+
   it('reads the separate declaration and treats its absence as an empty acceptance set', () => {
     const target = fixture();
     expect(readSuccessionCapabilities(target.bridge, target.build)).toMatchObject({

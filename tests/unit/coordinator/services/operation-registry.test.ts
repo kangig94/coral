@@ -68,6 +68,16 @@ describe('LocalOperationRegistry', () => {
     expect(registry.stateForJob(m.operation.jobId)).toBe('activated');
   });
 
+  it('exposes live carrier identities before a job has a status row', () => {
+    const { registry } = registryWithCleanup();
+    const m = meta({ jobId: 'external-without-status' });
+    registry.activate(m, fakeControl().control, cleanupFor(m));
+
+    expect(registry.liveJobIds()).toEqual(['external-without-status']);
+    registry.settled(identityFor(m));
+    expect(registry.liveJobIds()).toEqual([]);
+  });
+
   it('stateForJob() answers null for a job with no live entry', () => {
     const registry = new LocalOperationRegistry();
     expect(registry.stateForJob('never-registered')).toBeNull();

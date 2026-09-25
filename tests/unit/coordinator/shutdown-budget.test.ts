@@ -15,12 +15,12 @@ import {
   runShutdownSequence,
 } from '#src/coordinator/shutdown.js';
 import {
-  createShutdownSettlementLedger,
+  createShutdownSettlementLedger as createRegisteredShutdownSettlementLedger,
   type ProcessExitRemainder,
   type ProcessExitRemainderAcceptance,
   type ShutdownDeclinedSettlement,
   type ShutdownAuthorityReleaseBoundary,
-  type ShutdownObligation,
+  type ShutdownObligation as RegisteredShutdownObligation,
 } from '#src/coordinator/shutdown-settlement.js';
 import type {
   ProviderProxyAuthorityRegistry,
@@ -36,6 +36,8 @@ import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
 
+type ShutdownObligation = RegisteredShutdownObligation<string>;
+const createShutdownSettlementLedger = createRegisteredShutdownSettlementLedger<string>;
 type CallLog = string[];
 
 function formatProducedShutdown(shutdown: NonNullable<HealthSnapshot['shutdown']>): string {

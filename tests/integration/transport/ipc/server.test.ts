@@ -51,6 +51,9 @@ import { createDeferred } from '#tools/testing/deferred.js';
 import { IdleTimer } from '#src/coordinator/live/idle.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { domainSuccess } from '#src/transport/tool-result.js';
+import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
+import { testProjectPrincipal } from '#tests/helpers/principal.js';
 
 const tempDirs: string[] = [];
 
@@ -613,7 +616,7 @@ describe('ipc server', () => {
       childPrincipals: {
         authenticate: vi.fn((auth, namespace, nowMs) => {
           if (
-            namespace === 'test-namespace' &&
+            namespace === null &&
             nowMs === 0 &&
             auth.handle === 'handle-a' &&
             auth.jobId === 'job-a' &&
@@ -734,6 +737,59 @@ describe('ipc server', () => {
       ).rejects.toThrow('IPC boot token or child principal required');
     } finally {
       await closeIpcServer(listener);
+    }
+  });
+
+  it('authorizes KB search for an adopted child handle against its origin namespace', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-succession-ipc-'));
+    tempDirs.push(runDir);
+    const incumbentLedger = new ChildPrincipalNonceLedger(runDir);
+    const successorLedger = new ChildPrincipalNonceLedger(runDir);
+    const ids = { randomBytes: (length: number) => Buffer.alloc(length, 7) };
+    const originNamespace = () => 'incumbent-namespace';
+    const incumbent = new ChildPrincipalRegistry(ids, { ledger: incumbentLedger, originNamespace });
+    const credential = incumbent.register({
+      issuer: 'durable-job',
+      parentPrincipal: testProjectPrincipal('/project-root'),
+      childCaps: ['kb:read'],
+      namespace: 'incumbent-namespace',
+      parentJobId: 'job-a',
+      parentSessionId: 'session-a',
+      nowMs: 0,
+    });
+    const receipt = incumbent.prepareTransfer('attempt', 0);
+    if (receipt === null) throw new Error('Expected child transfer receipt.');
+    expect(incumbent.authenticate({
+      kind: 'child', handle: credential.handle, token: 'consumed', jobId: 'job-a', sessionId: 'session-a',
+    }, null, 1)).not.toBeNull();
+    incumbent.fenceAuthentication();
+    expect(incumbentLedger.advanceGeneration(1, 2)).toBe(true);
+
+    const successor = new ChildPrincipalRegistry(ids, { ledger: successorLedger, originNamespace });
+    expect(successor.adoptTransfer(receipt, new Set(['job-a']), 2, 2)).toBe(true);
+    const basePorts = createPorts();
+    const readSearch = vi.fn(async () => domainSuccess({ results: [] }));
+    const ports: HttpHandlerPorts = {
+      ...basePorts,
+      identity: { ...basePorts.identity, namespace: 'successor-namespace' },
+      childPrincipals: successor,
+      kb: { ...basePorts.kb, readSearch },
+    };
+    const listener = createIpcServer(ports);
+    const socketPath = makeSocketPath();
+    await listenIpcServer(listener, socketPath);
+    try {
+      await expect(requestIpcMethod(socketPath, 'kb.entries.search', { q: 'carried work' }, {
+        auth: { kind: 'child', handle: credential.handle, token: 'fresh', jobId: 'job-a', sessionId: 'session-a' },
+      })).resolves.toEqual({ results: [] });
+      expect(readSearch).toHaveBeenCalledOnce();
+      await expect(requestIpcMethod(socketPath, 'kb.entries.search', { q: 'replay' }, {
+        auth: { kind: 'child', handle: credential.handle, token: 'consumed', jobId: 'job-a', sessionId: 'session-a' },
+      })).rejects.toThrow();
+    } finally {
+      await closeIpcServer(listener);
+      incumbentLedger.close();
+      successorLedger.close();
     }
   });
 
