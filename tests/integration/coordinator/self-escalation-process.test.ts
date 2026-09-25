@@ -11,6 +11,7 @@ import {
   assertBuildArtifactsAvailable,
   coordinatorFilesForHome,
   createPluginFixture,
+  createShippedPluginFixture,
   readDiscoveryRecordForHome,
   spawnCoordinator,
   stopCoordinator,
@@ -95,7 +96,7 @@ describe('real-process incumbent self-escalation', () => {
     const prompt = join(sessionB, 'prompt.txt');
     writeFileSync(prompt, 'Keep session B running until its gate opens.');
 
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
@@ -108,12 +109,21 @@ describe('real-process incumbent self-escalation', () => {
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
     await runCli(oldFixture, home, sessionA, binDir, ['backend', 'status']);
-    const launch = await runCli(oldFixture, home, sessionB, binDir, ['codex', '-i', prompt]);
-    const jobId = launch.match(/Provider job (\S+) launch accepted/u)?.[1];
+    const launch = await runCli(oldFixture, home, sessionB, binDir, ['codex', '-i', prompt, '-d']);
+    const jobId = launch.match(/wait jobs (\S+)/u)?.[1];
     if (jobId === undefined) throw new Error(`Session B did not launch an app-server job: ${launch}`);
     await waitForCondition(() => existsSync(join(state, 'job-running')), 30_000);
 
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    for (const tag of ['v0.10.0', 'v0.10.13'] as const) {
+      const shipped = createShippedPluginFixture(roots, tag);
+      const olderContender = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
+      coordinators.push(olderContender);
+      await waitForProcessExit(olderContender, 30_000);
+      expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
+      expect(existsSync(join(state, 'job-running'))).toBe(true);
+    }
+
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);

@@ -97,7 +97,7 @@ describe('D5 protected epochs against shipped selectors', () => {
     expect(reconcileProtectedEpochs(storeRoot)).toEqual([]);
   }, 30_000);
 
-  it.each(['v0.10.0', 'v0.10.13'] as const)(
+  it.each(['v0.10.0', 'v0.10.10', 'v0.10.11', 'v0.10.12', 'v0.10.13'] as const)(
     'replays a moved but unpublished address after %s starts without a waiter',
     async (tag) => {
       const home = mkdtempSync(join(tmpdir(), `coral-protected-unmapped-${tag}-`));
@@ -137,7 +137,7 @@ describe('D5 protected epochs against shipped selectors', () => {
     30_000,
   );
 
-  it.each(['v0.10.0', 'v0.10.13'] as const)(
+  it.each(['v0.10.0', 'v0.10.10', 'v0.10.11', 'v0.10.12', 'v0.10.13'] as const)(
     'keeps a protected epoch byte-for-byte across a %s rollback after its waiter is killed',
     async (tag) => {
       const home = mkdtempSync(join(tmpdir(), `coral-protected-${tag}-`));

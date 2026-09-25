@@ -20,6 +20,11 @@ const tempDirs: string[] = [];
 const liveListeners: IpcListener[] = [];
 const liveChildren: ChildProcess[] = [];
 const contenders: SpawnedCoordinator[] = [];
+const shippedStateCases = (
+  ['v0.10.0', 'v0.10.1', 'v0.10.4', 'v0.10.5', 'v0.10.9', 'v0.10.10', 'v0.10.13'] as const
+).flatMap((tag) => (
+  ['starting', 'idle', 'busy', 'preparing', 'committing'] as const
+).map((state) => ({ tag, state })));
 
 function makeSocketPath(name: string): string {
   const root = mkdtempSync(join(tmpdir(), 'coral-starting-handoff-test-'));
@@ -149,10 +154,10 @@ describe('legacy transport.shutdown at a new incumbent', () => {
     },
   );
 
-  it.each(['starting', 'idle', 'busy', 'preparing', 'committing'] as const)(
-    'refuses a shipped contender and v0.10.0 CLI while %s',
-    async (state) => {
-      const fixture = createShippedPluginFixture(tempDirs, 'v0.10.0');
+  it.each(shippedStateCases)(
+    'refuses a shipped $tag contender and CLI while $state',
+    async ({ tag, state }) => {
+      const fixture = createShippedPluginFixture(tempDirs, tag);
       const home = mkdtempSync(join(tmpdir(), 'coral-legacy-arrival-'));
       tempDirs.push(home);
       const paths = coordinatorFilesForHome(home, 'prod');
@@ -202,6 +207,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       expect(dummy.exitCode).toBeNull();
       expect(dummy.signalCode).toBeNull();
       expect(requestDrain).not.toHaveBeenCalled();
+      const shutdownsBeforeCli = decideLegacyShutdown.mock.calls.length;
 
       const cli = spawn(process.execPath, [fixture.cliPath, 'backend', 'status'], {
         env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: fixture.root },
@@ -221,7 +227,11 @@ describe('legacy transport.shutdown at a new incumbent', () => {
           reject(error);
         });
       });
-      expect(decideLegacyShutdown.mock.calls.length).toBeGreaterThanOrEqual(2);
+      if (['v0.10.0', 'v0.10.1', 'v0.10.4'].includes(tag)) {
+        expect(decideLegacyShutdown.mock.calls.length).toBeGreaterThan(shutdownsBeforeCli);
+      } else {
+        expect(decideLegacyShutdown.mock.calls.length).toBe(shutdownsBeforeCli);
+      }
       expect(dummy.exitCode).toBeNull();
       expect(dummy.signalCode).toBeNull();
       expect(requestDrain).not.toHaveBeenCalled();
