@@ -182,6 +182,11 @@ describe('shutdownBackend', () => {
       reason: 'no_response',
       detail: 'ETIMEDOUT',
     });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:4321/admin/shutdown',
+      expect.objectContaining({ method: 'POST' }),
+    );
   });
 
   // A refused connection used to be reported as `not_running` here. It cannot be: an absent pid is excluded

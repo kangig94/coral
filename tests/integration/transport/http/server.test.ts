@@ -5678,39 +5678,45 @@ describe('execution backend server', () => {
     });
   });
 
-  it('returns 200 from /admin/shutdown with draining status and shuts down when idle', async () => {
-    const pluginRoot = createPluginRoot('plugin-root');
-    const backend = await startBackendServer({ pluginRoot });
-    const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
+  it.each(['shutdownToken', 'bootToken'] as const)(
+    'returns 200 from /admin/shutdown with %s and shuts down when idle',
+    async (tokenName) => {
+      const pluginRoot = createPluginRoot('plugin-root');
+      const backend = await startBackendServer({ pluginRoot });
+      const warnSpy = vi.spyOn(backendLog, 'warn').mockImplementation(() => undefined);
 
-    try {
-      const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
-        method: 'POST',
-        headers: { 'X-Coral-Shutdown-Token': backend.shutdownToken },
-      });
+      try {
+        const response = await fetch(`${backend.baseUrl}/admin/shutdown`, {
+          method: 'POST',
+          headers: {
+            [tokenName === 'bootToken' ? 'X-Coral-Boot-Token' : 'X-Coral-Shutdown-Token']: backend[tokenName],
+          },
+        });
 
-      expect(response.status).toBe(200);
-      const body = (await response.json()) as Record<string, unknown>;
-      expect(body.status).toBe('draining');
-      expect(typeof body.instanceId).toBe('string');
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as Record<string, unknown>;
+        expect(body.status).toBe('draining');
+        expect(typeof body.instanceId).toBe('string');
 
-      const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
-      expect(
-        messages.some(
-          (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
-        ),
-      ).toBe(true);
-      expect(messages.some((message) => message.includes('"transport":"http"'))).toBe(true);
+        const messages = warnSpy.mock.calls.map((call) => String(call[0] ?? ''));
+        expect(
+          messages.some(
+            (message) => message.startsWith('audit ') && message.includes('"event":"admin_shutdown_requested"'),
+          ),
+        ).toBe(true);
+        expect(messages.some((message) => message.includes('"transport":"http"'))).toBe(true);
+        expect(messages.some((message) => message.includes('"reason":"replaced"'))).toBe(true);
 
-      // Backend is idle (no active jobs in test), so drain fires promptly
-      await backend.controller.waitForShutdown();
+        // Backend is idle (no active jobs in test), so drain fires promptly
+        await backend.controller.waitForShutdown();
 
-      expect(backend.controller.getLifecycle()).toBe('stopped');
-      expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
-    } finally {
-      warnSpy.mockRestore();
-    }
-  });
+        expect(backend.controller.getLifecycle()).toBe('stopped');
+        expect(existsSync(runtime.paths.coral.coordinator.infoFile)).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    },
+  );
 
   it('rejects /admin/shutdown when only the general backend token is provided', async () => {
     const backend = await startBackendServer();

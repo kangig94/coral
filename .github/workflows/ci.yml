@@ -37,6 +37,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Fetch shipped release fixtures
+        run: |
+          tags=()
+          for patch in {0..13}; do
+            tags+=("refs/tags/v0.10.$patch:refs/tags/v0.10.$patch")
+          done
+          git fetch --no-tags origin "${tags[@]}"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}

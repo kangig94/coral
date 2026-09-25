@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -56,6 +57,34 @@ export type PluginFixture = {
   flavor: BuildFlavor;
   bundleHash: string;
 };
+
+export const SHIPPED_RELEASE_TAGS = [
+  'v0.10.0',
+  'v0.10.1',
+  'v0.10.2',
+  'v0.10.3',
+  'v0.10.4',
+  'v0.10.5',
+  'v0.10.6',
+  'v0.10.7',
+  'v0.10.8',
+  'v0.10.9',
+  'v0.10.10',
+  'v0.10.11',
+  'v0.10.12',
+  'v0.10.13',
+] as const;
+
+export type ShippedReleaseTag = (typeof SHIPPED_RELEASE_TAGS)[number];
+
+export type ShippedPluginFixture = PluginFixture & {
+  tag: ShippedReleaseTag;
+  version: string;
+  cliPath: string;
+  storeFormatFingerprint: string;
+};
+
+const shippedPluginFixtures = new Map<ShippedReleaseTag, ShippedPluginFixture>();
 
 export type SpawnedCoordinator = {
   child: ReturnType<typeof spawn>;
@@ -158,6 +187,69 @@ export function createPluginFixture(
     flavor: options.flavor,
     bundleHash,
   };
+}
+
+/** A shipped plugin root must retain its tag's files and manifest bytes. */
+export function createShippedPluginFixture(
+  tempRoots: string[],
+  tag: ShippedReleaseTag,
+): ShippedPluginFixture {
+  const cached = shippedPluginFixtures.get(tag);
+  if (cached && existsSync(cached.root)) {
+    return cached;
+  }
+
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { stdio: 'pipe' });
+  } catch (error: unknown) {
+    throw new Error(`Required shipped release tag ${tag} is missing. Fetch the pinned v0.10.0–v0.10.13 tags.`, {
+      cause: error,
+    });
+  }
+
+  const root = mkdtempSync(join(tmpdir(), `coral-shipped-${tag}-`));
+  try {
+    const archive = execFileSync('git', ['archive', '--format=tar', `${tag}:clients`], {
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    execFileSync('tar', ['-xf', '-', '-C', root], { input: archive });
+
+    const manifest = JSON.parse(readFileSync(join(root, 'bridge', 'manifest.json'), 'utf-8')) as {
+      bundleHash?: string;
+      flavor?: BuildFlavor;
+      storeFormatFingerprint?: string;
+    };
+    if (
+      typeof manifest.bundleHash !== 'string' ||
+      manifest.flavor !== 'prod' ||
+      typeof manifest.storeFormatFingerprint !== 'string'
+    ) {
+      throw new Error(`Incomplete shipped bundle manifest in ${tag}`);
+    }
+
+    mkdirSync(join(root, 'node_modules'));
+    symlinkSync(
+      join(process.cwd(), 'node_modules', 'better-sqlite3'),
+      join(root, 'node_modules', 'better-sqlite3'),
+      'dir',
+    );
+
+    const fixture: ShippedPluginFixture = {
+      root,
+      tag,
+      version: tag.slice(1),
+      flavor: manifest.flavor,
+      bundleHash: manifest.bundleHash,
+      cliPath: join(root, 'bridge', 'coral-cli.cjs'),
+      storeFormatFingerprint: manifest.storeFormatFingerprint,
+    };
+    tempRoots.push(root);
+    shippedPluginFixtures.set(tag, fixture);
+    return fixture;
+  } catch (error: unknown) {
+    rmSync(root, { recursive: true, force: true });
+    throw new Error(`Could not materialize shipped plugin fixture ${tag}: ${String(error)}`, { cause: error });
+  }
 }
 
 export function updatePluginFixtureBundleHash(fixture: PluginFixture, bundleHash: string): PluginFixture {

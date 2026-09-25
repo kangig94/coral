@@ -8,6 +8,7 @@ import { socketFallbackDir, socketPathByteLimit } from './unix-socket.js';
 
 export interface CoordinatorPaths {
   runDir: string;
+  upgradeIntentFile: string;
   socketPath: string;
   infoFile: string;
   startupErrorFile: string;
@@ -42,6 +43,11 @@ function v0109SocketPathByteLimit(platformName: string): number {
 
 export function generationRunDir(flavor: BuildFlavor, opts?: CoordinatorPathOptions): string {
   return join(generationRoot(opts), flavor === 'dev' ? 'run-dev' : 'run');
+}
+
+/** The intent address must remain outside epochs and installed plugin roots. */
+export function upgradeIntentPath(runDir: string): string {
+  return join(runDir, 'upgrade.v1.json');
 }
 
 export function handoffRoutingStatusPath(
@@ -115,6 +121,7 @@ export function coordinatorPaths(flavor: BuildFlavor, opts?: CoordinatorPathOpti
 
   return {
     runDir,
+    upgradeIntentFile: upgradeIntentPath(runDir),
     socketPath,
     infoFile: join(runDir, 'coordinator.json'),
     startupErrorFile: join(runDir, 'startup-error.json'),
