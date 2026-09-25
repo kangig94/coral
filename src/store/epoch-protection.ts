@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { z } from 'zod';
 
@@ -263,5 +263,23 @@ export function protectStoreEpoch(epoch: ResolvedStoreEpoch): ProtectedEpochAddr
     return address;
   } finally {
     lease.lease();
+  }
+}
+
+export function restoreProtectedEpoch(storeRoot: string, epochKey: string): void {
+  const address = observedAddress(storeRoot, epochKey);
+  if (address === null || !existsSync(address.protectedPath) || existsSync(address.originalPath)) {
+    throw new Error('Retiring epoch cannot return to its canonical address.');
+  }
+  const lock = attemptExclusiveFileLockSync(join(address.protectedPath, '.lock'));
+  if (lock.kind !== 'acquired') throw new Error(`Retiring epoch restoration is ${lock.kind}.`);
+  try {
+    unlinkSync(addressPath(storeRoot, epochKey));
+    syncDirectory(join(protectedStoreEpochRoot(storeRoot), 'addresses'));
+    renameSync(address.protectedPath, address.originalPath);
+    syncDirectory(dirname(address.protectedPath));
+    syncDirectory(storeRoot);
+  } finally {
+    lock.lease();
   }
 }

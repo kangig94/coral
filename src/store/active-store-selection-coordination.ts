@@ -32,7 +32,7 @@ import {
   type ActiveStoreTransitionFailureCode,
 } from './active-store-selection.js';
 import type { Database } from './db.js';
-import { settleStoreEpoch, type ResolvedStoreEpoch } from './epoch.js';
+import { settleStoreEpoch, type ResolvedStoreEpoch, type StoreEpochOptions } from './epoch.js';
 import type { StoreFormatDescription } from './format-fingerprint.js';
 import {
   formatLegacyGenerationIgnoredNotice,
@@ -71,6 +71,7 @@ export type ActiveStoreSelectionProtocolOptions = {
   readonly steadyStateBusyTimeoutMs?: number;
   readonly storeFormat: StoreFormatDescription;
   readonly currentSelection: ActiveStoreSelection;
+  readonly authorizeMint?: StoreEpochOptions['authorizeMint'];
   readonly dependencies: ActiveStoreSelectionProtocolDependencies;
 };
 
@@ -197,6 +198,7 @@ async function settleActiveStore(
     build: options.currentSelection.manifest,
     startupBusyTimeoutMs: options.startupBusyTimeoutMs,
     steadyStateBusyTimeoutMs: options.steadyStateBusyTimeoutMs,
+    authorizeMint: options.authorizeMint,
   });
   try {
     if (initialTransition !== null && adoption !== null) {
@@ -339,11 +341,23 @@ async function recoverCurrentSelectionFromEvidence(
   adoption: GenerationAdoptionLockLease,
 ): Promise<Extract<ActiveStoreSelectionProtocolResult, { kind: 'opened' }>> {
   publishTransitionOrRefuse(runtime, transition, adoption.actuator);
-  publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
-  return {
-    kind: 'opened',
-    ...(await settleActiveStore(runtime, options, transition, adoption)),
-  };
+  return { kind: 'opened', ...(await settleThenPublishCurrent(runtime, options, transition, adoption)) };
+}
+
+async function settleThenPublishCurrent(
+  runtime: Runtime,
+  options: ActiveStoreSelectionProtocolOptions,
+  transition: ActiveStoreTransition | null,
+  adoption: GenerationAdoptionLockLease,
+): Promise<ActiveStoreSettlement> {
+  const settled = await settleActiveStore(runtime, options, transition, adoption);
+  try {
+    publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
+    return settled;
+  } catch (error: unknown) {
+    settled.db.close();
+    throw error;
+  }
 }
 
 type NormalizedActiveStoreSelection =
@@ -421,10 +435,9 @@ export async function coordinateActiveStoreSelection(
     const transitionRead = readActiveStoreTransitionForSettlement(runtime, adoption.actuator);
     if (transitionRead.kind === 'valid') {
       if (transitionMatchesCurrent(transitionRead.transition, options.currentSelection)) {
-        publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
         return {
           kind: 'opened',
-          ...(await settleActiveStore(runtime, options, transitionRead.transition, adoption)),
+          ...(await settleThenPublishCurrent(runtime, options, transitionRead.transition, adoption)),
         };
       }
       supersedeActiveStoreTransition(runtime, options, adoption, 'transition_current_build_mismatch');
@@ -451,10 +464,9 @@ export async function coordinateActiveStoreSelection(
     if (normalized.kind === 'selected-newer') {
       return await handoffOrRecoverSelectedStore(runtime, options, normalized.selection, adoption);
     }
-    if (normalized.publishCurrent) {
-      publishSelectionOrRefuse(runtime, options.currentSelection, adoption.actuator);
-    }
-    return { kind: 'opened', ...(await settleActiveStore(runtime, options, null, adoption)) };
+    return { kind: 'opened', ...(normalized.publishCurrent
+      ? await settleThenPublishCurrent(runtime, options, null, adoption)
+      : await settleActiveStore(runtime, options, null, adoption)) };
   } finally {
     adoption();
   }

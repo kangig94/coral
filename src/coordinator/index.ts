@@ -57,8 +57,8 @@ import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
 import { recoverJobLocations } from '../jobs/location-recovery.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
-import { inspectCurrentStore } from '../store/epoch.js';
-import { readOrCreateEpochKey } from '../store/epoch-key.js';
+import { encodeResolvedStoreEpoch, inspectCurrentStore } from '../store/epoch.js';
+import { observeSuccessionWriterGeneration } from '../store/succession-writer-generation.js';
 import { createJobsStartupRunner } from '../jobs/startup.js';
 import { TypedEventBus } from './event-bus.js';
 import { createLifecycleReactor } from '../sessions/lifecycle-reactor.js';
@@ -235,11 +235,20 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   const flavor = deriveCoordinatorFlavor(options);
   const runtime = providedRuntime ?? createRealRuntime(flavor);
   const jobLocations = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
+  let core: CoordinatorCoreResult | null = null;
   const beforeJobAppend = (input: Parameters<JobLocationIndex['beforeAppend']>[0]): void => {
     if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)) return;
     const active = inspectCurrentStore(runtime);
     if (active.kind !== 'current') throw new Error('Job append requires an active store epoch');
-    jobLocations.beforeAppend(input, readOrCreateEpochKey(active.epoch));
+    const generation = observeSuccessionWriterGeneration(runtime);
+    const controller = core === null || generation === null ||
+      generation.storeRoot !== (active.epoch.canonicalStoreRoot ?? active.epoch.storeRoot) ||
+      generation.epoch !== active.epoch.epoch ? undefined : {
+        buildSetId: core.identity.buildSetId,
+        instanceId: core.identity.instanceId,
+        controlGeneration: generation.generation,
+      };
+    jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(active.epoch), controller);
   };
   const runtimeObserver = asEmittingRuntimeObserver(providedRuntimeObserver ?? new EventEmitterObserver());
   observeRuntimeSpawns(runtime, runtimeObserver);
@@ -278,7 +287,6 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
   assertDescriberCoverage(reducers.describerKeys);
   const bodyCodec = createEventBodyCodec();
   const readCtx = { schemas: reducers.schemas, streamKinds: reducers.streamKinds, bodyCodec };
-  let core: CoordinatorCoreResult | null = null;
   const bootFreshnessTimeoutMs = resolveBootFreshnessTimeoutMs(runtime);
   const textProjectionHealth = createTextProjectionHealthTracker();
   const providedCreateExecutionService = coreOptions.createExecutionService;
@@ -579,7 +587,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       const driver = getConsumerDriver();
       const activeEpoch = inspectCurrentStore(runtime);
       if (activeEpoch.kind !== 'current') throw new Error('Job recovery requires an active store epoch');
-      recoverJobLocations(jobLocations, readOrCreateEpochKey(activeEpoch.epoch), progressStore);
+      recoverJobLocations(jobLocations, encodeResolvedStoreEpoch(activeEpoch.epoch), progressStore);
 
       // Base journal projection consumers register cursor-only — projection
       // state is written by the commit-time reducer (spec §3.3); the cursor

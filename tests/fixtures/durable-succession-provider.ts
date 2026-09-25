@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { BackendAlreadyRunningError } from '#src/coordinator/handoff.js';
 import { createCoordinatorServer } from '#src/coordinator/index.js';
 import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from '#src/coordinator/succession/attempt-child.js';
+import { probeRetainedEpochOpen, runRetainedEpochRecovery } from '#src/coordinator/succession/retained-epoch-executor.js';
 import { resolveStrictBundleIdentity } from '#src/infra/bundle-manifest.js';
 import { runKbDaemonMain } from '#src/kb-daemon/daemon-main.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
@@ -92,6 +93,14 @@ async function main(): Promise<void> {
       return;
     }
     process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);
+    return;
+  }
+  if (process.argv.length === 4 && process.argv[2] === '--recover-retained-epoch') {
+    process.exitCode = runRetainedEpochRecovery(process.argv[3]!);
+    return;
+  }
+  if (process.argv.length === 5 && process.argv[2] === '--probe-retained-epoch') {
+    process.exitCode = probeRetainedEpochOpen(process.argv[3]!, process.argv[4]!);
     return;
   }
   if (process.env.CORAL_KB_DAEMON === '1') {

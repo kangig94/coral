@@ -13,11 +13,17 @@ const subjectSchema = z.object({
   workDir: z.string().nullable(),
   jobKind: z.enum(['provider', 'workflow', 'kb']),
 });
+const controllerSchema = z.object({
+  buildSetId: z.string().min(1),
+  instanceId: z.string().min(1),
+  controlGeneration: z.number().int().nonnegative(),
+});
 const locationSchema = z.object({
   version: z.literal('v1'),
   jobId: z.string().min(1),
   epochKey: z.string().min(1),
   subject: subjectSchema,
+  controller: controllerSchema.optional(),
   disposition: z.enum(['active-owner', 'unresolved', 'terminal']),
   terminalSeq: z.number().int().nonnegative().optional(),
   resultPath: z.string().optional(),
@@ -35,6 +41,7 @@ const unknownHoldSchema = z.object({ version: z.literal('v1'), reason: z.string(
 
 export type JobLocation = Omit<z.infer<typeof locationSchema>, 'detail'> & { detail?: JobDetailResponse };
 export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string | null; jobKind: JobKind }>;
+export type JobLocationController = z.infer<typeof controllerSchema>;
 export type JobLocationCertificate = z.infer<typeof certificateSchema>;
 
 function atomicJson(path: string, value: unknown): void {
@@ -105,7 +112,8 @@ export class JobLocationIndex {
     return record === null ? null : (record as JobLocation);
   }
 
-  register(jobId: string, epochKey: string, subject: JobLocationSubject): JobLocation {
+  register(jobId: string, epochKey: string, subject: JobLocationSubject,
+    controller?: JobLocationController): JobLocation {
     return this.withRevisionLock(epochKey, () => {
       const existing = this.read(jobId);
       if (existing !== null) {
@@ -115,6 +123,7 @@ export class JobLocationIndex {
       this.advanceRevision(epochKey);
       const location: JobLocation = {
         version: 'v1', jobId, epochKey, subject,
+        ...(controller === undefined ? {} : { controller }),
         disposition: 'active-owner',
       };
       atomicJson(this.jobPath(jobId), location);
@@ -122,7 +131,8 @@ export class JobLocationIndex {
     });
   }
 
-  beforeAppend(input: ResolvableCoralEventInput<unknown, unknown>, epochKey: string): void {
+  beforeAppend(input: ResolvableCoralEventInput<unknown, unknown>, epochKey: string,
+    controller?: JobLocationController): void {
     if (input.stream.kind !== 'job') return;
     if (input.type === 'job.launch.requested') {
       const launch = jobLaunchRequestBodySchema.parse(input.body);
@@ -130,7 +140,7 @@ export class JobLocationIndex {
         projectRoot: launch.projectRoot,
         workDir: launch.jobKind === 'kb' ? null : launch.request.cwd,
         jobKind: launch.jobKind,
-      });
+      }, controller);
     } else if (input.type === 'job.terminal.recorded') {
       this.invalidateTerminalCertificate(epochKey);
     }
@@ -180,6 +190,18 @@ export class JobLocationIndex {
     this.withRevisionLock(existing.epochKey, () => {
       this.advanceRevision(existing.epochKey);
       atomicJson(this.jobPath(jobId), { ...existing, disposition: 'unresolved' });
+    });
+  }
+
+  markUncertified(jobId: string): void {
+    const existing = this.read(jobId);
+    if (existing === null) throw new Error(`Uncertified job has no durable location: ${jobId}`);
+    this.withRevisionLock(existing.epochKey, () => {
+      const current = this.read(jobId);
+      if (current === null) throw new Error(`Uncertified job has no durable location: ${jobId}`);
+      this.advanceRevision(current.epochKey);
+      const { terminalSeq: _terminalSeq, resultPath: _resultPath, detail: _detail, ...identity } = current;
+      atomicJson(this.jobPath(jobId), { ...identity, disposition: 'unresolved' });
     });
   }
 

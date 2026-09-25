@@ -28,6 +28,7 @@ export type SuccessionReconcilerOptions = Readonly<{
   owners: readonly SuccessionOwner[];
   requiredOwners?: readonly SuccessionOwnerId[];
   liveJobIds?: () => readonly string[];
+  storeFormatFingerprint?: string;
   epochKey: () => string | null;
   admissionRevision: () => number;
   newAttemptId?: () => string;
@@ -37,6 +38,7 @@ export type SuccessionReconcilerOptions = Readonly<{
     successorInstanceId: string;
     recordedAt: string;
   }> | null;
+  retirementServing?: (attemptId: string, incumbentEpochKey: string, servedEpochKey: string) => boolean;
   onIntentChanged?: () => void;
   onReconcileError?: (error: unknown) => void;
   commitAvailable?: boolean;
@@ -372,6 +374,25 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const capabilities = declared.kind === 'declared' ? declared.capabilities : emptyCapabilities(intent);
       const epochKey = options.epochKey();
       if (epochKey === null) return { kind: 'deferred', reason: 'exact store epoch is unavailable' };
+      const formatChanges = options.storeFormatFingerprint !== undefined &&
+        intent.target.build.storeFormatFingerprint !== options.storeFormatFingerprint;
+      const liveJobs = formatChanges ? options.liveJobIds?.() ?? [] : [];
+      if (liveJobs.length > 0) {
+        const blockers = liveJobs.map((jobId) => ({ owner: 'jobs', reason: `blocking(format): ${jobId}` }));
+        const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          disposition: 'deferred',
+          blockers,
+          retryCondition: { kind: 'obligation-change', evidence: 'format-changing succession awaits job settlement' },
+          successionPreparation: null,
+          attemptId: null,
+          attemptOwner: null,
+        });
+        if (written.kind === 'conflict') continue;
+        if (written.kind !== 'written') return { kind: 'refused', reason: `upgrade intent is ${written.kind}` };
+        options.onIntentChanged?.();
+        return { kind: 'deferred', reason: 'format-changing succession awaits job settlement', blockers };
+      }
       const admissionRevision = options.admissionRevision();
       const existing = readPreparation(intent);
       if (existing !== null && currentPreparation(intent, existing, options)) {
@@ -382,7 +403,9 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           options.requiredOwners,
           options.liveJobIds,
         );
-        if (current.kind === 'prepared' && JSON.stringify(current.receipts) === JSON.stringify(existing.receipts)) {
+        if (current.kind === 'prepared' &&
+            (!formatChanges || current.receipts.length === 0) &&
+            JSON.stringify(current.receipts) === JSON.stringify(existing.receipts)) {
           return { kind: 'prepared', preparation: existing };
         }
       }
@@ -394,10 +417,32 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         options.requiredOwners,
         options.liveJobIds,
       );
+      if (formatChanges && obligations.kind === 'prepared' && obligations.receipts.length > 0) {
+        const blockers = obligations.receipts.map((receipt) => ({
+          owner: receipt.owner, reason: 'blocking(format): obligation requires exact epoch transfer',
+        }));
+        const written = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+          ...intent,
+          disposition: 'deferred',
+          blockers,
+          retryCondition: { kind: 'obligation-change', evidence: 'format-changing succession awaits obligation settlement' },
+          successionPreparation: null,
+          attemptId: null,
+          attemptOwner: null,
+        });
+        if (written.kind === 'conflict') continue;
+        if (written.kind !== 'written') return { kind: 'refused', reason: `upgrade intent is ${written.kind}` };
+        options.onIntentChanged?.();
+        return { kind: 'deferred', reason: 'format-changing succession awaits obligation settlement', blockers };
+      }
       if (obligations.kind === 'blocking' || !capabilities.protocols.includes('prepare')) {
         const blockers =
           obligations.kind === 'blocking'
-            ? obligations.blockers
+            ? formatChanges
+              ? obligations.blockers.map((blocker) => ({
+                  ...blocker, reason: `blocking(format): ${blocker.reason}`,
+                }))
+              : obligations.blockers
             : [{ owner: 'protocol', reason: 'target cannot prepare succession' }];
         const retryCondition =
           declared.kind === 'absent' || !capabilities.protocols.includes('prepare')
@@ -568,7 +613,8 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         if (
           preparation.ready === null ||
           preparation.targetKey !== targetKey(intent.target) ||
-          serving.epochKey !== preparation.epochKey ||
+          (serving.epochKey !== preparation.epochKey &&
+            !options.retirementServing?.(attemptId, preparation.epochKey, serving.epochKey)) ||
           serving.successorInstanceId.length === 0 ||
           !Number.isSafeInteger(serving.controlGeneration) ||
           serving.controlGeneration < 1 ||

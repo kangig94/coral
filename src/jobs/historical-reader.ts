@@ -7,7 +7,7 @@ import { acquireSharedFileLockSync } from '../infra/fs-lock.js';
 import type { StoragePort } from '../infra/port-types.js';
 import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
 import { executionOwnerSchema } from '../runtime/execution-owner.js';
-import { STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { decodeResolvedStoreEpoch, STORE_LOCK_FILE_NAME, type ResolvedStoreEpoch } from '../store/epoch.js';
 import { resolveProtectedEpoch } from '../store/epoch-protection.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { JobLocationIndex, type JobLocationSubject } from './location-index.js';
@@ -187,7 +187,8 @@ export function seedHistoricalEpoch(
 ): HistoricalSeedResult {
   let addressedEpoch: ResolvedStoreEpoch;
   try {
-    addressedEpoch = resolveProtectedEpoch(epoch.canonicalStoreRoot ?? epoch.storeRoot, epochKey) ?? epoch;
+    const lineageKey = decodeResolvedStoreEpoch(epochKey)?.lineageKey ?? epoch.lineageKey ?? epochKey;
+    addressedEpoch = resolveProtectedEpoch(epoch.canonicalStoreRoot ?? epoch.storeRoot, lineageKey) ?? epoch;
   } catch (error: unknown) {
     index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error));
     for (const location of index.locationsFor(epochKey)) index.markUnresolved(location.jobId);

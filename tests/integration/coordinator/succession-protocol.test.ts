@@ -64,6 +64,38 @@ afterEach(() => {
 });
 
 describe('succession protocol', () => {
+  it('defers a format-changing successor while a job is live and prepares after settlement', async () => {
+    const target = fixture();
+    let liveJobs = ['job-in-old-epoch'];
+    const service = createSuccessionCoordinator({
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent', pid: 100, incarnation: null,
+        version: '1.0.0', bundleHash: 'old-bundle', flavor: 'prod',
+      },
+      owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'idle' }) }],
+      requiredOwners: ['launch-admission'],
+      liveJobIds: () => liveJobs,
+      storeFormatFingerprint: `sha256:${'b'.repeat(64)}`,
+      epochKey: () => 'old-epoch',
+      admissionRevision: () => 0,
+    });
+    try {
+      await service.reconciler.request({
+        requestId: 'format-change', target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      });
+      expect(await service.reconciler.prepare('format-change')).toMatchObject({
+        kind: 'deferred', blockers: [{ owner: 'jobs', reason: 'blocking(format): job-in-old-epoch' }],
+      });
+      liveJobs = [];
+      expect(await service.reconciler.prepare('format-change')).toMatchObject({
+        kind: 'prepared', preparation: { epochKey: 'old-epoch', receipts: [] },
+      });
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
   it('launches the prepared target after its final obligation settles without another contender', async () => {
     const target = fixture();
     let blocked = true;

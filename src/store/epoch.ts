@@ -18,14 +18,19 @@ import { documentedCoralSetupError } from '../runtime/errors.js';
 import { classifyStoreFile, openStoreDatabase, openWritableStoreDatabase, type Database } from './db.js';
 import type { StoreFormatClassification, StoreFormatDescription } from './format-fingerprint.js';
 import { observeStorePath } from './path-observation.js';
-import { joinSuccessionWriterGeneration } from './succession-writer-generation.js';
+import {
+  advanceSuccessionWriterGeneration,
+  joinSuccessionWriterGeneration,
+  observeSuccessionServing,
+  type SuccessionWriterGeneration,
+} from './succession-writer-generation.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 import { readOrCreateEpochKey } from './epoch-key.js';
 import { closureCapability, readEpochClosure, recordEpochCustodyCoverage } from './epoch-closure.js';
 import { initializeCustodyLedger } from './custody-ledger.js';
 import {
   protectStoreEpoch, protectedDeletionResidues, reconcileProtectedEpochs, removeClosedProtectedEpoch,
-  resolveProtectedEpoch, unrecognizedProtectedEpochs,
+  knownProtectedEpochAddresses, resolveProtectedEpoch, unrecognizedProtectedEpochs,
 } from './epoch-protection.js';
 
 export const STORE_DATABASE_FILE_NAME = 'store.db';
@@ -40,6 +45,7 @@ const MINT_PREPARATION_DIRECTORY_PREFIX = '.preparing-';
 const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
+const RETIREMENT_ATTEMPT_FILE_NAME = '.retirement-attempt.v1.json';
 const STORE_EPOCH_HOLDER_PUBLICATION_ATTEMPTS = 2;
 const STORE_EPOCH_CANDIDATE_DETAIL_LIMIT = 16;
 const STORE_EPOCH_CLASSIFICATION_STRING_MAX_LENGTH = 512;
@@ -162,6 +168,18 @@ export type StoreEpochOptions = Readonly<{
   build: StrictBundleManifest;
   startupBusyTimeoutMs?: number;
   steadyStateBusyTimeoutMs?: number;
+  authorizeMint?: (observation: StoreMintObservation) => StoreMintDisposition | null;
+}>;
+
+export type StoreMintObservation = Readonly<{
+  incumbent: ResolvedStoreEpoch | null;
+  classification: StoreEpochClassification;
+  observedEpochCount: number;
+}>;
+
+export type StoreMintDisposition = Readonly<{
+  kind: 'initial' | 'retired' | 'unopenable';
+  incumbentEpochKey: string | null;
 }>;
 
 export type StoreEpoch = string;
@@ -1760,6 +1778,7 @@ function mintNextEpoch(
   supersedes: StoreEpoch | null,
   successor: StoreEpoch,
   classification: StoreEpochClassification,
+  retirementAttemptId?: string,
 ): Readonly<{ kind: 'published'; lease: FileLockLease }> | Readonly<{ kind: 'contended' | 'swept' }> {
   reconcileProtectedEpochs(dbDir);
   for (const observation of observeStoreEpochs(runtime.storage, dbDir)) {
@@ -1820,6 +1839,11 @@ function mintNextEpoch(
       mint,
       metadataFor(supersedes, classification, options.build, new Date(runtime.time.now()).toISOString()),
     );
+    if (retirementAttemptId !== undefined && !runtime.storage.writeAtomicDurableSync(
+      join(mint, RETIREMENT_ATTEMPT_FILE_NAME),
+      `${JSON.stringify({ version: 'v1', attemptId: retirementAttemptId })}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    )) throw new Error('Retirement mint attempt could not be recorded durably.');
     const ledgerId = initializeCustodyLedger(runtime.paths.coral.coordinator.runDir);
     recordEpochCustodyCoverage(mint, ledgerId);
     try {
@@ -1841,6 +1865,73 @@ function mintNextEpoch(
     cleanupMint(runtime.storage, mint);
     if (!leaseTransferred) mintLease();
   }
+}
+
+export function mintRetiredStoreEpoch(
+  runtime: Runtime,
+  options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
+  incumbentEpochKey: string,
+  attemptId: string,
+  expectedGeneration: SuccessionWriterGeneration,
+): StoreEpochSettlement & { generation: SuccessionWriterGeneration } {
+  const expected = decodeResolvedStoreEpoch(incumbentEpochKey);
+  if (expected === undefined || expected.path === ':memory:' || expected.lineageKey === undefined) {
+    throw new Error('Retiring epoch is unproven.');
+  }
+  const dbDir = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
+  const protectedEpoch = resolveProtectedEpoch(dbDir, expected.lineageKey);
+  if (protectedEpoch === null || protectedEpoch.epoch !== expected.epoch) {
+    throw new Error('Retiring epoch has no protected address.');
+  }
+  const classification = classifyStoreFile(protectedEpoch.path, runtime.storage, options.storeFormat);
+  if (classification.kind !== 'older-incompatible' && classification.kind !== 'newer-incompatible') {
+    throw new Error('Retirement mint requires a readable incompatible incumbent format.');
+  }
+  const successor = successorEpoch(expected.epoch);
+  const published = mintNextEpoch(runtime, options, dbDir, expected.epoch, successor, classification, attemptId);
+  if (published.kind !== 'published') throw new Error(`Retirement mint was ${published.kind}.`);
+  let generation: SuccessionWriterGeneration;
+  try {
+    if (runtime.env.get('NODE_ENV') === 'test' &&
+        runtime.env.get('CORAL_TEST_RETIREMENT_GENERATION_FAILURE') === '1') {
+      throw new Error('injected retirement generation transfer failure');
+    }
+    generation = advanceSuccessionWriterGeneration(runtime, expectedGeneration, {
+      storeRoot: dbDir, epoch: successor,
+    });
+  } catch (error: unknown) {
+    published.lease();
+    throw error;
+  }
+  return { ...openPublishedEpoch(runtime, options, dbDir, successor, published.lease), generation };
+}
+
+export function discardUnservedRetirementMint(
+  runtime: Runtime,
+  incumbentEpochKey: string,
+  attemptId: string,
+): void {
+  if (observeSuccessionServing(runtime, attemptId) !== null) {
+    throw new Error('A serving retirement mint cannot be discarded.');
+  }
+  const incumbent = decodeResolvedStoreEpoch(incumbentEpochKey);
+  if (incumbent === undefined) throw new Error('Retirement source is unproven.');
+  const dbDir = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
+  const successor = successorEpoch(incumbent.epoch);
+  const markerPath = join(epochDirectory(dbDir, successor), RETIREMENT_ATTEMPT_FILE_NAME);
+  let marker: unknown;
+  try {
+    marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf8') as string) as unknown;
+  } catch (error: unknown) {
+    if (errorCode(error) === 'ENOENT') return;
+    throw error;
+  }
+  if (typeof marker !== 'object' || marker === null || !('attemptId' in marker) ||
+      marker.attemptId !== attemptId) {
+    throw new Error('Retirement mint belongs to another attempt.');
+  }
+  const removed = removeEpochEntry(runtime, dbDir, successor);
+  if (removed !== 'removed') throw new Error(`Unserved retirement mint could not be discarded: ${removed}.`);
 }
 
 function openPublishedEpoch(
@@ -2079,6 +2170,21 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
   for (;;) {
     const observations = observeStoreEpochs(runtime.storage, dbDir);
     const current = currentProvenEpoch(observations);
+    const protectedAddresses = knownProtectedEpochAddresses(dbDir);
+    const latestProtected = current === null
+      ? [...protectedAddresses].sort((left, right) => {
+          const leftEpoch = BigInt(left.epochKey.slice(left.epochKey.lastIndexOf(':') + 1));
+          const rightEpoch = BigInt(right.epochKey.slice(right.epochKey.lastIndexOf(':') + 1));
+          return leftEpoch < rightEpoch ? 1 : leftEpoch > rightEpoch ? -1 : 0;
+        })[0]
+      : undefined;
+    if (latestProtected !== undefined && protectedAddresses.some((address) =>
+      address !== latestProtected && address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1) ===
+        latestProtected.epochKey.slice(latestProtected.epochKey.lastIndexOf(':') + 1))) {
+      throw new Error('Protected epochs have an ambiguous latest numeric predecessor.');
+    }
+    const protectedIncumbent = latestProtected === undefined ? null :
+      resolveProtectedEpoch(dbDir, latestProtected.epochKey);
     const shouldReobserve = hasHigherUnobservableCandidate(observations, current);
     let classification = absentClassification(observations);
     if (current !== null) {
@@ -2115,11 +2221,36 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     if (current === null && retryAttempts > 0) {
       classification = classificationWithAttempts(classification, retryAttempts);
     }
-    const successor = selectSuccessor(runtime, dbDir, current?.epoch ?? null);
-    const published = mintNextEpoch(runtime, options, dbDir, current?.epoch ?? null, successor.epoch, classification);
+    if (protectedIncumbent !== null) {
+      classification = classifyStoreFile(protectedIncumbent.path, runtime.storage, options.storeFormat);
+      if (classification.kind === 'compatible') {
+        const opened = openExactStoreEpoch(runtime, options, protectedIncumbent);
+        if (opened.kind === 'holding') throw new Error(`Protected epoch exact open held: ${opened.reason}.`);
+        return { db: opened.db, store: opened.store };
+      }
+    }
+    const incumbent = current === null ? protectedIncumbent : resolvedStoreEpoch(dbDir, current.epoch);
+    const disposition = options.authorizeMint?.({
+      incumbent,
+      classification,
+      observedEpochCount: observations.length + protectedAddresses.length,
+    }) ?? null;
+    if (options.path === undefined && disposition === null) {
+      throw new Error('Store epoch mint has no coordinator retirement disposition.');
+    }
+    if (disposition !== null) {
+      const incumbentKey = incumbent === null ? null : encodeResolvedStoreEpoch(incumbent);
+      if (disposition.incumbentEpochKey !== incumbentKey ||
+          (incumbent === null && observations.length === 0 && disposition.kind !== 'initial') ||
+          (incumbent !== null && disposition.kind === 'initial')) {
+        throw new Error('Store epoch mint disposition does not match the observed predecessor.');
+      }
+    }
+    const successor = selectSuccessor(runtime, dbDir, incumbent?.epoch ?? null);
+    const published = mintNextEpoch(runtime, options, dbDir, incumbent?.epoch ?? null, successor.epoch, classification);
     if (published.kind === 'published') {
-      if (current !== null || observations.length > 0) {
-        logStoreEpochReplacement(current?.epoch ?? null, classification);
+      if (incumbent !== null || observations.length > 0) {
+        logStoreEpochReplacement(incumbent?.epoch ?? null, classification);
       }
       return openPublishedEpoch(runtime, options, dbDir, successor.epoch, published.lease);
     }

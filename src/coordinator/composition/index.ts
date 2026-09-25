@@ -13,9 +13,12 @@ import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
-import { createEpochClosureRetryPlan, settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
+import {
+  certifyRetiringEpochCustody, createEpochClosureRetryPlan, settleSupersededEpochClosures,
+} from '../services/recovery/epoch-closure.js';
 import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import { pinRunningBuildRoot } from '../../infra/retained-build-root.js';
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
@@ -24,7 +27,14 @@ import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import { createJobLocationRecoveryRetryPlan } from '../../jobs/location-recovery.js';
+import { recoverJobLocations } from '../../jobs/location-recovery.js';
+import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { recordRetirementDisposition, readRetirementDisposition } from '../succession/retirement-disposition.js';
+import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../succession/startup-retirement.js';
+import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
+import { controllerRecoveryTarget } from '../succession/retained-epoch-executor.js';
 import { readOrCreateEpochKey } from '../../store/epoch-key.js';
+import { readEpochClosure } from '../../store/epoch-closure.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
 import type { StoragePort, TimerHandle } from '../../infra/port-types.js';
 import {
@@ -121,7 +131,10 @@ import {
 import type { KbDaemonRequestContextWire } from '../../kb-daemon/protocol.js';
 import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-component.js';
 import { readCorpusState } from '../../kb/state/corpus-state.js';
-import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, inspectCurrentStore, resolveCurrentStoreEpoch, sweepStoreEpochsPostReady } from '../../store/epoch.js';
+import {
+  decodeResolvedStoreEpoch, discardUnservedRetirementMint, encodeResolvedStoreEpoch, inspectCurrentStore,
+  listStoreEpochs, resolveCurrentStoreEpoch, sweepStoreEpochsPostReady,
+} from '../../store/epoch.js';
 import {
   handbackSuccessionWriterGeneration,
   observeSuccessionServing,
@@ -587,6 +600,7 @@ export async function reclaimIncumbentWriter(options: Readonly<{
   writer: SuccessionWriterEntitlement;
   failedGeneration?: SuccessionWriterGeneration;
   storeDb: Database;
+  reopenStore?: () => void;
   incumbentInstanceId: string;
   deadlineMs: number;
   reclaimKbDaemonWriter: (generation: SuccessionWriterGeneration, signal: AbortSignal) => Promise<void>;
@@ -605,6 +619,7 @@ export async function reclaimIncumbentWriter(options: Readonly<{
         handbackSuccessionWriterGeneration(options.runtime, options.failedGeneration, options.writer.generation);
       }
       options.writer.unpark();
+      options.reopenStore?.();
       if (options.runtime.time.monotonicNow() >= expiresAt) {
         throw new Error('Incumbent writer reclaim deadline expired.');
       }
@@ -676,11 +691,12 @@ export function createCoordinatorCore(
   const getProgressStore = () => getStoreServices().progressStore;
   const jobLocationIndex = new JobLocationIndex(runtime.paths.coral.generation.dataRoot);
   let selectedStoreEpochKey: string | null = null;
+  let selectedJobEpochKey: string | null = null;
   let selectedStoreEpochPath: string | null = null;
   const currentJobEpochKey = (): string | null => {
-    if (selectedStoreEpochKey !== null) return selectedStoreEpochKey;
+    if (selectedJobEpochKey !== null) return selectedJobEpochKey;
     const inspection = inspectCurrentStore(runtime);
-    return inspection.kind === 'current' ? readOrCreateEpochKey(inspection.epoch) : null;
+    return inspection.kind === 'current' ? encodeResolvedStoreEpoch(inspection.epoch) : null;
   };
   const getRecoveryQuarantineStore = () => new RecoveryQuarantineStore(getProgressStore().getDb(), runtime.time);
   const recoveryQuarantineStore: RecoveryRetryQuarantinePort = {
@@ -1891,12 +1907,36 @@ export function createCoordinatorCore(
       });
     }
   };
+  const retirementServes = (attemptId: string, incumbentEpochKey: string, servedEpochKey: string): boolean => {
+    const disposition = readRetirementDisposition(runtime, attemptId);
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    const incumbent = decodeResolvedStoreEpoch(incumbentEpochKey);
+    const successor = decodeResolvedStoreEpoch(servedEpochKey);
+    const certificate = jobLocationIndex.certificate(incumbentEpochKey);
+    if (
+      disposition === null || disposition.incumbentEpochKey !== incumbentEpochKey ||
+      observed.kind !== 'readable' || observed.intent.attemptId !== attemptId ||
+      disposition.successorFingerprint !== observed.intent.target.build.storeFormatFingerprint ||
+      incumbent === undefined || successor === undefined || certificate === null ||
+      certificate.revision !== disposition.certificateRevision ||
+      JSON.stringify(certificate.jobIds) !== JSON.stringify(disposition.certificateJobIds) ||
+      !jobLocationIndex.resultsReleased(incumbentEpochKey)
+    ) return false;
+    return successor.storeRoot === (incumbent.canonicalStoreRoot ?? incumbent.storeRoot) &&
+      BigInt(successor.epoch) === BigInt(incumbent.epoch) + 1n;
+  };
   const runSuccessionCommit = async (
     attempt: SuccessionAttempt,
     preparation: SuccessionPreparation,
     recoveryFromAttemptId?: string,
   ): Promise<void> => {
     const recovering = recoveryFromAttemptId !== undefined;
+    const intentAtStart = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (intentAtStart.kind !== 'readable' || intentAtStart.intent.attemptId !== attempt.attemptId) {
+      throw new Error('Succession intent changed before commit.');
+    }
+    const formatChanging = !recovering &&
+      intentAtStart.intent.target.build.storeFormatFingerprint !== options.storeFormat.fingerprint;
     const transfersChildPrincipals = preparation.receipts.some((receipt) => receipt.owner === 'child-principals');
     const ready = await waitForAttemptReady(attempt);
     if (ready.epochKey !== preparation.epochKey ||
@@ -1933,6 +1973,7 @@ export function createCoordinatorCore(
     let parked = false;
     let hold: string | null = null;
     let recoveryPreparation: SuccessionPreparation | null = null;
+    let retirementStoreParked = false;
     const unsubscribe = attempt.onAcknowledgment((acknowledgment) => {
       if (acknowledgment.kind === 'hold') hold = acknowledgment.reason;
     });
@@ -1951,6 +1992,12 @@ export function createCoordinatorCore(
       if (lifecycleController === null || kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn === undefined) {
         throw new Error('Incumbent writer park capabilities are unavailable.');
       }
+      if (formatChanging) {
+        if (preparation.receipts.length > 0 || readSuccessionJobs().length > 0) {
+          throw new Error('Format-changing retirement still has live obligations.');
+        }
+        recoverJobLocations(jobLocationIndex, preparation.epochKey, getProgressStore());
+      }
       const parkAbort = new AbortController();
       const parkDeadline = setTimeout(() => parkAbort.abort(new Error('Writer park exceeded the commit deadline.')),
         Math.max(0, deadlineAt - Date.now()));
@@ -1966,11 +2013,44 @@ export function createCoordinatorCore(
       if (!recovering) writer.park();
       parked = true;
       if (transfersChildPrincipals) world.childPrincipalRegistry.fenceAuthentication();
+      if (formatChanging) {
+        const certificate = jobLocationIndex.certificate(preparation.epochKey);
+        if (certificate === null || !jobLocationIndex.resultsReleased(preparation.epochKey)) {
+          throw new Error('Historical job inventory and result retention are not certified.');
+        }
+        const custodySettled = await certifyRetiringEpochCustody(
+          runtime, jobLocationIndex, preparation.epochKey,
+          AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
+        );
+        if (!custodySettled) throw new Error('Retiring epoch custody has not settled.');
+        if (Date.now() >= deadlineAt) throw new Error('Retirement certification exceeded the commit deadline.');
+        if (runtime.env.get('NODE_ENV') === 'test' &&
+            runtime.env.get('CORAL_TEST_RETIREMENT_PROTECTION_FAILURE') === '1') {
+          throw new Error('injected retirement protection failure');
+        }
+        retirementStoreParked = true;
+        lifecycleController.protectRetiringStore(preparation.epochKey);
+        if (runtime.env.get('NODE_ENV') === 'test' &&
+            runtime.env.get('CORAL_TEST_RETIREMENT_AUTHORIZATION_FAILURE') === '1') {
+          throw new Error('injected retirement authorization failure');
+        }
+        recordRetirementDisposition(runtime, {
+          version: 'v1',
+          attemptId: attempt.attemptId,
+          incumbentEpochKey: preparation.epochKey,
+          incumbentFingerprint: options.storeFormat.fingerprint,
+          successorFingerprint: intentAtStart.intent.target.build.storeFormatFingerprint,
+          certificateRevision: certificate.revision,
+          certificateJobIds: certificate.jobIds,
+          custodySettled: true,
+        });
+      }
       await attempt.allowCommittedOpen();
       for (;;) {
         const serving = observeSuccessionServing(runtime, attempt.attemptId);
         if (serving !== null) {
-          if (serving.epochKey !== preparation.epochKey ||
+          if ((serving.epochKey !== preparation.epochKey &&
+              !retirementServes(attempt.attemptId, preparation.epochKey, serving.epochKey)) ||
               serving.controlGeneration <= writer.generation.generation) {
             throw new Error('Durable serving record does not match the prepared takeover.');
           }
@@ -2018,6 +2098,7 @@ export function createCoordinatorCore(
       }
       await attempt.abort().catch(() => {});
       await reapAttempt(attempt);
+      if (formatChanging) discardUnservedRetirementMint(runtime, preparation.epochKey, attempt.attemptId);
       if (writer !== null) {
         const observed = observeSuccessionWriterGeneration(runtime);
         const failedGeneration = observed !== null && observed.generation > writer.generation.generation
@@ -2027,6 +2108,9 @@ export function createCoordinatorCore(
           writer,
           ...(failedGeneration === undefined ? {} : { failedGeneration }),
           storeDb: getStoreServices().storeDb,
+          ...(retirementStoreParked
+            ? { reopenStore: () => lifecycleController?.reopenRetiringStore(preparation.epochKey) }
+            : {}),
           incumbentInstanceId: identity.instanceId,
           deadlineMs: Math.max(0, pause.deadlineAtMs - Date.now()),
           reclaimKbDaemonWriter: async (generation, signal) => {
@@ -2055,6 +2139,10 @@ export function createCoordinatorCore(
           startSameBuildSuccession: (failure) => world.log(`Same-build writer recovery required: ${failure}\n`),
         });
         if (reclaimed.kind === 'reclaimed') {
+          if (strictHealthIdentity.ok) {
+            recordControllerOpen(runtime, preparation.epochKey, identity.instanceId, null,
+              identity.pluginRoot, strictHealthIdentity.manifest, reclaimed.generation.generation);
+          }
           if (transfersChildPrincipals &&
               !world.childPrincipalRegistry.reclaimAuthentication(reclaimed.generation.generation)) {
             throw new Error('Incumbent child authentication could not reclaim its consumed-nonce ledger.');
@@ -2181,6 +2269,7 @@ export function createCoordinatorCore(
     },
     owners: successionOwners,
     liveJobIds: readSuccessionJobs,
+    storeFormatFingerprint: options.storeFormat.fingerprint,
     epochKey: () => {
       if (storeServicesRef.tryGet() === null) return null;
       const inspection = inspectCurrentStore(runtime);
@@ -2188,6 +2277,7 @@ export function createCoordinatorCore(
     },
     admissionRevision: () => world.launchCoordinator.admissionRevision(),
     observeServing: (attemptId) => observeSuccessionServing(runtime, attemptId),
+    retirementServing: retirementServes,
     commitAvailable:
       kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn !== undefined &&
       kbDaemonSupervisorWithTrackedShutdown.reclaimWriterTurn !== undefined,
@@ -2562,9 +2652,52 @@ export function createCoordinatorCore(
     storeServicesRef,
     createStoreServicesFromDbFn,
     onStoreOpened: (openStore) => {
+      if (openStore.path !== ':memory:') {
+        const runningBuild = resolveStrictBundleIdentity();
+        if (runningBuild.ok && runningBuild.manifest.buildSetId === identity.buildSetId) {
+          pinRunningBuildRoot(runtime, identity.pluginRoot, runningBuild.manifest);
+          const writerGeneration = observeSuccessionWriterGeneration(runtime);
+          const generation = writerGeneration !== null && writerGeneration.epoch === openStore.epoch &&
+            writerGeneration.storeRoot === (openStore.canonicalStoreRoot ?? openStore.storeRoot)
+            ? writerGeneration.generation : 0;
+          recordControllerOpen(runtime, encodeResolvedStoreEpoch(openStore), identity.instanceId,
+            currentSuccessionAttemptChild()?.attemptId ?? null, identity.pluginRoot,
+            runningBuild.manifest, generation);
+        }
+      }
       selectedStoreEpochKey = openStore.path === ':memory:' ? null : readOrCreateEpochKey(openStore);
+      selectedJobEpochKey = openStore.path === ':memory:' ? null : encodeResolvedStoreEpoch(openStore);
       selectedStoreEpochPath = openStore.path === ':memory:' ? null : dirname(openStore.path);
       if (selectedStoreEpochPath !== null) world.launchCoordinator.bindActiveEpochPath(selectedStoreEpochPath);
+      if (openStore.path !== ':memory:') {
+        for (const historical of listStoreEpochs(runtime)) {
+          if (historical.role !== 'protected' || historical.resolved === null ||
+              historical.epochKey === null || historical.epochKey === undefined) continue;
+          const historicalKey = encodeResolvedStoreEpoch(historical.resolved);
+          if (readEpochClosure(runtime.paths.coral.generation.dataRoot, historical.epochKey)?.disposition ===
+              'unrecoverable-retained') continue;
+          const fingerprint = historical.epochJson.kind === 'valid'
+            ? historical.epochJson.value.build.storeFormatFingerprint : '';
+          void seedHistoricalEpoch(
+            jobLocationIndex, historical.resolved, historicalKey, fingerprint,
+            runtime.paths.coral.exports.jobsRoot, runtime.storage,
+          );
+        }
+      }
+    },
+    onStoreServing: (attemptId, epochKey, instanceId, controlGeneration) =>
+      recordControllerServing(runtime, attemptId, epochKey, instanceId, controlGeneration),
+    authorizeStartupMint: createStartupMintAuthorizer(runtime, jobLocationIndex, identity.instanceId),
+    prepareNoIncumbentHandoff: () =>
+      prepareRetainedControllerHandoff(runtime, jobLocationIndex, options.storeFormat),
+    prepareRecoveryGrantHandoff: (epochKey, incumbentInstanceId) =>
+      controllerRecoveryTarget(runtime, epochKey, incumbentInstanceId),
+    onRetiredEpochOpened: (epoch, disposition) => {
+      const seeded = seedHistoricalEpoch(
+        jobLocationIndex, epoch, disposition.incumbentEpochKey, disposition.incumbentFingerprint,
+        runtime.paths.coral.exports.jobsRoot, runtime.storage, [], true,
+      );
+      if (seeded.kind !== 'complete') throw new Error(`Retired epoch history is ${seeded.kind}.`);
     },
     verifySuccessionReceipts: (preparation, epoch) => {
       const accepted = new Set<string>();

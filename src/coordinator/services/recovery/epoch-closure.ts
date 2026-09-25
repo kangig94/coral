@@ -11,7 +11,7 @@ import {
 import { custodyLedgerDir, readCustodyLedger, type CustodyEntry } from '../../../store/custody-ledger.js';
 import { hasEpochCustodyCoverage, readEpochClosure, recordEpochClosure, type EpochClosureEvidence } from '../../../store/epoch-closure.js';
 import { knownProtectedEpochAddresses, reconcileProtectedEpochs } from '../../../store/epoch-protection.js';
-import { listStoreEpochs, type ResolvedStoreEpoch } from '../../../store/epoch.js';
+import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, listStoreEpochs, type ResolvedStoreEpoch } from '../../../store/epoch.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobLocationIndex } from '../../../jobs/location-index.js';
 import { readDurableCliControllerReceipts } from '../../succession/durable-cli-transfer.js';
@@ -41,6 +41,8 @@ function closureCandidates(runtime: Runtime): ClosureCandidate[] {
       storeRoot: dirname(address.protectedPath),
       epoch: address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1),
       path: join(address.protectedPath, 'store.db'),
+      lineageKey: address.epochKey,
+      canonicalStoreRoot: storeRoot,
     },
     originalPath: address.originalPath,
     epochKey: address.epochKey,
@@ -56,6 +58,7 @@ async function certifyCustody(
   ambiguousOriginalPath: boolean,
   signal: AbortSignal,
   closeProxySet?: CloseProxySet,
+  jobEpochKey = candidate.epochKey,
 ): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
   if (!hasEpochCustodyCoverage(dirname(candidate.epoch.path), runtime.paths.coral.coordinator.runDir)) {
     return { executionDischarge: 'undecidable', obligations: [], reason: 'this epoch predates complete pre-effect custody coverage' };
@@ -102,7 +105,7 @@ async function certifyCustody(
       } catch {
         return { executionDischarge: 'undecidable', obligations, reason: `provider operation ${entry.intent.operationId} result is unreadable` };
       }
-      if (location?.epochKey !== candidate.epochKey || location.disposition !== 'terminal') {
+      if (location?.epochKey !== jobEpochKey || location.disposition !== 'terminal') {
         return { executionDischarge: 'undecidable', obligations, reason: `provider operation ${entry.intent.operationId} awaits owner terminal result` };
       }
       obligations.push({
@@ -122,7 +125,7 @@ async function certifyCustody(
         return { executionDischarge: 'undecidable', obligations, reason: `durable-cli ${entry.intent.operationId} location is unreadable` };
       }
       const transfers = receipts?.filter((receipt) => receipt.jobId === entry.intent.operationId);
-      if (location?.epochKey !== candidate.epochKey || location.disposition !== 'terminal' ||
+      if (location?.epochKey !== jobEpochKey || location.disposition !== 'terminal' ||
           transfers === undefined || (transfers.length > 0 && !transfers.some((receipt) =>
             receipt.custodyIntentId === entry.intent.id && receipt.lineageEpochKey === candidate.epochKey))) {
         return { executionDischarge: 'undecidable', obligations, reason: `durable-cli ${entry.intent.operationId} awaits terminal result or matching controller receipt` };
@@ -156,7 +159,7 @@ async function certifyCustody(
     } else {
       if (entry.intent.owner === 'provider-proxy-set' && closeProxySet !== undefined) {
         let resultsReady = false;
-        try { resultsReady = index.resultsReleased(candidate.epochKey); } catch {}
+        try { resultsReady = index.resultsReleased(jobEpochKey); } catch {}
         if (resultsReady) {
           const proxyInstanceId = entry.intent.operationId.endsWith(':guardian')
             ? entry.intent.operationId.slice(0, -':guardian'.length)
@@ -188,6 +191,20 @@ async function certifyCustody(
     });
   }
   return { executionDischarge: 'certified', obligations, reason: 'owners certified every recorded custody obligation' };
+}
+
+export async function certifyRetiringEpochCustody(
+  runtime: Runtime,
+  index: JobLocationIndex,
+  epochKey: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  const lineageKey = decodeResolvedStoreEpoch(epochKey)?.lineageKey;
+  const candidate = closureCandidates(runtime).find((entry) => entry.epochKey === lineageKey);
+  if (candidate === undefined) return false;
+  const entries = readCustodyLedger(runtime.paths.coral.coordinator.runDir);
+  const settlement = await certifyCustody(runtime, index, candidate, entries, false, signal, undefined, epochKey);
+  return settlement.executionDischarge === 'certified';
 }
 
 export async function settleSupersededEpochClosures(
@@ -222,12 +239,13 @@ export async function settleSupersededEpochClosures(
     if (signal?.aborted) break;
     if (subjectKey !== undefined && subjectKey !== candidate.epochKey) continue;
     if (candidate.epochKey === selectedKey) continue;
+    const jobEpochKey = encodeResolvedStoreEpoch(candidate.epoch);
     let previous: EpochClosureEvidence | null;
     try { previous = readEpochClosure(stateRoot, candidate.epochKey); } catch { continue; }
     let dataOutcome: EpochClosureEvidence['dataOutcome'];
     try {
-      dataOutcome = index.resultsReleased(candidate.epochKey) ? 'retained' :
-        index.unknownLocationHold(candidate.epochKey) !== null ? 'unreadable' : 'unknown';
+      dataOutcome = index.resultsReleased(jobEpochKey) ? 'retained' :
+        index.unknownLocationHold(jobEpochKey) !== null ? 'unreadable' : 'unknown';
     } catch {
       dataOutcome = 'unreadable';
     }
@@ -243,7 +261,7 @@ export async function settleSupersededEpochClosures(
         address.epochKey !== candidate.epochKey && address.originalPath === candidate.originalPath);
     const settlement = await certifyCustody(
       runtime, index, candidate, custody, ambiguousOriginalPath, signal ?? new AbortController().signal,
-      closeProxySet,
+      closeProxySet, jobEpochKey,
     );
     const record = recordEpochClosure(stateRoot, {
       version: 'v1', epochKey: candidate.epochKey,

@@ -26,7 +26,6 @@ import { JobStore } from '../jobs/store.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
 import { deriveLaunchReadiness } from '../jobs/launch-readiness.js';
 import { observeTerminalResultExports } from '../jobs/terminal/export.js';
-import { readOrCreateEpochKey } from '../store/epoch-key.js';
 import { noProviderLookupPort } from '../providers/catalog.js';
 import { createEventBodyCodec } from '../store/event-body-codec.js';
 import { AbortRegistry } from '../jobs/shell/abort-registry.js';
@@ -61,7 +60,7 @@ import {
 import { parsePrincipalWire } from '../security/principal-wire.js';
 import { waitForCorpusReadiness } from './services/readiness.js';
 import type { Database } from '../store/db.js';
-import { openWritableStoreDbNoReset, resolveCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
+import { encodeResolvedStoreEpoch, openWritableStoreDbNoReset, resolveCurrentStore, type ResolvedStoreEpoch } from '../store/epoch.js';
 import {
   fenceCorpusStorage,
   joinSuccessionWriterGeneration,
@@ -417,7 +416,7 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
           ? undefined
           : (input) => {
               if (input.stream.kind !== 'job' || !['job.launch.requested', 'job.terminal.recorded'].includes(input.type)) return;
-              jobLocations.beforeAppend(input, readOrCreateEpochKey(resolvedStore));
+              jobLocations.beforeAppend(input, encodeResolvedStoreEpoch(resolvedStore));
             },
         observer: (appended) => {
           observeTerminalExports(appended);
