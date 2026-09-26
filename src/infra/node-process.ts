@@ -5,7 +5,7 @@ import {
   type ExecFileOptionsWithStringEncoding,
   type ExecFileSyncOptionsWithStringEncoding,
 } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readlinkSync } from 'node:fs';
 import { readFile as readFileAsync } from 'node:fs/promises';
 import { z } from 'zod';
 
@@ -214,6 +214,20 @@ const PROCESS_INCARNATION_PROBES: ReadonlyMap<string, (pid: number) => ProcessIn
   ['darwin', probeMacProcessIncarnation],
   ['win32', probeWindowsProcessIncarnation],
 ]);
+
+/**
+ * The pid namespace this process reads pids in. A pid recorded in another namespace names an unrelated process
+ * here, so its liveness and incarnation decide nothing; `null` is an unreadable namespace and must never compare
+ * equal to a recorded one.
+ */
+export function readPidNamespace(platform: NodeJS.Platform = process.platform): string | null {
+  if (platform !== 'linux') return `${platform}:single-pid-namespace`;
+  try {
+    return readlinkSync('/proc/self/ns/pid');
+  } catch {
+    return null;
+  }
+}
 
 export function canProbeProcessIncarnation(platform: string): boolean {
   return PROCESS_INCARNATION_PROBES.has(platform);

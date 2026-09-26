@@ -1,6 +1,12 @@
 import { dirname } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { acquireDirectoryLock, acquireDirectoryLockSync, type DirectoryLockDeps } from '#src/infra/fs-lock.js';
+import {
+  acquireDirectoryLock,
+  acquireDirectoryLockSync,
+  type DirectoryLockDeps,
+  type DirectoryLockOwner,
+} from '#src/infra/fs-lock.js';
+import { processIncarnationSchema, type ProcessLiveness } from '#src/infra/node-process.js';
 
 function errno(code: string): NodeJS.ErrnoException {
   const error = new Error(code) as NodeJS.ErrnoException;
@@ -15,6 +21,7 @@ function createLockDeps(
   deps: DirectoryLockDeps;
   directories: Map<string, number>;
   files: Set<string>;
+  fileContents: Map<string, string>;
   removed: string[];
   claimRefreshBeforeWrite(): void;
   refreshClaimOnRename(): void;
@@ -25,6 +32,7 @@ function createLockDeps(
   const directories = new Map<string, number>();
   const files = new Set<string>();
   const fileMtimes = new Map<string, number>();
+  const fileContents = new Map<string, string>();
   const directoryInodes = new Map<string, bigint>();
   const removed: string[] = [];
   let nextInode = 1n;
@@ -41,7 +49,7 @@ function createLockDeps(
         directories.set(path, now());
         directoryInodes.set(path, nextInode++);
       },
-      writeFileSync: (path: string, _data: unknown, options?: { readonly flag?: string }) => {
+      writeFileSync: (path: string, data: unknown, options?: { readonly flag?: string }) => {
         const parent = dirname(path);
         if (!directories.has(parent)) {
           throw errno('ENOENT');
@@ -68,6 +76,12 @@ function createLockDeps(
         }
         files.add(path);
         fileMtimes.set(path, now());
+        if (typeof data === 'string') fileContents.set(path, data);
+      },
+      readFileSync: (path: string) => {
+        const content = fileContents.get(path);
+        if (!files.has(path) || content === undefined) throw errno('ENOENT');
+        return content;
       },
       renameSync: (oldPath: string, newPath: string) => {
         if (failQuarantine && newPath.includes('.stale-')) {
@@ -82,6 +96,9 @@ function createLockDeps(
           files.add(newPath);
           fileMtimes.set(newPath, fileMtimes.get(oldPath) ?? now());
           fileMtimes.delete(oldPath);
+          const content = fileContents.get(oldPath);
+          fileContents.delete(oldPath);
+          if (content !== undefined) fileContents.set(newPath, content);
           if (refreshClaim && newPath.includes('/claim-')) {
             fileMtimes.set(newPath, now());
             refreshClaim = false;
@@ -105,6 +122,9 @@ function createLockDeps(
             files.add(moved);
             fileMtimes.set(moved, fileMtimes.get(file) ?? now());
             fileMtimes.delete(file);
+            const content = fileContents.get(file);
+            fileContents.delete(file);
+            if (content !== undefined) fileContents.set(moved, content);
           }
         }
       },
@@ -197,6 +217,7 @@ function createLockDeps(
     deps,
     directories,
     files,
+    fileContents,
     removed,
     claimRefreshBeforeWrite: () => {
       claimRefresh = true;
@@ -402,5 +423,125 @@ describe('directory fs lock', () => {
       /Directory lock timeout/u,
     );
     expect(wallTime).toBeLessThan(10_000);
+  });
+
+  describe('owner liveness', () => {
+    const HOLDER: DirectoryLockOwner = {
+      pid: 4242,
+      incarnation: processIncarnationSchema.parse('linux:boot:1'),
+      pidNamespace: 'pid:[1]',
+    };
+    const CONTENDER: DirectoryLockOwner = { pid: 7, incarnation: null, pidNamespace: 'pid:[1]' };
+
+    function ownerFixture(now: () => number = () => 1000): ReturnType<typeof createLockDeps> {
+      let monotonic = 0n;
+      return createLockDeps(now, () => (monotonic += 10n));
+    }
+
+    function holdAs(
+      fixture: ReturnType<typeof createLockDeps>,
+      lockDir: string,
+      holder: DirectoryLockOwner,
+    ): ReturnType<typeof acquireDirectoryLockSync> {
+      return acquireDirectoryLockSync(
+        lockDir,
+        { ...fixture.deps, owner: { self: holder, observe: () => 'alive' } },
+        100,
+      );
+    }
+
+    function contend(
+      fixture: ReturnType<typeof createLockDeps>,
+      lockDir: string,
+      holderLiveness: ProcessLiveness,
+      contender: DirectoryLockOwner = CONTENDER,
+    ): { acquire: () => ReturnType<typeof acquireDirectoryLockSync>; observed: unknown[] } {
+      const observed: unknown[] = [];
+      const deps: DirectoryLockDeps = {
+        ...fixture.deps,
+        owner: {
+          self: contender,
+          observe: (recorded) => {
+            observed.push(recorded);
+            return holderLiveness;
+          },
+        },
+      };
+      return { acquire: () => acquireDirectoryLockSync(lockDir, deps, 100), observed };
+    }
+
+    it('reclaims a lock whose recorded owner is proven gone without waiting for the stale window', () => {
+      const fixture = ownerFixture();
+      const killed = holdAs(fixture, '/locks/killed-holder', HOLDER);
+      const { acquire, observed } = contend(fixture, '/locks/killed-holder', 'absent');
+
+      const release = acquire();
+
+      expect(observed[0]).toEqual({ pid: HOLDER.pid, incarnation: HOLDER.incarnation });
+      expect(fixture.removed.some((path) => path.startsWith('/locks/killed-holder.stale-'))).toBe(true);
+      expect(() => killed.assertOwned()).toThrow(/ownership lost/u);
+      release();
+    });
+
+    it('keeps waiting on a live owner until the acquire deadline, as before', () => {
+      const fixture = ownerFixture();
+      const live = holdAs(fixture, '/locks/live-holder', HOLDER);
+
+      expect(() => contend(fixture, '/locks/live-holder', 'alive').acquire()).toThrow(/Directory lock timeout/u);
+      expect(() => live.assertOwned()).not.toThrow();
+      live();
+    });
+
+    it('does not reclaim when the owner liveness is unknown', () => {
+      const fixture = ownerFixture();
+      const holder = holdAs(fixture, '/locks/unknown-holder', HOLDER);
+
+      expect(() => contend(fixture, '/locks/unknown-holder', 'unknown').acquire()).toThrow(/Directory lock timeout/u);
+      expect(() => holder.assertOwned()).not.toThrow();
+      holder();
+    });
+
+    it('does not reclaim an owner recorded in another pid namespace, whose pid names nothing here', () => {
+      const fixture = ownerFixture();
+      const holder = holdAs(fixture, '/locks/foreign-namespace', HOLDER);
+      const { acquire, observed } = contend(fixture, '/locks/foreign-namespace', 'absent', {
+        ...CONTENDER,
+        pidNamespace: 'pid:[2]',
+      });
+
+      expect(acquire).toThrow(/Directory lock timeout/u);
+      expect(observed).toEqual([]);
+      holder();
+    });
+
+    it('does not reclaim when this process cannot read its own pid namespace', () => {
+      const fixture = ownerFixture();
+      const holder = holdAs(fixture, '/locks/unreadable-namespace', HOLDER);
+      const { acquire, observed } = contend(fixture, '/locks/unreadable-namespace', 'absent', {
+        ...CONTENDER,
+        pidNamespace: null,
+      });
+
+      expect(acquire).toThrow(/Directory lock timeout/u);
+      expect(observed).toEqual([]);
+      holder();
+    });
+
+    it('leaves a marker without an owner record to the time-based stale window', () => {
+      let currentTime = 1000;
+      const fixture = ownerFixture(() => currentTime);
+      const holder = holdAs(fixture, '/locks/legacy-marker', HOLDER);
+      const [marker] = [...fixture.files].filter((path) => path.startsWith('/locks/legacy-marker/owner-'));
+      fixture.fileContents.set(marker, marker.slice('/locks/legacy-marker/owner-'.length, -'.lock'.length));
+      const { acquire, observed } = contend(fixture, '/locks/legacy-marker', 'absent');
+
+      expect(acquire).toThrow(/Directory lock timeout/u);
+      expect(observed).toEqual([]);
+
+      currentTime += 31_000;
+      const release = acquire();
+      expect(() => holder.assertOwned()).toThrow(/ownership lost/u);
+      release();
+    });
   });
 });

@@ -10,7 +10,7 @@ import {
   WorkDirectoryError,
 } from '../runtime/canonical-work-dir.js';
 import { isCapability, type Capability } from '../security/capability.js';
-import type { Principal, ResourceBinding } from '../security/principal.js';
+import type { Principal, RequestedBinding } from '../security/principal.js';
 import {
   authorizeCapability,
   authorizeResourceBinding,
@@ -320,20 +320,22 @@ async function* withSuccessionHandover(
 export function resolveRequestBinding(
   rule: RequestBindingRule | undefined,
   projectRoot: CanonicalWorkDir | undefined,
-): ResourceBinding {
+): RequestedBinding {
   const bindingRule = rule ?? ({ kind: 'projectRoot', projectRoot: 'required' } satisfies RequestBindingRule);
 
   switch (bindingRule.kind) {
     case 'projectRoot': {
       return projectRoot === undefined ? { kind: 'unbound' } : { kind: 'project', root: projectRoot };
     }
+    case 'corpus':
+      return { kind: 'corpus' };
   }
 }
 
 function requestedBindingFor(
   spec: RpcMethodSpec<unknown, unknown>,
   projectRoot: CanonicalWorkDir | undefined,
-): ResourceBinding {
+): RequestedBinding {
   return resolveRequestBinding(spec.requestBinding, projectRoot);
 }
 
@@ -341,7 +343,7 @@ function authorizeCatalogResourceBinding(
   spec: RpcMethodSpec<unknown, unknown>,
   principal: Principal,
   requires: Capability,
-  requestedBinding: ResourceBinding,
+  requestedBinding: RequestedBinding,
 ): Decision {
   const decision = authorizeResourceBinding(principal, requires, requestedBinding);
   if (
@@ -419,7 +421,7 @@ function canonicalizeCatalogRequest(
   };
 }
 
-function narrowUnboundPrincipal(principal: Principal, binding: ResourceBinding): Principal {
+function narrowUnboundPrincipal(principal: Principal, binding: RequestedBinding): Principal {
   return principal.binding.kind === 'unbound' && binding.kind === 'project' ? { ...principal, binding } : principal;
 }
 

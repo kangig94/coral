@@ -964,10 +964,7 @@ describe('real-process durable-cli succession', () => {
     const before = readKbSearch(join(jobState, 'kb-search-before.json'));
     const after = readKbSearch(join(jobState, 'kb-search.json'));
     expect(before.error, JSON.stringify(before)).toBeUndefined();
-    // `scope_mismatch` is decided only after the child's token authenticated and carried `kb:read`; a token the
-    // incumbent could not authenticate answers `unauthenticated` instead. The unscoped KB request is refused
-    // for every project-bound principal, so the baseline names that refusal rather than success.
-    expect(kbSearchAuthorization(before), JSON.stringify(before)).toEqual({ status: 1, code: 'scope_mismatch' });
+    expect(kbSearchAuthorization(before), JSON.stringify(before)).toEqual({ status: 0, code: null });
     expect(kbSearchAuthorization(after), JSON.stringify({ before, after })).toEqual(kbSearchAuthorization(before));
 
     const queued = await runCli(newerFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']);

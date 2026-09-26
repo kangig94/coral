@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { USER_SOURCE_IMPORT_MAX_BYTES, deriveSourceImportReadPolicy } from '#src/kb/ops/source/import.js';
 import type { Capability } from '#src/security/capability.js';
-import type { ResourceBinding } from '#src/security/principal.js';
+import type { RequestedBinding } from '#src/security/principal.js';
 import { attenuate } from '#src/security/attenuate.js';
 import { authorize } from '#src/security/policy/authorize.js';
 import { resolveRequestBinding } from '#src/transport/dispatch.js';
@@ -33,7 +33,7 @@ function operationalSpec(id: OperationalRouteSpec['id']): OperationalRouteSpec {
   return spec;
 }
 
-function expectAllProjectReadPolicy(requires: Capability, requestedBinding: ResourceBinding): void {
+function expectAllProjectReadPolicy(requires: Capability, requestedBinding: RequestedBinding): void {
   expect(requestedBinding).toEqual({ kind: 'unbound' });
   expect(
     authorize(testPrincipal({ subject: 'operator', binding: { kind: 'unbound' } }), requires, requestedBinding),
@@ -59,6 +59,7 @@ describe('principal request binding invariants', () => {
     const binding = resolveRequestBinding(spec.requestBinding, fixtureCanonicalWorkDir(parsed.projectRoot));
 
     expect(binding).toEqual({ kind: 'project', root: '/workspace/project' });
+    if (binding.kind === 'corpus') throw new Error('Source import must resolve a project binding.');
     expect(deriveSourceImportReadPolicy(binding, parsed.projectRoot, envWith('8192'))).toEqual({
       kind: 'sandboxed',
       root: '/workspace/project',
@@ -123,5 +124,41 @@ describe('principal request binding invariants', () => {
     expect(
       authorize(child, eventsSpec.requires, resolveRequestBinding(eventsSpec.requestBinding, undefined)),
     ).toMatchObject({ ok: false, reason: 'resource_unbound' });
+  });
+
+  it('lets a project-bound child holding kb:read search the shared corpus without naming a project', () => {
+    const spec = rpcSpec('kb.entries.search');
+    const request = spec.requestSchema.parse({ q: 'lock' });
+    const binding = resolveRequestBinding(spec.requestBinding, undefined);
+    const child = attenuate(testProjectPrincipal('/workspace/project', { subject: 'agent' }), ['kb:read']);
+
+    expect(request).toEqual({ q: 'lock' });
+    expect(binding).toEqual({ kind: 'corpus' });
+    expect(authorize(child, spec.requires, binding)).toEqual({ ok: true });
+    expect(authorize(attenuate(child, ['jobs:read']), spec.requires, binding)).toMatchObject({
+      ok: false,
+      reason: 'missing_capability',
+    });
+  });
+
+  it('keeps project-owned KB reads bound to the requested project', () => {
+    const child = attenuate(testProjectPrincipal('/workspace/project', { subject: 'agent' }), ['kb:read']);
+
+    for (const name of ['kb.memo.list', 'kb.memo.read', 'kb.wake_up'] as const) {
+      const spec = rpcSpec(name);
+      expect(spec.requestBinding, name).not.toEqual({ kind: 'corpus' });
+      expect(
+        authorize(child, spec.requires, resolveRequestBinding(spec.requestBinding, undefined)),
+        name,
+      ).toMatchObject({ ok: false, reason: 'resource_unbound' });
+      expect(
+        authorize(
+          child,
+          spec.requires,
+          resolveRequestBinding(spec.requestBinding, fixtureCanonicalWorkDir('/workspace/other')),
+        ),
+        name,
+      ).toMatchObject({ ok: false, reason: 'resource_unbound' });
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { backendLog } from './backend-log.js';
 import type { Capability } from '../security/capability.js';
-import type { Principal, ResourceBinding } from '../security/principal.js';
+import type { Principal, RequestedBinding, ResourceBinding } from '../security/principal.js';
 import type { AuthorizationFailureDetail, AuthorizationFailureReason, Decision } from '../security/policy/authorize.js';
 
 export type AuditLogLevel = 'info' | 'warn' | 'error';
@@ -128,7 +128,7 @@ export function describeAuthorizationDecision(
   principal: Principal | null | undefined,
   method: string,
   decision: Decision,
-  binding: ResourceBinding,
+  binding: RequestedBinding,
 ): AuditPayload {
   return {
     principal: describePrincipal(principal),
@@ -142,7 +142,7 @@ export function writeAuthorizationDecisionAudit(
   principal: Principal | null | undefined,
   method: string,
   decision: Decision,
-  binding: ResourceBinding,
+  binding: RequestedBinding,
   level: AuditLogLevel = decision.ok ? 'info' : 'warn',
 ): void {
   writeAuditEvent('authorization_decision', describeAuthorizationDecision(principal, method, decision, binding), level);

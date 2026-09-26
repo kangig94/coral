@@ -196,7 +196,7 @@ describe('KB daemon request service', () => {
     const read = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime }).read;
 
     const result = await read({
-      method: 'listPrinciples',
+      method: 'listMemos',
       ctx: daemonCtx(link, principalWire(allowed)),
     });
 
@@ -508,6 +508,41 @@ describe('KB daemon request service', () => {
     expect(writeRuntime.warmSearchRuntime).toHaveBeenCalledTimes(1);
     expect(withKb).toHaveBeenCalledTimes(1);
     expect(searchMock.searchKb).toHaveBeenCalledWith(writeKb, '계약', 3, 'all', 'auto', undefined);
+  });
+
+  it('serves kb search to a project-bound child that names no project, since the corpus is not project-owned', async () => {
+    const runtime = new SimulationRuntime();
+    const kbRuntime = createSearchKbRuntime({});
+    const withKb = vi.fn(async (run: WithKbCallback<unknown>) => run({ kbRuntime, runtime }));
+    const service = createKbDaemonRequestService({
+      pluginRoot: '/plugin',
+      runtime,
+      writeRuntime: {
+        withKb: withKb as <T>(run: WithKbCallback<T>) => Promise<T>,
+        warmSearchRuntime: vi.fn(),
+        searchReadiness: vi.fn(() => ({ ready: true as const })),
+        createSource: vi.fn(async () => {
+          throw new Error('source import should not be called');
+        }),
+        reindex: vi.fn(async () => {
+          throw new Error('reindex should not be called');
+        }),
+        health: () => ({ phase: 'ready' as const, initializedAt: 1 }),
+      },
+    });
+    const child: PrincipalWire = {
+      subject: 'agent',
+      binding: { kind: 'project', root: fixtureCanonicalWorkDir(PROJECT_ROOT) },
+      attenuatedCaps: ['kb:read'],
+    };
+
+    await expect(
+      service.read({ method: 'readSearch', args: { query: '계약' }, ctx: { principal: child } }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(service.read({ method: 'listMemos', args: {}, ctx: { principal: child } })).resolves.toMatchObject({
+      ok: false,
+      code: 'unauthorized',
+    });
   });
 
   it.each([

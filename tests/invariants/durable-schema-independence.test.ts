@@ -43,6 +43,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/infra/backend-discovery.ts#coordinatorDiscoveryRecordSchema',
   'src/infra/durable-cli-runtime-evidence.ts#durableCliRuntimePublicationEvidenceSchema',
   'src/infra/error-format.ts#serializedThrownSchema',
+  'src/infra/fs-lock.ts#lockOwnerRecordSchema',
   'src/infra/plugin-registry.ts#installedPluginsFileSchema',
   'src/infra/persisted-scalar-contracts.ts#persistedNonEmptyStringSchema',
   'src/infra/persisted-scalar-contracts.ts#persistedProcessIncarnationSchema',

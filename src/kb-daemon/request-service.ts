@@ -51,7 +51,7 @@ import type { InvocationContext } from '../runtime/invocation-context.js';
 import { canonicalizeWorkDir, type CanonicalWorkDir, WorkDirectoryError } from '../runtime/canonical-work-dir.js';
 import { writeAuthorizationDecisionAudit } from '../infra/audit-log.js';
 import type { Capability } from '../security/capability.js';
-import type { Principal, ResourceBinding } from '../security/principal.js';
+import type { Principal, RequestedBinding, ResourceBinding } from '../security/principal.js';
 import { authorizeCapability, authorizeResourceBinding, type Decision } from '../security/policy/authorize.js';
 import { capabilitiesFor } from '../security/policy/capabilities.js';
 import { parsePrincipalWire } from '../security/principal-wire.js';
@@ -124,6 +124,26 @@ const KB_DAEMON_READ_CAPABILITIES = {
   listPrinciples: 'kb:read',
   wakeUp: 'kb:read',
 } as const satisfies Record<KbDaemonKbReadMethod, Capability>;
+
+type KbDaemonRequestResource = 'corpus' | 'request';
+
+const KB_DAEMON_READ_RESOURCES = {
+  readSearch: 'corpus',
+  diagnose: 'corpus',
+  readNote: 'corpus',
+  readSource: 'corpus',
+  readCommunity: 'corpus',
+  listStaleCommunities: 'corpus',
+  readCommunitySummaryInput: 'corpus',
+  readWiki: 'corpus',
+  readMemo: 'request',
+  readPrinciple: 'corpus',
+  listSources: 'corpus',
+  listWikis: 'corpus',
+  listMemos: 'request',
+  listPrinciples: 'corpus',
+  wakeUp: 'request',
+} as const satisfies Record<KbDaemonKbReadMethod, KbDaemonRequestResource>;
 
 const KB_DAEMON_MUTATION_CAPABILITIES = {
   setCommunitySummary: 'kb:write',
@@ -263,6 +283,7 @@ function authorizeDaemonRequest(
   rawCtx: RawKbDaemonRequestContext,
   method: string,
   requires: Capability,
+  resource: KbDaemonRequestResource,
 ): KbDaemonRequestContext | KbToolResult {
   const capabilityDecision = authorizeCapability(rawCtx.principal, requires);
   if (!capabilityDecision.ok) {
@@ -274,13 +295,15 @@ function authorizeDaemonRequest(
   const projectRoot =
     rawCtx.projectRoot === undefined ? undefined : canonicalizeWorkDir(rawCtx.projectRoot, process.cwd());
   let principal = rawCtx.principal;
+  // A corpus read is authorized without a project, so a project it carries must not reach the handler unchecked.
   const ctx: KbDaemonRequestContext = {
-    ...(projectRoot === undefined ? {} : { projectRoot }),
+    ...(projectRoot === undefined || resource === 'corpus' ? {} : { projectRoot }),
     ...(rawCtx.pluginRoot === undefined ? {} : { pluginRoot: rawCtx.pluginRoot }),
     ...(rawCtx.coralEnv === undefined ? {} : { coralEnv: rawCtx.coralEnv }),
     principal,
   };
-  const requestedBinding = requestedBindingFromContext(ctx);
+  const requestedBinding: RequestedBinding =
+    resource === 'corpus' ? { kind: 'corpus' } : requestedBindingFromContext(ctx);
   if (principal.binding.kind === 'unbound' && requestedBinding.kind === 'project') {
     principal = { ...principal, binding: requestedBinding };
     ctx.principal = principal;
@@ -532,7 +555,12 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
       if (rawCtx === undefined) {
         return invalidRequest('KB daemon read request requires principal context.');
       }
-      const authorization = authorizeDaemonRequest(rawCtx, request.method, KB_DAEMON_READ_CAPABILITIES[request.method]);
+      const authorization = authorizeDaemonRequest(
+        rawCtx,
+        request.method,
+        KB_DAEMON_READ_CAPABILITIES[request.method],
+        KB_DAEMON_READ_RESOURCES[request.method],
+      );
       if ('ok' in authorization) {
         return authorization;
       }
@@ -671,6 +699,7 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
         rawCtx,
         request.method,
         KB_DAEMON_MUTATION_CAPABILITIES[request.method],
+        'request',
       );
       if ('ok' in authorization) {
         return authorization;

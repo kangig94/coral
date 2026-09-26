@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   lstatSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -12,6 +13,17 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { z } from 'zod';
+import {
+  createRecordedProcessObserver,
+  observeProcessLiveness,
+  probeProcessIncarnation,
+  readPidNamespace,
+  type ProcessIncarnation,
+  type ProcessLiveness,
+  type RecordedProcessObserver,
+} from './node-process.js';
+import { persistedProcessIncarnationSchema } from './persisted-scalar-contracts.js';
 import type { StoragePort, TimePort, TimerHandle } from './port-types.js';
 import type { StorageActuator } from './storage-actuator.js';
 
@@ -19,12 +31,25 @@ const LOCK_RETRY_INTERVAL_MS = 50;
 const STALE_LOCK_MS = 30_000;
 const syncWaitState = new Int32Array(new SharedArrayBuffer(4));
 
+export type DirectoryLockOwner = Readonly<{
+  pid: number;
+  incarnation: ProcessIncarnation | null;
+  pidNamespace: string | null;
+}>;
+
+/** Who this process records as a lock's owner, and how it observes an owner another process recorded. */
+export type DirectoryLockOwnerProbe = Readonly<{
+  self: DirectoryLockOwner;
+  observe: RecordedProcessObserver;
+}>;
+
 export type DirectoryLockDeps = {
   storage: StoragePort;
   time: Pick<TimePort, 'now' | 'monotonicNow' | 'sleep' | 'setInterval' | 'clearInterval'>;
   staleMs?: number;
   heartbeatMs?: number;
   signal?: AbortSignal;
+  owner?: DirectoryLockOwnerProbe;
 };
 
 export class DirectoryLockTimeoutError extends Error {
@@ -248,6 +273,7 @@ function resolveDirectoryLockDeps(deps?: DirectoryLockDeps): DirectoryLockDeps {
   return {
     storage: {
       mkdirSync,
+      readFileSync,
       readdirSync,
       renameSync,
       rmSync,
@@ -290,8 +316,59 @@ function lockOwnerMarkerPath(lockDir: string, ownerToken: string): string {
   return join(lockDir, `owner-${ownerToken}.lock`);
 }
 
-function writeLockOwnerMarker(lockDir: string, ownerToken: string, storage: DirectoryLockDeps['storage']): void {
-  storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken), ownerToken, { encoding: 'utf-8', mode: 0o600 });
+let processOwnerProbe: DirectoryLockOwnerProbe | undefined;
+
+function ownerProbe(deps: DirectoryLockDeps): DirectoryLockOwnerProbe {
+  if (deps.owner !== undefined) return deps.owner;
+  processOwnerProbe ??= {
+    self: { pid: process.pid, incarnation: probeProcessIncarnation(process.pid), pidNamespace: readPidNamespace() },
+    observe: createRecordedProcessObserver({
+      readIncarnation: (pid) => probeProcessIncarnation(pid),
+      observeLiveness: observeProcessLiveness,
+    }),
+  };
+  return processOwnerProbe;
+}
+
+const lockOwnerRecordSchema = z.object({
+  pid: z.number().int().positive(),
+  incarnation: persistedProcessIncarnationSchema.optional(),
+  pidNamespace: z.string().min(1),
+});
+
+function lockOwnerMarkerContent(ownerToken: string, deps: DirectoryLockDeps): string {
+  const { pid, incarnation, pidNamespace } = ownerProbe(deps).self;
+  return JSON.stringify({
+    token: ownerToken,
+    pid,
+    ...(incarnation === null ? {} : { incarnation }),
+    ...(pidNamespace === null ? {} : { pidNamespace }),
+  });
+}
+
+function writeLockOwnerMarker(
+  lockDir: string,
+  ownerToken: string,
+  markerContent: string,
+  storage: DirectoryLockDeps['storage'],
+): void {
+  storage.writeFileSync(lockOwnerMarkerPath(lockDir, ownerToken), markerContent, { encoding: 'utf-8', mode: 0o600 });
+}
+
+/** A marker this build cannot read and an owner recorded in another pid namespace are both unobserved. */
+function observeMarkerOwner(markerPath: string, deps: DirectoryLockDeps): ProcessLiveness {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(deps.storage.readFileSync(markerPath, 'utf-8'));
+  } catch {
+    return 'unknown';
+  }
+  const recorded = lockOwnerRecordSchema.safeParse(raw);
+  if (!recorded.success) return 'unknown';
+  const probe = ownerProbe(deps);
+  if (probe.self.pidNamespace === null || recorded.data.pidNamespace !== probe.self.pidNamespace) return 'unknown';
+  const { pid, incarnation } = recorded.data;
+  return probe.observe(incarnation === undefined ? { pid } : { pid, incarnation });
 }
 
 type LockDirectoryIdentity = {
@@ -378,6 +455,7 @@ function ownsLockDirectory(
 function refreshLockOwnerMarker(
   lockDir: string,
   ownerToken: string,
+  markerContent: string,
   expectedIdentity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
 ): void {
@@ -388,7 +466,7 @@ function refreshLockOwnerMarker(
   const refreshPath = join(lockDir, `claim-refresh-${ownerToken}.lock`);
   deps.storage.renameSync(ownerPath, refreshPath);
   try {
-    deps.storage.writeFileSync(refreshPath, ownerToken, { encoding: 'utf-8', mode: 0o600, flag: 'r+' });
+    deps.storage.writeFileSync(refreshPath, markerContent, { encoding: 'utf-8', mode: 0o600, flag: 'r+' });
     if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
@@ -411,6 +489,7 @@ function refreshLockOwnerMarker(
 function startDirectoryLockHeartbeat(
   lockDir: string,
   ownerToken: string,
+  markerContent: string,
   expectedIdentity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
   loseOwnership: () => void,
@@ -419,7 +498,7 @@ function startDirectoryLockHeartbeat(
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor(staleMs / 3));
   return deps.time.setInterval(() => {
     try {
-      refreshLockOwnerMarker(lockDir, ownerToken, expectedIdentity, deps);
+      refreshLockOwnerMarker(lockDir, ownerToken, markerContent, expectedIdentity, deps);
     } catch {
       loseOwnership();
     }
@@ -430,6 +509,7 @@ function releaseDirectoryLock(
   lockDir: string,
   deps: DirectoryLockDeps,
   ownerToken: string,
+  markerContent: string,
   expectedIdentity: LockDirectoryIdentity,
   heartbeat: TimerHandle,
   isOwned: () => boolean,
@@ -447,7 +527,7 @@ function releaseDirectoryLock(
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
     try {
-      refreshLockOwnerMarker(lockDir, ownerToken, expectedIdentity, deps);
+      refreshLockOwnerMarker(lockDir, ownerToken, markerContent, expectedIdentity, deps);
     } catch {
       loseOwnership();
       throw new DirectoryLockOwnershipLostError(lockDir);
@@ -477,6 +557,18 @@ function markerIsStale(markerPath: string, deps: DirectoryLockDeps): boolean {
   } catch {
     return false;
   }
+}
+
+type OwnerMarkerDisposition = 'window-expired' | 'owner-absent' | 'owner-alive' | 'owner-unobserved';
+
+/** Only an expired window or an owner proven absent may be reclaimed; an unobserved owner waits out the window. */
+const RECLAIMABLE_OWNER_MARKERS: ReadonlySet<OwnerMarkerDisposition> = new Set(['window-expired', 'owner-absent']);
+
+function ownerMarkerDisposition(markerPath: string, deps: DirectoryLockDeps): OwnerMarkerDisposition {
+  if (markerIsStale(markerPath, deps)) return 'window-expired';
+  const liveness = observeMarkerOwner(markerPath, deps);
+  if (liveness === 'absent') return 'owner-absent';
+  return liveness === 'alive' ? 'owner-alive' : 'owner-unobserved';
 }
 
 function directoryIsStale(lockDir: string, deps: DirectoryLockDeps): boolean {
@@ -522,7 +614,7 @@ function tryClaimAndQuarantineStaleMarker(
   restorePath: string,
   deps: DirectoryLockDeps,
 ): boolean {
-  if (!markerIsStale(markerPath, deps)) return false;
+  if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(markerPath, deps))) return false;
 
   const claimPath = join(lockDir, `claim-${randomUUID()}.lock`);
   try {
@@ -532,7 +624,7 @@ function tryClaimAndQuarantineStaleMarker(
     throw error;
   }
 
-  if (!markerIsStale(claimPath, deps)) {
+  if (!RECLAIMABLE_OWNER_MARKERS.has(ownerMarkerDisposition(claimPath, deps))) {
     try {
       deps.storage.renameSync(claimPath, restorePath);
     } catch {
@@ -586,6 +678,7 @@ function tryQuarantineStaleLock(lockDir: string, deps: DirectoryLockDeps): boole
 function createDirectoryLockLease(
   lockDir: string,
   ownerToken: string,
+  markerContent: string,
   identity: LockDirectoryIdentity,
   deps: DirectoryLockDeps,
   actuatorStorage?: StoragePort,
@@ -594,8 +687,17 @@ function createDirectoryLockLease(
   const loseOwnership = () => {
     owned = false;
   };
-  const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, identity, deps, loseOwnership);
-  const lease = releaseDirectoryLock(lockDir, deps, ownerToken, identity, heartbeat, () => owned, loseOwnership);
+  const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, markerContent, identity, deps, loseOwnership);
+  const lease = releaseDirectoryLock(
+    lockDir,
+    deps,
+    ownerToken,
+    markerContent,
+    identity,
+    heartbeat,
+    () => owned,
+    loseOwnership,
+  );
   if (actuatorStorage !== undefined) {
     Object.defineProperty(lease, 'actuator', {
       value: createStorageActuator(actuatorStorage, () => {
@@ -623,6 +725,7 @@ function tryCreateDirectoryLock(
   actuatorStorage?: StoragePort,
 ): DirectoryLockLease | ActuatedDirectoryLockLease | null {
   const ownerToken = randomUUID();
+  const markerContent = lockOwnerMarkerContent(ownerToken, deps);
   try {
     deps.storage.mkdirSync(lockDir);
   } catch (error) {
@@ -638,13 +741,13 @@ function tryCreateDirectoryLock(
   }
   // If this write fails, leave the markerless publication for stale recovery.
   // Deleting by pathname could race with another process replacing the directory.
-  writeLockOwnerMarker(lockDir, ownerToken, deps.storage);
+  writeLockOwnerMarker(lockDir, ownerToken, markerContent, deps.storage);
 
   if (!ownsLockDirectory(lockDir, ownerToken, identity, deps)) {
     tryRemoveOwnedLockDirectory(lockDir, ownerToken, identity, deps.storage);
     throw new DirectoryLockOwnershipLostError(lockDir);
   }
-  return createDirectoryLockLease(lockDir, ownerToken, identity, deps, actuatorStorage);
+  return createDirectoryLockLease(lockDir, ownerToken, markerContent, identity, deps, actuatorStorage);
 }
 
 function throwIfDirectoryLockAborted(deps: DirectoryLockDeps): void {

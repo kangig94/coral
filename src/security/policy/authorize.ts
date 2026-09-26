@@ -1,5 +1,5 @@
 import { ALL_CAPABILITIES, capabilityScope, type Capability } from '../capability.js';
-import type { Principal, ResourceBinding } from '../principal.js';
+import type { Principal, RequestedBinding, ResourceBinding } from '../principal.js';
 import { containsWorkDir } from '../../runtime/canonical-work-dir.js';
 import { capabilitiesFor } from './capabilities.js';
 
@@ -7,7 +7,7 @@ export type AuthorizationFailureReason = 'missing_capability' | 'resource_unboun
 
 export type AuthorizationFailureDetail = {
   readonly requires: Capability;
-  readonly requestedBinding: ResourceBinding;
+  readonly requestedBinding: RequestedBinding;
   readonly principalBinding?: ResourceBinding;
   readonly subject?: Principal['subject'];
 };
@@ -23,7 +23,7 @@ export type Decision =
 export function authorize(
   principal: Principal | null | undefined,
   requires: Capability,
-  requestedBinding: ResourceBinding,
+  requestedBinding: RequestedBinding,
 ): Decision {
   const capabilityDecision = authorizeCapability(principal, requires, requestedBinding);
   if (!capabilityDecision.ok) return capabilityDecision;
@@ -35,7 +35,7 @@ export function authorize(
 export function authorizeCapability(
   principal: Principal | null | undefined,
   requires: Capability,
-  requestedBinding: ResourceBinding = { kind: 'unbound' },
+  requestedBinding: RequestedBinding = { kind: 'unbound' },
 ): Decision {
   if (!principal) {
     return {
@@ -58,7 +58,7 @@ export function authorizeCapability(
 export function authorizeResourceBinding(
   principal: Principal,
   requires: Capability,
-  requestedBinding: ResourceBinding,
+  requestedBinding: RequestedBinding,
 ): Decision {
   return bindingSatisfies(principal, requestedBinding, requires)
     ? { ok: true }
@@ -77,8 +77,8 @@ function hasEffectiveCapability(principal: Principal, requires: Capability): boo
   return (principal.attenuatedCaps ?? ALL_CAPABILITIES).has(requires);
 }
 
-function bindingSatisfies(principal: Principal, requestedBinding: ResourceBinding, requires: Capability): boolean {
-  if (capabilityScope(requires) === 'any') {
+function bindingSatisfies(principal: Principal, requestedBinding: RequestedBinding, requires: Capability): boolean {
+  if (capabilityScope(requires) === 'any' || requestedBinding.kind === 'corpus') {
     return true;
   }
 

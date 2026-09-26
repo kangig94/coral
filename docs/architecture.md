@@ -160,6 +160,8 @@ The provider-session branch of `LaunchDecision` has three answers: accepted (`ru
 
 Raw work-directory spellings stop at transport ingress. Capability authorization happens before filesystem access; then Coral resolves the directory with `realpath`, rejects missing or non-directory targets explicitly, and authorizes resource binding against the canonical project root. Internal launch, workflow, recovery, provider-host identity, and displayed cwd values carry that same canonical value. A symlink and its target therefore identify one provider-server specification rather than silently creating separate hosts.
 
+Reads of the shared KB Corpus (search, diagnose, note, source, wiki, community, and principle reads) name no project, because no project owns the Corpus: they are authorized by the `kb:read` capability alone, so a project-bound job child can search the KB it is granted without naming a root. The KB daemon canonicalizes a project root such a read carries but does not hand it to the handler. Memo and wake-up reads stay project-bound.
+
 ## Work Classification
 
 Not every command becomes a job. Jobs are for work that is long-running, observable, resumable, or recovery-relevant. Immediate reads and small mutations remain direct commands.
