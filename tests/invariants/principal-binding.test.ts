@@ -161,4 +161,13 @@ describe('principal request binding invariants', () => {
       ).toMatchObject({ ok: false, reason: 'resource_unbound' });
     }
   });
+
+  // A corpus binding authorizes any project-bound principal, so the capability is the only gate left on the read.
+  it('requires kb:read on every route bound to the shared corpus', () => {
+    const specs: readonly RpcMethodSpec<unknown, unknown>[] = rpcCatalog;
+    const corpusRoutes = specs.filter((spec) => spec.requestBinding?.kind === 'corpus');
+
+    expect(corpusRoutes.length).toBeGreaterThan(0);
+    for (const spec of corpusRoutes) expect(spec.requires, spec.name).toBe('kb:read');
+  });
 });

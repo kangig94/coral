@@ -792,15 +792,24 @@ type HostedWork = Readonly<{
 
 const hostProcesses: { pid: number; incarnation: ProcessIncarnation }[] = [];
 
-afterEach(() => {
-  for (const recorded of hostProcesses.splice(0)) {
-    if (
-      probeProcessIncarnation(recorded.pid) === recorded.incarnation &&
-      observeProcessLiveness(recorded.pid) === 'alive'
-    ) {
-      process.kill(recorded.pid, 'SIGKILL');
+/** Recorded host processes are not this test's children, so only their incarnation disappearing proves an exit. */
+afterEach(async () => {
+  const signalled = hostProcesses
+    .splice(0)
+    .filter(
+      ({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation && observeProcessLiveness(pid) === 'alive',
+    );
+  for (const { pid } of signalled) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // A process that exited after it was observed is what the wait below confirms.
     }
   }
+  await waitForCondition(
+    () => signalled.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
+    30_000,
+  );
 });
 
 function installTransferCodex(home: string): string {

@@ -376,7 +376,8 @@ export function createStartupMintAuthorizer(
       !custodyNamesEpoch &&
       !controllerReceiptsMayNameEpoch(runtime, epochKey, lineageKey);
     if (!liveHistory && !holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
-    recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
+    // An unreadable closure already retains the epoch visibly, so the mint proceeds without overwriting it.
+    void recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
       version: 'v1',
       epochKey: lineageKey,
       disposition: 'unrecoverable-retained',

@@ -3,11 +3,10 @@ import { dirname } from 'node:path';
 import { z } from 'zod';
 
 import {
-  currentHandoffCapsulePath,
   handoffCapsuleControllerBuildSetId,
-  readHandoffCapsuleFile,
   type RedeemableHandoffCapsule,
 } from '../../../provider-proxy/handoff-capsule.js';
+import { readAddressedHandoffCapsule } from '../../../provider-proxy/handoff-capsule-discovery.js';
 import {
   canonicalUuidSchema,
   hostFingerprintSchema,
@@ -169,8 +168,8 @@ export function controllerTransferRecoveryGrantsVerify(
   return transfer.sets.every((set) => {
     let capsule;
     try {
-      capsule = readHandoffCapsuleFile(
-        currentHandoffCapsulePath(
+      capsule =
+        readAddressedHandoffCapsule(
           {
             generation: 'gen2',
             flavor,
@@ -179,9 +178,8 @@ export function controllerTransferRecoveryGrantsVerify(
             proxyInstanceId: set.proxyInstanceId,
           },
           { baseDir: dirname(runtime.paths.coral.generation.root) },
-        ),
-        { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
-      );
+          { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
+        )?.capsule ?? null;
     } catch {
       return false;
     }

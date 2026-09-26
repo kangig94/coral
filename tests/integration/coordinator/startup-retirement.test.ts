@@ -1,4 +1,4 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,11 +7,14 @@ import { createStartupMintAuthorizer } from '#src/coordinator/services/startup-r
 import { recordControllerOpen } from '#src/coordinator/succession/controller-open.js';
 import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
 import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { sha256Hex } from '#src/infra/hash.js';
 import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { observeEpochClosure } from '#src/store/epoch-closure.js';
+import { readEpochKey } from '#src/store/epoch-key.js';
 import {
   encodeResolvedStoreEpoch,
   settleStoreEpoch,
@@ -83,6 +86,24 @@ describe('startup mint authorizer', () => {
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
 
     expect(startUp(runtime, index, 'startup-1')).toMatchObject({ kind: 'unopenable' });
+  });
+
+  it('should mint over an unreadable epoch whose closure record is unreadable instead of failing startup', () => {
+    const runtime = unreadableEpochRuntime();
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const stateRoot = runtime.paths.coral.generation.dataRoot;
+    let lineageKey: string | null = null;
+    const corruptClosure = (observation: StoreMintObservation): void => {
+      if (observation.incumbent === null) throw new Error('Expected the unreadable epoch as incumbent.');
+      lineageKey = readEpochKey(runtime, observation.incumbent);
+      if (lineageKey === null) throw new Error('Expected the unreadable epoch to carry a lineage key.');
+      mkdirSync(join(stateRoot, 'epoch-closure.v1'), { recursive: true });
+      writeFileSync(join(stateRoot, 'epoch-closure.v1', `${sha256Hex(lineageKey)}.json`), 'not a closure record');
+    };
+
+    expect(startUp(runtime, index, 'startup-1', corruptClosure)).toMatchObject({ kind: 'unopenable' });
+    expect(lineageKey).not.toBeNull();
+    expect(observeEpochClosure(runtime, stateRoot, lineageKey ?? '')).toMatchObject({ kind: 'unreadable' });
   });
 
   it('should keep two-startup patience when a job location names the unreadable epoch', () => {

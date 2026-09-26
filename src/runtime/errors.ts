@@ -802,6 +802,7 @@ export const LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES: ReadonlySet<string> = ne
   'kb_disabled',
   'provider_preflight_undetermined',
   'succession_admission_paused',
+  'succession_writer_parked',
 ]);
 
 /** A documented code's exit must come from its registry entry, including the default exit 1. */

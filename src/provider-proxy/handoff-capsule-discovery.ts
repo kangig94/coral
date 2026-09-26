@@ -1,6 +1,11 @@
 import { dirname, join } from 'node:path';
 
-import { providerHandoffCapsuleFileSuffix, providerHandoffCapsulePath } from '../infra/path/index.js';
+import {
+  providerHandoffCapsuleFileSuffix,
+  providerHandoffCapsulePath,
+  type ProviderBootstrapCapsulePathOptions,
+  type ProviderProxyEndpointIdentity,
+} from '../infra/path/index.js';
 import type { StoragePort } from '../infra/port-types.js';
 import {
   SUPPORTED_HANDOFF_CAPSULE_VERSIONS,
@@ -57,4 +62,22 @@ export function readProviderHandoffCapsuleCandidate(
     return { kind: 'invalid', path, reason: 'provider_proxy_handoff_capsule_path_mismatch' };
   }
   return { kind: 'readable', path, capsule };
+}
+
+/**
+ * A set's capsule sits at the address of the generation its writer wrote, which need not be this build's own.
+ * Every generation this build decodes is a candidate address, and the newest one present speaks for the set.
+ */
+export function readAddressedHandoffCapsule(
+  identity: ProviderProxyEndpointIdentity,
+  pathOptions: ProviderBootstrapCapsulePathOptions | undefined,
+  environment: HandoffCapsuleFileEnvironment,
+): Readonly<{ path: string; capsule: HandoffCapsule }> | null {
+  const newestFirst = [...SUPPORTED_HANDOFF_CAPSULE_VERSIONS].sort((left, right) => right - left);
+  const paths = [...new Set(newestFirst.map((version) => providerHandoffCapsulePath(identity, version, pathOptions)))];
+  for (const path of paths) {
+    const capsule = readHandoffCapsuleFile(path, environment);
+    if (capsule !== null) return { path, capsule };
+  }
+  return null;
 }

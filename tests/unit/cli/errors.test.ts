@@ -484,6 +484,7 @@ describe('cli errors', () => {
         'kb_disabled',
         'provider_preflight_undetermined',
         'succession_admission_paused',
+        'succession_writer_parked',
       ];
       const { DOCUMENTED_CORAL_SETUP_ERROR_CODES, LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES } =
         await import('#src/runtime/errors.js');

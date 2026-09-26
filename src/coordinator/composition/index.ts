@@ -2557,6 +2557,7 @@ export function createCoordinatorCore(
     onStopped: options.onStopped,
     onSuccessionServing: (attemptId) =>
       successionCommitter.publishServing(attemptId, currentSuccessionAttemptChild()?.recovery === true),
+    wakeSuccessionReconciler: () => succession.reconciler.notifyObligationChange(),
     succession: successionCommitter.shutdown,
     successionInterposition,
     ...(options.acceptProcessExitRemainder === undefined

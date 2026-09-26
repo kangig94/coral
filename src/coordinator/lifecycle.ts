@@ -145,7 +145,9 @@ import type { RetiringStoreProtection, SuccessionShutdownPort } from './successi
 import { NO_SUCCESSION_INTERPOSITION, type SuccessionInterposition } from './succession/interposition.js';
 import {
   completeWaiterLaunchedUpgrade,
+  dischargeDeadSuccessionAttempt,
   handBackDeadAttemptGeneration,
+  openPreferredStoreEpoch,
   prepareCommittedSuccessorRecovery,
   openCommittedRecoveryStore,
   openSuccessionAttemptStore,
@@ -898,6 +900,8 @@ export type LifecycleDeps = {
   ) => Promise<ListenIpcServerResult>;
   readonly onStopped?: (exitCode: number) => void;
   readonly onSuccessionServing?: (attemptId: string) => Promise<void>;
+  /** A reconciler pass before this process serves can act on nothing, so reaching service owes it one. */
+  readonly wakeSuccessionReconciler?: () => void;
   readonly verifySuccessionReceipts?: (
     preparation: SuccessionPreparation,
     epoch: ResolvedStoreEpoch,
@@ -1154,6 +1158,7 @@ async function runLifecycleStartup({
     const committedRecovery = committedRecoveryDecision?.kind === 'recover' ? committedRecoveryDecision : null;
     let preferredStoreEpochKey: string | null = null;
     let pendingDeadAttempt: DeadAttemptRecovery | null = null;
+    let retiredDeadAttemptId: string | null = null;
     if (successionAttemptChild === null && committedRecovery === null && preinjectedStoreServices === null) {
       const coordinator = probeCoordinator(runtime);
       if (
@@ -1174,6 +1179,7 @@ async function runLifecycleStartup({
           pendingDeadAttempt = incomplete.attempt;
           preferredStoreEpochKey = incomplete.preferredEpochKey;
         }
+        if (incomplete.kind === 'retire') retiredDeadAttemptId = incomplete.attemptId;
         if (pendingDeadAttempt === null) {
           const target = deps.prepareNoIncumbentHandoff?.();
           if (target !== undefined && target !== null) {
@@ -1262,8 +1268,20 @@ async function runLifecycleStartup({
       if (pendingDeadAttempt.discardAttemptId !== undefined) {
         discardUnservedRetirementMint(runtime, pendingDeadAttempt.epochKey, pendingDeadAttempt.discardAttemptId);
       }
-      handBackDeadAttemptGeneration(runtime, pendingDeadAttempt.epochKey, pendingDeadAttempt.force);
+      if ((await handBackDeadAttemptGeneration(runtime, instanceId, pendingDeadAttempt)) === 'abandoned') {
+        pendingDeadAttempt = null;
+        preferredStoreEpochKey = null;
+      }
     }
+    const preferredStore =
+      preferredStoreEpochKey === null
+        ? null
+        : await openPreferredStoreEpoch(
+            successionStoreContext,
+            instanceId,
+            preferredStoreEpochKey,
+            pendingDeadAttempt?.attemptId ?? null,
+          );
 
     if (successionAttemptChild !== null && preinjectedStoreServices !== null) {
       throw new SuccessionAttemptStartupHoldError('committed open requires a filesystem store');
@@ -1316,21 +1334,9 @@ async function runLifecycleStartup({
         openedStore = opened.store;
         successionGeneration = opened.generation;
         acceptedSuccessionPreparation = opened.preparation;
-      } else if (preferredStoreEpochKey !== null) {
-        const preferred = decodeResolvedStoreEpoch(runtime, preferredStoreEpochKey);
-        if (preferred === undefined) throw new SuccessionAttemptStartupHoldError('preferred epoch is invalid');
-        const committed = openCommittedBackendStoreAtStartup(
-          runtime,
-          {
-            storeFormat: deps.storeFormat,
-            build: currentBuild,
-            startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-          },
-          preferred,
-        );
-        if (committed.kind === 'holding') throw new SuccessionAttemptStartupHoldError(committed.reason);
-        storeDb = committed.db;
-        openedStore = committed.store;
+      } else if (preferredStore !== null) {
+        storeDb = preferredStore.db;
+        openedStore = preferredStore.store;
       } else {
         const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
         if (currentBundleDir === null) {
@@ -1604,6 +1610,17 @@ async function runLifecycleStartup({
         deps.readSelfIncarnationFn(),
       );
     }
+    const deadAttemptId = pendingDeadAttempt?.attemptId ?? retiredDeadAttemptId;
+    if (deadAttemptId !== null) {
+      await dischargeDeadSuccessionAttempt(runtime, deadAttemptId, {
+        instanceId,
+        pid: backendPid,
+        incarnation: deps.readSelfIncarnationFn(),
+        version,
+        bundleHash,
+        flavor,
+      });
+    }
 
     runtimeState.components.register(createRecoveryComponent(storeServices.storeDb));
     try {
@@ -1615,6 +1632,7 @@ async function runLifecycleStartup({
 
     runtimeState.setLifecycle('running');
     state.started = true;
+    deps.wakeSuccessionReconciler?.();
     void kbDaemonSupervisor
       ?.start(openedStore ?? undefined)
       .then((health) => {

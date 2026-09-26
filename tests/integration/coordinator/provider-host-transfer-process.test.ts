@@ -31,6 +31,7 @@ import {
   readDiscoveryRecordForHome,
   spawnCoordinator,
   stopCoordinator,
+  terminateChildProcess,
   waitForDiscoveryRecord,
   waitForProcessExit,
   type PluginFixture,
@@ -44,10 +45,36 @@ const cliChildren: ChildProcess[] = [];
 const hostProcesses: { pid: number; incarnation: ProcessIncarnation }[] = [];
 const successors: { pid: number; incarnation: ProcessIncarnation | null }[] = [];
 
-afterEach(async () => {
-  for (const cli of cliChildren.splice(0)) {
-    if (cli.exitCode === null && cli.signalCode === null) cli.kill('SIGKILL');
+/** Recorded host processes are not this test's children, so only their incarnation disappearing proves an exit. */
+async function killRecordedProcesses(recorded: readonly { pid: number; incarnation: ProcessIncarnation }[]) {
+  const signalled = recorded.filter(
+    ({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation && observeProcessLiveness(pid) === 'alive',
+  );
+  for (const { pid } of signalled) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // A process that exited after it was observed is what the wait below confirms.
+    }
   }
+  await waitForCondition(
+    () => signalled.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
+    30_000,
+  );
+}
+
+/** A probe can race the process it reads, so only an observed incarnation or an absent pid ends the wait. */
+async function observedIncarnation(pid: number): Promise<ProcessIncarnation | null> {
+  let incarnation: ProcessIncarnation | null = null;
+  await waitForCondition(() => {
+    incarnation = probeProcessIncarnation(pid);
+    return incarnation !== null || observeProcessLiveness(pid) === 'absent';
+  }, 10_000);
+  return incarnation;
+}
+
+afterEach(async () => {
+  await Promise.all(cliChildren.splice(0).map((cli) => terminateChildProcess(cli, 'SIGKILL')));
   // A successor shuts down its own children on SIGTERM; waiting for its exit keeps them from outliving the test.
   const terminated: { pid: number; incarnation: ProcessIncarnation }[] = [];
   for (const recorded of successors.splice(0)) {
@@ -62,14 +89,7 @@ afterEach(async () => {
     30_000,
   );
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
-  for (const recorded of hostProcesses.splice(0)) {
-    if (
-      probeProcessIncarnation(recorded.pid) === recorded.incarnation &&
-      observeProcessLiveness(recorded.pid) === 'alive'
-    ) {
-      process.kill(recorded.pid, 'SIGKILL');
-    }
-  }
+  await killRecordedProcesses(hostProcesses.splice(0));
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
@@ -229,7 +249,7 @@ async function startProxiedJob(
   expect(handoffCapsuleControllerBuildSetId(capsule)).toBe(buildSetIdOf(oldFixture));
   const hosts = recordHostProcesses(capsule);
   const codexPid = Number(readFileSync(join(world.state, 'job-running'), 'utf8'));
-  const codexIncarnation = probeProcessIncarnation(codexPid);
+  const codexIncarnation = await observedIncarnation(codexPid);
   if (codexIncarnation !== null) hostProcesses.push({ pid: codexPid, incarnation: codexIncarnation });
   const waiter = startCli(oldFixture, world, ['wait', 'jobs', jobId, '--verbose']);
   await waitForCondition(() => waiter.stdout().includes('before-transfer'), 60_000);

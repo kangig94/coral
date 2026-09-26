@@ -15,6 +15,7 @@ import {
   observeEpochClosure,
   recordEpochClosure,
   type EpochClosureEvidence,
+  type EpochClosureRecording,
 } from '../../../store/epoch-closure.js';
 import { knownProtectedEpochAddresses, reconcileProtectedEpochs } from '../../../store/epoch-protection.js';
 import { readOrCreateEpochKey } from '../../../store/epoch-key.js';
@@ -88,6 +89,87 @@ export function closureCandidates(runtime: Runtime): ClosureCandidate[] {
 type AbsenceProof =
   | Readonly<{ kind: 'reap'; confirmed: Set<string> }>
   | Readonly<{ kind: 'confirmed-only'; confirmed: ReadonlySet<string> }>;
+
+type RecordedProcess = Readonly<{ pid: number; incarnation: ProcessIncarnation; processGroupId: number }>;
+type AbsenceDecisionContext = Readonly<{
+  runtime: Runtime;
+  index: JobLocationIndex;
+  jobEpochKey: string;
+  signal: AbortSignal;
+  closeProxySet: CloseProxySet | undefined;
+  absence: AbsenceProof;
+}>;
+
+/** Only an owner's decisive absence discharges a bound process; a live or unanswered observation never does. */
+type RecordedAbsence = Readonly<{ kind: 'absent' }> | Readonly<{ kind: 'not-proven-absent' }>;
+const ABSENT: RecordedAbsence = { kind: 'absent' };
+const NOT_PROVEN_ABSENT: RecordedAbsence = { kind: 'not-proven-absent' };
+
+async function decideRecordedAbsence(
+  { runtime, index, jobEpochKey, signal, closeProxySet, absence }: AbsenceDecisionContext,
+  entry: Extract<CustodyEntry, { kind: 'bound' }>,
+  identity: RecordedProcess,
+): Promise<RecordedAbsence> {
+  const absenceKey = JSON.stringify([entry.intent.id, identity.pid, identity.incarnation, identity.processGroupId]);
+  if (entry.intent.owner === 'durable-cli' && absence.kind === 'confirmed-only') {
+    return absence.confirmed.has(absenceKey) ? ABSENT : NOT_PROVEN_ABSENT;
+  }
+  if (entry.intent.owner === 'durable-cli' && absence.kind === 'reap') {
+    const clock = createMonotonicClock(closureClockScope, {
+      readMilliseconds: () => runtime.time.monotonicNow(),
+      sleep: (milliseconds) => runtime.time.sleep(milliseconds),
+    });
+    try {
+      const outcome = await reapRecordedContainment(
+        identity,
+        [],
+        clock.shiftMilliseconds(clock.now(), REAP_DEADLINE_MS),
+        {
+          maxRecordedRoots: 0,
+          clock,
+          process: runtime.process,
+          platform: runtime.env.platform() as NodeJS.Platform,
+          readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+          signal,
+        },
+      );
+      if (outcome.kind !== 'containment-absent') return NOT_PROVEN_ABSENT;
+      absence.confirmed.add(absenceKey);
+      return ABSENT;
+    } catch {
+      return NOT_PROVEN_ABSENT;
+    }
+  }
+  if (entry.intent.owner === 'provider-proxy-set' && closeProxySet !== undefined) {
+    let resultsReady = false;
+    try {
+      resultsReady = index.resultsReleased(jobEpochKey);
+    } catch {
+      // Unreadable results keep the owner from requesting proxy containment.
+    }
+    if (resultsReady) {
+      const proxyInstanceId = entry.intent.operationId.endsWith(':guardian')
+        ? entry.intent.operationId.slice(0, -':guardian'.length)
+        : null;
+      if (proxyInstanceId !== null) {
+        try {
+          await closeProxySet(proxyInstanceId, identity, signal);
+        } catch {
+          // Process observation below still decides whether custody is discharged.
+        }
+      }
+    }
+  }
+  const observed = observeRecordedContainment(
+    { ...identity, childRoot: null },
+    {
+      process: runtime.process,
+      platform: runtime.env.platform() as NodeJS.Platform,
+      readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+    },
+  );
+  return observed.kind === 'absent' ? ABSENT : NOT_PROVEN_ABSENT;
+}
 
 async function certifyCustody(
   runtime: Runtime,
@@ -246,66 +328,12 @@ async function certifyCustody(
       };
     }
     const identity = { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId };
-    let absenceConfirmed: boolean;
-    const absenceKey = JSON.stringify([entry.intent.id, identity.pid, identity.incarnation, identity.processGroupId]);
-    if (entry.intent.owner === 'durable-cli' && absence.kind === 'confirmed-only') {
-      absenceConfirmed = absence.confirmed.has(absenceKey);
-    } else if (entry.intent.owner === 'durable-cli' && absence.kind === 'reap') {
-      const clock = createMonotonicClock(closureClockScope, {
-        readMilliseconds: () => runtime.time.monotonicNow(),
-        sleep: (milliseconds) => runtime.time.sleep(milliseconds),
-      });
-      try {
-        const outcome = await reapRecordedContainment(
-          identity,
-          [],
-          clock.shiftMilliseconds(clock.now(), REAP_DEADLINE_MS),
-          {
-            maxRecordedRoots: 0,
-            clock,
-            process: runtime.process,
-            platform: runtime.env.platform() as NodeJS.Platform,
-            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-            signal,
-          },
-        );
-        absenceConfirmed = outcome.kind === 'containment-absent';
-        if (absenceConfirmed) absence.confirmed.add(absenceKey);
-      } catch {
-        absenceConfirmed = false;
-      }
-    } else {
-      if (entry.intent.owner === 'provider-proxy-set' && closeProxySet !== undefined) {
-        let resultsReady = false;
-        try {
-          resultsReady = index.resultsReleased(jobEpochKey);
-        } catch {
-          // Unreadable results keep the owner from requesting proxy containment.
-        }
-        if (resultsReady) {
-          const proxyInstanceId = entry.intent.operationId.endsWith(':guardian')
-            ? entry.intent.operationId.slice(0, -':guardian'.length)
-            : null;
-          if (proxyInstanceId !== null) {
-            try {
-              await closeProxySet(proxyInstanceId, identity, signal);
-            } catch {
-              // Process observation below still decides whether custody is discharged.
-            }
-          }
-        }
-      }
-      absenceConfirmed =
-        observeRecordedContainment(
-          { ...identity, childRoot: null },
-          {
-            process: runtime.process,
-            platform: runtime.env.platform() as NodeJS.Platform,
-            readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
-          },
-        ).kind === 'absent';
-    }
-    if (!absenceConfirmed) {
+    const recorded = await decideRecordedAbsence(
+      { runtime, index, jobEpochKey, signal, closeProxySet, absence },
+      entry,
+      identity,
+    );
+    if (recorded.kind !== 'absent') {
       return {
         executionDischarge: 'undecidable',
         obligations,
@@ -391,6 +419,9 @@ export async function settleSupersededEpochClosures(
   const selectedKey = activeEpochKey ?? currentEpochLineageKey(runtime);
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const evidence: EpochClosureEvidence[] = [];
+  const keepRecorded = (recording: EpochClosureRecording): void => {
+    if (recording.kind === 'recorded') evidence.push(recording.evidence);
+  };
   const candidates = closureCandidates(runtime);
   if (candidates.length === 0) return evidence;
   let historicalAddresses: ReturnType<typeof knownProtectedEpochAddresses>;
@@ -402,7 +433,7 @@ export async function settleSupersededEpochClosures(
   } catch {
     for (const candidate of candidates) {
       if (candidate.epochKey === selectedKey) continue;
-      evidence.push(
+      keepRecorded(
         recordEpochClosure(runtime, stateRoot, {
           version: 'v1',
           epochKey: candidate.epochKey,
@@ -436,9 +467,9 @@ export async function settleSupersededEpochClosures(
       dataOutcome = 'unreadable';
     }
     if (previous?.disposition === 'closed') {
-      evidence.push(
+      keepRecorded(
         previous.dataOutcome === dataOutcome
-          ? previous
+          ? { kind: 'recorded', evidence: previous }
           : recordEpochClosure(runtime, stateRoot, {
               ...previous,
               dataOutcome,
@@ -464,15 +495,16 @@ export async function settleSupersededEpochClosures(
       closeProxySet,
       jobEpochKey,
     );
-    const record = recordEpochClosure(runtime, stateRoot, {
-      version: 'v1',
-      epochKey: candidate.epochKey,
-      disposition: settlement.executionDischarge === 'certified' ? 'closed' : 'unrecoverable-retained',
-      dataOutcome,
-      ...settlement,
-      observedAtMs: runtime.time.now(),
-    });
-    evidence.push(record);
+    keepRecorded(
+      recordEpochClosure(runtime, stateRoot, {
+        version: 'v1',
+        epochKey: candidate.epochKey,
+        disposition: settlement.executionDischarge === 'certified' ? 'closed' : 'unrecoverable-retained',
+        dataOutcome,
+        ...settlement,
+        observedAtMs: runtime.time.now(),
+      }),
+    );
   }
   return evidence;
 }

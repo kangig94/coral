@@ -1,10 +1,9 @@
 import {
-  currentHandoffCapsulePath,
   handoffCapsuleControllerBuildSetId,
-  readHandoffCapsuleFile,
   type HandoffCapsule,
   type RedeemableHandoffCapsule,
 } from '../../../provider-proxy/handoff-capsule.js';
+import { readAddressedHandoffCapsule } from '../../../provider-proxy/handoff-capsule-discovery.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { HeartbeatObservation } from '../../../provider-proxy/heartbeat-observation.js';
@@ -66,10 +65,9 @@ import type {
  * spawning a new one. Fresh acquisition installs the role digests and durable capsule before publishing the
  * set; this file is the read half.
  *
- * The capsule is addressable, never discovered: `currentHandoffCapsulePath` hashes `flavor`/`generation`
- * (this successor's own — a grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` (the
- * locator's — the predecessor's), so there is exactly one path to check, never a scan. Absent, stale, or
- * wrong-identity capsules mean no credential exists for this exact address. Redemption and proof failures
+ * The capsule is addressable, never discovered: its address takes `flavor`/`generation` from this successor (a
+ * grant is build-bound) and `buildSetId`/`hostFingerprint`/`proxyInstanceId` from the locator, so no directory is
+ * scanned. Absent, stale, or wrong-identity capsules mean no credential exists for this exact address. Redemption and proof failures
  * remain errors so transport ambiguity cannot be mistaken for authority absence.
  *
  * Lives in `coordinator/services/`, not `coordinator/live/provider-hosts/` (where `DefaultProviderHostManager`,
@@ -489,7 +487,7 @@ async function redeem(
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { operation, locator } = reference;
-  const capsulePath = currentHandoffCapsulePath(
+  const addressed = readAddressedHandoffCapsule(
     {
       generation: deps.coordinatorIdentity.generation,
       flavor: deps.coordinatorIdentity.flavor,
@@ -498,12 +496,10 @@ async function redeem(
       proxyInstanceId: operation.proxyInstanceId,
     },
     deps.baseDir === undefined ? undefined : { baseDir: deps.baseDir },
+    { storage: deps.runtime.storage, uid: process.getuid?.() ?? 0 },
   );
-  const capsule = readHandoffCapsuleFile(capsulePath, {
-    storage: deps.runtime.storage,
-    uid: process.getuid?.() ?? 0,
-  });
-  if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
+  if (addressed === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
+  const { path: capsulePath, capsule } = addressed;
   const verdict = classifyProviderProxySetInheritance(
     capsule,
     deps.coordinatorIdentity.buildSetId,

@@ -109,19 +109,29 @@ export function observeEpochClosure(
     : { kind: 'unreadable', path };
 }
 
+/**
+ * An unreadable closure may be another build's certified record, so it is never overwritten; it already reads as
+ * unrecoverable-retained, which is the status every caller that meets it must leave in place.
+ */
+export type EpochClosureRecording =
+  | Readonly<{ kind: 'recorded'; evidence: EpochClosureEvidence }>
+  | Readonly<{ kind: 'unreadable'; path: string }>;
+
 export function recordEpochClosure(
   runtime: Runtime,
   stateRoot: string,
   input: EpochClosureEvidence,
-): EpochClosureEvidence {
+): EpochClosureRecording {
   const evidence = closureSchema.parse(input);
   if ((evidence.disposition === 'closed') !== (evidence.executionDischarge === 'certified')) {
     throw new Error('Execution discharge must agree with the closure disposition.');
   }
   const read = observeEpochClosure(runtime, stateRoot, evidence.epochKey);
-  if (read.kind === 'unreadable') throw new Error(`Epoch closure is unreadable: ${read.path}`);
+  if (read.kind === 'unreadable') return read;
   const existing = read.kind === 'recorded' ? read.evidence : null;
-  if (existing?.disposition === 'closed' && evidence.disposition !== 'closed') return existing;
+  if (existing?.disposition === 'closed' && evidence.disposition !== 'closed') {
+    return { kind: 'recorded', evidence: existing };
+  }
   const path = closurePath(stateRoot, evidence.epochKey);
   const parent = dirname(path);
   runtime.storage.mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -153,7 +163,7 @@ export function recordEpochClosure(
       resultRetention: evidence.dataOutcome,
     });
   }
-  return evidence;
+  return { kind: 'recorded', evidence };
 }
 
 export function closureCapability(

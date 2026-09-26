@@ -6,6 +6,7 @@ import { strictBundleManifestSchema, type StrictBundleManifest } from '../../inf
 import { SUCCESSION_CAPABILITIES_FILE, SUCCESSION_CAPABILITY_VERSION } from '../../infra/bundle-manifest-address.js';
 import { jsonValueSchema } from '../../infra/json-value.js';
 import { SUCCESSION_PROTOCOL_VERSION } from '../../infra/succession-address.js';
+import type { UpgradeIntent } from '../../infra/upgrade-intent.js';
 
 const acceptanceSchema = z.object({ owner: z.string().min(1), generation: z.number().int().positive() }).passthrough();
 
@@ -83,6 +84,22 @@ export const successionPreparationSchema = z
   .passthrough();
 
 export type SuccessionPreparation = z.infer<typeof successionPreparationSchema>;
+
+/** The identity a preparation, and every retry accounted against it, is bound to. */
+export function successionTargetKey(target: UpgradeIntent['target']): string {
+  const { build } = target;
+  return JSON.stringify([
+    target.pluginRootLabel,
+    build.version,
+    build.buildSetId,
+    build.flavor,
+    build.storeFormatFingerprint,
+    build.bundleHash,
+    build.cliBundleHash,
+    build.claudeAppserverBundleHash,
+    build.durableWrapperBundleHash,
+  ]);
+}
 
 export function readSuccessionCapabilities(
   runtime: Pick<Runtime, 'storage'>,

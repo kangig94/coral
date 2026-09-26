@@ -49,7 +49,11 @@ describe('jobs.detail retained-epoch dispositions', () => {
 
     expect(result).toMatchObject({
       kind: 'unary',
-      body: { code: 'job_detail_unreadable', detail: { epochKey: 'lineage:7' } },
+      body: {
+        code: 'job_detail_unreadable',
+        message: expect.stringContaining('retrying with this build will not change that') as unknown,
+        detail: { epochKey: 'lineage:7' },
+      },
     });
     expect(errorCodeToExit('job_detail_unreadable', 409)).toBe(1);
   });

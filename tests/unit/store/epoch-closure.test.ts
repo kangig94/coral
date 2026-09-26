@@ -17,13 +17,20 @@ import { backendLog } from '#src/infra/backend-log.js';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { formatStoreResetList } from '#src/cli/format/store-reset.js';
-import { settleSupersededEpochClosures } from '#src/coordinator/services/recovery/epoch-closure.js';
+import {
+  RetiringCustodyCertificate,
+  settleSupersededEpochClosures,
+} from '#src/coordinator/services/recovery/epoch-closure.js';
+import type { JobDetailResponse } from '#src/jobs/records.js';
+import { canonicalWorkDirWireSchema } from '#src/runtime/canonical-work-dir.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import {
   bindCustodyIdentity,
   custodyLedgerDir,
+  type CustodyIntent,
+  type CustodyProcessIdentity,
   initializeCustodyLedger,
   recordCustodyIntent,
   reconcileCustodyLedger,
@@ -625,5 +632,107 @@ describe('epoch closure and protected addressing', () => {
       disposition: 'unrecoverable-retained',
       reason: 'path-only custody cannot distinguish reused epoch numbers',
     });
+  });
+});
+
+describe('retiring custody certificate', () => {
+  function terminalDetail(jobId: string): JobDetailResponse {
+    const result = { content: 'done', outcome: { kind: 'completed' as const }, durationMs: 1 };
+    return {
+      status: {
+        jobId,
+        owner: { kind: 'provider-session' as const, id: 'session-1' },
+        sessionId: 'session-1',
+        provider: 'claude',
+        projectRoot: '/workspace/project',
+        workDir: canonicalWorkDirWireSchema.parse('/workspace/project'),
+        backendNamespace: 'test-namespace',
+        jobKind: 'provider' as const,
+        phase: 'completed',
+        updatedAt: '2026-09-25T00:00:00.000Z',
+        lastSeq: 1,
+        result,
+      },
+      events: [],
+      readiness: 'ready',
+      exit: { ...result, diagnostics: { progressFaults: [] }, endTime: '2026-09-25T00:00:00.000Z' },
+    };
+  }
+
+  async function exitedProcess(runtime: Runtime): Promise<CustodyProcessIdentity> {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
+    await once(child, 'spawn');
+    if (child.pid === undefined) throw new Error('Custody process did not start.');
+    const incarnation = runtime.process.readProcessIncarnation(child.pid, runtime.env.platform() as NodeJS.Platform);
+    const exited = once(child, 'exit');
+    child.kill('SIGKILL');
+    await exited;
+    if (incarnation === null) throw new Error('Custody process incarnation was not observable.');
+    return { pid: child.pid, incarnation, processGroupId: child.pid };
+  }
+
+  async function certifiedRetiringEpoch(): Promise<{
+    runtime: Runtime;
+    index: JobLocationIndex;
+    certificate: RetiringCustodyCertificate;
+    bindExited: () => Promise<CustodyIntent>;
+    process: CustodyProcessIdentity;
+    intent: CustodyIntent;
+  }> {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    recordEpochCustodyCoverage(runtime, epochDirectory(root, '1'), initializeCustodyLedger(runtime, runDir));
+    const epochKey = encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    index.register('job-1', epochKey, { projectRoot: '/workspace/project', workDir: null, jobKind: 'provider' });
+    index.recordTerminal('job-1', terminalDetail('job-1'), join(root, 'job-1.result'), 1);
+    let lastProcess: CustodyProcessIdentity | undefined;
+    const bindExited = async (): Promise<CustodyIntent> => {
+      lastProcess = await exitedProcess(runtime);
+      const intent = recordCustodyIntent(runtime, runDir, {
+        effect: 'process-spawn',
+        epoch: epochDirectory(root, '1'),
+        owner: 'durable-cli',
+        operationId: 'job-1',
+        capsule: null,
+        bindWithinMs: 60_000,
+        nowMs: 1,
+      });
+      bindCustodyIdentity(runtime, runDir, intent, { process: lastProcess, capsule: null, observedAtMs: 2 });
+      return intent;
+    };
+    const intent = await bindExited();
+    const process = lastProcess as CustodyProcessIdentity;
+    const certificate = await RetiringCustodyCertificate.certify(
+      runtime,
+      index,
+      epochKey,
+      new AbortController().signal,
+    );
+    if (certificate === null) throw new Error('Retiring custody was not certified.');
+    expect(await certificate.confirm(runtime, index, new AbortController().signal)).toBe(true);
+    return { runtime, index, certificate, bindExited, process, intent };
+  }
+
+  it('should refuse confirmation when custody gains an entry after certification', async () => {
+    const { runtime, index, certificate, bindExited } = await certifiedRetiringEpoch();
+    await bindExited();
+    expect(await certificate.confirm(runtime, index, new AbortController().signal)).toBe(false);
+  });
+
+  it.each([
+    ['identity', (process: CustodyProcessIdentity) => ({ ...process, pid: process.pid + 1 })],
+    [
+      'incarnation',
+      (process: CustodyProcessIdentity) => ({ ...process, incarnation: `${process.incarnation}-reused` }),
+    ],
+  ])('should refuse confirmation when the bound %s changes after certification', async (_label, change) => {
+    const { runtime, index, certificate, process, intent } = await certifiedRetiringEpoch();
+    const bindingPath = join(custodyLedgerDir(runtime.paths.coral.coordinator.runDir), intent.id, 'binding.v1.json');
+    const binding = JSON.parse(readFileSync(bindingPath, 'utf8')) as Record<string, unknown>;
+    writeFileSync(bindingPath, JSON.stringify({ ...binding, process: change(process) }));
+    expect(await certificate.confirm(runtime, index, new AbortController().signal)).toBe(false);
   });
 });

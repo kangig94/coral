@@ -1096,7 +1096,7 @@ async function executeJobsDetailCatalogRequest({
     return unary(
       {
         code: 'job_detail_unreadable',
-        message: `Job ${parsed.jobId} has a recorded detail that this Coral build cannot read.`,
+        message: `Job ${parsed.jobId} has a recorded detail in a form this Coral build cannot read, so this build cannot show its outcome; retrying with this build will not change that.`,
         detail: { epochKey: detail.epochKey },
       },
       409,

@@ -1,4 +1,5 @@
 import { RecoveryQuarantineClearError } from '../recovery/source-registry.js';
+import { SuccessionWriterParkedError } from '../store/db.js';
 import {
   documentedCoralSetupError,
   serializeCoralSetupError,
@@ -80,7 +81,18 @@ function publicRecoveryQuarantineError(error: unknown): CoralSetupError | null {
   }
 }
 
+/** A parked writer is a succession commit in progress, never a fault: its caller must be told to retry. */
+const SUCCESSION_WRITER_PARKED_MESSAGE =
+  'The coordinator store writer is parked while an upgrade commits. Retry shortly; the serving coordinator answers once the commit settles.';
+
 export function buildTransportErrorResponse(error: unknown): TransportErrorResponse {
+  if (error instanceof SuccessionWriterParkedError) {
+    return {
+      message: SUCCESSION_WRITER_PARKED_MESSAGE,
+      statusCode: 503,
+      body: { code: 'succession_writer_parked', message: SUCCESSION_WRITER_PARKED_MESSAGE },
+    };
+  }
   const setupError = serializeCoralSetupError(publicRecoveryQuarantineError(error) ?? error);
   if (setupError === null) {
     return {

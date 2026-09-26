@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import type { TimerHandle } from '../../infra/port-types.js';
 import { compareProductVersions } from '../../infra/product-version.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { SUCCESSION_CAPABILITY_VERSION } from '../../infra/bundle-manifest-address.js';
@@ -16,11 +17,14 @@ import {
 import {
   readSuccessionCapabilities,
   successionPreparationSchema,
+  successionTargetKey,
   type SuccessionCapabilities,
   type SuccessionPreparation,
   type SuccessionReady,
 } from './protocol.js';
+import { transientRetryAtMs } from './attempt-retry.js';
 import { prepareOwnerObligations, type SuccessionOwner, type SuccessionOwnerId } from './obligations.js';
+import { observeRecordedDeath } from './startup.js';
 
 type IncumbentIdentity = UpgradeIntent['incumbent'];
 type Target = UpgradeIntent['target'];
@@ -58,6 +62,8 @@ export type SuccessionDecision =
   | Readonly<{ kind: 'committed'; receipt: NonNullable<UpgradeIntent['completionReceipt']> }>
   | Readonly<{ kind: 'deferred'; reason: string; blockers?: readonly { owner: string; reason: string }[] }>
   | Readonly<{ kind: 'refused'; reason: string }>
+  /** Readiness for a preparation that no longer matches; `cause` names the change that ends the hold. */
+  | Readonly<{ kind: 'stale'; reason: string; cause: 'target-change' | 'obligation-change' }>
   | Readonly<{ kind: 'aborted' }>;
 
 export type SuccessionStatus =
@@ -95,22 +101,7 @@ function decisionOf(
 }
 
 function sameTarget(left: Target, right: Target): boolean {
-  return targetKey(left) === targetKey(right);
-}
-
-function targetKey(target: Target): string {
-  const { build } = target;
-  return JSON.stringify([
-    target.pluginRootLabel,
-    build.version,
-    build.buildSetId,
-    build.flavor,
-    build.storeFormatFingerprint,
-    build.bundleHash,
-    build.cliBundleHash,
-    build.claudeAppserverBundleHash,
-    build.durableWrapperBundleHash,
-  ]);
+  return successionTargetKey(left) === successionTargetKey(right);
 }
 
 function incumbentKey(incumbent: IncumbentIdentity): string {
@@ -122,6 +113,15 @@ function incumbentKey(incumbent: IncumbentIdentity): string {
     incumbent.bundleHash,
     incumbent.flavor,
   ]);
+}
+
+/** Holds only a newer target can end; a pass that finds one leaves it for that target. */
+const TARGET_CHANGE_HOLD_OWNERS = new Set(['succession-commit', 'succession-prepare', 'succession-startup']);
+
+function outranks(target: Target, incumbent: IncumbentIdentity): boolean {
+  return (
+    target.build.flavor === incumbent.flavor && compareProductVersions(target.build.version, incumbent.version) > 0
+  );
 }
 
 function readPreparation(intent: UpgradeIntent): SuccessionPreparation | null {
@@ -174,11 +174,31 @@ function currentPreparation(
     preparation.incumbentPid === options.incumbent.pid &&
     preparation.incumbentKey === incumbentKey(options.incumbent) &&
     preparation.incumbentKey === incumbentKey(intent.incumbent) &&
-    preparation.targetKey === targetKey(intent.target) &&
+    preparation.targetKey === successionTargetKey(intent.target) &&
     preparation.capabilitiesKey === JSON.stringify(capabilities) &&
     preparation.epochKey === options.epochKey() &&
     preparation.admissionRevision === options.admissionRevision()
   );
+}
+
+/** A stale preparation whose target still validates with the same declaration was outdated by obligations. */
+function staleCause(
+  intent: UpgradeIntent,
+  preparation: SuccessionPreparation,
+  options: SuccessionReconcilerOptions,
+): 'target-change' | 'obligation-change' {
+  const declared = readSuccessionCapabilities(
+    options.runtime,
+    join(intent.target.pluginRootLabel, 'bridge'),
+    intent.target.build,
+  );
+  const targetChanged =
+    preparation.targetKey !== successionTargetKey(intent.target) ||
+    revalidateUpgradeIntentTarget(intent).kind !== 'validated' ||
+    declared.kind === 'invalid' ||
+    preparation.capabilitiesKey !==
+      JSON.stringify(declared.kind === 'declared' ? declared.capabilities : emptyCapabilities(intent));
+  return targetChanged ? 'target-change' : 'obligation-change';
 }
 
 function emptyCapabilities(intent: UpgradeIntent): SuccessionCapabilities {
@@ -199,6 +219,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   // A change that joins a running pass may postdate what that pass read, so it is owed one more pass.
   let changedDuringReconcile = false;
   const launchedAttempts = new Set<string>();
+  let backoffWake: TimerHandle | null = null;
   const notifyObligationChange = (): void => {
     if (disposed) return;
     queueMicrotask(() => {
@@ -223,6 +244,16 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   retryTimer.unref?.();
   queueMicrotask(notifyObligationChange);
 
+  /** A backoff ends by this wake, so it never depends on another wake source arriving. */
+  function wakeAt(atMs: number): void {
+    options.runtime.time.clearTimeout(backoffWake);
+    backoffWake = options.runtime.time.setTimeout(
+      notifyObligationChange,
+      Math.max(0, atMs - options.runtime.time.now()),
+    );
+    backoffWake.unref?.();
+  }
+
   function reconcile(): Promise<SuccessionDecision> {
     if (reconciling !== null) {
       changedDuringReconcile = true;
@@ -245,15 +276,28 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     if (intent.disposition === 'closed' || intent.disposition === 'completed') {
       return { kind: 'deferred', reason: 'upgrade intent has ended' };
     }
-    if (incumbentKey(intent.incumbent) !== incumbentKey(options.incumbent)) {
-      return { kind: 'deferred', reason: 'upgrade intent names another incumbent' };
+    if (incumbentKey(intent.incumbent) !== incumbentKey(options.incumbent)) return adopt(intent);
+    let applies: boolean;
+    try {
+      applies = outranks(intent.target, options.incumbent);
+    } catch {
+      return { kind: 'deferred', reason: 'target or incumbent version is invalid' };
     }
+    if (!applies && intent.attemptId === null) return close(intent);
     if (
       intent.disposition === 'deferred' &&
       intent.retryCondition?.kind === 'target-change' &&
-      intent.blockers.some((blocker) => blocker.owner === 'succession-commit' || blocker.owner === 'succession-prepare')
+      intent.blockers.some((blocker) => TARGET_CHANGE_HOLD_OWNERS.has(blocker.owner))
     ) {
       return { kind: 'deferred', reason: 'successor target must change after failed attempt' };
+    }
+    const retryAtMs = intent.attemptId === null ? transientRetryAtMs(intent) : null;
+    if (retryAtMs !== null && retryAtMs > options.runtime.time.now()) {
+      wakeAt(retryAtMs);
+      return {
+        kind: 'deferred',
+        reason: `transient attempt failure backs off until ${new Date(retryAtMs).toISOString()}`,
+      };
     }
     if (options.commitAvailable !== true) {
       return { kind: 'deferred', reason: 'incumbent needs a legacy retirement waiter' };
@@ -304,10 +348,66 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
     return { kind: 'deferred', reason: 'successor launch is awaiting readiness' };
   }
 
+  /**
+   * The serving incumbent owns an intent whose recorded incumbent is proven gone, keeping its disposition, hold, and
+   * retry. An attempt still named belongs to startup, and an unproven exit adopts nothing: the next pass looks again.
+   */
+  async function adopt(intent: UpgradeIntent): Promise<SuccessionDecision> {
+    const recorded = intent.incumbent;
+    if (intent.attemptId !== null) {
+      return { kind: 'deferred', reason: 'upgrade intent names another incumbent and its attempt' };
+    }
+    if (options.epochKey() === null) {
+      return { kind: 'deferred', reason: 'upgrade intent names another incumbent; this process does not serve yet' };
+    }
+    const liveness = observeRecordedDeath(recorded);
+    if (liveness !== 'absent') {
+      return { kind: 'deferred', reason: `upgrade intent names another incumbent that is ${liveness}` };
+    }
+    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) => {
+      if (
+        observed.kind !== 'readable' ||
+        observed.intent.requestId !== intent.requestId ||
+        observed.intent.attemptId !== null ||
+        observed.intent.disposition === 'closed' ||
+        observed.intent.disposition === 'completed' ||
+        incumbentKey(observed.intent.incumbent) !== incumbentKey(recorded)
+      ) {
+        return settle({ kind: 'deferred', reason: 'upgrade intent changed before adoption' });
+      }
+      return {
+        kind: 'write',
+        expectedRevision: observed.intent.revision,
+        change: { ...observed.intent, incumbent: options.incumbent },
+        settle: (written) => {
+          options.onIntentChanged?.();
+          notifyObligationChange();
+          return { kind: 'registered', intent: written };
+        },
+      };
+    });
+    return decisionOf(outcome, 'deferred');
+  }
+
+  /** An intent whose target this incumbent already runs, or outranks, has nothing left to apply. */
+  async function close(intent: UpgradeIntent): Promise<SuccessionDecision> {
+    const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, (observed) =>
+      observed.kind === 'readable' && observed.intent.revision === intent.revision
+        ? writeThen(
+            intent,
+            { ...intent, disposition: 'closed', blockers: [], retryCondition: null, successionPreparation: null },
+            { kind: 'refused', reason: 'target does not strictly outrank the incumbent' },
+          )
+        : settle({ kind: 'deferred', reason: 'upgrade intent changed before it closed' }),
+    );
+    return decisionOf(outcome, 'deferred');
+  }
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
     options.runtime.time.clearInterval(retryTimer);
+    options.runtime.time.clearTimeout(backoffWake);
     unsubscribe?.();
   }
 
@@ -549,7 +649,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         incumbentInstanceId: options.incumbent.instanceId,
         incumbentPid: options.incumbent.pid,
         incumbentKey: incumbentKey(options.incumbent),
-        targetKey: targetKey(intent.target),
+        targetKey: successionTargetKey(intent.target),
         capabilitiesKey: JSON.stringify(capabilities),
         epochKey,
         admissionRevision,
@@ -597,7 +697,11 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         return settle({ kind: 'refused', reason: 'attempt is not prepared' });
       }
       if (!currentPreparation(intent, preparation, options)) {
-        return settle({ kind: 'refused', reason: 'preparation is stale' });
+        return settle({
+          kind: 'stale',
+          reason: 'preparation is stale',
+          cause: staleCause(intent, preparation, options),
+        });
       }
       const declaration = readSuccessionCapabilities(
         options.runtime,
@@ -689,7 +793,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       if (serving !== null && serving !== undefined) {
         if (
           preparation.ready === null ||
-          preparation.targetKey !== targetKey(intent.target) ||
+          preparation.targetKey !== successionTargetKey(intent.target) ||
           (serving.epochKey !== preparation.epochKey &&
             !options.retirementServing?.(attemptId, preparation.epochKey, serving.epochKey)) ||
           serving.successorInstanceId.length === 0 ||
@@ -729,17 +833,6 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         );
       }
       if (!currentPreparation(intent, preparation, options)) {
-        const declared = readSuccessionCapabilities(
-          options.runtime,
-          join(intent.target.pluginRootLabel, 'bridge'),
-          intent.target.build,
-        );
-        const targetChanged =
-          preparation.targetKey !== targetKey(intent.target) ||
-          revalidateUpgradeIntentTarget(intent).kind !== 'validated' ||
-          declared.kind === 'invalid' ||
-          preparation.capabilitiesKey !==
-            JSON.stringify(declared.kind === 'declared' ? declared.capabilities : emptyCapabilities(intent));
         writeRefusal = 'refused';
         return writeThen(
           intent,
@@ -747,9 +840,10 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
             ...intent,
             disposition: 'deferred',
             blockers: [{ owner: 'preparation', reason: 'preparation is stale' }],
-            retryCondition: targetChanged
-              ? { kind: 'target-change', evidence: 'target identity or capability declaration changed' }
-              : { kind: 'obligation-change', evidence: 'epoch or admission revision changed' },
+            retryCondition:
+              staleCause(intent, preparation, options) === 'target-change'
+                ? { kind: 'target-change', evidence: 'target identity or capability declaration changed' }
+                : { kind: 'obligation-change', evidence: 'epoch or admission revision changed' },
           },
           { kind: 'refused', reason: 'preparation is stale' },
         );

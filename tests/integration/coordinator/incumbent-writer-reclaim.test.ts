@@ -46,7 +46,7 @@ describe('incumbent writer reclaim', () => {
       incumbentInstanceId: 'incumbent',
       deadlineMs: 1_000,
       reclaimKbDaemonWriter: async () => undefined,
-      startSameBuildSuccession: (reason) => fallback.push(reason),
+      reportReclaimFailure: (reason) => fallback.push(reason),
     });
 
     if (result.kind !== 'reclaimed') throw new Error(`Unexpected reclaim result: ${result.reason}`);
@@ -72,7 +72,7 @@ describe('incumbent writer reclaim', () => {
       incumbentInstanceId: 'incumbent',
       deadlineMs: 1,
       reclaimKbDaemonWriter: async () => new Promise<void>(() => undefined),
-      startSameBuildSuccession: (reason) => fallback.push(reason),
+      reportReclaimFailure: (reason) => fallback.push(reason),
     });
 
     expect(result.kind).toBe('same-build-succession');

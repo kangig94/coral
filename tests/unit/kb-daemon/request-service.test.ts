@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +27,11 @@ vi.mock('#src/kb/ops/search.js', () => ({
 }));
 
 import { createKbDaemonRequestService } from '#src/kb-daemon/request-service.js';
+import { attemptExclusiveFileLockSync } from '#src/infra/fs-lock.js';
+import { createRealRuntime } from '#src/runtime/real.js';
+import { epochDirectory, epochPath, storeEpochLockPath } from '#src/store/epoch.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { openTestStoreDatabase } from '#tests/helpers/store-db.js';
 import { INDEX_FILE } from '#src/kb/corpus/index/store.js';
 import { GeneratedCommunityProjectionStore } from '#src/kb/curate/community/generated-projection-store.js';
 import { memoDir, notePathFromName, wikiPathFromName } from '#src/kb/paths.js';
@@ -219,6 +224,39 @@ describe('KB daemon request service', () => {
         content: 'Body from the daemon request service.',
       },
     });
+  });
+
+  it('should release the store epoch read lock once a diagnose request answers', async () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-kb-daemon-diagnose-'));
+    tempDirs.push(baseDir);
+    const runtime = createRealRuntime('prod', { baseDir });
+    const storeFormat = currentCoralStoreFormat();
+    const root = runtime.paths.coral.store.dbDir;
+    mkdirSync(epochDirectory(root, '1'), { recursive: true });
+    writeFileSync(storeEpochLockPath(root, '1'), '');
+    openTestStoreDatabase({ path: epochPath(root, '1'), storage: runtime.storage, storeFormat }).close();
+    writeFileSync(
+      join(epochDirectory(root, '1'), 'epoch.json'),
+      JSON.stringify({
+        supersedes: null,
+        classification: { kind: 'absent' },
+        build: {
+          version: storeFormat.productVersion,
+          buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+          bundleHash: '0123456789abcdef',
+          flavor: 'prod',
+          storeFormatFingerprint: storeFormat.fingerprint,
+        },
+        publishedAt: '2026-09-25T00:00:00.000Z',
+      }),
+    );
+    const service = createKbDaemonRequestService({ pluginRoot: '/plugin', runtime });
+
+    await expect(service.read({ method: 'diagnose', ctx: daemonCtx() })).resolves.toMatchObject({ ok: true });
+
+    const attempt = attemptExclusiveFileLockSync(storeEpochLockPath(root, '1'));
+    expect(attempt.kind).toBe('acquired');
+    if (attempt.kind === 'acquired') attempt.lease();
   });
 
   it('reports daemon request runtime health after first successful runtime use', async () => {

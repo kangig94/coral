@@ -131,7 +131,7 @@ terminal-recovery entry could use a registry shape introduced by another recover
 receipt is a separate decision. Admission-hold's operator clear is no longer an unattended exit under
 principle 12.
 
-Mixed-build record enforcement is still owed in [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md). A newer installed build can leave durable data for an older retained reader, so an additive contract test remains necessary even though succession shapes already tolerate unknown fields. Provider hosts that cannot transfer across builds block immediate upgrade until Phase 6.
+Mixed-build record enforcement is still owed in [`build-identity-and-upgrade.md`](./build-identity-and-upgrade.md). A newer installed build can leave durable data for an older retained reader, so an additive contract test remains necessary even though succession shapes already tolerate unknown fields. Provider hosts now transfer their controller across builds ([design rationale §13.5](../design-rationale.md#135-why-a-provider-host-changes-controller-but-never-build)); what still defers an upgrade is a legacy host that predates the transfer methods, a successor that does not declare the host control generation, a format-changing successor, a job without a durable saga record, and coordinator-local provider work.
 
 ---
 

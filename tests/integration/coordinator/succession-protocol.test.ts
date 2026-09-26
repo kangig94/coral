@@ -224,6 +224,49 @@ describe('succession protocol', () => {
     }
   });
 
+  it('classifies readiness after a launch landed during the readiness window as an obligation change', async () => {
+    const target = fixture();
+    let admissionRevision = 0;
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: {
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      },
+      owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'idle' }) }],
+      requiredOwners: ['launch-admission'],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => admissionRevision,
+    });
+    try {
+      await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      });
+      const prepared = await service.reconciler.prepare('request');
+      if (prepared.kind !== 'prepared') throw new Error(`preparation was ${prepared.kind}`);
+      admissionRevision = 1;
+
+      expect(
+        await service.reconciler.reportReady({
+          attemptId: prepared.preparation.attemptId,
+          successorPid: 200,
+          targetKey: prepared.preparation.targetKey,
+          epochKey: prepared.preparation.epochKey,
+          admissionRevision: prepared.preparation.admissionRevision,
+          receiptIds: [],
+        }),
+      ).toEqual({ kind: 'stale', reason: 'preparation is stale', cause: 'obligation-change' });
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
   it('reports no incumbent commit capability when the registered target declares preparation only', async () => {
     const target = fixture();
     writeFileSync(target.declarationPath, JSON.stringify({ ...target.declaration, protocols: ['prepare'] }));

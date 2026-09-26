@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { errorCodeToExit } from '#src/cli/errors.js';
 import { RecoveryQuarantineClearError } from '#src/recovery/source-registry.js';
+import { SuccessionWriterParkedError } from '#src/store/db.js';
 import { buildTransportErrorResponse } from '#src/transport/error-response.js';
 
 describe('transport error response', () => {
@@ -59,5 +61,15 @@ describe('transport error response', () => {
       statusCode: 500,
       body: { code: 'internal_error', message: 'Internal error' },
     });
+  });
+
+  it('should answer a parked succession writer with a retry-later code instead of an internal error', () => {
+    const response = buildTransportErrorResponse(new SuccessionWriterParkedError(new Promise(() => {})));
+
+    expect(response).toMatchObject({
+      statusCode: 503,
+      body: { code: 'succession_writer_parked', message: expect.stringContaining('Retry shortly') as unknown },
+    });
+    expect(errorCodeToExit('succession_writer_parked', response.statusCode)).toBe(75);
   });
 });

@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,7 +8,10 @@ import { createSuccessionReconciler } from '#src/coordinator/succession/reconcil
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
-import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { successionTargetKey } from '#src/coordinator/succession/protocol.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
+import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const runtime = createRealRuntime('prod', { baseDir: tmpdir() });
 
@@ -21,6 +25,59 @@ const build = {
   claudeAppserverBundleHash: '0123456789abcdef',
   durableWrapperBundleHash: '0123456789abcdef',
 };
+
+/** A pid whose process has exited, so its absence is decisive. */
+async function exitedPid(): Promise<number> {
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  if (child.pid === undefined) throw new Error('exited child has no pid');
+  return child.pid;
+}
+
+const serving = {
+  instanceId: 'serving',
+  pid: process.pid,
+  incarnation: probeProcessIncarnation(process.pid),
+  version: '0.10.13',
+  bundleHash: 'fedcba9876543210',
+  flavor: 'prod' as const,
+};
+
+/** An intent with no attempt, left by an earlier incumbent under a hold only a newer target ends. */
+async function seedHeldIntent(
+  runDir: string,
+  incumbent: UpgradeIntent['incumbent'],
+  targetVersion = build.version,
+): Promise<UpgradeIntent> {
+  const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+    requestId: 'request-1',
+    incumbent,
+    target: { build: { ...build, version: targetVersion }, pluginRootLabel: '/missing/target' },
+    attemptId: null,
+    attemptOwner: null,
+    disposition: 'deferred',
+    blockers: [
+      { owner: 'succession-startup', reason: 'abandoned after 3 startups: attempt process deaths are unproven' },
+    ],
+    retryCondition: { kind: 'target-change', evidence: 'abandoned incomplete succession attempt' },
+    attemptDeadline: null,
+    completionReceipt: null,
+  });
+  if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+  return seeded.intent;
+}
+
+function servingReconciler(runDir: string) {
+  return createSuccessionReconciler({
+    runtime,
+    runDir,
+    incumbent: serving,
+    owners: [],
+    epochKey: () => 'serving-epoch',
+    admissionRevision: () => 0,
+    commitAvailable: true,
+  });
+}
 
 describe('succession reconciler', () => {
   const directories: string[] = [];
@@ -152,5 +209,151 @@ describe('succession reconciler', () => {
     }
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(onIntentChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds the next attempt through an obligation wake until a transient backoff ends, then wakes itself', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const incumbent = {
+      instanceId: 'incumbent',
+      pid: 1234,
+      incarnation: null,
+      version: '0.10.13',
+      bundleHash: 'fedcba9876543210',
+      flavor: 'prod' as const,
+    };
+    const target = { build, pluginRootLabel: '/missing/target' };
+    const retryAfterMs = Date.now() + 1_500;
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent,
+      target,
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'deferred',
+      blockers: [{ owner: 'succession-commit', reason: 'Successor missed its serving deadline.' }],
+      retryCondition: { kind: 'attempt-expiry', evidence: 'transient attempt failure 1 of 6' },
+      attemptDeadline: null,
+      completionReceipt: null,
+      transientRetry: {
+        targetKey: successionTargetKey(target),
+        failures: 1,
+        retryAfter: new Date(retryAfterMs).toISOString(),
+      },
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    let notify: (() => void) | undefined;
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent,
+      owners: [],
+      epochKey: () => null,
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      subscribeObligationChanges: (callback) => {
+        notify = callback;
+        return () => undefined;
+      },
+    });
+    try {
+      expect(await reconciler.reconcile()).toMatchObject({
+        kind: 'deferred',
+        reason: expect.stringContaining('backs off until'),
+      });
+      notify?.();
+      expect(await reconciler.reconcile()).toMatchObject({
+        kind: 'deferred',
+        reason: expect.stringContaining('backs off'),
+      });
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: seeded.intent.revision } });
+
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return observed.kind === 'readable' && observed.intent.revision > seeded.intent.revision;
+      }, 10_000);
+      expect(Date.now()).toBeGreaterThanOrEqual(retryAfterMs);
+      expect(readUpgradeIntent(runDir)).toMatchObject({
+        intent: { blockers: [{ owner: 'target', reason: 'target build no longer validates' }] },
+      });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+  it('adopts the intent of an exited incumbent and keeps the hold its target is under', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const exited = { ...serving, instanceId: 'exited', pid: await exitedPid(), incarnation: null };
+    const seeded = await seedHeldIntent(runDir, exited);
+    const reconciler = servingReconciler(runDir);
+    try {
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return observed.kind === 'readable' && observed.intent.incumbent.instanceId === serving.instanceId;
+      }, 5_000);
+      expect(readUpgradeIntent(runDir)).toMatchObject({
+        intent: {
+          incumbent: serving,
+          disposition: 'deferred',
+          blockers: seeded.blockers,
+          retryCondition: seeded.retryCondition,
+        },
+      });
+      expect(await reconciler.reconcile()).toEqual({
+        kind: 'deferred',
+        reason: 'successor target must change after failed attempt',
+      });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('closes an adopted intent whose target no longer outranks the adopting incumbent', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const exited = { ...serving, instanceId: 'exited', pid: await exitedPid(), incarnation: null };
+    await seedHeldIntent(runDir, exited, serving.version);
+    const reconciler = servingReconciler(runDir);
+    try {
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return observed.kind === 'readable' && observed.intent.disposition === 'closed';
+      }, 5_000);
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { incumbent: serving, retryCondition: null } });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('closes an intent recorded against an incumbent that already runs its target', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    await seedHeldIntent(runDir, serving, serving.version);
+    const reconciler = servingReconciler(runDir);
+    try {
+      expect(await reconciler.reconcile()).toEqual({
+        kind: 'refused',
+        reason: 'target does not strictly outrank the incumbent',
+      });
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { disposition: 'closed' } });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('leaves the intent of an incumbent that is still alive to that incumbent', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const seeded = await seedHeldIntent(runDir, { ...serving, instanceId: 'alive' });
+    const reconciler = servingReconciler(runDir);
+    try {
+      expect(await reconciler.reconcile()).toEqual({
+        kind: 'deferred',
+        reason: 'upgrade intent names another incumbent that is alive',
+      });
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { revision: seeded.revision } });
+    } finally {
+      reconciler.dispose();
+    }
   });
 });

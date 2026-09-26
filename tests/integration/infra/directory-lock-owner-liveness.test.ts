@@ -19,11 +19,18 @@ const roots: string[] = [];
 const children: ChildProcess[] = [];
 const leases: DirectoryLockLease[] = [];
 
-afterEach(() => {
+afterEach(async () => {
   for (const lease of leases.splice(0)) lease();
-  for (const child of children.splice(0)) {
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-  }
+  await Promise.all(
+    children
+      .splice(0)
+      .filter((child) => child.exitCode === null && child.signalCode === null)
+      .map(async (child) => {
+        const exited = once(child, 'exit');
+        child.kill('SIGKILL');
+        await exited;
+      }),
+  );
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

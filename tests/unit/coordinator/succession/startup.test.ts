@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  dischargeDeadSuccessionAttempt,
+  openPreferredStoreEpoch,
+  prepareCommittedSuccessorRecovery,
   resolveIncompleteSuccessionAtStartup,
+  SuccessionAttemptStartupHoldError,
   type IncompleteSuccessionResolution,
   type SuccessionStartupHold,
 } from '#src/coordinator/succession/startup.js';
@@ -15,6 +19,9 @@ import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation 
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
+import { encodeResolvedStoreEpoch, settleStoreEpoch } from '#src/store/epoch.js';
+import { currentCoralStoreFormat } from '#src/store-format.js';
+import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
 
 const roots: string[] = [];
 const build = {
@@ -229,5 +236,136 @@ describe('incomplete succession at startup', () => {
       kind: 'recovery-grants-unverified',
       attemptId: 'attempt-1',
     });
+  });
+
+  it('should retire a dead attempt that transferred nothing, and discharge it once this startup serves', async () => {
+    const runtime = runtimeFixture();
+    const dead = await exitedPid();
+    const childIncarnation = 'recorded-child-incarnation';
+    if (!isProcessIncarnation(childIncarnation)) throw new Error('child incarnation is not well-formed');
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'request-1',
+      incumbent: {
+        instanceId: 'incumbent',
+        pid: dead,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'attempt-1',
+      attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', pid: dead, incarnation: null },
+      attemptChild: { attemptId: 'attempt-1', pid: dead, incarnation: childIncarnation },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      successionPreparation: preparation('attempt-1'),
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+
+    await expect(resolveAt(runtime, 'startup-1')).resolves.toEqual({ kind: 'retire', attemptId: 'attempt-1' });
+    const serving = {
+      instanceId: 'serving',
+      pid: process.pid,
+      incarnation: probeProcessIncarnation(process.pid),
+      version: '0.10.13',
+      bundleHash: 'fedcba9876543210',
+      flavor: 'prod' as const,
+    };
+    await dischargeDeadSuccessionAttempt(runtime, 'attempt-1', serving);
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      kind: 'readable',
+      intent: {
+        incumbent: serving,
+        target: { build },
+        attemptId: null,
+        attemptChild: null,
+        attemptOwner: null,
+        successionPreparation: null,
+        disposition: 'deferred',
+        retryCondition: { kind: 'attempt-expiry' },
+      },
+    });
+  });
+
+  it('should hold a committed successor whose writer generation cannot be attributed, then abandon it', async () => {
+    const runtime = runtimeFixture();
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat: format,
+      build: current,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    settled.db.close();
+    const dead = await exitedPid();
+    const owner = { kind: 'incumbent' as const, instanceId: 'incumbent', pid: dead, incarnation: null };
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'request-1',
+      incumbent: { ...owner, version: '0.10.13', bundleHash: 'fedcba9876543210', flavor: 'prod' },
+      target: { build: current, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'attempt-1',
+      attemptOwner: owner,
+      attemptChild: null,
+      disposition: 'completed',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: {
+        kind: 'serving',
+        attemptId: 'attempt-1',
+        successor: { instanceId: 'successor', pid: dead, incarnation: null, build: current },
+        epochKey: encodeResolvedStoreEpoch(runtime, settled.store),
+        controlGeneration: 1,
+        acceptedObligations: [],
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    const recoverAt = (instanceId: string) =>
+      prepareCommittedSuccessorRecovery(runtime, { pluginRoot: '/plugin', instanceId }, format, current, () => false);
+
+    await expect(recoverAt('startup-1')).resolves.toEqual({
+      kind: 'hold',
+      hold: {
+        kind: 'committed-successor-unattributable',
+        attemptId: 'attempt-1',
+        reason: 'committed successor generation cannot be attributed',
+      },
+    });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'completed', blockers: [{ owner: 'succession-startup' }] },
+    });
+    await expect(recoverAt('startup-2')).resolves.toMatchObject({ kind: 'hold' });
+    await expect(recoverAt('startup-3')).resolves.toEqual({ kind: 'none' });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'completed', completionReceipt: { attemptId: 'attempt-1' } },
+    });
+  });
+
+  it('should hold an unopenable preferred epoch under startup patience, then fall back to ordinary selection', async () => {
+    const runtime = runtimeFixture();
+    const format = currentCoralStoreFormat();
+    const context = {
+      runtime,
+      storeFormat: format,
+      currentBuild: { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint },
+      busyTimeoutMs: 1_000,
+    };
+    const openAt = (startupId: string) => openPreferredStoreEpoch(context, startupId, 'not-an-epoch-key', null);
+
+    for (const startupId of ['startup-1', 'startup-2']) {
+      const held = await openAt(startupId).catch((error: unknown) => error);
+      expect(held).toBeInstanceOf(SuccessionAttemptStartupHoldError);
+      expect((held as SuccessionAttemptStartupHoldError).hold).toMatchObject({
+        kind: 'preferred-epoch-unopenable',
+        attemptId: null,
+        epochKey: 'not-an-epoch-key',
+      });
+    }
+    await expect(openAt('startup-3')).resolves.toBeNull();
   });
 });

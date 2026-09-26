@@ -457,13 +457,21 @@ function ownsLockDirectory(
  * exactly one wins, and no open descriptor can refresh an already-checked
  * claim after the claimant has decided to quarantine it.
  */
-function refreshLockOwnerMarker(
-  lockDir: string,
-  ownerToken: string,
-  markerContent: string,
-  expectedIdentity: LockDirectoryIdentity,
-  deps: DirectoryLockDeps,
-): void {
+type HeldLockDirectory = Readonly<{
+  lockDir: string;
+  ownerToken: string;
+  markerContent: string;
+  expectedIdentity: LockDirectoryIdentity;
+  deps: DirectoryLockDeps;
+}>;
+
+function refreshLockOwnerMarker({
+  lockDir,
+  ownerToken,
+  markerContent,
+  expectedIdentity,
+  deps,
+}: HeldLockDirectory): void {
   if (!lockDirectoryIdentityMatches(lockDir, expectedIdentity, deps.storage)) {
     throw new DirectoryLockOwnershipLostError(lockDir);
   }
@@ -491,19 +499,13 @@ function refreshLockOwnerMarker(
   }
 }
 
-function startDirectoryLockHeartbeat(
-  lockDir: string,
-  ownerToken: string,
-  markerContent: string,
-  expectedIdentity: LockDirectoryIdentity,
-  deps: DirectoryLockDeps,
-  loseOwnership: () => void,
-): TimerHandle {
+function startDirectoryLockHeartbeat(held: HeldLockDirectory, loseOwnership: () => void): TimerHandle {
+  const { deps } = held;
   const staleMs = deps.staleMs ?? STALE_LOCK_MS;
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor(staleMs / 3));
   return deps.time.setInterval(() => {
     try {
-      refreshLockOwnerMarker(lockDir, ownerToken, markerContent, expectedIdentity, deps);
+      refreshLockOwnerMarker(held);
     } catch {
       loseOwnership();
     }
@@ -511,15 +513,12 @@ function startDirectoryLockHeartbeat(
 }
 
 function releaseDirectoryLock(
-  lockDir: string,
-  deps: DirectoryLockDeps,
-  ownerToken: string,
-  markerContent: string,
-  expectedIdentity: LockDirectoryIdentity,
+  held: HeldLockDirectory,
   heartbeat: TimerHandle,
   isOwned: () => boolean,
   loseOwnership: () => void,
 ): DirectoryLockLease {
+  const { lockDir, ownerToken, expectedIdentity, deps } = held;
   const heartbeatMs = deps.heartbeatMs ?? Math.max(10, Math.floor((deps.staleMs ?? STALE_LOCK_MS) / 3));
   let refreshedAt: number | undefined;
   const release = (() => {
@@ -532,7 +531,7 @@ function releaseDirectoryLock(
       throw new DirectoryLockOwnershipLostError(lockDir);
     }
     try {
-      refreshLockOwnerMarker(lockDir, ownerToken, markerContent, expectedIdentity, deps);
+      refreshLockOwnerMarker(held);
     } catch {
       loseOwnership();
       throw new DirectoryLockOwnershipLostError(lockDir);
@@ -692,17 +691,9 @@ function createDirectoryLockLease(
   const loseOwnership = () => {
     owned = false;
   };
-  const heartbeat = startDirectoryLockHeartbeat(lockDir, ownerToken, markerContent, identity, deps, loseOwnership);
-  const lease = releaseDirectoryLock(
-    lockDir,
-    deps,
-    ownerToken,
-    markerContent,
-    identity,
-    heartbeat,
-    () => owned,
-    loseOwnership,
-  );
+  const held: HeldLockDirectory = { lockDir, ownerToken, markerContent, expectedIdentity: identity, deps };
+  const heartbeat = startDirectoryLockHeartbeat(held, loseOwnership);
+  const lease = releaseDirectoryLock(held, heartbeat, () => owned, loseOwnership);
   if (actuatorStorage !== undefined) {
     Object.defineProperty(lease, 'actuator', {
       value: createStorageActuator(actuatorStorage, () => {

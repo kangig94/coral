@@ -6,6 +6,7 @@ import { serializeCoralSetupError, type SerializedCoralSetupError } from '../run
 import {
   createDefaultKbReadPaths,
   createKbQueryHost,
+  readWithKbQueryHost,
   type KbQueryContext,
   type KbQueryRuntime,
 } from '../read-model/kb-query-runtime.js';
@@ -599,8 +600,7 @@ export function createKbDaemonRequestService(options: KbDaemonRequestServiceOpti
         case 'diagnose':
           return run(() => {
             const { queryContext } = createContext(state, ctx);
-            const host = createKbQueryHost(queryContext);
-            return diagnoseKnowledgeBase(host);
+            return readWithKbQueryHost(queryContext, diagnoseKnowledgeBase);
           }, markFailure);
         case 'readNote':
           return readTyped(state, 'note', request, ctx);

@@ -1,8 +1,13 @@
-import { dirname } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   acquireDirectoryLock,
   acquireDirectoryLockSync,
+  attemptExclusiveFileLockSync,
   type DirectoryLockDeps,
   type DirectoryLockOwner,
 } from '#src/infra/fs-lock.js';
@@ -543,5 +548,64 @@ describe('directory fs lock', () => {
       expect(() => holder.assertOwned()).toThrow(/ownership lost/u);
       release();
     });
+  });
+});
+
+describe('exclusive file lock wait', () => {
+  const holders: ChildProcess[] = [];
+  const roots: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      holders.splice(0).map(async (holder) => {
+        if (holder.exitCode !== null || holder.signalCode !== null) return;
+        const exited = once(holder, 'exit');
+        holder.kill('SIGKILL');
+        await exited;
+      }),
+    );
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  /** The wait blocks this thread, so only another process can release a holder during it. */
+  async function sharedHolder(releaseAfterMs: number): Promise<string> {
+    const root = mkdtempSync(join(tmpdir(), 'coral-exclusive-wait-'));
+    roots.push(root);
+    const path = join(root, '.lock');
+    writeFileSync(path, '');
+    const holder = spawn(
+      process.execPath,
+      [
+        '--no-warnings',
+        '-e',
+        `const { DatabaseSync } = require('node:sqlite');
+         const db = new DatabaseSync(process.argv[1], { readOnly: true });
+         db.exec('BEGIN; SELECT count(*) FROM sqlite_schema');
+         process.stdout.write('held\\n');
+         setTimeout(() => { db.exec('ROLLBACK'); db.close(); }, Number(process.argv[2]));
+         setInterval(() => {}, 1000);`,
+        path,
+        String(releaseAfterMs),
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] },
+    );
+    holders.push(holder);
+    await new Promise<void>((resolve, reject) => {
+      holder.once('exit', () => reject(new Error('Lock holder exited before holding.')));
+      holder.stdout?.once('data', () => resolve());
+    });
+    return path;
+  }
+
+  it('should acquire a lock whose holder releases inside the busy timeout', async () => {
+    const path = await sharedHolder(300);
+    const attempt = attemptExclusiveFileLockSync(path, 5_000);
+    expect(attempt.kind).toBe('acquired');
+    if (attempt.kind === 'acquired') attempt.lease();
+  });
+
+  it('should refuse a lock whose holder outlasts the busy timeout', async () => {
+    const path = await sharedHolder(60_000);
+    expect(attemptExclusiveFileLockSync(path, 200).kind).toBe('contended');
   });
 });

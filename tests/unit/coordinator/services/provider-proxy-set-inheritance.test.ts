@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
   const original = await importOriginal<object>();
-  return { ...original, readHandoffCapsuleFile: vi.fn() };
+  return { ...original, readHandoffCapsuleFile: vi.fn(() => null) };
 });
 
 vi.mock('#src/provider-proxy/role-spawn.js', async (importOriginal) => {
@@ -27,6 +27,7 @@ import {
   CURRENT_HANDOFF_CAPSULE_VERSION,
   type HandoffCapsule,
   type HandoffCapsuleV2,
+  type HandoffCapsuleV3,
   type HandoffCapsuleV4,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
@@ -306,6 +307,7 @@ function proofRuntime(liveProcesses: ReadonlyMap<number, ProcessIncarnation>) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedReadCapsule.mockImplementation(() => null);
   mockedProbe.mockImplementation(() => testIncarnation(1_700_000_000));
 });
 
@@ -808,6 +810,31 @@ describe('attemptProviderProxySetInheritance', () => {
 
     expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'no capsule at this address' });
     expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  // A set spawned by an older build keeps the capsule that build wrote, at that generation's own address.
+  it('reads a set capsule written at an older supported generation address', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    const { controllerBuildSetId: _controller, ...currentFields } = capsuleFor(loc) as HandoffCapsuleV4;
+    const olderGeneration: HandoffCapsuleV3 = { ...currentFields, version: 3 };
+    mockedReadCapsule.mockImplementation((path) => (path.endsWith('.handoff.v3.json') ? olderGeneration : null));
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+      },
+      neverAborts,
+    );
+
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the set is controlled by another build' });
+    expect(mockedReadCapsule.mock.calls.map(([path]) => path.slice(path.indexOf('.handoff')))).toEqual([
+      '.handoff.v4.json',
+      '.handoff.v3.json',
+    ]);
   });
 
   // The upgrade path, and the one a discovery-side build gate cannot cover: this entry derives the capsule's
