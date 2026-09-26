@@ -101,7 +101,7 @@ import {
   MAX_HANDOFF_ROUTING_STATUS_QUARANTINES,
   type HandoffRoutingStatusQuarantineList,
 } from '../../store/handoff-routing-status-store/index.js';
-import { getBackendStatusFull, type BackendStatusFull } from '../backend-status.js';
+import { getBackendStatusFull, withSupersededEpochClosures, type BackendStatusFull } from '../backend-status.js';
 import { shutdownBackend, type ShutdownReason } from '../../transport/http/backend/shutdown.js';
 import { TOOL_TIMEOUT_MS } from '../../transport/http/sse.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../../transport/ipc/child-principal-auth.js';
@@ -997,7 +997,7 @@ export function createBackendStatusCommandOperations(
   const statusPath = routingStatusPath(runtime);
   return {
     inspectReadiness: () => inspectGenerationReadiness(runtime),
-    getStatus: () => getBackendStatusFull(getPluginRoot()),
+    getStatus: async () => withSupersededEpochClosures(runtime, await getBackendStatusFull(getPluginRoot())),
     getLiveHandoffResult,
     getRoutingStatus: () => readHandoffRoutingStatusWithOwnerObservations(runtime, statusPath),
     readProviderProxySetHolderStatusDirect: () => readProviderProxySetHolderStatusDirect(runtime),

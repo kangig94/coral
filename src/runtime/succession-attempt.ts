@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import type { Socket } from 'node:net';
 import { join } from 'node:path';
 
 import { probeProcessIncarnation, type ProcessIncarnation } from '../infra/node-process.js';
@@ -16,6 +17,8 @@ export interface SuccessionAttemptPorts {
     readonly available: boolean;
     readonly connected: boolean;
     send(message: unknown, callback?: (error: Error | null) => void): void;
+    /** Sends a connection's handle; the handle is closed in this process once sent. */
+    sendHandle(message: unknown, handle: Socket, callback: (error: Error | null) => void): void;
     on(event: 'disconnect', listener: () => void): void;
     on(event: 'message', listener: (message: unknown, handle: unknown) => void): void;
     fail(serving: boolean): void;
@@ -43,6 +46,10 @@ export function createRealSuccessionAttemptPorts(): SuccessionAttemptPorts {
       send: (message, callback) => {
         if (callback === undefined) process.send?.(message);
         else process.send?.(message, callback);
+      },
+      sendHandle: (message, handle, callback) => {
+        if (process.send === undefined) callback(new Error('Succession attempt channel is unavailable'));
+        else process.send(message, handle, callback);
       },
       on: (event, listener) => {
         if (event === 'message') process.on('message', listener);

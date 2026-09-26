@@ -170,6 +170,7 @@ describe('job addressing', () => {
         waitStream: async function* () {},
       },
       () => false,
+      () => 'pending',
     );
     expect(addressing.scopeCheck(['old'], canonicalWorkDirWireSchema.parse('/workspace'), 'contains').missing).toEqual(
       [],
@@ -193,11 +194,25 @@ describe('job addressing', () => {
       waitStream: async function* () {},
     };
 
-    expect(new JobAddressing(index, access, () => true).detail('flat-store-job')).toEqual({
+    expect(
+      new JobAddressing(
+        index,
+        access,
+        () => true,
+        () => 'pending',
+      ).detail('flat-store-job'),
+    ).toEqual({
       kind: 'pre-epoch-history',
       jobId: 'flat-store-job',
     });
-    expect(new JobAddressing(index, access, () => false).detail('flat-store-job')).toBeNull();
+    expect(
+      new JobAddressing(
+        index,
+        access,
+        () => false,
+        () => 'pending',
+      ).detail('flat-store-job'),
+    ).toBeNull();
   });
 
   it('invalidates a completeness certificate before accepting queued work', () => {
@@ -241,6 +256,7 @@ describe('job addressing', () => {
         waitStream: async function* () {},
       },
       () => false,
+      () => 'pending',
     );
     const jobIds = ['live', 'older-b', 'older-a'];
     expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 2 } })?.code).toBe('wait_cursor_epoch_required');
@@ -351,6 +367,7 @@ describe('job addressing', () => {
         waitStream: async function* () {},
       },
       () => false,
+      () => 'pending',
     );
     const stream = addressing.waitStream({
       jobIds: ['old-live', 'new-live'],
@@ -408,6 +425,7 @@ describe('job addressing', () => {
         waitStream: async function* () {},
       },
       () => false,
+      () => 'pending',
     );
     const stream = addressing.waitStream({ jobIds: ['later', 'earlier'], supportsWaitV2: true });
     expect((await stream.next()).value).toMatchObject({ type: 'progress', jobId: 'earlier', seq: 3 });
@@ -451,7 +469,7 @@ describe('job addressing', () => {
       continuity: 'unavailable',
       outcome: 'unknown',
     };
-    const addressing = (supportsWaitV2: boolean) =>
+    const addressing = (supportsWaitV2: boolean, jobIds: string[]) =>
       new JobAddressing(
         index,
         {
@@ -463,14 +481,16 @@ describe('job addressing', () => {
           },
         },
         () => false,
-      ).waitStream({ jobIds: ['old-live', 'new-live'], supportsWaitV2 });
+        () => 'pending',
+      ).waitStream({ jobIds, supportsWaitV2 });
 
-    const shipped = addressing(false);
+    // A caller without wait v2 is refused any historical id, so only the active epoch can answer it.
+    const shipped = addressing(false, ['new-live']);
     const legacyEvent = (await shipped.next()).value;
     await shipped.return(undefined);
     expect(shippedInterruptedSchema.safeParse(legacyEvent).success).toBe(true);
 
-    const current = addressing(true);
+    const current = addressing(true, ['old-live', 'new-live']);
     expect((await current.next()).value).toMatchObject({ type: 'interrupted', cursor: { version: 'jobs.wait.v2' } });
     await current.return(undefined);
   });
@@ -497,6 +517,7 @@ describe('job addressing', () => {
         waitStream: async function* () {},
       },
       () => false,
+      () => 'pending',
     );
     expect(addressing.detail('newer')).toEqual({
       kind: 'detail-unreadable',
@@ -510,5 +531,204 @@ describe('job addressing', () => {
       detail: laterDetail,
       laterField: 1,
     });
+  });
+
+  describe('a historical job without a recorded terminal', () => {
+    function historicalFixture(closure: 'pending' | 'decided') {
+      const { index } = fixture();
+      index.register('stranded', 'lineage-old:7', {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+      index.recordObserved('stranded', detail('stranded', 'running'));
+      index.markUnresolved('stranded');
+      const addressing = new JobAddressing(
+        index,
+        {
+          epochKey: () => 'lineage-new:8',
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          waitStream: async function* () {},
+        },
+        () => false,
+        (epochKey) => (epochKey === 'lineage-old:7' ? closure : 'pending'),
+      );
+      return addressing;
+    }
+
+    it('should answer detail and abort with a final disposition once its epoch closure is decided', () => {
+      const addressing = historicalFixture('decided');
+
+      expect(addressing.detail('stranded')).toEqual({
+        kind: 'outcome-unrecoverable',
+        jobId: 'stranded',
+        epochKey: 'lineage-old:7',
+      });
+      expect(addressing.outcomeUnrecoverable(['stranded', 'unknown'])).toEqual(['stranded']);
+      const abort = addressing.abort(['stranded']);
+      expect(abort).toMatchObject({
+        kind: 'answered',
+        result: { refused: [{ jobId: 'stranded', reason: 'historical_outcome_unrecoverable' }] },
+      });
+      expect(abort.kind === 'answered' ? abort.result.held : undefined).toBeUndefined();
+    });
+
+    it('should keep holding while its epoch closure is still pending, naming that closure as the exit', () => {
+      const addressing = historicalFixture('pending');
+
+      expect(addressing.detail('stranded')).toMatchObject({ status: { jobId: 'stranded', phase: 'running' } });
+      expect(addressing.outcomeUnrecoverable(['stranded'])).toEqual([]);
+      expect(addressing.abort(['stranded'])).toMatchObject({
+        kind: 'answered',
+        result: { held: [{ jobId: 'stranded', reason: 'historical_owner_unresolved' }] },
+      });
+    });
+  });
+
+  it('should answer an id no epoch knows by whether a pre-epoch store exists', () => {
+    const { index } = fixture();
+    const access = {
+      epochKey: () => 'lineage-new:8',
+      detail: () => null,
+      abort: () => ({ kind: 'answered' as const, result: { aborted: [], notFound: [] } }),
+      waitStream: async function* () {},
+    };
+
+    expect(
+      new JobAddressing(
+        index,
+        access,
+        () => true,
+        () => 'pending',
+      ).unknownJobDisposition(),
+    ).toBe('pre-epoch-history');
+    expect(
+      new JobAddressing(
+        index,
+        access,
+        () => false,
+        () => 'pending',
+      ).unknownJobDisposition(),
+    ).toBe('not-found');
+  });
+
+  it('should keep the carrier-unconfirmed list when it multiplexes a wait', async () => {
+    const { index } = fixture();
+    index.register('new-live', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {
+          yield { type: 'waiting', waitingJobIds: ['new-live'], carrierUnknownJobIds: ['new-live'] };
+        },
+      },
+      () => false,
+      () => 'pending',
+    );
+
+    const stream = addressing.waitStream({ jobIds: ['new-live'], supportsWaitV2: true, timeoutSeconds: 1 });
+    expect((await stream.next()).value).toMatchObject({
+      type: 'waiting',
+      waitingJobIds: ['new-live'],
+      carrierUnknownJobIds: ['new-live'],
+    });
+    await stream.return(undefined);
+  });
+
+  it('should refuse a historical wait to a caller whose cursor can only name the active epoch', async () => {
+    const { index } = fixture();
+    index.register('old', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'pending',
+    );
+
+    expect(addressing.validateWait({ jobIds: ['old'] })?.code).toBe('wait_epoch_unsupported');
+    await expect(addressing.waitStream({ jobIds: ['old'] }).next()).rejects.toThrow('wait_epoch_unsupported');
+    expect(addressing.validateWait({ jobIds: ['old'], supportsWaitV2: true })).toBeNull();
+  });
+
+  it('should retire a location whose launch never committed so the epoch can still be certified', () => {
+    const { index } = fixture();
+    const db = newRawDatabase(':memory:');
+    db.exec('CREATE TABLE events (seq INTEGER, stream_kind TEXT, stream_id TEXT, type TEXT, project TEXT, body BLOB)');
+    const store = {
+      getDb: () => db,
+      loadJobProjectionDetail: () => ({ status: null, launch: null, runtime: null, exit: null }),
+      readJobEvents: () => [],
+      ensureResultArtifact: () => '',
+    } as unknown as JobProgressStore;
+    index.register('rolled-back', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+
+    recoverJobLocations(index, 'lineage-new:8', store);
+
+    expect(index.read('rolled-back')).toBeNull();
+    expect(index.certificate('lineage-new:8')?.jobIds).toEqual([]);
+    db.close();
+  });
+
+  it('should skip a location record a newer build wrote and keep only its own epoch uncertified', () => {
+    const { root, index } = fixture();
+    index.register('known', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordTerminal('known', detail('known', 'completed'), join(root, 'known.md'), 12);
+    index.register('newer', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const newerPath = join(root, 'job-locations.v1', 'jobs', `${Buffer.from('newer').toString('base64url')}.json`);
+    const stored = JSON.parse(readFileSync(newerPath, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(newerPath, `${JSON.stringify({ ...stored, disposition: 'a-later-disposition' })}\n`);
+
+    expect(index.locations().map((location) => location.jobId)).toEqual(['known']);
+    expect(index.certify('lineage-new:8', 12)?.jobIds).toEqual(['known']);
+    expect(index.certify('lineage-old:7', 0)).toBeNull();
+  });
+
+  it('should not overwrite a terminal another process records while an unresolved mark waits for the lock', () => {
+    const { root, index } = fixture();
+    const other = new JobLocationIndex(runtime, root);
+    index.register('racing', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const locked = index as unknown as { withRevisionLock: (key: string, action: () => unknown) => unknown };
+    const acquire = locked.withRevisionLock.bind(index);
+    locked.withRevisionLock = (key, action) => {
+      other.recordTerminal('racing', detail('racing', 'completed'), join(root, 'racing.md'), 12);
+      return acquire(key, action);
+    };
+
+    index.markUnresolved('racing');
+
+    expect(other.read('racing')).toMatchObject({ disposition: 'terminal', terminalSeq: 12 });
   });
 });

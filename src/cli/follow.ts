@@ -16,6 +16,7 @@ import {
 } from '../jobs/wait.js';
 import { advanceWaitRenderCursor, isWaitHandoverNotice, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
+import { jobsWaitRequest } from '../transport/rpc/jobs.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
 import { isRecord } from '../infra/json.js';
@@ -670,17 +671,10 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
         // from the iterator, not here.
         subscription: await backend.subscribe<unknown>(
           'jobs.wait',
-          {
-            jobIds: [...jobIds],
-            timeoutSeconds,
-            projectRoot: options.projectRoot,
-            ...(cursor ? { cursor } : {}),
-            // `emitWaitEvent` above has a case for `interrupted`; declaring that here is what lets a
-            // coordinator new enough to derive it actually put one on the wire.
-            supportsInterrupted: true,
-            supportsWaitV2: true,
-            supportsHandover: true,
-          },
+          jobsWaitRequest(
+            { jobIds, timeoutSeconds, projectRoot: options.projectRoot, ...(cursor ? { cursor } : {}) },
+            backend.jobsWaitExtensions,
+          ),
           {
             timeoutMs: HEALTH_TIMEOUT_MS,
             signal,

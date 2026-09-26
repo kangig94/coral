@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { parseBooleanQuery } from '../../infra/json.js';
 import { providerIdentPattern } from '../../infra/identifiers.js';
 import { jobPhaseSchema } from '../../jobs/phase.js';
-import { isWaitCursor, type WaitCursor } from '../../jobs/wait.js';
+import { isWaitCursor, isWaitCursorV2, type WaitCursor } from '../../jobs/wait.js';
 import { MAX_WAIT_JOB_IDS } from '../../jobs/wait-stream-event.js';
 
 const projectRootSchema = z.string().min(1, 'Project root is required');
@@ -34,6 +34,39 @@ export const jobWaitSchema = z
     supportsHandover: z.boolean().optional(),
   })
   .strict();
+
+/**
+ * The `jobs.wait` flags added after v0.10.13, whose strict schema rejects a request carrying either of them. A
+ * coordinator that accepts them advertises them on `ping`; a client sends one only to a coordinator that did.
+ */
+export const JOBS_WAIT_EXTENSIONS = ['supportsWaitV2', 'supportsHandover'] as const;
+
+export type JobsWaitFields = Readonly<{
+  jobIds: readonly string[];
+  projectRoot: string;
+  timeoutSeconds?: number;
+  cursor?: WaitCursor;
+}>;
+
+/**
+ * The request `jobs.wait` sends to a coordinator that advertised `extensions`. A vector cursor is omitted for a
+ * coordinator without `supportsWaitV2`: it cannot parse one, and resubscribing without a cursor only replays
+ * what the client already rendered.
+ */
+export function jobsWaitRequest(fields: JobsWaitFields, extensions: readonly string[]): Record<string, unknown> {
+  const waitV2 = extensions.includes('supportsWaitV2');
+  const cursor = fields.cursor === undefined || (!waitV2 && isWaitCursorV2(fields.cursor)) ? undefined : fields.cursor;
+  return {
+    jobIds: [...fields.jobIds],
+    projectRoot: fields.projectRoot,
+    ...(fields.timeoutSeconds === undefined ? {} : { timeoutSeconds: fields.timeoutSeconds }),
+    ...(cursor === undefined ? {} : { cursor }),
+    // Only a client whose wait renderer has an arm for `interrupted` may declare this; every shipped coordinator
+    // since v0.10.5 withholds the event from a subscriber that does not.
+    supportsInterrupted: true,
+    ...Object.fromEntries(JOBS_WAIT_EXTENSIONS.filter((flag) => extensions.includes(flag)).map((flag) => [flag, true])),
+  };
+}
 
 export const jobAbortSchema = z
   .object({

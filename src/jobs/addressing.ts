@@ -22,15 +22,48 @@ const HISTORICAL_POLL_MS = 250;
  */
 export type PreEpochHistoryProbe = () => boolean;
 
+/**
+ * Whether anything could still record a terminal in a superseded epoch. `decided` is owed once no source for the
+ * epoch is seeded in this process, or once its closure is recorded: a job without a terminal there then has no exit
+ * left to wait on. `pending` names the closure pass as the exit.
+ */
+export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided';
+
 export class JobAddressing {
   private readonly locations: JobLocationIndex;
   private readonly active: ActiveJobAccess;
   private readonly preEpochHistoryExists: PreEpochHistoryProbe;
+  private readonly historicalClosure: HistoricalClosureProbe;
 
-  constructor(locations: JobLocationIndex, active: ActiveJobAccess, preEpochHistoryExists: PreEpochHistoryProbe) {
+  constructor(
+    locations: JobLocationIndex,
+    active: ActiveJobAccess,
+    preEpochHistoryExists: PreEpochHistoryProbe,
+    historicalClosure: HistoricalClosureProbe,
+  ) {
     this.locations = locations;
     this.active = active;
     this.preEpochHistoryExists = preEpochHistoryExists;
+    this.historicalClosure = historicalClosure;
+  }
+
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found' {
+    return this.preEpochHistoryExists() ? 'pre-epoch-history' : 'not-found';
+  }
+
+  /** A historical job still without a terminal after a refresh, in an epoch whose closure is decided. */
+  private outcomeUnrecoverableLocation(location: JobLocation): boolean {
+    if (location.epochKey === this.active.epochKey()) return false;
+    refreshHistoricalEpoch(this.locations, location.epochKey, [location.jobId]);
+    const latest = this.locations.read(location.jobId) ?? location;
+    return latest.disposition !== 'terminal' && this.historicalClosure(latest.epochKey) === 'decided';
+  }
+
+  outcomeUnrecoverable(jobIds: readonly string[]): string[] {
+    return jobIds.filter((jobId) => {
+      const location = this.location(jobId);
+      return location !== null && this.outcomeUnrecoverableLocation(location);
+    });
   }
 
   private location(jobId: string): JobLocation | null {
@@ -79,8 +112,8 @@ export class JobAddressing {
     if (!historical) {
       const active = this.active.detail(jobId);
       if (active !== null) return active;
-    } else {
-      refreshHistoricalEpoch(this.locations, location.epochKey, [jobId]);
+    } else if (this.outcomeUnrecoverableLocation(location)) {
+      return { kind: 'outcome-unrecoverable', jobId, epochKey: location.epochKey };
     }
     const latest = this.locations.read(jobId) ?? location;
     if (!historical && latest.disposition === 'unresolved') {
@@ -101,16 +134,28 @@ export class JobAddressing {
         ? this.active.abort(activeIds)
         : { kind: 'answered' as const, result: { aborted: [], notFound: [] } };
     if (active.kind !== 'answered') return active;
-    const refused = active.result.refused ?? [];
     const historicalTerminal = historicalIds.filter((jobId) => this.location(jobId)?.disposition === 'terminal');
+    const unrecoverable = this.outcomeUnrecoverable(
+      historicalIds.filter((jobId) => !historicalTerminal.includes(jobId)),
+    );
+    const refused = [
+      ...(active.result.refused ?? []),
+      ...unrecoverable.map((jobId) => ({
+        jobId,
+        reason: 'historical_outcome_unrecoverable',
+        nextStep:
+          'No Coral coordinator controls this job any more and none will record its outcome, so Coral has nothing to stop. Do not retry.',
+      })),
+    ];
     const held = [
       ...(active.result.held ?? []),
       ...historicalIds
-        .filter((jobId) => !historicalTerminal.includes(jobId))
+        .filter((jobId) => !historicalTerminal.includes(jobId) && !unrecoverable.includes(jobId))
         .map((jobId) => ({
           jobId,
           reason: 'historical_owner_unresolved',
-          nextStep: 'Custody recovery will retry the retained epoch automatically.',
+          nextStep:
+            "Its retained store epoch's closure is decided automatically; once it is, an abort answers finally.",
         })),
     ];
     return {
@@ -134,8 +179,7 @@ export class JobAddressing {
     const locations = request.jobIds.map((jobId) => this.location(jobId));
     const activeEpochKey = this.active.epochKey();
     const cursor = request.cursor;
-    if (cursor === undefined) return null;
-    if (!isWaitCursorV2(cursor)) {
+    if (cursor !== undefined && !isWaitCursorV2(cursor)) {
       return locations.every((location) => location !== null && location.epochKey === activeEpochKey)
         ? null
         : {
@@ -143,6 +187,18 @@ export class JobAddressing {
             message: 'The legacy wait cursor cannot identify historical epochs; retry without a cursor.',
           };
     }
+    if (
+      request.supportsWaitV2 !== true &&
+      cursor === undefined &&
+      locations.some((location) => location !== null && location.epochKey !== activeEpochKey)
+    ) {
+      return {
+        code: 'wait_epoch_unsupported',
+        message:
+          'This Coral CLI cannot wait on a job kept in a superseded store epoch. Read its outcome with jobs detail instead.',
+      };
+    }
+    if (cursor === undefined) return null;
     const requestedLocations = Object.fromEntries(
       locations.flatMap((location) => (location === null ? [] : [[location.jobId, location.epochKey]])),
     );
@@ -275,6 +331,7 @@ export class JobAddressing {
             })
             [Symbol.asyncIterator]();
     let pendingActive = activeIterator?.next() ?? null;
+    let carrierUnknownJobIds: readonly string[] = [];
     const historicalGroups = new Map<string, string[]>();
     for (const location of locations) {
       if (location.epochKey === activeEpochKey) continue;
@@ -348,7 +405,10 @@ export class JobAddressing {
         }
         pendingActive = activeIterator?.next() ?? null;
         const event = next.value;
-        if (event.type === 'waiting') continue;
+        if (event.type === 'waiting') {
+          carrierUnknownJobIds = event.carrierUnknownJobIds ?? [];
+          continue;
+        }
         if (event.type === 'progress' || event.type === 'terminal') {
           if (
             activeEpochKey === null ||
@@ -377,6 +437,7 @@ export class JobAddressing {
         type: 'waiting',
         waitingJobIds: [...request.jobIds],
         ...(request.supportsWaitV2 === true ? { cursor: this.snapshotCursor(cursor) } : {}),
+        ...(carrierUnknownJobIds.length === 0 ? {} : { carrierUnknownJobIds: [...carrierUnknownJobIds] }),
       };
     } finally {
       request.abortSignal?.removeEventListener('abort', onAbort);

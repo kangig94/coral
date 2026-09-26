@@ -122,6 +122,26 @@ describe('startup mint authorizer', () => {
     expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
   });
 
+  it('should count one startup observing the unreadable epoch again once the patience interval has passed', () => {
+    const base = unreadableEpochRuntime();
+    let now = Date.now();
+    const runtime: Runtime = { ...base, time: { ...base.time, now: () => now } };
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const registerJob = (observation: StoreMintObservation): void => {
+      if (observation.incumbent === null) throw new Error('Expected the unreadable epoch as incumbent.');
+      index.register('job-in-unreadable-epoch', encodeResolvedStoreEpoch(runtime, observation.incumbent), {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+    };
+
+    expect(startUp(runtime, index, 'startup-1', registerJob)).toBeNull();
+    expect(startUp(runtime, index, 'startup-1')).toBeNull();
+    now += 10_000;
+    expect(startUp(runtime, index, 'startup-1')).toMatchObject({ kind: 'unopenable' });
+  });
+
   it.each([
     ['a transient executor failure waits out bounded patience', 73, [null, 'unopenable']],
     ['an executor that cannot identify as the controller mints at once', 71, ['unopenable']],

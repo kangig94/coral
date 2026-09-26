@@ -38,7 +38,14 @@ type AttemptMessage =
   | { kind: 'deadline'; attemptId: string; at: number }
   | { kind: 'writers-parked'; attemptId: string }
   | { kind: 'abort'; attemptId: string }
+  | { kind: 'connections-released'; attemptId: string }
   | { kind: 'ack'; attemptId: string; acknowledgment: AttemptAcknowledgment };
+
+/**
+ * An aborted child returns its parked connections before it exits; the incumbent reaps it right after the abort,
+ * so an unresponsive child may delay that reap by no more than this.
+ */
+const CONNECTION_RELEASE_TIMEOUT_MS = 2_000;
 
 function isAttemptMessage(value: unknown): value is AttemptMessage {
   return (
@@ -154,8 +161,15 @@ export async function createSuccessionAttemptChannel(
   };
   child.on('exit', () => fail('Succession attempt child exited before listener handover completed'));
   child.on('disconnect', () => fail('Succession attempt channel disconnected'));
-  child.on('message', (message: unknown) => {
+  child.on('message', (message: unknown, handle: unknown) => {
     if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
+    if (message.kind === 'connection' && handle !== undefined) {
+      const socket = handle as Socket;
+      const entry = claim.find((candidate) => candidate.socketPath === message.socketPath);
+      if (entry?.listener.acceptSocket === undefined) socket.destroy();
+      else entry.listener.acceptSocket(socket, message.pendingFrameBase64);
+      return;
+    }
     if (message.kind === 'listener-accepted') received.add(message.socketPath);
     if (message.kind === 'ack') {
       observedAcknowledgments.set(message.acknowledgment.kind, message.acknowledgment);
@@ -259,7 +273,21 @@ export async function createSuccessionAttemptChannel(
     },
     setDeadline: (at) => send({ kind: 'deadline', attemptId, at }),
     allowCommittedOpen: () => send({ kind: 'writers-parked', attemptId }),
-    abort: () => send({ kind: 'abort', attemptId }),
+    abort: async () => {
+      const released = waitFor('connections-released').catch(() => {});
+      await send({ kind: 'abort', attemptId });
+      let bound: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
+      try {
+        await Promise.race([
+          released,
+          new Promise<void>((resolve) => {
+            bound = ports.time.setTimeout(resolve, CONNECTION_RELEASE_TIMEOUT_MS);
+          }),
+        ]);
+      } finally {
+        ports.time.clearTimeout(bound);
+      }
+    },
     onAcknowledgment: (callback) => {
       acknowledgments.add(callback);
       for (const acknowledgment of observedAcknowledgments.values()) callback(acknowledgment);
@@ -319,16 +347,39 @@ export async function receiveSuccessionAttemptChild(
     servingResolve = resolve;
   });
   let deadlineTimer: ReturnType<SuccessionAttemptPorts['time']['setTimeout']> | null = null;
-  const pendingConnections: { socket: Socket; socketPath: string; pendingFrameBase64: string }[] = [];
+  type ParkedConnection = { socket: Socket; socketPath: string; pendingFrameBase64: string };
+  const pendingConnections: ParkedConnection[] = [];
   const stopParking: (() => void)[] = [];
+  let releasing = false;
+  const returnConnection = (connection: ParkedConnection): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const { socket, ...addressed } = connection;
+      ports.channel.sendHandle({ kind: 'connection', attemptId, ...addressed }, socket, () => resolve());
+    });
+  /** Until serving, a connection waits here; once the attempt is being released it goes back to the incumbent. */
+  const park = (connection: ParkedConnection): void => {
+    if (releasing) void returnConnection(connection);
+    else pendingConnections.push(connection);
+  };
   const send = (message: AttemptMessage): void => {
     ports.channel.send(message);
   };
   const online = ports.time.setInterval(() => send({ kind: 'child-online', attemptId }), 100);
   online.unref?.();
+  let failing = false;
+  /**
+   * An unserved attempt hands every parked connection back before it ends, for the incumbent keeps serving their
+   * clients. Once the channel is gone nothing can travel back: sending a handle closed the incumbent's copy, so the
+   * only one left is this process's, and it closes with it.
+   */
   const fail = (reason: string): void => {
     adoptReject?.(new Error(reason));
-    ports.channel.fail(serving);
+    if (failing) return;
+    failing = true;
+    releasing = true;
+    const parked = serving || !ports.channel.connected ? [] : pendingConnections.splice(0);
+    if (parked.length === 0) ports.channel.fail(serving);
+    else void Promise.all(parked.map(returnConnection)).then(() => ports.channel.fail(serving));
   };
   ports.channel.on('disconnect', () => {
     if (!serving) fail('Succession attempt lost its incumbent channel before serving');
@@ -349,7 +400,13 @@ export async function receiveSuccessionAttemptChild(
       return;
     }
     if (message.kind === 'abort' && !serving) {
-      fail('Succession attempt aborted');
+      // The incumbent keeps serving an aborted attempt's clients; a connection parked here must reach it unanswered.
+      releasing = true;
+      const released = (): void =>
+        ports.channel.send({ kind: 'connections-released', attemptId }, () => fail('Succession attempt aborted'));
+      const parked = pendingConnections.splice(0);
+      if (parked.length === 0) released();
+      else void Promise.all(parked.map(returnConnection)).then(released);
       return;
     }
     if (message.kind === 'deadline' && !serving && Number.isFinite(message.at)) {
@@ -376,7 +433,7 @@ export async function receiveSuccessionAttemptChild(
       }
       if (next !== listener) listener.compatibilityListeners?.push(next);
       const stop = next.forwardConnections?.((socket, pendingFrameBase64) => {
-        pendingConnections.push({ socket, socketPath: message.socketPath, pendingFrameBase64 });
+        park({ socket, socketPath: message.socketPath, pendingFrameBase64 });
       });
       if (stop !== undefined) stopParking.push(stop);
       attachInheritedIpcServer(next, handle as NetServer, message.socketPath);
@@ -393,12 +450,7 @@ export async function receiveSuccessionAttemptChild(
       const socket = handle as Socket;
       socket.pause();
       if (serving) adopted.get(message.socketPath)?.acceptSocket?.(socket, message.pendingFrameBase64);
-      else
-        pendingConnections.push({
-          socket,
-          socketPath: message.socketPath,
-          pendingFrameBase64: message.pendingFrameBase64,
-        });
+      else park({ socket, socketPath: message.socketPath, pendingFrameBase64: message.pendingFrameBase64 });
     }
   });
   send({ kind: 'child-online', attemptId });

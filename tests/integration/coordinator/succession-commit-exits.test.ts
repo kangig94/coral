@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,10 +14,15 @@ import {
   type SuccessionCommitter,
 } from '#src/coordinator/succession/commit.js';
 import { successionTargetKey } from '#src/coordinator/succession/protocol.js';
+import { recordRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
 import { dischargeDeadSuccessionAttempt } from '#src/coordinator/succession/startup.js';
 import type { SuccessionInterpositionPoint } from '#src/coordinator/succession/interposition.js';
 import type { SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
-import type { SuccessionDecision, SuccessionReconciler } from '#src/coordinator/succession/reconciler.js';
+import {
+  createSuccessionReconciler,
+  type SuccessionDecision,
+  type SuccessionReconciler,
+} from '#src/coordinator/succession/reconciler.js';
 import { createDisabledKbDaemonSupervisor } from '#src/coordinator/live/kb-daemon-supervisor.js';
 import type { SuccessionRelease } from '#src/coordinator/shutdown.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
@@ -26,7 +31,15 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import type { Database } from '#src/store/db.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
-import { encodeResolvedStoreEpoch, settleStoreEpoch } from '#src/store/epoch.js';
+import { encodeResolvedStoreEpoch, epochDirectory, settleStoreEpoch } from '#src/store/epoch.js';
+import { createSharedFileLockSync } from '#src/infra/fs-lock.js';
+import type { RetiringCustodyCertificate } from '#src/coordinator/services/recovery/epoch-closure.js';
+import {
+  advanceSuccessionWriterGeneration,
+  observeSuccessionServing,
+  observeSuccessionWriterGeneration,
+  recordSuccessionServing,
+} from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import { authorizeFixtureStoreMint } from '#tests/helpers/store-db.js';
 import { terminateChildProcess } from '#tests/integration/coordinator/helpers.js';
@@ -56,6 +69,16 @@ type AttemptBehavior = Readonly<{
   unprovenIdentity?: boolean;
   /** The successor neither serves nor holds, so the attempt ends only at its commit deadline. */
   silent?: boolean;
+  /**
+   * The successor takes the writer generation at committed open and its serving record lands only after the
+   * incumbent's last serving check, just before the failed window is closed.
+   */
+  servesAfterIncumbentCheck?: Readonly<{ runtime: Runtime; epochKey: string }>;
+  /**
+   * The successor has not yet taken the writer generation when its incumbent fails the window for another reason,
+   * and takes it and records serving before it processes the incumbent's abort.
+   */
+  servesBeforeAbort?: Readonly<{ runtime: Runtime; epochKey: string; refusals: unknown[] }>;
 }>;
 
 function spawnIdleChild(): ChildProcess {
@@ -84,15 +107,50 @@ async function fakeAttempt(attemptId: string, epochKey: string, behavior: Attemp
     child,
     childIdentity: { pid, incarnation: recorded },
     transferListeners: async () => undefined,
-    forwardConnections: () => () => undefined,
+    forwardConnections: () => () => {
+      const late = behavior.servesAfterIncumbentCheck;
+      const generation = late === undefined ? null : observeSuccessionWriterGeneration(late.runtime);
+      if (late === undefined || generation === null) return;
+      recordSuccessionServing(late.runtime, generation, {
+        attemptId,
+        epochKey: late.epochKey,
+        successorInstanceId: 'successor',
+        controlGeneration: generation.generation,
+        recordedAt: new Date(late.runtime.time.now()).toISOString(),
+      });
+    },
     drainIncumbentConnections: async () => undefined,
     setDeadline: async () => undefined,
     // Unless silent, the successor's committed open fails: it reports a hold instead of serving.
     allowCommittedOpen: async () => {
+      const late = behavior.servesAfterIncumbentCheck;
+      if (late !== undefined) {
+        const parked = observeSuccessionWriterGeneration(late.runtime);
+        if (parked === null) throw new Error('the incumbent parked no writer generation');
+        advanceSuccessionWriterGeneration(late.runtime, parked, parked);
+        return;
+      }
       if (behavior.silent === true) return;
       for (const callback of acknowledgments) callback({ kind: 'hold', reason: 'injected committed-open failure' });
     },
-    abort: async () => undefined,
+    abort: async () => {
+      const racing = behavior.servesBeforeAbort;
+      if (racing === undefined) return;
+      try {
+        const parked = observeSuccessionWriterGeneration(racing.runtime);
+        if (parked === null) throw new Error('the incumbent parked no writer generation');
+        const generation = advanceSuccessionWriterGeneration(racing.runtime, parked, parked, attemptId);
+        recordSuccessionServing(racing.runtime, generation, {
+          attemptId,
+          epochKey: racing.epochKey,
+          successorInstanceId: 'successor',
+          controlGeneration: generation.generation,
+          recordedAt: new Date(racing.runtime.time.now()).toISOString(),
+        });
+      } catch (error: unknown) {
+        racing.refusals.push(error);
+      }
+    },
     onAcknowledgment: (callback) => {
       acknowledgments.add(callback);
       callback({ kind: 'ready', epochKey, receiptIds: [] });
@@ -112,7 +170,7 @@ function incumbentIdentity(): UpgradeIntent['incumbent'] {
   };
 }
 
-function reconcilerStub(readiness?: SuccessionDecision): SuccessionReconciler {
+function reconcilerStub(readiness?: SuccessionDecision, recertification?: SuccessionDecision): SuccessionReconciler {
   const deferred: SuccessionDecision = { kind: 'deferred', reason: 'test reconciler' };
   return {
     incumbent: incumbentIdentity,
@@ -121,6 +179,8 @@ function reconcilerStub(readiness?: SuccessionDecision): SuccessionReconciler {
     reportReady: async (report) =>
       readiness ?? { kind: 'ready', preparation: preparationFor(report.epochKey, report.attemptId) },
     commit: async () => deferred,
+    recertify: async (attemptId) =>
+      recertification ?? { kind: 'prepared', preparation: preparationFor('epoch-key', attemptId) },
     abort: async () => deferred,
     status: () => ({ kind: 'absent' }),
     reconcile: async () => deferred,
@@ -152,23 +212,32 @@ type Harness = Readonly<{
   runtime: Runtime;
   db: Database;
   epochKey: string;
+  attemptId: string;
   releases: readonly SuccessionRelease[];
+  servingRefusals: readonly unknown[];
   adoptedAdmissions: number;
   launchFence: readonly boolean[];
   startedRecoveries: number;
   retryNotifications: number;
   committer: SuccessionCommitter;
-  launch(): Promise<void>;
+  launch(): Promise<unknown>;
 }>;
 
 async function harness(
   options: Readonly<{
     failingPoints: (point: SuccessionInterpositionPoint, recovery: boolean) => boolean;
     recoveryLaunch: 'fails' | 'starts';
-    attempt?: AttemptBehavior;
+    attempt?:
+      | Omit<AttemptBehavior, 'servesAfterIncumbentCheck' | 'servesBeforeAbort'>
+      | 'serves-after-incumbent-check'
+      | 'serves-before-abort';
     pauseMs?: number;
     /** What the reconciler answers when the successor reports readiness. */
     readiness?: SuccessionDecision;
+    /** What the reconciler answers when the window re-certifies obligations before writers park. */
+    recertification?: SuccessionDecision;
+    /** The KB daemon refuses to park its writer turn with this error. */
+    kbParkRefusal?: string;
     /** A target store format other than the incumbent's makes the commit a format-changing retirement. */
     targetFingerprint?: string;
     certifyCustody?: SuccessionCommitPorts['retiringEpoch']['certifyCustody'];
@@ -182,7 +251,16 @@ async function harness(
   const settled = settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint });
   const epochKey = encodeResolvedStoreEpoch(runtime, settled.store);
   const preparation = preparationFor(epochKey, runtime.ids.uuid());
-  const attempt = await fakeAttempt(preparation.attemptId, epochKey, options.attempt ?? {});
+  const servingRefusals: unknown[] = [];
+  const attempt = await fakeAttempt(
+    preparation.attemptId,
+    epochKey,
+    options.attempt === 'serves-after-incumbent-check'
+      ? { servesAfterIncumbentCheck: { runtime, epochKey } }
+      : options.attempt === 'serves-before-abort'
+        ? { servesBeforeAbort: { runtime, epochKey, refusals: servingRefusals } }
+        : (options.attempt ?? {}),
+  );
   const state = {
     releases: [] as SuccessionRelease[],
     adoptedAdmissions: 0,
@@ -214,13 +292,22 @@ async function harness(
       build: { manifest: build, bundleDir: join(root, 'bridge') },
     },
     reconciler: () => ({
-      ...reconcilerStub(options.readiness),
+      ...reconcilerStub(options.readiness, options.recertification),
       notifyObligationChange: () => {
         state.retryNotifications += 1;
       },
     }),
     writers: () => writers,
-    kbDaemon: createDisabledKbDaemonSupervisor('test'),
+    kbDaemon: {
+      ...createDisabledKbDaemonSupervisor('test'),
+      ...(options.kbParkRefusal === undefined
+        ? {}
+        : {
+            parkWriterTurn: async () => {
+              throw new Error(options.kbParkRefusal);
+            },
+          }),
+    },
     launchCoordinator: {
       admissionRevision: () => 0,
       beginSuccessionCommitWindow: (attemptId) => ({
@@ -299,6 +386,8 @@ async function harness(
     runtime,
     db: settled.db,
     epochKey,
+    attemptId: preparation.attemptId,
+    servingRefusals,
     get releases() {
       return state.releases;
     },
@@ -390,6 +479,103 @@ describe('succession commit failure exits', () => {
     expect(test.releases).toEqual([]);
     expect(blockers(test.runtime)[0]?.reason).toContain('Successor missed its serving deadline');
     expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+  });
+
+  it('should release to a successor whose serving record lands after the missed deadline, without reaping it', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: 'serves-after-incumbent-check',
+      pauseMs: 3_000,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.releases.length === 1, 15_000);
+    expect(test.releases[0]).toMatchObject({ kind: 'successor' });
+    const successor = children.at(-1);
+    expect([successor?.exitCode, successor?.signalCode]).toEqual([null, null]);
+    expect(test.adoptedAdmissions).toBe(0);
+  });
+
+  it('should refuse a successor that serves after its incumbent failed the window for another reason', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: 'serves-before-abort',
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    expect(test.releases).toEqual([]);
+    expect(test.servingRefusals).toHaveLength(1);
+    expect(observeSuccessionServing(test.runtime, test.attemptId)).toBeNull();
+    expect(blockers(test.runtime)[0]?.reason).toContain('injected committed-open failure');
+  });
+
+  it('should recognize a retirement its disposition recorded after the historical certificate moves on', async () => {
+    const test = await harness({ failingPoints: () => false, recoveryLaunch: 'fails' });
+    recordRetirementDisposition(test.runtime, {
+      version: 'v1',
+      attemptId: test.attemptId,
+      incumbentEpochKey: test.epochKey,
+      incumbentFingerprint: format.fingerprint,
+      successorFingerprint: format.fingerprint,
+      certificateRevision: 3,
+      certificateJobIds: ['job-1'],
+      custodySettled: true,
+    });
+
+    expect(test.committer.retirementServes(test.attemptId, test.epochKey)).toBe(true);
+    expect(test.committer.retirementServes(test.runtime.ids.uuid(), test.epochKey)).toBe(false);
+    expect(test.committer.retirementServes(test.attemptId, 'other-epoch')).toBe(false);
+  });
+
+  it('should fence launches while a reclaim outlives the admission pause', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: { silent: true },
+      pauseMs: 3_000,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    expect(test.launchFence).toEqual([true, false]);
+  });
+
+  it('should retry, not block, the target when the KB writer turn refuses to park', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      kbParkRefusal: 'KB daemon writer turn cannot park while 1 KB job(s) run.',
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.retryNotifications === 1, 15_000);
+    expect(test.adoptedAdmissions).toBe(1);
+    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(blockers(test.runtime)[0]?.reason).toContain('cannot park while 1 KB job(s) run');
+  });
+
+  it('should retry, not strand, an obligation that began after preparation, before any writer parks', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      recertification: {
+        kind: 'deferred',
+        reason: 'succession obligations began after preparation',
+        blockers: [{ owner: 'discuss', reason: 'live discuss session retains coordinator-local state' }],
+      },
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.retryNotifications === 1, 15_000);
+    expect(test.adoptedAdmissions).toBe(1);
+    expect(test.releases).toEqual([]);
+    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(blockers(test.runtime)[0]?.reason).toContain(
+      'discuss: live discuss session retains coordinator-local state',
+    );
   });
 
   it('should reclaim in place after a same-build recovery child fails to start', async () => {
@@ -511,7 +697,29 @@ describe('succession commit failure exits', () => {
       throw new Error('restart grant is unreadable');
     expect(granted.intent.recoveryRetry).toMatchObject({ kind: 'transient' });
 
-    await test.committer.publishServing(granted.intent.attemptId, true);
+    const attemptId = granted.intent.attemptId;
+    const reconciler = createSuccessionReconciler({
+      runtime: test.runtime,
+      runDir: test.runtime.paths.coral.coordinator.runDir,
+      incumbent: incumbentIdentity,
+      owners: [],
+      epochKey: () => test.epochKey,
+      admissionRevision: () => 0,
+      observeServing: (served) =>
+        served === attemptId
+          ? {
+              epochKey: test.epochKey,
+              controlGeneration: 2,
+              successorInstanceId: incumbentIdentity().instanceId,
+              recordedAt: new Date(test.runtime.time.now()).toISOString(),
+            }
+          : null,
+    });
+    try {
+      expect(await reconciler.commit(attemptId)).toMatchObject({ kind: 'registered' });
+    } finally {
+      reconciler.dispose();
+    }
     expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
   });
 
@@ -548,6 +756,36 @@ describe('succession commit failure exits', () => {
         disposition: 'deferred',
         retryCondition: { kind: 'attempt-expiry' },
         transientRetry: { failures: 1 },
+      },
+    });
+  });
+
+  it('should record an unserved retirement mint whose discard a reader holds, so a later pass retries it', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      targetFingerprint: `sha256:${'f'.repeat(64)}`,
+      certifyCustody: async () => ({}) as unknown as RetiringCustodyCertificate,
+    });
+    const dbDir = realpathSync(test.runtime.paths.coral.store.dbDir);
+    const mint = epochDirectory(dbDir, '2');
+    cpSync(epochDirectory(dbDir, '1'), mint, { recursive: true });
+    writeFileSync(
+      join(mint, '.retirement-attempt.v1.json'),
+      `${JSON.stringify({ version: 'v1', attemptId: test.attemptId })}\n`,
+    );
+    const reader = createSharedFileLockSync(join(mint, '.lock'));
+    try {
+      await test.launch();
+      await waitForCondition(() => test.adoptedAdmissions === 1, 15_000);
+    } finally {
+      reader();
+    }
+
+    expect(readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: {
+        attemptId: null,
+        unservedMintDiscard: { attemptId: test.attemptId, incumbentEpochKey: test.epochKey },
       },
     });
   });

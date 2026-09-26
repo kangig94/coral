@@ -11,12 +11,7 @@ import {
 } from '../../infra/upgrade-intent.js';
 import type { Runtime } from '../../runtime/ports.js';
 import type { Database } from '../../store/db.js';
-import {
-  decodeResolvedStoreEpoch,
-  discardUnservedRetirementMint,
-  encodeResolvedStoreEpoch,
-  inspectCurrentStore,
-} from '../../store/epoch.js';
+import { discardUnservedRetirementMint, encodeResolvedStoreEpoch, inspectCurrentStore } from '../../store/epoch.js';
 import {
   acquireProviderOperationMutationAdmission,
   type ProviderOperationMutationAdmission,
@@ -26,6 +21,7 @@ import {
   joinSuccessionWriterGeneration,
   observeSuccessionServing,
   observeSuccessionWriterGeneration,
+  refuseSuccessionAttempt,
   SuccessionServingCommittedError,
   type SuccessionWriterEntitlement,
   type SuccessionWriterGeneration,
@@ -37,11 +33,11 @@ import { SUCCESSION_PAUSE_ROLLING_WINDOW_MS, type LaunchCoordinator } from '../l
 import type { RetiringCustodyCertificate } from '../services/recovery/epoch-closure.js';
 import type { SuccessionRelease } from '../shutdown.js';
 import type { AttemptAcknowledgment, SuccessionAttempt } from './attempt-child.js';
-import { failedAttemptRetry, recoveryRetryOf, TRANSIENT_RETRY_BASE_MS } from './attempt-retry.js';
+import { failedAttemptRetry, TRANSIENT_RETRY_BASE_MS } from './attempt-retry.js';
 import { recordControllerOpen } from './controller-open.js';
 import type { SuccessionInterposition } from './interposition.js';
 import type { SuccessionPreparation } from './protocol.js';
-import type { SuccessionReconciler } from './reconciler.js';
+import type { SuccessionLaunch, SuccessionReconciler } from './reconciler.js';
 import { observeRetirementDisposition, recordRetirementDisposition } from './retirement-disposition.js';
 
 const ATTEMPT_READY_TIMEOUT_MS = 10_000;
@@ -224,8 +220,8 @@ export type SuccessionShutdownPort = Readonly<{
 }>;
 
 export type SuccessionCommitter = Readonly<{
-  launchPrepared(intent: UpgradeIntent, preparation: SuccessionPreparation): Promise<void>;
-  retirementServes(attemptId: string, incumbentEpochKey: string, servedEpochKey: string): boolean;
+  launchPrepared(intent: UpgradeIntent, preparation: SuccessionPreparation): Promise<SuccessionLaunch>;
+  retirementServes(attemptId: string, incumbentEpochKey: string): boolean;
   publishServing(attemptId: string, recovery: boolean): Promise<void>;
   shutdown: SuccessionShutdownPort;
 }>;
@@ -447,29 +443,19 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
   const childHoldBlockers = (childHold: string | null): { owner: string; reason: string }[] =>
     childHold === null ? [] : [{ owner: 'succession-attempt-child', reason: childHold }];
 
-  function retirementServes(attemptId: string, incumbentEpochKey: string, servedEpochKey: string): boolean {
+  /**
+   * Only evidence fixed before serving may decide this: a serving record is final, so a certificate or epoch address
+   * that moves on after it would refuse the attempt's completion receipt forever.
+   */
+  function retirementServes(attemptId: string, incumbentEpochKey: string): boolean {
     const recorded = observeRetirementDisposition(runtime, attemptId);
     const observed = readUpgradeIntent(runDir);
-    const incumbent = decodeResolvedStoreEpoch(runtime, incumbentEpochKey);
-    const successor = decodeResolvedStoreEpoch(runtime, servedEpochKey);
-    const certificate = ports.retiringEpoch.certificate(incumbentEpochKey);
-    if (
-      recorded.kind !== 'recorded' ||
-      recorded.disposition.incumbentEpochKey !== incumbentEpochKey ||
-      observed.kind !== 'readable' ||
-      observed.intent.attemptId !== attemptId ||
-      recorded.disposition.successorFingerprint !== observed.intent.target.build.storeFormatFingerprint ||
-      incumbent === undefined ||
-      successor === undefined ||
-      certificate === null ||
-      certificate.revision !== recorded.disposition.certificateRevision ||
-      JSON.stringify(certificate.jobIds) !== JSON.stringify(recorded.disposition.certificateJobIds) ||
-      !ports.retiringEpoch.resultsReleased(incumbentEpochKey)
-    )
-      return false;
     return (
-      successor.storeRoot === (incumbent.canonicalStoreRoot ?? incumbent.storeRoot) &&
-      BigInt(successor.epoch) === BigInt(incumbent.epoch) + 1n
+      recorded.kind === 'recorded' &&
+      recorded.disposition.incumbentEpochKey === incumbentEpochKey &&
+      observed.kind === 'readable' &&
+      observed.intent.attemptId === attemptId &&
+      recorded.disposition.successorFingerprint === observed.intent.target.build.storeFormatFingerprint
     );
   }
 
@@ -490,6 +476,31 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     }
   }
 
+  /** Runs before writers park: owners classify from stores that parking closes. */
+  async function recertifyObligations(attemptId: string, deadlineAt: number): Promise<void> {
+    let timeout: TimerHandle | null = null;
+    try {
+      const recertified = await Promise.race([
+        ports.reconciler().recertify(attemptId),
+        new Promise<never>((_resolve, reject) => {
+          timeout = runtime.time.setTimeout(
+            () =>
+              reject(new TransientCommitFailure('Succession obligations were not re-certified before the deadline.')),
+            Math.max(0, deadlineAt - runtime.time.now()),
+          );
+        }),
+      ]);
+      if (recertified.kind === 'prepared') return;
+      const blockers =
+        recertified.kind === 'deferred' && recertified.blockers !== undefined
+          ? recertified.blockers.map(({ owner, reason }) => `${owner}: ${reason}`).join('; ')
+          : recertified.kind;
+      throw new TransientCommitFailure(`Succession obligations changed after preparation: ${blockers}`);
+    } finally {
+      runtime.time.clearTimeout(timeout);
+    }
+  }
+
   async function parkIncumbentWriters(writers: IncumbentWriterPorts, deadlineAt: number): Promise<void> {
     const parkAbort = new AbortController();
     const parkDeadline = runtime.time.setTimeout(
@@ -501,7 +512,12 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       if (ports.kbDaemon.parkWriterTurn === undefined) {
         throw new Error('Incumbent writer park capabilities are unavailable.');
       }
-      await ports.kbDaemon.parkWriterTurn(parkAbort.signal);
+      try {
+        await ports.kbDaemon.parkWriterTurn(parkAbort.signal);
+      } catch (error: unknown) {
+        // A writer that cannot park yet decides nothing about the target.
+        throw new TransientCommitFailure(`KB daemon writer turn did not park: ${formatError(error)}`);
+      }
       parkAbort.signal.throwIfAborted();
     } finally {
       runtime.time.clearTimeout(parkDeadline);
@@ -655,12 +671,18 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       ports.retiringEpoch.recoverLocations(preparation.epochKey);
     }
     if (!recovering) {
+      await recertifyObligations(attempt.attemptId, deadlineAt);
       await parkIncumbentWriters(writers, deadlineAt);
       writer.park();
     }
     if (plan.transfersChildPrincipals) ports.childPrincipals.fenceAuthentication();
     if (!recovering && ports.providerHosts.transfersHosts(preparation)) {
-      await ports.providerHosts.releaseForTransfer(attempt.attemptId);
+      try {
+        await ports.providerHosts.releaseForTransfer(attempt.attemptId);
+      } catch (error: unknown) {
+        // A host that cannot be handed over now decides nothing about the target.
+        throw new TransientCommitFailure(`Provider hosts were not released for the successor: ${formatError(error)}`);
+      }
     }
     if (custody !== null) {
       await authorizeRetirement(
@@ -686,8 +708,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       const serving = observeSuccessionServing(runtime, attempt.attemptId);
       if (serving !== null) {
         if (
-          (serving.epochKey !== preparation.epochKey &&
-            !retirementServes(attempt.attemptId, preparation.epochKey, serving.epochKey)) ||
+          (serving.epochKey !== preparation.epochKey && !retirementServes(attempt.attemptId, preparation.epochKey)) ||
           serving.controlGeneration <= writer.generation.generation
         ) {
           throw new Error('Durable serving record does not match the prepared takeover.');
@@ -717,6 +738,21 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
       : retryAfterFailure(error);
 
+  /**
+   * Decides a failed window before its successor is reaped: a successor that has not recorded serving by now never
+   * can, whether or not it has taken the writer generation yet.
+   */
+  function successorServesBeforeRefusal(window: CommitWindow): boolean {
+    if (window.writer === null) return false;
+    try {
+      return refuseSuccessionAttempt(runtime, window.attempt.attemptId).kind === 'serving';
+    } catch (error: unknown) {
+      // Reclaim still hands back any generation the successor took, and owns that failure.
+      ports.log(`Failed succession window could not refuse its attempt: ${formatError(error)}\n`);
+      return false;
+    }
+  }
+
   /** Hands the window's parked state to whoever owes its reclaim, unless the successor served meanwhile. */
   async function closeFailedWindow(
     window: CommitWindow,
@@ -727,6 +763,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     const { attempt, preparation } = window;
     window.stopForwarding();
     ports.waitHandover.renew();
+    if (successorServesBeforeRefusal(window)) return { kind: 'serving', attempt };
     const reason = formatError(failure);
     await recordReleasePending(attempt.attemptId, {
       blockers: [{ owner: 'succession-commit', reason }],
@@ -734,11 +771,15 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     });
     const childHold = await abortAndReap(attempt);
     if (plan.formatChanging) {
-      try {
-        discardUnservedRetirementMint(runtime, preparation.epochKey, attempt.attemptId);
-      } catch (error: unknown) {
-        if (observeSuccessionServing(runtime, attempt.attemptId) !== null) return { kind: 'serving', attempt };
-        ports.log(`Unserved retirement mint could not be discarded: ${formatError(error)}\n`);
+      const discarded = discardUnservedRetirementMint(runtime, preparation.epochKey, attempt.attemptId);
+      if (discarded.kind === 'serving') return { kind: 'serving', attempt };
+      if (discarded.kind === 'held') {
+        ports.log(`Unserved retirement mint could not be discarded yet: ${discarded.reason}\n`);
+        // Every later write of this intent spreads it, so the record outlives the attempt until a discard succeeds.
+        await recordBestEffort(attempt.attemptId, (intent) => ({
+          ...intent,
+          unservedMintDiscard: { attemptId: attempt.attemptId, incumbentEpochKey: preparation.epochKey },
+        }));
       }
     }
     return {
@@ -853,6 +894,10 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     }
     const writers = writersOrThrow();
     const writer = failure.writer;
+    const pauseRemainingMs = failure.pauseDeadlineAtMs - runtime.time.now();
+    // The admission pause expires on its own clock; while writers stay parked past it, launches must be refused
+    // before any effect rather than fail against a parked writer.
+    if (!recovering && pauseRemainingMs < RECLAIM_RESERVE_MS) ports.setLaunchFenceActive(true);
     const observed = observeSuccessionWriterGeneration(runtime);
     const failedGeneration =
       observed !== null && observed.generation > writer.generation.generation ? observed : undefined;
@@ -865,7 +910,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         ? { reopenStore: () => writers.reopenRetiringStore(failure.preparation.epochKey) }
         : {}),
       incumbentInstanceId: ports.incumbent.instanceId,
-      deadlineMs: Math.max(RECLAIM_RESERVE_MS, failure.pauseDeadlineAtMs - runtime.time.now()),
+      deadlineMs: Math.max(RECLAIM_RESERVE_MS, pauseRemainingMs),
       reclaimKbDaemonWriter: (generation, signal) => reclaimKbDaemonWriter(generation, signal, recovering),
       reportReclaimFailure: (reason) => ports.log(`Same-build writer recovery required: ${reason}\n`),
     });
@@ -1072,7 +1117,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     }
   }
 
-  async function launchPrepared(intent: UpgradeIntent, preparation: SuccessionPreparation): Promise<void> {
+  async function launchPrepared(intent: UpgradeIntent, preparation: SuccessionPreparation): Promise<SuccessionLaunch> {
     if (active !== null) throw new Error('Another succession attempt is active.');
     const attempt = await ports.startAttempt({ intent, preparation });
     try {
@@ -1091,38 +1136,21 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     }
     active = attempt;
     attemptAbort = new AbortController();
-    supervision = superviseCommit(attempt, preparation)
+    const settled = superviseCommit(attempt, preparation)
       .catch((error: unknown) => ports.log(`Succession commit supervision failed: ${formatError(error)}\n`))
       .finally(() => {
         active = null;
         supervision = null;
       });
+    supervision = settled;
+    return { settled };
   }
 
+  /** The reconciler's cadence retries whatever these attempts leave unsettled, since serving is already final. */
   async function publishServing(attemptId: string, recovery: boolean): Promise<void> {
-    if (recovery) {
-      await updateAttempt(attemptId, (intent) => ({
-        ...intent,
-        incumbent: ports.reconciler().incumbent(),
-        attemptId: null,
-        attemptChild: null,
-        attemptOwner: null,
-        attemptDeadline: null,
-        recoveryAttemptId: null,
-        recoveryBuildSetId: null,
-        recoveryRetry: null,
-        successionPreparation: null,
-        disposition: 'deferred',
-        blockers: [{ owner: 'succession-commit', reason: 'same-build recovery serves after failed target commit' }],
-        ...failedAttemptRetry(intent, recoveryRetryOf(intent), 'successor committed-open failure', runtime.time.now()),
-        completionReceipt: null,
-      }));
-      ports.reconciler().notifyObligationChange();
-      return;
-    }
     for (let attempt = 0; attempt < SERVING_RECEIPT_ATTEMPTS; attempt++) {
       const decision = await ports.reconciler().commit(attemptId);
-      if (decision.kind === 'committed') return;
+      if (decision.kind === (recovery ? 'registered' : 'committed')) return;
       await runtime.time.sleep(SERVING_RECEIPT_RETRY_MS);
     }
     ports.log('Durable succession serving could not publish its completion receipt.\n');

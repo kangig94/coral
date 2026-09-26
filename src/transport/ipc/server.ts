@@ -33,6 +33,7 @@ import {
   type RpcMethodSpec,
 } from '../rpc/catalog.js';
 import { readIpcOperationalSpec, type IpcOperationalSpec } from '../rpc/operational-catalog.js';
+import { JOBS_WAIT_EXTENSIONS } from '../rpc/jobs.js';
 import { authorizationFailurePayload, type CatalogRequestExecution, executeCatalogRequest } from '../dispatch.js';
 import { writeAuditEvent, writeAuthorizationDecisionAudit } from '../../infra/audit-log.js';
 import { buildJsonRpcError } from '../../infra/json-rpc.js';
@@ -325,6 +326,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
   instanceId: string;
   pid: number;
   incarnation?: ProcessIncarnation;
+  jobsWaitExtensions: readonly string[];
 } {
   const health = rpcPorts.health.read();
   return {
@@ -336,6 +338,7 @@ function readPingSnapshot(rpcPorts: HttpHandlerPorts): {
     instanceId: health.instanceId,
     pid: health.pid,
     ...(health.incarnation === undefined ? {} : { incarnation: health.incarnation }),
+    jobsWaitExtensions: JOBS_WAIT_EXTENSIONS,
   };
 }
 
@@ -638,6 +641,16 @@ export function enableInheritedIpcCleanup(listener: IpcListener): void {
   for (const compatibility of listener.compatibilityListeners ?? []) enableInheritedIpcCleanup(compatibility);
 }
 
+/** A subscriber that declared `supportsHandover` is told of a handover by its own stream's notice. */
+function declaresHandover(request: JsonRpcRequestEnvelope): boolean {
+  return (
+    typeof request.params === 'object' &&
+    request.params !== null &&
+    'supportsHandover' in request.params &&
+    request.params.supportsHandover === true
+  );
+}
+
 async function streamSubscription(
   socket: Socket,
   request: JsonRpcRequestEnvelope,
@@ -645,8 +658,15 @@ async function streamSubscription(
   invocation: Extract<CatalogRequestExecution, { kind: 'subscription' }>,
   controller: AbortController,
   options: { writeDrainTimeoutMs: number },
+  handover: AbortSignal | null,
 ): Promise<void> {
   const iterator = invocation.notifications[Symbol.asyncIterator]();
+  let onHandover = (): void => {};
+  const handedOver = new Promise<'handover'>((resolve) => {
+    onHandover = () => resolve('handover');
+  });
+  if (handover?.aborted === true) onHandover();
+  else handover?.addEventListener('abort', onHandover, { once: true });
   let released = false;
   const releaseSubscription = () => {
     if (released) {
@@ -676,7 +696,17 @@ async function streamSubscription(
 
   try {
     while (true) {
-      const next = await iterator.next();
+      const next = await Promise.race([iterator.next(), handedOver]);
+      if (next === 'handover') {
+        // Every shipped CLI retries this refusal and resubscribes with the cursor it holds, which the successor
+        // now answers; a plain close would read to it as a stream that ended without its terminal.
+        await writeEnvelope(
+          socket,
+          requestErrorResponse(request.id, lifecycleRefusalResult.message, lifecycleRefusalResult),
+          { drainTimeoutMs: options.writeDrainTimeoutMs },
+        );
+        break;
+      }
       if (next.done || socket.destroyed || socket.writableEnded) {
         break;
       }
@@ -695,6 +725,7 @@ async function streamSubscription(
       }
     }
   } finally {
+    handover?.removeEventListener('abort', onHandover);
     releaseSubscription();
   }
 
@@ -766,7 +797,11 @@ async function dispatchFrame(
     }
 
     if (operationalSpec.dispatch.kind === 'health') {
-      await finishUnaryResponse({ kind: 'response', id: request.id, result: rpcPorts.health.read() });
+      await finishUnaryResponse({
+        kind: 'response',
+        id: request.id,
+        result: { ...rpcPorts.health.read(), jobsWaitExtensions: JOBS_WAIT_EXTENSIONS },
+      });
       return;
     }
 
@@ -890,7 +925,15 @@ async function dispatchFrame(
     }
 
     socket.off('close', abortDispatchOnClose);
-    await streamSubscription(socket, request, entry, invocation, subscriptionController, options);
+    await streamSubscription(
+      socket,
+      request,
+      entry,
+      invocation,
+      subscriptionController,
+      options,
+      declaresHandover(request) ? null : rpcPorts.jobs.waitHandoverSignal(),
+    );
   } catch (error: unknown) {
     if (subscriptionController?.signal.aborted || socket.destroyed) {
       return;
@@ -904,6 +947,18 @@ async function dispatchFrame(
     socket.off('close', abortDispatchOnClose);
     finishRequest();
   }
+}
+
+/**
+ * Measured on Node 26.3.1: `pause()` leaves a reading handle reading, and the bytes it reads before a handle transfer
+ * queued behind another converts are dropped with the parent's socket (19 of 20 burst-forwarded frames lost).
+ * Stopped here, they stay in the kernel for the process the socket reaches.
+ */
+function stopHandleReads(socket: Socket): void {
+  const handle = (socket as unknown as { _handle?: { reading?: boolean; readStop?: () => number } | null })._handle;
+  if (handle?.readStop === undefined) return;
+  handle.reading = false;
+  handle.readStop();
 }
 
 export function createIpcServer(rpcPorts: HttpHandlerPorts, options: IpcServerOptions = {}): IpcListener {
@@ -1009,6 +1064,7 @@ function createTrackedIpcListener(
     const transferPending = (): void => {
       if (forwardAccepted === null || socket.destroyed) return;
       socket.pause();
+      stopHandleReads(socket);
       socket.off('data', onData);
       socket.off('close', onClose);
       socket.off('error', onError);

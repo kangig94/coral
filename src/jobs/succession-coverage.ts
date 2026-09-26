@@ -1,11 +1,13 @@
 import type { Database } from '../store/db.js';
 import { decodeBody, type StoreReadContext } from '../store/body-codec.js';
+import type { CustodyEntry } from '../store/custody-ledger.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
 
 export function readSuccessionLiveJobIds(
   db: Database,
   pendingLaunchIds: readonly string[],
   carrierIds: readonly string[],
+  custodyJobIds: readonly string[],
 ): readonly string[] {
   const rows = db
     .prepare<
@@ -13,7 +15,26 @@ export function readSuccessionLiveJobIds(
       { job_id: string }
     >("SELECT job_id FROM projection_jobs WHERE phase NOT IN ('completed', 'error', 'aborted')")
     .all();
-  return [...new Set([...rows.map((row) => row.job_id), ...pendingLaunchIds, ...carrierIds])];
+  return [...new Set([...rows.map((row) => row.job_id), ...pendingLaunchIds, ...carrierIds, ...custodyJobIds])];
+}
+
+/**
+ * Jobs of the serving epoch whose recorded external effect is neither bound to an identity nor proven absent: a
+ * process may exist that no projection row still names. An unreadable entry may be any of them, so it throws.
+ */
+export function readSuccessionCustodyJobIds(
+  entries: readonly CustodyEntry[],
+  epoch: Readonly<{ epochPath: string; lineageKey: string | null }>,
+): readonly string[] {
+  return entries.flatMap((entry) => {
+    if (entry.kind === 'unreadable') throw new Error(`Custody entry is unreadable: ${entry.path}`);
+    if (entry.kind !== 'holding') return [];
+    const intent = entry.intent;
+    const inEpoch =
+      intent.epochKey === undefined ? intent.epoch === epoch.epochPath : intent.epochKey === epoch.lineageKey;
+    const jobId = intent.jobId ?? (intent.owner === 'durable-cli' ? intent.operationId : undefined);
+    return inEpoch && jobId !== undefined ? [jobId] : [];
+  });
 }
 
 export function readSuccessionJobIdsByKind(db: Database, jobKind: 'workflow' | 'kb'): readonly string[] {

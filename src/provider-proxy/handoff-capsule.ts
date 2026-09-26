@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import { readBoundedFileAtIdentity } from '../infra/bounded-file-read.js';
 import {
+  providerHandoffCapsuleFileSuffix,
   providerHandoffCapsulePath,
   type ProviderBootstrapCapsulePathOptions,
   type ProviderProxyEndpointIdentity,
@@ -368,6 +369,25 @@ export function currentHandoffCapsulePath(
   options?: ProviderBootstrapCapsulePathOptions,
 ): string {
   return providerHandoffCapsulePath(identity, CURRENT_HANDOFF_CAPSULE_VERSION, options);
+}
+
+/**
+ * Where a capsule read at `path` goes when this build rewrites it. A rewrite emits only the current generation,
+ * and current-generation bytes under an older generation's name are what an older build opens and cannot parse.
+ */
+export function currentHandoffCapsulePathBeside(
+  path: string,
+  readVersion: RedeemableHandoffCapsule['version'],
+): string {
+  if (readVersion === CURRENT_HANDOFF_CAPSULE_VERSION) return path;
+  const readName = `.${providerHandoffCapsuleFileSuffix(readVersion)}`;
+  if (!path.endsWith(readName)) {
+    throw new HandoffCapsuleError(
+      'handoff_capsule_non_canonical_path',
+      `Handoff capsule ${path} is not named for its generation.`,
+    );
+  }
+  return `${path.slice(0, -readName.length)}.${providerHandoffCapsuleFileSuffix(CURRENT_HANDOFF_CAPSULE_VERSION)}`;
 }
 
 export type HandoffCapsuleV1 = z.output<typeof handoffCapsuleV1Schema>;

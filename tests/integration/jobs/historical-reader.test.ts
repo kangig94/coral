@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -6,7 +6,7 @@ import { newRawDatabase } from '../../helpers/test-db.js';
 
 import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
-import { seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
+import { refreshHistoricalEpoch, seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
 import { readOrCreateEpochKey } from '../../../src/store/epoch-key.js';
 import { protectStoreEpoch } from '../../../src/store/epoch-protection.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
@@ -188,6 +188,30 @@ describe('historical job readers', () => {
     });
   }
 
+  it('keeps a retired epoch certified when a later refresh cannot read its store', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.close();
+    const index = new JobLocationIndex(runtime, root);
+    const result = seedHistoricalEpoch(
+      runtime,
+      index,
+      { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+      'lineage-old:7',
+      fingerprints[0],
+      join(root, 'results'),
+      storage,
+      [],
+      true,
+    );
+    expect(result.kind).toBe('complete');
+    writeFileSync(join(epochDir, 'store.db'), 'not a sqlite database');
+
+    refreshHistoricalEpoch(index, 'lineage-old:7', ['any-job']);
+
+    expect(index.certificate('lineage-old:7')).not.toBeNull();
+    expect(index.resultsReleased('lineage-old:7')).toBe(true);
+  });
+
   it('keeps a known id unresolved when its retained root is missing', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
     db.close();
@@ -316,6 +340,7 @@ describe('historical job readers', () => {
         waitStream: async function* () {},
       },
       () => false,
+      () => 'pending',
     );
     expect(addressing.detail('finished')).toMatchObject({
       status: { jobId: 'finished', phase: 'completed' },

@@ -135,6 +135,8 @@ function createHarness(): {
       abort: control.abortJobs,
       list: () => [],
       detail: (jobId: string) => store.loadJobProjectionDetail(jobId),
+      unknownJobDisposition: () => 'not-found',
+      outcomeUnrecoverable: () => [],
       validateWait: () => null,
       waitStream: async function* () {},
     },

@@ -2,21 +2,23 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createLifecycle, createRuntimeState } from '#src/coordinator/lifecycle.js';
+import { createLifecycle, createRuntimeState, StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
 import {
   installSuccessionAttemptChild,
   type SuccessionAttemptChild,
 } from '#src/coordinator/succession/attempt-child.js';
 import * as successionProtocol from '#src/coordinator/succession/protocol.js';
 import * as upgradeIntent from '#src/infra/upgrade-intent.js';
+import { SuccessionAttemptStartupHoldError } from '#src/coordinator/succession/startup.js';
 import { createStoreServicesRef } from '#src/coordinator/composition/store-services-ref.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
-import type { BackendInfo } from '#src/infra/backend-discovery.js';
+import { writeBackendInfo, type BackendInfo } from '#src/infra/backend-discovery.js';
+import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { JobStore } from '#src/jobs/store.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
@@ -26,10 +28,19 @@ import {
   retirementMintDisposition,
   settleStoreEpoch,
   type ResolvedStoreEpoch,
+  type StoreEpochOptions,
 } from '#src/store/epoch.js';
+import { joinSuccessionWriterGeneration, recordSuccessionServing } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 import type { IpcListener } from '#src/transport/ipc/server.js';
+import * as handoffRouting from '#src/coordinator/handoff-routing/runner.js';
+import {
+  ACTIVE_STORE_SELECTION_VERSION,
+  encodeActiveStoreSelection,
+  resolveActiveStoreRecordPaths,
+} from '#src/store/active-store-selection.js';
 import { permissiveProviderLookupPort } from '#tests/helpers/append-context.js';
+import { newRawDatabase } from '#tests/helpers/test-db.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 
 const roots: string[] = [];
@@ -43,6 +54,8 @@ afterEach(() => {
 function lifecycleHarness(
   writeBackendInfoFn: (info: BackendInfo) => boolean | void,
   successionAttemptChild: SuccessionAttemptChild | null = null,
+  authorizeStartupMint: StoreEpochOptions['authorizeMint'] = ({ incumbent, observedEpochCount }) =>
+    incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'coral-lifecycle-store-epoch-'));
   const pluginRoot = join(root, 'plugin');
@@ -78,13 +91,13 @@ function lifecycleHarness(
     log: () => {},
   };
   const ipcServer: IpcListener = { server: createNetServer(), sockets: new Set(), socketPath: null };
+  const registerBuiltInProvidersFn = vi.fn();
   const lifecycle = createLifecycle(
     {
       storeFormat,
       identity,
       runtime,
-      authorizeStartupMint: ({ incumbent, observedEpochCount }) =>
-        incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
+      authorizeStartupMint,
       backendPid: process.pid,
       runtimeState,
       idleTimer: {
@@ -143,7 +156,7 @@ function lifecycleHarness(
         init: async () => {},
         dispose: async () => {},
       }),
-      registerBuiltInProvidersFn: vi.fn(),
+      registerBuiltInProvidersFn,
       recoverPersistedDiscussFn: vi.fn(async () => []),
       hooks: {
         onShutdown: vi.fn(async () => {}),
@@ -173,6 +186,7 @@ function lifecycleHarness(
     runtime,
     storeFormat,
     identity,
+    registerBuiltInProvidersFn,
   };
 }
 
@@ -301,6 +315,219 @@ describe('lifecycle store epoch handoff', () => {
       expect(harness.scheduleStoreEpochSweepFn).not.toHaveBeenCalled();
       expect(listStoreEpochs(runtime).map(({ epoch }) => epoch)).toEqual(['1']);
       expect(harness.runtimeState.getLifecycle()).toBe('stopped');
+    } finally {
+      await disposeHarness(harness);
+    }
+  });
+
+  it('should leave a completed upgrade whose successor answers to the bind instead of holding the contender', async () => {
+    const writeBackendInfoFn = vi.fn((_info: BackendInfo) => true);
+    const harness = lifecycleHarness(writeBackendInfoFn);
+    const { runtime, storeFormat, identity } = harness;
+    const successorBuild = {
+      version: '0.10.99',
+      buildSetId: '223e4567-e89b-42d3-a456-426614174000',
+      bundleHash: 'fedcba9876543210',
+      cliBundleHash: 'fedcba9876543210',
+      claudeAppserverBundleHash: 'fedcba9876543210',
+      durableWrapperBundleHash: 'fedcba9876543210',
+      flavor: identity.flavor,
+      storeFormatFingerprint: storeFormat.fingerprint,
+    };
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat,
+      build: successorBuild,
+      authorizeMint: ({ incumbent, observedEpochCount }) =>
+        incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
+    });
+    settled.db.close();
+    const generation = joinSuccessionWriterGeneration(runtime, settled.store).generation;
+    const epochKey = encodeResolvedStoreEpoch(runtime, settled.store);
+    const recordedAt = new Date(runtime.time.now()).toISOString();
+    recordSuccessionServing(runtime, generation, {
+      attemptId: 'completed-attempt',
+      epochKey,
+      successorInstanceId: 'serving-successor',
+      controlGeneration: generation.generation,
+      recordedAt,
+    });
+    const incarnation = probeProcessIncarnation(process.pid);
+    if (incarnation === null) throw new Error('this process has no observable incarnation');
+    const written = await upgradeIntent.compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'completed-request',
+      incumbent: {
+        instanceId: 'retired-incumbent',
+        pid: 1,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: '0000000000000000',
+        flavor: 'prod',
+      },
+      target: { build: successorBuild, pluginRootLabel: '/installed/successor' },
+      attemptId: 'completed-attempt',
+      attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: 1, incarnation: null },
+      attemptChild: null,
+      disposition: 'completed',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: {
+        kind: 'serving',
+        attemptId: 'completed-attempt',
+        successor: { instanceId: 'serving-successor', pid: process.pid, incarnation, build: successorBuild },
+        epochKey,
+        controlGeneration: generation.generation,
+        acceptedObligations: [],
+        recordedAt,
+      },
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    writeBackendInfo(
+      {
+        pid: process.pid,
+        port: 4100,
+        socketPath: runtime.paths.coral.coordinator.socketPath,
+        host: '127.0.0.1',
+        token: 'successor-token',
+        bootToken: 'successor-boot-token',
+        version: successorBuild.version,
+        bundleHash: successorBuild.bundleHash,
+        flavor: 'prod',
+        instanceId: 'serving-successor',
+        namespace: identity.namespace,
+        startedAt: 1,
+      },
+      runtime,
+    );
+
+    try {
+      await harness.lifecycle.start();
+      const intent = upgradeIntent.readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      expect(intent).toMatchObject({ kind: 'readable', intent: { revision: written.intent.revision, blockers: [] } });
+    } finally {
+      await disposeHarness(harness);
+    }
+  });
+
+  it('should hand a newer selected build the store before binding anything', async () => {
+    const harness = lifecycleHarness(vi.fn((_info: BackendInfo) => true));
+    const { runtime, storeFormat, identity } = harness;
+    const selectionFile = resolveActiveStoreRecordPaths(runtime).selectionFile;
+    mkdirSync(dirname(selectionFile), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      selectionFile,
+      encodeActiveStoreSelection({
+        version: ACTIVE_STORE_SELECTION_VERSION,
+        manifest: {
+          version: '99.0.0',
+          buildSetId: '323e4567-e89b-42d3-a456-426614174000',
+          bundleHash: 'aaaaaaaaaaaaaaaa',
+          cliBundleHash: 'aaaaaaaaaaaaaaaa',
+          claudeAppserverBundleHash: 'aaaaaaaaaaaaaaaa',
+          durableWrapperBundleHash: 'aaaaaaaaaaaaaaaa',
+          flavor: identity.flavor,
+          storeFormatFingerprint: storeFormat.fingerprint,
+        },
+        bundleDir: join(identity.pluginRoot, '..', 'newer', 'bridge'),
+        activeStoreFingerprint: storeFormat.fingerprint,
+      }),
+      { mode: 0o600 },
+    );
+    vi.spyOn(handoffRouting, 'validateForeignHandoffTarget').mockReturnValue({
+      kind: 'validated',
+      target: { build: { version: '99.0.0' } },
+    } as never);
+
+    try {
+      await expect(harness.lifecycle.start()).rejects.toBeInstanceOf(StartupStoreHandoffError);
+      expect(harness.registerBuiltInProvidersFn).not.toHaveBeenCalled();
+    } finally {
+      await disposeHarness(harness);
+    }
+  });
+
+  it('should observe a withheld retirement mint again within the same startup instead of failing it', async () => {
+    const decisions: (ReturnType<typeof retirementMintDisposition> | null)[] = [];
+    const authorize = vi.fn<NonNullable<StoreEpochOptions['authorizeMint']>>(({ incumbentEpochKey }) => {
+      const disposition = decisions.length === 0 ? null : retirementMintDisposition('unopenable', incumbentEpochKey);
+      decisions.push(disposition);
+      return disposition;
+    });
+    const harness = lifecycleHarness(
+      vi.fn((_info: BackendInfo) => true),
+      null,
+      authorize,
+    );
+    const { runtime, storeFormat, identity } = harness;
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat,
+      build: {
+        version: identity.version,
+        buildSetId: identity.buildSetId,
+        bundleHash: identity.bundleHash,
+        cliBundleHash: identity.cliBundleHash,
+        claudeAppserverBundleHash: identity.claudeAppserverBundleHash,
+        durableWrapperBundleHash: identity.durableWrapperBundleHash,
+        flavor: identity.flavor,
+        storeFormatFingerprint: storeFormat.fingerprint,
+      },
+      authorizeMint: ({ incumbent, observedEpochCount }) =>
+        incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
+    });
+    settled.db.close();
+    const unreadable = newRawDatabase(settled.store.path);
+    unreadable.exec(`UPDATE meta SET value = 'sha256:${'0'.repeat(64)}' WHERE key = 'store_format_fingerprint'`);
+    unreadable.close();
+    vi.spyOn(runtime.time, 'sleep').mockResolvedValue(undefined);
+
+    try {
+      await harness.lifecycle.start();
+      expect(decisions.map((decision) => decision?.kind ?? null)).toEqual([null, 'unopenable']);
+      expect(listStoreEpochs(runtime).map(({ epoch }) => epoch)).toContain('2');
+    } finally {
+      await disposeHarness(harness);
+    }
+  });
+
+  it('should refuse a retirement mint withheld on both observations with a typed hold naming the next startup', async () => {
+    const harness = lifecycleHarness(
+      vi.fn((_info: BackendInfo) => true),
+      null,
+      () => null,
+    );
+    const { runtime, storeFormat, identity } = harness;
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat,
+      build: {
+        version: identity.version,
+        buildSetId: identity.buildSetId,
+        bundleHash: identity.bundleHash,
+        cliBundleHash: identity.cliBundleHash,
+        claudeAppserverBundleHash: identity.claudeAppserverBundleHash,
+        durableWrapperBundleHash: identity.durableWrapperBundleHash,
+        flavor: identity.flavor,
+        storeFormatFingerprint: storeFormat.fingerprint,
+      },
+      authorizeMint: ({ incumbent, observedEpochCount }) =>
+        incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
+    });
+    settled.db.close();
+    const unreadable = newRawDatabase(settled.store.path);
+    unreadable.exec(`UPDATE meta SET value = 'sha256:${'0'.repeat(64)}' WHERE key = 'store_format_fingerprint'`);
+    unreadable.close();
+    vi.spyOn(runtime.time, 'sleep').mockResolvedValue(undefined);
+
+    try {
+      const refused = await harness.lifecycle.start().then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(refused).toBeInstanceOf(SuccessionAttemptStartupHoldError);
+      expect((refused as SuccessionAttemptStartupHoldError).hold).toMatchObject({
+        kind: 'retirement-mint-withheld',
+        attemptId: null,
+      });
+      expect((refused as Error).message).toContain('the next startup observes it again');
     } finally {
       await disposeHarness(harness);
     }

@@ -88,6 +88,7 @@ export type RawCoordinatorHealth = {
   incarnation?: ProcessIncarnation;
   components?: TransportRuntimeComponentStatus[];
   env?: Readonly<Record<string, string>>;
+  jobsWaitExtensions?: readonly string[];
 };
 
 export type VerifiedBackendInfo = {
@@ -115,6 +116,8 @@ export type EnsuredIpcClient = IpcClient & {
   readonly host: string;
   readonly port: number;
   readonly version: string;
+  /** Empty for a coordinator that advertises none, which is every build through v0.10.13. */
+  readonly jobsWaitExtensions: readonly string[];
 };
 
 type EnsuredClientAuthMode = 'boot' | 'none';
@@ -214,6 +217,7 @@ function summarizeBackend(
     host: info.host,
     port: info.port,
     version: info.version,
+    jobsWaitExtensions: health.jobsWaitExtensions ?? [],
   });
 }
 
@@ -283,6 +287,8 @@ const rawCoordinatorHealthSchema = z
     incarnation: processIncarnationSchema.optional(),
     components: z.array(runtimeComponentStatusSchema).optional(),
     env: z.record(z.string()).optional(),
+    // An unreadable advertisement is no advertisement: it may withhold an extension, never reject the coordinator.
+    jobsWaitExtensions: z.array(z.string()).optional().catch(undefined),
   })
   .passthrough();
 
@@ -751,7 +757,8 @@ function endedStartupMessage(
       }
       return (
         'The spawned Coral coordinator stopped, and this address does not answer health requests ' +
-        `(${reading.cause}). Verify the socket owner, force-kill it if it is still alive, then retry.`
+        `(${reading.cause}). No live recorded coordinator could be identified behind it, so Coral signaled ` +
+        'nothing; retry the command.'
       );
     }
     default:

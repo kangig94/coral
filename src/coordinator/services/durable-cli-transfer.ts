@@ -25,10 +25,10 @@ const durableCliTransferSchema = z
           custodyIntentId: z.string().uuid(),
           runtimeMeta: durableCliProcessRuntimeMetaSchema,
         })
-        .strict(),
+        .passthrough(),
     ),
   })
-  .strict();
+  .passthrough();
 
 export type DurableCliTransfer = z.infer<typeof durableCliTransferSchema>;
 
@@ -51,7 +51,7 @@ const durableCliRecoveryGrantSchema = z
     incumbentBuildSetId: z.string().min(1),
     transfer: durableCliTransferSchema,
   })
-  .strict();
+  .passthrough();
 
 export function prepareDurableCliRecoveryGrant(
   runtime: Pick<Runtime, 'storage' | 'ids'>,

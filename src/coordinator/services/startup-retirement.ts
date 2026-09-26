@@ -34,8 +34,15 @@ import {
 
 const UNOPENABLE_STARTUP_ATTEMPTS = 2;
 
+/** A startup that observes the same unopenable epoch again after this long counts that observation as an attempt. */
+export const RETIREMENT_PATIENCE_INTERVAL_MS = 5_000;
+
 const retirementPatienceSchema = z
-  .object({ startupId: z.string(), attempts: z.number().int().nonnegative() })
+  .object({
+    startupId: z.string(),
+    attempts: z.number().int().nonnegative(),
+    countedAt: z.number().int().nonnegative().optional(),
+  })
   .passthrough();
 
 type RetirementPatience = z.infer<typeof retirementPatienceSchema>;
@@ -362,10 +369,18 @@ export function createStartupMintAuthorizer(
     } catch {
       // An unreadable patience record starts a fresh observation count.
     }
-    const attempts = previous?.startupId === startupId ? previous.attempts : (previous?.attempts ?? 0) + 1;
+    const now = runtime.time.now();
+    const repeated =
+      previous !== null &&
+      previous.startupId === startupId &&
+      (previous.countedAt === undefined || now - previous.countedAt < RETIREMENT_PATIENCE_INTERVAL_MS)
+        ? previous
+        : null;
+    const attempts = repeated?.attempts ?? (previous?.attempts ?? 0) + 1;
+    const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
     runtime.storage.mkdirSync(dirname(attemptsPath), { recursive: true, mode: 0o700 });
     if (
-      !runtime.storage.writeAtomicDurableSync(attemptsPath, `${JSON.stringify({ startupId, attempts })}\n`, {
+      !runtime.storage.writeAtomicDurableSync(attemptsPath, `${JSON.stringify({ startupId, attempts, countedAt })}\n`, {
         encoding: 'utf8',
         mode: 0o600,
       })

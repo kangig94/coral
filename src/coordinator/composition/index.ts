@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { ZodError } from 'zod';
 import { reconcileStartupCustody } from '../services/recovery/custody-reconciliation.js';
+import { readCustodyLedger } from '../../store/custody-ledger.js';
 import { RetiringCustodyCertificate, settleSupersededEpochClosures } from '../services/recovery/epoch-closure.js';
 import { createEpochClosureRetryPlan } from '../services/recovery/epoch-closure-retry-plan.js';
 import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
@@ -27,7 +28,7 @@ import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import { createJobLocationRecoveryRetryPlan, recoverJobLocations } from '../../jobs/location-recovery.js';
-import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { hasHistoricalSource, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
 import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js';
@@ -130,9 +131,11 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import {
   decodeResolvedStoreEpoch,
+  discardUnservedRetirementMint,
   encodeResolvedStoreEpoch,
   inspectCurrentStore,
   listStoreEpochs,
+  observeResolvedStoreEpoch,
   resolveCurrentStoreEpoch,
   sweepStoreEpochsPostReady,
   type ResolvedStoreEpoch,
@@ -172,6 +175,7 @@ import {
   readSuccessionJobIdsByKind,
   readSuccessionLiveJobIds,
   readJobLaunchOriginNamespace,
+  readSuccessionCustodyJobIds,
 } from '../../jobs/succession-coverage.js';
 import { listProjectionSessionEntries } from '../../sessions/projections.js';
 import type { JsonValue } from '../../infra/json-value.js';
@@ -1455,6 +1459,18 @@ export function createCoordinatorCore(
         join(runtime.paths.coral.store.dbDir, 'store.db'),
         join(runtime.paths.coral.generation.legacyDataRoot, 'store', 'store.db'),
       ].some((path) => runtime.storage.existsSync(path)),
+    (epochKey) => {
+      if (!hasHistoricalSource(jobLocationIndex, epochKey)) return 'decided';
+      let lineageKey: string | undefined;
+      try {
+        lineageKey = observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
+      } catch {
+        return 'pending';
+      }
+      if (lineageKey === undefined) return 'pending';
+      const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, lineageKey);
+      return closure.kind === 'recorded' ? 'decided' : 'pending';
+    },
   );
 
   let waitHandover = new AbortController();
@@ -1490,6 +1506,8 @@ export function createCoordinatorCore(
         return jobs;
       },
       detail: (jobId) => jobAddressing.detail(jobId),
+      unknownJobDisposition: () => jobAddressing.unknownJobDisposition(),
+      outcomeUnrecoverable: (jobIds) => jobAddressing.outcomeUnrecoverable(jobIds),
     },
     workflows: {
       execute: async (request, ctx) => {
@@ -1589,6 +1607,52 @@ export function createCoordinatorCore(
     return rememberedSelfIncarnation;
   };
 
+  let custodyReconciliationArmed = false;
+  let lastCustodyReconciliationError: string | null = null;
+  const reconcileCustody = (): void => {
+    const store = world.storeServicesRef.tryGet();
+    if (store === null) {
+      custodyReconciliationArmed = false;
+      return;
+    }
+    try {
+      const dbDir = runtime.paths.coral.store.dbDir;
+      const epoch = selectedStoreEpochPath === null ? resolveCurrentStoreEpoch(runtime.storage, dbDir) : null;
+      if (selectedStoreEpochPath === null && epoch === null) {
+        throw new Error('Custody reconciliation requires a selected store epoch.');
+      }
+      const entries = reconcileStartupCustody(
+        runtime,
+        runtime.paths.coral.coordinator.runDir,
+        runtime.time.now(),
+        store.progressStore.getDb(),
+        selectedStoreEpochPath ?? join(dbDir, `epoch-${epoch}`),
+        {
+          readProcessIncarnation: (pid) =>
+            runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
+          capsuleExists: (path) => runtime.storage.existsSync(path),
+        },
+      );
+      lastCustodyReconciliationError = null;
+      if (!entries.some((entry) => entry.kind === 'holding' || entry.kind === 'unreadable')) {
+        custodyReconciliationArmed = false;
+        return;
+      }
+    } catch (error: unknown) {
+      const reason = formatError(error);
+      if (reason !== lastCustodyReconciliationError)
+        world.log(`Custody reconciliation remains undecidable: ${reason}\n`);
+      lastCustodyReconciliationError = reason;
+    }
+    const timer = runtime.time.setTimeout(reconcileCustody, 1_000);
+    timer.unref?.();
+  };
+  const armCustodyReconciliation = (): void => {
+    if (custodyReconciliationArmed) return;
+    custodyReconciliationArmed = true;
+    reconcileCustody();
+  };
+
   const readSuccessionJobs = () => {
     const db = getProgressStore().getDb();
     const operationIds = [
@@ -1602,12 +1666,26 @@ export function createCoordinatorCore(
         .map((record) => record.host.ownerJobId)
         .filter((jobId): jobId is string => typeof jobId === 'string') ?? [];
     const recoveryIds = [...(lifecycleController?.getRecoveryRegistry() ?? [])].map(([jobId]) => jobId);
-    return readSuccessionLiveJobIds(db, world.launchCoordinator.pendingLaunchJobIds(), [
-      ...world.launchCoordinator.activeLaunchPermits().map((permit) => permit.jobId),
-      ...operationIds,
-      ...hostIds,
-      ...recoveryIds,
-    ]);
+    const custodyIds =
+      selectedStoreEpochPath === null
+        ? []
+        : readSuccessionCustodyJobIds(readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir), {
+            epochPath: selectedStoreEpochPath,
+            lineageKey: selectedStoreEpochKey,
+          });
+    // Only custody reconciliation binds or proves absent what keeps these ids live, so it must be running.
+    if (custodyIds.length > 0) armCustodyReconciliation();
+    return readSuccessionLiveJobIds(
+      db,
+      world.launchCoordinator.pendingLaunchJobIds(),
+      [
+        ...world.launchCoordinator.activeLaunchPermits().map((permit) => permit.jobId),
+        ...operationIds,
+        ...hostIds,
+        ...recoveryIds,
+      ],
+      custodyIds,
+    );
   };
   const liveProviderHosts = () => {
     if (localProviderHosts.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
@@ -1896,6 +1974,8 @@ export function createCoordinatorCore(
       kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn !== undefined &&
       kbDaemonSupervisorWithTrackedShutdown.reclaimWriterTurn !== undefined,
     launchPrepared: successionCommitter.launchPrepared,
+    discardUnservedMint: (incumbentEpochKey, attemptId) =>
+      discardUnservedRetirementMint(runtime, incumbentEpochKey, attemptId),
     subscribeObligationChanges: (notify) => {
       notifySuccessionObligationChange = notify;
       const unsubscribe = subscribeSuccessionObligationChanges(world.eventBus, world.launchCoordinator, notify);
@@ -2412,41 +2492,7 @@ export function createCoordinatorCore(
     listExecutionServices: services.listExecutionServices,
     connectProviderOperationRecovery: services.connectProviderOperationRecovery,
     reconcileProviderOperationsAtStartup: services.reconcileProviderOperationsAtStartup,
-    reconcileCustodyAtStartup: () => {
-      let lastError: string | null = null;
-      const reconcile = (): void => {
-        const store = world.storeServicesRef.tryGet();
-        if (store === null) return;
-        try {
-          const dbDir = runtime.paths.coral.store.dbDir;
-          const epoch = selectedStoreEpochPath === null ? resolveCurrentStoreEpoch(runtime.storage, dbDir) : null;
-          if (selectedStoreEpochPath === null && epoch === null) {
-            throw new Error('Custody reconciliation requires a selected store epoch.');
-          }
-          const entries = reconcileStartupCustody(
-            runtime,
-            runtime.paths.coral.coordinator.runDir,
-            runtime.time.now(),
-            store.progressStore.getDb(),
-            selectedStoreEpochPath ?? join(dbDir, `epoch-${epoch}`),
-            {
-              readProcessIncarnation: (pid) =>
-                runtime.process.readProcessIncarnation(pid, runtime.env.platform() as NodeJS.Platform),
-              capsuleExists: (path) => runtime.storage.existsSync(path),
-            },
-          );
-          lastError = null;
-          if (!entries.some((entry) => entry.kind === 'holding' || entry.kind === 'unreadable')) return;
-        } catch (error: unknown) {
-          const reason = formatError(error);
-          if (reason !== lastError) world.log(`Custody reconciliation remains undecidable: ${reason}\n`);
-          lastError = reason;
-        }
-        const timer = runtime.time.setTimeout(reconcile, 1_000);
-        timer.unref?.();
-      };
-      reconcile();
-    },
+    reconcileCustodyAtStartup: () => armCustodyReconciliation(),
     startProviderOperationReconciler: services.startProviderOperationReconciler,
     stopProviderOperationReconciler: services.stopProviderOperationReconciler,
     startupRecoveryBarrierPublisher: startupRecoveryBarrier.publication,

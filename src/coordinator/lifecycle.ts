@@ -2,7 +2,7 @@ import type { Server, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
-import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
+import { errorMessage, formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
 import { sha256Hex } from '../infra/hash.js';
 import { type LaunchCoordinator } from './live/admission.js';
 import type { RecoveryRegistry } from '../jobs/reconcile/registry.js';
@@ -74,10 +74,10 @@ import {
   BackendAlreadyRunningError,
   HandoffEscalationError,
   requestUpgradeFromContender,
-  UpgradeWaiterUnavailableError,
+  settleContenderUpgrade,
   type BoundCoordinator,
 } from './handoff.js';
-import { requestLegacyUpgrade } from '../upgrade-waiter/start.js';
+import { recordContenderDeferral, requestLegacyUpgrade } from '../upgrade-waiter/start.js';
 import {
   IncumbentMatchesError,
   type DesiredIncumbentIdentity,
@@ -121,9 +121,15 @@ import {
   openCommittedBackendStoreAtStartup,
   routeOrOpenBackendStoreAtStartup,
 } from '../store/startup-store-routing.js';
-import { ACTIVE_STORE_SELECTION_VERSION } from '../store/active-store-selection.js';
+import {
+  ACTIVE_STORE_SELECTION_VERSION,
+  classifyActiveStoreSelection,
+  readActiveStoreSelection,
+  type ActiveStoreSelection,
+} from '../store/active-store-selection.js';
 import { validateForeignHandoffTarget } from './handoff-routing/runner.js';
 import type { CoordinatorStoreServices, StoreServicesRef } from './composition/store-services-ref.js';
+import { RETIREMENT_PATIENCE_INTERVAL_MS } from './services/startup-retirement.js';
 import type { KbDaemonSupervisor } from './live/kb-daemon-supervisor.js';
 import type { SystemProviderScope } from '../infra/provider-scope.js';
 import { documentedCoralSetupError } from '../runtime/errors.js';
@@ -156,6 +162,7 @@ import {
   publishAttemptServing,
   publishCommittedRecoveryServing,
   resolveIncompleteSuccessionAtStartup,
+  retryRecordedMintDiscard,
   startupHoldError,
   SuccessionAttemptStartupHoldError,
   type DeadAttemptRecovery,
@@ -1046,6 +1053,16 @@ export async function yieldPastKernelReadyResponse(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
 }
 
+/** The newer build the active selection names, once it validates. Reading the selection takes no lock. */
+function selectedNewerBuild(runtime: Runtime, currentSelection: ActiveStoreSelection): ValidatedHandoffTarget | null {
+  const read = readActiveStoreSelection(runtime);
+  if (read.kind !== 'valid' || classifyActiveStoreSelection(read.selection, currentSelection) !== 'selected-newer') {
+    return null;
+  }
+  const validation = validateForeignHandoffTarget(read.selection.bundleDir, read.selection.manifest);
+  return validation.kind === 'validated' ? validation.target : null;
+}
+
 async function runLifecycleStartup({
   deps,
   runStartupRecovery,
@@ -1132,6 +1149,16 @@ async function runLifecycleStartup({
       currentBuild,
       busyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
     };
+    const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
+    const currentSelection =
+      currentBundleDir === null
+        ? null
+        : {
+            version: ACTIVE_STORE_SELECTION_VERSION,
+            manifest: currentBuild,
+            bundleDir: currentBundleDir,
+            activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+          };
     if (successionAttemptChild !== null && (ipcServer === undefined || listenIpcFn === undefined)) {
       throw new Error('Succession attempt requires an IPC listener');
     }
@@ -1146,14 +1173,21 @@ async function runLifecycleStartup({
       );
     }
     const preinjectedStoreServices = storeServicesRef.tryGet();
-    const committedRecoveryDecision =
-      successionAttemptChild === null && preinjectedStoreServices === null
-        ? await prepareCommittedSuccessorRecovery(runtime, identity, deps.storeFormat, currentBuild, (epochKey) =>
-            new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot)
-              .locationsFor(epochKey)
-              .some((location) => location.disposition !== 'terminal'),
-          )
-        : null;
+    // A dead attempt or committed successor is acted on only while no coordinator may answer: with one answering, the
+    // bind decides this process, and acting first would hold every contender or fence the coordinator that serves.
+    const coordinatorAtStartup =
+      successionAttemptChild === null && preinjectedStoreServices === null ? probeCoordinator(runtime) : null;
+    const noCoordinatorServes =
+      coordinatorAtStartup !== null &&
+      (coordinatorAtStartup.kind === 'absent' ||
+        (coordinatorAtStartup.kind === 'unobservable' && coordinatorAtStartup.reason === 'recorded-process-absent'));
+    const committedRecoveryDecision = noCoordinatorServes
+      ? await prepareCommittedSuccessorRecovery(runtime, identity, deps.storeFormat, currentBuild, (epochKey) =>
+          new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot)
+            .locationsFor(epochKey)
+            .some((location) => location.disposition !== 'terminal'),
+        )
+      : null;
     if (committedRecoveryDecision?.kind === 'handoff') {
       throw new StartupStoreHandoffError(committedRecoveryDecision.target);
     }
@@ -1162,41 +1196,40 @@ async function runLifecycleStartup({
     let preferredStoreEpochKey: string | null = null;
     let pendingDeadAttempt: DeadAttemptRecovery | null = null;
     let retiredDeadAttemptId: string | null = null;
-    if (successionAttemptChild === null && committedRecovery === null && preinjectedStoreServices === null) {
-      const coordinator = probeCoordinator(runtime);
-      if (
-        coordinator.kind === 'absent' ||
-        (coordinator.kind === 'unobservable' && coordinator.reason === 'recorded-process-absent')
-      ) {
-        const incomplete = await resolveIncompleteSuccessionAtStartup({
-          runtime,
-          currentBuild,
-          startupId: instanceId,
-          ...(deps.prepareRecoveryGrantHandoff === undefined
-            ? {}
-            : { prepareRecoveryGrantHandoff: deps.prepareRecoveryGrantHandoff }),
-        });
-        if (incomplete.kind === 'handoff') throw new StartupStoreHandoffError(incomplete.target);
-        if (incomplete.kind === 'hold') throw startupHoldError(incomplete.hold);
-        if (incomplete.kind === 'recover') {
-          pendingDeadAttempt = incomplete.attempt;
-          preferredStoreEpochKey = incomplete.preferredEpochKey;
-        }
-        if (incomplete.kind === 'retire') retiredDeadAttemptId = incomplete.attemptId;
-        if (pendingDeadAttempt === null) {
-          const target = deps.prepareNoIncumbentHandoff?.();
-          if (target !== undefined && target !== null) {
-            const targetBuild = inspectValidatedHandoffTarget(target.target).build;
-            const sameBuild =
-              targetBuild.buildSetId === currentBuild.buildSetId && targetBuild.bundleHash === currentBuild.bundleHash;
-            if (!sameBuild) {
-              throw new StartupStoreHandoffError(target.target);
-            }
-            if (sameBuild) {
-              preferredStoreEpochKey = target.epochKey;
-            }
+    if (noCoordinatorServes && committedRecovery === null) {
+      const incomplete = await resolveIncompleteSuccessionAtStartup({
+        runtime,
+        currentBuild,
+        startupId: instanceId,
+        ...(deps.prepareRecoveryGrantHandoff === undefined
+          ? {}
+          : { prepareRecoveryGrantHandoff: deps.prepareRecoveryGrantHandoff }),
+      });
+      if (incomplete.kind === 'handoff') throw new StartupStoreHandoffError(incomplete.target);
+      if (incomplete.kind === 'hold') throw startupHoldError(incomplete.hold);
+      if (incomplete.kind === 'recover') {
+        pendingDeadAttempt = incomplete.attempt;
+        preferredStoreEpochKey = incomplete.preferredEpochKey;
+      }
+      if (incomplete.kind === 'retire') retiredDeadAttemptId = incomplete.attemptId;
+      if (pendingDeadAttempt === null) {
+        const target = deps.prepareNoIncumbentHandoff?.();
+        if (target !== undefined && target !== null) {
+          const targetBuild = inspectValidatedHandoffTarget(target.target).build;
+          const sameBuild =
+            targetBuild.buildSetId === currentBuild.buildSetId && targetBuild.bundleHash === currentBuild.bundleHash;
+          if (!sameBuild) {
+            throw new StartupStoreHandoffError(target.target);
+          }
+          if (sameBuild) {
+            preferredStoreEpochKey = target.epochKey;
           }
         }
+      }
+      // A newer build the active selection names is handed the store before this process binds anything.
+      if (pendingDeadAttempt === null && preferredStoreEpochKey === null && currentSelection !== null) {
+        const selected = selectedNewerBuild(runtime, currentSelection);
+        if (selected !== null) throw new StartupStoreHandoffError(selected);
       }
     }
     let bound: BoundCoordinator | null = null;
@@ -1243,9 +1276,7 @@ async function runLifecycleStartup({
               time: runtime.time,
               startLegacy: requestLegacyUpgrade,
             });
-            if (waiting.kind === 'refused' || waiting.kind === 'deferred') {
-              throw new UpgradeWaiterUnavailableError(waiting.reason);
-            }
+            await settleContenderUpgrade(runtime.paths.coral.coordinator.runDir, waiting, recordContenderDeferral);
           },
           signal,
           totalBudgetMs: HANDOFF_DRAIN_TIMEOUT_MS,
@@ -1267,9 +1298,21 @@ async function runLifecycleStartup({
         });
       }
     }
+    if (noCoordinatorServes && successionAttemptChild === null) await retryRecordedMintDiscard(runtime);
     if (pendingDeadAttempt !== null) {
       if (pendingDeadAttempt.discardAttemptId !== undefined) {
-        discardUnservedRetirementMint(runtime, pendingDeadAttempt.epochKey, pendingDeadAttempt.discardAttemptId);
+        const discarded = discardUnservedRetirementMint(
+          runtime,
+          pendingDeadAttempt.epochKey,
+          pendingDeadAttempt.discardAttemptId,
+        );
+        if (discarded.kind === 'held') {
+          throw startupHoldError({
+            kind: 'unserved-mint-held',
+            attemptId: pendingDeadAttempt.attemptId,
+            reason: discarded.reason,
+          });
+        }
       }
       if ((await handBackDeadAttemptGeneration(runtime, instanceId, pendingDeadAttempt)) === 'abandoned') {
         pendingDeadAttempt = null;
@@ -1341,28 +1384,55 @@ async function runLifecycleStartup({
         storeDb = preferredStore.db;
         openedStore = preferredStore.store;
       } else {
-        const currentBundleDir = resolveRunningBundleDir(identity.pluginRoot);
-        if (currentBundleDir === null) {
+        if (currentSelection === null) {
           throw documentedCoralSetupError({
             code: 'startup_bundle_unresolvable',
             pluginRoot: identity.pluginRoot,
           });
         }
-        const routing = await routeOrOpenBackendStoreAtStartup({
-          runtime,
-          validateForeignTarget: validateForeignHandoffTarget,
-          options: {
-            storeFormat: deps.storeFormat,
-            startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-            authorizeMint: deps.authorizeStartupMint,
-            currentSelection: {
-              version: ACTIVE_STORE_SELECTION_VERSION,
-              manifest: currentBuild,
-              bundleDir: currentBundleDir,
-              activeStoreFingerprint: currentBuild.storeFormatFingerprint,
+        const authorizeStartupMint = deps.authorizeStartupMint;
+        let mintWithheld = false;
+        const routeStore = () =>
+          routeOrOpenBackendStoreAtStartup({
+            runtime,
+            validateForeignTarget: validateForeignHandoffTarget,
+            options: {
+              storeFormat: deps.storeFormat,
+              startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+              ...(authorizeStartupMint === undefined
+                ? {}
+                : {
+                    authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
+                      const disposition = authorizeStartupMint(observation);
+                      mintWithheld = disposition === null;
+                      return disposition;
+                    },
+                  }),
+              currentSelection,
             },
-          },
-        });
+          });
+        let routing: Awaited<ReturnType<typeof routeStore>>;
+        try {
+          routing = await routeStore();
+        } catch (error: unknown) {
+          // A withheld mint is decided by this boot: no later spawn is guaranteed on a machine nobody is watching.
+          if (!mintWithheld) throw error;
+          backendLog.warn(
+            `Store epoch mint withheld under retirement patience; observing again: ${formatError(error)}`,
+          );
+          await runtime.time.sleep(RETIREMENT_PATIENCE_INTERVAL_MS, { signal });
+          mintWithheld = false;
+          try {
+            routing = await routeStore();
+          } catch (repeated: unknown) {
+            if (!mintWithheld) throw repeated;
+            throw startupHoldError({
+              kind: 'retirement-mint-withheld',
+              attemptId: null,
+              reason: errorMessage(repeated),
+            });
+          }
+        }
         if (routing.kind === 'handoff') {
           throw new StartupStoreHandoffError(routing.target);
         }

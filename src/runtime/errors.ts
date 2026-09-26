@@ -747,7 +747,8 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
   handoff_socket_holder_unverified: {
     userMessage: (context) =>
       `Handoff refused for socket ${context.socketPath}: the address remained bound without an answering coordinator.`,
-    remediation: 'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
+    remediation:
+      'No live coordinator could be verified behind this socket, so Coral signaled nothing. Retry the command.',
     exitCode: 75,
     observation: 'not_observed',
   },

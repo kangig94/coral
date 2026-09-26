@@ -70,7 +70,10 @@ export type OwnerDisposition =
 
 export type SuccessionOwner = Readonly<{
   id: SuccessionOwnerId;
-  /** A transferable result requires its attempt-scoped recovery grant to be durable before return. */
+  /**
+   * A transferable result requires its attempt-scoped recovery grant to be durable before return. An owner the
+   * target cannot accept is classified again for the same attempt inside its commit window, before writers park.
+   */
   classify: (attemptId: string, capabilities: SuccessionCapabilities) => Promise<OwnerDisposition>;
 }>;
 
@@ -157,4 +160,23 @@ export async function prepareOwnerObligations(
     blockers.push({ owner: 'jobs', reason: 'live job coverage unavailable' });
   }
   return blockers.length > 0 ? { kind: 'blocking', blockers } : { kind: 'prepared', receipts };
+}
+
+/**
+ * An owner the target cannot accept can only complete or block, and no receipt carries its work; one that no longer
+ * completes holds an obligation that began after preparation and would otherwise be abandoned when writers park.
+ */
+export function recertifyUntransferableOwners(
+  owners: readonly SuccessionOwner[],
+  attemptId: string,
+  capabilities: SuccessionCapabilities,
+  requiredOwners: readonly SuccessionOwnerId[] = REQUIRED_SUCCESSION_OWNERS,
+): Promise<ObligationPreparation> {
+  const accepted = new Set(capabilities.accepts.map((entry) => entry.owner));
+  return prepareOwnerObligations(
+    owners.filter((owner) => !accepted.has(owner.id)),
+    attemptId,
+    capabilities,
+    requiredOwners.filter((owner) => !accepted.has(owner)),
+  );
 }

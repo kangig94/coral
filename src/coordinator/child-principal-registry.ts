@@ -98,21 +98,21 @@ const childPrincipalTransferSchema = z
           issuer: z.string().min(1),
           authorization: z
             .object({
-              principalWire: principalWireSchema,
+              principalWire: principalWireSchema.passthrough(),
               namespace: z.string().min(1),
               expiresAtMs: z.number().int().positive(),
             })
-            .strict(),
+            .passthrough(),
           parentJobId: z.string().min(1),
           parentSessionId: z.string().min(1),
         })
-        .strict(),
+        .passthrough(),
     ),
     consumedNonceCheckpoint: z.number().int().nonnegative(),
     recoveryGrantId: z.string().min(1),
     authorityGeneration: z.number().int().positive(),
   })
-  .strict();
+  .passthrough();
 
 export function decodeChildPrincipalTransfer(payload: unknown): ChildPrincipalTransfer | null {
   const parsed = childPrincipalTransferSchema.safeParse(payload);

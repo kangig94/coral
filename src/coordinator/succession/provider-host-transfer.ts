@@ -22,15 +22,23 @@ import {
   transferredOperation,
   transferredSetOf,
   verifyProviderOperationTransfer,
+  type ProviderProxyControllerTransfer,
   type TransferredProviderProxySet,
 } from '../services/provider-proxy-set/controller-transfer.js';
-import { providerProxySetIdentityFromRecord } from '../services/provider-proxy-set/identity.js';
+import {
+  providerProxySetIdentitiesEqual,
+  providerProxySetIdentityFromRecord,
+  type ProviderProxySetIdentity,
+} from '../services/provider-proxy-set/identity.js';
 import type { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
 import type { OwnerDisposition, SuccessionOwner } from './obligations.js';
 import { successionPreparationSchema, type SuccessionCapabilities, type SuccessionPreparation } from './protocol.js';
 
 export const PROVIDER_PROXY_SETS_OWNER = 'provider-proxy-sets';
 export const PROVIDER_OPERATIONS_OWNER = 'provider-operations';
+
+const INSTALL_RETRY_BASE_MS = 1_000;
+const INSTALL_RETRY_MAX_MS = 30_000;
 
 export type ProviderHostTransferPorts = Readonly<{
   runtime: Runtime;
@@ -66,6 +74,16 @@ type HostTransferPreparation =
 
 function accepts(capabilities: SuccessionCapabilities, owner: string, generation: number): boolean {
   return capabilities.accepts.some((entry) => entry.owner === owner && entry.generation === generation);
+}
+
+function namesTransferredSet(identity: ProviderProxySetIdentity, set: TransferredProviderProxySet): boolean {
+  return (
+    identity.buildSetId === set.buildSetId &&
+    identity.hostFingerprint === set.hostFingerprint &&
+    identity.proxyInstanceId === set.proxyInstanceId &&
+    identity.guardianInstanceId === set.guardianInstanceId &&
+    identity.reaperInstanceId === set.reaperInstanceId
+  );
 }
 
 function receiptOf(
@@ -230,6 +248,71 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
 
   const toJson = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
 
+  /** A same-build recovery redeems through the grant its incumbent's build still holds, never through the takeover. */
+  const receiptReader = (transfer: ProviderProxyControllerTransfer): 'successor' | 'recovery' | null =>
+    transfer.successorBuildSetId === ports.buildSetId
+      ? 'successor'
+      : transfer.incumbentBuildSetId === ports.buildSetId
+        ? 'recovery'
+        : null;
+
+  /** A grant reinstalled after preparation revokes the transfer; only authorization at release admits the successor. */
+  async function reauthorizeTransfer(
+    lifecycle: ProviderProxySetLifecycle,
+    attemptId: string,
+    transfer: Extract<HostTransferPreparation, { kind: 'transferable' }>,
+  ): Promise<void> {
+    const successor = { generation: 'gen2' as const, flavor: ports.flavor, buildSetId: transfer.successorBuildSetId };
+    const signal = AbortSignal.timeout(PROXY_CONTROL_RPC_TIMEOUT_MS * 2);
+    await Promise.all(
+      transfer.sets.map(async (transferred) => {
+        const set = lifecycle.liveSets().find((candidate) => namesTransferredSet(candidate.setIdentity, transferred));
+        if (set === undefined || lifecycle.authorityFor(set.setIdentity) !== set) {
+          throw new Error('An authorized provider host is not under operational control at release.');
+        }
+        const outcome = await set.authorizeControllerTransfer({ attemptId, successor }, signal);
+        if (outcome.kind !== 'authorized' || outcome.recoveryGrantId !== transferred.recoveryGrantId) {
+          throw new Error(`Provider host no longer authorizes the prepared successor: ${outcome.kind}.`);
+        }
+      }),
+    );
+  }
+
+  /**
+   * Until its grant is this build's, a host is redeemable by this build only while the served receipt survives,
+   * which nothing here controls; so the install is retried while this coordinator holds the set, and only a
+   * refusal ends it early.
+   */
+  async function completeTransfer(identity: ProviderProxySetIdentity): Promise<void> {
+    let delayMs = INSTALL_RETRY_BASE_MS;
+    let reported: string | null = null;
+    for (;;) {
+      const set = ports
+        .lifecycle()
+        ?.liveSets()
+        .find((candidate) => providerProxySetIdentitiesEqual(candidate.setIdentity, identity));
+      if (set === undefined) return;
+      let pending: string;
+      try {
+        const installed = await set.installRecoveryCredential(AbortSignal.timeout(PROXY_CONTROL_RPC_TIMEOUT_MS * 2));
+        if (installed.kind === 'installed') return;
+        if (installed.kind === 'refused') {
+          ports.log(`Provider host refused this controller's recovery grant: ${installed.incident.role}\n`);
+          return;
+        }
+        pending = installed.kind;
+      } catch (error: unknown) {
+        pending = formatError(error);
+      }
+      if (pending !== reported) {
+        ports.log(`Provider host recovery grant is not yet this controller's (${pending}); retrying.\n`);
+        reported = pending;
+      }
+      await ports.runtime.time.sleep(delayMs);
+      delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_MS);
+    }
+  }
+
   const operationsOwner: SuccessionOwner = {
     id: PROVIDER_OPERATIONS_OWNER,
     classify: async (attemptId, capabilities): Promise<OwnerDisposition> => {
@@ -288,7 +371,20 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
   return {
     owners: [operationsOwner, setsOwner],
     releaseForTransfer: async (attemptId) => {
-      await ports.lifecycle()?.releaseControlForTransfer(attemptId);
+      const lifecycle = ports.lifecycle();
+      if (lifecycle === null) throw new Error('Provider proxy set lifecycle is unavailable at host release.');
+      const transfer = prepared?.attemptId === attemptId ? await prepared.preparation : null;
+      if (transfer?.kind !== 'transferable') {
+        throw new Error('Provider host transfer was not prepared for this attempt.');
+      }
+      await reauthorizeTransfer(lifecycle, attemptId, transfer);
+      const released = await lifecycle.releaseControlForTransfer(attemptId);
+      const unreleased = transfer.sets.filter(
+        (set) => !released.some((identity) => namesTransferredSet(identity, set)),
+      );
+      if (unreleased.length > 0) {
+        throw new Error(`${unreleased.length} authorized provider host(s) were not released for the successor.`);
+      }
     },
     reclaimTransferred: () => {
       ports.lifecycle()?.reclaimTransferredControl();
@@ -302,7 +398,8 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
         return [];
       }
       const transfer = decodeProviderProxyControllerTransfer(setsReceipt.payload);
-      if (transfer === null || transfer.successorBuildSetId !== ports.buildSetId) {
+      const reader = transfer === null ? null : receiptReader(transfer);
+      if (transfer === null || reader === null) {
         throw new Error('Provider host transfer receipt does not name this successor.');
       }
       const successorServes = observeSuccessionServing(ports.runtime, preparation.attemptId) !== null;
@@ -312,7 +409,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
           ports.flavor,
           transfer,
           setsReceipt.recoveryGrantId,
-          successorServes,
+          reader === 'successor' && successorServes,
         )
       ) {
         throw new Error('Provider host recovery grants are unavailable or changed.');
@@ -348,20 +445,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
     },
     completeTransfers: async () => {
       const sets = ports.lifecycle()?.liveSets() ?? [];
-      await Promise.all(
-        sets.map(async (set) => {
-          try {
-            const installed = await set.installRecoveryCredential(
-              AbortSignal.timeout(PROXY_CONTROL_RPC_TIMEOUT_MS * 2),
-            );
-            if (installed.kind !== 'installed') {
-              ports.log(`Provider host recovery grant is not yet this controller's: ${installed.kind}\n`);
-            }
-          } catch (error: unknown) {
-            ports.log(`Provider host recovery grant install failed: ${formatError(error)}\n`);
-          }
-        }),
-      );
+      await Promise.all(sets.map((set) => completeTransfer(set.setIdentity)));
     },
   };
 }

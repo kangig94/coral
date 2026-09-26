@@ -19,7 +19,12 @@ import {
 } from '../../coordinator/handoff-routing/runner.js';
 import { encodeRecoveryQuarantineKey, type RecoveryQuarantineListEntry } from '../../recovery/quarantine.js';
 import type { BackendHealth, ProviderProxySetRowSkip } from '../../transport/http/backend/health.js';
-import type { BackendStatusFull, OperatorFacingShutdownEntryView, ShutdownRemainderReport } from '../backend-status.js';
+import type {
+  BackendStatusFull,
+  OperatorFacingShutdownEntryView,
+  ShutdownRemainderReport,
+  SupersededEpochClosures,
+} from '../backend-status.js';
 import type { OperatorFacingCoralSetupError, SetupErrorAuthorshipKind } from '../../runtime/errors.js';
 import type { ShutdownResult } from '../../transport/http/backend/shutdown.js';
 import {
@@ -719,6 +724,9 @@ export function formatBackendStatus(
       ? (daemonStatus.health.successionProblem ?? daemonStatus.upgradeProblem)
       : daemonStatus.upgradeProblem;
   if (upgradeProblem !== undefined) sections.push(formatUpgradeRecordProblem(upgradeProblem));
+  if (daemonStatus.supersededEpochs !== undefined) {
+    sections.push(formatSupersededEpochClosures(daemonStatus.supersededEpochs));
+  }
   if (upgrade === undefined && daemonStatus.legacyContenderDeferred) {
     sections.push(
       'An older contender was refused while this incumbent continues serving. Its attempted upgrade is deferred.',
@@ -732,6 +740,20 @@ export function formatBackendStatus(
     if (liveHandoffText !== null) sections.push(liveHandoffText);
   }
   return sections.join('\n');
+}
+
+function formatSupersededEpochClosures(closures: SupersededEpochClosures): string {
+  if (closures.kind === 'unobservable') {
+    return `Superseded store epochs could not be observed (${closures.reason}); their closures are not shown.`;
+  }
+  return [
+    'Superseded store epochs:',
+    ...closures.epochs.map(
+      (epoch) =>
+        `  ${epoch.epochKey ?? 'unobservable'} (epoch ${epoch.epoch}, ${epoch.role}): ${epoch.closure}` +
+        (epoch.reason === null ? '' : `; ${epoch.reason}`),
+    ),
+  ].join('\n');
 }
 
 const UPGRADE_INTENT_RECORD = 'the upgrade intent record (upgrade.v1.json in the coordinator run directory)';

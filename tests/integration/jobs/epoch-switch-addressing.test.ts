@@ -144,6 +144,7 @@ describe('job addressing across a process-owned epoch switch', () => {
           waitStream: async function* () {},
         },
         () => false,
+        () => 'pending',
       );
       createNewFormatEpoch(root);
       activeEpochKey = newEpochKey;
@@ -193,6 +194,7 @@ describe('job addressing across a process-owned epoch switch', () => {
           waitStream: async function* () {},
         },
         () => false,
+        () => 'pending',
       );
       expect(addressing.detail('old-live')).toMatchObject({
         status: { jobId: 'old-live', phase: 'running' },

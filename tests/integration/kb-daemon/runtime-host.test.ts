@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { AbortRegistry } from '#src/jobs/shell/abort-registry.js';
 import { createKbDaemonWriteRuntimeHost } from '#src/kb-daemon/runtime-host.js';
 import type { KiwiSearchAnalyzerPort } from '#src/kb-daemon/expansion/bundled-loaders.js';
 import { ORAMA_BASE_CONSUMER_ID } from '#src/engines/orama/constants.js';
@@ -171,6 +172,52 @@ describe('KB daemon runtime host', () => {
       await host.withKb(({ db }) => {
         db.prepare('INSERT INTO epoch_marker (epoch) VALUES (?)').run('reclaimed');
         expect(db.prepare<[], { total: number }>('SELECT count(*) AS total FROM epoch_marker').get()?.total).toBe(2);
+      });
+    } finally {
+      await host.dispose().catch(() => undefined);
+    }
+  });
+
+  it('refuses to park its writer turn while a KB job the succession inventory did not see still runs', async () => {
+    const root = createTempRoot();
+    vi.stubEnv('CLAUDE_CONFIG_DIR', join(root, '.claude'));
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    const storeFormat = currentCoralStoreFormat();
+    const directory = join(runtime.paths.coral.store.dbDir, 'epoch-1');
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, '.lock'), '');
+    openTestStoreDb(runtime, join(directory, 'store.db')).close();
+    writeFileSync(
+      join(directory, STORE_EPOCH_METADATA_FILE_NAME),
+      JSON.stringify({
+        supersedes: null,
+        classification: { kind: 'unavailable' },
+        build: {
+          version: storeFormat.productVersion,
+          buildSetId: '123e4567-e89b-42d3-a456-426614174000',
+          bundleHash: '0123456789abcdef',
+          flavor: 'prod',
+          storeFormatFingerprint: storeFormat.fingerprint,
+        },
+        publishedAt: '2026-09-15T00:00:00.000Z',
+      }),
+    );
+    const store = resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1');
+    const host = createKbDaemonWriteRuntimeHost({
+      pluginRoot: join(root, 'plugin'),
+      backendNamespace: 'test-namespace',
+      bundleHash: 'test-bundle',
+      curateUsageBudget: { isExhausted: async () => false },
+      runtime,
+      store,
+    });
+
+    try {
+      await host.withKb(() => undefined);
+      vi.spyOn(AbortRegistry.prototype, 'listActive').mockReturnValue(['kb-job-started-after-preparation']);
+      await expect(host.parkWriterTurn()).rejects.toThrow(/cannot park while 1 KB job/u);
+      await host.withKb(({ db }) => {
+        db.exec('CREATE TABLE written_after_refused_park (value TEXT)');
       });
     } finally {
       await host.dispose().catch(() => undefined);

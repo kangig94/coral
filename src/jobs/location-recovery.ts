@@ -1,3 +1,4 @@
+import { withImmediate, type Database } from '../store/db.js';
 import type { JobProgressStore } from './contracts/job-store.js';
 import { isTerminalPhase } from './phase.js';
 import { deriveLaunchReadiness } from './launch-readiness.js';
@@ -12,9 +13,34 @@ type LaunchIdentityRow = {
   body: Uint8Array;
 };
 
+/**
+ * A launch registers its location before its write transaction commits, so a rollback or a crash leaves a location
+ * no launch event backs. Deciding that needs the store write lock; without it the answer stays with the next pass.
+ */
+function retireUncommittedLaunches(index: JobLocationIndex, epochKey: string, db: Database): void {
+  try {
+    withImmediate(db, () => {
+      const launched = new Set(
+        db
+          .prepare<[], { stream_id: string }>(
+            "SELECT stream_id FROM events WHERE stream_kind = 'job' AND type = 'job.launch.requested'",
+          )
+          .all()
+          .map((row) => row.stream_id),
+      );
+      for (const location of index.locationsFor(epochKey)) {
+        if (!launched.has(location.jobId)) index.retireNeverAccepted(location.jobId, epochKey);
+      }
+    });
+  } catch {
+    // The location stays non-terminal and keeps the epoch uncertified; the next recovery pass decides it.
+  }
+}
+
 export function recoverJobLocations(index: JobLocationIndex, epochKey: string, store: JobProgressStore): void {
   try {
     const db = store.getDb();
+    retireUncommittedLaunches(index, epochKey, db);
     const launches = db
       .prepare<[], LaunchIdentityRow>(
         `SELECT stream_id, body

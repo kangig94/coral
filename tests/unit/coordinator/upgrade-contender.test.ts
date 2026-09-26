@@ -3,10 +3,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { requestUpgradeFromContender } from '#src/coordinator/handoff.js';
+import {
+  requestUpgradeFromContender,
+  settleContenderUpgrade,
+  UpgradeWaiterUnavailableError,
+} from '#src/coordinator/handoff.js';
 import { createRealTimePort } from '#src/infra/time.js';
 import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
-import { requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
+import { recordContenderDeferral, requestLegacyUpgrade } from '#src/upgrade-waiter/start.js';
 
 const build = {
   version: '0.11.0',
@@ -100,5 +104,44 @@ describe('contender upgrade request', () => {
     expect(request).not.toHaveBeenCalled();
     expect(startLegacy).not.toHaveBeenCalled();
     expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
+  });
+
+  it('should exit a contender whose waiter could not start as a deferral recorded on the intent it registered', async () => {
+    const { options, runDir } = fixture();
+    const startLegacy = vi.fn((legacy: Parameters<typeof requestLegacyUpgrade>[0]) =>
+      requestLegacyUpgrade({
+        ...legacy,
+        startWaiter: async () => ({ kind: 'unavailable', reason: 'waiter process could not start' }),
+      }),
+    );
+    const waiting = await requestUpgradeFromContender({
+      ...options,
+      startLegacy,
+      request: async () => ({ kind: 'refused' }),
+    });
+
+    await expect(settleContenderUpgrade(runDir, waiting, recordContenderDeferral)).resolves.toBeUndefined();
+    expect(readUpgradeIntent(runDir)).toMatchObject({
+      intent: { blockers: [{ owner: 'upgrade-contender', reason: 'waiter process could not start' }] },
+    });
+  });
+
+  it('should exit a redundant contender without recording anything, and fail one that cannot read its intent', async () => {
+    const { runDir } = fixture();
+    const recordDeferral = vi.fn(async () => undefined);
+
+    await settleContenderUpgrade(
+      runDir,
+      { kind: 'refused', reason: 'target does not strictly outrank the incumbent', disposition: 'redundant' },
+      recordDeferral,
+    );
+    await expect(
+      settleContenderUpgrade(
+        runDir,
+        { kind: 'refused', reason: 'upgrade intent is corrupt', disposition: 'error' },
+        recordDeferral,
+      ),
+    ).rejects.toBeInstanceOf(UpgradeWaiterUnavailableError);
+    expect(recordDeferral).not.toHaveBeenCalled();
   });
 });

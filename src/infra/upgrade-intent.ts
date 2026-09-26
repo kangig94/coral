@@ -105,6 +105,29 @@ const transientRetrySchema = z
   })
   .passthrough();
 
+const targetSchema = z
+  .object({
+    build: buildIdentitySchema,
+    pluginRootLabel: z.string().min(1),
+  })
+  .passthrough();
+
+/** A newer target requested while an attempt held the intent; it replaces the intent once that attempt settles. */
+const nextTargetSchema = z
+  .object({
+    requestId: z.string().min(1),
+    target: targetSchema,
+  })
+  .passthrough();
+
+/** A retirement mint whose attempt never served and whose discard has not yet succeeded. */
+const unservedMintDiscardSchema = z
+  .object({
+    attemptId: z.string().min(1),
+    incumbentEpochKey: z.string().min(1),
+  })
+  .passthrough();
+
 const upgradeIntentSchema = z
   .object({
     version: z.literal('v1'),
@@ -112,12 +135,7 @@ const upgradeIntentSchema = z
     requestedAt: z.string().datetime().optional(),
     revision: z.number().int().nonnegative(),
     incumbent: incumbentIdentitySchema,
-    target: z
-      .object({
-        build: buildIdentitySchema,
-        pluginRootLabel: z.string().min(1),
-      })
-      .passthrough(),
+    target: targetSchema,
     attemptId: z.string().min(1).nullable(),
     attemptChild: z
       .object({
@@ -139,6 +157,10 @@ const upgradeIntentSchema = z
     transientRetry: transientRetrySchema.optional().catch(undefined),
     /** The failure a same-build recovery grant stands in for. */
     recoveryRetry: attemptRetrySchema.nullable().optional().catch(undefined),
+    // Losing an unreadable next target only waits for its build to contend again.
+    nextTarget: nextTargetSchema.nullable().optional().catch(undefined),
+    // Losing an unreadable discard leaves the mint in place, where store selection already declines to read it.
+    unservedMintDiscard: unservedMintDiscardSchema.nullable().optional().catch(undefined),
   })
   .passthrough()
   .superRefine((intent, context) => {

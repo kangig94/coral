@@ -25,12 +25,22 @@ if (process.argv[2] === 'incumbent') {
   });
 } else {
   const attemptId = process.argv[3] ?? 'fixture-parent';
+  const parked = [];
+  const park = (connection) => {
+    connection.socket.pause();
+    parked.push(connection);
+    process.send({ kind: 'parked', attemptId });
+  };
   const online = setInterval(() => process.send({ kind: 'child-online', attemptId }), 100);
   online.unref();
   process.on('message', (message, handle) => {
     if (message.kind === 'listener' && handle) {
       if (attemptId === 'fixture-parent') clearInterval(online);
       handle.on('connection', (socket) => {
+        if (process.env.PARK_CONNECTIONS === '1') {
+          park({ socket, socketPath: message.socketPath, pendingFrameBase64: '' });
+          return;
+        }
         socket.end('successor\n', () => {
           if (process.env.EXIT_AFTER_RESPONSE === '1') process.exit(0);
         });
@@ -53,7 +63,20 @@ if (process.argv[2] === 'incumbent') {
       process.send({ kind: 'ack', attemptId: message.attemptId, acknowledgment: { kind: 'hold', reason: 'open-failed' } });
     }
     if (message.kind === 'connection' && handle) {
-      handle.end('forwarded\n');
+      if (process.env.PARK_CONNECTIONS === '1') {
+        park({ socket: handle, socketPath: message.socketPath, pendingFrameBase64: message.pendingFrameBase64 });
+      } else handle.end('forwarded\n');
+    }
+    if (message.kind === 'abort' && process.env.PARK_CONNECTIONS === '1') {
+      let remaining = parked.length;
+      const released = () =>
+        process.send({ kind: 'connections-released', attemptId: message.attemptId }, () => process.exit(1));
+      if (remaining === 0) released();
+      for (const { socket, ...addressed } of parked.splice(0)) {
+        process.send({ kind: 'connection', attemptId: message.attemptId, ...addressed }, socket, () => {
+          if (--remaining === 0) released();
+        });
+      }
     }
   });
   process.send({ kind: 'child-online', attemptId });

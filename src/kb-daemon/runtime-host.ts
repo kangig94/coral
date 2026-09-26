@@ -984,6 +984,11 @@ export function createKbDaemonWriteRuntimeHost(options: KbDaemonWriteRuntimeOpti
       }
       await drainCorpusMutationLock(activeState.kbRuntime.kb, { signal: options?.signal });
       if (state !== activeState) throw new Error('KB daemon writer turn changed during park.');
+      // A job the succession inventory did not see would lose its writer with no owner accepting it.
+      const activeJobs = activeState.abortRegistry.listActive();
+      if (activeJobs.length > 0) {
+        throw new Error(`KB daemon writer turn cannot park while ${activeJobs.length} KB job(s) run.`);
+      }
       activeState.writerEntitlement.park();
     },
     reclaimWriterTurn(generation, signal) {

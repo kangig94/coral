@@ -388,3 +388,207 @@ describe('accepted controller transfer', () => {
     expect(transfer.sets).toHaveLength(1);
   });
 });
+
+describe('provider host transfer across a failed attempt', () => {
+  async function preparedIntent(runtime: Runtime, controller: string): Promise<SuccessionPreparation> {
+    const record = executing();
+    const result = await classify(
+      transferFor(runtime, { db: databaseWith([record]), hosts: [hostFor(record, authorized)] }),
+    );
+    if (result.sets.kind !== 'transferable' || result.operations.kind !== 'transferable') {
+      throw new Error('expected host receipts');
+    }
+    await seedPreparation(runtime, [result.operations.receipt, result.sets.receipt]);
+    return successionPreparationFrom(runtime, controller);
+  }
+
+  function successionPreparationFrom(runtime: Runtime, controller: string): SuccessionPreparation {
+    writeCapsule(runtime, controller);
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('expected a readable intent');
+    return successionPreparationSchema.parse(observed.intent.successionPreparation);
+  }
+
+  function writeCapsule(runtime: Runtime, controllerBuildSetId: string): void {
+    const identity = providerProxySetIdentityFromRecord(executing());
+    runtime.storage.mkdirSync(runtime.paths.coral.coordinator.runDir, { recursive: true, mode: 0o700 });
+    writeHandoffCapsuleFile(
+      currentHandoffCapsulePath(
+        {
+          generation: 'gen2',
+          flavor: 'prod',
+          buildSetId: identity.buildSetId,
+          hostFingerprint: identity.hostFingerprint,
+          proxyInstanceId: identity.proxyInstanceId,
+        },
+        { baseDir: dirname(runtime.paths.coral.generation.root) },
+      ),
+      {
+        version: 4,
+        controllerBuildSetId,
+        grantId: RECOVERY_GRANT,
+        secret: 'e'.repeat(64),
+        generation: 'gen2',
+        flavor: 'prod',
+        buildSetId: identity.buildSetId,
+        hostFingerprint: identity.hostFingerprint,
+        guardianInstanceId: identity.guardianInstanceId,
+        reaperInstanceId: identity.reaperInstanceId,
+        proxyInstanceId: identity.proxyInstanceId,
+        guardianControlEndpoint: identity.guardianControlEndpoint,
+        reaperControlEndpoint: identity.reaperControlEndpoint,
+        proxyEndpoint: identity.canonicalEndpoint,
+        orphanTimeoutMs: 30_000,
+        teardownReserveMs: 14_000,
+        guardianPid: identity.guardianPid,
+        guardianIncarnation: identity.guardianIncarnation,
+        proxyPid: identity.proxyPid,
+        reaperPid: identity.reaperPid,
+        reaperIncarnation: identity.reaperIncarnation,
+        containmentKind: identity.containmentKind,
+        proxyIncarnation: identity.proxyIncarnation,
+        proxyProcessGroupId: identity.proxyProcessGroupId,
+      },
+      { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
+    );
+  }
+
+  function readerOf(runtime: Runtime, buildSetId: string) {
+    const db = databaseWith([executing()]);
+    return createProviderHostTransfer({
+      runtime,
+      flavor: 'prod',
+      buildSetId,
+      lifecycle: () => lifecycleWith([]),
+      db: () => db,
+      jobSettled: () => false,
+      localOperationJobIds: () => [],
+      hostRootRetained: () => true,
+      attemptId: () => null,
+      targetChangesStoreFormat: () => false,
+      log: () => undefined,
+    });
+  }
+
+  it("lets a same-build recovery child verify the receipt through the grant its incumbent's build still holds", async () => {
+    const runtime = runtimeFor();
+    const preparation = await preparedIntent(runtime, INCUMBENT_BUILD);
+
+    expect(readerOf(runtime, INCUMBENT_BUILD).verifyReceipts(preparation)).toEqual([executing().operation.jobId]);
+    expect(() => readerOf(runtime, '55555555-5555-4555-8555-555555555555').verifyReceipts(preparation)).toThrow(
+      /does not name this successor/u,
+    );
+  });
+
+  it('refuses a recovery child once the capsule no longer holds the grant under its own build', async () => {
+    const runtime = runtimeFor();
+    const preparation = await preparedIntent(runtime, SUCCESSOR_BUILD);
+
+    expect(() => readerOf(runtime, INCUMBENT_BUILD).verifyReceipts(preparation)).toThrow(
+      /recovery grants are unavailable/u,
+    );
+  });
+});
+
+describe('provider host transfer at the commit and after serving', () => {
+  const INSTALLED = {
+    kind: 'installed',
+    receipt: { kind: 'installed-recovery-credential', grantId: RECOVERY_GRANT },
+  } as const;
+  const RETRYABLE = { kind: 'retryable', incident: { role: 'guardian' } } as const;
+
+  function transferOver(
+    runtime: Runtime,
+    lifecycle: ProviderProxySetLifecycle,
+    record: ProviderOperationRecord,
+    log: (message: string) => void = () => undefined,
+  ) {
+    const db = databaseWith([record]);
+    return createProviderHostTransfer({
+      runtime: { ...runtime, time: { ...runtime.time, sleep: async () => undefined } },
+      flavor: 'prod',
+      buildSetId: INCUMBENT_BUILD,
+      lifecycle: () => lifecycle,
+      db: () => db,
+      jobSettled: () => false,
+      localOperationJobIds: () => [],
+      hostRootRetained: () => true,
+      attemptId: () => null,
+      targetChangesStoreFormat: () => false,
+      log,
+    });
+  }
+
+  it("keeps installing a served host's grant until the host acknowledges it", async () => {
+    const record = executing();
+    const host = hostFor(record, authorized);
+    const install = host.installRecoveryCredential as ReturnType<typeof vi.fn>;
+    install
+      .mockResolvedValueOnce(RETRYABLE)
+      .mockRejectedValueOnce(new Error('lost reply'))
+      .mockResolvedValue(INSTALLED);
+
+    await transferOver(runtimeFor(), lifecycleWith([host]), record).completeTransfers();
+
+    expect(install).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops installing once the host is no longer this coordinator’s', async () => {
+    const record = executing();
+    let live = true;
+    const install = vi.fn(() => {
+      live = false;
+      return Promise.resolve(RETRYABLE);
+    });
+    const host = {
+      ...hostFor(record, authorized),
+      installRecoveryCredential: install,
+    } as unknown as DurableProviderProxyOperationAuthority;
+    const lifecycle = {
+      liveSets: () => (live ? [host] : []),
+      authorityFor: () => (live ? host : null),
+    } as unknown as ProviderProxySetLifecycle;
+
+    await transferOver(runtimeFor(), lifecycle, record).completeTransfers();
+
+    expect(install).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-authorizes every host immediately before releasing it, so a reinstall since preparation cannot revoke the transfer', async () => {
+    const record = executing();
+    let transferAuthorized = false;
+    const host = hostFor(record, async () => {
+      transferAuthorized = true;
+      return authorized();
+    });
+    const authorizedAtRelease: boolean[] = [];
+    const lifecycle = {
+      ...lifecycleWith([host]),
+      releaseControlForTransfer: vi.fn(async () => {
+        authorizedAtRelease.push(transferAuthorized);
+        return [host.setIdentity];
+      }),
+    } as unknown as ProviderProxySetLifecycle;
+    const transfer = transferOver(runtimeFor(), lifecycle, record);
+    await classify(transfer);
+    // A control reattachment reinstalls the identical grant, which the roles read as the controller taking it back.
+    transferAuthorized = false;
+
+    await transfer.releaseForTransfer('attempt-1');
+
+    expect(authorizedAtRelease).toEqual([true]);
+  });
+
+  it('releases nothing when a host no longer holds the grant the receipt names', async () => {
+    const record = executing();
+    let grant = RECOVERY_GRANT;
+    const host = hostFor(record, async () => ({ kind: 'authorized', recoveryGrantId: grant }));
+    const lifecycle = lifecycleWith([host]);
+    const transfer = transferOver(runtimeFor(), lifecycle, record);
+    await classify(transfer);
+    grant = '44444444-4444-4444-8444-444444444444';
+
+    await expect(transfer.releaseForTransfer('attempt-1')).rejects.toThrow(/no longer authorizes/u);
+    expect(lifecycle.releaseControlForTransfer).not.toHaveBeenCalled();
+  });
+});

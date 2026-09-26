@@ -70,7 +70,13 @@ import { TOOL_TIMEOUT_MS } from '../transport/http/sse.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import type { IpcSubscription, IpcSubscriptionOptions } from '../transport/ipc/client.js';
 import { retrySuccessionPausedRequest } from './succession-pause-retry.js';
-import { ensure, issueWithSuccessorAfterLifecycleRefusal, type RawCoordinatorHealth } from '../transport/ipc/ensure.js';
+import {
+  ensure,
+  issueWithSuccessorAfterLifecycleRefusal,
+  type EnsuredIpcClient,
+  type RawCoordinatorHealth,
+} from '../transport/ipc/ensure.js';
+import { jobsWaitRequest, type JobsWaitFields } from '../transport/rpc/jobs.js';
 import { childPrincipalAuthFromEnv, childPrincipalAuthOptions } from '../transport/ipc/child-principal-auth.js';
 import { CORAL_KB_ENABLE_ENV, KB_DISABLED_REASON, resolveKbEnabled } from '../infra/kb-toggle.js';
 import { filterForwardableCoralEnv } from '../infra/env-sanitize.js';
@@ -185,6 +191,7 @@ type CliCommandClient = AbortCapableClient & {
     params?: unknown,
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>>;
+  subscribeJobsWait(fields: JobsWaitFields, options?: IpcSubscriptionOptions): Promise<IpcSubscription<unknown>>;
 };
 
 export type ProviderRunOptions = {
@@ -534,9 +541,9 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     return result;
   };
 
-  const subscribe = async <TResult>(
+  const subscribeTo = async <TResult>(
     method: string,
-    params?: unknown,
+    paramsFor: (coordinator: EnsuredIpcClient) => unknown,
     options?: IpcSubscriptionOptions,
   ): Promise<IpcSubscription<TResult>> => {
     if (commandClass !== 'subscribe') {
@@ -546,12 +553,17 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     const authOptions = ipcAuthOptions();
     await reconcileKbBoot();
     const client = await ensure(method, resolvePluginRoot());
-    return client.subscribe<TResult>(method, params, {
+    return client.subscribe<TResult>(method, paramsFor(client), {
       timeoutMs: HEALTH_TIMEOUT_MS,
       ...options,
       ...authOptions,
     });
   };
+  const subscribe = <TResult>(
+    method: string,
+    params?: unknown,
+    options?: IpcSubscriptionOptions,
+  ): Promise<IpcSubscription<TResult>> => subscribeTo<TResult>(method, () => params, options);
 
   const readStore = () => getSharedReadCoralStore(canonicalProjectRoot);
 
@@ -804,6 +816,8 @@ export function makeClient(projectRoot: string, command: Command): CliCommandCli
     kbReindex: async (args = {}) =>
       request<KbReindexResponse>('kb.reindex', buildKbMutationTransportContextBody(args, defaultContext)),
     subscribe,
+    subscribeJobsWait: (fields, options) =>
+      subscribeTo('jobs.wait', (coordinator) => jobsWaitRequest(fields, coordinator.jobsWaitExtensions), options),
   };
 }
 

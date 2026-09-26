@@ -2,6 +2,7 @@ import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordin
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -300,6 +301,8 @@ function createPorts(): HttpHandlerPorts {
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
+      unknownJobDisposition: vi.fn(() => 'not-found' as const),
+      outcomeUnrecoverable: vi.fn(() => []),
     },
     workflows: {
       execute: vi.fn(),
@@ -431,6 +434,65 @@ describe('ipc server', () => {
     } finally {
       for (const socket of forwarded) socket.destroy();
       client.destroy();
+      await closeIpcServer(listener);
+    }
+  });
+
+  it('delivers every byte of pending sockets forwarded to another process in one burst', async () => {
+    const receiver = spawn(
+      process.execPath,
+      [
+        '-e',
+        `process.on('message', (message, socket) => {
+          let frame = Buffer.from(message.pending, 'base64');
+          socket.on('data', (chunk) => {
+            frame = Buffer.concat([frame, chunk]);
+            if (frame.includes(10)) process.send({ frame: frame.toString() });
+          });
+          socket.resume();
+        });
+        process.send({ online: true });`,
+      ],
+      { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] },
+    );
+    const listener = createIpcServer(createPorts());
+    const socketPath = makeSocketPath();
+    const clients: Socket[] = [];
+    try {
+      await new Promise<void>((resolve) => receiver.once('message', () => resolve()));
+      const frames: string[] = [];
+      receiver.on('message', (message: { frame: string }) => frames.push(message.frame));
+      await listenIpcServer(listener, socketPath);
+      const count = 5;
+      const pending = new Promise<void>((resolve) => {
+        let observed = 0;
+        listener.server.on('connection', (socket) =>
+          socket.once('data', () => {
+            observed += 1;
+            if (observed === count) resolve();
+          }),
+        );
+      });
+      for (let index = 0; index < count; index += 1) {
+        const client = createConnection(socketPath);
+        clients.push(client);
+        client.on('error', () => undefined);
+        client.write('{"jsonrpc":"2.0",');
+      }
+      await pending;
+
+      listener.forwardConnections!((socket, pendingFrameBase64) => {
+        receiver.send({ pending: pendingFrameBase64 }, socket);
+      });
+      clients.forEach((client, index) => client.write(`"method":"transport.ping","id":"${index}"}\n`));
+
+      await waitForCondition(() => frames.length === count, 'every forwarded frame delivered').catch(() => undefined);
+      expect([...frames].sort()).toEqual(
+        clients.map((_client, index) => `{"jsonrpc":"2.0","method":"transport.ping","id":"${index}"}\n`),
+      );
+    } finally {
+      for (const client of clients) client.destroy();
+      receiver.kill('SIGKILL');
       await closeIpcServer(listener);
     }
   });
@@ -872,6 +934,7 @@ describe('ipc server', () => {
         namespace: 'test-namespace',
         instanceId: 'test-instance',
         pid: 12345,
+        jobsWaitExtensions: ['supportsWaitV2', 'supportsHandover'],
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.health', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),

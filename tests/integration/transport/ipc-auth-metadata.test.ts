@@ -136,6 +136,8 @@ function createPorts(succession?: (method: string, params: unknown) => Promise<u
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
+      unknownJobDisposition: vi.fn(() => 'not-found' as const),
+      outcomeUnrecoverable: vi.fn(() => []),
     },
     workflows: { execute: vi.fn() },
     kb: {

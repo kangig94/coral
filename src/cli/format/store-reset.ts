@@ -119,12 +119,16 @@ export function formatStoreEpochReport(result: Extract<StoreResetReportResult, {
     `- Publication reason: ${code(result.epoch.publicationReason.kind)}`,
     `- Superseded store Coral version: ${result.epoch.supersededStoreVersion === null ? 'not observed' : code(result.epoch.supersededStoreVersion)}`,
     `- Epoch metadata: ${code(formatEpochMetadata(result.epoch.epochJson))}`,
-    `- Database: ${code(relativeDatabase)}`,
-    '',
-    '## SQLite inspection',
-    '',
-    `command=sqlite3 ${code(inspectionDatabase)} ${code('PRAGMA quick_check(1)')}`,
-    '',
+    ...(epoch.role === 'removed'
+      ? ['- Database: reclaimed after closure; there is no database left to inspect.', '']
+      : [
+          `- Database: ${code(relativeDatabase)}`,
+          '',
+          '## SQLite inspection',
+          '',
+          `command=sqlite3 ${code(inspectionDatabase)} ${code('PRAGMA quick_check(1)')}`,
+          '',
+        ]),
     'No file was uploaded. Do not attach DB, WAL, SHM, raw logs, credentials, settings, or environment files.',
     '',
   ].join('\n');
@@ -150,18 +154,20 @@ export function formatStoreResetList(result: StoreResetListResult, target: 'lega
     ...result.epochs.map((epoch) => {
       const address =
         epoch.role === 'protected' ||
+        epoch.role === 'removed' ||
         (epoch.role === 'unobservable' && epoch.epochKey !== null && epoch.epochKey !== undefined)
           ? `<protected-store-root>/${epoch.epochKey?.split(':')[0] ?? 'unobservable'}/epoch-${epoch.epoch}`
           : `epoch-${epoch.epoch}`;
       let next: string;
       if (epoch.role === 'current') {
         next = 'serving current epoch';
-      } else if (
-        epoch.role === 'unobservable' &&
-        epoch.closureDisposition === 'closed' &&
-        epoch.resultRetention === 'retained'
-      ) {
-        next = 'closed epoch address is absent; retained historical results remain addressable';
+      } else if (epoch.protectionPending !== undefined) {
+        next = `automatic protection retry once its opener releases it (${epoch.protectionPending})`;
+      } else if (epoch.role === 'removed') {
+        next =
+          epoch.resultRetention === 'retained'
+            ? 'reclaimed after closure; retained historical results remain addressable'
+            : 'reclaimed after closure; historical results are no longer retained';
       } else if (epoch.role === 'unobservable') {
         next = 'hold: epoch address cannot be verified; retained for reconciliation';
       } else if (epoch.closureDisposition === 'unrecoverable-retained') {

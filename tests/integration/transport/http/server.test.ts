@@ -2224,6 +2224,7 @@ describe('execution backend server', () => {
           waitStream: (request: unknown) => service.waitStream(request),
           list: () => [],
           detail: () => null,
+          unknownJobDisposition: () => 'not-found' as const,
         },
         workflows: {
           execute:
@@ -6600,6 +6601,7 @@ describe('execution backend server', () => {
           },
           list: () => [],
           detail: () => null,
+          unknownJobDisposition: () => 'not-found' as const,
         },
         workflows: {
           execute: vi.fn(),

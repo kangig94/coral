@@ -32,6 +32,7 @@ import {
   listStoreEpochResidues,
   listStoreEpochs,
   inspectResolvedStoreEpochKey,
+  lineageJobEpochKey,
   type StoreEpochHolderListEntry,
   type StoreEpochListEntry,
   type StoreEpochResidueListEntry,
@@ -169,7 +170,12 @@ export function listStoreResetIncidentsLocal(
         target === 'legacy'
           ? []
           : listStoreEpochs(runtime).map((epoch) => {
-              const epochKey = epoch.resolved === null ? null : inspectResolvedStoreEpochKey(runtime, epoch.resolved);
+              const epochKey =
+                epoch.role === 'removed' && typeof epoch.epochKey === 'string'
+                  ? lineageJobEpochKey(runtime.storage.realpathSync(runtime.paths.coral.store.dbDir), epoch.epochKey)
+                  : epoch.resolved === null
+                    ? null
+                    : inspectResolvedStoreEpochKey(runtime, epoch.resolved);
               if (epochKey === null) return { ...epoch, resultRetention: 'unobservable' as const };
               try {
                 return {

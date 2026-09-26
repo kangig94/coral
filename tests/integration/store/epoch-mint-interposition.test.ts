@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { once } from 'node:events';
 import { Worker } from 'node:worker_threads';
@@ -7,6 +7,7 @@ import { Worker } from 'node:worker_threads';
 import { afterEach, expect, it, vi } from 'vitest';
 
 import type * as DbMod from '#src/store/db.js';
+import type * as EpochKeyMod from '#src/store/epoch-key.js';
 import type * as FsLockMod from '#src/infra/fs-lock.js';
 // @ts-expect-error -- JavaScript hook reader intentionally has no TypeScript declaration.
 import { resolveCurrentStoreDbPath } from '../../../clients/hooks/lib/store-epoch.mjs';
@@ -18,8 +19,9 @@ const interposition = vi.hoisted(() => ({
   incompatibleOpen: false,
   lockOpenObserved: false,
   nullReadLockAttempts: 0,
-  publishEpochTwoOnSweep: false,
+  epochTwoPublishSource: null as string | null,
   onEpochTwoPublished: null as (() => void) | null,
+  readingEpochKey: false,
   readLockBusyTimeouts: [] as Array<number | undefined>,
   rejectZeroEpochTwoReadLock: false,
   releaseFailure: false,
@@ -40,7 +42,9 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
   return {
     ...actual,
     acquireSharedFileLockSync: (path: string, busyTimeoutMs?: number) => {
-      if (path.endsWith('/epoch-1/.lock')) interposition.readLockBusyTimeouts.push(busyTimeoutMs);
+      if (path.endsWith('/epoch-1/.lock') && !interposition.readingEpochKey) {
+        interposition.readLockBusyTimeouts.push(busyTimeoutMs);
+      }
       if (path.endsWith('/epoch-2/.lock')) {
         interposition.epochTwoReadLockBusyTimeouts.push(busyTimeoutMs);
         if (interposition.rejectZeroEpochTwoReadLock && busyTimeoutMs === 0) {
@@ -78,23 +82,21 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
       fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
       interposition.lockOpenObserved = true;
       const name = path.basename(directory);
-      const publishEpochTwoOnSweep = interposition.publishEpochTwoOnSweep;
+      const epochTwoPublishSource = interposition.epochTwoPublishSource;
       if (
-        publishEpochTwoOnSweep &&
+        epochTwoPublishSource !== null &&
         interposition.dbDir !== null &&
         path.dirname(directory) === interposition.dbDir &&
         name.startsWith('.coral-store-epoch-construction-')
       ) {
-        interposition.publishEpochTwoOnSweep = false;
-        fs.cpSync(path.join(interposition.dbDir, 'epoch-1'), path.join(interposition.dbDir, 'epoch-2'), {
-          recursive: true,
-        });
+        interposition.epochTwoPublishSource = null;
+        fs.cpSync(epochTwoPublishSource, path.join(interposition.dbDir, 'epoch-2'), { recursive: true });
         interposition.onEpochTwoPublished?.();
       }
       if (
         interposition.dbDir !== null &&
         path.dirname(directory) === interposition.dbDir &&
-        (((interposition.sweepConstruction || publishEpochTwoOnSweep) &&
+        (((interposition.sweepConstruction || epochTwoPublishSource !== null) &&
           name.startsWith('.coral-store-epoch-construction-')) ||
           name.startsWith('.mint-') ||
           name.startsWith('.preparing-') ||
@@ -118,6 +120,22 @@ vi.mock('#src/infra/fs-lock.js', async (importOriginal) => {
           db.close();
         }
       };
+    },
+  };
+});
+
+// An epoch-key read is not an open attempt, so its lock wait is kept out of the open-attempt record.
+vi.mock('#src/store/epoch-key.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof EpochKeyMod>();
+  return {
+    ...actual,
+    readOrCreateEpochKey: (...args: Parameters<typeof actual.readOrCreateEpochKey>) => {
+      interposition.readingEpochKey = true;
+      try {
+        return actual.readOrCreateEpochKey(...args);
+      } finally {
+        interposition.readingEpochKey = false;
+      }
     },
   };
 });
@@ -209,7 +227,8 @@ afterEach(() => {
   interposition.incompatibleOpen = false;
   interposition.lockOpenObserved = false;
   interposition.nullReadLockAttempts = 0;
-  interposition.publishEpochTwoOnSweep = false;
+  interposition.epochTwoPublishSource = null;
+  interposition.readingEpochKey = false;
   interposition.onEpochTwoPublished = null;
   interposition.readLockBusyTimeouts = [];
   interposition.rejectZeroEpochTwoReadLock = false;
@@ -519,7 +538,10 @@ it('resets retry state after a swept mint reveals a different current epoch', ()
   publishInitialEpoch(runtime);
   const clock = withVirtualRetryClock(runtime);
   interposition.dbDir = runtime.paths.coral.store.dbDir;
-  interposition.publishEpochTwoOnSweep = true;
+  // The simulated publisher must not depend on epoch 1 still sitting at its canonical address.
+  const epochTwoSource = join(runtime.paths.coral.store.dbDir, '..', 'epoch-2-source');
+  cpSync(epochDirectory(runtime.paths.coral.store.dbDir, '1'), epochTwoSource, { recursive: true });
+  interposition.epochTwoPublishSource = epochTwoSource;
   interposition.onEpochTwoPublished = () => {
     const current = observeSuccessionWriterGeneration(runtime);
     if (current === null) throw new Error('The simulated publisher has no writer generation.');

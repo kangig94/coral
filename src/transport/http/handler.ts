@@ -856,10 +856,28 @@ async function handleJobsWaitSubscription(
   };
   req.once('close', close);
   runOnResponseDone(res, close);
+  // No shipped client waits over SSE; a handover still ends the stream with a named event that carries the cursor
+  // to resume from, never a close that reads as a stream ending without its terminal.
+  const handover = deps.jobs.waitHandoverSignal();
+  let onHandover = (): void => {};
+  const handedOver = new Promise<'handover'>((resolve) => {
+    onHandover = () => resolve('handover');
+  });
+  if (handover.aborted) onHandover();
+  else handover.addEventListener('abort', onHandover, { once: true });
 
   try {
     while (true) {
-      const next = await iterator.next();
+      const next = await Promise.race([iterator.next(), handedOver]);
+      if (next === 'handover' || (!next.done && (next.value as { type?: unknown }).type === 'handover')) {
+        writeSseEvent(
+          res,
+          'handover',
+          { type: 'handover', ...lifecycleRefusalResult },
+          serializeWaitCursor(currentCursor),
+        );
+        break;
+      }
       if (next.done || closed || res.writableEnded || res.destroyed) {
         break;
       }
@@ -910,6 +928,7 @@ async function handleJobsWaitSubscription(
       throw error;
     }
   } finally {
+    handover.removeEventListener('abort', onHandover);
     close();
     if (!res.writableEnded && !res.destroyed) {
       res.end();

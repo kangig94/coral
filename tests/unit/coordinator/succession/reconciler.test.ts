@@ -446,4 +446,186 @@ describe('succession reconciler', () => {
       reconciler.dispose();
     }
   });
+
+  it('should clear every attempt field a stale intent carried when a fresh request replaces it', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const incumbent = { ...serving, instanceId: 'former', pid: await exitedPid(), incarnation: null };
+    const discard = { attemptId: 'retirement-attempt', incumbentEpochKey: 'retired-epoch' };
+    const staleIncarnation = probeProcessIncarnation(process.pid);
+    if (staleIncarnation === null) throw new Error('this process has no observable incarnation');
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent,
+      target: { build: { ...build, version: '0.10.50' }, pluginRootLabel: '/missing/target' },
+      attemptId: 'recovery-attempt',
+      attemptOwner: { kind: 'incumbent', instanceId: 'former', pid: incumbent.pid, incarnation: null },
+      attemptChild: { attemptId: 'recovery-attempt', pid: incumbent.pid, incarnation: staleIncarnation },
+      disposition: 'deferred',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      recoveryAttemptId: 'recovery-attempt',
+      recoveryBuildSetId: build.buildSetId,
+      recoveryRetry: { kind: 'transient', retryAfterMs: 1_000 },
+      unservedMintDiscard: discard,
+      fieldFromNewerBuild: 'kept',
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const reconciler = servingReconciler(runDir);
+    try {
+      expect(
+        await reconciler.request({ requestId: 'request-2', target: { build, pluginRootLabel: '/missing/target' } }),
+      ).toMatchObject({ kind: 'registered', intent: { requestId: 'request-2' } });
+      const written = readUpgradeIntent(runDir);
+      if (written.kind !== 'readable') throw new Error(`intent is ${written.kind}`);
+      expect(written.intent).toMatchObject({
+        attemptId: null,
+        attemptChild: null,
+        recoveryAttemptId: null,
+        recoveryBuildSetId: null,
+        recoveryRetry: null,
+        unservedMintDiscard: discard,
+        fieldFromNewerBuild: 'kept',
+      });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should settle a same-build recovery that serves without its own intent write, instead of refusing it forever', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const failedIncumbent = { ...serving, instanceId: 'failed-incumbent', pid: await exitedPid(), incarnation: null };
+    const target = { build, pluginRootLabel: '/missing/target' };
+    const recoveryPreparation = {
+      version: 'v1',
+      requestId: 'request-1',
+      attemptId: 'recovery-attempt',
+      incumbentInstanceId: failedIncumbent.instanceId,
+      incumbentPid: failedIncumbent.pid,
+      incumbentKey: 'failed-incumbent-key',
+      targetKey: successionTargetKey(target),
+      capabilitiesKey: '{}',
+      epochKey: 'serving-epoch',
+      admissionRevision: 0,
+      accepts: [],
+      receipts: [],
+      stage: 'prepared',
+      ready: null,
+    };
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: failedIncumbent,
+      target,
+      attemptId: 'recovery-attempt',
+      attemptOwner: {
+        kind: 'incumbent',
+        instanceId: failedIncumbent.instanceId,
+        pid: failedIncumbent.pid,
+        incarnation: null,
+      },
+      disposition: 'deferred',
+      blockers: [{ owner: 'succession-commit', reason: 'same-build recovery after a failed commit' }],
+      retryCondition: { kind: 'target-change', evidence: 'same-build recovery in progress' },
+      attemptDeadline: null,
+      completionReceipt: null,
+      recoveryAttemptId: 'recovery-attempt',
+      recoveryBuildSetId: build.buildSetId,
+      recoveryRetry: { kind: 'target-change' },
+      successionPreparation: recoveryPreparation,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      observeServing: (attemptId) =>
+        attemptId === 'recovery-attempt'
+          ? {
+              epochKey: 'serving-epoch',
+              controlGeneration: 2,
+              successorInstanceId: serving.instanceId,
+              recordedAt: new Date().toISOString(),
+            }
+          : null,
+    });
+    try {
+      await reconciler.commit('recovery-attempt');
+      expect(readUpgradeIntent(runDir)).toMatchObject({
+        kind: 'readable',
+        intent: {
+          incumbent: { instanceId: serving.instanceId },
+          attemptId: null,
+          recoveryAttemptId: null,
+          successionPreparation: null,
+          disposition: 'deferred',
+          retryCondition: { kind: 'target-change' },
+        },
+      });
+      expect(
+        await reconciler.request({
+          requestId: 'request-2',
+          target: { build: { ...build, version: '0.12.0' }, pluginRootLabel: '/missing/newer' },
+        }),
+      ).toMatchObject({ kind: 'registered', intent: { requestId: 'request-2' } });
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should retry the discard of an unserved retirement mint before preparing again, and clear it only once discarded', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const discard = { attemptId: 'failed-retirement', incumbentEpochKey: 'retired-epoch' };
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: serving,
+      target: { build: { ...build, storeFormatFingerprint: `sha256:${'1'.repeat(64)}` }, pluginRootLabel: '/t' },
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'deferred',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+      unservedMintDiscard: discard,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const outcomes: ('held' | 'discarded')[] = ['held', 'discarded'];
+    const attempts: (readonly [string, string])[] = [];
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      storeFormatFingerprint: build.storeFormatFingerprint,
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 60_000,
+      discardUnservedMint: (incumbentEpochKey, attemptId) => {
+        attempts.push([incumbentEpochKey, attemptId]);
+        const kind = outcomes.shift() ?? 'discarded';
+        return kind === 'held' ? { kind, reason: 'a reader holds the mint' } : { kind };
+      },
+    });
+    try {
+      await waitForCondition(() => attempts.length >= 1);
+      expect(readUpgradeIntent(runDir)).toMatchObject({ intent: { unservedMintDiscard: discard } });
+      expect(await reconciler.reconcile()).toMatchObject({ kind: 'deferred' });
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return observed.kind === 'readable' && observed.intent.unservedMintDiscard === null;
+      });
+      expect(attempts[0]).toEqual(['retired-epoch', 'failed-retirement']);
+    } finally {
+      reconciler.dispose();
+    }
+  });
 });

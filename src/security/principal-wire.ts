@@ -57,7 +57,10 @@ export function principalToWire(principal: Principal): PrincipalWire {
 }
 
 export function canonicalizePrincipalWire(value: unknown): PrincipalWire {
-  const wire = principalWireSchema.parse(value);
+  // Passthrough here tolerates a durable transfer's additive fields; it must never be the only gate a caller
+  // puts between this function and unvetted wire input — callers untrusted at the boundary validate with
+  // `principalWireSchema` (strict) first.
+  const wire = principalWireSchema.passthrough().parse(value);
   return {
     ...wire,
     binding:

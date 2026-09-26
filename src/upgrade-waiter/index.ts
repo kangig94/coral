@@ -1,6 +1,7 @@
 import { createConnection } from 'node:net';
 import { join } from 'node:path';
 
+import type { ProcessLiveness } from '../infra/node-process.js';
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
@@ -11,9 +12,13 @@ import type { UpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 
 const LEASE_MS = 30_000;
+
+/** Names what a contender deferred for; the waiter that claims the intent is what that deferral waited on. */
+export const CONTENDER_DEFERRAL_OWNER = 'upgrade-contender';
 const POLL_MS = 2_000;
 
-type RetirementObservation = 'serving' | 'retired' | 'unknown';
+/** `replaced`: another coordinator answers and the recorded incumbent is proven gone, so it can never retire. */
+type RetirementObservation = 'serving' | 'retired' | 'replaced' | 'unknown';
 
 export type UpgradeWaiterOptions = Readonly<{
   runDir: string;
@@ -28,7 +33,9 @@ export type UpgradeWaiterOptions = Readonly<{
 }>;
 
 export type UpgradeWaiterResult =
-  | Readonly<{ kind: 'completed' | 'closed' | 'superseded' | 'target-unavailable' | 'lease-held' | 'expired' }>
+  | Readonly<{
+      kind: 'completed' | 'closed' | 'superseded' | 'replaced' | 'target-unavailable' | 'lease-held' | 'expired';
+    }>
   | Readonly<{ kind: 'unobservable'; reason: string }>;
 
 function sameIncumbent(
@@ -61,6 +68,16 @@ function socketReleased(socketPath: string): Promise<boolean> {
   });
 }
 
+/** A recorded incumbent without an incarnation is judged by its pid alone, which only ever proves absence. */
+export function observeRecordedIncumbent(
+  ports: Pick<UpgradeWaiterPorts, 'processIncarnation' | 'processLiveness'>,
+  incumbent: UpgradeIntent['incumbent'],
+): ProcessLiveness {
+  const current = incumbent.incarnation === null ? null : ports.processIncarnation(incumbent.pid);
+  if (current !== null) return current === incumbent.incarnation ? 'alive' : 'absent';
+  return ports.processLiveness(incumbent.pid);
+}
+
 /** Only ping and health may poll a legacy incumbent; catalog requests renew its idle timer. */
 async function observeNaturalRetirement(
   ports: UpgradeWaiterPorts,
@@ -74,17 +91,10 @@ async function observeNaturalRetirement(
       pid: number;
       incarnation?: string;
     }>({ timeoutMs: 1_000 });
-    return sameIncumbent(intent, ping) ? 'serving' : 'unknown';
+    if (sameIncumbent(intent, ping)) return 'serving';
+    return observeRecordedIncumbent(ports, intent.incumbent) === 'absent' ? 'replaced' : 'unknown';
   } catch {
-    const recorded = intent.incumbent.incarnation;
-    const current = recorded === null ? null : ports.processIncarnation(intent.incumbent.pid);
-    const liveness =
-      current !== null && recorded !== null
-        ? current === recorded
-          ? 'alive'
-          : 'absent'
-        : ports.processLiveness(intent.incumbent.pid);
-    if (liveness !== 'absent') return 'unknown';
+    if (observeRecordedIncumbent(ports, intent.incumbent) !== 'absent') return 'unknown';
     if (!ports.pathAbsent(join(runDir, 'coordinator.json'))) return 'unknown';
     return (await socketReleased(socketPath)) ? 'retired' : 'unknown';
   }
@@ -215,6 +225,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     if (intent.attemptOwner?.instanceId !== instanceId || (!launched && deadline - now() < LEASE_MS / 2)) {
       const claimed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
+        blockers: intent.blockers.filter((entry) => entry.owner !== CONTENDER_DEFERRAL_OWNER),
         attemptId,
         attemptOwner: { kind: 'waiter', instanceId, pid: ports.pid, incarnation },
         attemptDeadline: new Date(now() + LEASE_MS).toISOString(),
@@ -225,7 +236,23 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       await sleep(pollMs);
       continue;
     }
-    if (!launched && (await observe(intent)) === 'retired') {
+    const retirement = launched ? null : await observe(intent);
+    if (retirement === 'replaced') {
+      // The coordinator that serves adopts or supersedes an intent only once no attempt names it.
+      const released = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
+        ...intent,
+        disposition: 'pending',
+        blockers: [{ owner: 'waiter', reason: 'another coordinator serves after the recorded incumbent exited' }],
+        retryCondition: null,
+        attemptId: null,
+        attemptOwner: null,
+        attemptDeadline: null,
+      });
+      if (released.kind === 'conflict') continue;
+      if (released.kind !== 'written') return { kind: 'unobservable', reason: released.kind };
+      return { kind: 'replaced' };
+    }
+    if (retirement === 'retired') {
       if (!validate(intent)) continue;
       const claimed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,

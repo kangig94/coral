@@ -15,7 +15,10 @@ import {
   ProviderProxyRoleControlUnavailableError,
   type ProviderProxyRoleControlAvailabilityIncident,
 } from '../../live/provider-proxy/role-control.js';
-import { createProviderProxySetAuthority } from '../../live/provider-proxy/set-authority.js';
+import {
+  createProviderProxySetAuthority,
+  type ProviderProxySetRecoveryAuthority,
+} from '../../live/provider-proxy/set-authority.js';
 import {
   closeRedeemedProviderProxyControl,
   providerProxyControlRedemptionBundle,
@@ -372,6 +375,38 @@ function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal)
   }
 }
 
+const INSTALL_RETRY_BASE_MS = 1_000;
+const INSTALL_RETRY_MAX_MS = 30_000;
+
+/**
+ * A set redeemed through a served receipt stays redeemable by this build only while that receipt survives, which
+ * nothing here controls, so an unacknowledged install is retried until the grant is this build's. A refusal ends
+ * it, and so does a control channel that closed, because a closed channel means this coordinator holds the set no
+ * longer and its next holder redeems it afresh.
+ */
+async function completeServedTransfer(
+  authority: Pick<ProviderProxySetRecoveryAuthority, 'installRecoveryCredential'>,
+  runtime: Pick<Runtime, 'time'>,
+): Promise<void> {
+  for (let delayMs = INSTALL_RETRY_BASE_MS; ; delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_MS)) {
+    await runtime.time.sleep(delayMs);
+    let installed: Awaited<ReturnType<typeof authority.installRecoveryCredential>> | null;
+    try {
+      installed = await authority.installRecoveryCredential(AbortSignal.timeout(PROXY_CONTROL_RPC_TIMEOUT_MS * 2));
+    } catch {
+      installed = null;
+    }
+    if (installed?.kind === 'installed' || installed?.kind === 'refused') return;
+    if (
+      installed?.kind === 'retryable' &&
+      installed.incident.exchange.kind === 'not-sent' &&
+      installed.incident.exchange.cause === 'connection-already-closed'
+    ) {
+      return;
+    }
+  }
+}
+
 async function buildInheritedAuthority(
   redemption: RedeemedProviderProxyControl,
   capsulePath: string,
@@ -416,8 +451,10 @@ async function buildInheritedAuthority(
     if (via !== 'transfer-before-serving') {
       const installation = await base.installRecoveryCredential(signal);
       switch (installation.kind) {
-        case 'installed':
         case 'retryable':
+          if (via === 'transfer-served') void completeServedTransfer(base, deps.runtime);
+          break;
+        case 'installed':
         case 'refused':
           break;
         case 'cancelled':

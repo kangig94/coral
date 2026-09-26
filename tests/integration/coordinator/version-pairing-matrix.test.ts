@@ -447,7 +447,10 @@ describe('AC18 first-release version pairing', () => {
         fixture: shipped,
         home,
         tempRoots: roots,
-        env: { CORAL_BACKEND_IDLE_MS: '100', PATH: `${binDir}:${process.env.PATH ?? ''}` },
+        // Longer than the upgrade waiter's 2s ping-only poll (POLL_MS in src/upgrade-waiter/index.ts): if a ping
+        // ever renewed the incumbent's idle timer, this incumbent would never go idle and the test would time out
+        // instead of passing vacuously.
+        env: { CORAL_BACKEND_IDLE_MS: '3000', PATH: `${binDir}:${process.env.PATH ?? ''}` },
       });
       coordinators.push(incumbent);
       const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
@@ -484,7 +487,10 @@ describe('AC18 first-release version pairing', () => {
       }
       expect(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir)).toMatchObject({
         kind: 'readable',
-        intent: { disposition: 'completed' },
+        // attemptOwner.kind must be 'waiter', not 'incumbent': only the idle-driven natural-retirement path
+        // writes 'waiter' here; a signaled handoff completion writes 'incumbent' instead. See
+        // completeWaiterLaunchedUpgrade in src/coordinator/succession/startup.ts.
+        intent: { disposition: 'completed', attemptOwner: { kind: 'waiter' } },
       });
     },
     210_000,

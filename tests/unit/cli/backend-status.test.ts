@@ -256,6 +256,35 @@ describe('pending upgrade visibility', () => {
     expect(parsed?.health.succession?.phase).toBe('committing');
   });
 
+  it('renders each superseded epoch closure disposition without an operator command', () => {
+    const rendered = formatBackendStatus(
+      {
+        ...runningBackendStatus({}),
+        supersededEpochs: {
+          kind: 'observed',
+          epochs: [
+            {
+              epoch: '7',
+              epochKey: '00000000-0000-4000-8000-000000000007:7',
+              role: 'protected',
+              closure: 'unrecoverable-retained',
+              reason: 'this epoch predates complete pre-effect custody coverage',
+            },
+            { epoch: '8', epochKey: null, role: 'unobservable', closure: 'pending', reason: null },
+          ],
+        },
+      },
+      { kind: 'absent' },
+      null,
+    );
+    expect(rendered).toContain('Superseded store epochs:');
+    expect(rendered).toContain(
+      '00000000-0000-4000-8000-000000000007:7 (epoch 7, protected): unrecoverable-retained; this epoch predates complete pre-effect custody coverage',
+    );
+    expect(rendered).toContain('unobservable (epoch 8, unobservable): pending');
+    expect(rendered).not.toContain('command=');
+  });
+
   it('renders a corrupt durable intent as a visible automatic hold', () => {
     const rendered = formatBackendStatus(
       runningBackendStatus({}, { successionProblem: 'corrupt' }),

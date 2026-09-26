@@ -25,12 +25,14 @@ import { readCustodyLedger } from '../../store/custody-ledger.js';
 import { raiseStoredProductVersion, type Database } from '../../store/db.js';
 import {
   decodeResolvedStoreEpoch,
+  discardUnservedRetirementMint,
   encodeResolvedStoreEpoch,
   inspectCurrentStore,
   mintRetiredStoreEpoch,
   observeResolvedStoreEpoch,
   observeResolvedStoreEpochKey,
   type ResolvedStoreEpoch,
+  type UnservedMintDiscard,
 } from '../../store/epoch.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import {
@@ -63,6 +65,12 @@ import { observeRetirementDisposition, type RetirementDisposition } from './reti
 /** Startups a hold on an incomplete attempt may span before the attempt is abandoned for ordinary startup. */
 const SUCCESSION_STARTUP_PATIENCE = 3;
 
+/**
+ * Startups closer together than this count as one: a burst of spawns observes the same evidence, and must not
+ * spend patience that exists to let a process's exit become provable.
+ */
+const SUCCESSION_STARTUP_PATIENCE_INTERVAL_MS = 30_000;
+
 export class SuccessionAttemptStartupHoldError extends Error {
   readonly hold: SuccessionStartupHold | null;
 
@@ -88,7 +96,17 @@ export type SuccessionStartupHold =
   | Readonly<{ kind: 'committed-store-holding'; attemptId: string; reason: string }>
   | Readonly<{ kind: 'dead-attempt-generation-unattributable'; attemptId: string; reason: string }>
   /** A retained controller's preference names no attempt; its epoch is what the patience counts against. */
-  | Readonly<{ kind: 'preferred-epoch-unopenable'; attemptId: string | null; epochKey: string; reason: string }>;
+  | Readonly<{ kind: 'preferred-epoch-unopenable'; attemptId: string | null; epochKey: string; reason: string }>
+  /**
+   * A dead attempt's mint still occupies its successor address, where ordinary selection would read it as the store;
+   * the next startup retries the discard, and only a reader of that mint, which exits on its own, can hold it.
+   */
+  | Readonly<{ kind: 'unserved-mint-held'; attemptId: string; reason: string }>
+  /**
+   * Retirement patience withheld the mint on both observations of one startup. Patience counts startups, so the
+   * next startup's observation proceeds; this one refuses rather than wait on a clock it cannot advance.
+   */
+  | Readonly<{ kind: 'retirement-mint-withheld'; attemptId: null; reason: string }>;
 
 export function startupHoldError(hold: SuccessionStartupHold): SuccessionAttemptStartupHoldError {
   return new SuccessionAttemptStartupHoldError(describeStartupHold(hold), hold);
@@ -113,11 +131,16 @@ function describeStartupHold(hold: SuccessionStartupHold): string {
       return `committed successor epoch is holding (${hold.reason})`;
     case 'preferred-epoch-unopenable':
       return `preferred epoch cannot be opened (${hold.reason})`;
+    case 'unserved-mint-held':
+      return `a dead attempt's unserved retirement mint is still held (${hold.reason}); the next startup retries its discard`;
+    case 'retirement-mint-withheld':
+      return `retirement patience withheld the store epoch mint twice (${hold.reason}); the next startup observes it again`;
   }
 }
 
 function patienceSubject(hold: SuccessionStartupHold): string {
   if (hold.kind === 'preferred-epoch-unopenable') return hold.attemptId ?? `preferred-epoch:${hold.epochKey}`;
+  if (hold.kind === 'retirement-mint-withheld') return hold.kind;
   return hold.attemptId;
 }
 
@@ -147,12 +170,31 @@ const startupPatienceSchema = z
     attemptId: z.string().min(1),
     startupId: z.string().min(1),
     startups: z.number().int().positive(),
+    countedAt: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 
+function startupPatiencePath(runtime: Runtime, subject: string): string {
+  return join(
+    runtime.paths.coral.coordinator.runDir,
+    'succession-startup-patience.v1',
+    `${runtime.ids.sha256(subject)}.json`,
+  );
+}
+
+/** A hold that resolved or was abandoned leaves nothing counted against the next hold on the same subject. */
+function clearStartupPatience(runtime: Runtime, subject: string): void {
+  try {
+    runtime.storage.rmSync(startupPatiencePath(runtime, subject), { force: true });
+  } catch (error: unknown) {
+    backendLog.warn(`Succession startup patience could not be cleared: ${formatError(error)}`);
+  }
+}
+
 /**
- * Counts the startups a hold has spanned; true once patience is exhausted. A startup repeated within one process
- * counts once. A live owner is never counted: its exit is what ends that hold.
+ * Counts the startups a hold has spanned; true once patience is exhausted. A startup repeated within one process,
+ * or following another within the patience interval, counts once. A live owner is never counted: its exit is what
+ * ends that hold.
  */
 async function exhaustStartupPatience(
   runtime: Runtime,
@@ -161,11 +203,7 @@ async function exhaustStartupPatience(
 ): Promise<boolean> {
   if (hold.kind === 'deaths-unproven' && hold.alive) return false;
   const subject = patienceSubject(hold);
-  const path = join(
-    runtime.paths.coral.coordinator.runDir,
-    'succession-startup-patience.v1',
-    `${runtime.ids.sha256(subject)}.json`,
-  );
+  const path = startupPatiencePath(runtime, subject);
   let previous: z.infer<typeof startupPatienceSchema> | null = null;
   try {
     const parsed = startupPatienceSchema.safeParse(JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as unknown);
@@ -173,14 +211,23 @@ async function exhaustStartupPatience(
   } catch {
     // An absent or unreadable record starts the count; it can only delay abandonment, never cause it.
   }
-  const startups = previous?.startupId === startupId ? previous.startups : (previous?.startups ?? 0) + 1;
+  const now = runtime.time.now();
+  const repeated =
+    previous !== null &&
+    (previous.startupId === startupId ||
+      (previous.countedAt !== undefined && now - previous.countedAt < SUCCESSION_STARTUP_PATIENCE_INTERVAL_MS))
+      ? previous
+      : null;
+  const startups = repeated?.startups ?? (previous?.startups ?? 0) + 1;
+  const countedAt = repeated === null ? now : (repeated.countedAt ?? now);
   runtime.storage.mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const record = { version: 'v1', attemptId: subject, startupId, startups };
+  const record = { version: 'v1', attemptId: subject, startupId, startups, countedAt };
   if (!runtime.storage.writeAtomicDurableSync(path, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 })) {
     throw new SuccessionAttemptStartupHoldError(`${describeStartupHold(hold)}; patience could not be recorded`, hold);
   }
   const exhausted = startups >= SUCCESSION_STARTUP_PATIENCE;
   if (hold.attemptId !== null) await recordStartupHold(runtime, hold.attemptId, hold, startups, exhausted);
+  if (exhausted) clearStartupPatience(runtime, subject);
   return exhausted;
 }
 
@@ -507,13 +554,12 @@ export async function openPreferredStoreEpoch(
           },
           preferred,
         );
-  if (opened.kind !== 'holding') return { db: opened.db, store: opened.store };
-  await holdUnlessAbandoned(runtime, startupId, {
-    kind: 'preferred-epoch-unopenable',
-    attemptId,
-    epochKey,
-    reason: opened.reason,
-  });
+  const hold = { kind: 'preferred-epoch-unopenable', attemptId, epochKey } as const;
+  if (opened.kind !== 'holding') {
+    clearStartupPatience(runtime, patienceSubject({ ...hold, reason: 'opened' }));
+    return { db: opened.db, store: opened.store };
+  }
+  await holdUnlessAbandoned(runtime, startupId, { ...hold, reason: opened.reason });
   return null;
 }
 
@@ -575,6 +621,36 @@ export async function dischargeDeadSuccessionAttempt(
       `A dead succession attempt could not be discharged (${outcome.kind}); the next startup acts on it.`,
     );
   }
+}
+
+/**
+ * Retries a discard an earlier incumbent could not finish. Only a startup that bound with no coordinator answering
+ * may call it, so no serving process still reads the mint; a discard still held stays recorded for the reconciler
+ * of whichever process serves.
+ */
+export async function retryRecordedMintDiscard(runtime: Runtime): Promise<UnservedMintDiscard | null> {
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  const pending = observed.kind === 'readable' ? (observed.intent.unservedMintDiscard ?? null) : null;
+  if (pending === null) return null;
+  const discarded = discardUnservedRetirementMint(runtime, pending.incumbentEpochKey, pending.attemptId);
+  if (discarded.kind === 'held') {
+    backendLog.warn(`A recorded unserved retirement mint is still held: ${discarded.reason}`);
+    return discarded;
+  }
+  const cleared = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (current) =>
+    current.kind === 'readable' && current.intent.unservedMintDiscard?.attemptId === pending.attemptId
+      ? {
+          kind: 'write',
+          expectedRevision: current.intent.revision,
+          change: { ...current.intent, unservedMintDiscard: null },
+          settle: () => undefined,
+        }
+      : { kind: 'settle', value: undefined },
+  );
+  if (cleared.kind !== 'settled') {
+    backendLog.warn(`A discarded retirement mint record could not be cleared (${cleared.kind}); it is retried.`);
+  }
+  return discarded;
 }
 
 export async function prepareSuccessionAttemptStore(
@@ -804,6 +880,7 @@ export async function prepareCommittedSuccessorRecovery(
   if (prepared.kind === 'holding') {
     return holdOrAbandon({ kind: 'committed-store-holding', attemptId: receipt.attemptId, reason: prepared.reason });
   }
+  clearStartupPatience(runtime, receipt.attemptId);
   return { kind: 'recover', store: prepared.store, intent };
 }
 
@@ -898,6 +975,9 @@ export async function completeWaiterLaunchedUpgrade(
 ): Promise<void> {
   const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
   if (attemptId === undefined || incarnation === null) return;
+  // One instant and one epoch key for every decision: a re-run decision must write the identical serving record.
+  const recordedAt = new Date(runtime.time.now()).toISOString();
+  const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
   const unchanged = { kind: 'settle', value: undefined } as const;
   void (await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
     if (observed.kind !== 'readable') return unchanged;
@@ -911,16 +991,20 @@ export async function completeWaiterLaunchedUpgrade(
     ) {
       return unchanged;
     }
+    // A receipt may never postdate the deadline; past it, the attempt is the waiter's to expire.
+    if (intent.attemptDeadline !== null && Date.parse(recordedAt) > Date.parse(intent.attemptDeadline)) {
+      return unchanged;
+    }
     const generation = observeSuccessionWriterGeneration(runtime);
     if (generation === null) return unchanged;
     let serving: ReturnType<typeof recordSuccessionServing>;
     try {
       serving = recordSuccessionServing(runtime, generation, {
         attemptId,
-        epochKey: encodeResolvedStoreEpoch(runtime, openedStore),
+        epochKey,
         successorInstanceId: instanceId,
         controlGeneration: generation.generation,
-        recordedAt: new Date(runtime.time.now()).toISOString(),
+        recordedAt,
       });
     } catch (error: unknown) {
       backendLog.warn(`Waiter-launched upgrade could not record serving: ${formatError(error)}`);
@@ -1046,7 +1130,7 @@ export async function openSuccessionAttemptStore(
     throw new SuccessionAttemptStartupHoldError('accepted receipts changed before committed open');
   }
   const priorGeneration = joinSuccessionWriterGeneration(runtime, prepared.store).generation;
-  const generation = advanceSuccessionWriterGeneration(runtime, priorGeneration, prepared.store);
+  const generation = advanceSuccessionWriterGeneration(runtime, priorGeneration, prepared.store, child.attemptId);
   const interpositionContext = { recovery: child.recovery };
   await options.interposition.at('successor-writer-fence', interpositionContext);
   await options.interposition.at('successor-committed-open', interpositionContext);
@@ -1137,7 +1221,9 @@ export async function publishAttemptServing(
   }
   await options.interposition.at('successor-before-serving', { recovery: child.recovery });
   options.signal.throwIfAborted();
-  if (Date.parse(intentAtCommit.intent.attemptDeadline) <= runtime.time.now()) {
+  // The serving record carries the instant this check passed: a completion receipt may never postdate the deadline.
+  const servingAt = runtime.time.now();
+  if (Date.parse(intentAtCommit.intent.attemptDeadline) <= servingAt) {
     throw new SuccessionAttemptStartupHoldError('succession commit deadline expired');
   }
   if (
@@ -1151,7 +1237,7 @@ export async function publishAttemptServing(
     epochKey: encodeResolvedStoreEpoch(runtime, opened.store),
     successorInstanceId: options.instanceId,
     controlGeneration: opened.generation.generation,
-    recordedAt: new Date(runtime.time.now()).toISOString(),
+    recordedAt: new Date(servingAt).toISOString(),
   });
   raiseStoredProductVersion(opened.db, options.productVersion);
   options.onStoreServing?.(

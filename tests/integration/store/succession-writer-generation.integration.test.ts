@@ -15,6 +15,7 @@ import {
   joinSuccessionWriterGeneration,
   observeSuccessionServing,
   recordSuccessionServing,
+  refuseSuccessionAttempt,
 } from '#src/store/succession-writer-generation.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
 
@@ -224,5 +225,35 @@ describe('succession writer generation', () => {
     );
     expect(() => recordSuccessionServing(runtime, incumbent.generation, serving)).toThrow(/current writer generation/u);
     expect(() => handbackSuccessionWriterGeneration(runtime, successor, store)).toThrow(/serving was committed/u);
+  });
+
+  it('fences a refused attempt out of the generation, but yields to one that already serves', () => {
+    const { runtime, store } = fixture();
+    const incumbent = joinSuccessionWriterGeneration(runtime, store);
+    incumbent.park();
+    const servingOf = (attemptId: string, generation: number) => ({
+      attemptId,
+      epochKey: JSON.stringify({ ...store, path: join(store.storeRoot, 'epoch-1') }),
+      successorInstanceId: 'successor-1',
+      controlGeneration: generation,
+      recordedAt: new Date().toISOString(),
+    });
+
+    expect(refuseSuccessionAttempt(runtime, 'refused-early')).toEqual({ kind: 'refused' });
+    expect(() => advanceSuccessionWriterGeneration(runtime, incumbent.generation, store, 'refused-early')).toThrow(
+      /was refused/u,
+    );
+    const advanced = advanceSuccessionWriterGeneration(runtime, incumbent.generation, store, 'refused-late');
+    expect(refuseSuccessionAttempt(runtime, 'refused-late')).toEqual({ kind: 'refused' });
+    expect(() => recordSuccessionServing(runtime, advanced, servingOf('refused-late', advanced.generation))).toThrow(
+      /was refused/u,
+    );
+    expect(observeSuccessionServing(runtime, 'refused-late')).toBeNull();
+
+    const handedBack = handbackSuccessionWriterGeneration(runtime, advanced, store);
+    const successor = advanceSuccessionWriterGeneration(runtime, handedBack, store, 'serving');
+    const serving = recordSuccessionServing(runtime, successor, servingOf('serving', successor.generation));
+    expect(refuseSuccessionAttempt(runtime, 'serving')).toEqual({ kind: 'serving', serving });
+    expect(observeSuccessionServing(runtime, 'serving')).toEqual(serving);
   });
 });

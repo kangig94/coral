@@ -11,6 +11,7 @@ const ATTEMPT_ID = '00000000-0000-4000-8000-000000000002';
 type FakeChannel = SuccessionAttemptPorts['channel'] & {
   deliver(message: unknown, handle?: unknown): void;
   sent: unknown[];
+  handles: unknown[];
   failures: boolean[];
 };
 
@@ -20,10 +21,16 @@ function fakePorts(env: Record<string, string> = { CORAL_SUCCESSION_ATTEMPT_ID: 
     available,
     connected: true,
     sent: [],
+    handles: [],
     failures: [],
     send: (message, callback) => {
       channel.sent.push(message);
       callback?.(null);
+    },
+    sendHandle: (message, handle, callback) => {
+      channel.sent.push(message);
+      channel.handles.push(handle);
+      callback(null);
     },
     on: (event: string, listener: (...args: unknown[]) => void) => {
       events.on(event, listener);
@@ -152,5 +159,79 @@ describe('succession attempt child channel', () => {
     await rejected;
     expect(channel.failures).toEqual([false]);
     expect(channel.sent).not.toContainEqual(expect.objectContaining({ kind: 'listener-accepted' }));
+  });
+
+  it('should return every connection it parked to the incumbent before an abort ends it', async () => {
+    const { ports, channel } = fakePorts();
+    const received = receiveSuccessionAttemptChild(ports);
+    channel.deliver(start());
+    const child = await received;
+    if (child === null) throw new Error('expected an attempt child');
+    let parkInheritedAccept: ((socket: unknown, pendingFrameBase64: string) => void) | null = null;
+    const listener = {
+      server: { listening: false },
+      compatibilityListeners: [],
+      acceptSocket: vi.fn(),
+      forwardConnections: (park: (socket: unknown, pendingFrameBase64: string) => void) => {
+        parkInheritedAccept = park;
+        return () => {};
+      },
+    } as unknown as IpcListener;
+    const adoption = child.adoptListeners(listener);
+    channel.deliver({ kind: 'listener', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock' }, { on: vi.fn() });
+    channel.deliver({ kind: 'listeners-complete', attemptId: ATTEMPT_ID });
+    await adoption;
+    const forwarded = { pause: vi.fn() };
+    const accepted = { pause: vi.fn() };
+    channel.deliver(
+      { kind: 'connection', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock', pendingFrameBase64: 'e30=' },
+      forwarded,
+    );
+    if (parkInheritedAccept === null) throw new Error('the inherited listener parks nothing');
+    (parkInheritedAccept as (socket: unknown, pendingFrameBase64: string) => void)(accepted, '');
+
+    channel.deliver({ kind: 'abort', attemptId: ATTEMPT_ID });
+
+    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
+    expect(channel.handles).toEqual(expect.arrayContaining([forwarded, accepted]));
+    const returned = channel.sent.filter((message) => (message as { kind?: string }).kind === 'connection');
+    expect(returned).toEqual(
+      expect.arrayContaining([
+        { kind: 'connection', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock', pendingFrameBase64: 'e30=' },
+        { kind: 'connection', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock', pendingFrameBase64: '' },
+      ]),
+    );
+    expect(channel.sent.at(-1)).toEqual({ kind: 'connections-released', attemptId: ATTEMPT_ID });
+  });
+
+  it.each([
+    ['its own commit deadline', { kind: 'deadline', attemptId: ATTEMPT_ID, at: Date.now() + 5 }],
+    ['a listener outside its claim', { kind: 'listener', attemptId: ATTEMPT_ID, socketPath: '/run/other.sock' }],
+  ])('should return its parked connections while the channel lives when it fails on %s', async (_cause, failure) => {
+    const { ports, channel } = fakePorts();
+    const received = receiveSuccessionAttemptChild(ports);
+    channel.deliver(start());
+    const child = await received;
+    if (child === null) throw new Error('expected an attempt child');
+    const listener = {
+      server: { listening: false },
+      compatibilityListeners: [],
+      acceptSocket: vi.fn(),
+      forwardConnections: () => () => {},
+    } as unknown as IpcListener;
+    const adoption = child.adoptListeners(listener);
+    channel.deliver({ kind: 'listener', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock' }, { on: vi.fn() });
+    channel.deliver({ kind: 'listeners-complete', attemptId: ATTEMPT_ID });
+    await adoption;
+    const forwarded = { pause: vi.fn() };
+    channel.deliver(
+      { kind: 'connection', attemptId: ATTEMPT_ID, socketPath: '/run/coral.sock', pendingFrameBase64: 'e30=' },
+      forwarded,
+    );
+
+    channel.deliver(failure, {});
+
+    await vi.waitFor(() => expect(channel.failures).toEqual([false]));
+    expect(channel.handles).toEqual([forwarded]);
   });
 });

@@ -109,7 +109,7 @@ describe('succession protocol', () => {
   it('launches the prepared target after its final obligation settles without another contender', async () => {
     const target = fixture();
     let blocked = true;
-    const launchPrepared = vi.fn(async () => {});
+    const launchPrepared = vi.fn(async () => ({ settled: new Promise<void>(() => undefined) }));
     const owner: SuccessionOwner = {
       id: 'launch-admission',
       classify: async () =>
@@ -168,7 +168,7 @@ describe('succession protocol', () => {
     const staleClassifyGate = new Promise<void>((resolve) => {
       releaseStaleClassify = resolve;
     });
-    const launchPrepared = vi.fn(async () => {});
+    const launchPrepared = vi.fn(async () => ({ settled: new Promise<void>(() => undefined) }));
     const owner: SuccessionOwner = {
       id: 'launch-admission',
       classify: async () => {
@@ -651,12 +651,410 @@ describe('succession protocol', () => {
         target: { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot },
       }),
     ).toMatchObject({ kind: 'registered', intent: { requestId: 'request' } });
-    expect(await service.reconciler.abort('attempt')).toEqual({ kind: 'committed', receipt });
+    // The pass the request wakes records the receipt the serving attempt owes.
+    await waitForCondition(() => {
+      const observed = readUpgradeIntent(target.runDir);
+      return observed.kind === 'readable' && observed.intent.disposition === 'completed';
+    }, 5_000);
     expect(await service.reconciler.commit('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.commit('attempt')).toEqual({ kind: 'committed', receipt });
     expect(await service.reconciler.abort('attempt')).toEqual({
       kind: 'refused',
       reason: 'attempt already serves',
     });
+  });
+
+  it('leaves a launched attempt to its commit when admission changes before readiness', async () => {
+    const target = fixture();
+    let admissionRevision = 0;
+    let minted = 0;
+    const launched: string[] = [];
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      }),
+      owners: [{ id: 'launch-admission', classify: async () => ({ kind: 'completed', reason: 'idle' }) }],
+      requiredOwners: ['launch-admission'],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => admissionRevision,
+      commitAvailable: true,
+      newAttemptId: () => `attempt-${++minted}`,
+      retryIntervalMs: 3_600_000,
+      // Like the committer, one supervised attempt at a time; this one never settles.
+      launchPrepared: async (_intent, preparation) => {
+        if (launched.length > 0) throw new Error('Another succession attempt is active.');
+        launched.push(preparation.attemptId);
+        return { settled: new Promise<void>(() => undefined) };
+      },
+    });
+    try {
+      await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      });
+      await waitForCondition(() => launched.length === 1, 5_000);
+      await service.reconciler.reconcile();
+
+      admissionRevision = 1;
+      await service.reconciler.reconcile().catch(() => undefined);
+      await service.reconciler.reconcile().catch(() => undefined);
+
+      expect(launched).toEqual(['attempt-1']);
+      expect(service.reconciler.status()).toMatchObject({
+        kind: 'readable',
+        intent: { attemptId: 'attempt-1', disposition: 'pending' },
+      });
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
+  it('keeps a committing attempt when a newer target is requested', async () => {
+    const target = fixture();
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      }),
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      newAttemptId: () => 'attempt',
+    });
+    try {
+      await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      });
+      expect(await service.reconciler.prepare('request')).toMatchObject({ kind: 'prepared' });
+      const prepared = readUpgradeIntent(target.runDir);
+      if (prepared.kind !== 'readable') throw new Error('prepared intent is unreadable');
+      const committing = await compareAndSwapUpgradeIntent(target.runDir, prepared.intent.revision, {
+        ...prepared.intent,
+        disposition: 'attempting',
+        attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+      });
+      if (committing.kind !== 'written') throw new Error(`committing write was ${committing.kind}`);
+
+      expect(
+        await service.reconciler.request({
+          requestId: 'newer',
+          target: { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot },
+        }),
+      ).toMatchObject({ kind: 'registered', intent: { requestId: 'request' } });
+      expect(readUpgradeIntent(target.runDir)).toMatchObject({
+        kind: 'readable',
+        intent: {
+          requestId: 'request',
+          attemptId: 'attempt',
+          disposition: 'attempting',
+          attemptOwner: { kind: 'incumbent', instanceId: 'incumbent' },
+        },
+      });
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
+  it('records the completion receipt of an attempt it serves although another incumbent recorded it', async () => {
+    const target = fixture();
+    const incumbent = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      }),
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      newAttemptId: () => 'attempt',
+    });
+    await incumbent.reconciler.request({
+      requestId: 'request',
+      target: { build: target.build, pluginRootLabel: target.pluginRoot },
+    });
+    const prepared = await incumbent.reconciler.prepare('request');
+    if (prepared.kind !== 'prepared') throw new Error(`preparation was ${prepared.kind}`);
+    expect(
+      await incumbent.reconciler.reportReady({
+        attemptId: 'attempt',
+        successorPid: 200,
+        targetKey: prepared.preparation.targetKey,
+        epochKey: prepared.preparation.epochKey,
+        admissionRevision: prepared.preparation.admissionRevision,
+        receiptIds: [],
+      }),
+    ).toMatchObject({ kind: 'ready' });
+    incumbent.reconciler.dispose();
+
+    const recordedAt = new Date().toISOString();
+    const successor = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'successor',
+        pid: 200,
+        incarnation: null,
+        version: target.build.version,
+        bundleHash: target.build.bundleHash,
+        flavor: 'prod',
+      }),
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 3_600_000,
+      observeServing: (attemptId) =>
+        attemptId === 'attempt'
+          ? { epochKey: 'epoch-one', controlGeneration: 2, successorInstanceId: 'successor', recordedAt }
+          : null,
+    });
+    try {
+      expect(await successor.reconciler.reconcile()).toMatchObject({
+        kind: 'committed',
+        receipt: { attemptId: 'attempt', successor: { instanceId: 'successor' } },
+      });
+      expect(readUpgradeIntent(target.runDir)).toMatchObject({
+        kind: 'readable',
+        intent: { disposition: 'completed', completionReceipt: { attemptId: 'attempt' } },
+      });
+    } finally {
+      successor.reconciler.dispose();
+    }
+  });
+
+  it('adopts a newer target requested during a commit once that commit completes', async () => {
+    const target = fixture();
+    const incumbent = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      }),
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      newAttemptId: () => 'attempt',
+    });
+    await incumbent.reconciler.request({
+      requestId: 'request',
+      target: { build: target.build, pluginRootLabel: target.pluginRoot },
+    });
+    const prepared = await incumbent.reconciler.prepare('request');
+    if (prepared.kind !== 'prepared') throw new Error(`preparation was ${prepared.kind}`);
+    await incumbent.reconciler.reportReady({
+      attemptId: 'attempt',
+      successorPid: 200,
+      targetKey: prepared.preparation.targetKey,
+      epochKey: prepared.preparation.epochKey,
+      admissionRevision: prepared.preparation.admissionRevision,
+      receiptIds: [],
+    });
+    const ready = readUpgradeIntent(target.runDir);
+    if (ready.kind !== 'readable') throw new Error('ready intent is unreadable');
+    const committing = await compareAndSwapUpgradeIntent(target.runDir, ready.intent.revision, {
+      ...ready.intent,
+      disposition: 'attempting',
+      attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+    });
+    if (committing.kind !== 'written') throw new Error(`committing write was ${committing.kind}`);
+    const newer = { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot };
+    expect(await incumbent.reconciler.request({ requestId: 'newer', target: newer })).toMatchObject({
+      kind: 'registered',
+      intent: { requestId: 'request', attemptId: 'attempt', disposition: 'attempting' },
+    });
+    incumbent.reconciler.dispose();
+
+    const recordedAt = new Date().toISOString();
+    const successor = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'successor',
+        pid: 200,
+        incarnation: null,
+        version: target.build.version,
+        bundleHash: target.build.bundleHash,
+        flavor: 'prod',
+      }),
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      retryIntervalMs: 3_600_000,
+      observeServing: (attemptId) =>
+        attemptId === 'attempt'
+          ? { epochKey: 'epoch-one', controlGeneration: 2, successorInstanceId: 'successor', recordedAt }
+          : null,
+    });
+    try {
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(target.runDir);
+        return observed.kind === 'readable' && observed.intent.requestId === 'newer';
+      }, 5_000);
+      expect(readUpgradeIntent(target.runDir)).toMatchObject({
+        kind: 'readable',
+        intent: {
+          requestId: 'newer',
+          incumbent: { instanceId: 'successor' },
+          target: { build: { version: '3.0.0' } },
+          attemptId: null,
+          completionReceipt: null,
+        },
+      });
+    } finally {
+      successor.reconciler.dispose();
+    }
+  });
+
+  it('adopts a newer target requested during a commit once that commit fails and is reclaimed', async () => {
+    const target = fixture();
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      }),
+      owners: [],
+      requiredOwners: [],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      newAttemptId: () => 'attempt',
+      commitAvailable: true,
+      retryIntervalMs: 3_600_000,
+    });
+    try {
+      await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      });
+      expect(await service.reconciler.prepare('request')).toMatchObject({ kind: 'prepared' });
+      const prepared = readUpgradeIntent(target.runDir);
+      if (prepared.kind !== 'readable') throw new Error('prepared intent is unreadable');
+      const committing = await compareAndSwapUpgradeIntent(target.runDir, prepared.intent.revision, {
+        ...prepared.intent,
+        disposition: 'attempting',
+        attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+      });
+      if (committing.kind !== 'written') throw new Error(`committing write was ${committing.kind}`);
+      const newer = { build: { ...target.build, version: '3.0.0' }, pluginRootLabel: target.pluginRoot };
+      await service.reconciler.request({ requestId: 'newer', target: newer });
+
+      const held = readUpgradeIntent(target.runDir);
+      if (held.kind !== 'readable') throw new Error('held intent is unreadable');
+      // The commit settles its failure the way a reclaim records it, keeping every field it does not own.
+      const reclaimed = await compareAndSwapUpgradeIntent(target.runDir, held.intent.revision, {
+        ...held.intent,
+        disposition: 'deferred',
+        attemptId: null,
+        attemptChild: null,
+        attemptOwner: null,
+        attemptDeadline: null,
+        successionPreparation: null,
+        blockers: [{ owner: 'succession-commit', reason: 'incumbent reclaimed after a failed window' }],
+        retryCondition: { kind: 'target-change', evidence: 'successor committed-open failure' },
+      });
+      if (reclaimed.kind !== 'written') throw new Error(`reclaim write was ${reclaimed.kind}`);
+      await service.reconciler.reconcile();
+
+      expect(readUpgradeIntent(target.runDir)).toMatchObject({
+        kind: 'readable',
+        intent: { requestId: 'newer', target: { build: { version: '3.0.0' } } },
+      });
+    } finally {
+      service.reconciler.dispose();
+    }
+  });
+
+  it('re-certifies only the owners its target cannot accept, and reports one that no longer completes', async () => {
+    const target = fixture();
+    let discussLive = false;
+    const acceptedClassifications: string[] = [];
+    const service = createSuccessionCoordinator({
+      runtime,
+      runDir: target.runDir,
+      incumbent: () => ({
+        instanceId: 'incumbent',
+        pid: 100,
+        incarnation: null,
+        version: '1.0.0',
+        bundleHash: 'old-bundle',
+        flavor: 'prod',
+      }),
+      owners: [
+        {
+          id: 'launch-admission',
+          classify: async (attemptId) => {
+            acceptedClassifications.push(attemptId);
+            return { kind: 'completed', reason: 'idle' };
+          },
+        },
+        {
+          id: 'discuss',
+          classify: async () =>
+            discussLive
+              ? { kind: 'blocking', reason: 'live discuss session retains coordinator-local state' }
+              : { kind: 'completed', reason: 'no live discuss session' },
+        },
+      ],
+      requiredOwners: ['launch-admission', 'discuss'],
+      epochKey: () => 'epoch-one',
+      admissionRevision: () => 0,
+      newAttemptId: () => 'attempt',
+    });
+    try {
+      await service.reconciler.request({
+        requestId: 'request',
+        target: { build: target.build, pluginRootLabel: target.pluginRoot },
+      });
+      const prepared = await service.reconciler.prepare('request');
+      if (prepared.kind !== 'prepared') throw new Error(`preparation was ${prepared.kind}`);
+      expect(await service.reconciler.recertify('attempt')).toEqual(prepared);
+
+      discussLive = true;
+      acceptedClassifications.length = 0;
+      expect(await service.reconciler.recertify('attempt')).toEqual({
+        kind: 'deferred',
+        reason: 'succession obligations began after preparation',
+        blockers: [{ owner: 'discuss', reason: 'live discuss session retains coordinator-local state' }],
+      });
+      expect(acceptedClassifications).toEqual([]);
+      expect(await service.reconciler.recertify('another-attempt')).toMatchObject({ kind: 'refused' });
+    } finally {
+      service.reconciler.dispose();
+    }
   });
 });

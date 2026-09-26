@@ -19,7 +19,12 @@ import {
 } from '../../../store/epoch-closure.js';
 import { knownProtectedEpochAddresses, reconcileProtectedEpochs } from '../../../store/epoch-protection.js';
 import { readOrCreateEpochKey } from '../../../store/epoch-key.js';
-import { decodeResolvedStoreEpoch, listStoreEpochs, type ResolvedStoreEpoch } from '../../../store/epoch.js';
+import {
+  decodeResolvedStoreEpoch,
+  lineageJobEpochKey,
+  listStoreEpochs,
+  type ResolvedStoreEpoch,
+} from '../../../store/epoch.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { JobLocationIndex } from '../../../jobs/location-index.js';
 import { readDurableCliControllerReceipts } from '../durable-cli-transfer.js';
@@ -178,8 +183,8 @@ async function certifyCustody(
   entries: readonly CustodyEntry[],
   ambiguousOriginalPath: boolean,
   signal: AbortSignal,
-  closeProxySet?: CloseProxySet,
-  jobEpochKey = candidate.epochKey,
+  closeProxySet: CloseProxySet | undefined,
+  jobEpochKey: string,
   absence: AbsenceProof = { kind: 'reap', confirmed: new Set() },
 ): Promise<Pick<EpochClosureEvidence, 'executionDischarge' | 'obligations' | 'reason'>> {
   if (!hasEpochCustodyCoverage(runtime, dirname(candidate.epoch.path), runtime.paths.coral.coordinator.runDir)) {
@@ -452,7 +457,10 @@ export async function settleSupersededEpochClosures(
     if (signal?.aborted) break;
     if (subjectKey !== undefined && subjectKey !== candidate.epochKey) continue;
     if (candidate.epochKey === selectedKey) continue;
-    const jobEpochKey = candidate.epochKey;
+    const jobEpochKey = lineageJobEpochKey(
+      candidate.epoch.canonicalStoreRoot ?? candidate.epoch.storeRoot,
+      candidate.epochKey,
+    );
     const read = observeEpochClosure(runtime, stateRoot, candidate.epochKey);
     if (read.kind === 'unreadable') continue;
     const previous = read.kind === 'recorded' ? read.evidence : null;

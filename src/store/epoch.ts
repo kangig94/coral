@@ -4,6 +4,7 @@ import type { StrictBundleManifest } from '../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../infra/audit-log.js';
 import { backendLog } from '../infra/backend-log.js';
 import { probeCoordinator } from '../infra/backend-discovery.js';
+import { errorMessage } from '../infra/error-format.js';
 import {
   acquireSharedFileLockSync,
   attemptExclusiveFileLockSync,
@@ -39,10 +40,12 @@ import { initializeCustodyLedger, readCustodyLedger, type CustodyEntry } from '.
 import {
   protectStoreEpoch,
   protectedDeletionResidues,
+  StoreEpochOpenerHeldError,
   reconcileProtectedEpochs,
   removeClosedProtectedEpoch,
   knownProtectedEpochAddresses,
   observeProtectedEpoch,
+  protectedEpochRemoved,
   resolveProtectedEpoch,
   unrecognizedProtectedEpochs,
 } from './epoch-protection.js';
@@ -130,12 +133,14 @@ export type ExactStoreEpochOpen =
 
 export type StoreEpochListEntry = Readonly<{
   epoch: StoreEpoch;
-  role: 'current' | 'preserved' | 'garbage' | 'protected' | 'unobservable';
+  role: 'current' | 'preserved' | 'garbage' | 'protected' | 'removed' | 'unobservable';
   epochKey?: string | null;
   closureDisposition?: 'closed' | 'unrecoverable-retained' | 'pending';
   dataOutcome?: 'retained' | 'unreadable' | 'unknown';
   custodyState?: 'certified' | 'undecidable' | 'holding' | 'absent' | 'unobserved';
   closureReason?: string | null;
+  /** Why a superseded epoch still sits where a shipped older sweep can reach it; the post-ready sweep retries it. */
+  protectionPending?: string;
   bytes: number | null;
   publicationReason: StoreEpochClassification;
   supersededStoreVersion: string | null;
@@ -287,6 +292,8 @@ type StoreEpochObservation = Readonly<{
   epoch: StoreEpoch;
   proof: StoreEpochProof;
   epochJson: StoreEpochMetadataDisposition;
+  /** A successor a retirement attempt minted; it becomes current only once its predecessor left the store root. */
+  retirementMint?: true;
 }>;
 
 type ProvenStoreEpochObservation = StoreEpochObservation &
@@ -396,12 +403,27 @@ function observeStoreEpoch(
   }
   const database = observeContainedRegularFile(storage, directory, epochPath(dbDir, epoch), contained);
   const lock = database.kind === 'proven' ? observeStoreEpochLock(storage, dbDir, epoch, contained) : database;
-  return { epoch, proof: epochJson.kind === 'valid' ? lock : { kind: 'disproven' }, epochJson };
+  const proof = epochJson.kind === 'valid' ? lock : ({ kind: 'disproven' } as const);
+  const retirementMint =
+    proof.kind === 'proven' &&
+    observeContainedRegularFile(storage, directory, join(directory, RETIREMENT_ATTEMPT_FILE_NAME), contained).kind !==
+      'disproven';
+  return { epoch, proof, epochJson, ...(retirementMint ? { retirementMint: true } : {}) };
 }
 
+/**
+ * A retirement moves its predecessor out of the store root before minting, and only a failed attempt's reclaim
+ * returns it; a mint whose predecessor is proven there again was never served and must not be read as the store.
+ */
 function currentProvenEpoch(observations: readonly StoreEpochObservation[]): ProvenStoreEpochObservation | null {
+  const proven = new Set(
+    observations.filter((observation) => observation.proof.kind === 'proven').map(({ epoch }) => epoch),
+  );
   return observations.reduce<ProvenStoreEpochObservation | null>((current, observation) => {
     if (observation.proof.kind !== 'proven') return current;
+    if (observation.retirementMint === true && proven.has((BigInt(observation.epoch) - 1n).toString())) {
+      return current;
+    }
     return current === null || compareEpoch(observation.epoch, current.epoch) > 0
       ? (observation as ProvenStoreEpochObservation)
       : current;
@@ -454,6 +476,14 @@ export function encodeResolvedStoreEpoch(
 function fullEpochKey(resolved: ResolvedStoreEpoch, lineageKey: string): string {
   const storeRoot = resolved.canonicalStoreRoot ?? resolved.storeRoot;
   return JSON.stringify({ storeRoot, epoch: resolved.epoch, path: epochPath(storeRoot, resolved.epoch), lineageKey });
+}
+
+/**
+ * The key job locations and their certificate use for the epoch `lineageKey` names under the canonical
+ * `storeRoot`, wherever its directory now lives. A lineage key alone never finds a job location.
+ */
+export function lineageJobEpochKey(storeRoot: string, lineageKey: string): string {
+  return fullEpochKey(resolvedStoreEpoch(storeRoot, lineageKey.slice(lineageKey.lastIndexOf(':') + 1)), lineageKey);
 }
 
 /** Store inspection derives the key without the epoch lock and without creating a missing marker. */
@@ -1743,6 +1773,7 @@ export async function sweepStoreEpochsPostReady(
   const mutations: PostReadySweepMutationState = { pending: false };
 
   if (signal?.aborted) return 'cancelled';
+  retryPendingProtections(runtime, dbDir, openEpoch);
   let entries: readonly string[];
   try {
     entries = await runtime.storage.readdir(dbDir);
@@ -1785,7 +1816,7 @@ export async function sweepStoreEpochsPostReady(
       const epochKey = readOrCreateEpochKey(runtime, resolved);
       if (
         closureCapability(runtime, runtime.paths.coral.generation.dataRoot, epochKey) === null ||
-        !options.resultsReleased(epochKey)
+        !options.resultsReleased(lineageJobEpochKey(dbDir, epochKey))
       )
         continue;
       mutations.pending = true;
@@ -1808,7 +1839,7 @@ export async function sweepStoreEpochsPostReady(
         if (metadata.kind !== 'valid' || Date.parse(metadata.value.publishedAt) >= retentionBoundary) continue;
         if (
           closureCapability(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||
-          !options.resultsReleased(address.epochKey)
+          !options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey))
         )
           continue;
         const removal = removeClosedProtectedEpoch(runtime, address);
@@ -1820,7 +1851,7 @@ export async function sweepStoreEpochsPostReady(
       if (signal?.aborted) return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
       if (
         closureCapability(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey) === null ||
-        !options.resultsReleased(address.epochKey)
+        !options.resultsReleased(lineageJobEpochKey(dbDir, address.epochKey))
       )
         continue;
       complete = removeClosedProtectedEpoch(runtime, address) === 'removed' && complete;
@@ -1899,6 +1930,111 @@ function selectSuccessor(
   return { kind: 'selected', epoch: candidate };
 }
 
+/**
+ * How long a mint waits for an opener still holding a superseded epoch before it publishes the successor anyway and
+ * leaves that epoch's protection to the post-ready sweep. The wait blocks startup, so it stays short.
+ */
+const SUPERSEDED_OPENER_DRAIN_MS = 2_000;
+
+type PendingProtection = Readonly<{ storeRoot: string; epoch: StoreEpoch; reason: string; recordedAt: string }>;
+
+function pendingProtectionDirectory(runtime: Pick<Runtime, 'paths'>): string {
+  return join(runtime.paths.coral.generation.dataRoot, 'store-epoch-protection-pending.v1');
+}
+
+function pendingProtectionPath(runtime: Pick<Runtime, 'paths' | 'ids'>, storeRoot: string, epoch: StoreEpoch): string {
+  return join(pendingProtectionDirectory(runtime), `${runtime.ids.sha256(epochDirectory(storeRoot, epoch))}.json`);
+}
+
+/** Unknown keys are kept for a newer writer; a record this build cannot read is skipped, never deleted. */
+function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): readonly PendingProtection[] {
+  let names: string[];
+  try {
+    names = runtime.storage.readdirSync(pendingProtectionDirectory(runtime));
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    try {
+      const value = JSON.parse(
+        runtime.storage.readFileSync(join(pendingProtectionDirectory(runtime), name), 'utf-8'),
+      ) as unknown;
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        'version' in value &&
+        value.version === 'v1' &&
+        'storeRoot' in value &&
+        typeof value.storeRoot === 'string' &&
+        'epoch' in value &&
+        typeof value.epoch === 'string' &&
+        EPOCH_DIRECTORY_PATTERN.test(`epoch-${value.epoch}`) &&
+        'reason' in value &&
+        typeof value.reason === 'string' &&
+        'recordedAt' in value &&
+        typeof value.recordedAt === 'string'
+      ) {
+        return [{ storeRoot: value.storeRoot, epoch: value.epoch, reason: value.reason, recordedAt: value.recordedAt }];
+      }
+    } catch {
+      // An unreadable record hides nothing: the epoch it names is still listed at its canonical address.
+    }
+    return [];
+  });
+}
+
+/**
+ * The superseded epoch stays where a shipped older sweep can reach it until a later protection succeeds, so the
+ * record is the status the store listing shows and the post-ready sweep acts on.
+ */
+function recordPendingProtection(runtime: Runtime, storeRoot: string, epoch: StoreEpoch, reason: string): void {
+  writeAuditEvent('store_epoch_protection_deferred', { path: epochDirectory(storeRoot, epoch), cause: reason }, 'warn');
+  try {
+    runtime.storage.mkdirSync(pendingProtectionDirectory(runtime), { recursive: true, mode: 0o700 });
+    const record = { version: 'v1', storeRoot, epoch, reason, recordedAt: new Date(runtime.time.now()).toISOString() };
+    if (
+      runtime.storage.writeAtomicDurableSync(
+        pendingProtectionPath(runtime, storeRoot, epoch),
+        `${JSON.stringify(record)}\n`,
+        { encoding: 'utf8', mode: 0o600 },
+      )
+    )
+      return;
+  } catch {
+    // Reported below: the audit event above is then the only record.
+  }
+  writeAuditEvent('store_epoch_protection_unrecorded', { path: epochDirectory(storeRoot, epoch) }, 'error');
+}
+
+function clearPendingProtection(runtime: Runtime, storeRoot: string, epoch: StoreEpoch): void {
+  try {
+    runtime.storage.rmSync(pendingProtectionPath(runtime, storeRoot, epoch), { force: true });
+  } catch (error: unknown) {
+    auditSweepFailure(epochDirectory(storeRoot, epoch), error);
+  }
+}
+
+/**
+ * The one owner of a deferred protection, retried on the sweep's cadence for as long as a coordinator serves.
+ * Only an epoch older than the one this process opened is protected, and an epoch already gone needs nothing.
+ */
+function retryPendingProtections(runtime: Runtime, storeRoot: string, openEpoch: StoreEpoch): void {
+  for (const pending of readPendingProtections(runtime)) {
+    if (pending.storeRoot !== storeRoot || compareEpoch(pending.epoch, openEpoch) >= 0) continue;
+    const directory = epochDirectory(storeRoot, pending.epoch);
+    if (observeStorePath(runtime.storage, directory) === 'absent') {
+      clearPendingProtection(runtime, storeRoot, pending.epoch);
+      continue;
+    }
+    try {
+      protectStoreEpoch(runtime, resolvedStoreEpoch(storeRoot, pending.epoch));
+      clearPendingProtection(runtime, storeRoot, pending.epoch);
+    } catch (error: unknown) {
+      if (!(error instanceof StoreEpochOpenerHeldError)) auditSweepFailure(directory, error);
+    }
+  }
+}
+
 function mintNextEpoch(
   runtime: Runtime,
   options: StoreEpochOptions,
@@ -1911,18 +2047,22 @@ function mintNextEpoch(
   reconcileProtectedEpochs(runtime, dbDir);
   const writerGeneration = observeSuccessionWriterGeneration(runtime);
   for (const observation of observeStoreEpochs(runtime.storage, dbDir)) {
-    if (
-      classification.kind === 'unavailable' &&
-      observation.epoch === supersedes &&
-      (writerGeneration === null || (writerGeneration.storeRoot === dbDir && writerGeneration.epoch === supersedes))
-    ) {
-      continue;
-    }
     const directory = epochDirectory(dbDir, observation.epoch);
     const directoryProof = observeContainedDirectory(runtime.storage, dbDir, directory);
     if (directoryProof.kind !== 'proven') continue;
     if (observeStoreEpochLock(runtime.storage, dbDir, observation.epoch, directoryProof).kind !== 'proven') continue;
-    protectStoreEpoch(runtime, resolvedStoreEpoch(dbDir, observation.epoch));
+    const unavailableWriterEpoch =
+      classification.kind === 'unavailable' &&
+      observation.epoch === supersedes &&
+      (writerGeneration === null || (writerGeneration.storeRoot === dbDir && writerGeneration.epoch === supersedes));
+    // A boot is never refused because an opener still holds a superseded epoch; the epoch is published past and
+    // protected later. An epoch that will not open is published past whatever kept it from protection.
+    try {
+      protectStoreEpoch(runtime, resolvedStoreEpoch(dbDir, observation.epoch), SUPERSEDED_OPENER_DRAIN_MS);
+    } catch (error: unknown) {
+      if (!unavailableWriterEpoch && !(error instanceof StoreEpochOpenerHeldError)) throw error;
+      recordPendingProtection(runtime, dbDir, observation.epoch, errorMessage(error));
+    }
   }
   const id = runtime.ids.uuid();
   const construction = join(dbDir, `${PRIVATE_MINT_CONSTRUCTION_PREFIX}${id}`);
@@ -2044,27 +2184,41 @@ export async function mintRetiredStoreEpoch(
   return { ...openPublishedEpoch(runtime, options, dbDir, expected.epoch, successor, published.lease), generation };
 }
 
-export function discardUnservedRetirementMint(runtime: Runtime, incumbentEpochKey: string, attemptId: string): void {
-  if (observeSuccessionServing(runtime, attemptId) !== null) {
-    throw new Error('A serving retirement mint cannot be discarded.');
-  }
+/**
+ * What a discard of an unserved retirement mint found. `absent` means nothing this attempt minted remains at the
+ * successor address; `held` leaves the mint in place and names why, so its owner retries.
+ */
+export type UnservedMintDiscard =
+  | Readonly<{ kind: 'discarded' | 'absent' | 'serving' }>
+  | Readonly<{ kind: 'held'; reason: string }>;
+
+export function discardUnservedRetirementMint(
+  runtime: Runtime,
+  incumbentEpochKey: string,
+  attemptId: string,
+): UnservedMintDiscard {
+  if (observeSuccessionServing(runtime, attemptId) !== null) return { kind: 'serving' };
   const incumbent = decodeResolvedStoreEpoch(runtime, incumbentEpochKey);
-  if (incumbent === undefined) throw new Error('Retirement source is unproven.');
-  const dbDir = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
-  const successor = successorEpoch(incumbent.epoch);
-  const markerPath = join(epochDirectory(dbDir, successor), RETIREMENT_ATTEMPT_FILE_NAME);
+  if (incumbent === undefined) return { kind: 'held', reason: 'retirement source is unproven' };
   let marker: unknown;
+  let dbDir: string;
+  let successor: StoreEpoch;
   try {
-    marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
+    dbDir = runtime.storage.realpathSync(runtime.paths.coral.store.dbDir);
+    successor = successorEpoch(incumbent.epoch);
+    marker = JSON.parse(
+      runtime.storage.readFileSync(join(epochDirectory(dbDir, successor), RETIREMENT_ATTEMPT_FILE_NAME), 'utf-8'),
+    ) as unknown;
   } catch (error: unknown) {
-    if (errorCode(error) === 'ENOENT') return;
-    throw error;
+    if (errorCode(error) === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'held', reason: `retirement mint marker is unreadable: ${errorMessage(error)}` };
   }
+  // Another attempt could publish at this address only after this attempt's mint left it.
   if (typeof marker !== 'object' || marker === null || !('attemptId' in marker) || marker.attemptId !== attemptId) {
-    throw new Error('Retirement mint belongs to another attempt.');
+    return { kind: 'absent' };
   }
   const removed = removeEpochEntry(runtime, dbDir, successor);
-  if (removed !== 'removed') throw new Error(`Unserved retirement mint could not be discarded: ${removed}.`);
+  return removed === 'removed' ? { kind: 'discarded' } : { kind: 'held', reason: `removal was ${removed}` };
 }
 
 function openPublishedEpoch(
@@ -2656,10 +2810,12 @@ export function listStoreEpochs(
     return entries.every((entry) => entry.kind === 'absent') ? 'absent' : 'holding';
   };
 
+  const pendingProtections = readPendingProtections(runtime).filter((pending) => pending.storeRoot === dbDir);
   const canonical: StoreEpochListEntry[] = [...observations]
     .sort((left, right) => compareEpoch(right.epoch, left.epoch))
     .map((observation) => {
       const { epoch } = observation;
+      const protectionPending = pendingProtections.find((pending) => pending.epoch === epoch)?.reason;
       const publicationReason =
         observation.epochJson.kind === 'valid'
           ? observation.epochJson.value.classification
@@ -2679,6 +2835,7 @@ export function listStoreEpochs(
         dataOutcome: closure?.dataOutcome ?? (closureUnreadable ? 'unreadable' : 'unknown'),
         custodyState: closureUnreadable ? 'undecidable' : custodyState(epochKey, closure),
         closureReason: closure?.reason ?? null,
+        ...(protectionPending === undefined ? {} : { protectionPending }),
         role:
           observation.proof.kind === 'unobservable'
             ? 'unobservable'
@@ -2731,15 +2888,21 @@ export function listStoreEpochs(
     const read = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey);
     const closure = read.kind === 'recorded' ? read.evidence : null;
     const closureUnreadable = read.kind === 'unreadable';
+    const role: StoreEpochListEntry['role'] = addressPresent
+      ? 'protected'
+      : closure?.disposition === 'closed' && protectedEpochRemoved(runtime, address)
+        ? 'removed'
+        : 'unobservable';
     return {
       epoch,
       address: address.protectedPath,
       epochKey: address.epochKey,
-      role: addressPresent ? 'protected' : 'unobservable',
+      role,
       closureDisposition:
-        closure?.disposition ?? (closureUnreadable || !addressPresent ? 'unrecoverable-retained' : 'pending'),
-      dataOutcome: closure?.dataOutcome ?? (closureUnreadable || !addressPresent ? 'unreadable' : 'unknown'),
-      custodyState: closureUnreadable || !addressPresent ? 'undecidable' : custodyState(address.epochKey, closure),
+        closure?.disposition ?? (closureUnreadable || role === 'unobservable' ? 'unrecoverable-retained' : 'pending'),
+      dataOutcome: closure?.dataOutcome ?? (closureUnreadable || role === 'unobservable' ? 'unreadable' : 'unknown'),
+      custodyState:
+        closureUnreadable || role === 'unobservable' ? 'undecidable' : custodyState(address.epochKey, closure),
       closureReason: closure?.reason ?? null,
       bytes: addressPresent ? epochBytes(runtime.storage, protectedStoreRoot, epoch) : null,
       publicationReason,

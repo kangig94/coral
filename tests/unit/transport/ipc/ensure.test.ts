@@ -379,6 +379,31 @@ describe('ipc ensure', () => {
     });
   });
 
+  it.each([
+    { advertised: ['supportsWaitV2', 'supportsHandover'], expected: ['supportsWaitV2', 'supportsHandover'] },
+    { advertised: undefined, expected: [] },
+    { advertised: 'supportsWaitV2', expected: [] },
+  ])('should carry wait extensions $advertised as $expected', async ({ advertised, expected }) => {
+    makeHome();
+    const root = createPluginRoot();
+    writeDiscovery(root, { port: 4202, token: 'existing-token', instanceId: 'existing-coordinator' });
+    mockState.health.mockResolvedValue({
+      status: 'ok',
+      version: '0.5.2',
+      bundleHash: 'test-hash',
+      flavor: 'prod',
+      instanceId: 'existing-coordinator',
+      namespace: pluginRootNamespace(root),
+      ...(advertised === undefined ? {} : { jobsWaitExtensions: advertised }),
+    });
+
+    const { ensure } = await importEnsure();
+    const ensured = await ensure('jobs.wait', root);
+
+    expect(ensured.instanceId).toBe('existing-coordinator');
+    expect(ensured.jobsWaitExtensions).toEqual(expected);
+  });
+
   it('reuses a present healthy coordinator whose discovery record carries a field this build predates', async () => {
     makeHome();
     const root = createPluginRoot();
@@ -2279,7 +2304,8 @@ describe('ipc ensure', () => {
 
   const UNREACHABLE_AFTER_CHILD_STOPPED =
     'The spawned Coral coordinator stopped, and this address does not answer health requests ' +
-    '(health-request-failed). Verify the socket owner, force-kill it if it is still alive, then retry.';
+    '(health-request-failed). No live recorded coordinator could be identified behind it, so Coral signaled ' +
+    'nothing; retry the command.';
 
   it('names a verified live unresponsive coordinator in labeled force-kill guidance', async () => {
     makeHome();
@@ -2337,6 +2363,7 @@ describe('ipc ensure', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).not.toContain('action=kill -9');
+    expect((error as Error).message).not.toMatch(/force-kill/i);
     expect((error as Error).message).toBe(UNREACHABLE_AFTER_CHILD_STOPPED);
   });
 

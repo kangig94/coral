@@ -59,6 +59,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/jobs/historical-reader.ts#olderProjectionSchema',
   'src/jobs/historical-reader.ts#progressBodySchema',
   'src/jobs/historical-reader.ts#terminalBodySchema',
+  'src/jobs/location-index.ts#locationSchema',
   'src/jobs/location-index.ts#storedJobDetailSchema',
   'src/jobs/outcome.ts#externalErrorSchema',
   'src/jobs/outcome.ts#jobDomainProgressSchema',

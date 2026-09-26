@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +25,14 @@ const build = {
   claudeAppserverBundleHash: '0123456789abcdef',
   durableWrapperBundleHash: '0123456789abcdef',
 };
+
+/** A pid whose process has exited, so its absence is decisive. */
+async function exitedPid(): Promise<number> {
+  const child = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+  await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  if (child.pid === undefined) throw new Error('exited child has no pid');
+  return child.pid;
+}
 
 describe('legacy upgrade request', () => {
   const directories: string[] = [];
@@ -102,6 +111,88 @@ describe('legacy upgrade request', () => {
       }),
     ).toMatchObject({ kind: 'refused' });
     expect(readUpgradeIntent(runDir)).toEqual({ kind: 'absent' });
+    expect(startWaiter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no attempt', {}],
+    [
+      'an expired waiter lease',
+      {
+        attemptId: 'expired-attempt',
+        attemptOwner: { kind: 'waiter' as const, instanceId: 'waiter', pid: 2222, incarnation: null },
+        disposition: 'attempting' as const,
+        attemptDeadline: '2026-09-24T00:00:00.000Z',
+      },
+    ],
+  ])(
+    'should replace an intent naming an incumbent proven gone, with %s, by the incumbent that now serves',
+    async (_case, attempt) => {
+      const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+      directories.push(runDir);
+      const retired = { ...incumbent, instanceId: 'retired', pid: await exitedPid() };
+      expect(
+        await compareAndSwapUpgradeIntent(runDir, null, {
+          requestId: 'retired-request',
+          incumbent: retired,
+          target: { build, pluginRootLabel: '/installed/target' },
+          attemptId: null,
+          attemptOwner: null,
+          disposition: 'pending',
+          blockers: [],
+          retryCondition: { kind: 'incumbent-retirement', evidence: 'idle exit' },
+          attemptDeadline: null,
+          completionReceipt: null,
+          ...attempt,
+        }),
+      ).toMatchObject({ kind: 'written' });
+      const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
+
+      const result = await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        startWaiter,
+      });
+
+      expect(result).toMatchObject({ kind: 'waiting' });
+      expect(result).not.toMatchObject({ requestId: 'retired-request' });
+      expect(readUpgradeIntent(runDir)).toMatchObject({
+        kind: 'readable',
+        intent: { incumbent: { instanceId: 'legacy' }, disposition: 'pending', attemptId: null },
+      });
+    },
+  );
+
+  it('should refuse to replace an intent whose recorded incumbent may still be alive', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-legacy-upgrade-'));
+    directories.push(runDir);
+    expect(
+      await compareAndSwapUpgradeIntent(runDir, null, {
+        requestId: 'live-request',
+        incumbent: { ...incumbent, instanceId: 'other', pid: process.pid },
+        target: { build, pluginRootLabel: '/installed/target' },
+        attemptId: null,
+        attemptOwner: null,
+        disposition: 'pending',
+        blockers: [],
+        retryCondition: { kind: 'incumbent-retirement', evidence: 'idle exit' },
+        attemptDeadline: null,
+        completionReceipt: null,
+      }),
+    ).toMatchObject({ kind: 'written' });
+    const startWaiter = vi.fn(async () => ({ kind: 'started' as const, pid: 5678 }));
+
+    expect(
+      await requestLegacyUpgrade({
+        runDir,
+        socketPath: '/legacy.sock',
+        incumbent,
+        target: { build, pluginRootLabel: '/installed/target' },
+        startWaiter,
+      }),
+    ).toEqual({ kind: 'refused', reason: 'pending intent names another incumbent', disposition: 'deferred' });
     expect(startWaiter).not.toHaveBeenCalled();
   });
 });

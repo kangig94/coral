@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ChildPrincipalRegistry } from '#src/coordinator/child-principal-registry.js';
+import { ChildPrincipalRegistry, decodeChildPrincipalTransfer } from '#src/coordinator/child-principal-registry.js';
 import { ChildPrincipalNonceLedger } from '#src/infra/child-principal-nonce-ledger.js';
 import { authorize } from '#src/security/policy/authorize.js';
 import type { Capability } from '#src/security/capability.js';
@@ -100,6 +100,75 @@ describe('ChildPrincipalRegistry', () => {
       expect(incumbent.reclaimAuthentication(3)).toBe(true);
       expect(incumbent.authenticate(childAuth(credential.handle, { token: 'nonce-2' }), null, 1_005)).toBeNull();
       expect(successor.authenticate(childAuth(credential.handle, { token: 'nonce-4' }), null, 1_005)).toBeNull();
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('decodes a transfer receipt that a newer writer extended with fields this build does not know', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-additive-'));
+    try {
+      const incumbent = new ChildPrincipalRegistry(ids(), {
+        ledger: new ChildPrincipalNonceLedger(runDir),
+        originNamespace: () => 'ns-a',
+      });
+      register(incumbent, testProjectPrincipal(projectIn(runDir)));
+      const receipt = incumbent.prepareTransfer('attempt', 1_001);
+      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+      const [entry] = receipt.entries;
+      if (entry === undefined) throw new Error('Expected a transferred handle.');
+      const extended = {
+        ...receipt,
+        laterField: 'added',
+        entries: [{ ...entry, laterField: 'added', authorization: { ...entry.authorization, laterField: 'added' } }],
+      };
+
+      expect(decodeChildPrincipalTransfer(JSON.parse(JSON.stringify(extended)))).toMatchObject({
+        recoveryGrantId: receipt.recoveryGrantId,
+        entries: [{ handle: entry.handle }],
+      });
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('decodes and adopts a transfer whose nested principal wire carries a newer writer field', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-child-wire-additive-'));
+    try {
+      const incumbent = new ChildPrincipalRegistry(ids(), {
+        ledger: new ChildPrincipalNonceLedger(runDir),
+        originNamespace: () => 'ns-a',
+      });
+      register(incumbent, testProjectPrincipal(projectIn(runDir)));
+      const receipt = incumbent.prepareTransfer('attempt', 1_001);
+      if (receipt === null) throw new Error('Expected a durable child transfer grant.');
+      const [entry] = receipt.entries;
+      if (entry === undefined) throw new Error('Expected a transferred handle.');
+      const extended = {
+        ...receipt,
+        entries: [
+          {
+            ...entry,
+            authorization: {
+              ...entry.authorization,
+              principalWire: { ...entry.authorization.principalWire, laterField: 'added' },
+            },
+          },
+        ],
+      };
+      const decoded = decodeChildPrincipalTransfer(JSON.parse(JSON.stringify(extended)));
+
+      expect(decoded).toMatchObject({
+        recoveryGrantId: receipt.recoveryGrantId,
+        entries: [{ handle: entry.handle }],
+      });
+
+      const successor = new ChildPrincipalRegistry(ids(), {
+        ledger: new ChildPrincipalNonceLedger(runDir),
+        originNamespace: () => 'ns-a',
+      });
+      if (decoded === null) throw new Error('Expected the extended transfer to decode.');
+      expect(successor.adoptTransfer(decoded, new Set(['job-a']), 2, 1_002)).toBe(true);
     } finally {
       rmSync(runDir, { recursive: true, force: true });
     }

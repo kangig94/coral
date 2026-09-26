@@ -158,6 +158,52 @@ describe('succession listening-handle handover', () => {
     for (const path of paths) await expectBusy(path);
   });
 
+  it('answers from the incumbent a connection an aborted attempt child had parked', async () => {
+    const path = join(root(), 'primary.sock');
+    let forward: ((socket: Socket, pendingFrame: string) => void) | null = null;
+    const answer = (socket: Socket) => socket.end('incumbent\n');
+    const server = await listen(path, (socket) => (forward === null ? answer(socket) : forward(socket, '')));
+    const listener: IpcListener = {
+      server,
+      sockets: new Set(),
+      socketPath: path,
+      acceptSocket: answer,
+      forwardConnections: (next) => {
+        forward = next;
+        return () => {
+          forward = null;
+        };
+      },
+    };
+    const child = spawn(process.execPath, [fixture, 'successor', 'attempt-parked'], {
+      env: { ...process.env, PARK_CONNECTIONS: '1' },
+      stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+    });
+    children.push(child);
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    const attempt = await createSuccessionAttemptChannel(
+      createRealSuccessionAttemptPorts(),
+      child,
+      'attempt-parked',
+      listener,
+      'boot-token',
+      { epochKey: 'fixture-epoch', receipts: [] },
+    );
+    await attempt.transferListeners(listener);
+    const stopForwarding = attempt.forwardConnections(listener);
+    const parked = messageFrom(child, 'parked');
+    const response = responseAt(path);
+    await parked;
+    stopForwarding();
+
+    await attempt.abort();
+
+    expect(await response).toBe('incumbent\n');
+  });
+
   it('keeps the incumbent serving when the attempt child dies before listener acknowledgment', async () => {
     const path = join(root(), 'primary.sock');
     const server = await listen(path, (socket) => socket.end('incumbent\n'));

@@ -1,7 +1,7 @@
 import type { ProcessLiveness } from '#src/infra/node-process.js';
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -698,10 +698,12 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     refuseOnce?: 'guardian' | 'reaper' | 'proxy';
     installGate?: Promise<void>;
     recovery?: Readonly<{ capsule: HandoffCapsuleV3; operations: ReadonlyArray<typeof OPERATION> }>;
+    coordinatorBuildSetId?: string;
+    capsuleFileName?: string;
   }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
     const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-'));
     tempRoots.push(tempRoot);
-    const handoffCapsulePath = join(tempRoot, 'proxy.handoff.json');
+    const handoffCapsulePath = join(tempRoot, options.capsuleFileName ?? 'proxy.handoff.json');
     const runtime = createRealRuntime('dev', { baseDir: tempRoot });
     const common = {
       proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
@@ -736,7 +738,10 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       reaperIdentity: REAPER_IDENTITY,
       proxyIdentityFields: PROXY_IDENTITY,
       heartbeats: inactiveHeartbeats(),
-      coordinatorIdentity: COORDINATOR_IDENTITY,
+      coordinatorIdentity:
+        options.coordinatorBuildSetId === undefined
+          ? COORDINATOR_IDENTITY
+          : { ...COORDINATOR_IDENTITY, buildSetId: options.coordinatorBuildSetId },
       handoffCapsulePath,
       runtime,
       operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
@@ -1007,6 +1012,58 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       /provider_proxy_handoff_install_ack_grant_mismatch/u,
     );
     expect(recoveredCalls.filter(({ method }) => method === 'guardian.handoff-install.v1')).toHaveLength(2);
+  });
+
+  describe('an inherited capsule of an older generation', () => {
+    const OTHER_CONTROLLER_BUILD = '99999999-9999-4999-8999-999999999999';
+
+    async function inheritedV3(): Promise<HandoffCapsuleV3> {
+      const fresh = authorityForInstall({ calls: [] });
+      await fresh.authority.installRecoveryCredential(new AbortController().signal);
+      const { controllerBuildSetId: _controller, ...fields } = JSON.parse(
+        readFileSync(fresh.handoffCapsulePath, 'utf-8'),
+      ) as HandoffCapsuleV3 & { controllerBuildSetId: string };
+      return { ...fields, version: 3 };
+    }
+
+    function recoveredAt(capsule: HandoffCapsuleV3, coordinatorBuildSetId?: string) {
+      const recovered = authorityForInstall({
+        calls: [],
+        recovery: { capsule, operations: [OPERATION] },
+        capsuleFileName: 'provider-1a.handoff.v3.json',
+        ...(coordinatorBuildSetId === undefined ? {} : { coordinatorBuildSetId }),
+      });
+      writeFileSync(recovered.handoffCapsulePath, JSON.stringify(capsule), { mode: 0o600 });
+      return recovered;
+    }
+
+    it("leaves a capsule that already names this controller's build in the generation it was written in", async () => {
+      const capsule = await inheritedV3();
+      const { authority, handoffCapsulePath } = recoveredAt(capsule);
+
+      await expect(authority.installRecoveryCredential(new AbortController().signal)).resolves.toMatchObject({
+        kind: 'installed',
+      });
+
+      expect(JSON.parse(readFileSync(handoffCapsulePath, 'utf-8'))).toEqual(capsule);
+    });
+
+    it('moves a capsule that names another controller to the current generation address', async () => {
+      const capsule = await inheritedV3();
+      const { authority, handoffCapsulePath } = recoveredAt(capsule, OTHER_CONTROLLER_BUILD);
+
+      await authority.installRecoveryCredential(new AbortController().signal);
+
+      expect(() => statSync(handoffCapsulePath)).toThrow();
+      const current = JSON.parse(
+        readFileSync(handoffCapsulePath.replace(/\.handoff\.v3\.json$/u, '.handoff.v4.json'), 'utf-8'),
+      ) as Record<string, unknown>;
+      expect(current).toMatchObject({
+        version: 4,
+        controllerBuildSetId: OTHER_CONTROLLER_BUILD,
+        grantId: capsule.grantId,
+      });
+    });
   });
 
   it('registers a non-executing journal operation in standing succession membership', async () => {

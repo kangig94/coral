@@ -173,6 +173,13 @@ vi.mock('#src/cli/dispatch.js', async () => {
           [Symbol.asyncIterator]: () => iterator[Symbol.asyncIterator](),
         };
       },
+      subscribeJobsWait: async (fields: unknown) => {
+        const iterator = await mockState.streamWait('jobs.wait', fields);
+        return {
+          close: vi.fn().mockResolvedValue(undefined),
+          [Symbol.asyncIterator]: () => iterator[Symbol.asyncIterator](),
+        };
+      },
     }),
   };
 });

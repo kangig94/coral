@@ -48,7 +48,7 @@ export const durableCliProcessRuntimeMetaSchema: z.ZodType<DurableCliProcessRunt
       .strict()
       .readonly(),
   })
-  .strict()
+  .passthrough()
   .readonly();
 
 export type DurableCliProcessRuntimeMeta = Readonly<{ jobId: string }> & DurableCliProcessSubject;

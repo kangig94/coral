@@ -352,6 +352,11 @@ export function seedHistoricalEpoch(
   }
 }
 
+/** Without a seeded source nothing in this process can observe a later terminal in that epoch. */
+export function hasHistoricalSource(index: JobLocationIndex, epochKey: string): boolean {
+  return historicalSources.get(index)?.has(epochKey) === true;
+}
+
 export function refreshHistoricalEpoch(index: JobLocationIndex, epochKey: string, jobIds: readonly string[]): void {
   const source = historicalSources.get(index)?.get(epochKey);
   if (source === undefined) return;
@@ -380,8 +385,9 @@ export function refreshHistoricalEpoch(index: JobLocationIndex, epochKey: string
       const resultPath = writeResultArtifact(source.storage, source.jobsRoot, row.job_id, markdown);
       index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
     }
-  } catch (error: unknown) {
-    index.holdUnknownLocations(epochKey, error instanceof Error ? error.message : String(error));
+  } catch {
+    // Seeding already fixed which jobs this epoch holds, so a failed re-read can only leave a newer outcome unseen.
+    // It is not evidence of an unknown job and may not hold the epoch or void its certificate.
   } finally {
     db?.close();
     releaseLock?.();

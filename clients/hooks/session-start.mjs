@@ -99,8 +99,11 @@ function recoverExpiredUpgradeWaiter(pluginRoot) {
   try {
     const intent = JSON.parse(readFileSync(join(runDir, 'upgrade.v1.json'), 'utf-8'));
     if (intent?.version !== 'v1' || intent.target?.pluginRootLabel !== pluginRoot) return;
-    if (!['pending', 'deferred'].includes(intent.disposition)) return;
-    if (intent.retryCondition?.kind !== 'incumbent-retirement') return;
+    const awaitsRetirement =
+      ['pending', 'deferred'].includes(intent.disposition) && intent.retryCondition?.kind === 'incumbent-retirement';
+    // A launched attempt is released only by its waiter; once that waiter's lease lapses, a new one takes it over.
+    const waiterAttempt = intent.disposition === 'attempting' && intent.attemptOwner?.kind === 'waiter';
+    if (!awaitsRetirement && !waiterAttempt) return;
     if (intent.attemptOwner !== null && intent.attemptOwner?.kind !== 'waiter') return;
     if (intent.attemptDeadline !== null && Date.parse(intent.attemptDeadline) > Date.now()) return;
     const child = spawn(process.execPath, [waiterBin, runDir, '', pluginRoot], {

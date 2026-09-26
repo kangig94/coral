@@ -4,6 +4,7 @@ import { readUpgradeIntent, type UpgradeIntent } from '../infra/upgrade-intent.j
 import { requestIpcMethod } from '../transport/ipc/client.js';
 import { SUCCESSION_METHODS } from '../infra/succession-address.js';
 import type { LegacyUpgradeStart } from '../infra/legacy-upgrade-contract.js';
+import { backendLog } from '../infra/backend-log.js';
 import { CoralSetupError, renderHandoffRefusal, type HandoffRefusalInit } from '../runtime/errors.js';
 import type { RunStartupRecoveryFn, RunStartupRecoveryOrchestratorFn } from './lifecycle.js';
 import type { RunCoordinatorStartupRecoveryFn } from './services/recovery/startup.js';
@@ -110,14 +111,14 @@ export async function requestUpgradeFromContender(
   const { health, incumbent, target } = options;
   const instanceId = health.instanceId ?? incumbent.instanceId;
   if (health.version === undefined || instanceId === undefined) {
-    return { kind: 'refused', reason: 'verified incumbent identity is incomplete' };
+    return { kind: 'refused', reason: 'verified incumbent identity is incomplete', disposition: 'deferred' };
   }
   try {
     if (health.flavor !== target.build.flavor || compareProductVersions(target.build.version, health.version) <= 0) {
-      return { kind: 'refused', reason: 'target does not strictly outrank the incumbent' };
+      return { kind: 'refused', reason: 'target does not strictly outrank the incumbent', disposition: 'redundant' };
     }
   } catch {
-    return { kind: 'refused', reason: 'build version is invalid' };
+    return { kind: 'refused', reason: 'build version is invalid', disposition: 'error' };
   }
   if (incumbent.bootToken !== undefined) {
     try {
@@ -163,6 +164,24 @@ export async function requestUpgradeFromContender(
     },
     target,
   });
+}
+
+/**
+ * Against a live, answering incumbent a contender exits as a redundant one does, unless it cannot read what it would
+ * wait on. A deferral is recorded where status reads it, and names its exit there.
+ */
+export async function settleContenderUpgrade(
+  runDir: string,
+  waiting: LegacyUpgradeStart | Readonly<{ kind: 'incumbent-commit-capable' }>,
+  recordDeferral: (runDir: string, reason: string) => Promise<void>,
+): Promise<void> {
+  if (waiting.kind === 'refused' && waiting.disposition === 'error') {
+    throw new UpgradeWaiterUnavailableError(waiting.reason);
+  }
+  if (waiting.kind === 'deferred' || (waiting.kind === 'refused' && waiting.disposition === 'deferred')) {
+    backendLog.warn(`Upgrade deferred while the incumbent serves: ${waiting.reason}`);
+    await recordDeferral(runDir, waiting.reason);
+  }
 }
 
 function createBoundCoordinator(sawIncumbent: boolean, opts: HandoffOptions): BoundCoordinator {

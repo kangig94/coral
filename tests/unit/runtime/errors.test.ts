@@ -69,7 +69,8 @@ const HANDOFF_REFUSAL_CASES = [
     },
     userMessage:
       'Handoff refused for socket /run/coral/coordinator.sock: the address remained bound without an answering coordinator.',
-    remediation: 'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
+    remediation:
+      'No live coordinator could be verified behind this socket, so Coral signaled nothing. Retry the command.',
     exitCode: 75,
     observation: 'not_observed',
     retryable: false,
@@ -330,7 +331,7 @@ describe('CoralSetupError', () => {
       code: 'handoff_socket_holder_unverified',
       userMessage: `Handoff refused for socket ${socketPath}: the address remained bound without an answering coordinator.`,
       remediation:
-        'Verify the socket owner and, if it is still alive but cannot answer, force-kill it before retrying.',
+        'No live coordinator could be verified behind this socket, so Coral signaled nothing. Retry the command.',
     });
   });
 

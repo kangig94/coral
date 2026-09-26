@@ -20,6 +20,7 @@ import {
   type SetupErrorAuthorIdentity,
 } from '../runtime/errors.js';
 import { createRealRuntime } from '../runtime/real.js';
+import { listStoreEpochs, type StoreEpochListEntry } from '../store/epoch.js';
 import type { Runtime } from '../runtime/ports.js';
 import { parseJsonResponse } from '../transport/http/sse.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
@@ -436,10 +437,24 @@ type BackendStatusFullBase =
       shutdownRemainder?: ShutdownRemainderReport;
     };
 
+export type SupersededEpochClosure = Readonly<{
+  epoch: string;
+  epochKey: string | null;
+  role: StoreEpochListEntry['role'];
+  closure: NonNullable<StoreEpochListEntry['closureDisposition']>;
+  reason: string | null;
+}>;
+
+/** Omitted from a status when every epoch but the serving one has been reclaimed. */
+export type SupersededEpochClosures =
+  | Readonly<{ kind: 'observed'; epochs: readonly SupersededEpochClosure[] }>
+  | Readonly<{ kind: 'unobservable'; reason: string }>;
+
 export type BackendStatusFull = BackendStatusFullBase & {
   upgrade?: UpgradeIntentVisibility;
   upgradeProblem?: UpgradeIntentProblem;
   legacyContenderDeferred?: boolean;
+  supersededEpochs?: SupersededEpochClosures;
 };
 
 type RecentFailureStatus = Extract<BackendStatusFull, { status: 'recent_failure' }>;
@@ -1048,6 +1063,36 @@ async function probeAddressedCoordinatorStatus(
     result,
     info,
   );
+}
+
+function readSupersededEpochClosures(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
+): SupersededEpochClosures | null {
+  let entries: readonly StoreEpochListEntry[];
+  try {
+    entries = listStoreEpochs(runtime);
+  } catch (error: unknown) {
+    return { kind: 'unobservable', reason: errorMessage(error) };
+  }
+  const epochs = entries
+    .filter((entry) => entry.role !== 'current' && entry.role !== 'removed')
+    .map((entry) => ({
+      epoch: entry.epoch,
+      epochKey: entry.epochKey ?? null,
+      role: entry.role,
+      closure: entry.closureDisposition ?? 'pending',
+      reason: entry.closureReason ?? null,
+    }));
+  return epochs.length === 0 ? null : { kind: 'observed', epochs };
+}
+
+/** Each superseded epoch's closure is read from local records, whether or not a coordinator answers. */
+export function withSupersededEpochClosures(
+  runtime: Pick<Runtime, 'paths' | 'storage' | 'ids' | 'env'>,
+  status: BackendStatusFull,
+): BackendStatusFull {
+  const supersededEpochs = readSupersededEpochClosures(runtime);
+  return supersededEpochs === null ? status : { ...status, supersededEpochs };
 }
 
 export async function getBackendStatusFull(pluginRoot: string): Promise<BackendStatusFull> {

@@ -287,13 +287,29 @@ export function resolveProtectedEpoch(
   return address === undefined ? null : resolvedProtectedAddress(storeRoot, epochKey, address);
 }
 
+function deletionTombstone(address: ProtectedEpochAddress): string {
+  const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
+  return join(dirname(address.protectedPath), `.reaping-epoch-${epoch}`);
+}
+
+/** Removed means both the directory and its deletion tombstone are observed absent; unobservable is not removed. */
+export function protectedEpochRemoved(runtime: Pick<Runtime, 'storage'>, address: ProtectedEpochAddress): boolean {
+  try {
+    return (
+      observeStorePath(runtime.storage, address.protectedPath) === 'absent' &&
+      observeStorePath(runtime.storage, deletionTombstone(address)) === 'absent'
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function removeClosedProtectedEpoch(
   runtime: Runtime,
   address: ProtectedEpochAddress,
 ): 'removed' | 'locked' | 'failed' {
   const lineageRoot = dirname(address.protectedPath);
-  const epoch = address.epochKey.slice(address.epochKey.lastIndexOf(':') + 1);
-  const tombstone = join(lineageRoot, `.reaping-epoch-${epoch}`);
+  const tombstone = deletionTombstone(address);
   const protectedPresent = observeStorePath(runtime.storage, address.protectedPath) === 'present';
   const tombstonePresent = observeStorePath(runtime.storage, tombstone) === 'present';
   if (!protectedPresent && !tombstonePresent) return 'removed';

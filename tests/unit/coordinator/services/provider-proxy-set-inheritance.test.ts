@@ -3,6 +3,7 @@ import { strictControlExchangeResult as strictTestExchange } from '#tests/suppor
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 vi.mock('#src/provider-proxy/handoff-capsule.js', async (importOriginal) => {
   const original = await importOriginal<object>();
@@ -1263,6 +1264,48 @@ describe('attemptProviderProxySetInheritance', () => {
     expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
     outcome.set.stopHeartbeats();
     await outcome.set.initiateControlClose();
+  });
+
+  it('should keep installing a served transfer recovery grant until the host acknowledges it', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const calls: { method: string; params: unknown }[] = [];
+    let guardianInstalls = 0;
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.handoff-install.v1': (params: unknown) => {
+          guardianInstalls += 1;
+          if (guardianInstalls === 1) {
+            throw new ControlClientError('control_call_failed', 'the guardian did not answer', 'timeout');
+          }
+          return { state: 'installed-dormant', grantId: (params as { grantId: string }).grantId };
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        acceptsControllerTransfer: () => 'served',
+      },
+      neverAborts,
+    );
+
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    try {
+      expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
+      await waitForCondition(() => calls.some(({ method }) => method === 'handoff.install.v1'), 5_000);
+      expect(guardianInstalls).toBe(2);
+    } finally {
+      outcome.set.stopHeartbeats();
+      await outcome.set.initiateControlClose();
+    }
   });
 
   // Every refusal `registerInheritedSet` can raise happens before a slot holds the set, so no owner is left

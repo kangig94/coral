@@ -17,6 +17,13 @@ import { backendLog } from '#src/infra/backend-log.js';
 
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { formatStoreResetList } from '#src/cli/format/store-reset.js';
+import { withSupersededEpochClosures } from '#src/cli/backend-status.js';
+import {
+  listStoreResetIncidentsLocal,
+  reportStoreResetLocal,
+  type StoreResetCliDependencies,
+} from '#src/cli/store-reset.js';
+import { createStoreResetInspectionFs } from '#src/infra/store-reset-inspection-fs.js';
 import {
   RetiringCustodyCertificate,
   settleSupersededEpochClosures,
@@ -204,6 +211,42 @@ describe('epoch closure and protected addressing', () => {
     expect(rendered).toContain(newKey);
   });
 
+  it('reports every superseded epoch closure to backend status and nothing once only the serving one remains', () => {
+    const runtime = harness();
+    publish(runtime, '1');
+    expect(withSupersededEpochClosures(runtime, { status: 'no_record_no_socket' })).toEqual({
+      status: 'no_record_no_socket',
+    });
+    publish(runtime, '2');
+    const key = readOrCreateEpochKey(runtime, resolvedStoreEpoch(runtime.paths.coral.store.dbDir, '1'));
+    recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
+      version: 'v1',
+      epochKey: key,
+      disposition: 'unrecoverable-retained',
+      dataOutcome: 'unknown',
+      executionDischarge: 'undecidable',
+      obligations: [],
+      reason: 'custody ledger root is missing',
+      observedAtMs: 1,
+    });
+
+    expect(withSupersededEpochClosures(runtime, { status: 'no_record_no_socket' })).toEqual({
+      status: 'no_record_no_socket',
+      supersededEpochs: {
+        kind: 'observed',
+        epochs: [
+          {
+            epoch: '1',
+            epochKey: key,
+            role: 'preserved',
+            closure: 'unrecoverable-retained',
+            reason: 'custody ledger root is missing',
+          },
+        ],
+      },
+    });
+  });
+
   it('opens the protected exact epoch by its lineage key', () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
@@ -227,6 +270,7 @@ describe('epoch closure and protected addressing', () => {
     const root = runtime.paths.coral.store.dbDir;
     for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
     const key = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    const jobKey = encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
     const stateRoot = runtime.paths.coral.generation.dataRoot;
     const index = new JobLocationIndex(runtime, stateRoot);
     const open = resolvedStoreEpoch(root, '3');
@@ -264,6 +308,10 @@ describe('epoch closure and protected addressing', () => {
 
     expect(index.certify(key, 0)).not.toBeNull();
     await sweepStoreEpochsPostReady(runtime, open, { resultsReleased: (epochKey) => index.resultsReleased(epochKey) });
+    expect(existsSync(epochDirectory(root, '1'))).toBe(true);
+
+    expect(index.certify(jobKey, 0)).not.toBeNull();
+    await sweepStoreEpochsPostReady(runtime, open, { resultsReleased: (epochKey) => index.resultsReleased(epochKey) });
     expect(existsSync(epochDirectory(root, '1'))).toBe(false);
     expect(existsSync(join(stateRoot, 'epoch-closure.v1'))).toBe(true);
   });
@@ -272,13 +320,14 @@ describe('epoch closure and protected addressing', () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
     publish(runtime, '1', '2026-09-25T00:00:00.000Z');
+    const oldJobKey = encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
     const old = protectStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
     publish(runtime, '2', '2026-09-25T00:01:00.000Z');
     protectStoreEpoch(runtime, resolvedStoreEpoch(root, '2'));
     publish(runtime, '3', '2026-09-25T00:02:00.000Z');
     const stateRoot = runtime.paths.coral.generation.dataRoot;
     const index = new JobLocationIndex(runtime, stateRoot);
-    index.certify(old.epochKey, 0);
+    index.certify(oldJobKey, 0);
     recordEpochClosure(runtime, stateRoot, {
       version: 'v1',
       epochKey: old.epochKey,
@@ -304,19 +353,33 @@ describe('epoch closure and protected addressing', () => {
       kind: 'recorded',
       evidence: { disposition: 'closed' },
     });
+    expect(listStoreEpochs(runtime).find((entry) => entry.epochKey === old.epochKey)?.role).toBe('removed');
+    const dependencies: StoreResetCliDependencies = {
+      resolveIdentity: () => ({ ok: true, manifest: build }),
+      createInspectionFs: createStoreResetInspectionFs,
+      quarantineRoot: () => join(dirname(root), 'legacy-quarantine'),
+      runtime: () => runtime,
+    };
+    expect(
+      listStoreResetIncidentsLocal('gen2', dependencies).epochs.find((entry) => entry.epochKey === old.epochKey),
+    ).toMatchObject({ role: 'removed', resultRetention: 'retained' });
+    await expect(reportStoreResetLocal('gen2', '9', dependencies)).rejects.toMatchObject({
+      code: 'store_reset_incident_not_found',
+    });
   });
 
   it('finishes a closed protected deletion interrupted after its durable rename', async () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
     publish(runtime, '1', '2026-09-25T00:00:00.000Z');
+    const oldJobKey = encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
     const old = protectStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
     publish(runtime, '2', '2026-09-25T00:01:00.000Z');
     protectStoreEpoch(runtime, resolvedStoreEpoch(root, '2'));
     publish(runtime, '3', '2026-09-25T00:02:00.000Z');
     const stateRoot = runtime.paths.coral.generation.dataRoot;
     const index = new JobLocationIndex(runtime, stateRoot);
-    index.certify(old.epochKey, 0);
+    index.certify(oldJobKey, 0);
     recordEpochClosure(runtime, stateRoot, {
       version: 'v1',
       epochKey: old.epochKey,
@@ -350,6 +413,7 @@ describe('epoch closure and protected addressing', () => {
       const runtime = harness();
       const root = runtime.paths.coral.store.dbDir;
       publish(runtime, '1', '2026-09-25T00:00:00.000Z');
+      const oldJobKey = encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
       const old = protectStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
       publish(runtime, '2', '2026-09-25T00:01:00.000Z');
       protectStoreEpoch(runtime, resolvedStoreEpoch(root, '2'));
@@ -369,7 +433,7 @@ describe('epoch closure and protected addressing', () => {
         });
       };
       const release = (): void => {
-        expect(index.certify(old.epochKey, 0)).not.toBeNull();
+        expect(index.certify(oldJobKey, 0)).not.toBeNull();
       };
       const target =
         location === 'protected' ? old.protectedPath : join(dirname(old.protectedPath), '.reaping-epoch-1');
@@ -398,7 +462,7 @@ describe('epoch closure and protected addressing', () => {
     const key = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
     const stateRoot = runtime.paths.coral.generation.dataRoot;
     const index = new JobLocationIndex(runtime, stateRoot);
-    index.certify(key, 0);
+    index.certify(encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1')), 0);
     recordEpochClosure(runtime, stateRoot, {
       version: 'v1',
       epochKey: key,
@@ -458,7 +522,7 @@ describe('epoch closure and protected addressing', () => {
       executionDischarge: 'certified',
       dataOutcome: 'unknown',
     });
-    index.certify(key, 0);
+    index.certify(encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1')), 0);
     expect((await settleSupersededEpochClosures(runtime, index))[0]).toMatchObject({
       epochKey: key,
       executionDischarge: 'certified',
@@ -555,7 +619,7 @@ describe('epoch closure and protected addressing', () => {
         (await settleSupersededEpochClosures(runtime, index, undefined, key, undefined, closeProxySet))[0]?.disposition,
       ).toBe('unrecoverable-retained');
       expect(closeCalls).toBe(0);
-      index.certify(key, 0);
+      index.certify(encodeResolvedStoreEpoch(runtime, old), 0);
       expect(
         (await settleSupersededEpochClosures(runtime, index, undefined, key, undefined, closeProxySet))[0],
       ).toMatchObject({ disposition: 'closed', executionDischarge: 'certified' });
@@ -715,6 +779,44 @@ describe('retiring custody certificate', () => {
     expect(await certificate.confirm(runtime, index, new AbortController().signal)).toBe(true);
     return { runtime, index, certificate, bindExited, process, intent };
   }
+
+  it('should close a superseded epoch whose bound durable-cli job is terminal under its job-location key', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    publish(runtime, '2');
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    recordEpochCustodyCoverage(runtime, epochDirectory(root, '1'), initializeCustodyLedger(runtime, runDir));
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    index.register('job-1', encodeResolvedStoreEpoch(runtime, resolvedStoreEpoch(root, '1')), {
+      projectRoot: '/workspace/project',
+      workDir: null,
+      jobKind: 'provider',
+    });
+    index.recordTerminal('job-1', terminalDetail('job-1'), join(root, 'job-1.result'), 1);
+    const intent = recordCustodyIntent(runtime, runDir, {
+      effect: 'process-spawn',
+      epoch: epochDirectory(root, '1'),
+      owner: 'durable-cli',
+      operationId: 'job-1',
+      capsule: null,
+      bindWithinMs: 60_000,
+      nowMs: 1,
+    });
+    bindCustodyIdentity(runtime, runDir, intent, {
+      process: await exitedProcess(runtime),
+      capsule: null,
+      observedAtMs: 2,
+    });
+
+    const [closure] = await settleSupersededEpochClosures(runtime, index);
+
+    expect(closure).toMatchObject({
+      disposition: 'closed',
+      executionDischarge: 'certified',
+      obligations: [{ owner: 'durable-cli', intentId: intent.id, outcome: 'terminal-and-absent' }],
+    });
+  });
 
   it('should refuse confirmation when custody gains an entry after certification', async () => {
     const { runtime, index, certificate, bindExited } = await certifiedRetiringEpoch();

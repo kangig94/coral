@@ -647,12 +647,10 @@ describe('real-process durable-cli succession', () => {
       '0.0.2',
       'CREATE TABLE ac16_schema_generation (id INTEGER PRIMARY KEY);',
     );
-    const first = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
-    coordinators.push(first);
-    expect((await waitForProcessExit(first, 30_000)).code).not.toBe(0);
-    const second = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
-    coordinators.push(second);
+    const newer = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
+    coordinators.push(newer);
     await waitForCondition(() => readDiscoveryRecordForHome(home, 'prod')?.version === '0.0.2', 30_000);
+    expect(newer.child.exitCode).toBeNull();
     expect(resolveCurrentStore(runtime).epoch?.epoch).toBe('2');
     expect(new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot).read(jobId)?.disposition).toBe(
       'unresolved',

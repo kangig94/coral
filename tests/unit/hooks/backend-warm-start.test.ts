@@ -398,6 +398,17 @@ describe('session-start.mjs expired upgrade waiter recovery', () => {
         attemptDeadline: expired,
       }),
     },
+    {
+      name: "a waiter's launched attempt whose lease expired",
+      change: (intent: Record<string, unknown>) => ({
+        ...intent,
+        disposition: 'attempting',
+        retryCondition: null,
+        attemptId: 'attempt-1',
+        attemptOwner: owner('waiter'),
+        attemptDeadline: expired,
+      }),
+    },
   ])(
     'starts the target waiter for $name',
     async ({ change }) => {

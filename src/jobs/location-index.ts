@@ -271,8 +271,11 @@ export class JobLocationIndex {
     if (existing === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
     if (existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
-      this.advanceRevision(existing.epochKey);
-      atomicJson(this.runtime, this.jobPath(jobId), { ...existing, disposition: 'unresolved' });
+      const current = this.readStored(jobId);
+      if (current === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
+      if (current.disposition === 'terminal') return;
+      this.advanceRevision(current.epochKey);
+      atomicJson(this.runtime, this.jobPath(jobId), { ...current, disposition: 'unresolved' });
     });
   }
 
@@ -285,6 +288,23 @@ export class JobLocationIndex {
       this.advanceRevision(current.epochKey);
       const { terminalSeq: _terminalSeq, resultPath: _resultPath, detail: _detail, ...identity } = current;
       atomicJson(this.runtime, this.jobPath(jobId), { ...identity, disposition: 'unresolved' });
+    });
+  }
+
+  /**
+   * Retires a location no committed launch backs. The caller must hold the epoch's store write lock while it
+   * observes that no launch event exists: `beforeAppend` registers inside the launch's own write transaction, so
+   * under that lock a missing event means the launch rolled back or its writer died, never that it is in flight.
+   */
+  retireNeverAccepted(jobId: string, epochKey: string): void {
+    this.withRevisionLock(epochKey, () => {
+      const current = this.readStored(jobId);
+      if (current === null || current.epochKey !== epochKey || current.disposition === 'terminal') return;
+      this.runtime.storage.unlinkSync(this.jobPath(jobId));
+      this.advanceRevision(epochKey);
+      if (!this.runtime.storage.syncDirectoryDurableSync(dirname(this.jobPath(jobId)))) {
+        throw new Error(`Could not sync job location directory: ${dirname(this.jobPath(jobId))}`);
+      }
     });
   }
 
@@ -314,25 +334,54 @@ export class JobLocationIndex {
     );
   }
 
-  locations(): JobLocation[] {
+  /**
+   * Readable records, plus every record this build cannot decode — a newer build's, say — reported by file with
+   * the epoch it names, or `null` when even that is unreadable and it may belong to any epoch.
+   */
+  private scan(): { readable: JobLocation[]; unreadable: Array<{ file: string; epochKey: string | null }> } {
     const dir = join(this.root, 'jobs');
-    if (!this.runtime.storage.existsSync(dir)) return [];
-    return this.runtime.storage
-      .readdirSync(dir)
-      .filter((name) => name.endsWith('.json'))
-      .map((name) => optionalJson(this.runtime, join(dir, name), locationSchema))
-      .filter((value): value is StoredJobLocation => value !== null)
-      .map(viewLocation);
+    const result: ReturnType<JobLocationIndex['scan']> = { readable: [], unreadable: [] };
+    if (!this.runtime.storage.existsSync(dir)) return result;
+    for (const name of this.runtime.storage.readdirSync(dir).filter((entry) => entry.endsWith('.json'))) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(this.runtime.storage.readFileSync(join(dir, name), 'utf-8')) as unknown;
+      } catch (error: unknown) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue;
+        result.unreadable.push({ file: name, epochKey: null });
+        continue;
+      }
+      const parsed = locationSchema.safeParse(raw);
+      if (parsed.success) {
+        result.readable.push(viewLocation(parsed.data));
+        continue;
+      }
+      const named = z.object({ epochKey: z.string().min(1) }).safeParse(raw);
+      result.unreadable.push({ file: name, epochKey: named.success ? named.data.epochKey : null });
+    }
+    return result;
+  }
+
+  locations(): JobLocation[] {
+    return this.scan().readable;
   }
 
   locationsFor(epochKey: string): JobLocation[] {
     return this.locations().filter((location) => location.epochKey === epochKey);
   }
 
+  /** Records this build cannot decode that may belong to `epochKey`; each keeps that epoch from being certified. */
+  private unreadableLocationsFor(epochKey: string): string[] {
+    return this.scan()
+      .unreadable.filter((entry) => entry.epochKey === null || entry.epochKey === epochKey)
+      .map((entry) => entry.file);
+  }
+
   certify(epochKey: string, terminalHighWaterSeq: number): JobLocationCertificate | null {
     return this.withRevisionLock(epochKey, () => {
       const locations = this.locationsFor(epochKey);
       if (this.unknownLocationHold(epochKey) !== null) return null;
+      if (this.unreadableLocationsFor(epochKey).length > 0) return null;
       if (locations.some((location) => location.disposition !== 'terminal')) return null;
       const revision =
         optionalJson(this.runtime, this.epochPath(epochKey, 'revision.v1.json'), revisionSchema)?.revision ?? 0;

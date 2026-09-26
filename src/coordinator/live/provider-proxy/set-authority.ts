@@ -6,6 +6,7 @@ import {
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
   CURRENT_HANDOFF_CAPSULE_VERSION,
+  currentHandoffCapsulePathBeside,
   handoffCapsuleControllerBuildSetId,
   writeHandoffCapsuleFile,
   type HandoffCapsuleV4,
@@ -383,8 +384,9 @@ export function createProviderProxySetAuthority(
     if (inherited !== undefined && !capsuleNamesThisController(inherited)) {
       // The roles now authorize only this controller's build, so the durable half must say the same before
       // a later coordinator of this build decides whether it may dial the set.
+      const currentCapsulePath = currentHandoffCapsulePathBeside(handoffCapsulePath, inherited.version);
       writeHandoffCapsuleFile(
-        handoffCapsulePath,
+        currentCapsulePath,
         {
           ...inherited,
           version: CURRENT_HANDOFF_CAPSULE_VERSION,
@@ -392,6 +394,8 @@ export function createProviderProxySetAuthority(
         },
         { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
       );
+      // A set speaks through one capsule, and the superseded one names a controller the roles now refuse.
+      if (currentCapsulePath !== handoffCapsulePath) runtime.storage.rmSync(handoffCapsulePath, { force: true });
     }
     const receipt = Object.freeze({
       kind: 'installed-recovery-credential',
@@ -401,7 +405,6 @@ export function createProviderProxySetAuthority(
   };
 
   const capsuleNamesThisController = (capsule: RedeemableHandoffCapsule): boolean =>
-    capsule.version === CURRENT_HANDOFF_CAPSULE_VERSION &&
     handoffCapsuleControllerBuildSetId(capsule) === coordinatorIdentity.buildSetId;
 
   const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {

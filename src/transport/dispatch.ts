@@ -1004,6 +1004,27 @@ async function executeExpansionCatalogRequest({
   }
 }
 
+function unknownJobsAnswer(rpcPorts: HttpHandlerPorts, jobIds: readonly string[]): CatalogRequestExecution {
+  if (rpcPorts.jobs.unknownJobDisposition() === 'pre-epoch-history') {
+    return unary(
+      {
+        code: 'job_pre_epoch_history',
+        message: `No job history this coordinator reads knows ${jobIds.join(', ')}. History written before Coral v0.10.11 is kept in a store this build does not read, so a job that ran there has no details here; any other id was never a job.`,
+        detail: { jobs: [...jobIds] },
+      },
+      404,
+    );
+  }
+  return unary(
+    {
+      code: 'jobs_not_found',
+      message: 'Requested jobs were not found',
+      detail: { jobs: [...jobIds] },
+    },
+    404,
+  );
+}
+
 async function executeJobsAbortCatalogRequest({
   request,
   canonicalRequest,
@@ -1017,14 +1038,7 @@ async function executeJobsAbortCatalogRequest({
     return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === parsed.jobs.length) {
-    return unary(
-      {
-        code: 'jobs_not_found',
-        message: 'Requested jobs were not found',
-        detail: { jobs: scopeCheck.missing },
-      },
-      404,
-    );
+    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
   }
 
   const decision = rpcPorts.jobs.abort(parsed.jobs);
@@ -1073,12 +1087,16 @@ async function executeJobsDetailCatalogRequest({
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
   }
   if ('kind' in detail && detail.kind === 'pre-epoch-history') {
+    return unknownJobsAnswer(rpcPorts, [parsed.jobId]);
+  }
+  if ('kind' in detail && detail.kind === 'outcome-unrecoverable') {
     return unary(
       {
-        code: 'job_pre_epoch_history',
-        message: `Job ${parsed.jobId} is not in this coordinator's job history. History written before Coral v0.10.11 is kept in a store this build does not read, so details of a job that ran there are not available.`,
+        code: 'job_outcome_unrecoverable',
+        message: `Job ${parsed.jobId} never reached a recorded outcome in a superseded store epoch that nothing will write again, so no outcome will ever be recorded; retrying will not change that.`,
+        detail: { epochKey: detail.epochKey },
       },
-      404,
+      409,
     );
   }
   if ('kind' in detail && detail.kind === 'unresolved') {
@@ -1127,13 +1145,17 @@ async function executeJobsWaitCatalogRequest({
     return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
   if (scopeCheck.missing.length === parsed.jobIds.length) {
+    return unknownJobsAnswer(rpcPorts, scopeCheck.missing);
+  }
+  const unrecoverable = rpcPorts.jobs.outcomeUnrecoverable(parsed.jobIds);
+  if (unrecoverable.length > 0) {
     return unary(
       {
-        code: 'jobs_not_found',
-        message: 'Requested jobs were not found',
-        detail: { jobs: scopeCheck.missing },
+        code: 'job_outcome_unrecoverable',
+        message: `${unrecoverable.join(', ')} never reached a recorded outcome in a superseded store epoch that nothing will write again, so no outcome will ever be recorded. Waiting cannot end; wait only on the other jobs.`,
+        detail: { jobs: unrecoverable },
       },
-      404,
+      409,
     );
   }
 

@@ -33,7 +33,20 @@ export class SuccessionServingCommittedError extends Error {
 declare const committedServing: unique symbol;
 export type CommittedSuccessionServing = SuccessionServingRecord & Readonly<{ [committedServing]: true }>;
 
-type SuccessionWriterRecord = SuccessionWriterGeneration & Readonly<{ serving?: SuccessionServingRecord }>;
+type SuccessionWriterRecord = SuccessionWriterGeneration &
+  Readonly<{ serving?: SuccessionServingRecord; refusedAttemptIds?: readonly string[] }>;
+
+/** Why an attempt the incumbent failed can no longer take the writer generation. */
+export class SuccessionAttemptRefusedError extends Error {
+  constructor(attemptId: string) {
+    super(`Succession attempt ${attemptId} was refused by its incumbent.`);
+  }
+}
+
+/** Whether a failed attempt's successor won the writer guard first, or is fenced out of it. */
+export type SuccessionAttemptRefusal =
+  | Readonly<{ kind: 'refused' }>
+  | Readonly<{ kind: 'serving'; serving: CommittedSuccessionServing }>;
 
 export interface SuccessionWriterEntitlement {
   readonly generation: SuccessionWriterGeneration;
@@ -50,6 +63,8 @@ export interface SuccessionWriterEntitlement {
 const GUARD_FILE = 'succession-writer-guard.db';
 const RECORD_FILE = 'succession-writer-generation.v1.json';
 const GUARD_WAIT_MS = 5_000;
+/** Covers every attempt one commit supervision can fail, its same-build recoveries included. */
+const REFUSED_ATTEMPT_MEMORY = 8;
 type LocalParkState = {
   generation: SuccessionWriterGeneration;
   parked: boolean;
@@ -140,7 +155,18 @@ function readGeneration(runtime: Runtime, record: string): SuccessionWriterRecor
       throw new Error(`Invalid succession serving record: ${record}`);
     }
   }
+  if (
+    'refusedAttemptIds' in value &&
+    (!Array.isArray(value.refusedAttemptIds) ||
+      !value.refusedAttemptIds.every((attemptId) => typeof attemptId === 'string'))
+  ) {
+    throw new Error(`Invalid succession attempt refusals: ${record}`);
+  }
   return value as SuccessionWriterRecord;
+}
+
+function assertNotRefused(current: SuccessionWriterRecord, attemptId: string): void {
+  if (current.refusedAttemptIds?.includes(attemptId) === true) throw new SuccessionAttemptRefusedError(attemptId);
 }
 
 function writeGeneration(runtime: Runtime, record: string, generation: SuccessionWriterRecord): void {
@@ -320,10 +346,12 @@ export function joinSuccessionWriterGeneration(
   };
 }
 
+/** An attempt child names its attempt, so an advance its incumbent already refused is refused under the guard. */
 export function advanceSuccessionWriterGeneration(
   runtime: Runtime,
   expected: SuccessionWriterGeneration,
   store: Readonly<{ storeRoot: string; epoch: string }>,
+  attemptId?: string,
 ): SuccessionWriterGeneration {
   const location = ensureGuard(runtime);
   const release = exclusiveGuard(runtime, location.guard);
@@ -336,6 +364,7 @@ export function advanceSuccessionWriterGeneration(
     ) {
       throw new Error(`Succession writer generation ${expected.generation} cannot advance.`);
     }
+    if (attemptId !== undefined) assertNotRefused(current, attemptId);
     const next = { ...current, generation: current.generation + 1, storeRoot: store.storeRoot, epoch: store.epoch };
     delete next.serving;
     writeGeneration(runtime, location.record, next);
@@ -365,6 +394,7 @@ export function recordSuccessionServing(
     if (!validServing(serving, current)) {
       throw new Error('Succession serving record must name a current full epoch key and valid identity.');
     }
+    assertNotRefused(current, serving.attemptId);
     if (current.serving !== undefined) {
       if (
         current.serving.attemptId !== serving.attemptId ||
@@ -379,6 +409,30 @@ export function recordSuccessionServing(
     }
     writeGeneration(runtime, location.record, { ...current, serving });
     return serving as CommittedSuccessionServing;
+  } finally {
+    release();
+  }
+}
+
+/**
+ * Decides a failed attempt under the guard its successor serves under: the successor either already serves, or
+ * can neither advance a writer generation nor record serving for that attempt afterwards.
+ */
+export function refuseSuccessionAttempt(runtime: Runtime, attemptId: string): SuccessionAttemptRefusal {
+  const location = ensureGuard(runtime);
+  const release = exclusiveGuard(runtime, location.guard);
+  try {
+    const current = readGeneration(runtime, location.record);
+    if (current === null) throw new Error('Succession cannot refuse an attempt without a writer generation.');
+    if (current.serving?.attemptId === attemptId) {
+      return { kind: 'serving', serving: current.serving as CommittedSuccessionServing };
+    }
+    const earlier = (current.refusedAttemptIds ?? []).filter((refused) => refused !== attemptId);
+    writeGeneration(runtime, location.record, {
+      ...current,
+      refusedAttemptIds: [...earlier, attemptId].slice(-REFUSED_ATTEMPT_MEMORY),
+    });
+    return { kind: 'refused' };
   } finally {
     release();
   }

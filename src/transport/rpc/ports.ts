@@ -59,6 +59,10 @@ interface JobsRequestPort {
   waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetailLookup;
+  /** How an id no epoch knows is answered; the same for every jobs route. */
+  unknownJobDisposition(): 'pre-epoch-history' | 'not-found';
+  /** Requested historical jobs that no recorded terminal will ever reach. */
+  outcomeUnrecoverable(jobIds: readonly string[]): string[];
 }
 
 interface WorkflowRequestPort {
