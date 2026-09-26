@@ -916,6 +916,28 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     expect(secondOutcome).toEqual(firstOutcome);
   });
 
+  it('should cancel a caller while a recovery credential install is still waiting on a role', async () => {
+    const calls: InstallCall[] = [];
+    let releaseInstall: () => void = () => undefined;
+    const installGate = new Promise<void>((resolve) => {
+      releaseInstall = resolve;
+    });
+    const { authority } = authorityForInstall({ calls, installGate });
+    const deadline = new AbortController();
+    const pending = authority.installRecoveryCredential(deadline.signal);
+    deadline.abort();
+    const outcome = await Promise.race([
+      pending,
+      new Promise<'pending'>((resolve) => setTimeout(() => resolve('pending'), 20)),
+    ]);
+    releaseInstall();
+
+    expect(outcome).toEqual({ kind: 'cancelled' });
+    expect(await authority.installRecoveryCredential(new AbortController().signal)).toMatchObject({
+      kind: 'installed',
+    });
+  });
+
   it('cancels only a joining caller while retaining the shared installed outcome', async () => {
     const calls: InstallCall[] = [];
     let releaseInstall!: () => void;

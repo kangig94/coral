@@ -407,6 +407,23 @@ export function createProviderProxySetAuthority(
   const capsuleNamesThisController = (capsule: RedeemableHandoffCapsule): boolean =>
     handoffCapsuleControllerBuildSetId(capsule) === coordinatorIdentity.buildSetId;
 
+  const untilAbort = <T>(pending: Promise<T>, signal: AbortSignal): Promise<T | null> =>
+    new Promise((resolve, reject) => {
+      if (signal.aborted) return resolve(null);
+      const abort = () => resolve(null);
+      signal.addEventListener('abort', abort, { once: true });
+      pending.then(
+        (value) => {
+          signal.removeEventListener('abort', abort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', abort);
+          reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
+        },
+      );
+    });
+
   const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {
     if (signal.aborted) return { kind: 'cancelled' };
     if (recoveryCredentialInstallState.kind === 'installed') {
@@ -427,8 +444,8 @@ export function createProviderProxySetAuthority(
       recoveryCredentialInstallState = { kind: 'installing', completion };
     }
     const completion = recoveryCredentialInstallState.completion;
-    const outcome = await completion;
-    return signal.aborted ? { kind: 'cancelled' } : outcome;
+    const outcome = await untilAbort(completion, signal);
+    return outcome ?? { kind: 'cancelled' };
   };
 
   const transferExchangeOutcome = (
@@ -459,17 +476,22 @@ export function createProviderProxySetAuthority(
     const installation = await installRecoveryCredential(signal);
     if (installation.kind === 'cancelled') return installation;
     if (installation.kind !== 'installed') return installation;
+    if (signal.aborted) return { kind: 'cancelled' };
     const params = controllerTransferParamsSchema.parse({
       grantId: installation.receipt.grantId,
       attemptId: transfer.attemptId,
       successor: transfer.successor,
       controlGeneration: PROVIDER_PROXY_CONTROL_GENERATION,
     });
-    const [guardianExchange, proxyExchange] = await Promise.all([
-      guardianClient.exchange('guardian.controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-      proxyClient.exchange('controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
-    ]);
-    if (signal.aborted) return { kind: 'cancelled' };
+    const exchanges = await untilAbort(
+      Promise.all([
+        guardianClient.exchange('guardian.controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+        proxyClient.exchange('controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      ]),
+      signal,
+    );
+    if (exchanges === null) return { kind: 'cancelled' };
+    const [guardianExchange, proxyExchange] = exchanges;
     const outcomes = [
       transferExchangeOutcome('guardian', 'guardian.controller-transfer.v1', guardianExchange, params),
       transferExchangeOutcome('proxy', 'controller-transfer.v1', proxyExchange, params),

@@ -71,7 +71,9 @@ export function custodyLedgerDir(runDir: string): string {
   return join(runDir, 'custody.v1');
 }
 
-const custodyRootSchema = z.object({ version: z.literal('v1'), id: z.string().uuid() }).passthrough();
+const custodyRootSchema = z
+  .object({ version: z.literal('v1'), id: z.string().uuid(), createdAtMs: z.number().int().nonnegative().optional() })
+  .passthrough();
 
 export function initializeCustodyLedger(runtime: Runtime, runDir: string): string {
   runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
@@ -81,7 +83,7 @@ export function initializeCustodyLedger(runtime: Runtime, runDir: string): strin
   let root = readRecord(runtime, marker, custodyRootSchema);
   if (root === null) {
     try {
-      writeOnce(runtime, marker, { version: 'v1', id: runtime.ids.uuid() });
+      writeOnce(runtime, marker, { version: 'v1', id: runtime.ids.uuid(), createdAtMs: runtime.time.now() });
     } catch (error: unknown) {
       if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
     }
@@ -94,6 +96,14 @@ export function initializeCustodyLedger(runtime: Runtime, runDir: string): strin
 export function readCustodyLedgerId(runtime: Pick<Runtime, 'storage'>, runDir: string): string | null {
   try {
     return readRecord(runtime, join(custodyLedgerDir(runDir), 'root.v1.json'), custodyRootSchema)?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function readCustodyLedgerStartMs(runtime: Pick<Runtime, 'storage'>, runDir: string): number | null {
+  try {
+    return readRecord(runtime, join(custodyLedgerDir(runDir), 'root.v1.json'), custodyRootSchema)?.createdAtMs ?? null;
   } catch {
     return null;
   }

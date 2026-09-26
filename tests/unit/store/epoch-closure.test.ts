@@ -363,6 +363,50 @@ describe('epoch closure and protected addressing', () => {
     expect(existsSync(join(stateRoot, 'epoch-closure.v1'))).toBe(true);
   });
 
+  it('reclaims an interrupted canonical deletion only while its closure and results remain certified', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    index.certify(encodeResolvedStoreEpoch(runtime, old), 0);
+    recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
+      version: 'v1',
+      epochKey: key,
+      disposition: 'closed',
+      dataOutcome: 'retained',
+      executionDischarge: 'certified',
+      obligations: [],
+      reason: 'owner certificate',
+      observedAtMs: 1,
+    });
+    const remove = runtime.storage.rmSync;
+    let interrupted = false;
+    vi.spyOn(runtime.storage, 'rmSync').mockImplementation((path, ...args) => {
+      if (!interrupted && String(path).includes('.reaping-')) {
+        interrupted = true;
+        throw new Error('interrupted removal');
+      }
+      return remove(path, ...args);
+    });
+    let allowResults = true;
+    const sweep = () =>
+      sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+        resultsReleased: (epochKey) => allowResults && index.resultsReleased(epochKey),
+      });
+
+    await sweep();
+    expect(interrupted).toBe(true);
+    expect(readdirSync(root).some((entry) => entry.startsWith('.reaping-'))).toBe(true);
+    allowResults = false;
+    await sweep();
+    expect(readdirSync(root).some((entry) => entry.startsWith('.reaping-'))).toBe(true);
+    allowResults = true;
+    await sweep();
+    expect(readdirSync(root).some((entry) => entry.startsWith('.reaping-'))).toBe(false);
+  });
+
   it('retains the address map and closure certificate after deleting a protected closed epoch', async () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
@@ -550,6 +594,127 @@ describe('epoch closure and protected addressing', () => {
       'unrecoverable-retained',
     );
     expect(existsSync(epochDirectory(root, '1'))).toBe(true);
+  });
+
+  it('certifies a superseded pre-coverage epoch for shipped keep-two reclamation', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+    publish(runtime, '2');
+    publish(runtime, '3');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    index.certify(encodeResolvedStoreEpoch(runtime, old), 0);
+
+    const records = await settleSupersededEpochClosures(runtime, index);
+    expect(records.find((record) => record.epochKey === key)).toMatchObject({
+      disposition: 'closed',
+      executionDischarge: 'certified',
+    });
+    const reader = openExactStoreEpoch(runtime, { storeFormat, build }, { ...old, lineageKey: key });
+    expect(reader.kind).toBe('opened');
+    await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+      resultsReleased: (epochKey) => index.resultsReleased(epochKey),
+    });
+    expect(existsSync(epochDirectory(root, '1'))).toBe(true);
+    if (reader.kind === 'opened') reader.db.close();
+    await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+      resultsReleased: (epochKey) => index.resultsReleased(epochKey),
+    });
+    expect(existsSync(epochDirectory(root, '1'))).toBe(false);
+    expect(existsSync(epochDirectory(root, '2'))).toBe(true);
+  });
+
+  it('retains an uncovered epoch minted after custody started and one with an unreadable coverage file', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+    publish(runtime, '1', new Date(runtime.time.now() + 1_000).toISOString());
+    publish(runtime, '2');
+    publish(runtime, '3');
+    const key = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'unrecoverable-retained',
+      executionDischarge: 'undecidable',
+    });
+    writeFileSync(join(epochDirectory(root, '1'), '.coral-custody-coverage.v1.json'), 'unreadable');
+    writeFileSync(
+      join(epochDirectory(root, '1'), 'epoch.json'),
+      JSON.stringify({
+        supersedes: null,
+        classification: { kind: 'absent' },
+        build,
+        publishedAt: '2026-09-25T00:00:00.000Z',
+      }),
+    );
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'unrecoverable-retained',
+      executionDischarge: 'undecidable',
+    });
+  });
+
+  it('holds a pre-coverage epoch while a process bound to it is alive', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    initializeCustodyLedger(runtime, runDir);
+    publish(runtime, '2');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const guardian = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    await once(guardian, 'spawn');
+    try {
+      if (guardian.pid === undefined) throw new Error('Guardian process did not start.');
+      const incarnation = runtime.process.readProcessIncarnation(
+        guardian.pid,
+        runtime.env.platform() as NodeJS.Platform,
+      );
+      if (incarnation === null) throw new Error('Guardian incarnation was not observable.');
+      const intent = recordCustodyIntent(runtime, runDir, {
+        effect: 'process-spawn',
+        epoch: dirname(old.path),
+        owner: 'provider-proxy-set',
+        operationId: 'proxy-legacy:guardian',
+        capsule: null,
+        bindWithinMs: 10_000,
+        nowMs: 1,
+      });
+      bindCustodyIdentity(runtime, runDir, intent, {
+        process: { pid: guardian.pid, incarnation, processGroupId: guardian.pid },
+        capsule: null,
+        observedAtMs: 2,
+      });
+      expect(
+        (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+      ).toMatchObject({
+        disposition: 'unrecoverable-retained',
+        executionDischarge: 'undecidable',
+        reason: expect.stringContaining('retry after its recorded incarnation exits') as unknown,
+      });
+    } finally {
+      const exited = once(guardian, 'exit');
+      guardian.kill('SIGKILL');
+      await exited;
+    }
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'closed',
+      executionDischarge: 'certified',
+    });
   });
 
   it('updates retained data outcome without reopening certified execution discharge', async () => {

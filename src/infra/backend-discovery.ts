@@ -224,7 +224,9 @@ export function probeCoordinator(runtime: DiscoveryRuntime): CoordinatorProbe {
  */
 export function probeCoordinatorAtAddress(runtime: DiscoveryRuntime, socketPath: string): CoordinatorProbe {
   const primary = readDiscoveryRecordDisposition(runtime);
-  if (primary.kind !== 'missing') return probeDiscoveryRead(primary);
+  if (primary.kind === 'record' && primary.record.socketPath === socketPath) return probeDiscoveryRead(primary);
+  if (primary.kind === 'undecodable' && socketPath === runtime.paths.coral.coordinator.socketPath)
+    return probeDiscoveryRead(primary);
   const legacy = readDiscoveryRecordDisposition(runtime, runtime.paths.coral.coordinator.legacyInfoFile);
   return legacy.kind === 'record' && legacy.record.socketPath === socketPath
     ? probeDiscoveryRead(legacy)

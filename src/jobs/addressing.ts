@@ -1,7 +1,7 @@
 import { canonicalWorkDirWireSchema, type CanonicalWorkDir } from '../runtime/canonical-work-dir.js';
 import type { AbortDecision } from './contracts/abort-registry.js';
 import type { JobDetailLookup, WaitCursorError } from './contracts/addressing.js';
-import { refreshHistoricalEpoch } from './historical-reader.js';
+import { hasHistoricalSource, refreshHistoricalEpoch } from './historical-reader.js';
 import { type JobLocationIndex, type JobLocation } from './location-index.js';
 import { jobInCallerScope, type JobScopeRelation, type ScopeCheckResult } from './scope.js';
 import type { JobDetailResponse, JobProgressEvent } from './records.js';
@@ -23,9 +23,8 @@ const HISTORICAL_POLL_MS = 250;
 export type PreEpochHistoryProbe = () => boolean;
 
 /**
- * Whether anything could still record a terminal in a superseded epoch. `decided` is owed once no source for the
- * epoch is seeded in this process, or once its closure is recorded: a job without a terminal there then has no exit
- * left to wait on. `pending` names the closure pass as the exit.
+ * Whether anything could still record a terminal in a superseded epoch. A missing historical source cannot
+ * decide closure; a conclusive read must establish the job's outcome before this decision can finalize it.
  */
 export type HistoricalClosureProbe = (epochKey: string) => 'pending' | 'decided';
 
@@ -54,9 +53,14 @@ export class JobAddressing {
   /** A historical job still without a terminal after a refresh, in an epoch whose closure is decided. */
   private outcomeUnrecoverableLocation(location: JobLocation): boolean {
     if (location.epochKey === this.active.epochKey()) return false;
-    refreshHistoricalEpoch(this.locations, location.epochKey, [location.jobId]);
+    const read = refreshHistoricalEpoch(this.locations, location.epochKey, [location.jobId]);
     const latest = this.locations.read(location.jobId) ?? location;
-    return latest.disposition !== 'terminal' && this.historicalClosure(latest.epochKey) === 'decided';
+    return (
+      latest.disposition !== 'terminal' &&
+      this.locations.unknownLocationHold(latest.epochKey) === null &&
+      (read === 'read' || !hasHistoricalSource(this.locations, latest.epochKey)) &&
+      this.historicalClosure(latest.epochKey) === 'decided'
+    );
   }
 
   outcomeUnrecoverable(jobIds: readonly string[]): string[] {
@@ -134,10 +138,9 @@ export class JobAddressing {
         ? this.active.abort(activeIds)
         : { kind: 'answered' as const, result: { aborted: [], notFound: [] } };
     if (active.kind !== 'answered') return active;
+    const unrecoverableAfterRefresh = this.outcomeUnrecoverable(historicalIds);
     const historicalTerminal = historicalIds.filter((jobId) => this.location(jobId)?.disposition === 'terminal');
-    const unrecoverable = this.outcomeUnrecoverable(
-      historicalIds.filter((jobId) => !historicalTerminal.includes(jobId)),
-    );
+    const unrecoverable = unrecoverableAfterRefresh.filter((jobId) => !historicalTerminal.includes(jobId));
     const refused = [
       ...(active.result.refused ?? []),
       ...unrecoverable.map((jobId) => ({
@@ -341,7 +344,7 @@ export class JobAddressing {
     try {
       while (!request.abortSignal?.aborted && time.now() < deadline) {
         for (const [epochKey, jobIds] of historicalGroups) {
-          refreshHistoricalEpoch(this.locations, epochKey, jobIds);
+          void refreshHistoricalEpoch(this.locations, epochKey, jobIds);
         }
         for (const jobId of request.jobIds) {
           const location = locations.find((candidate) => candidate.jobId === jobId);

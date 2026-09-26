@@ -168,6 +168,7 @@ function requestedIntent(
     successionPreparation: null,
     recoveryAttemptId: null,
     recoveryBuildSetId: null,
+    recoveryGrantAttemptId: null,
     recoveryRetry: null,
     obligationRetry: null,
     nextTarget: queued !== null && queued !== undefined && supersedes(queued.target, request.target) ? queued : null,
@@ -255,12 +256,16 @@ function readPreparation(intent: UpgradeIntent): SuccessionPreparation | null {
   const parsed = successionPreparationSchema.safeParse(intent.successionPreparation);
   if (!parsed.success) return null;
   const preparation = parsed.data;
+  const grantAttemptId =
+    intent.recoveryAttemptId === preparation.attemptId && intent.recoveryBuildSetId !== null
+      ? intent.recoveryGrantAttemptId
+      : preparation.attemptId;
   if (
     preparation.requestId !== intent.requestId ||
     preparation.attemptId !== intent.attemptId ||
     preparation.receipts.some(
       (receipt) =>
-        receipt.attemptId !== preparation.attemptId ||
+        receipt.attemptId !== grantAttemptId ||
         !preparation.accepts.some((entry) => entry.owner === receipt.owner && entry.generation === receipt.generation),
     ) ||
     new Set(preparation.receipts.map((receipt) => receipt.owner)).size !== preparation.receipts.length ||
@@ -351,6 +356,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   let owedClear: Extract<SuccessionLaunchSettlement, { kind: 'clear-owed' }> | null = null;
   // Reused while the intent's revision stands, so a decide run that repeats records nothing new.
   let pendingAttempt: Readonly<{ requestId: string; revision: number; attemptId: string }> | null = null;
+  const preparingAttempts = new Map<string, number>();
   let backoffWake: TimerHandle | null = null;
   const notifyObligationChange = (): void => {
     if (disposed) return;
@@ -431,6 +437,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       ...namedAttempts(intent),
       ...(launchedAttempt === null ? [] : [launchedAttempt]),
       ...(pendingAttempt === null ? [] : [pendingAttempt.attemptId]),
+      ...preparingAttempts.keys(),
     ]);
     for (const owner of options.owners) {
       try {
@@ -771,6 +778,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
   }
 
   async function prepare(requestId: string): Promise<SuccessionDecision> {
+    const heldAttempts = new Set<string>();
     const outcome = await retryUpgradeIntentCas<SuccessionDecision>(options.runDir, async (observed) => {
       if (observed.kind !== 'readable')
         return settle({ kind: 'refused', reason: `upgrade intent is ${observed.kind}` });
@@ -856,22 +864,26 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
       const admissionRevision = options.admissionRevision();
       const existing = readPreparation(intent);
       if (existing !== null && currentPreparation(intent, existing, options)) {
+        const grantedOwners = new Set(existing.receipts.map((receipt) => receipt.owner));
         const current = await prepareOwnerObligations(
-          options.owners,
+          options.owners.filter((owner) => !grantedOwners.has(owner.id)),
           existing.attemptId,
           capabilities,
-          options.requiredOwners,
-          options.liveJobIds,
+          options.requiredOwners?.filter((owner) => !grantedOwners.has(owner)),
         );
         if (
           current.kind === 'prepared' &&
-          (!formatChanges || current.receipts.length === 0) &&
-          JSON.stringify(current.receipts) === JSON.stringify(existing.receipts)
+          current.receipts.length === 0 &&
+          (!formatChanges || existing.receipts.length === 0)
         ) {
           return settle({ kind: 'prepared', preparation: existing });
         }
       }
       const attemptId = attemptFor(intent);
+      if (!heldAttempts.has(attemptId)) {
+        heldAttempts.add(attemptId);
+        preparingAttempts.set(attemptId, (preparingAttempts.get(attemptId) ?? 0) + 1);
+      }
       const obligations = await prepareOwnerObligations(
         options.owners,
         attemptId,
@@ -980,6 +992,12 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         },
         { kind: 'prepared', preparation },
       );
+    }).finally(() => {
+      for (const attemptId of heldAttempts) {
+        const count = preparingAttempts.get(attemptId);
+        if (count === 1) preparingAttempts.delete(attemptId);
+        else if (count !== undefined) preparingAttempts.set(attemptId, count - 1);
+      }
     });
     return decisionOf(outcome, 'refused');
   }
@@ -1196,6 +1214,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
         attemptDeadline: null,
         recoveryAttemptId: null,
         recoveryBuildSetId: null,
+        recoveryGrantAttemptId: null,
         recoveryRetry: null,
         successionPreparation: null,
         disposition: 'deferred',

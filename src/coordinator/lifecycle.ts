@@ -1317,13 +1317,17 @@ async function runLifecycleStartup({
     const unserved = boundUnanswered ? await resolveUnservedSuccession() : unservedBeforeBind;
     if (unserved.hold !== null) throw startupHoldError(unserved.hold);
     const noCoordinatorAnswers = noCoordinatorServes || boundUnanswered;
-    const committedRecovery = unserved.committedRecovery;
-    const committedRecoveryStep = async <T>(step: () => T | Promise<T>): Promise<T> => {
+    let committedRecovery = unserved.committedRecovery;
+    const abandonedCommittedRecovery = Symbol('abandoned committed recovery');
+    const committedRecoveryStep = async <T>(
+      step: () => T | Promise<T>,
+    ): Promise<T | typeof abandonedCommittedRecovery> => {
       try {
         return await step();
       } catch (error: unknown) {
         if (committedRecovery === null || signal.aborted) throw error;
-        return holdFailedCommittedRecovery(runtime, instanceId, committedRecovery, error);
+        await holdFailedCommittedRecovery(runtime, instanceId, committedRecovery, error);
+        return abandonedCommittedRecovery;
       }
     };
     let preferredStoreEpochKey = unserved.preferredStoreEpochKey;
@@ -1389,6 +1393,62 @@ async function runLifecycleStartup({
     let acceptedSuccessionJobs: readonly string[] = [];
     let recoveryGeneration: SuccessionWriterGeneration | null = null;
     let recoveryIncarnation: ProcessIncarnation | null = null;
+    const openOrdinaryStore = async (): Promise<Readonly<{ db: Database; store: ResolvedStoreEpoch }>> => {
+      if (currentSelection === null) {
+        throw documentedCoralSetupError({
+          code: 'startup_bundle_unresolvable',
+          pluginRoot: identity.pluginRoot,
+        });
+      }
+      const authorizeStartupMint = deps.authorizeStartupMint;
+      let mintWithheld = false;
+      const routeStore = () =>
+        routeOrOpenBackendStoreAtStartup({
+          runtime,
+          validateForeignTarget: validateForeignHandoffTarget,
+          options: {
+            storeFormat: deps.storeFormat,
+            startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
+            ...(authorizeStartupMint === undefined
+              ? {}
+              : {
+                  authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
+                    const disposition = authorizeStartupMint(observation);
+                    mintWithheld = disposition === null;
+                    return disposition;
+                  },
+                }),
+            currentSelection,
+          },
+        });
+      let routing: Awaited<ReturnType<typeof routeStore>>;
+      try {
+        routing = await routeStore();
+      } catch (error: unknown) {
+        // A withheld mint is decided by this boot: no later spawn is guaranteed on a machine nobody is watching.
+        if (!mintWithheld) throw error;
+        backendLog.warn(`Store epoch mint withheld under retirement patience; observing again: ${formatError(error)}`);
+        await runtime.time.sleep(RETIREMENT_PATIENCE_INTERVAL_MS, { signal });
+        mintWithheld = false;
+        try {
+          routing = await routeStore();
+        } catch (repeated: unknown) {
+          if (!mintWithheld) throw repeated;
+          throw startupHoldError({
+            kind: 'retirement-mint-withheld',
+            attemptId: null,
+            reason: errorMessage(repeated),
+          });
+        }
+      }
+      if (routing.kind === 'handoff') throw new StartupStoreHandoffError(routing.target);
+      if (routing.kind === 'reset-newer-invalid') {
+        backendLog.warn(
+          `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
+        );
+      }
+      return { db: routing.db, store: routing.store };
+    };
     if (preinjectedStoreServices !== null) {
       // Production starts with an empty service ref. Test composition may pre-inject an in-memory store, which
       // has no filesystem selection or reset state to coordinate and must not consume deterministic IDs.
@@ -1398,17 +1458,25 @@ async function runLifecycleStartup({
       storeDb = preinjectedStoreServices.storeDb;
     } else {
       if (committedRecovery !== null) {
+        const recovery = committedRecovery;
         const opened = await committedRecoveryStep(() =>
-          openCommittedRecoveryStore(successionStoreContext, committedRecovery, {
+          openCommittedRecoveryStore(successionStoreContext, recovery, {
             pid: backendPid,
             incarnation: deps.readSelfIncarnationFn,
           }),
         );
-        storeDb = opened.db;
-        openedStore = opened.store;
-        recoveryGeneration = opened.generation;
-        recoveryIncarnation = opened.incarnation;
-        acceptedSuccessionPreparation = opened.preparation;
+        if (opened === abandonedCommittedRecovery) {
+          committedRecovery = null;
+          const ordinary = await openOrdinaryStore();
+          storeDb = ordinary.db;
+          openedStore = ordinary.store;
+        } else {
+          storeDb = opened.db;
+          openedStore = opened.store;
+          recoveryGeneration = opened.generation;
+          recoveryIncarnation = opened.incarnation;
+          acceptedSuccessionPreparation = opened.preparation;
+        }
       } else if (successionAttemptChild !== null) {
         if (preparedCommittedStore === null) {
           throw new SuccessionAttemptStartupHoldError('committed epoch was not prepared');
@@ -1435,65 +1503,9 @@ async function runLifecycleStartup({
         storeDb = preferredStore.db;
         openedStore = preferredStore.store;
       } else {
-        if (currentSelection === null) {
-          throw documentedCoralSetupError({
-            code: 'startup_bundle_unresolvable',
-            pluginRoot: identity.pluginRoot,
-          });
-        }
-        const authorizeStartupMint = deps.authorizeStartupMint;
-        let mintWithheld = false;
-        const routeStore = () =>
-          routeOrOpenBackendStoreAtStartup({
-            runtime,
-            validateForeignTarget: validateForeignHandoffTarget,
-            options: {
-              storeFormat: deps.storeFormat,
-              startupBusyTimeoutMs: STARTUP_STORE_BUSY_TIMEOUT_MS,
-              ...(authorizeStartupMint === undefined
-                ? {}
-                : {
-                    authorizeMint: (observation: Parameters<typeof authorizeStartupMint>[0]) => {
-                      const disposition = authorizeStartupMint(observation);
-                      mintWithheld = disposition === null;
-                      return disposition;
-                    },
-                  }),
-              currentSelection,
-            },
-          });
-        let routing: Awaited<ReturnType<typeof routeStore>>;
-        try {
-          routing = await routeStore();
-        } catch (error: unknown) {
-          // A withheld mint is decided by this boot: no later spawn is guaranteed on a machine nobody is watching.
-          if (!mintWithheld) throw error;
-          backendLog.warn(
-            `Store epoch mint withheld under retirement patience; observing again: ${formatError(error)}`,
-          );
-          await runtime.time.sleep(RETIREMENT_PATIENCE_INTERVAL_MS, { signal });
-          mintWithheld = false;
-          try {
-            routing = await routeStore();
-          } catch (repeated: unknown) {
-            if (!mintWithheld) throw repeated;
-            throw startupHoldError({
-              kind: 'retirement-mint-withheld',
-              attemptId: null,
-              reason: errorMessage(repeated),
-            });
-          }
-        }
-        if (routing.kind === 'handoff') {
-          throw new StartupStoreHandoffError(routing.target);
-        }
-        if (routing.kind === 'reset-newer-invalid') {
-          backendLog.warn(
-            `Recovered the newer-incompatible active store after selected bundle ${routing.evidence.bundleDir} failed validation (${routing.evidence.failure}).`,
-          );
-        }
-        storeDb = routing.db;
-        openedStore = routing.store;
+        const ordinary = await openOrdinaryStore();
+        storeDb = ordinary.db;
+        openedStore = ordinary.store;
       }
     }
     let storeServices: CoordinatorStoreServices;
@@ -1520,7 +1532,7 @@ async function runLifecycleStartup({
       }
       const preparation = acceptedSuccessionPreparation;
       const epoch = openedStore;
-      acceptedSuccessionJobs = await committedRecoveryStep(
+      const verified = await committedRecoveryStep(
         () =>
           deps.verifySuccessionReceipts?.(
             preparation,
@@ -1528,6 +1540,23 @@ async function runLifecycleStartup({
             committedRecovery?.intent.completionReceipt?.successor.instanceId ?? null,
           ) ?? [],
       );
+      if (verified === abandonedCommittedRecovery) {
+        committedRecovery = null;
+        acceptedSuccessionPreparation = null;
+        recoveryGeneration = null;
+        recoveryIncarnation = null;
+        if (state.rebindableStoreDb === null) throw new Error('Committed recovery store has no rebindable database.');
+        state.rebindableStoreDb.closeCurrent();
+        const ordinary = await openOrdinaryStore();
+        state.rebindableStoreDb.replace(ordinary.db);
+        openedStore = ordinary.store;
+        deps.onStoreOpened?.(ordinary.store);
+        storeServices = createStoreServicesFromDbFn(storeDb);
+        storeServicesRef.clear();
+        storeServicesRef.set(storeServices);
+      } else {
+        acceptedSuccessionJobs = verified;
+      }
     }
     const mutationAdmission = acquireProviderOperationMutationAdmission(storeDb, instanceId);
     if (mutationAdmission.kind === 'holding') {
@@ -1662,7 +1691,7 @@ async function runLifecycleStartup({
     };
     // A startup that bound no socket owes recovery only for work it was handed: a succession child that
     // inherited its listeners owns exactly the obligations its accepted receipts transferred, and nothing else.
-    const recoveredDiscussResumes =
+    let recoveredDiscussResumes =
       bound !== null
         ? await bound.runStartupRecovery(recoveryInputs)
         : (acceptedSuccessionPreparation?.receipts.length ?? 0) > 0
@@ -1678,7 +1707,7 @@ async function runLifecycleStartup({
       }
       const adoptSuccessionReceipts = deps.adoptSuccessionReceipts;
       const preparation = acceptedSuccessionPreparation;
-      await committedRecoveryStep(() =>
+      const adopted = await committedRecoveryStep(() =>
         adoptSuccessionReceipts(
           preparation,
           acceptedSuccessionJobs,
@@ -1686,6 +1715,25 @@ async function runLifecycleStartup({
           successionAttemptChild?.recovery === true || committedRecovery !== null,
         ),
       );
+      if (adopted === abandonedCommittedRecovery) {
+        committedRecovery = null;
+        acceptedSuccessionPreparation = null;
+        acceptedSuccessionJobs = [];
+        runtimeState.setLifecycle('kernel-ready');
+        publishDiscovery();
+        if (shouldScheduleStoreEpochSweep && openedStore !== null) deps.scheduleStoreEpochSweepFn?.(openedStore);
+        const ordinaryResumes = await (bound !== null
+          ? bound.runStartupRecovery({ ...recoveryInputs, transferredJobIds: new Set() })
+          : runStartupRecovery(
+              { ...recoveryInputs, transferredJobIds: new Set(), interruptedAppServerReason: 'restart' },
+              recoveryCoordinator.runStartupRecovery,
+            ));
+        recoveredDiscussResumes = [
+          ...new Map(
+            [...recoveredDiscussResumes, ...ordinaryResumes].map((resume) => [resume.sessionId, resume]),
+          ).values(),
+        ];
+      }
     }
     startupRecoveryBarrierPublisher?.publish();
     startProviderOperationReconciler?.();

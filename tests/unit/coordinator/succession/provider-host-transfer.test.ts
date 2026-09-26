@@ -488,6 +488,28 @@ describe('provider host transfer across a failed attempt', () => {
       /recovery grants are unavailable/u,
     );
   });
+
+  it('accepts a committed successor receipt after its provider operation settled', async () => {
+    const runtime = runtimeFor();
+    const preparation = await preparedIntent(runtime, SUCCESSOR_BUILD);
+    const reader = (settled: boolean) =>
+      createProviderHostTransfer({
+        runtime,
+        flavor: 'prod',
+        buildSetId: SUCCESSOR_BUILD,
+        lifecycle: () => lifecycleWith([]),
+        db: () => databaseWith([]),
+        jobSettled: () => settled,
+        localOperationJobIds: () => [],
+        hostRootRetained: () => true,
+        attemptId: () => null,
+        targetChangesStoreFormat: () => false,
+        log: () => undefined,
+      });
+
+    expect(reader(true).verifyReceipts(preparation, true)).toEqual([]);
+    expect(() => reader(false).verifyReceipts(preparation, true)).toThrow(/no longer matches/u);
+  });
 });
 
 describe('provider host transfer at the commit and after serving', () => {
@@ -592,5 +614,59 @@ describe('provider host transfer at the commit and after serving', () => {
       /no longer authorizes/u,
     );
     expect(lifecycle.releaseControlForTransfer).not.toHaveBeenCalled();
+  });
+
+  it('should stop waiting for a host re-authorization when the commit deadline expires', async () => {
+    const record = executing();
+    let authorize: () => void = () => undefined;
+    let calls = 0;
+    const host = hostFor(record, () => {
+      if (++calls === 1) return authorized();
+      return new Promise<ControllerTransferOutcome>((resolve) => {
+        authorize = () => resolve(authorized());
+      });
+    });
+    const lifecycle = lifecycleWith([host]);
+    const transfer = transferOver(runtimeFor(), lifecycle, record);
+    await classify(transfer);
+    const deadline = new AbortController();
+    const release = transfer.releaseForTransfer('attempt-1', deadline.signal);
+    deadline.abort();
+
+    const outcome = await Promise.race([
+      release.then(
+        () => 'released',
+        () => 'aborted',
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 20)),
+    ]);
+    authorize();
+    expect(outcome).toBe('aborted');
+    expect(lifecycle.releaseControlForTransfer).not.toHaveBeenCalled();
+  });
+
+  it('should stop waiting for control close when the commit deadline expires', async () => {
+    const record = executing();
+    const host = hostFor(record, authorized);
+    const lifecycle = {
+      ...lifecycleWith([host]),
+      releaseControlForTransfer: vi.fn(() => new Promise<never>(() => undefined)),
+    } as unknown as ProviderProxySetLifecycle;
+    const transfer = transferOver(runtimeFor(), lifecycle, record);
+    await classify(transfer);
+    const deadline = new AbortController();
+    const release = transfer.releaseForTransfer('attempt-1', deadline.signal);
+    await vi.waitFor(() => expect(lifecycle.releaseControlForTransfer).toHaveBeenCalled());
+    deadline.abort();
+
+    expect(
+      await Promise.race([
+        release.then(
+          () => 'released',
+          () => 'aborted',
+        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve('pending'), 20)),
+      ]),
+    ).toBe('aborted');
   });
 });

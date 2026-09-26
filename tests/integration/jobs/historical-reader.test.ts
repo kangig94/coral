@@ -8,7 +8,7 @@ import { JobLocationIndex } from '../../../src/jobs/location-index.js';
 import { JobAddressing } from '../../../src/jobs/addressing.js';
 import { refreshHistoricalEpoch, seedHistoricalEpoch } from '../../../src/jobs/historical-reader.js';
 import { readOrCreateEpochKey } from '../../../src/store/epoch-key.js';
-import { protectStoreEpoch } from '../../../src/store/epoch-protection.js';
+import { protectStoreEpoch, protectedStoreEpochRoot } from '../../../src/store/epoch-protection.js';
 import { createRealRuntime } from '../../../src/runtime/real.js';
 
 const fingerprints = [
@@ -240,6 +240,145 @@ describe('historical job readers', () => {
     expect(index.read('known-live')?.disposition).toBe('unresolved');
     expect(index.unknownLocationHold('lineage-old:7')).toBe('retained-store-root-missing');
     expect(index.certificate('lineage-old:7')).toBeNull();
+  });
+
+  it('does not finalize a known job when its protected address cannot be read', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.close();
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    const epochKey = readOrCreateEpochKey(runtime, epoch);
+    protectStoreEpoch(runtime, epoch);
+    const addressPath = join(
+      protectedStoreEpochRoot(epoch.storeRoot),
+      'addresses',
+      `${Buffer.from(epochKey).toString('base64url')}.json`,
+    );
+    const protectedAddress = readFileSync(addressPath, 'utf8');
+    writeFileSync(addressPath, '{invalid');
+    const index = new JobLocationIndex(runtime, root);
+    index.register('known-live', epochKey, {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, epochKey, fingerprints[0], join(root, 'results'), storage),
+    ).toMatchObject({ kind: 'unrecoverable-retained', reason: 'protected-epoch-address-unreadable' });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'decided',
+    );
+    expect(addressing.outcomeUnrecoverable(['known-live'])).toEqual([]);
+    expect(addressing.detail('known-live')).not.toMatchObject({ kind: 'outcome-unrecoverable' });
+    expect(addressing.abort(['known-live'])).toMatchObject({
+      kind: 'answered',
+      result: { held: [{ jobId: 'known-live', reason: 'historical_owner_unresolved' }] },
+    });
+    writeFileSync(addressPath, protectedAddress);
+    expect(addressing.outcomeUnrecoverable(['known-live'])).toEqual(['known-live']);
+    expect(addressing.detail('known-live')).toMatchObject({ kind: 'outcome-unrecoverable' });
+  });
+
+  it('reports a terminal discovered during abort as not found', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.prepare('INSERT INTO projection_jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      'late-terminal',
+      JSON.stringify({ kind: 'provider-session', id: 'session-1' }),
+      'running',
+      JSON.stringify({ progressFaults: [] }),
+      'session-1',
+      'claude',
+      '/workspace/project',
+      'old-namespace',
+      null,
+      'provider',
+      null,
+      null,
+      null,
+      null,
+      '2026-09-25T00:00:00.000Z',
+      1,
+    );
+    const index = new JobLocationIndex(runtime, root);
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, 'lineage-old:7', fingerprints[0], join(root, 'results'), storage).kind,
+    ).toBe('uncertified');
+    db.prepare('UPDATE projection_jobs SET phase = ?, last_seq = ? WHERE job_id = ?').run(
+      'completed',
+      12,
+      'late-terminal',
+    );
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      12,
+      '2026-09-25T00:00:10.000Z',
+      'job.terminal.recorded',
+      'job',
+      'late-terminal',
+      Buffer.from(JSON.stringify({ terminal: { content: 'done', outcome: { kind: 'completed' }, durationMs: 10 } })),
+    );
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'pending',
+    );
+    expect(addressing.abort(['late-terminal'])).toMatchObject({
+      kind: 'answered',
+      result: { notFound: ['late-terminal'] },
+    });
+    db.close();
+  });
+
+  it('returns a nonfinal refresh promptly while the historical lock is held exclusively', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    const index = new JobLocationIndex(runtime, root);
+    index.register('known', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.markUnresolved('known');
+    const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
+    expect(
+      seedHistoricalEpoch(runtime, index, epoch, 'lineage-old:7', fingerprints[0], join(root, 'results'), storage).kind,
+    ).toBe('uncertified');
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+      () => 'decided',
+    );
+    const lock = newRawDatabase(join(epochDir, '.lock'));
+    lock.exec('BEGIN EXCLUSIVE');
+    try {
+      const started = performance.now();
+      expect(refreshHistoricalEpoch(index, 'lineage-old:7', ['known'])).toBe('unreadable');
+      expect(addressing.outcomeUnrecoverable(['known'])).toEqual([]);
+      expect(performance.now() - started).toBeLessThan(500);
+    } finally {
+      lock.exec('ROLLBACK');
+      lock.close();
+      db.close();
+    }
+    expect(addressing.outcomeUnrecoverable(['known'])).toEqual(['known']);
   });
 
   it('keeps a launched id addressable when its projection row is missing', () => {

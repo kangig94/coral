@@ -1,4 +1,5 @@
 import {
+  currentHandoffCapsulePathBeside,
   handoffCapsuleControllerBuildSetId,
   type HandoffCapsule,
   type RedeemableHandoffCapsule,
@@ -130,6 +131,7 @@ export type ProviderProxySetRedemptionOutcome =
       set: DurableProviderProxyOperationAuthority;
       publicationReceipt: PublicationReceipt;
       protection: ProviderProxySetProtection;
+      capsulePath?: string;
     }>
   | Readonly<{
       kind: 'protocol-incompatible';
@@ -432,9 +434,11 @@ async function buildInheritedAuthority(
     set: DurableProviderProxyOperationAuthority;
     publicationReceipt: PublicationReceipt;
     protection: ProviderProxySetProtection;
+    capsulePath: string;
   }>
 > {
   const bundle = providerProxyControlRedemptionBundle(redemption);
+  let installedCapsulePath = capsulePath;
   try {
     if (expectedIdentity !== null && !providerProxySetIdentitiesEqual(expectedIdentity, bundle.setIdentity)) {
       throw new ProviderProxySetInheritanceCorruptionError(
@@ -467,6 +471,10 @@ async function buildInheritedAuthority(
           if (via === 'transfer-served') void completeServedTransfer(base, deps.runtime);
           break;
         case 'installed':
+          if (handoffCapsuleControllerBuildSetId(capsule) !== deps.coordinatorIdentity.buildSetId) {
+            installedCapsulePath = currentHandoffCapsulePathBeside(capsulePath, capsule.version);
+          }
+          break;
         case 'refused':
           break;
         case 'cancelled':
@@ -482,7 +490,12 @@ async function buildInheritedAuthority(
       mutationRpcTimeoutMs: PROXY_CONTROL_RPC_TIMEOUT_MS,
     });
     deps.registerInheritedSet?.(set, bundle.publicationReceipt, 'protected');
-    return { set, publicationReceipt: bundle.publicationReceipt, protection: 'protected' };
+    return {
+      set,
+      publicationReceipt: bundle.publicationReceipt,
+      protection: 'protected',
+      capsulePath: installedCapsulePath,
+    };
   } catch (error: unknown) {
     closeRedeemedProviderProxyControl(redemption);
     throw error;

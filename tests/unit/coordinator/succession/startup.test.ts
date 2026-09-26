@@ -10,6 +10,7 @@ import {
   completeWaiterLaunchedUpgrade,
   dischargeDeadSuccessionAttempt,
   heldUnservedMint,
+  holdFailedCommittedRecovery,
   openPreferredStoreEpoch,
   prepareCommittedSuccessorRecovery,
   publishAttemptServing,
@@ -19,10 +20,12 @@ import {
   type IncompleteSuccessionResolution,
   type SuccessionStartupHold,
 } from '#src/coordinator/succession/startup.js';
-import type { SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
+import { successionTargetKey, type SuccessionPreparation } from '#src/coordinator/succession/protocol.js';
 import { recordRetirementDisposition } from '#src/coordinator/succession/retirement-disposition.js';
 import { isProcessIncarnation, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntentChange } from '#src/infra/upgrade-intent.js';
+import { writeBackendInfo } from '#src/infra/backend-discovery.js';
+import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { encodeResolvedStoreEpoch, epochDirectory, resolvedStoreEpoch, settleStoreEpoch } from '#src/store/epoch.js';
@@ -164,6 +167,113 @@ function resolveAt(runtime: Runtime, startupId: string) {
 }
 
 describe('incomplete succession at startup', () => {
+  it('lets the waiter-launched target start while its waiter is alive', async () => {
+    const base = runtimeFixture();
+    const attemptId = 'waiter-attempt';
+    const written = await compareAndSwapUpgradeIntent(base.paths.coral.coordinator.runDir, null, {
+      requestId: 'waiter-request',
+      incumbent: {
+        instanceId: 'old',
+        pid: process.pid,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId,
+      attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: process.pid, incarnation: null },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+
+    await expect(resolveAt(base, 'other-startup')).resolves.toMatchObject({
+      kind: 'hold',
+      hold: { kind: 'deaths-unproven' },
+    });
+    const runtime = {
+      ...base,
+      env: {
+        ...base.env,
+        get: (name: string) => (name === 'CORAL_STARTUP_ATTEMPT_ID' ? attemptId : base.env.get(name)),
+      },
+    };
+    await expect(
+      resolveIncompleteSuccessionAtStartup({
+        runtime,
+        currentBuild: build,
+        startupId: 'waiter-child',
+        prepareRecoveryGrantHandoff: () => null,
+      }),
+    ).resolves.toEqual({ kind: 'none' });
+  });
+
+  it('should retire a waiter attempt whose owner and child are gone before serving', async () => {
+    const runtime = runtimeFixture();
+    const dead = await exitedIncarnation();
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'waiter-request',
+      incumbent: {
+        instanceId: 'old',
+        pid: dead.pid,
+        incarnation: dead.incarnation,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: '/installed/coral/0.11.0' },
+      attemptId: 'dead-waiter',
+      attemptOwner: { kind: 'waiter', instanceId: 'waiter', ...dead },
+      attemptChild: { attemptId: 'dead-waiter', ...dead },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+
+    await expect(resolveAt(runtime, 'restart')).resolves.toEqual({ kind: 'retire', attemptId: 'dead-waiter' });
+  });
+
+  it('should release an attempt after a crash following the exhausted patience write', async () => {
+    const runtime = runtimeFixture();
+    await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
+    const subject = 'recovery-attempt';
+    const path = join(
+      runtime.paths.coral.coordinator.runDir,
+      'succession-startup-patience.v1',
+      `${runtime.ids.sha256(subject)}.json`,
+    );
+    runtime.storage.mkdirSync(join(runtime.paths.coral.coordinator.runDir, 'succession-startup-patience.v1'), {
+      recursive: true,
+    });
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 'v1', attemptId: subject, startupId: 'crashed', startups: 3, countedAt: Date.now() }),
+    );
+
+    await expect(resolveAt(runtime, 'restart')).resolves.toEqual({ kind: 'none' });
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { attemptId: null, recoveryAttemptId: null },
+    });
+  });
+
+  it('should hold an unsupported active intent before ordinary startup', async () => {
+    const runtime = runtimeFixture();
+    await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
+    const path = upgradeIntentPath(runtime.paths.coral.coordinator.runDir);
+    const intent = JSON.parse(runtime.storage.readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, JSON.stringify({ ...intent, disposition: 'transferring' }));
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir).kind).toBe('unsupported');
+
+    expect(await holdOf(resolveAt(runtime, 'startup-1'))).toMatchObject({ kind: 'unsupported-intent' });
+  });
+
   it('should abandon an attempt whose deaths stay unproven once patience is exhausted', async () => {
     const runtime = runtimeFixture();
     await seedRecoveryGrant(runtime, { pid: process.pid, incarnation: null });
@@ -478,6 +588,37 @@ describe('incomplete succession at startup', () => {
     }
   });
 
+  it('should release exhausted committed recovery to the ordinary path in this startup', async () => {
+    const runtime = runtimeFixture();
+    await seedRecoveryGrant(runtime, { pid: await exitedPid(), incarnation: null });
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent seed is unreadable');
+    const recovery = {
+      intent: {
+        ...observed.intent,
+        completionReceipt: {
+          kind: 'serving' as const,
+          attemptId: 'recovery-attempt',
+          successor: { instanceId: 'successor', pid: process.pid, incarnation: null, build },
+          epochKey: 'epoch-key',
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date().toISOString(),
+        },
+      },
+    };
+    for (const startupId of ['startup-1', 'startup-2']) {
+      atStartup(runtime, startupId);
+      await expect(
+        holdFailedCommittedRecovery(runtime, startupId, recovery, new Error('failed')),
+      ).rejects.toBeInstanceOf(SuccessionAttemptStartupHoldError);
+    }
+    atStartup(runtime, 'startup-3');
+    await expect(holdFailedCommittedRecovery(runtime, 'startup-3', recovery, new Error('failed'))).resolves.toBe(
+      'abandoned',
+    );
+  });
+
   it("should record the discard of an abandoned attempt's possible retirement mint", async () => {
     const runtime = runtimeFixture();
     const attemptId = runtime.ids.uuid();
@@ -541,8 +682,7 @@ describe('incomplete succession at startup', () => {
       });
     }
     await expect(openAt('startup-3')).resolves.toBeNull();
-    // The next time the same epoch will not open is a new hold, with patience of its own.
-    await expect(openAt('startup-4')).rejects.toBeInstanceOf(SuccessionAttemptStartupHoldError);
+    await expect(openAt('startup-4')).resolves.toBeNull();
   });
 
   it('should count a burst of startups within one patience interval as a single startup', async () => {
@@ -636,6 +776,98 @@ describe('incomplete succession at startup', () => {
     expect(serving).not.toBeNull();
     expect(Date.parse(serving?.recordedAt ?? '')).toBeLessThan(deadline);
   });
+
+  it('should complete a served attempt before choosing ordinary recovery', async () => {
+    const runtime = runtimeFixture();
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    const settled = settleStoreEpoch(runtime, {
+      storeFormat: format,
+      build: current,
+      authorizeMint: authorizeFixtureStoreMint,
+    });
+    settled.db.close();
+    const writer = joinSuccessionWriterGeneration(runtime, settled.store);
+    const dead = await exitedIncarnation();
+    const attemptId = runtime.ids.uuid();
+    const epochKey = encodeResolvedStoreEpoch(runtime, settled.store);
+    const target = { build: current, pluginRootLabel: '/installed/coral/0.11.0' };
+    const prepared = {
+      ...preparation(attemptId, [
+        {
+          owner: 'durable-cli',
+          generation: 1,
+          attemptId,
+          receiptId: `durable-cli:${attemptId}`,
+          recoveryGrantId: `grant:${attemptId}`,
+          payload: null,
+        },
+      ]),
+      targetKey: successionTargetKey(target),
+      epochKey,
+      stage: 'ready' as const,
+      ready: {
+        attemptId,
+        successorPid: dead.pid,
+        targetKey: successionTargetKey(target),
+        epochKey,
+        admissionRevision: 0,
+        receiptIds: [`durable-cli:${attemptId}`],
+      },
+    };
+    const written = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+      requestId: 'request-1',
+      incumbent: {
+        instanceId: 'incumbent',
+        ...dead,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target,
+      attemptId,
+      attemptOwner: { kind: 'incumbent', instanceId: 'incumbent', ...dead },
+      attemptChild: { attemptId, ...dead },
+      disposition: 'attempting',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: new Date(Date.now() + 60_000).toISOString(),
+      completionReceipt: null,
+      successionPreparation: prepared,
+    });
+    if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+    writerGeneration.recordSuccessionServing(runtime, writer.generation, {
+      attemptId,
+      epochKey,
+      successorInstanceId: 'successor',
+      controlGeneration: writer.generation.generation,
+      recordedAt: new Date().toISOString(),
+    });
+
+    await prepareCommittedSuccessorRecovery(
+      runtime,
+      { pluginRoot: '/plugin', instanceId: 'restart' },
+      format,
+      current,
+      () => false,
+    );
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: {
+        disposition: 'completed',
+        completionReceipt: {
+          attemptId,
+          epochKey,
+          acceptedObligations: [
+            {
+              owner: 'durable-cli',
+              receiptId: `durable-cli:${attemptId}`,
+              controlGeneration: writer.generation.generation,
+            },
+          ],
+        },
+      },
+    });
+  });
 });
 
 describe('waiter-launched upgrade completion', () => {
@@ -722,6 +954,112 @@ describe('waiter-launched upgrade completion', () => {
       kind: 'readable',
       intent: { disposition: 'completed', completionReceipt: { attemptId: 'waiter-attempt' } },
     });
+  });
+
+  it('should recover a waiter receipt after its serving write survives a crash', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const record = writerGeneration.recordSuccessionServing;
+    vi.spyOn(writerGeneration, 'recordSuccessionServing').mockImplementation((...args) => {
+      record(...args);
+      throw new Error('simulated crash after serving write');
+    });
+    await complete();
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'attempting', attemptChild: { attemptId: 'waiter-attempt' }, completionReceipt: null },
+    });
+    vi.restoreAllMocks();
+
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('waiter intent is unreadable');
+    const legacy = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      attemptChild: null,
+    });
+    if (legacy.kind !== 'written') throw new Error(`legacy intent seed was ${legacy.kind}`);
+    writeBackendInfo(
+      {
+        pid: process.pid,
+        port: 4000,
+        host: '127.0.0.1',
+        socketPath: runtime.paths.coral.coordinator.socketPath,
+        bundleHash: current.bundleHash,
+        flavor: current.flavor,
+        namespace: 'test',
+        startedAt: runtime.time.now(),
+        token: 'token',
+        bootToken: 'boot-token',
+        instanceId: 'target',
+        version: current.version,
+      },
+      runtime,
+    );
+    await prepareCommittedSuccessorRecovery(
+      runtime,
+      { pluginRoot: '/plugin', instanceId: 'restart' },
+      format,
+      current,
+      () => false,
+    );
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      intent: { disposition: 'completed', completionReceipt: { attemptId: 'waiter-attempt' } },
+    });
+  });
+
+  it('should release an unattributable legacy waiter serving record after patience', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const record = writerGeneration.recordSuccessionServing;
+    vi.spyOn(writerGeneration, 'recordSuccessionServing').mockImplementation((...args) => {
+      record(...args);
+      throw new Error('simulated crash after serving write');
+    });
+    await complete();
+    vi.restoreAllMocks();
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('waiter intent is unreadable');
+    const legacy = await compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
+      ...observed.intent,
+      attemptChild: null,
+    });
+    if (legacy.kind !== 'written') throw new Error(`legacy intent seed was ${legacy.kind}`);
+    const patienceDir = join(runtime.paths.coral.coordinator.runDir, 'succession-startup-patience.v1');
+    runtime.storage.mkdirSync(patienceDir, { recursive: true });
+    writeFileSync(
+      join(patienceDir, `${runtime.ids.sha256('waiter-attempt')}.json`),
+      JSON.stringify({
+        version: 'v1',
+        attemptId: 'waiter-attempt',
+        startupId: 'earlier',
+        startups: 2,
+        countedAt: 0,
+      }),
+    );
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    const previousServing = writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt');
+    if (previousServing === null) throw new Error('waiter serving record is unavailable');
+
+    await prepareCommittedSuccessorRecovery(
+      runtime,
+      { pluginRoot: '/plugin', instanceId: 'restart' },
+      format,
+      current,
+      () => false,
+    );
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({ intent: { attemptId: null } });
+    expect(writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt')).toBeNull();
+    const generation = writerGeneration.observeSuccessionWriterGeneration(runtime);
+    if (generation === null) throw new Error('writer generation is unavailable');
+    expect(() =>
+      writerGeneration.recordSuccessionServing(runtime, generation, {
+        attemptId: 'next-waiter-attempt',
+        epochKey: previousServing.epochKey,
+        successorInstanceId: 'next-target',
+        controlGeneration: generation.generation,
+        recordedAt: new Date().toISOString(),
+      }),
+    ).not.toThrow();
   });
 });
 

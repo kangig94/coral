@@ -149,7 +149,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
   releaseForTransfer(attemptId: string, signal: AbortSignal): Promise<void>;
   reclaimTransferred(): void;
   transfersHosts(preparation: SuccessionPreparation): boolean;
-  verifyReceipts(preparation: SuccessionPreparation): readonly string[];
+  verifyReceipts(preparation: SuccessionPreparation, committedSuccessorServed?: boolean): readonly string[];
   adoptReceipts(preparation: SuccessionPreparation): void;
   /** The jobs a `provider-operations` receipt names, without re-reading the journal they may have moved on in. */
   transferredJobIds(preparation: SuccessionPreparation): readonly string[];
@@ -256,6 +256,24 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
         ? 'recovery'
         : null;
 
+  const awaitBeforeAbort = <T>(pending: Promise<T>, signal: AbortSignal): Promise<T> =>
+    new Promise((resolve, reject) => {
+      const asError = (reason: unknown): Error => (reason instanceof Error ? reason : new Error(formatError(reason)));
+      if (signal.aborted) return reject(asError(signal.reason));
+      const abort = () => reject(asError(signal.reason));
+      signal.addEventListener('abort', abort, { once: true });
+      pending.then(
+        (value) => {
+          signal.removeEventListener('abort', abort);
+          resolve(value);
+        },
+        (error: unknown) => {
+          signal.removeEventListener('abort', abort);
+          reject(asError(error));
+        },
+      );
+    });
+
   /** A grant reinstalled after preparation revokes the transfer; only authorization at release admits the successor. */
   async function reauthorizeTransfer(
     lifecycle: ProviderProxySetLifecycle,
@@ -270,7 +288,10 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
         if (set === undefined || lifecycle.authorityFor(set.setIdentity) !== set) {
           throw new Error('An authorized provider host is not under operational control at release.');
         }
-        const outcome = await set.authorizeControllerTransfer({ attemptId, successor }, signal);
+        const outcome = await awaitBeforeAbort(
+          set.authorizeControllerTransfer({ attemptId, successor }, signal),
+          signal,
+        );
         if (outcome.kind !== 'authorized' || outcome.recoveryGrantId !== transferred.recoveryGrantId) {
           throw new Error(`Provider host no longer authorizes the prepared successor: ${outcome.kind}.`);
         }
@@ -399,13 +420,13 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
     releaseForTransfer: async (attemptId, signal) => {
       const lifecycle = ports.lifecycle();
       if (lifecycle === null) throw new Error('Provider proxy set lifecycle is unavailable at host release.');
-      const transfer = prepared?.attemptId === attemptId ? await prepared.preparation : null;
+      const transfer = prepared?.attemptId === attemptId ? await awaitBeforeAbort(prepared.preparation, signal) : null;
       if (transfer?.kind !== 'transferable') {
         throw new Error('Provider host transfer was not prepared for this attempt.');
       }
       await reauthorizeTransfer(lifecycle, attemptId, transfer, signal);
       signal.throwIfAborted();
-      const released = await lifecycle.releaseControlForTransfer(attemptId);
+      const released = await awaitBeforeAbort(lifecycle.releaseControlForTransfer(attemptId), signal);
       const unreleased = transfer.sets.filter(
         (set) => !released.some((identity) => namesTransferredSet(identity, set)),
       );
@@ -417,7 +438,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
       ports.lifecycle()?.reclaimTransferredControl();
     },
     transfersHosts: (preparation) => receiptOf(preparation, PROVIDER_PROXY_SETS_OWNER) !== null,
-    verifyReceipts: (preparation) => {
+    verifyReceipts: (preparation, committedSuccessorServed = false) => {
       const setsReceipt = receiptOf(preparation, PROVIDER_PROXY_SETS_OWNER);
       const operationsReceipt = receiptOf(preparation, PROVIDER_OPERATIONS_OWNER);
       if (setsReceipt === null) {
@@ -429,7 +450,8 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
       if (transfer === null || reader === null) {
         throw new Error('Provider host transfer receipt does not name this successor.');
       }
-      const successorServes = observeSuccessionServing(ports.runtime, preparation.attemptId) !== null;
+      const successorServes =
+        committedSuccessorServed || observeSuccessionServing(ports.runtime, preparation.attemptId) !== null;
       if (
         !controllerTransferRecoveryGrantsVerify(
           ports.runtime,
@@ -443,8 +465,22 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
       }
       if (operationsReceipt === null) return [];
       const operations = decodeProviderOperationTransfer(operationsReceipt.payload);
+      const unsettledOperations =
+        operations === null || !committedSuccessorServed
+          ? operations
+          : {
+              ...operations,
+              operations: operations.operations.filter((entry) => !ports.jobSettled(entry.operation.jobId)),
+            };
       const jobIds =
-        operations === null ? null : verifyProviderOperationTransfer(ports.db(), operations, transfer, successorServes);
+        unsettledOperations === null
+          ? null
+          : verifyProviderOperationTransfer(
+              ports.db(),
+              unsettledOperations,
+              transfer,
+              !committedSuccessorServed && successorServes,
+            );
       if (jobIds === null || operationsReceipt.recoveryGrantId !== setsReceipt.recoveryGrantId) {
         throw new Error('Provider operation receipt no longer matches the saga journal.');
       }

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import { createSuccessionReconciler } from '#src/coordinator/succession/reconcil
 import { createRealRuntime } from '#src/runtime/real.js';
 import { createSuccessionCoordinator } from '#src/coordinator/succession/index.js';
 import { SUCCESSION_METHODS } from '#src/infra/succession-address.js';
+import { upgradeIntentPath } from '#src/infra/path/index.js';
 import { successionTargetKey } from '#src/coordinator/succession/protocol.js';
 import { probeProcessIncarnation } from '#src/infra/node-process.js';
 import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } from '#src/infra/upgrade-intent.js';
@@ -542,8 +543,17 @@ describe('succession reconciler', () => {
       capabilitiesKey: '{}',
       epochKey: 'serving-epoch',
       admissionRevision: 0,
-      accepts: [],
-      receipts: [],
+      accepts: [{ owner: 'durable-cli', generation: 1 }],
+      receipts: [
+        {
+          owner: 'durable-cli',
+          generation: 1,
+          attemptId: 'failed-attempt',
+          receiptId: 'receipt-1',
+          recoveryGrantId: 'grant-1',
+          payload: {},
+        },
+      ],
       stage: 'prepared',
       ready: null,
     };
@@ -565,8 +575,13 @@ describe('succession reconciler', () => {
       completionReceipt: null,
       recoveryAttemptId: 'recovery-attempt',
       recoveryBuildSetId: build.buildSetId,
+      recoveryGrantAttemptId: 'failed-attempt',
       recoveryRetry: { kind: 'target-change' },
       successionPreparation: recoveryPreparation,
+      nextTarget: {
+        requestId: 'request-2',
+        target: { build: { ...build, version: '0.12.0' }, pluginRootLabel: '/missing/newer' },
+      },
     });
     if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
     const reconciler = createSuccessionReconciler({
@@ -588,9 +603,8 @@ describe('succession reconciler', () => {
           : null,
     });
     try {
-      await reconciler.commit('recovery-attempt');
-      expect(readUpgradeIntent(runDir)).toMatchObject({
-        kind: 'readable',
+      expect(await reconciler.commit('recovery-attempt')).toMatchObject({
+        kind: 'registered',
         intent: {
           incumbent: { instanceId: serving.instanceId },
           attemptId: null,
@@ -600,12 +614,79 @@ describe('succession reconciler', () => {
           retryCondition: { kind: 'target-change' },
         },
       });
-      expect(
-        await reconciler.request({
-          requestId: 'request-2',
-          target: { build: { ...build, version: '0.12.0' }, pluginRootLabel: '/missing/newer' },
-        }),
-      ).toMatchObject({ kind: 'registered', intent: { requestId: 'request-2' } });
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(runDir);
+        return observed.kind === 'readable' && observed.intent.requestId === 'request-2';
+      }, 5_000);
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should not finalize a served recovery whose retry kind belongs to a newer build', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'coral-succession-reconcile-'));
+    directories.push(runDir);
+    const failedIncumbent = { ...serving, instanceId: 'failed-incumbent', pid: await exitedPid(), incarnation: null };
+    const target = { build, pluginRootLabel: '/missing/target' };
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: failedIncumbent,
+      target,
+      attemptId: 'recovery-attempt',
+      attemptOwner: {
+        kind: 'incumbent',
+        instanceId: failedIncumbent.instanceId,
+        pid: failedIncumbent.pid,
+        incarnation: null,
+      },
+      disposition: 'deferred',
+      blockers: [{ owner: 'succession-commit', reason: 'same-build recovery' }],
+      retryCondition: { kind: 'target-change', evidence: 'same-build recovery in progress' },
+      attemptDeadline: null,
+      completionReceipt: null,
+      recoveryAttemptId: 'recovery-attempt',
+      recoveryBuildSetId: build.buildSetId,
+      recoveryRetry: { kind: 'target-change' },
+      successionPreparation: {
+        version: 'v1',
+        requestId: 'request-1',
+        attemptId: 'recovery-attempt',
+        incumbentInstanceId: failedIncumbent.instanceId,
+        incumbentPid: failedIncumbent.pid,
+        incumbentKey: 'failed-incumbent-key',
+        targetKey: successionTargetKey(target),
+        capabilitiesKey: '{}',
+        epochKey: 'serving-epoch',
+        admissionRevision: 0,
+        accepts: [],
+        receipts: [],
+        stage: 'prepared',
+        ready: null,
+      },
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const path = upgradeIntentPath(runDir);
+    const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    const unknown = JSON.stringify({ ...stored, recoveryRetry: { kind: 'future-kind' } });
+    writeFileSync(path, unknown);
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: true,
+      observeServing: () => ({
+        epochKey: 'serving-epoch',
+        controlGeneration: 2,
+        successorInstanceId: serving.instanceId,
+        recordedAt: new Date().toISOString(),
+      }),
+    });
+    try {
+      expect((await reconciler.commit('recovery-attempt')).kind).toBe('refused');
+      expect(readFileSync(path, 'utf-8')).toBe(unknown);
     } finally {
       reconciler.dispose();
     }
@@ -781,6 +862,129 @@ describe('succession reconciler over an installed target', () => {
       expect(durableCli.granted.size).toBeLessThanOrEqual(1);
       expect(childPrincipals.granted.size).toBeLessThanOrEqual(1);
     } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should reuse an already named grant without classifying it a second time', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: serving,
+      target,
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'pending',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const durableCli = grantingOwner();
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [durableCli.owner],
+      requiredOwners: ['durable-cli'],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: false,
+      retryIntervalMs: 60_000,
+    });
+    try {
+      const first = await reconciler.prepare('request-1');
+      const second = await reconciler.prepare('request-1');
+      expect(first.kind).toBe('prepared');
+      expect(second).toEqual(first);
+      expect(durableCli.classified).toHaveLength(1);
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should retain a grant while another preparation is still naming its attempt', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    installedTargets.set(target.pluginRootLabel, {
+      ...(installedTargets.get(target.pluginRootLabel) as SuccessionCapabilities),
+      accepts: [
+        { owner: 'durable-cli', generation: 1 },
+        { owner: 'child-principals', generation: 1 },
+      ],
+    });
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: serving,
+      target,
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'deferred',
+      blockers: [{ owner: 'child-principals', reason: 'busy' }],
+      retryCondition: { kind: 'obligation-change', evidence: 'owner disposition changes' },
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const durableCli = grantingOwner();
+    let releaseFirst: () => void = () => undefined;
+    const firstHeld = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstEntered: () => void = () => undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      firstEntered = resolve;
+    });
+    let calls = 0;
+    const childPrincipals: SuccessionOwner = {
+      id: 'child-principals',
+      recordsGrants: true,
+      classify: async (attemptId) => {
+        calls++;
+        if (calls === 1) {
+          firstEntered();
+          await firstHeld;
+          return {
+            kind: 'transferable',
+            reason: 'grant recorded',
+            receipt: {
+              owner: 'child-principals',
+              generation: 1,
+              attemptId,
+              receiptId: `child:${attemptId}`,
+              recoveryGrantId: `child:${attemptId}`,
+              payload: {},
+            },
+          };
+        }
+        return { kind: 'blocking', reason: 'busy' };
+      },
+    };
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners: [durableCli.owner, childPrincipals],
+      requiredOwners: ['durable-cli', 'child-principals'],
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: false,
+      retryIntervalMs: 60_000,
+    });
+    try {
+      const first = reconciler.prepare('request-1');
+      await firstStarted;
+      expect((await reconciler.prepare('request-1')).kind).toBe('deferred');
+      await reconciler.reconcile();
+      releaseFirst();
+      expect((await first).kind).toBe('prepared');
+      const attemptId = intentOf(runDir).attemptId;
+      expect(attemptId).not.toBeNull();
+      expect(durableCli.granted.has(attemptId as string)).toBe(true);
+    } finally {
+      releaseFirst();
       reconciler.dispose();
     }
   });

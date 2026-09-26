@@ -161,14 +161,12 @@ describe('upgrade intent', () => {
     const path = upgradeIntentPath(dir);
     const stored = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
     stored.transientRetry = { targetKey: 'target', failures: 'many', retryAfter: 'later' };
-    stored.recoveryRetry = { kind: 'future-kind' };
     writeFileSync(path, JSON.stringify(stored));
 
     const read = readUpgradeIntent(dir);
     expect(read.kind).toBe('readable');
     if (read.kind !== 'readable') return;
     expect(read.intent.transientRetry).toBeUndefined();
-    expect(read.intent.recoveryRetry).toBeUndefined();
   });
 
   it.each([
@@ -185,6 +183,7 @@ describe('upgrade intent', () => {
         attemptOwner: { kind: 'supervisor', instanceId: 'supervisor', pid: 100, incarnation: null },
       }),
     ],
+    ['recovery retry', (stored: Record<string, unknown>) => ({ ...stored, recoveryRetry: { kind: 'future-kind' } })],
   ])(
     'should read an intent whose %s comes from a newer vocabulary as a newer build’s, and never overwrite it',
     async (_field, newer) => {

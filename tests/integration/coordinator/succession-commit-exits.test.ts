@@ -250,11 +250,13 @@ async function harness(
     recertification?: SuccessionDecision;
     /** The KB daemon refuses to park its writer turn with this error. */
     kbParkRefusal?: string;
+    kbParkRefusalDelayMs?: number;
     /** A target store format other than the incumbent's makes the commit a format-changing retirement. */
     targetFingerprint?: string;
     certifyCustody?: SuccessionCommitPorts['retiringEpoch']['certifyCustody'];
     /** Transient failures this target has already spent. */
     priorTransientFailures?: number;
+    releaseAuthorityThrowsOnce?: boolean;
   }>,
 ): Promise<Harness> {
   const root = mkdtempSync(join(tmpdir(), 'coral-succession-exits-'));
@@ -291,6 +293,9 @@ async function harness(
     reopenRetiringStore: () => undefined,
     releaseAuthority: (release) => {
       state.releases.push(release);
+      if (options.releaseAuthorityThrowsOnce === true && state.releases.length === 1) {
+        return Promise.reject(new Error('injected authority release failure'));
+      }
       return new Promise<never>(() => undefined);
     },
   };
@@ -318,6 +323,7 @@ async function harness(
         ? {}
         : {
             parkWriterTurn: async () => {
+              if (options.kbParkRefusalDelayMs !== undefined) await runtime.time.sleep(options.kbParkRefusalDelayMs);
               throw new Error(options.kbParkRefusal);
             },
           }),
@@ -436,6 +442,19 @@ function blockers(runtime: Runtime): readonly { owner: string; reason: string }[
 }
 
 describe('succession commit failure exits', () => {
+  it('should not settle a serving attempt when its first authority release throws', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      attempt: 'serves-after-incumbent-check',
+      releaseAuthorityThrowsOnce: true,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.releases.length === 2, 15_000);
+    expect(test.releases.map((release) => release.kind)).toEqual(['successor', 'successor']);
+  });
+
   it('should reclaim the incumbent writer even when the failed successor cannot be proven absent', async () => {
     const test = await harness({
       failingPoints: () => false,
@@ -565,13 +584,35 @@ describe('succession commit failure exits', () => {
       failingPoints: () => false,
       recoveryLaunch: 'fails',
       kbParkRefusal: 'KB daemon writer turn cannot park while 1 KB job(s) run.',
+      priorTransientFailures: 6,
     });
     await test.launch();
 
     await waitForCondition(() => test.retryNotifications === 1, 15_000);
     expect(test.adoptedAdmissions).toBe(1);
-    expect(retryCondition(test.runtime)?.kind).toBe('attempt-expiry');
+    expect(retryCondition(test.runtime)?.kind).toBe('obligation-change');
+    const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+    expect(observed.intent.transientRetry?.failures).toBe(6);
     expect(blockers(test.runtime)[0]?.reason).toContain('cannot park while 1 KB job(s) run');
+  });
+
+  it('should preserve obligation churn when a KB park refusal arrives after the commit deadline', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      pauseMs: 3_000,
+      kbParkRefusal: 'KB writer turn remains busy',
+      kbParkRefusalDelayMs: 600,
+      priorTransientFailures: 6,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.retryNotifications === 1, 15_000);
+    const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+    expect(observed.intent.retryCondition?.kind).toBe('obligation-change');
+    expect(observed.intent.transientRetry?.failures).toBe(6);
   });
 
   it('should retry, not strand, an obligation that began after preparation, before any writer parks', async () => {

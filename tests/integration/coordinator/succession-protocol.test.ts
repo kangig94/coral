@@ -975,6 +975,7 @@ describe('succession protocol', () => {
 
       const held = readUpgradeIntent(target.runDir);
       if (held.kind !== 'readable') throw new Error('held intent is unreadable');
+      expect(held.intent.nextTarget).toMatchObject({ requestId: 'newer' });
       // The commit settles its failure the way a reclaim records it, keeping every field it does not own.
       const reclaimed = await compareAndSwapUpgradeIntent(target.runDir, held.intent.revision, {
         ...held.intent,
@@ -989,6 +990,10 @@ describe('succession protocol', () => {
       });
       if (reclaimed.kind !== 'written') throw new Error(`reclaim write was ${reclaimed.kind}`);
       await service.reconciler.reconcile();
+      await waitForCondition(() => {
+        const observed = readUpgradeIntent(target.runDir);
+        return observed.kind === 'readable' && observed.intent.requestId === 'newer';
+      }, 2_000);
 
       expect(readUpgradeIntent(target.runDir)).toMatchObject({
         kind: 'readable',

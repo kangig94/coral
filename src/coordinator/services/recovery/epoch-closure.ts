@@ -9,7 +9,12 @@ import {
   SIGKILL_GRACE_MS,
   SIGTERM_GRACE_MS,
 } from '../../../infra/process-constants.js';
-import { custodyLedgerDir, readCustodyLedger, type CustodyEntry } from '../../../store/custody-ledger.js';
+import {
+  custodyLedgerDir,
+  readCustodyLedger,
+  readCustodyLedgerStartMs,
+  type CustodyEntry,
+} from '../../../store/custody-ledger.js';
 import {
   hasEpochCustodyCoverage,
   observeEpochClosure,
@@ -117,6 +122,50 @@ export function closureCandidates(runtime: Runtime): ClosureCandidate[] {
     epochKey: address.epochKey,
   }));
   return [...canonical, ...protectedEpochs];
+}
+
+function predatesCustodyCoverage(runtime: Runtime, candidate: ClosureCandidate): boolean {
+  const startMs = readCustodyLedgerStartMs(runtime, runtime.paths.coral.coordinator.runDir);
+  if (startMs === null) return false;
+  try {
+    runtime.storage.lstatSync(join(dirname(candidate.epoch.path), '.coral-custody-coverage.v1.json'));
+    return false;
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) return false;
+  }
+  const observed = listStoreEpochs(runtime).find(
+    (entry) => entry.epochKey === candidate.epochKey && entry.resolved?.path === candidate.epoch.path,
+  );
+  return observed?.epochJson.kind === 'valid' && Date.parse(observed.epochJson.value.publishedAt) < startMs;
+}
+
+function observePreCoverageCustody(
+  runtime: Runtime,
+  candidate: ClosureCandidate,
+  entries: readonly CustodyEntry[],
+): Readonly<{ kind: 'alive' | 'not-proven-alive' }> {
+  for (const entry of entries) {
+    if (entry.kind !== 'bound' || entry.binding.process === null) continue;
+    if (
+      entry.intent.epochKey !== candidate.epochKey &&
+      entry.intent.epoch !== candidate.originalPath &&
+      entry.intent.epoch !== candidate.epochKey &&
+      entry.intent.epoch !== dirname(candidate.epoch.path)
+    )
+      continue;
+    const process = entry.binding.process;
+    if (!isProcessIncarnation(process.incarnation)) continue;
+    const observed = observeRecordedContainment(
+      { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId, childRoot: null },
+      {
+        process: runtime.process,
+        platform: runtime.env.platform() as NodeJS.Platform,
+        readProcessIncarnation: (pid, platform) => runtime.process.readProcessIncarnation(pid, platform),
+      },
+    );
+    if (observed.kind === 'alive') return { kind: 'alive' };
+  }
+  return { kind: 'not-proven-alive' };
 }
 
 /**
@@ -528,16 +577,30 @@ export async function settleSupersededEpochClosures(
       historicalAddresses.some(
         (address) => address.epochKey !== candidate.epochKey && address.originalPath === candidate.originalPath,
       );
-    const settlement = await certifyCustody(
-      runtime,
-      index,
-      candidate,
-      custody,
-      ambiguousOriginalPath,
-      signal ?? new AbortController().signal,
-      closeProxySet,
-      jobEpochKey,
-    );
+    const preCoverage = predatesCustodyCoverage(runtime, candidate);
+    const liveCustody = preCoverage ? observePreCoverageCustody(runtime, candidate, custody) : null;
+    const settlement = preCoverage
+      ? liveCustody?.kind === 'alive'
+        ? {
+            executionDischarge: 'undecidable' as const,
+            obligations: [],
+            reason: 'pre-coverage process is alive; retry after its recorded incarnation exits',
+          }
+        : {
+            executionDischarge: 'certified' as const,
+            obligations: [],
+            reason: 'pre-coverage epoch follows shipped keep-two retention',
+          }
+      : await certifyCustody(
+          runtime,
+          index,
+          candidate,
+          custody,
+          ambiguousOriginalPath,
+          signal ?? new AbortController().signal,
+          closeProxySet,
+          jobEpochKey,
+        );
     keepRecorded(
       recordEpochClosure(runtime, stateRoot, {
         version: 'v1',

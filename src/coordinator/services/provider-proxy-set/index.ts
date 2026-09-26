@@ -4164,11 +4164,16 @@ export class ProviderProxySetLifecycle {
             this.#slots.delete(slot.key);
             this.#identityIndex.delete(slot.identity);
             void this.#deleteOperatorDispositions(slot.identity);
+            const capsulePath = outcome.capsulePath ?? slot.capsulePath;
+            if (capsulePath !== slot.capsulePath) {
+              this.#capsuleAddresses.set(providerProxySetAddressKey(slot.address), capsulePath);
+              this.#capsuleGrants.set(slot.capsuleBinding.grantId, capsulePath);
+            }
             this.#establish(
               outcome.set,
               outcome.publicationReceipt,
               slot.routeKey,
-              slot.capsulePath,
+              capsulePath,
               slot.routeKey === null ? 'contain-unclaimed-discovery' : 'serve',
               outcome.protection,
             );

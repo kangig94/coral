@@ -722,16 +722,26 @@ async function waitForSocketRelease(socketPath: string, timeoutMs: number, timeP
   );
 }
 
-/** Consecutive unanswered readings of this wait; any other reading ends the run. */
-type UnansweredRun = Readonly<{ probes: number; since: number }>;
+/** Consecutive unanswered readings of one recorded holder; any other reading ends the run. */
+type UnansweredRun = Readonly<{ probes: number; since: number; address: string; holder: string | null }>;
+
+function recordedHolderIdentity(info: VerifiedBackendInfo | null): string | null {
+  return info === null
+    ? null
+    : JSON.stringify([info.socketPath, info.pid, info.incarnation, info.instanceId, info.bootToken, info.startedAt]);
+}
 
 function extendUnansweredRun(
   run: UnansweredRun | null,
   reading: CoordinatorHealthReading,
   probeStartedAt: number,
+  address: string,
+  holder: string | null,
 ): UnansweredRun | null {
   if (reading.kind !== 'unanswered') return null;
-  return run === null ? { probes: 1, since: probeStartedAt } : { probes: run.probes + 1, since: run.since };
+  return run === null || run.address !== address || run.holder !== holder
+    ? { probes: 1, since: probeStartedAt, address, holder }
+    : { ...run, probes: run.probes + 1 };
 }
 
 function unansweredThroughWindow(run: UnansweredRun | null, now: number): run is UnansweredRun {
@@ -819,14 +829,16 @@ async function waitForBackendReady(
   // draining coordinator: that would hand back the incumbent as its own replacement.
   const admission: RouteLifecycleAdmission = 'running';
   let unansweredRun: UnansweredRun | null = null;
+  let firstObservedHolder: string | null | undefined;
 
   while (currentAttempt || timePort.now() < readyDeadline) {
     const info = readDiscoverySnapshot(paths);
+    const holder = recordedHolderIdentity(info);
+    if (firstObservedHolder === undefined) firstObservedHolder = holder;
+    const address = info?.socketPath ?? expectedSocketPath;
     const probeStartedAt = timePort.now();
-    const observedReading = await readRawCoordinatorHealth(
-      createIpcClient(info?.socketPath ?? expectedSocketPath, timePort),
-    );
-    unansweredRun = extendUnansweredRun(unansweredRun, observedReading, probeStartedAt);
+    const observedReading = await readRawCoordinatorHealth(createIpcClient(address, timePort));
+    unansweredRun = extendUnansweredRun(unansweredRun, observedReading, probeStartedAt, address, holder);
     const observedHealth = answeredHealth(observedReading);
     const observedPid: number | undefined = observedHealth?.pid ?? info?.pid;
     let servingIncumbent: ReadyCoordinatorEvidence | null = null;
@@ -871,7 +883,14 @@ async function waitForBackendReady(
     if (startupError) {
       switch (startupError.kind) {
         case 'documented': {
-          const unresponsivePid = verifiedUnresponsivePid(info);
+          const latestInfo = readDiscoverySnapshot(paths);
+          const sameHolder =
+            firstObservedHolder !== null &&
+            firstObservedHolder === holder &&
+            holder === recordedHolderIdentity(latestInfo) &&
+            unansweredRun?.holder === holder &&
+            unansweredRun?.address === address;
+          const unresponsivePid = sameHolder ? verifiedUnresponsivePid(latestInfo) : null;
           const now = timePort.now();
           if (
             startupError.code === 'handoff_socket_holder_unverified' &&

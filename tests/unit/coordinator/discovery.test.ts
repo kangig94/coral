@@ -419,6 +419,32 @@ describe('coordinator discovery', () => {
     expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').socketPath)).toEqual({ kind: 'absent' });
   });
 
+  it('reads a live legacy holder despite a stale primary record for another address', async () => {
+    makeHome();
+    writeLegacyOnlyRecord();
+    const { probeCoordinatorAtAddress, writeDiscoveryRecord } = await importDiscovery();
+    const runtime = makeDiscoveryRuntime('prod');
+    writeDiscoveryRecord(
+      {
+        pid: process.pid,
+        port: 4313,
+        socketPath: coordinatorPaths('prod').socketPath,
+        bundleHash: 'stale-bundle',
+        flavor: 'prod',
+        namespace: 'stale-namespace',
+        startedAt: 1_713_456_789_001,
+        token: 'stale-token',
+        bootToken: 'stale-boot-token',
+      },
+      runtime,
+    );
+
+    expect(probeCoordinatorAtAddress(runtime, coordinatorPaths('prod').legacySocketPath)).toMatchObject({
+      kind: 'live',
+      record: { instanceId: 'legacy-instance', bootToken: 'boot-token-legacy' },
+    });
+  });
+
   // Shipped v0.10.0-v0.10.3 readers of the legacy record never send the shutdown token, so the mirror has no reason
   // to carry a credential beyond what those readers use.
   it('mirrors the legacy record without the shutdown token', async () => {

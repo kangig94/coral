@@ -1461,7 +1461,7 @@ export function createCoordinatorCore(
         join(runtime.paths.coral.generation.legacyDataRoot, 'store', 'store.db'),
       ].some((path) => runtime.storage.existsSync(path)),
     (epochKey) => {
-      if (!hasHistoricalSource(jobLocationIndex, epochKey)) return 'decided';
+      if (!hasHistoricalSource(jobLocationIndex, epochKey)) return 'pending';
       let lineageKey: string | undefined;
       try {
         lineageKey = observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
@@ -2428,7 +2428,8 @@ export function createCoordinatorCore(
           throw new Error(`Unsupported succession receipt owner: ${receipt.owner}`);
         }
       }
-      for (const jobId of providerHostTransfer.verifyReceipts(preparation)) accepted.add(jobId);
+      for (const jobId of providerHostTransfer.verifyReceipts(preparation, committedSuccessorInstanceId !== null))
+        accepted.add(jobId);
       const live = readSuccessionJobs();
       // A crashed committed successor's own admissions are ordinary recovery obligations of this same build.
       const admittedByCommittedSuccessor = (jobId: string): boolean =>

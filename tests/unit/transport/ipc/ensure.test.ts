@@ -2331,6 +2331,32 @@ describe('ipc ensure', () => {
     expect((error as Error).message).toContain(`action=kill -9 ${process.pid}`);
   });
 
+  it('resets silence when the recorded holder identity changes', async () => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, { pid: process.pid, incarnation: incarnation!, instanceId: 'holder-a' });
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure, FORCE_KILL_UNANSWERED_WINDOW_MS } = await importEnsure();
+    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    setTimeout(
+      () => writeDiscovery(root, { pid: process.pid, incarnation: incarnation!, instanceId: 'holder-b' }),
+      FORCE_KILL_UNANSWERED_WINDOW_MS - 200,
+    );
+    setTimeout(() => writeStartupSentinel(root, spawnedAttemptId()), FORCE_KILL_UNANSWERED_WINDOW_MS + 400);
+    await vi.advanceTimersByTimeAsync(FORCE_KILL_UNANSWERED_WINDOW_MS + 800);
+
+    const error = await ensuredPromise;
+    expect(error).toMatchObject({ code: 'handoff_socket_holder_unverified' });
+    expect(JSON.stringify(error)).not.toContain('action=kill -9');
+  });
+
   // A contender that refuses after a stall of a few seconds has not shown that the holder cannot answer: the
   // stall may be a journal flush or a slow read, and the coordinator behind it is serving.
   it('withholds force-kill guidance from an unverified-holder refusal after a stall shorter than the window', async () => {

@@ -174,12 +174,11 @@ const upgradeIntentFields = z
     retryCondition: retryConditionSchema.nullable(),
     attemptDeadline: z.string().datetime().nullable(),
     completionReceipt: servingReceiptSchema.nullable(),
-    // A retry record this build cannot read degrades to absent rather than corrupting the intent: losing it only
-    // restarts the backoff count or keeps a recovery grant decisive, while a corrupt intent refuses the upgrade.
     transientRetry: transientRetrySchema.optional().catch(undefined),
     obligationRetry: obligationRetrySchema.nullable().optional().catch(undefined),
     /** The failure a same-build recovery grant stands in for. */
-    recoveryRetry: attemptRetrySchema.nullable().optional().catch(undefined),
+    recoveryRetry: attemptRetrySchema.nullable().optional(),
+    recoveryGrantAttemptId: z.string().min(1).nullable().optional(),
     // Losing an unreadable next target only waits for its build to contend again.
     nextTarget: nextTargetSchema.nullable().optional().catch(undefined),
     // Losing an unreadable discard leaves the mint in place, where store selection already declines to read it.
@@ -196,16 +195,24 @@ const newerVocabularySchema = upgradeIntentFields.extend({
   disposition: z.string().min(1),
   attemptOwner: attemptOwnerSchema.extend({ kind: z.string().min(1) }).nullable(),
   retryCondition: retryConditionSchema.extend({ kind: z.string().min(1) }).nullable(),
+  recoveryRetry: z
+    .object({ kind: z.string().min(1) })
+    .passthrough()
+    .nullable()
+    .optional(),
 });
 
 function namesNewerVocabulary(value: unknown): boolean {
   const parsed = newerVocabularySchema.safeParse(value);
   if (!parsed.success) return false;
-  const { disposition, attemptOwner, retryCondition } = parsed.data;
+  const { disposition, attemptOwner, retryCondition, recoveryRetry } = parsed.data;
   return (
     !(UPGRADE_INTENT_DISPOSITIONS as readonly string[]).includes(disposition) ||
     (attemptOwner !== null && !(ATTEMPT_OWNER_KINDS as readonly string[]).includes(attemptOwner.kind)) ||
-    (retryCondition !== null && !(RETRY_CONDITION_KINDS as readonly string[]).includes(retryCondition.kind))
+    (retryCondition !== null && !(RETRY_CONDITION_KINDS as readonly string[]).includes(retryCondition.kind)) ||
+    (recoveryRetry !== null &&
+      recoveryRetry !== undefined &&
+      !['transient', 'target-change'].includes(recoveryRetry.kind))
   );
 }
 

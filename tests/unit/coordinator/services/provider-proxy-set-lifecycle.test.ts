@@ -6326,6 +6326,44 @@ describe('ProviderProxySetLifecycle', () => {
     expect(reportLifecycle).not.toHaveBeenCalled();
   });
 
+  it('retires the current capsule path after a discovered set moves its capsule', async () => {
+    const record = providerOperationRecord('executing');
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([]);
+    const authority = fakeAuthority({ record });
+    const redemption = deferred<ProviderProxySetRedemptionOutcome>();
+    const retireCapsule = vi.fn(async () => ({ kind: 'retired' as const }));
+    const lifecycle = lifecycleFor({
+      claims,
+      controlEstablished: ignoreControlEstablished,
+      disappearanceConsumer: { containmentDisappeared: async () => ({}) as never },
+      time: new ManualClock(),
+      proveContainmentAbsent: noContainmentProof,
+      redeemCapsule: () => redemption.promise,
+      retireCapsule,
+    });
+    lifecycle.initializeClaimSlots();
+    lifecycle.installDiscoveredCapsules(
+      [{ path: '/capsules/moved.handoff.v3.json', capsule: capsuleV3For(authority) }],
+      retainsEveryCapsule,
+    );
+    claims.applyMutation({ kind: 'upserted', record });
+    redemption.resolve({
+      kind: 'redeemed',
+      set: authority,
+      publicationReceipt: TEST_PUBLICATION_RECEIPT,
+      protection: 'protected',
+      capsulePath: '/capsules/moved.handoff.v4.json',
+    });
+    await vi.waitFor(() => expect(lifecycle.authorityFor(authority.setIdentity)).toBe(authority));
+    claims.applyMutation({ kind: 'deleted', record });
+    latchAuthorityFault(authority, terminalAuthorityFault());
+    lifecycle.containmentAbsent(authority.setIdentity, 'moved-capsule-absence');
+
+    await vi.waitFor(() => expect(retireCapsule).toHaveBeenCalled());
+    expect(retireCapsule).toHaveBeenCalledWith('/capsules/moved.handoff.v4.json');
+  });
+
   it('keeps a claim-bearing protocol-incompatible capsule until disappearance reaches the claim', async () => {
     const record = providerOperationRecord('executing');
     const claims = new ProviderProxySetClaimMirror();

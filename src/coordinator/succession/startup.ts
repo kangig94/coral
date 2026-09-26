@@ -2,6 +2,7 @@ import { dirname, join } from 'node:path';
 import { z } from 'zod';
 
 import { backendLog } from '../../infra/backend-log.js';
+import { readBackendInfo } from '../../infra/backend-discovery.js';
 import { resolveRunningBundleDir, type StrictBundleManifest } from '../../infra/bundle-manifest.js';
 import { verifyChildPrincipalRecoveryGrant } from '../../infra/child-principal-nonce-ledger.js';
 import { errorMessage, formatError } from '../../infra/error-format.js';
@@ -14,6 +15,7 @@ import {
   type ProcessLiveness,
 } from '../../infra/node-process.js';
 import { retainedBuildRoot } from '../../infra/retained-build-root.js';
+import { upgradeIntentPath } from '../../infra/path/index.js';
 import {
   readUpgradeIntent,
   retryUpgradeIntentCas,
@@ -59,7 +61,12 @@ import {
   PROVIDER_PROXY_SETS_OWNER,
   providerHostRecoveryGrantVerifies,
 } from './provider-host-transfer.js';
-import { readSuccessionCapabilities, successionPreparationSchema, type SuccessionPreparation } from './protocol.js';
+import {
+  readSuccessionCapabilities,
+  successionPreparationSchema,
+  successionTargetKey,
+  type SuccessionPreparation,
+} from './protocol.js';
 import { observeRetirementDisposition, type RetirementDisposition } from './retirement-disposition.js';
 
 /** Startups a hold on an incomplete attempt may span before the attempt is abandoned for ordinary startup. */
@@ -87,6 +94,7 @@ export class SuccessionAttemptStartupHoldError extends Error {
  * observed live owner ends only when that process exits.
  */
 export type SuccessionStartupHold =
+  | Readonly<{ kind: 'unsupported-intent'; attemptId: null; reason: string; fingerprint: string }>
   | Readonly<{ kind: 'attempt-record-unreadable'; attemptId: string }>
   | Readonly<{ kind: 'deaths-unproven'; attemptId: string; alive: boolean }>
   | Readonly<{ kind: 'recovery-grants-unverified'; attemptId: string }>
@@ -116,6 +124,8 @@ export function startupHoldError(hold: SuccessionStartupHold): SuccessionAttempt
 
 function describeStartupHold(hold: SuccessionStartupHold): string {
   switch (hold.kind) {
+    case 'unsupported-intent':
+      return hold.reason;
     case 'attempt-record-unreadable':
       return 'incomplete attempt record is unreadable';
     case 'deaths-unproven':
@@ -143,9 +153,20 @@ function describeStartupHold(hold: SuccessionStartupHold): string {
 }
 
 function patienceSubject(hold: SuccessionStartupHold): string {
+  if (hold.kind === 'unsupported-intent') return `${hold.kind}:${hold.fingerprint}`;
   if (hold.kind === 'preferred-epoch-unopenable') return hold.attemptId ?? `preferred-epoch:${hold.epochKey}`;
   if (hold.kind === 'retirement-mint-withheld') return hold.kind;
   return hold.attemptId;
+}
+
+function unsupportedIntentFingerprint(runtime: Runtime): string {
+  try {
+    return runtime.ids.sha256(
+      runtime.storage.readFileSync(upgradeIntentPath(runtime.paths.coral.coordinator.runDir), 'utf-8'),
+    );
+  } catch {
+    return 'unreadable';
+  }
 }
 
 /** Every recorded process is absent, any is alive, or else the answer is unknown. */
@@ -229,7 +250,14 @@ async function exhaustStartupPatience(
   const subject = patienceSubject(hold);
   const path = startupPatiencePath(runtime, subject);
   const previous = readStartupPatience(runtime, subject);
-  if (previous !== null && previous.startups >= SUCCESSION_STARTUP_PATIENCE) return true;
+  if (previous !== null && previous.startups >= SUCCESSION_STARTUP_PATIENCE) {
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (hold.attemptId !== null && !(observed.kind === 'readable' && observed.intent.disposition === 'completed')) {
+      const recorded = await recordStartupHold(runtime, hold.attemptId, hold, previous.startups, true);
+      if (recorded === 'released') clearStartupPatience(runtime, subject);
+    }
+    return true;
+  }
   const now = runtime.time.now();
   const repeated =
     previous !== null &&
@@ -247,7 +275,7 @@ async function exhaustStartupPatience(
   const exhausted = startups >= SUCCESSION_STARTUP_PATIENCE;
   const recorded =
     hold.attemptId === null ? 'released' : await recordStartupHold(runtime, hold.attemptId, hold, startups, exhausted);
-  if (exhausted && recorded === 'released') clearStartupPatience(runtime, subject);
+  if (exhausted && recorded === 'released' && hold.attemptId !== null) clearStartupPatience(runtime, subject);
   return exhausted;
 }
 
@@ -262,6 +290,33 @@ async function recordStartupHold(
   startups: number,
   exhausted: boolean,
 ): Promise<'released' | 'retained'> {
+  if (exhausted && hold.kind === 'committed-successor-unattributable') {
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (
+      observed.kind === 'readable' &&
+      observed.intent.attemptId === attemptId &&
+      observed.intent.disposition === 'attempting' &&
+      observed.intent.attemptOwner?.kind === 'waiter' &&
+      (observed.intent.attemptChild === null || observed.intent.attemptChild === undefined)
+    ) {
+      const serving = observeSuccessionServing(runtime, attemptId);
+      if (serving !== null) {
+        const epoch = decodeResolvedStoreEpoch(runtime, serving.epochKey);
+        const generation = observeSuccessionWriterGeneration(runtime);
+        if (
+          epoch === undefined ||
+          generation === null ||
+          generation.generation !== serving.controlGeneration ||
+          generation.storeRoot !== epoch.storeRoot ||
+          generation.epoch !== epoch.epoch
+        ) {
+          throw new SuccessionAttemptStartupHoldError('waiter serving generation cannot be released', hold);
+        }
+        // A waiter carries no transfer receipts; the generation must advance before its attempt can be released.
+        advanceSuccessionWriterGeneration(runtime, generation, epoch);
+      }
+    }
+  }
   const reason = exhausted
     ? `abandoned after ${startups} startups: ${describeStartupHold(hold)}`
     : `${describeStartupHold(hold)} (startup ${startups} of ${SUCCESSION_STARTUP_PATIENCE})`;
@@ -419,6 +474,15 @@ export async function resolveIncompleteSuccessionAtStartup(
 ): Promise<IncompleteSuccessionResolution> {
   const { runtime } = options;
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (observed.kind === 'unsupported') {
+    const hold = {
+      kind: 'unsupported-intent',
+      attemptId: null,
+      reason: 'upgrade intent uses unsupported vocabulary',
+      fingerprint: unsupportedIntentFingerprint(runtime),
+    } as const;
+    return (await exhaustStartupPatience(runtime, options.startupId, hold)) ? { kind: 'none' } : { kind: 'hold', hold };
+  }
   if (observed.kind !== 'readable') return { kind: 'none' };
   const intent = observed.intent;
   const holdOrAbandon = async (hold: SuccessionStartupHold): Promise<IncompleteSuccessionResolution> => {
@@ -476,8 +540,26 @@ export async function resolveIncompleteSuccessionAtStartup(
     };
   }
 
-  // A waiter-owned attempt carries no receipts or grants; the target's own startup decides it.
   const attemptId = intent.attemptId;
+  if (
+    intent.attemptOwner?.kind === 'waiter' &&
+    attemptId !== null &&
+    observeSuccessionServing(runtime, attemptId) === null &&
+    !(
+      runtime.env.get('CORAL_STARTUP_ATTEMPT_ID') === attemptId &&
+      intent.target.build.buildSetId === options.currentBuild.buildSetId &&
+      intent.target.build.bundleHash === options.currentBuild.bundleHash
+    )
+  ) {
+    const child = intent.attemptChild;
+    const unproven = deathsUnproven(
+      attemptId,
+      child === null || child === undefined || child.attemptId !== attemptId
+        ? [intent.attemptOwner]
+        : [intent.attemptOwner, child],
+    );
+    return unproven === null ? { kind: 'retire', attemptId } : holdOrAbandon(unproven);
+  }
   if (
     intent.attemptOwner?.kind !== 'incumbent' ||
     attemptId === null ||
@@ -854,6 +936,96 @@ export type CommittedSuccessorRecovery =
   | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
 
+async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'completed' | 'unattributable'> {
+  const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (observed.kind !== 'readable') return 'none';
+  const { intent } = observed;
+  if (intent.disposition === 'completed') return 'completed';
+  if (intent.disposition !== 'attempting' || intent.attemptId === null) return 'none';
+  const attemptId = intent.attemptId;
+  const serving = observeSuccessionServing(runtime, attemptId);
+  if (serving === null || intent.recoveryAttemptId === attemptId) return 'none';
+  if (
+    !Number.isFinite(Date.parse(serving.recordedAt)) ||
+    (intent.attemptDeadline !== null && Date.parse(serving.recordedAt) > Date.parse(intent.attemptDeadline))
+  )
+    return 'unattributable';
+
+  const preparation = successionPreparationSchema.safeParse(intent.successionPreparation);
+  const incumbentAttempt = intent.attemptOwner?.kind === 'incumbent';
+  const child = intent.attemptChild;
+  const discovery = incumbentAttempt || (child !== null && child !== undefined) ? null : readBackendInfo(runtime);
+  const waiterChild =
+    child?.attemptId === intent.attemptId
+      ? child
+      : discovery?.instanceId === serving.successorInstanceId &&
+          discovery.bundleHash === intent.target.build.bundleHash &&
+          discovery.flavor === intent.target.build.flavor
+        ? { attemptId: intent.attemptId, pid: discovery.pid, incarnation: discovery.incarnation ?? null }
+        : null;
+  const prepared = preparation.success ? preparation.data : null;
+  const retirement = observeRetirementDisposition(runtime, intent.attemptId);
+  let pid: number;
+  let incarnation: ProcessIncarnation | null;
+  let acceptedObligations: NonNullable<UpgradeIntent['completionReceipt']>['acceptedObligations'];
+  if (incumbentAttempt) {
+    if (
+      prepared === null ||
+      prepared.attemptId !== intent.attemptId ||
+      prepared.ready === null ||
+      prepared.targetKey !== successionTargetKey(intent.target) ||
+      prepared.ready.attemptId !== intent.attemptId ||
+      prepared.ready.targetKey !== prepared.targetKey ||
+      prepared.ready.epochKey !== prepared.epochKey ||
+      JSON.stringify(prepared.ready.receiptIds) !==
+        JSON.stringify(prepared.receipts.map((receipt) => receipt.receiptId)) ||
+      (prepared.epochKey !== serving.epochKey &&
+        (retirement.kind !== 'recorded' || retirement.disposition.incumbentEpochKey !== prepared.epochKey))
+    )
+      return 'unattributable';
+    pid = prepared.ready.successorPid;
+    incarnation = child?.attemptId === intent.attemptId && child.pid === pid ? child.incarnation : null;
+    acceptedObligations = prepared.receipts.map((ownerReceipt) => ({
+      owner: ownerReceipt.owner,
+      receiptId: ownerReceipt.receiptId,
+      controlGeneration: serving.controlGeneration,
+    }));
+  } else {
+    if (intent.attemptOwner?.kind !== 'waiter' || waiterChild === null) return 'unattributable';
+    pid = waiterChild.pid;
+    incarnation = waiterChild.incarnation;
+    acceptedObligations = [];
+  }
+  const receipt: NonNullable<UpgradeIntent['completionReceipt']> = {
+    kind: 'serving',
+    attemptId: intent.attemptId,
+    successor: { instanceId: serving.successorInstanceId, pid, incarnation, build: intent.target.build },
+    epochKey: serving.epochKey,
+    controlGeneration: serving.controlGeneration,
+    acceptedObligations,
+    recordedAt: serving.recordedAt,
+  };
+  const outcome = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (current) => {
+    if (current.kind !== 'readable' || current.intent.attemptId !== intent.attemptId) {
+      return { kind: 'settle', value: false };
+    }
+    if (current.intent.disposition === 'completed') return { kind: 'settle', value: true };
+    if (
+      current.intent.disposition !== 'attempting' ||
+      current.intent.revision !== intent.revision ||
+      observeSuccessionServing(runtime, attemptId) === null
+    )
+      return { kind: 'settle', value: false };
+    return {
+      kind: 'write',
+      expectedRevision: current.intent.revision,
+      change: { ...current.intent, disposition: 'completed', completionReceipt: receipt },
+      settle: () => true,
+    };
+  });
+  return outcome.kind === 'settled' && outcome.value ? 'completed' : 'unattributable';
+}
+
 export async function prepareCommittedSuccessorRecovery(
   runtime: Runtime,
   identity: Readonly<{ pluginRoot: string; instanceId: string }>,
@@ -861,7 +1033,21 @@ export async function prepareCommittedSuccessorRecovery(
   currentBuild: StrictBundleManifest,
   epochHasLiveJobs: (epochKey: string) => boolean,
 ): Promise<CommittedSuccessorRecovery> {
+  const served = await reconcileServedAttempt(runtime);
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+  if (served === 'unattributable') {
+    const attemptId = observed.kind === 'readable' ? observed.intent.attemptId : null;
+    if (attemptId !== null) {
+      const hold = {
+        kind: 'committed-successor-unattributable',
+        attemptId,
+        reason: 'served attempt has no attributable receipt',
+      } as const;
+      return (await exhaustStartupPatience(runtime, identity.instanceId, hold))
+        ? { kind: 'none' }
+        : { kind: 'hold', hold };
+    }
+  }
   if (observed.kind !== 'readable' || observed.intent.disposition !== 'completed') return { kind: 'none' };
   const intent = observed.intent;
   const receipt = intent.completionReceipt;
@@ -958,15 +1144,13 @@ export async function holdFailedCommittedRecovery(
   startupId: string,
   recovery: Readonly<{ intent: UpgradeIntent }>,
   error: unknown,
-): Promise<never> {
+): Promise<'abandoned'> {
   const attemptId = recovery.intent.completionReceipt?.attemptId;
   if (attemptId === undefined) throw error;
   const hold = { kind: 'committed-recovery-failed', attemptId, reason: errorMessage(error) } as const;
   if (!(await exhaustStartupPatience(runtime, startupId, hold))) throw startupHoldError(hold);
-  throw new SuccessionAttemptStartupHoldError(
-    `${describeStartupHold(hold)}; abandoned, so the next startup selects its store ordinarily`,
-    hold,
-  );
+  backendLog.warn(`Abandoned committed successor recovery for ordinary startup: ${describeStartupHold(hold)}`);
+  return 'abandoned';
 }
 
 /**
@@ -1101,6 +1285,37 @@ export async function completeWaiterLaunchedUpgrade(
 ): Promise<void> {
   const attemptId = runtime.env.get('CORAL_STARTUP_ATTEMPT_ID');
   if (attemptId === undefined || incarnation === null) return;
+  const childRecorded = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
+    if (observed.kind !== 'readable') return { kind: 'settle', value: false };
+    const intent = observed.intent;
+    if (
+      intent.disposition !== 'attempting' ||
+      intent.attemptId !== attemptId ||
+      intent.attemptOwner?.kind !== 'waiter' ||
+      intent.target.build.buildSetId !== currentBuild.buildSetId ||
+      intent.target.build.bundleHash !== currentBuild.bundleHash
+    )
+      return { kind: 'settle', value: false };
+    if (intent.attemptDeadline !== null && runtime.time.now() > Date.parse(intent.attemptDeadline)) {
+      return { kind: 'settle', value: false };
+    }
+    if (intent.attemptChild !== null && intent.attemptChild !== undefined) {
+      return {
+        kind: 'settle',
+        value:
+          intent.attemptChild.attemptId === attemptId &&
+          intent.attemptChild.pid === pid &&
+          intent.attemptChild.incarnation === incarnation,
+      };
+    }
+    return {
+      kind: 'write',
+      expectedRevision: intent.revision,
+      change: { ...intent, attemptChild: { attemptId, pid, incarnation } },
+      settle: () => true,
+    };
+  });
+  if (childRecorded.kind !== 'settled' || !childRecorded.value) return;
   // One instant and one epoch key for every decision: a re-run decision must write the identical serving record.
   const recordedAt = new Date(runtime.time.now()).toISOString();
   const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);

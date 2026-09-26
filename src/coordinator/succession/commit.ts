@@ -543,7 +543,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         await ports.kbDaemon.parkWriterTurn(parkAbort.signal);
       } catch (error: unknown) {
         // A writer that cannot park yet decides nothing about the target.
-        throw new TransientCommitFailure(`KB daemon writer turn did not park: ${formatError(error)}`);
+        throw new TransientCommitFailure(
+          `KB daemon writer turn did not park: ${formatError(error)}`,
+          TRANSIENT_RETRY_BASE_MS,
+          true,
+        );
       }
       parkAbort.signal.throwIfAborted();
     } finally {
@@ -779,9 +783,11 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
 
   /** At its deadline the successor fences itself, so whatever it reports afterwards is that deadline's doing. */
   const retryAfterWindowFailure = (window: CommitWindow, error: unknown): AttemptRetry =>
-    !attemptAbort.signal.aborted && runtime.time.now() >= window.deadlineAt
-      ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
-      : retryAfterFailure(error);
+    error instanceof TransientCommitFailure && error.obligationChange
+      ? retryAfterFailure(error)
+      : !attemptAbort.signal.aborted && runtime.time.now() >= window.deadlineAt
+        ? { kind: 'transient', retryAfterMs: TRANSIENT_RETRY_BASE_MS }
+        : retryAfterFailure(error);
 
   /**
    * Decides a failed window before its successor is reaped: a successor that has not recorded serving by now never
@@ -1000,6 +1006,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       attemptDeadline: null,
       recoveryAttemptId: null,
       recoveryBuildSetId: null,
+      recoveryGrantAttemptId: null,
       recoveryRetry: null,
       successionPreparation: null,
       blockers: [
@@ -1032,6 +1039,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       attemptOwner: incumbentOwner(),
       recoveryAttemptId: recoveryPreparation.attemptId,
       recoveryBuildSetId: ports.incumbent.build?.manifest.buildSetId ?? null,
+      recoveryGrantAttemptId: failure.preparation.receipts[0]?.attemptId ?? failure.preparation.attemptId,
       recoveryRetry: failure.retry,
       successionPreparation: recoveryPreparation,
       disposition: 'deferred',
@@ -1197,9 +1205,22 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
     active = attempt;
     attemptAbort = new AbortController();
     const settled = superviseCommit(attempt, preparation)
-      .catch((error: unknown): SuccessionLaunchSettlement => {
-        ports.log(`Succession commit supervision failed: ${formatError(error)}\n`);
-        return { kind: 'settled' };
+      .catch(async (error: unknown): Promise<SuccessionLaunchSettlement> => {
+        const reason = formatError(error);
+        ports.log(`Succession commit supervision failed: ${reason}\n`);
+        try {
+          if (observeSuccessionServing(runtime, attempt.attemptId) !== null) return releaseToSuccessor(attempt);
+        } catch (observationError: unknown) {
+          ports.log(`Succession serving could not be observed: ${formatError(observationError)}\n`);
+        }
+        ports.setLaunchFenceActive(true);
+        await recordReleasePending(attempt.attemptId, {
+          blockers: [{ owner: 'succession-commit', reason }],
+          retryCondition: { kind: 'attempt-expiry', evidence: 'same-build restart after failed supervision' },
+        }).catch((writeError: unknown) =>
+          ports.log(`Succession restart hold could not be recorded: ${formatError(writeError)}\n`),
+        );
+        return writersOrThrow().releaseAuthority({ kind: 'restart', reason });
       })
       .finally(() => {
         active = null;

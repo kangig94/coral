@@ -98,6 +98,44 @@ describe('superseded epoch protection', () => {
     expect(listed?.protectionPending).toBeUndefined();
   });
 
+  it('should refuse publication when a held epoch cannot be recorded for later protection', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-superseded-protection-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint }).db.close();
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    const held = vi.spyOn(epochProtection, 'protectStoreEpoch').mockImplementation(() => {
+      throw new epochProtection.StoreEpochOpenerHeldError('held');
+    });
+    const write = runtime.storage.writeAtomicDurableSync;
+    vi.spyOn(runtime.storage, 'writeAtomicDurableSync').mockImplementation((path, ...args) =>
+      path.includes('store-epoch-protection-pending.v1') ? false : write(path, ...args),
+    );
+
+    expect(() => discardCurrentStoreEpoch(runtime, { storeFormat: format, build })).toThrow();
+    expect(existsSync(epochDirectory(dbDir, '2'))).toBe(false);
+    held.mockRestore();
+  });
+
+  it('should refuse publication when the first pending directory cannot be synced', () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-superseded-protection-'));
+    roots.push(root);
+    const runtime = createRealRuntime('prod', { baseDir: root });
+    settleStoreEpoch(runtime, { storeFormat: format, build, authorizeMint: authorizeFixtureStoreMint }).db.close();
+    const dbDir = realpathSync(runtime.paths.coral.store.dbDir);
+    const held = vi.spyOn(epochProtection, 'protectStoreEpoch').mockImplementation(() => {
+      throw new epochProtection.StoreEpochOpenerHeldError('held');
+    });
+    const sync = runtime.storage.syncDirectoryDurableSync;
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockImplementation((path) =>
+      path === runtime.paths.coral.generation.dataRoot ? false : sync(path),
+    );
+
+    expect(() => discardCurrentStoreEpoch(runtime, { storeFormat: format, build })).toThrow();
+    expect(existsSync(epochDirectory(dbDir, '2'))).toBe(false);
+    held.mockRestore();
+  });
+
   describe('an epoch awaiting protection when a later mint meets it', () => {
     const protect = epochProtection.protectStoreEpoch;
 

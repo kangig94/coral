@@ -6,7 +6,12 @@ import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createLifecycle, createRuntimeState, StartupStoreHandoffError } from '#src/coordinator/lifecycle.js';
+import {
+  createLifecycle,
+  createRuntimeState,
+  StartupStoreHandoffError,
+  type LifecycleDeps,
+} from '#src/coordinator/lifecycle.js';
 import {
   installSuccessionAttemptChild,
   type SuccessionAttemptChild,
@@ -14,6 +19,7 @@ import {
 import * as successionProtocol from '#src/coordinator/succession/protocol.js';
 import * as upgradeIntent from '#src/infra/upgrade-intent.js';
 import { SuccessionAttemptStartupHoldError } from '#src/coordinator/succession/startup.js';
+import * as successionStartup from '#src/coordinator/succession/startup.js';
 import { createStoreServicesRef } from '#src/coordinator/composition/store-services-ref.js';
 import { LaunchCoordinator } from '#src/coordinator/live/admission.js';
 import { KB_COMPONENT_ID } from '#src/coordinator/runtime-components/contract.js';
@@ -56,6 +62,7 @@ function lifecycleHarness(
   successionAttemptChild: SuccessionAttemptChild | null = null,
   authorizeStartupMint: StoreEpochOptions['authorizeMint'] = ({ incumbent, observedEpochCount }) =>
     incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
+  overrides: Partial<LifecycleDeps> = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), 'coral-lifecycle-store-epoch-'));
   const pluginRoot = join(root, 'plugin');
@@ -173,6 +180,7 @@ function lifecycleHarness(
             closeIpcServerFn: vi.fn(async () => {}),
           }),
       onFatalShutdownError: vi.fn(),
+      ...overrides,
     },
     async () => [],
   );
@@ -198,6 +206,122 @@ async function disposeHarness(harness: ReturnType<typeof lifecycleHarness>): Pro
 }
 
 describe('lifecycle store epoch handoff', () => {
+  it.each(['open', 'verify', 'adopt'] as const)(
+    'should finish ordinary startup when committed recovery exhausts patience during %s',
+    async (failurePhase) => {
+      const writeBackendInfoFn = vi.fn((_info: BackendInfo) => true);
+      const harness = lifecycleHarness(writeBackendInfoFn, null, undefined, {
+        verifySuccessionReceipts: () => {
+          if (failurePhase === 'verify') throw new Error('simulated receipt verification failure');
+          return [];
+        },
+        adoptSuccessionReceipts: () => {
+          throw new Error('simulated receipt adoption failure');
+        },
+      });
+      const { runtime, storeFormat, identity } = harness;
+      const build = {
+        version: identity.version,
+        buildSetId: identity.buildSetId,
+        bundleHash: identity.bundleHash,
+        cliBundleHash: identity.cliBundleHash,
+        claudeAppserverBundleHash: identity.claudeAppserverBundleHash,
+        durableWrapperBundleHash: identity.durableWrapperBundleHash,
+        flavor: identity.flavor,
+        storeFormatFingerprint: storeFormat.fingerprint,
+      };
+      const initial = settleStoreEpoch(runtime, {
+        storeFormat,
+        build,
+        authorizeMint: ({ incumbent, observedEpochCount }) =>
+          incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
+      });
+      if (failurePhase === 'open') initial.db.close();
+      const attemptId = 'failed-committed-recovery';
+      const written = await upgradeIntent.compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, null, {
+        requestId: 'failed-recovery-request',
+        incumbent: {
+          instanceId: 'incumbent',
+          pid: 1,
+          incarnation: null,
+          version: '0.10.13',
+          bundleHash: '0000000000000000',
+          flavor: 'prod',
+        },
+        target: { build, pluginRootLabel: identity.pluginRoot },
+        attemptId,
+        attemptOwner: { kind: 'waiter', instanceId: 'waiter', pid: 1, incarnation: null },
+        attemptChild: null,
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        attemptDeadline: null,
+        completionReceipt: {
+          kind: 'serving',
+          attemptId,
+          successor: { instanceId: 'successor', pid: 1, incarnation: null, build },
+          epochKey: encodeResolvedStoreEpoch(runtime, initial.store),
+          controlGeneration: 1,
+          acceptedObligations: [],
+          recordedAt: new Date().toISOString(),
+        },
+      });
+      if (written.kind !== 'written') throw new Error(`intent seed was ${written.kind}`);
+      const patienceDir = join(runtime.paths.coral.coordinator.runDir, 'succession-startup-patience.v1');
+      mkdirSync(patienceDir, { recursive: true });
+      writeFileSync(
+        join(patienceDir, `${runtime.ids.sha256(attemptId)}.json`),
+        JSON.stringify({
+          version: 'v1',
+          attemptId,
+          startupId: 'earlier',
+          startups: 2,
+          countedAt: 0,
+        }),
+      );
+      vi.spyOn(successionStartup, 'prepareCommittedSuccessorRecovery').mockResolvedValue({
+        kind: 'recover',
+        store: initial.store,
+        intent: written.intent,
+      });
+      if (failurePhase !== 'open') {
+        const incarnation = probeProcessIncarnation(process.pid);
+        if (incarnation === null) throw new Error('this process has no observable incarnation');
+        const generation = joinSuccessionWriterGeneration(runtime, initial.store).generation;
+        const preparation = successionProtocol.successionPreparationSchema.parse({
+          version: 'v1',
+          requestId: 'failed-recovery-request',
+          attemptId,
+          incumbentInstanceId: 'incumbent',
+          incumbentPid: 1,
+          incumbentKey: 'incumbent-key',
+          targetKey: 'target-key',
+          capabilitiesKey: 'capabilities-key',
+          epochKey: encodeResolvedStoreEpoch(runtime, initial.store),
+          admissionRevision: 0,
+          accepts: [],
+          receipts: [],
+          stage: 'prepared',
+          ready: null,
+        });
+        vi.spyOn(successionStartup, 'openCommittedRecoveryStore').mockResolvedValue({
+          db: initial.db,
+          store: initial.store,
+          generation,
+          incarnation,
+          preparation,
+        });
+      }
+
+      try {
+        await expect(harness.lifecycle.start()).resolves.toMatchObject({ instanceId: identity.instanceId });
+        expect(writeBackendInfoFn).toHaveBeenCalled();
+      } finally {
+        await disposeHarness(harness);
+      }
+    },
+  );
+
   it('reports an attempt child open hold after acceptance without minting or publishing', async () => {
     let agreedPath: string | null = null;
     const child: SuccessionAttemptChild = {

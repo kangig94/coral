@@ -21,6 +21,7 @@ import type { StoreFormatClassification, StoreFormatDescription } from './format
 import { observeStorePath } from './path-observation.js';
 import {
   advanceSuccessionWriterGeneration,
+  assertSuccessionAttemptMayAdvance,
   handbackSuccessionWriterGeneration,
   joinSuccessionWriterGeneration,
   observeSuccessionWriterGeneration,
@@ -1095,7 +1096,7 @@ function removeWhileExclusivelyLocked(
   return removal;
 }
 
-function removeEpochEntry(runtime: Runtime, dbDir: string, epoch: StoreEpoch): LockedRemoval {
+function removeEpochEntry(runtime: Runtime, dbDir: string, epoch: StoreEpoch, closureEpochKey?: string): LockedRemoval {
   const targetPath = epochDirectory(dbDir, epoch);
   const root = observeContainedDirectory(runtime.storage, dbDir, targetPath);
   if (root.kind === 'unobservable') return 'target-failed';
@@ -1106,6 +1107,17 @@ function removeEpochEntry(runtime: Runtime, dbDir: string, epoch: StoreEpoch): L
     return readEpochMetadata(runtime.storage, targetPath).kind === 'valid'
       ? 'target-failed'
       : removeAfterReapingRename(runtime, dbDir, targetPath);
+  }
+  if (closureEpochKey !== undefined) {
+    const marker = join(targetPath, '.coral-closed-reaping.v1.json');
+    if (
+      !runtime.storage.writeAtomicDurableSync(
+        marker,
+        `${JSON.stringify({ version: 'v1', epochKey: closureEpochKey, epoch })}\n`,
+        { encoding: 'utf8', mode: 0o600 },
+      )
+    )
+      return 'target-failed';
   }
   return removeWhileExclusivelyLocked(runtime, dbDir, storeEpochLockPath(dbDir, epoch), targetPath);
 }
@@ -1587,6 +1599,7 @@ async function removeAbandonedStoreDirectory(
   runtime: Runtime,
   dbDir: string,
   path: string,
+  resultsReleased?: (epochKey: string) => boolean,
 ): Promise<LockedRemoval | 'unobservable'> {
   const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, path);
   if (root.kind === 'unobservable') return 'unobservable';
@@ -1598,7 +1611,38 @@ async function removeAbandonedStoreDirectory(
       join(path, STORE_DATABASE_FILE_NAME),
       root,
     );
-    return database.kind === 'disproven' ? removeAfterReapingRenameAsync(runtime, dbDir, path) : 'unobservable';
+    if (database.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
+    const markerPath = join(path, '.coral-closed-reaping.v1.json');
+    const markerProof = await observeContainedRegularFileAsync(runtime.storage, path, markerPath, root);
+    if (markerProof.kind !== 'proven' || resultsReleased === undefined) return 'unobservable';
+    try {
+      const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
+      if (
+        typeof marker !== 'object' ||
+        marker === null ||
+        !('version' in marker) ||
+        marker.version !== 'v1' ||
+        !('epoch' in marker) ||
+        typeof marker.epoch !== 'string' ||
+        !EPOCH_DIRECTORY_PATTERN.test(`epoch-${marker.epoch}`) ||
+        !('epochKey' in marker) ||
+        typeof marker.epochKey !== 'string' ||
+        !marker.epochKey.endsWith(`:${marker.epoch}`) ||
+        readEpochKey(runtime, {
+          ...resolvedStoreEpoch(dbDir, marker.epoch),
+          path: join(path, STORE_DATABASE_FILE_NAME),
+        }) !== marker.epochKey ||
+        observeStorePath(runtime.storage, epochDirectory(dbDir, marker.epoch)) !== 'absent' ||
+        closureCapability(runtime, runtime.paths.coral.generation.dataRoot, marker.epochKey) === null ||
+        !resultsReleased(lineageJobEpochKey(dbDir, marker.epochKey))
+      )
+        return 'unobservable';
+    } catch {
+      return 'unobservable';
+    }
+    const lockPath = join(path, STORE_LOCK_FILE_NAME);
+    const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
+    return lock.kind === 'proven' ? removeWhileExclusivelyLockedAsync(runtime, dbDir, lockPath, path) : 'unobservable';
   }
   const lockPath = join(path, STORE_LOCK_FILE_NAME);
   const lock = await observeContainedRegularFileAsync(runtime.storage, path, lockPath, root);
@@ -1718,6 +1762,7 @@ async function reapPostReadyStoreEpochEntries(
   entries: readonly string[],
   residueEntries: ReadonlySet<string>,
   mutations: PostReadySweepMutationState,
+  resultsReleased?: (epochKey: string) => boolean,
 ): Promise<PostReadyEpochReapingResult> {
   const { runtime, dbDir, signal } = context;
   let complete = true;
@@ -1729,7 +1774,7 @@ async function reapPostReadyStoreEpochEntries(
     if (residueEntries.has(entry)) {
       const wasPending = mutations.pending;
       mutations.pending = true;
-      const removal = await removeAbandonedStoreDirectory(runtime, dbDir, join(dbDir, entry));
+      const removal = await removeAbandonedStoreDirectory(runtime, dbDir, join(dbDir, entry), resultsReleased);
       if (removal === 'unobservable') {
         mutations.pending = wasPending;
         unobservableResidue = true;
@@ -1794,7 +1839,13 @@ export async function sweepStoreEpochsPostReady(
   if (holderCleanup.unobservableHolder) return 'unobservable-holder';
 
   const residueEntries = new Set(entries.filter((entry) => isStoreEpochResidue(entry)));
-  const reaping = await reapPostReadyStoreEpochEntries(context, entries, residueEntries, mutations);
+  const reaping = await reapPostReadyStoreEpochEntries(
+    context,
+    entries,
+    residueEntries,
+    mutations,
+    options.resultsReleased,
+  );
   if (reaping.kind === 'cancelled') {
     return finishPostReadyStoreEpochSweep(runtime, dbDir, mutations, 'cancelled');
   }
@@ -1821,7 +1872,7 @@ export async function sweepStoreEpochsPostReady(
       )
         continue;
       mutations.pending = true;
-      const removal = removeEpochEntry(runtime, dbDir, epoch);
+      const removal = removeEpochEntry(runtime, dbDir, epoch, epochKey);
       complete = removal === 'removed' && complete;
       await yieldSweepTurn();
     }
@@ -1988,23 +2039,32 @@ function readPendingProtections(runtime: Pick<Runtime, 'paths' | 'storage'>): re
  * The superseded epoch stays where a shipped older sweep can reach it until a later protection succeeds, so the
  * record is the status the store listing shows and the post-ready sweep acts on.
  */
-function recordPendingProtection(runtime: Runtime, storeRoot: string, epoch: StoreEpoch, reason: string): void {
+function recordPendingProtection(
+  runtime: Runtime,
+  storeRoot: string,
+  epoch: StoreEpoch,
+  reason: string,
+): Readonly<{ kind: 'recorded' }> | Readonly<{ kind: 'unrecorded'; cause: Error }> {
   writeAuditEvent('store_epoch_protection_deferred', { path: epochDirectory(storeRoot, epoch), cause: reason }, 'warn');
   try {
     runtime.storage.mkdirSync(pendingProtectionDirectory(runtime), { recursive: true, mode: 0o700 });
+    if (!runtime.storage.syncDirectoryDurableSync(runtime.paths.coral.generation.dataRoot)) {
+      throw new Error('Pending protection directory could not be linked durably.');
+    }
     const record = { version: 'v1', storeRoot, epoch, reason, recordedAt: new Date(runtime.time.now()).toISOString() };
     if (
-      runtime.storage.writeAtomicDurableSync(
+      !runtime.storage.writeAtomicDurableSync(
         pendingProtectionPath(runtime, storeRoot, epoch),
         `${JSON.stringify(record)}\n`,
         { encoding: 'utf8', mode: 0o600 },
       )
     )
-      return;
-  } catch {
-    // Reported below: the audit event above is then the only record.
+      throw new Error('Pending protection record could not be written durably.');
+    return { kind: 'recorded' };
+  } catch (cause: unknown) {
+    writeAuditEvent('store_epoch_protection_unrecorded', { path: epochDirectory(storeRoot, epoch) }, 'error');
+    return { kind: 'unrecorded', cause: cause instanceof Error ? cause : new Error(String(cause)) };
   }
-  writeAuditEvent('store_epoch_protection_unrecorded', { path: epochDirectory(storeRoot, epoch) }, 'error');
 }
 
 function clearPendingProtection(runtime: Runtime, storeRoot: string, epoch: StoreEpoch): void {
@@ -2057,9 +2117,6 @@ function mintNextEpoch(
       classification.kind === 'unavailable' &&
       observation.epoch === supersedes &&
       (writerGeneration === null || (writerGeneration.storeRoot === dbDir && writerGeneration.epoch === supersedes));
-    // A boot is never refused because an opener still holds a superseded epoch; the epoch is published past and
-    // protected later. An epoch that will not open, or already awaits protection, is published past whatever kept
-    // it from protection, and one another process moved since it was observed needs nothing.
     try {
       protectStoreEpoch(runtime, resolvedStoreEpoch(dbDir, observation.epoch), SUPERSEDED_OPENER_DRAIN_MS);
     } catch (error: unknown) {
@@ -2071,7 +2128,10 @@ function mintNextEpoch(
       ) {
         throw error;
       }
-      recordPendingProtection(runtime, dbDir, observation.epoch, errorMessage(error));
+      const pending = recordPendingProtection(runtime, dbDir, observation.epoch, errorMessage(error));
+      if (pending.kind === 'unrecorded') {
+        throw pending.cause;
+      }
     }
   }
   const id = runtime.ids.uuid();
@@ -2178,6 +2238,7 @@ export async function mintRetiredStoreEpoch(
     throw new Error('Retirement mint requires a readable incompatible incumbent format.');
   }
   const successor = successorEpoch(expected.epoch);
+  assertSuccessionAttemptMayAdvance(runtime, expectedGeneration, attemptId);
   const published = mintNextEpoch(runtime, options, dbDir, expected.epoch, successor, classification, attemptId);
   if (published.kind !== 'published') throw new Error(`Retirement mint was ${published.kind}.`);
   let generation: SuccessionWriterGeneration;
@@ -2191,6 +2252,7 @@ export async function mintRetiredStoreEpoch(
     );
   } catch (error: unknown) {
     published.lease();
+    discardUnservedRetirementMint(runtime, incumbentEpochKey, attemptId);
     throw error;
   }
   return { ...openPublishedEpoch(runtime, options, dbDir, expected.epoch, successor, published.lease), generation };
@@ -3017,6 +3079,16 @@ function isRegularFile(path, device) {
   }
 }
 
+function hasRetirementAttempt(root, entry) {
+  const marker = join(root.path, entry, '.retirement-attempt.v1.json');
+  try {
+    const observed = lstatSync(marker, { bigint: true });
+    return observed.isFile() && observed.nlink === 1n && observed.dev === root.device;
+  } catch (error) {
+    return errorCode(error) !== 'ENOENT';
+  }
+}
+
 function resolveStoreRoot(dbDir) {
   const path = realpathSync(dbDir);
   const entry = lstatSync(path, { bigint: true });
@@ -3060,7 +3132,6 @@ function isPublishedEpoch(root, name) {
 }
 
 export function resolveCurrentStoreDbPath(dbDir) {
-  let current = null;
   try {
     lstatSync(dbDir);
   } catch (error) {
@@ -3069,15 +3140,16 @@ export function resolveCurrentStoreDbPath(dbDir) {
   }
   const root = resolveStoreRoot(dbDir);
   const entries = readdirSync(root.path);
-  for (const entry of entries) {
+  const published = entries.filter((entry) => epochNumber(entry) !== null && isPublishedEpoch(root, entry));
+  const epochs = new Set(published.map((entry) => epochNumber(entry)));
+  let current = null;
+  for (const entry of published) {
     const epoch = epochNumber(entry);
     if (
-      epoch !== null &&
-      (current === null || BigInt(epoch) > BigInt(current)) &&
-      isPublishedEpoch(root, entry)
-    ) {
-      current = epoch;
-    }
+      hasRetirementAttempt(root, entry) &&
+      epochs.has((BigInt(epoch) - 1n).toString())
+    ) continue;
+    if (current === null || BigInt(epoch) > BigInt(current)) current = epoch;
   }
   if (current === null) return null;
   return join(root.path, 'epoch-' + current, 'store.db');

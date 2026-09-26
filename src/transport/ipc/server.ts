@@ -1040,8 +1040,8 @@ function createTrackedIpcListener(
     resources.sockets.add(socket);
     openSockets.add(socket);
     const framer = createLineFramer();
-    let pendingFrame = Buffer.from(pendingFrameBase64, 'base64');
-    if (pendingFrame.length > 0) framer.push(pendingFrame);
+    const carriedFrame = Buffer.from(pendingFrameBase64, 'base64');
+    let pendingFrame = Buffer.alloc(0);
     let inflightRequest = false;
     let pendingFrameBytes = framer.pendingBytes();
     resources.aggregatePendingFrameBytes += pendingFrameBytes;
@@ -1173,6 +1173,7 @@ function createTrackedIpcListener(
     };
 
     socket.on('data', onData);
+    if (carriedFrame.length > 0) onData(carriedFrame);
     socket.resume();
   };
   const server = createServer({ pauseOnConnect: true }, acceptSocket);

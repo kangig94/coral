@@ -79,12 +79,14 @@ const launchBodySchema = z
 
 type Projection = z.infer<typeof olderProjectionSchema> & { work_dir?: string | null };
 type HistoricalReader = (db: SqliteDatabasePort) => Projection[];
-type HistoricalEpochSource = Readonly<{
-  epoch: ResolvedStoreEpoch;
-  fingerprint: string;
-  jobsRoot: string;
-  storage: StoragePort;
-}>;
+type HistoricalEpochSource = {
+  readonly runtime: Pick<Runtime, 'storage' | 'ids' | 'env'>;
+  readonly originalEpoch: ResolvedStoreEpoch;
+  epoch: ResolvedStoreEpoch | null;
+  readonly fingerprint: string;
+  readonly jobsRoot: string;
+  readonly storage: StoragePort;
+};
 const historicalSources = new WeakMap<JobLocationIndex, Map<string, HistoricalEpochSource>>();
 export type KnownHistoricalJob = Readonly<{ jobId: string; subject: JobLocationSubject }>;
 export type HistoricalSeedResult =
@@ -238,6 +240,13 @@ export function seedHistoricalEpoch(
   knownJobs: readonly KnownHistoricalJob[] = [],
   certifyRetiredEpoch = false,
 ): HistoricalSeedResult {
+  const sources = historicalSources.get(index) ?? new Map<string, HistoricalEpochSource>();
+  const source: HistoricalEpochSource = { runtime, originalEpoch: epoch, epoch: null, fingerprint, jobsRoot, storage };
+  sources.set(epochKey, source);
+  historicalSources.set(index, sources);
+  for (const known of knownJobs) {
+    index.register(known.jobId, epochKey, known.subject);
+  }
   let addressedEpoch: ResolvedStoreEpoch;
   try {
     const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey ?? epoch.lineageKey ?? epochKey;
@@ -252,12 +261,7 @@ export function seedHistoricalEpoch(
       reason: 'protected-epoch-address-unreadable',
     };
   }
-  const sources = historicalSources.get(index) ?? new Map<string, HistoricalEpochSource>();
-  sources.set(epochKey, { epoch: addressedEpoch, fingerprint, jobsRoot, storage });
-  historicalSources.set(index, sources);
-  for (const known of knownJobs) {
-    index.register(known.jobId, epochKey, known.subject);
-  }
+  source.epoch = addressedEpoch;
   const reader = readers[fingerprint];
   const dbPath = addressedEpoch.path;
   if (reader === undefined || !storage.existsSync(dbPath)) {
@@ -357,17 +361,36 @@ export function hasHistoricalSource(index: JobLocationIndex, epochKey: string): 
   return historicalSources.get(index)?.has(epochKey) === true;
 }
 
-export function refreshHistoricalEpoch(index: JobLocationIndex, epochKey: string, jobIds: readonly string[]): void {
+export function refreshHistoricalEpoch(
+  index: JobLocationIndex,
+  epochKey: string,
+  jobIds: readonly string[],
+): 'read' | 'unreadable' {
   const source = historicalSources.get(index)?.get(epochKey);
-  if (source === undefined) return;
+  if (source === undefined) return 'unreadable';
+  if (source.epoch === null) {
+    try {
+      const { runtime, originalEpoch } = source;
+      const lineageKey =
+        decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey ?? originalEpoch.lineageKey ?? epochKey;
+      source.epoch =
+        observeProtectedEpoch(
+          { storage: source.storage },
+          originalEpoch.canonicalStoreRoot ?? originalEpoch.storeRoot,
+          lineageKey,
+        ) ?? originalEpoch;
+    } catch {
+      return 'unreadable';
+    }
+  }
   const reader = readers[source.fingerprint];
   const dbPath = source.epoch.path;
-  if (reader === undefined || !source.storage.existsSync(dbPath)) return;
+  if (reader === undefined || !source.storage.existsSync(dbPath)) return 'unreadable';
 
   let releaseLock: (() => void) | null = null;
   let db: SqliteDatabasePort | null = null;
   try {
-    releaseLock = acquireSharedFileLockSync(join(dirname(source.epoch.path), STORE_LOCK_FILE_NAME));
+    releaseLock = acquireSharedFileLockSync(join(dirname(source.epoch.path), STORE_LOCK_FILE_NAME), 0);
     db = source.storage.openSqliteDatabaseSync(dbPath, { readOnly: true });
     const requested = new Set(jobIds);
     for (const row of reader(db)) {
@@ -385,9 +408,11 @@ export function refreshHistoricalEpoch(index: JobLocationIndex, epochKey: string
       const resultPath = writeResultArtifact(source.storage, source.jobsRoot, row.job_id, markdown);
       index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
     }
+    index.clearUnknownLocations(epochKey);
+    return 'read';
   } catch {
-    // Seeding already fixed which jobs this epoch holds, so a failed re-read can only leave a newer outcome unseen.
-    // It is not evidence of an unknown job and may not hold the epoch or void its certificate.
+    // An unreadable refresh cannot certify absence or void an earlier terminal certificate.
+    return 'unreadable';
   } finally {
     db?.close();
     releaseLock?.();
