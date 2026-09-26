@@ -876,7 +876,12 @@ describe('real-process durable-cli succession', () => {
 
     await expectSchemaChangingSuccessorServes(home, incumbentPid);
     expect(existsSync(missedDeadline)).toBe(true);
-    const intent = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    await waitForCondition(() => {
+      const intent = readUpgradeIntent(runDir);
+      return intent.kind === 'readable' && intent.intent.disposition === 'completed';
+    }, 30_000);
+    const intent = readUpgradeIntent(runDir);
     expect(intent.kind === 'readable' ? intent.intent.disposition : intent.kind).toBe('completed');
   }, 180_000);
 

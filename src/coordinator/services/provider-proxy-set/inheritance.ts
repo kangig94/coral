@@ -102,7 +102,6 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   onProviderEvent?(): ProviderEventHandler;
   collectContainmentProof: ProviderProxySetContainmentProver['collectContainmentProof'];
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
-  /** Whether an accepted succession receipt hands a set whose capsule names another controller to this build. */
   acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
   registerInheritedSet?(
     set: ProviderProxyOperationAuthority,
@@ -164,6 +163,7 @@ type ProviderProxySetRedemptionAttempt = Exclude<ProviderProxySetRedemptionOutco
 export type ProviderProxySetAvailabilityIncident =
   | ProviderProxyRoleControlAvailabilityIncident
   | ProviderProxySetPublicationUnknown
+  | Readonly<{ kind: 'transfer-status-unconfirmed' }>
   | Readonly<{ kind: 'recovery-deadline'; timeoutMs: 45_000 }>;
 
 function dispatchProviderProxySetInheritance(
@@ -274,6 +274,8 @@ export function providerProxySetAvailabilityReason(incident: ProviderProxySetAva
       ].join(':');
     case 'recovery-deadline':
       return `${incident.kind}:${incident.timeoutMs}`;
+    case 'transfer-status-unconfirmed':
+      return incident.kind;
     case 'publication-unknown':
       return `${incident.kind}:${incident.role}:${incident.reason}`;
   }
@@ -296,11 +298,7 @@ export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-ide
  * own), and an accepted succession receipt may hand the set to the successor it names; a capsule this build
  * cannot derive a set identity from is represented, never dialed.
  */
-/**
- * What an accepted succession receipt says about a set another build controls: nothing, handed to this build's
- * successor that has not yet served, or handed to a successor that serves.
- */
-export type ControllerTransferAcceptance = 'not-accepted' | 'before-serving' | 'served';
+export type ControllerTransferAcceptance = 'not-accepted' | 'before-serving' | 'served' | 'unconfirmed';
 
 /**
  * How this build may take a set over. `transfer-before-serving` redeems without taking the grant over: the
@@ -311,6 +309,7 @@ export type ProviderProxySetInheritanceRoute = 'controller' | 'transfer-before-s
 
 export type ProviderProxySetInheritanceVerdict =
   | Readonly<{ kind: 'inheritable'; candidate: RedeemableHandoffCapsule; via: ProviderProxySetInheritanceRoute }>
+  | Readonly<{ kind: 'held'; candidate: RedeemableHandoffCapsule; reason: 'transfer-status-unconfirmed' }>
   | Readonly<{ kind: 'refused'; reason: ProviderProxySetInheritanceRefusal }>;
 
 export function classifyProviderProxySetInheritance(
@@ -329,6 +328,8 @@ export function classifyProviderProxySetInheritance(
       return { kind: 'inheritable', candidate: capsule, via: 'transfer-before-serving' };
     case 'served':
       return { kind: 'inheritable', candidate: capsule, via: 'transfer-served' };
+    case 'unconfirmed':
+      return { kind: 'held', candidate: capsule, reason: 'transfer-status-unconfirmed' };
     case 'not-accepted':
       return { kind: 'refused', reason: 'other-build' };
   }
@@ -381,17 +382,12 @@ function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal)
 const INSTALL_RETRY_BASE_MS = 1_000;
 const INSTALL_RETRY_MAX_MS = 30_000;
 
-/**
- * A set redeemed through a served receipt stays redeemable by this build only while that receipt survives, which
- * nothing here controls, so an unacknowledged install is retried until the grant is this build's. A refusal ends
- * it, and so does a control channel that closed, because a closed channel means this coordinator holds the set no
- * longer and its next holder redeems it afresh.
- */
 async function completeServedTransfer(
   authority: Pick<ProviderProxySetRecoveryAuthority, 'installRecoveryCredential'>,
   runtime: Pick<Runtime, 'time'>,
 ): Promise<void> {
   let reportedFailure = false;
+  let reportedRefusal = false;
   for (let delayMs = INSTALL_RETRY_BASE_MS; ; delayMs = Math.min(delayMs * 2, INSTALL_RETRY_MAX_MS)) {
     await runtime.time.sleep(delayMs);
     let installed: Awaited<ReturnType<typeof authority.installRecoveryCredential>> | null;
@@ -405,11 +401,11 @@ async function completeServedTransfer(
       reportedFailure = true;
     }
     if (installed?.kind === 'installed') return;
-    if (installed?.kind === 'refused') {
+    if (installed?.kind === 'refused' && !reportedRefusal) {
       backendLog.warn(
-        `Provider ${installed.incident.role} refused this controller's recovery grant after a served transfer.`,
+        `Provider ${installed.incident.role} refused this controller's recovery grant after a served transfer; retrying.`,
       );
-      return;
+      reportedRefusal = true;
     }
     if (
       installed?.kind === 'retryable' &&
@@ -476,6 +472,7 @@ async function buildInheritedAuthority(
           }
           break;
         case 'refused':
+          if (via === 'transfer-served') void completeServedTransfer(base, deps.runtime);
           break;
         case 'cancelled':
           signal.throwIfAborted();
@@ -567,6 +564,9 @@ async function redeem(
     deps.coordinatorIdentity.buildSetId,
     deps.acceptsControllerTransfer,
   );
+  if (verdict.kind === 'held') {
+    return { kind: 'temporarily-unavailable', incident: { kind: 'transfer-status-unconfirmed' } };
+  }
   if (verdict.kind === 'refused') {
     // Not-bequeathed is the honest outcome rather than an error: there is genuinely nothing here this build may
     // inherit, and the caller already knows how to settle a set it could not take over.
@@ -673,12 +673,13 @@ export async function attemptProviderProxySetInheritance(
 function discoveredCapsuleRoute(
   capsule: RedeemableHandoffCapsule,
   deps: ProviderProxySetInheritanceDeps,
-): ProviderProxySetInheritanceRoute {
+): ProviderProxySetInheritanceRoute | 'unconfirmed' {
   const verdict = classifyProviderProxySetInheritance(
     capsule,
     deps.coordinatorIdentity.buildSetId,
     deps.acceptsControllerTransfer,
   );
+  if (verdict.kind === 'held') return 'unconfirmed';
   if (verdict.kind === 'refused') throw new Error('provider_proxy_discovered_capsule_no_longer_inheritable');
   return verdict.via;
 }
@@ -803,15 +804,15 @@ export function createProviderProxySetInheritance(
         time: options.runtime.time,
         signal,
         timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS,
-        produce: (bounded) =>
-          redeemCapsule(
-            capsulePath,
-            capsule,
-            null,
-            inheritanceDeps,
-            bounded,
-            discoveredCapsuleRoute(capsule, inheritanceDeps),
-          ),
+        produce: (bounded) => {
+          const route = discoveredCapsuleRoute(capsule, inheritanceDeps);
+          return route === 'unconfirmed'
+            ? Promise.resolve({
+                kind: 'temporarily-unavailable' as const,
+                incident: { kind: 'transfer-status-unconfirmed' as const },
+              })
+            : redeemCapsule(capsulePath, capsule, null, inheritanceDeps, bounded, route);
+        },
       });
       if (
         deadline.kind === 'unavailable' &&

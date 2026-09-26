@@ -38,6 +38,8 @@ type AttemptMessage =
   | { kind: 'deadline'; attemptId: string; at: number }
   | { kind: 'writers-parked'; attemptId: string }
   | { kind: 'abort'; attemptId: string }
+  | { kind: 'release-request'; attemptId: string }
+  | { kind: 'release-ready'; attemptId: string }
   | { kind: 'connections-released'; attemptId: string }
   | { kind: 'ack'; attemptId: string; acknowledgment: AttemptAcknowledgment };
 
@@ -75,7 +77,7 @@ export type SuccessionAttempt = Readonly<{
   childIdentity: Readonly<{ pid: number; incarnation: ProcessIncarnation }>;
   transferListeners(listener: IpcListener): Promise<void>;
   forwardConnections(listener: IpcListener): () => void;
-  drainIncumbentConnections(listener: IpcListener): Promise<void>;
+  drainIncumbentConnections(listener: IpcListener, timeoutMs?: number): Promise<void>;
   setDeadline(at: number): Promise<void>;
   allowCommittedOpen(): Promise<void>;
   abort(): Promise<void>;
@@ -154,6 +156,10 @@ export async function createSuccessionAttemptChannel(
   const waiters = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
   let ended = false;
   let transferred = false;
+  let releaseRequested = false;
+  let stopForwarding: (() => void) | null = null;
+  const forwardedSends = new Set<Promise<void>>();
+  const forwardedSockets = new Set<Socket>();
   const fail = (reason: string): void => {
     ended = true;
     for (const waiter of waiters.values()) waiter.reject(new Error(reason));
@@ -163,6 +169,12 @@ export async function createSuccessionAttemptChannel(
   child.on('disconnect', () => fail('Succession attempt channel disconnected'));
   child.on('message', (message: unknown, handle: unknown) => {
     if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
+    if (message.kind === 'release-request') {
+      releaseRequested = true;
+      stopForwarding?.();
+      void send({ kind: 'release-ready', attemptId }).catch(() => {});
+      return;
+    }
     if (message.kind === 'connection' && handle !== undefined) {
       const socket = handle as Socket;
       const entry = claim.find((candidate) => candidate.socketPath === message.socketPath);
@@ -246,6 +258,7 @@ export async function createSuccessionAttemptChannel(
       transferred = true;
     },
     forwardConnections: (current) => {
+      if (releaseRequested) throw new Error('Succession attempt ended before overlap forwarding');
       if (!transferred) throw new Error('IPC listeners must transfer before overlap forwarding');
       const entries = listeningClaim(current);
       if (entries.some((entry) => entry.listener.forwardConnections === undefined)) {
@@ -255,21 +268,41 @@ export async function createSuccessionAttemptChannel(
         const forward = entry.listener.forwardConnections;
         if (forward === undefined) throw new Error('IPC listener cannot forward overlap connections');
         return forward((socket, pendingFrameBase64) => {
-          void send({ kind: 'connection', attemptId, socketPath: entry.socketPath, pendingFrameBase64 }, socket).catch(
-            () => socket.destroy(),
-          );
+          forwardedSockets.add(socket);
+          const transfer = send(
+            { kind: 'connection', attemptId, socketPath: entry.socketPath, pendingFrameBase64 },
+            socket,
+          )
+            .catch(() => {
+              socket.destroy();
+            })
+            .finally(() => {
+              forwardedSockets.delete(socket);
+              forwardedSends.delete(transfer);
+            });
+          forwardedSends.add(transfer);
         });
       });
-      return () => stops.forEach((stop) => stop());
+      stopForwarding = () => {
+        for (const stop of stops) stop();
+        stopForwarding = null;
+      };
+      return stopForwarding;
     },
-    drainIncumbentConnections: async (current) => {
-      await Promise.all(
-        listeningClaim(current).map((entry) => {
-          const drain = entry.listener.drainConnections;
-          if (drain === undefined) throw new Error('IPC listener cannot drain open connections');
-          return drain();
-        }),
-      );
+    drainIncumbentConnections: async (current, timeoutMs) => {
+      const drain = async (): Promise<void> => {
+        await Promise.all(
+          listeningClaim(current).map((entry) => {
+            const drainConnections = entry.listener.drainConnections;
+            if (drainConnections === undefined) throw new Error('IPC listener cannot drain open connections');
+            return drainConnections();
+          }),
+        );
+        while (forwardedSends.size > 0) await Promise.all(forwardedSends);
+      };
+      if (timeoutMs === undefined) return drain();
+      const completed = await Promise.race([drain().then(() => true), ports.time.sleep(timeoutMs).then(() => false)]);
+      if (!completed) for (const socket of forwardedSockets) socket.destroy();
     },
     setDeadline: (at) => send({ kind: 'deadline', attemptId, at }),
     allowCommittedOpen: () => send({ kind: 'writers-parked', attemptId }),
@@ -351,19 +384,36 @@ export async function receiveSuccessionAttemptChild(
   const pendingConnections: ParkedConnection[] = [];
   const stopParking: (() => void)[] = [];
   let releasing = false;
+  let releaseReady = false;
+  let releaseTimedOut = false;
+  const returningSockets = new Set<Socket>();
+  const returnSends = new Set<Promise<void>>();
   // Set by the commit window's deadline, which also ends every park; before it, the incumbent is still serving.
   let windowOpen = false;
-  const returnConnection = (connection: ParkedConnection): Promise<void> =>
-    new Promise<void>((resolve) => {
+  const returnConnection = (connection: ParkedConnection): Promise<void> => {
+    const returned = new Promise<void>((resolve) => {
       const { socket, ...addressed } = connection;
-      ports.channel.sendHandle({ kind: 'connection', attemptId, ...addressed }, socket, () => resolve());
+      const finish = (error: Error | null): void => {
+        if (error !== null) socket.destroy();
+        resolve();
+      };
+      try {
+        ports.channel.sendHandle({ kind: 'connection', attemptId, ...addressed }, socket, finish);
+      } catch (error: unknown) {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      }
     });
-  /**
-   * Inside the commit window a connection waits here until serving. Outside it, or once the attempt is being
-   * released, it goes back to the incumbent, which answers it.
-   */
+    returningSockets.add(connection.socket);
+    returnSends.add(returned);
+    void returned.then(() => {
+      returningSockets.delete(connection.socket);
+      returnSends.delete(returned);
+    });
+    return returned;
+  };
   const park = (connection: ParkedConnection): void => {
-    if (releasing || !windowOpen) void returnConnection(connection);
+    if (releaseTimedOut) connection.socket.destroy();
+    else if (!windowOpen || (releasing && releaseReady)) void returnConnection(connection);
     else pendingConnections.push(connection);
   };
   const send = (message: AttemptMessage): void => {
@@ -372,26 +422,75 @@ export async function receiveSuccessionAttemptChild(
   const online = ports.time.setInterval(() => send({ kind: 'child-online', attemptId }), 100);
   online.unref?.();
   let failing = false;
-  /**
-   * An unserved attempt hands every parked connection back before it ends, for the incumbent keeps serving their
-   * clients. Once the channel is gone nothing can travel back: sending a handle closed the incumbent's copy, so the
-   * only one left is this process's, and it closes with it.
-   */
+  let abortRequested = false;
+  const finishFailure = async (): Promise<void> => {
+    for (const connection of pendingConnections.splice(0)) void returnConnection(connection);
+    const drained = async (): Promise<boolean> => {
+      while (returnSends.size > 0) await Promise.all(returnSends);
+      return true;
+    };
+    const completed = await Promise.race([
+      drained(),
+      ports.time.sleep(CONNECTION_RELEASE_TIMEOUT_MS).then(() => false),
+    ]);
+    if (!completed) {
+      releaseTimedOut = true;
+      for (const socket of returningSockets) socket.destroy();
+    }
+    if (abortRequested) {
+      if (!ports.channel.connected) ports.channel.fail(false);
+      else {
+        try {
+          ports.channel.send({ kind: 'connections-released', attemptId }, () => ports.channel.fail(false));
+        } catch {
+          ports.channel.fail(false);
+        }
+      }
+    } else {
+      ports.channel.fail(false);
+    }
+  };
   const fail = (reason: string): void => {
     adoptReject?.(new Error(reason));
     if (failing) return;
     failing = true;
     releasing = true;
-    const parked = serving || !ports.channel.connected ? [] : pendingConnections.splice(0);
-    if (parked.length === 0) ports.channel.fail(serving);
-    else void Promise.all(parked.map(returnConnection)).then(() => ports.channel.fail(serving));
+    ports.time.clearTimeout(deadlineTimer);
+    if (serving || !ports.channel.connected) {
+      ports.channel.fail(serving);
+      return;
+    }
+    if (releaseReady || !windowOpen) {
+      void finishFailure();
+      return;
+    }
+    send({ kind: 'release-request', attemptId });
+    const releaseTimeout = ports.time.setTimeout(() => {
+      releaseReadyCallback = null;
+      releaseTimedOut = true;
+      for (const connection of pendingConnections.splice(0)) connection.socket.destroy();
+      for (const socket of returningSockets) socket.destroy();
+      ports.channel.fail(false);
+    }, CONNECTION_RELEASE_TIMEOUT_MS);
+    const onReleaseReady = (): void => {
+      ports.time.clearTimeout(releaseTimeout);
+      releaseReady = true;
+      void finishFailure();
+    };
+    releaseReadyCallback = onReleaseReady;
   };
+  let releaseReadyCallback: (() => void) | null = null;
   ports.channel.on('disconnect', () => {
     if (!serving) fail('Succession attempt lost its incumbent channel before serving');
     else if (servingListener !== null) enableInheritedIpcCleanup(servingListener);
   });
   ports.channel.on('message', (message: unknown, handle: unknown) => {
     if (!isAttemptMessage(message) || message.attemptId !== attemptId) return;
+    if (message.kind === 'release-ready' && releasing && !releaseTimedOut) {
+      releaseReadyCallback?.();
+      releaseReadyCallback = null;
+      return;
+    }
     if (
       message.kind === 'start' &&
       Array.isArray(message.socketPaths) &&
@@ -405,13 +504,14 @@ export async function receiveSuccessionAttemptChild(
       return;
     }
     if (message.kind === 'abort' && !serving) {
-      // The incumbent keeps serving an aborted attempt's clients; a connection parked here must reach it unanswered.
+      abortRequested = true;
+      if (failing) return;
+      failing = true;
       releasing = true;
-      const released = (): void =>
-        ports.channel.send({ kind: 'connections-released', attemptId }, () => fail('Succession attempt aborted'));
-      const parked = pendingConnections.splice(0);
-      if (parked.length === 0) released();
-      else void Promise.all(parked.map(returnConnection)).then(released);
+      releaseReady = true;
+      ports.time.clearTimeout(deadlineTimer);
+      adoptReject?.(new Error('Succession attempt aborted'));
+      void finishFailure();
       return;
     }
     if (message.kind === 'deadline' && !serving && Number.isFinite(message.at)) {

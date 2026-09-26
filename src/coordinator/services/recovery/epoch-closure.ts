@@ -133,19 +133,35 @@ function predatesCustodyCoverage(runtime: Runtime, candidate: ClosureCandidate):
   } catch (error: unknown) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) return false;
   }
-  const observed = listStoreEpochs(runtime).find(
+  try {
+    runtime.storage.lstatSync(join(dirname(candidate.epoch.path), '.coral-used-after-custody-start.v1.json'));
+    return false;
+  } catch (error: unknown) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) return false;
+  }
+  const epochs = listStoreEpochs(runtime);
+  const observed = epochs.find(
     (entry) => entry.epochKey === candidate.epochKey && entry.resolved?.path === candidate.epoch.path,
   );
-  return observed?.epochJson.kind === 'valid' && Date.parse(observed.epochJson.value.publishedAt) < startMs;
+  return (
+    observed?.epochJson.kind === 'valid' &&
+    Date.parse(observed.epochJson.value.publishedAt) < startMs &&
+    epochs.some(
+      (entry) =>
+        entry.epochJson.kind === 'valid' &&
+        BigInt(entry.epoch) > BigInt(candidate.epoch.epoch) &&
+        Date.parse(entry.epochJson.value.publishedAt) < startMs,
+    )
+  );
 }
 
 function observePreCoverageCustody(
   runtime: Runtime,
   candidate: ClosureCandidate,
   entries: readonly CustodyEntry[],
-): Readonly<{ kind: 'alive' | 'not-proven-alive' }> {
+): Readonly<{ kind: 'alive' | 'undecidable' | 'discharged' }> {
   for (const entry of entries) {
-    if (entry.kind !== 'bound' || entry.binding.process === null) continue;
+    if (entry.kind === 'unreadable') return { kind: 'undecidable' };
     if (
       entry.intent.epochKey !== candidate.epochKey &&
       entry.intent.epoch !== candidate.originalPath &&
@@ -153,8 +169,11 @@ function observePreCoverageCustody(
       entry.intent.epoch !== dirname(candidate.epoch.path)
     )
       continue;
+    if (entry.kind === 'holding') return { kind: 'undecidable' };
+    if (entry.kind === 'absent') continue;
+    if (entry.binding.process === null) return { kind: 'undecidable' };
     const process = entry.binding.process;
-    if (!isProcessIncarnation(process.incarnation)) continue;
+    if (!isProcessIncarnation(process.incarnation)) return { kind: 'undecidable' };
     const observed = observeRecordedContainment(
       { pid: process.pid, incarnation: process.incarnation, processGroupId: process.processGroupId, childRoot: null },
       {
@@ -164,8 +183,9 @@ function observePreCoverageCustody(
       },
     );
     if (observed.kind === 'alive') return { kind: 'alive' };
+    if (observed.kind !== 'absent') return { kind: 'undecidable' };
   }
-  return { kind: 'not-proven-alive' };
+  return { kind: 'discharged' };
 }
 
 /**
@@ -504,15 +524,20 @@ export async function settleSupersededEpochClosures(
   closeProxySet?: CloseProxySet,
 ): Promise<EpochClosureEvidence[]> {
   const stateRoot = runtime.paths.coral.generation.dataRoot;
+  const candidates = closureCandidates(runtime);
+  if (candidates.length === 0) return [];
   const uncertifiable = uncertifiableEpochKeys(runtime, activeEpochKey);
   if (uncertifiable === null) return [];
+  const isUncertifiable = (epochKey: string): boolean => {
+    if (uncertifiable.has(epochKey)) return true;
+    const current = uncertifiableEpochKeys(runtime, activeEpochKey);
+    return current === null || current.has(epochKey);
+  };
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const evidence: EpochClosureEvidence[] = [];
   const keepRecorded = (recording: EpochClosureRecording): void => {
     if (recording.kind === 'recorded') evidence.push(recording.evidence);
   };
-  const candidates = closureCandidates(runtime);
-  if (candidates.length === 0) return evidence;
   let historicalAddresses: ReturnType<typeof knownProtectedEpochAddresses>;
   try {
     historicalAddresses = knownProtectedEpochAddresses(
@@ -521,7 +546,7 @@ export async function settleSupersededEpochClosures(
     );
   } catch {
     for (const candidate of candidates) {
-      if (uncertifiable.has(candidate.epochKey)) continue;
+      if (isUncertifiable(candidate.epochKey)) continue;
       keepRecorded(
         recordEpochClosure(runtime, stateRoot, {
           version: 'v1',
@@ -540,7 +565,7 @@ export async function settleSupersededEpochClosures(
   for (const candidate of candidates) {
     if (signal?.aborted) break;
     if (subjectKey !== undefined && subjectKey !== candidate.epochKey) continue;
-    if (uncertifiable.has(candidate.epochKey)) continue;
+    if (isUncertifiable(candidate.epochKey)) continue;
     const jobEpochKey = lineageJobEpochKey(
       candidate.epoch.canonicalStoreRoot ?? candidate.epoch.storeRoot,
       candidate.epochKey,
@@ -586,11 +611,17 @@ export async function settleSupersededEpochClosures(
             obligations: [],
             reason: 'pre-coverage process is alive; retry after its recorded incarnation exits',
           }
-        : {
-            executionDischarge: 'certified' as const,
-            obligations: [],
-            reason: 'pre-coverage epoch follows shipped keep-two retention',
-          }
+        : liveCustody?.kind === 'undecidable'
+          ? {
+              executionDischarge: 'undecidable' as const,
+              obligations: [],
+              reason: 'pre-coverage custody is undecidable; retry after custody evidence settles',
+            }
+          : {
+              executionDischarge: 'certified' as const,
+              obligations: [],
+              reason: 'pre-coverage epoch follows shipped keep-two retention',
+            }
       : await certifyCustody(
           runtime,
           index,
@@ -601,6 +632,7 @@ export async function settleSupersededEpochClosures(
           closeProxySet,
           jobEpochKey,
         );
+    if (isUncertifiable(candidate.epochKey)) continue;
     keepRecorded(
       recordEpochClosure(runtime, stateRoot, {
         version: 'v1',

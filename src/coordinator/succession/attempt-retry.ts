@@ -9,6 +9,7 @@ const TRANSIENT_RETRY_MAX_MS = 30_000;
  * two failures of it, and a bound that restarts on anything else would not bound the target.
  */
 const TRANSIENT_RETRY_LIMIT = 6;
+const OBLIGATION_RETRY_LIMIT = 6;
 
 type TransientRetry = NonNullable<UpgradeIntent['transientRetry']>;
 type ObligationRetry = NonNullable<UpgradeIntent['obligationRetry']>;
@@ -63,6 +64,15 @@ export function failedAttemptRetry(
       changes,
       retryAfter: new Date(nowMs + Math.max(retry.retryAfterMs, backoffMs(changes))).toISOString(),
     };
+    if (changes > OBLIGATION_RETRY_LIMIT) {
+      return {
+        retryCondition: {
+          kind: 'target-change',
+          evidence: `${OBLIGATION_RETRY_LIMIT} obligation attempt failures exhausted this target's retries`,
+        },
+        obligationRetry,
+      };
+    }
     return {
       retryCondition: {
         kind: 'obligation-change',

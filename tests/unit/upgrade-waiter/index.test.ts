@@ -135,6 +135,60 @@ describe('upgrade waiter', () => {
     });
   });
 
+  it('retains a recorded child on expiry so its serving write remains attributable', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent());
+    let time = Date.parse('2026-09-25T00:00:00.000Z');
+    let launchedAttemptId: string | null = null;
+    const incarnation = waiterPorts(() => time).processIncarnation(process.pid);
+    if (incarnation === null) throw new Error('test process has no incarnation');
+    const result = await runUpgradeWaiter({
+      runDir: dir,
+      socketPath: '/unused.sock',
+      targetRoot: '/installed/target',
+      validateTarget: () => true,
+      observeRetirement: async () => 'retired',
+      launchTarget: async (intent, attemptId) => {
+        launchedAttemptId = attemptId;
+        const recorded = await compareAndSwapUpgradeIntent(dir, intent.revision, {
+          ...intent,
+          attemptChild: { attemptId, pid: process.pid, incarnation },
+        });
+        expect(recorded.kind).toBe('written');
+      },
+      ports: waiterPorts(
+        () => time,
+        async (ms) => {
+          time += ms;
+        },
+      ),
+    });
+    expect(result).toEqual({ kind: 'expired' });
+    expect(readUpgradeIntent(dir)).toMatchObject({
+      kind: 'readable',
+      intent: {
+        disposition: 'deferred',
+        attemptId: launchedAttemptId,
+        attemptOwner: { kind: 'waiter' },
+        attemptChild: { attemptId: launchedAttemptId },
+      },
+    });
+    expect(
+      await runUpgradeWaiter({
+        runDir: dir,
+        socketPath: '/unused.sock',
+        targetRoot: '/installed/target',
+        validateTarget: () => true,
+        observeRetirement: async () => 'retired',
+        launchTarget: async () => {
+          throw new Error('recorded child must retain the attempt');
+        },
+        ports: waiterPorts(() => time),
+      }),
+    ).toEqual({ kind: 'lease-held' });
+    expect(readUpgradeIntent(dir)).toMatchObject({ intent: { attemptId: launchedAttemptId } });
+  });
+
   it('keeps an unanswered incumbent observation from authorizing launch', async () => {
     const dir = runDir();
     await compareAndSwapUpgradeIntent(dir, null, pendingIntent());

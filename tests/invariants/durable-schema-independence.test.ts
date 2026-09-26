@@ -34,6 +34,7 @@ const DURABLE_SCHEMA_ROOTS = new Set<SchemaKey>([
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetAcquisitionDispositionRecordSchema',
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetOperatorDispositionFileSchema',
   'src/coordinator/services/provider-proxy-set/operator-disposition-store.ts#durableProviderProxySetOperatorDispositionRecordSchema',
+  'src/coordinator/services/provider-proxy-set/pending-grant-transfer.ts#pendingGrantTransferSchema',
   'src/coordinator/services/startup-retirement.ts#retirementPatienceSchema',
   'src/discuss/projections.ts#persistedDiscussSnapshotSchema',
   'src/discuss/events.ts#persistedDiscussRuntimeSchema',

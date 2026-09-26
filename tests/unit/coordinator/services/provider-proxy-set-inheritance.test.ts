@@ -2,6 +2,9 @@ import type { ProcessLiveness } from '#src/infra/node-process.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
@@ -80,6 +83,10 @@ import {
 import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/set-publication.js';
 import { ProviderProxySetClaimMirror } from '#src/coordinator/services/provider-proxy-set/claim-mirror.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import {
+  readPendingGrantTransfer,
+  recordPendingGrantTransfer,
+} from '#src/coordinator/services/provider-proxy-set/pending-grant-transfer.js';
 import { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import { flushMicrotasks, VirtualTime } from '#tools/simulation/core/virtual-time.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
@@ -898,6 +905,51 @@ describe('attemptProviderProxySetInheritance', () => {
     ).toMatchObject({ kind: 'inheritable', via: 'transfer-served' });
   });
 
+  it('redeems an old-grant host after the transfer intent is gone when durable transfer evidence survives', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coral-pending-grant-'));
+    const isolatedRuntime = {
+      ...runtime,
+      paths: createRealRuntime('prod', { baseDir: join(root, '.coral') }).paths,
+    };
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    const capsule = capsuleFor(loc);
+    if (capsule.version !== 4) throw new Error('expected a current recovery capsule');
+    mockedReadCapsule.mockReturnValueOnce(capsule);
+    const calls: { method: string; params: unknown }[] = [];
+    stubConnect(fakeClient(redemptionResponses(loc, matchingOperationSets([])), calls));
+    try {
+      expect(
+        recordPendingGrantTransfer(isolatedRuntime, capsule, COORDINATOR_IDENTITY.buildSetId, 'attempt-1'),
+      ).toEqual({
+        kind: 'recorded',
+      });
+      const restartedAcceptance = () =>
+        readPendingGrantTransfer(isolatedRuntime, capsule, COORDINATOR_IDENTITY.buildSetId).kind === 'recorded'
+          ? ('served' as const)
+          : ('not-accepted' as const);
+      const outcome = await attemptProviderProxySetInheritance(
+        loc,
+        unusedDb,
+        {
+          runtime: isolatedRuntime,
+          coordinatorIdentity: COORDINATOR_IDENTITY,
+          operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+          acceptsControllerTransfer: restartedAcceptance,
+        },
+        neverAborts,
+      );
+
+      expect(outcome.kind).toBe('inherited');
+      expect(calls.some(({ method }) => method === 'guardian.handoff-redeem.v1')).toBe(true);
+      if (outcome.kind === 'inherited') {
+        outcome.set.stopHeartbeats();
+        await outcome.set.initiateControlClose();
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // Same build, shipped-V2 capsule. Its process fields are seconds this build cannot verify, so there is no
   // identity to redeem against — and inventing one from them reports a live process as absent.
   it('reports not-bequeathed for a capsule that predates the incarnation token', async () => {
@@ -1300,6 +1352,53 @@ describe('attemptProviderProxySetInheritance', () => {
     if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
     try {
       expect(calls.some(({ method }) => method === 'handoff.install.v1')).toBe(false);
+      await waitForCondition(() => calls.some(({ method }) => method === 'handoff.install.v1'), 5_000);
+      expect(guardianInstalls).toBe(2);
+    } finally {
+      outcome.set.stopHeartbeats();
+      await outcome.set.initiateControlClose();
+    }
+  });
+
+  it('retries a served transfer grant after a host refusal', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+    const calls: { method: string; params: unknown }[] = [];
+    let guardianInstalls = 0;
+    const client = fakeClient(
+      redemptionResponses(loc, matchingOperationSets([]), {
+        'guardian.handoff-install.v1': (params: unknown) => {
+          guardianInstalls += 1;
+          if (guardianInstalls === 1) {
+            throw new ControlClientError('control_call_failed', 'guardian refused the grant', 'remote-response', {
+              kind: 'json-rpc-error',
+              jsonRpcCode: -32_000,
+              protocolCode: 'identity_mismatch',
+              admissionReason: null,
+              heartbeatRefusal: null,
+            });
+          }
+          return { state: 'installed-dormant', grantId: (params as { grantId: string }).grantId };
+        },
+      }),
+      calls,
+    );
+    stubConnect(client);
+
+    const outcome = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        acceptsControllerTransfer: () => 'served',
+      },
+      neverAborts,
+    );
+
+    if (outcome.kind !== 'inherited') throw new Error('inheritance did not return its operation authority');
+    try {
       await waitForCondition(() => calls.some(({ method }) => method === 'handoff.install.v1'), 5_000);
       expect(guardianInstalls).toBe(2);
     } finally {

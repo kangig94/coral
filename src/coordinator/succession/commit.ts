@@ -344,10 +344,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
 
   async function handOverOpenConnections(attempt: SuccessionAttempt): Promise<void> {
     ports.waitHandover.abort();
-    await Promise.race([
-      attempt.drainIncumbentConnections(ports.listener()),
-      runtime.time.sleep(CONNECTION_HANDOVER_MS),
-    ]);
+    await attempt.drainIncumbentConnections(ports.listener(), CONNECTION_HANDOVER_MS);
   }
 
   const releaseToSuccessor = (attempt: SuccessionAttempt): Promise<never> =>
@@ -673,7 +670,13 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
       closePause();
       throw error;
     }
-    const stopForwarding = attempt.forwardConnections(ports.listener());
+    let stopForwarding: () => void;
+    try {
+      stopForwarding = attempt.forwardConnections(ports.listener());
+    } catch (error: unknown) {
+      closePause();
+      throw error;
+    }
     stopWindowForwarding = stopForwarding;
     // Only after forwarding starts: a wait that resubscribes must reach the successor, never this incumbent,
     // whose store reads fail once its writers park.

@@ -256,6 +256,7 @@ async function harness(
     certifyCustody?: SuccessionCommitPorts['retiringEpoch']['certifyCustody'];
     /** Transient failures this target has already spent. */
     priorTransientFailures?: number;
+    priorObligationChanges?: number;
     releaseAuthorityThrowsOnce?: boolean;
   }>,
 ): Promise<Harness> {
@@ -400,6 +401,18 @@ async function harness(
               pluginRootLabel: root,
             }),
             failures: options.priorTransientFailures,
+            retryAfter: new Date(runtime.time.now()).toISOString(),
+          },
+        }),
+    ...(options.priorObligationChanges === undefined
+      ? {}
+      : {
+          obligationRetry: {
+            targetKey: successionTargetKey({
+              build: { ...build, storeFormatFingerprint: targetFingerprint },
+              pluginRootLabel: root,
+            }),
+            changes: options.priorObligationChanges,
             retryAfter: new Date(runtime.time.now()).toISOString(),
           },
         }),
@@ -613,6 +626,23 @@ describe('succession commit failure exits', () => {
     if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
     expect(observed.intent.retryCondition?.kind).toBe('obligation-change');
     expect(observed.intent.transientRetry?.failures).toBe(6);
+  });
+
+  it('should stop retrying a target after recurring KB writer park refusals', async () => {
+    const test = await harness({
+      failingPoints: () => false,
+      recoveryLaunch: 'fails',
+      kbParkRefusal: 'KB writer turn remains busy',
+      priorObligationChanges: 6,
+    });
+    await test.launch();
+
+    await waitForCondition(() => test.retryNotifications === 1, 15_000);
+    const observed = readUpgradeIntent(test.runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error(`intent is ${observed.kind}`);
+    expect(observed.intent.retryCondition?.kind).toBe('target-change');
+    expect(observed.intent.obligationRetry?.changes).toBe(7);
+    expect(test.adoptedAdmissions).toBe(1);
   });
 
   it('should retry, not strand, an obligation that began after preparation, before any writer parks', async () => {

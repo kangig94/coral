@@ -27,8 +27,9 @@ import { nowIsoString } from '../../infra/time.js';
 import { deriveLaunchReadiness } from '../../jobs/launch-readiness.js';
 import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
+import type { Runtime } from '../../runtime/ports.js';
 import { createJobLocationRecoveryRetryPlan, recoverJobLocations } from '../../jobs/location-recovery.js';
-import { hasHistoricalSource, seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
 import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js';
@@ -602,6 +603,19 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
     readBinding: (request: ReadBindingRequest, principal?: Principal): Promise<ReadBindingResult> =>
       run('readBinding', request, principal),
   };
+}
+
+/** An undecidable closure cannot finalize a historical job, even when its retained store is readable. */
+export function probeHistoricalJobClosure(runtime: Runtime, epochKey: string): 'pending' | 'decided' {
+  let lineageKey: string | undefined;
+  try {
+    lineageKey = observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
+  } catch {
+    return 'pending';
+  }
+  if (lineageKey === undefined) return 'pending';
+  const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, lineageKey);
+  return closure.kind === 'recorded' && closure.evidence.disposition === 'closed' ? 'decided' : 'pending';
 }
 
 export function createCoordinatorCore(
@@ -1460,18 +1474,7 @@ export function createCoordinatorCore(
         join(runtime.paths.coral.store.dbDir, 'store.db'),
         join(runtime.paths.coral.generation.legacyDataRoot, 'store', 'store.db'),
       ].some((path) => runtime.storage.existsSync(path)),
-    (epochKey) => {
-      if (!hasHistoricalSource(jobLocationIndex, epochKey)) return 'pending';
-      let lineageKey: string | undefined;
-      try {
-        lineageKey = observeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
-      } catch {
-        return 'pending';
-      }
-      if (lineageKey === undefined) return 'pending';
-      const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, lineageKey);
-      return closure.kind === 'recorded' ? 'decided' : 'pending';
-    },
+    (epochKey) => probeHistoricalJobClosure(runtime, epochKey),
   );
 
   let waitHandover = new AbortController();

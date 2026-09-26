@@ -15,7 +15,7 @@ import { compareAndSwapUpgradeIntent, readUpgradeIntent, type UpgradeIntent } fr
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 import { SUCCESSION_CAPABILITY_VERSION } from '#src/infra/bundle-manifest-address.js';
 import type { SuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
-import type { SuccessionOwner } from '#src/coordinator/succession/obligations.js';
+import { REQUIRED_SUCCESSION_OWNERS, type SuccessionOwner } from '#src/coordinator/succession/obligations.js';
 import type * as ProtocolModule from '#src/coordinator/succession/protocol.js';
 import type * as UpgradeIntentModule from '#src/infra/upgrade-intent.js';
 
@@ -900,6 +900,54 @@ describe('succession reconciler over an installed target', () => {
       expect(first.kind).toBe('prepared');
       expect(second).toEqual(first);
       expect(durableCli.classified).toHaveLength(1);
+    } finally {
+      reconciler.dispose();
+    }
+  });
+
+  it('should retain a named grant with the production required-owner default', async () => {
+    const runDir = runDirectory();
+    const target = installedTarget('/installed/target');
+    const seeded = await compareAndSwapUpgradeIntent(runDir, null, {
+      requestId: 'request-1',
+      incumbent: serving,
+      target,
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'pending',
+      blockers: [],
+      retryCondition: null,
+      attemptDeadline: null,
+      completionReceipt: null,
+    });
+    if (seeded.kind !== 'written') throw new Error(`intent seed was ${seeded.kind}`);
+    const durableCli = grantingOwner();
+    const owners: SuccessionOwner[] = [
+      durableCli.owner,
+      ...REQUIRED_SUCCESSION_OWNERS.filter((id) => id !== 'durable-cli').map((id) => ({
+        id,
+        classify: async () => ({ kind: 'completed' as const, reason: 'no live obligation' }),
+      })),
+    ];
+    const reconciler = createSuccessionReconciler({
+      runtime,
+      runDir,
+      incumbent: () => serving,
+      owners,
+      epochKey: () => 'serving-epoch',
+      admissionRevision: () => 0,
+      commitAvailable: false,
+      retryIntervalMs: 60_000,
+    });
+    try {
+      const first = await reconciler.prepare('request-1');
+      const second = await reconciler.prepare('request-1');
+      expect(first.kind).toBe('prepared');
+      expect(second).toEqual(first);
+      if (first.kind !== 'prepared') throw new Error(`preparation was ${first.kind}`);
+      await reconciler.reconcile();
+      expect(durableCli.classified).toEqual([first.preparation.attemptId]);
+      expect(durableCli.granted.has(first.preparation.attemptId)).toBe(true);
     } finally {
       reconciler.dispose();
     }

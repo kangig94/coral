@@ -2169,9 +2169,20 @@ describe('write-once store epochs', () => {
 
     const result = await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'));
     const remaining = listStoreEpochResidues(runtime);
-    expect(result).toBe('unobservable-metadata');
+    expect(result).toBe('complete');
     expect(remaining).toHaveLength(residueCount);
-    expect(remaining.every(({ name }) => name.startsWith('.reaping-partial-cleanup-'))).toBe(true);
+    expect(remaining.every(({ name, state }) => name.startsWith('.retained-reaping-') && state === 'retained')).toBe(
+      true,
+    );
+    expect(remaining.every(({ name }) => existsSync(join(dbDir, name, 'store.db')))).toBe(true);
+    expect(
+      formatStoreResetList(
+        { epochs: [], holders: [], residues: remaining, legacyIncidents: [], truncated: false },
+        'gen2',
+      ),
+    ).toContain(' | retained');
+    expect(await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(dbDir, '1'))).toBe('complete');
+    expect(listStoreEpochResidues(runtime)).toEqual(remaining);
   });
 
   it('does not sweep the coordinator epoch while its settled database is open', async () => {

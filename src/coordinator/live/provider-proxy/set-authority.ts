@@ -49,6 +49,7 @@ import {
 import type { ControlClient, ControlExchange, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import type { Runtime } from '../../../runtime/ports.js';
 import type { ProviderProxySetIdentity } from '../../services/provider-proxy-set/identity.js';
+import { retireProviderHandoffCapsule } from '../../services/provider-proxy-capsule-discovery.js';
 import {
   closeRedeemedProviderProxyControl,
   providerProxyControlRedemptionBundle,
@@ -395,7 +396,10 @@ export function createProviderProxySetAuthority(
         { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
       );
       // A set speaks through one capsule, and the superseded one names a controller the roles now refuse.
-      if (currentCapsulePath !== handoffCapsulePath) runtime.storage.rmSync(handoffCapsulePath, { force: true });
+      if (currentCapsulePath !== handoffCapsulePath) {
+        const retirement = retireProviderHandoffCapsule(runtime.storage, handoffCapsulePath);
+        if (retirement.kind !== 'retired') throw new Error('provider_proxy_capsule_migration_retirement_unavailable');
+      }
     }
     const receipt = Object.freeze({
       kind: 'installed-recovery-credential',

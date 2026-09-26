@@ -141,4 +141,13 @@ describe('succession attempt child connection custody', () => {
 
     await waitForCondition(() => received() === FRAME.repeat(requests), 5_000);
   });
+
+  it('should stop forwarding before returning a parked connection at the child deadline', async () => {
+    const { attempt, listener, received, socketPath } = await launchAttemptChild();
+    await attempt.setDeadline(Date.now() + 400);
+    attempt.forwardConnections(listener);
+    sendFrame(socketPath);
+
+    await waitForCondition(() => received() === FRAME, 5_000);
+  });
 });

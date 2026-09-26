@@ -7,6 +7,7 @@ import type { HandoffCapsule } from '../../provider-proxy/handoff-capsule.js';
 import {
   providerHandoffCapsuleCandidatePaths,
   readProviderHandoffCapsuleCandidate,
+  supersededHandoffCapsulePaths,
 } from '../../provider-proxy/handoff-capsule-discovery.js';
 
 export type DiscoveredProviderHandoffCapsule = Readonly<{
@@ -23,7 +24,7 @@ export function discoverProviderHandoffCapsules(
   }>,
 ): readonly DiscoveredProviderHandoffCapsule[] {
   const candidates = providerHandoffCapsuleCandidatePaths(options.runDir, options.storage);
-  return candidates.map((path) => {
+  const discovered = candidates.map((path) => {
     const candidate = readProviderHandoffCapsuleCandidate(path, options.generationRoot, {
       storage: options.storage,
       uid: options.uid,
@@ -31,6 +32,12 @@ export function discoverProviderHandoffCapsules(
     if (candidate.kind === 'invalid') throw new Error(`${candidate.reason}:${path}`);
     return Object.freeze({ path, capsule: candidate.capsule });
   });
+  const superseded = supersededHandoffCapsulePaths(discovered);
+  for (const path of superseded) {
+    const retirement = retireProviderHandoffCapsule(options.storage, path);
+    if (retirement.kind !== 'retired') throw new Error('provider_proxy_capsule_migration_retirement_unavailable');
+  }
+  return discovered.filter(({ path }) => !superseded.has(path));
 }
 
 export type ProviderHandoffCapsuleRetirementOutcome =

@@ -69,6 +69,7 @@ import {
   listStoreEpochs,
   openExactStoreEpoch,
   resolvedStoreEpoch,
+  settleStoreEpoch,
   storeEpochLockPath,
   sweepStoreEpochsPostReady,
 } from '#src/store/epoch.js';
@@ -571,7 +572,24 @@ describe('epoch closure and protected addressing', () => {
       resultsReleased: (epochKey) => index.resultsReleased(epochKey),
     });
     expect(existsSync(epochDirectory(root, '1'))).toBe(true);
-    expect(existsSync(residue)).toBe(true);
+    expect(existsSync(residue)).toBe(false);
+    const retained = readdirSync(root).find((entry) => entry.startsWith('.retained-reaping-'));
+    expect(retained).toBeDefined();
+    expect(readFileSync(join(root, retained as string, 'store.db'), 'utf8')).toBe('unattributed bytes');
+  });
+
+  it('classifies a markerless interrupted reaping directory without retrying it', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    for (const epoch of ['1', '2', '3']) publish(runtime, epoch);
+    const residueName = '.reaping-legacy';
+    renameSync(epochDirectory(root, '1'), join(root, residueName));
+    const sweep = () => sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'));
+
+    expect(await sweep()).toBe('complete');
+    expect(existsSync(join(root, residueName))).toBe(false);
+    expect(readdirSync(root).some((entry) => entry.startsWith('.retained-reaping-'))).toBe(true);
+    expect(await sweep()).toBe('complete');
   });
 
   it('records unreadable legacy custody as visible unrecoverable-retained without blocking service', async () => {
@@ -602,8 +620,8 @@ describe('epoch closure and protected addressing', () => {
     publish(runtime, '1');
     const old = resolvedStoreEpoch(root, '1');
     const key = readOrCreateEpochKey(runtime, old);
-    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
     publish(runtime, '2');
+    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
     publish(runtime, '3');
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     index.certify(encodeResolvedStoreEpoch(runtime, old), 0);
@@ -625,6 +643,59 @@ describe('epoch closure and protected addressing', () => {
     });
     expect(existsSync(epochDirectory(root, '1'))).toBe(false);
     expect(existsSync(epochDirectory(root, '2'))).toBe(true);
+  });
+
+  it('retains a legacy epoch used after custody tracking began while its spawn intent is holding', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    initializeCustodyLedger(runtime, runDir);
+    settleStoreEpoch(runtime, { storeFormat, build }).db.close();
+    expect(existsSync(join(dirname(old.path), '.coral-used-after-custody-start.v1.json'))).toBe(true);
+    const intent = recordCustodyIntent(runtime, runDir, {
+      effect: 'process-spawn',
+      epoch: dirname(old.path),
+      owner: 'provider-proxy-set',
+      operationId: 'proxy-legacy:guardian',
+      capsule: null,
+      bindWithinMs: 60_000,
+      nowMs: runtime.time.now(),
+    });
+    publish(runtime, '2');
+    publish(runtime, '3');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    index.certify(encodeResolvedStoreEpoch(runtime, old), 0);
+
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'unrecoverable-retained',
+      executionDischarge: 'undecidable',
+    });
+    expect(intent.epochKey).toBe(key);
+    await sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+      resultsReleased: (epochKey) => index.resultsReleased(epochKey),
+    });
+    expect(existsSync(epochDirectory(root, '1'))).toBe(true);
+  });
+
+  it('records use of a legacy epoch opened by exact address before it can serve', () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    publish(runtime, '2');
+    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+
+    const opened = openExactStoreEpoch(runtime, { storeFormat, build }, { ...old, lineageKey: key });
+
+    expect(opened.kind).toBe('opened');
+    if (opened.kind === 'opened') opened.db.close();
+    expect(existsSync(join(dirname(old.path), '.coral-used-after-custody-start.v1.json'))).toBe(true);
   });
 
   it('retains an uncovered epoch minted after custody started and one with an unreadable coverage file', async () => {
@@ -661,6 +732,34 @@ describe('epoch closure and protected addressing', () => {
     });
   });
 
+  it('retries a pre-coverage closure after unreadable custody becomes readable', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const old = resolvedStoreEpoch(root, '1');
+    const key = readOrCreateEpochKey(runtime, old);
+    publish(runtime, '2');
+    initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
+    const broken = join(custodyLedgerDir(runtime.paths.coral.coordinator.runDir), 'broken');
+    mkdirSync(broken);
+    writeFileSync(join(broken, 'intent.v1.json'), '{');
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'unrecoverable-retained',
+      executionDischarge: 'undecidable',
+    });
+    rmSync(broken, { recursive: true });
+    expect(
+      (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+    ).toMatchObject({
+      disposition: 'closed',
+      executionDischarge: 'certified',
+    });
+  });
+
   it('holds a pre-coverage epoch while a process bound to it is alive', async () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
@@ -668,8 +767,8 @@ describe('epoch closure and protected addressing', () => {
     const old = resolvedStoreEpoch(root, '1');
     const key = readOrCreateEpochKey(runtime, old);
     const runDir = runtime.paths.coral.coordinator.runDir;
-    initializeCustodyLedger(runtime, runDir);
     publish(runtime, '2');
+    initializeCustodyLedger(runtime, runDir);
     const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
     const guardian = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
       detached: true,
@@ -704,6 +803,17 @@ describe('epoch closure and protected addressing', () => {
         executionDischarge: 'undecidable',
         reason: expect.stringContaining('retry after its recorded incarnation exits') as unknown,
       });
+      const observe = vi.spyOn(runtime.process, 'readProcessIncarnation').mockImplementation(() => {
+        throw new Error('process observation unavailable');
+      });
+      expect(
+        (await settleSupersededEpochClosures(runtime, index)).find((record) => record.epochKey === key),
+      ).toMatchObject({
+        disposition: 'unrecoverable-retained',
+        executionDischarge: 'undecidable',
+        reason: expect.stringContaining('custody is undecidable') as unknown,
+      });
+      observe.mockRestore();
     } finally {
       const exited = once(guardian, 'exit');
       guardian.kill('SIGKILL');
@@ -759,6 +869,39 @@ describe('epoch closure and protected addressing', () => {
 
     await settleSupersededEpochClosures(runtime, index, undefined, undefined, incumbentKey);
 
+    expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, successorKey)).toEqual({
+      kind: 'absent',
+    });
+  });
+
+  it('does not close an epoch published between the exclusion and candidate listings', async () => {
+    const runtime = harness();
+    const root = runtime.paths.coral.store.dbDir;
+    publish(runtime, '1');
+    const incumbentKey = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '1'));
+    const realpath = runtime.storage.realpathSync;
+    let rootReads = 0;
+    vi.spyOn(runtime.storage, 'realpathSync').mockImplementation((path) => {
+      const result = realpath(path);
+      if (path === root && ++rootReads === 2) {
+        publish(runtime, '2');
+        recordEpochCustodyCoverage(
+          runtime,
+          epochDirectory(root, '2'),
+          initializeCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir),
+        );
+      }
+      return result;
+    });
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+
+    await settleSupersededEpochClosures(runtime, index, undefined, undefined, incumbentKey);
+
+    const successorKey = readOrCreateEpochKey(runtime, resolvedStoreEpoch(root, '2'));
+    expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, successorKey)).toEqual({
+      kind: 'absent',
+    });
+    await settleSupersededEpochClosures(runtime, index, undefined, undefined, successorKey);
     expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, successorKey)).toEqual({
       kind: 'absent',
     });

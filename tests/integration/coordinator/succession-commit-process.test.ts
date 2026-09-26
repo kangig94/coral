@@ -232,7 +232,12 @@ describe('real-process succession commit', () => {
     await waitForProcessExit(old, 30_000);
     const committed = readDiscoveryRecordForHome(home, 'prod');
     if (committed === null) throw new Error('Committed successor discovery was not published.');
-    const first = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+    const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+    await waitForCondition(() => {
+      const intent = readUpgradeIntent(runDir);
+      return intent.kind === 'readable' && intent.intent.disposition === 'completed';
+    }, 30_000);
+    const first = readUpgradeIntent(runDir);
     if (first.kind !== 'readable' || first.intent.completionReceipt === null) {
       throw new Error('Committed successor has no durable serving receipt.');
     }

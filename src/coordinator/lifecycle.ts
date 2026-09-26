@@ -2020,6 +2020,13 @@ export function createLifecycle(
       if (disposition.disposition !== 'settled') {
         bestEffortLifecycleLog(log, `succession release ended ${disposition.disposition}\n`);
       }
+      if (release.kind === 'successor') {
+        try {
+          await release.handOver();
+        } catch (error: unknown) {
+          bestEffortLifecycleLog(log, `final succession connection handover failed: ${formatError(error)}\n`);
+        }
+      }
       runtimeState.setLifecycle('stopped');
       // A handed-over listener must stay open until exit: closing it would unlink the successor's address.
       return process.exit(release.kind === 'successor' ? 0 : SUCCESSION_RESTART_EXIT_CODE);

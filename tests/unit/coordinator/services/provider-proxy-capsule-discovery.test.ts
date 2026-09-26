@@ -21,6 +21,8 @@ import {
 } from '#src/provider-proxy/handoff-capsule.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
+import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
+import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
 
 /** The build this fixture lifecycle belongs to — the same one its capsule carries, so discovery treats it as inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '22222222-2222-4222-8222-222222222222';
@@ -36,6 +38,126 @@ function retirementStorage(
 }
 
 describe('provider proxy capsule discovery', () => {
+  it('keeps an executing operation recoverable after a crash between v4 write and v3 retirement', () => {
+    const baseDir = mkdtempSync(join(tmpdir(), 'coral-capsule-migration-'));
+    const runtime = createRealRuntime('prod', { baseDir });
+    const runDir = runtime.paths.coral.coordinator.runDir;
+    runtime.storage.mkdirSync(runDir, { recursive: true, mode: 0o700 });
+    const record = providerOperationRecord('executing');
+    const identity = providerProxySetIdentityFromRecord(record);
+    const v3 = {
+      version: 3 as const,
+      grantId: '11111111-1111-4111-8111-111111111111',
+      secret: 'c'.repeat(64),
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId: identity.buildSetId,
+      hostFingerprint: identity.hostFingerprint,
+      guardianInstanceId: identity.guardianInstanceId,
+      reaperInstanceId: identity.reaperInstanceId,
+      proxyInstanceId: identity.proxyInstanceId,
+      guardianControlEndpoint: identity.guardianControlEndpoint,
+      reaperControlEndpoint: identity.reaperControlEndpoint,
+      proxyEndpoint: identity.canonicalEndpoint,
+      orphanTimeoutMs: 30_000,
+      teardownReserveMs: 14_000,
+      guardianPid: identity.guardianPid,
+      guardianIncarnation: identity.guardianIncarnation,
+      proxyPid: identity.proxyPid,
+      reaperPid: identity.reaperPid,
+      reaperIncarnation: identity.reaperIncarnation,
+      containmentKind: identity.containmentKind,
+      proxyIncarnation: identity.proxyIncarnation,
+      proxyProcessGroupId: identity.proxyProcessGroupId,
+    };
+    const v4 = { ...v3, version: 4 as const, controllerBuildSetId: FIXTURE_BUILD_SET_ID };
+    const v3Path = providerHandoffCapsulePath(v3, 3, { baseDir });
+    const v4Path = providerHandoffCapsulePath(v4, 4, { baseDir });
+    runtime.storage.writeAtomicDurableSync(v3Path, JSON.stringify(v3), { encoding: 'utf-8', mode: 0o600 });
+    runtime.storage.writeAtomicDurableSync(v4Path, JSON.stringify(v4), { encoding: 'utf-8', mode: 0o600 });
+
+    const stat = runtime.storage.statSync(baseDir, { bigint: true });
+    if (stat.uid === undefined) throw new Error('temporary directory has no owner');
+    const discovered = discoverProviderHandoffCapsules({
+      runDir,
+      generationRoot: runtime.paths.coral.generation.root,
+      storage: runtime.storage,
+      uid: Number(stat.uid),
+    });
+    const claims = new ProviderProxySetClaimMirror();
+    claims.initialize([record]);
+    const lifecycle = new ProviderProxySetLifecycle({
+      buildSetId: FIXTURE_BUILD_SET_ID,
+      claims,
+      controlEstablished: () => undefined,
+      time: runtime.time,
+      ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
+      recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({
+        'capsule-redemption': () => new Promise<never>(() => undefined),
+        'containment-proof': () => new Promise<never>(() => undefined),
+      }),
+      reapRecordedContainment: () => {
+        throw new Error('unexpected containment reaping');
+      },
+      reportLifecycle: () => undefined,
+    });
+    lifecycle.activateDurableOperatorDispositions();
+    lifecycle.initializeClaimSlots();
+    lifecycle.installDiscoveredCapsules(discovered, retainsEveryCapsule);
+
+    expect(discovered).toEqual([{ path: v4Path, capsule: v4 }]);
+    expect(runtime.storage.existsSync(v3Path)).toBe(false);
+    expect(runtime.storage.existsSync(v4Path)).toBe(true);
+    expect(lifecycle.snapshot().states).toEqual(['recovering']);
+
+    for (const conflicting of [
+      { ...v4, grantId: '99999999-9999-4999-8999-999999999999' },
+      { ...v4, secret: 'd'.repeat(64) },
+      { ...v4, guardianInstanceId: '99999999-9999-4999-8999-999999999999' },
+    ]) {
+      runtime.storage.writeAtomicDurableSync(v3Path, JSON.stringify(v3), { encoding: 'utf-8', mode: 0o600 });
+      runtime.storage.writeAtomicDurableSync(v4Path, JSON.stringify(conflicting), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      const conflict = discoverProviderHandoffCapsules({
+        runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: Number(stat.uid),
+      });
+      expect(conflict).toHaveLength(2);
+      expect(runtime.storage.existsSync(v3Path)).toBe(true);
+      const conflictingLifecycle = new ProviderProxySetLifecycle({
+        buildSetId: FIXTURE_BUILD_SET_ID,
+        claims,
+        controlEstablished: () => undefined,
+        time: runtime.time,
+        ...testProviderProxySetLifecycleDurability(runtime.storage, runtime.time),
+        recoveryDispatcher: createTestProviderProxyRecoveryDispatcher({}),
+        reapRecordedContainment: () => {
+          throw new Error('unexpected containment reaping');
+        },
+        reportLifecycle: () => undefined,
+      });
+      conflictingLifecycle.activateDurableOperatorDispositions();
+      conflictingLifecycle.initializeClaimSlots();
+      expect(() => conflictingLifecycle.installDiscoveredCapsules(conflict, retainsEveryCapsule)).toThrow(
+        'provider_proxy_capsule_address_alias',
+      );
+    }
+
+    runtime.storage.writeAtomicDurableSync(v4Path, JSON.stringify(v4), { encoding: 'utf-8', mode: 0o600 });
+    vi.spyOn(runtime.storage, 'syncDirectoryDurableSync').mockReturnValueOnce(false);
+    expect(() =>
+      discoverProviderHandoffCapsules({
+        runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: Number(stat.uid),
+      }),
+    ).toThrow('provider_proxy_capsule_migration_retirement_unavailable');
+  });
   it('derives retirement availability only from directory durability', () => {
     const unlinkSync = vi.fn();
     const syncDirectoryDurableSync = vi.fn(() => false);

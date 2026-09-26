@@ -936,12 +936,26 @@ export type CommittedSuccessorRecovery =
   | Readonly<{ kind: 'handoff'; target: ValidatedHandoffTarget }>
   | Readonly<{ kind: 'hold'; hold: SuccessionStartupHold }>;
 
+function waiterServingEligible(intent: UpgradeIntent, attemptId: string): boolean {
+  return (
+    intent.disposition === 'deferred' &&
+    intent.attemptId === attemptId &&
+    intent.attemptOwner?.kind === 'waiter' &&
+    intent.attemptChild?.attemptId === attemptId &&
+    intent.attemptDeadline !== null
+  );
+}
+
 async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'completed' | 'unattributable'> {
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
   if (observed.kind !== 'readable') return 'none';
   const { intent } = observed;
   if (intent.disposition === 'completed') return 'completed';
-  if (intent.disposition !== 'attempting' || intent.attemptId === null) return 'none';
+  if (
+    intent.attemptId === null ||
+    (intent.disposition !== 'attempting' && !waiterServingEligible(intent, intent.attemptId))
+  )
+    return 'none';
   const attemptId = intent.attemptId;
   const serving = observeSuccessionServing(runtime, attemptId);
   if (serving === null || intent.recoveryAttemptId === attemptId) return 'none';
@@ -1011,7 +1025,7 @@ async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'compl
     }
     if (current.intent.disposition === 'completed') return { kind: 'settle', value: true };
     if (
-      current.intent.disposition !== 'attempting' ||
+      (current.intent.disposition !== 'attempting' && !waiterServingEligible(current.intent, attemptId)) ||
       current.intent.revision !== intent.revision ||
       observeSuccessionServing(runtime, attemptId) === null
     )
@@ -1019,7 +1033,13 @@ async function reconcileServedAttempt(runtime: Runtime): Promise<'none' | 'compl
     return {
       kind: 'write',
       expectedRevision: current.intent.revision,
-      change: { ...current.intent, disposition: 'completed', completionReceipt: receipt },
+      change: {
+        ...current.intent,
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        completionReceipt: receipt,
+      },
       settle: () => true,
     };
   });
@@ -1319,12 +1339,15 @@ export async function completeWaiterLaunchedUpgrade(
   // One instant and one epoch key for every decision: a re-run decision must write the identical serving record.
   const recordedAt = new Date(runtime.time.now()).toISOString();
   const epochKey = encodeResolvedStoreEpoch(runtime, openedStore);
-  const unchanged = { kind: 'settle', value: undefined } as const;
-  void (await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
+  const unchanged = { kind: 'settle', value: false } as const;
+  const completed = await retryUpgradeIntentCas(runtime.paths.coral.coordinator.runDir, (observed) => {
     if (observed.kind !== 'readable') return unchanged;
     const intent = observed.intent;
+    if (intent.disposition === 'completed' && intent.completionReceipt?.attemptId === attemptId) {
+      return { kind: 'settle', value: true } as const;
+    }
     if (
-      intent.disposition !== 'attempting' ||
+      (intent.disposition !== 'attempting' && !waiterServingEligible(intent, attemptId)) ||
       intent.attemptId !== attemptId ||
       intent.attemptOwner?.kind !== 'waiter' ||
       intent.target.build.buildSetId !== currentBuild.buildSetId ||
@@ -1349,7 +1372,7 @@ export async function completeWaiterLaunchedUpgrade(
       });
     } catch (error: unknown) {
       backendLog.warn(`Waiter-launched upgrade could not record serving: ${formatError(error)}`);
-      return unchanged;
+      throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
     }
     return {
       kind: 'write',
@@ -1357,6 +1380,8 @@ export async function completeWaiterLaunchedUpgrade(
       change: {
         ...intent,
         disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
         attemptChild: { attemptId, pid, incarnation },
         completionReceipt: {
           kind: 'serving',
@@ -1368,9 +1393,12 @@ export async function completeWaiterLaunchedUpgrade(
           recordedAt: serving.recordedAt,
         },
       },
-      settle: () => undefined,
+      settle: () => true,
     };
-  }));
+  });
+  if (completed.kind !== 'settled' || !completed.value) {
+    throw new SuccessionAttemptStartupHoldError('waiter serving record has no completion receipt');
+  }
 }
 
 /** What a succession startup needs to open or mint its committed store. */

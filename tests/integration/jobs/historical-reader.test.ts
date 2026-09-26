@@ -244,6 +244,20 @@ describe('historical job readers', () => {
 
   it('does not finalize a known job when its protected address cannot be read', () => {
     const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      5,
+      '2026-09-25T00:00:00.000Z',
+      'job.launch.requested',
+      'job',
+      'previously-unknown',
+      Buffer.from(
+        JSON.stringify({
+          projectRoot: '/workspace/project',
+          jobKind: 'provider',
+          request: { cwd: '/workspace/project' },
+        }),
+      ),
+    );
     db.close();
     const epoch = { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') };
     const epochKey = readOrCreateEpochKey(runtime, epoch);
@@ -284,6 +298,74 @@ describe('historical job readers', () => {
     writeFileSync(addressPath, protectedAddress);
     expect(addressing.outcomeUnrecoverable(['known-live'])).toEqual(['known-live']);
     expect(addressing.detail('known-live')).toMatchObject({ kind: 'outcome-unrecoverable' });
+    expect(index.read('previously-unknown')?.disposition).toBe('unresolved');
+    expect(index.unknownLocationHold(epochKey)).toBeNull();
+  });
+
+  it('seeds a KB reindex launch alongside another job without a cwd', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    for (const [jobId, jobKind, request] of [
+      ['kb-reindex', 'kb', {}],
+      ['provider-job', 'provider', { cwd: '/workspace/project' }],
+    ] as const) {
+      db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+        jobId === 'kb-reindex' ? 1 : 2,
+        '2026-09-25T00:00:00.000Z',
+        'job.launch.requested',
+        'job',
+        jobId,
+        Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind, request })),
+      );
+    }
+    db.close();
+    const index = new JobLocationIndex(runtime, root);
+    expect(
+      seedHistoricalEpoch(
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        'lineage-old:7',
+        fingerprints[0],
+        join(root, 'results'),
+        storage,
+      ).kind,
+    ).toBe('uncertified');
+    expect(index.read('kb-reindex')).toMatchObject({ subject: { jobKind: 'kb', workDir: null } });
+    expect(index.read('provider-job')).toMatchObject({
+      subject: { jobKind: 'provider', workDir: '/workspace/project' },
+    });
+  });
+
+  it('keeps an inventory hold when a requested-job refresh cannot scan every launch', () => {
+    const { root, epochDir, db } = fixture(fingerprints[0]);
+    db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?, ?)').run(
+      1,
+      '2026-09-25T00:00:00.000Z',
+      'job.launch.requested',
+      'job',
+      'unreadable-launch',
+      Buffer.from(JSON.stringify({ projectRoot: '/workspace/project', jobKind: 'provider', request: {} })),
+    );
+    db.close();
+    const index = new JobLocationIndex(runtime, root);
+    index.register('known-live', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    expect(
+      seedHistoricalEpoch(
+        runtime,
+        index,
+        { storeRoot: join(root, 'db'), epoch: '7', path: join(epochDir, 'store.db') },
+        'lineage-old:7',
+        fingerprints[0],
+        join(root, 'results'),
+        storage,
+      ).kind,
+    ).toBe('unrecoverable-retained');
+    expect(refreshHistoricalEpoch(index, 'lineage-old:7', ['known-live'])).toBe('unreadable');
+    expect(index.unknownLocationHold('lineage-old:7')).not.toBeNull();
   });
 
   it('reports a terminal discovered during abort as not found', () => {

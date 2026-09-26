@@ -930,19 +930,50 @@ describe('waiter-launched upgrade completion', () => {
     expect(writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt')).toBeNull();
   });
 
+  it('should hold a recorded child whose serving publication missed the deadline', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('intent disappeared');
+    const deadline = new Date(runtime.time.now() + 1).toISOString();
+    const changed = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        attemptDeadline: deadline,
+      },
+    );
+    if (changed.kind !== 'written') throw new Error(`deadline update was ${changed.kind}`);
+
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
+    expect(writerGeneration.observeSuccessionServing(runtime, 'waiter-attempt')).toBeNull();
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      kind: 'readable',
+      intent: { disposition: 'attempting', attemptChild: { attemptId: 'waiter-attempt' } },
+    });
+  });
+
   it('should complete an attempt whose intent changed while its serving record was being written', async () => {
     const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
     const record = writerGeneration.recordSuccessionServing;
-    let raced = false;
+    let racedRevision: number | null = null;
     vi.spyOn(writerGeneration, 'recordSuccessionServing').mockImplementation((...args) => {
       const served = record(...args);
-      if (!raced) {
-        raced = true;
+      if (racedRevision === null) {
         const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
         if (observed.kind !== 'readable') throw new Error('intent disappeared');
-        void compareAndSwapUpgradeIntent(runtime.paths.coral.coordinator.runDir, observed.intent.revision, {
-          ...observed.intent,
-          blockers: [{ owner: 'waiter', reason: 'renewed' }],
+        racedRevision = observed.intent.revision + 1;
+        writeFileSync(
+          upgradeIntentPath(runtime.paths.coral.coordinator.runDir),
+          JSON.stringify({
+            ...observed.intent,
+            revision: racedRevision,
+            blockers: [{ owner: 'waiter', reason: 'renewed' }],
+          }),
+        );
+        expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+          kind: 'readable',
+          intent: { revision: racedRevision, blockers: [{ owner: 'waiter', reason: 'renewed' }] },
         });
       }
       return served;
@@ -954,6 +985,114 @@ describe('waiter-launched upgrade completion', () => {
       kind: 'readable',
       intent: { disposition: 'completed', completionReceipt: { attemptId: 'waiter-attempt' } },
     });
+    expect(racedRevision).not.toBeNull();
+  });
+
+  it('should complete a recorded child after its waiter expires during the serving write', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const record = writerGeneration.recordSuccessionServing;
+    let expired = false;
+    vi.spyOn(writerGeneration, 'recordSuccessionServing').mockImplementation((...args) => {
+      const served = record(...args);
+      if (expired) return served;
+      expired = true;
+      const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      writeFileSync(
+        upgradeIntentPath(runtime.paths.coral.coordinator.runDir),
+        JSON.stringify({
+          ...observed.intent,
+          revision: observed.intent.revision + 1,
+          disposition: 'deferred',
+          blockers: [{ owner: 'waiter', reason: 'target did not report serving before attempt deadline' }],
+          retryCondition: {
+            kind: 'incumbent-retirement',
+            evidence: 'legacy incumbent retired; successor attempt expired',
+          },
+        }),
+      );
+      return served;
+    });
+
+    await complete();
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      kind: 'readable',
+      intent: {
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        completionReceipt: { attemptId: 'waiter-attempt' },
+      },
+    });
+  });
+
+  it('should recover a serving receipt after expiry interrupts its completion write', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const record = writerGeneration.recordSuccessionServing;
+    vi.spyOn(writerGeneration, 'recordSuccessionServing').mockImplementation((...args) => {
+      record(...args);
+      const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      writeFileSync(
+        upgradeIntentPath(runtime.paths.coral.coordinator.runDir),
+        JSON.stringify({
+          ...observed.intent,
+          revision: observed.intent.revision + 1,
+          disposition: 'deferred',
+          blockers: [{ owner: 'waiter', reason: 'target did not report serving before attempt deadline' }],
+          retryCondition: {
+            kind: 'incumbent-retirement',
+            evidence: 'legacy incumbent retired; successor attempt expired',
+          },
+        }),
+      );
+      throw new Error('simulated crash after serving write');
+    });
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
+    vi.restoreAllMocks();
+
+    const format = currentCoralStoreFormat();
+    const current = { ...build, version: format.productVersion, storeFormatFingerprint: format.fingerprint };
+    await prepareCommittedSuccessorRecovery(
+      runtime,
+      { pluginRoot: '/plugin', instanceId: 'restart' },
+      format,
+      current,
+      () => false,
+    );
+    expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
+      kind: 'readable',
+      intent: {
+        disposition: 'completed',
+        blockers: [],
+        retryCondition: null,
+        completionReceipt: { attemptId: 'waiter-attempt' },
+      },
+    });
+  });
+
+  it('should hold when its serving record cannot receive a completion receipt', async () => {
+    const { runtime, complete } = await waiterAttempt('2026-09-25T00:00:30.000Z');
+    const record = writerGeneration.recordSuccessionServing;
+    vi.spyOn(writerGeneration, 'recordSuccessionServing').mockImplementation((...args) => {
+      const served = record(...args);
+      const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      if (observed.kind !== 'readable') throw new Error('intent disappeared');
+      writeFileSync(
+        upgradeIntentPath(runtime.paths.coral.coordinator.runDir),
+        JSON.stringify({
+          ...observed.intent,
+          revision: observed.intent.revision + 1,
+          disposition: 'closed',
+          attemptId: null,
+          attemptOwner: null,
+          attemptDeadline: null,
+        }),
+      );
+      return served;
+    });
+
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
   });
 
   it('should recover a waiter receipt after its serving write survives a crash', async () => {
@@ -963,7 +1102,7 @@ describe('waiter-launched upgrade completion', () => {
       record(...args);
       throw new Error('simulated crash after serving write');
     });
-    await complete();
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
     expect(readUpgradeIntent(runtime.paths.coral.coordinator.runDir)).toMatchObject({
       intent: { disposition: 'attempting', attemptChild: { attemptId: 'waiter-attempt' }, completionReceipt: null },
     });
@@ -1014,7 +1153,7 @@ describe('waiter-launched upgrade completion', () => {
       record(...args);
       throw new Error('simulated crash after serving write');
     });
-    await complete();
+    await expect(complete()).rejects.toThrow('waiter serving record has no completion receipt');
     vi.restoreAllMocks();
     const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
     if (observed.kind !== 'readable') throw new Error('waiter intent is unreadable');

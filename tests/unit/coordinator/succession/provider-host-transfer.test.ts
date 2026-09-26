@@ -11,6 +11,7 @@ import {
   type ProviderProxyControllerTransfer,
 } from '#src/coordinator/services/provider-proxy-set/controller-transfer.js';
 import { providerProxySetIdentityFromRecord } from '#src/coordinator/services/provider-proxy-set/identity.js';
+import { classifyProviderProxySetInheritance } from '#src/coordinator/services/provider-proxy-set/inheritance.js';
 import type { ProviderProxySetLifecycle } from '#src/coordinator/services/provider-proxy-set/index.js';
 import type { SuccessionCapabilities } from '#src/coordinator/succession/protocol.js';
 import {
@@ -370,6 +371,70 @@ describe('accepted controller transfer', () => {
     expect(acceptedControllerTransferHandsCapsule(runtime, SUCCESSOR_BUILD, null, capsule)).toBe('served');
   });
 
+  it('keeps a refused host grant redeemable after preparation clears and the successor restarts', async () => {
+    const runtime = runtimeFor();
+    const capsule = capsuleFor(runtime, INCUMBENT_BUILD);
+    await preparedTransfer(runtime);
+
+    expect(acceptedControllerTransferHandsCapsule(runtime, SUCCESSOR_BUILD, 'attempt-1', capsule)).toBe(
+      'before-serving',
+    );
+    const record = executing();
+    const host = hostFor(record, authorized);
+    const install = host.installRecoveryCredential as ReturnType<typeof vi.fn>;
+    install.mockResolvedValueOnce({ kind: 'refused', incident: { role: 'guardian' } }).mockResolvedValue({
+      kind: 'installed',
+      receipt: { kind: 'installed-recovery-credential', grantId: RECOVERY_GRANT },
+    });
+    let resume!: () => void;
+    const paused = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const completing = transferFor(
+      { ...runtime, time: { ...runtime.time, sleep: () => paused } },
+      { hosts: [host] },
+    ).completeTransfers();
+    await vi.waitFor(() => expect(install).toHaveBeenCalledTimes(1));
+
+    serving.attemptId = 'attempt-1';
+    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+    if (observed.kind !== 'readable') throw new Error('expected a readable intent');
+    const cleared = await compareAndSwapUpgradeIntent(
+      runtime.paths.coral.coordinator.runDir,
+      observed.intent.revision,
+      {
+        ...observed.intent,
+        successionPreparation: null,
+      },
+    );
+    expect(cleared.kind).toBe('written');
+
+    const acceptance = acceptedControllerTransferHandsCapsule(runtime, SUCCESSOR_BUILD, null, capsule);
+    expect(classifyProviderProxySetInheritance(capsule, SUCCESSOR_BUILD, () => acceptance)).toMatchObject({
+      kind: 'inheritable',
+      via: 'transfer-served',
+    });
+    resume();
+    await completing;
+  });
+
+  it('holds an accepted host when its restart evidence cannot be written durably', async () => {
+    const runtime = runtimeFor();
+    const capsule = capsuleFor(runtime, INCUMBENT_BUILD);
+    await preparedTransfer(runtime);
+    const unwritable = {
+      ...runtime,
+      storage: { ...runtime.storage, writeAtomicDurableSync: () => false },
+    } as Runtime;
+
+    const acceptance = acceptedControllerTransferHandsCapsule(unwritable, SUCCESSOR_BUILD, 'attempt-1', capsule);
+    expect(acceptance).toBe('unconfirmed');
+    expect(classifyProviderProxySetInheritance(capsule, SUCCESSOR_BUILD, () => acceptance)).toMatchObject({
+      kind: 'held',
+      reason: 'transfer-status-unconfirmed',
+    });
+  });
+
   it('verifies the recovery grant a failed attempt redeems only while the capsule still holds it', async () => {
     const runtime = runtimeFor();
     capsuleFor(runtime, INCUMBENT_BUILD);
@@ -553,6 +618,17 @@ describe('provider host transfer at the commit and after serving', () => {
     await transferOver(runtimeFor(), lifecycleWith([host]), record).completeTransfers();
 
     expect(install).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries a refused grant install while the transferred host remains live', async () => {
+    const record = executing();
+    const host = hostFor(record, authorized);
+    const install = host.installRecoveryCredential as ReturnType<typeof vi.fn>;
+    install.mockResolvedValueOnce({ kind: 'refused', incident: { role: 'guardian' } }).mockResolvedValue(INSTALLED);
+
+    await transferOver(runtimeFor(), lifecycleWith([host]), record).completeTransfers();
+
+    expect(install).toHaveBeenCalledTimes(2);
   });
 
   it('stops installing once the host is no longer this coordinator’s', async () => {

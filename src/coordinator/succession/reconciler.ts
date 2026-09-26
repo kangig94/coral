@@ -26,6 +26,7 @@ import {
 import type { UnservedMintDiscard } from '../../store/epoch.js';
 import { attemptRetryAtMs, failedAttemptRetry, recoveryRetryOf } from './attempt-retry.js';
 import {
+  REQUIRED_SUCCESSION_OWNERS,
   prepareOwnerObligations,
   recertifyUntransferableOwners,
   type SuccessionOwner,
@@ -869,7 +870,7 @@ export function createSuccessionReconciler(options: SuccessionReconcilerOptions)
           options.owners.filter((owner) => !grantedOwners.has(owner.id)),
           existing.attemptId,
           capabilities,
-          options.requiredOwners?.filter((owner) => !grantedOwners.has(owner)),
+          (options.requiredOwners ?? REQUIRED_SUCCESSION_OWNERS).filter((owner) => !grantedOwners.has(owner)),
         );
         if (
           current.kind === 'prepared' &&

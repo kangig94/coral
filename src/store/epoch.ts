@@ -33,6 +33,7 @@ import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 import { inspectEpochKey, readEpochKey, readOrCreateEpochKey } from './epoch-key.js';
 import {
   closureCapability,
+  hasEpochCustodyCoverage,
   observeEpochClosure,
   recordEpochCustodyCoverage,
   type EpochClosureEvidence,
@@ -63,6 +64,7 @@ const MINT_DIRECTORY_PREFIX = '.mint-';
 const MINT_PREPARATION_DIRECTORY_PREFIX = '.preparing-';
 const PRIVATE_MINT_CONSTRUCTION_PREFIX = '.coral-store-epoch-construction-';
 const REAPING_DIRECTORY_PREFIX = '.reaping-';
+const RETAINED_REAPING_DIRECTORY_PREFIX = '.retained-reaping-';
 const EPOCH_HOLDER_PREFIX = '.epoch-holder-';
 const RETIREMENT_ATTEMPT_FILE_NAME = '.retirement-attempt.v1.json';
 const STORE_EPOCH_HOLDER_PUBLICATION_ATTEMPTS = 2;
@@ -160,7 +162,7 @@ export type StoreEpochHolderListEntry = Readonly<{
 export type StoreEpochResidueListEntry = Readonly<{
   name: string;
   bytes: number | null;
-  state: 'live' | 'reclaimable' | 'unobservable';
+  state: 'live' | 'reclaimable' | 'retained' | 'unobservable';
 }>;
 
 export type StoreEpochSweepResult =
@@ -1600,7 +1602,7 @@ async function removeAbandonedStoreDirectory(
   dbDir: string,
   path: string,
   resultsReleased?: (epochKey: string) => boolean,
-): Promise<LockedRemoval | 'unobservable'> {
+): Promise<LockedRemoval | 'retained' | 'unobservable'> {
   const root = await observeContainedDirectoryAsync(runtime.storage, dbDir, path);
   if (root.kind === 'unobservable') return 'unobservable';
   if (root.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
@@ -1614,6 +1616,16 @@ async function removeAbandonedStoreDirectory(
     if (database.kind === 'disproven') return removeAfterReapingRenameAsync(runtime, dbDir, path);
     const markerPath = join(path, '.coral-closed-reaping.v1.json');
     const markerProof = await observeContainedRegularFileAsync(runtime.storage, path, markerPath, root);
+    if (markerProof.kind === 'disproven') {
+      const retained = join(dbDir, `${RETAINED_REAPING_DIRECTORY_PREFIX}${runtime.ids.uuid()}`);
+      try {
+        runtime.storage.renameSync(path, retained);
+        return runtime.storage.syncDirectoryDurableSync(dbDir) ? 'retained' : 'target-failed';
+      } catch (error: unknown) {
+        auditSweepFailure(path, error);
+        return 'target-failed';
+      }
+    }
     if (markerProof.kind !== 'proven' || resultsReleased === undefined) return 'unobservable';
     try {
       const marker = JSON.parse(runtime.storage.readFileSync(markerPath, 'utf-8')) as unknown;
@@ -1788,7 +1800,7 @@ async function reapPostReadyStoreEpochEntries(
         continue;
       }
       lockReleaseFailed ||= removal === 'lock-release-failed';
-      complete = removal === 'removed' && complete;
+      complete = (removal === 'removed' || removal === 'retained') && complete;
     }
     await yieldSweepTurn();
   }
@@ -2495,6 +2507,7 @@ export function openExactStoreEpoch(
     if (!runtime.storage.syncDirectoryDurableSync(proven.storeRoot)) {
       return { kind: 'holding', reason: 'open-failed' };
     }
+    recordUncoveredEpochUse(runtime, proven);
     opened.db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
     adopted = true;
     return {
@@ -2514,6 +2527,22 @@ export function openExactStoreEpoch(
   } finally {
     if (!adopted) opened.db.close();
   }
+}
+
+function recordUncoveredEpochUse(runtime: Runtime, epoch: ResolvedStoreEpoch): void {
+  const runDir = runtime.paths.coral.coordinator.runDir;
+  const ledgerId = initializeCustodyLedger(runtime, runDir);
+  const directory = dirname(epoch.path);
+  if (hasEpochCustodyCoverage(runtime, directory, runDir)) return;
+  const usedPath = join(directory, '.coral-used-after-custody-start.v1.json');
+  if (
+    observeStorePath(runtime.storage, usedPath) === 'absent' &&
+    !runtime.storage.writeAtomicDurableSync(usedPath, `${JSON.stringify({ version: 'v1', ledgerId })}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
+  )
+    throw new Error(`Failed to record use of uncovered store epoch ${epoch.epoch}.`);
 }
 
 export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): StoreEpochSettlement {
@@ -2552,6 +2581,12 @@ export function settleStoreEpoch(runtime: Runtime, options: StoreEpochOptions): 
     if (!runtime.storage.syncDirectoryDurableSync(dbDir)) {
       db.close();
       throw new Error(`Failed to durably adopt store epoch ${current.epoch} in '${dbDir}'.`);
+    }
+    try {
+      recordUncoveredEpochUse(runtime, resolved);
+    } catch (error: unknown) {
+      db.close();
+      throw error;
     }
     db.exec(`PRAGMA busy_timeout = ${options.steadyStateBusyTimeoutMs ?? 5_000}`);
     return { db, store: resolved };
@@ -2830,13 +2865,15 @@ export function listStoreEpochResidues(
     return [{ name: 'unobservable', bytes: null, state: 'unobservable' }];
   }
   return entries
-    .filter(isStoreEpochResidue)
+    .filter((name) => isStoreEpochResidue(name) || name.startsWith(RETAINED_REAPING_DIRECTORY_PREFIX))
     .sort()
     .map((name) => {
       const path = join(dbDir, name);
       const root = observeContainedDirectory(runtime.storage, dbDir, path);
       let state: StoreEpochResidueListEntry['state'];
-      if (root.kind === 'unobservable' || root.kind === 'proven') {
+      if (name.startsWith(RETAINED_REAPING_DIRECTORY_PREFIX)) {
+        state = root.kind === 'proven' ? 'retained' : 'unobservable';
+      } else if (root.kind === 'unobservable' || root.kind === 'proven') {
         state = 'unobservable';
       } else {
         state = 'reclaimable';

@@ -30,6 +30,10 @@ import {
   providerProxySetIdentityFromRecord,
   type ProviderProxySetIdentity,
 } from '../services/provider-proxy-set/identity.js';
+import {
+  readPendingGrantTransfer,
+  recordPendingGrantTransfer,
+} from '../services/provider-proxy-set/pending-grant-transfer.js';
 import type { ProviderProxySetLifecycle } from '../services/provider-proxy-set/index.js';
 import type { OwnerDisposition, SuccessionOwner } from './obligations.js';
 import { successionPreparationSchema, type SuccessionCapabilities, type SuccessionPreparation } from './protocol.js';
@@ -93,12 +97,7 @@ function receiptOf(
   return preparation.receipts.find((receipt) => receipt.owner === owner) ?? null;
 }
 
-/**
- * Whether the current succession preparation hands the set `capsule` describes to this build, and whether its
- * successor already serves. Only two processes may act on it: the attempt's own successor before it serves,
- * and any coordinator of the successor's build once serving is recorded. Every other reader sees a set another
- * build controls.
- */
+/** A pre-serving transfer is valid only for its running attempt; a later controller needs a serving record. */
 export function acceptedControllerTransferHandsCapsule(
   runtime: Runtime,
   ownBuildSetId: string,
@@ -106,15 +105,27 @@ export function acceptedControllerTransferHandsCapsule(
   capsule: RedeemableHandoffCapsule,
 ): ControllerTransferAcceptance {
   const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-  if (observed.kind !== 'readable') return 'not-accepted';
-  const preparation = successionPreparationSchema.safeParse(observed.intent.successionPreparation);
-  if (!preparation.success) return 'not-accepted';
-  const receipt = receiptOf(preparation.data, PROVIDER_PROXY_SETS_OWNER);
-  const transfer = receipt === null ? null : decodeProviderProxyControllerTransfer(receipt.payload);
-  if (transfer === null || !controllerTransferHandsCapsuleTo(transfer, capsule, ownBuildSetId)) return 'not-accepted';
-  const attemptId = preparation.data.attemptId;
-  if (observeSuccessionServing(runtime, attemptId) !== null) return 'served';
-  return runningAttemptId === attemptId ? 'before-serving' : 'not-accepted';
+  if (observed.kind === 'readable') {
+    const preparation = successionPreparationSchema.safeParse(observed.intent.successionPreparation);
+    if (preparation.success) {
+      const receipt = receiptOf(preparation.data, PROVIDER_PROXY_SETS_OWNER);
+      const transfer = receipt === null ? null : decodeProviderProxyControllerTransfer(receipt.payload);
+      if (transfer !== null && controllerTransferHandsCapsuleTo(transfer, capsule, ownBuildSetId)) {
+        const attemptId = preparation.data.attemptId;
+        const served = observeSuccessionServing(runtime, attemptId) !== null;
+        if (!served && runningAttemptId !== attemptId) return 'not-accepted';
+        if (recordPendingGrantTransfer(runtime, capsule, ownBuildSetId, attemptId).kind !== 'recorded') {
+          return 'unconfirmed';
+        }
+        return served ? 'served' : 'before-serving';
+      }
+    }
+  }
+  const pending = readPendingGrantTransfer(runtime, capsule, ownBuildSetId);
+  if (pending.kind === 'unreadable') return 'unconfirmed';
+  return pending.kind === 'recorded' && observeSuccessionServing(runtime, pending.attemptId) !== null
+    ? 'served'
+    : 'not-accepted';
 }
 
 /**
@@ -139,11 +150,7 @@ export function providerHostRecoveryGrantVerifies(
   );
 }
 
-/**
- * The succession owners for provider execution hosts and the saga rows that run in them, on both sides of a
- * transfer: the incumbent authorizes each host to accept the successor and records the receipt; the successor
- * redeems only what an accepted receipt names, and takes the grants over for its own build once it serves.
- */
+/** Transferred hosts must keep recoverable custody until their provider operations settle. */
 export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Readonly<{
   owners: readonly [SuccessionOwner, SuccessionOwner];
   releaseForTransfer(attemptId: string, signal: AbortSignal): Promise<void>;
@@ -299,12 +306,6 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
     );
   }
 
-  /**
-   * Until its grant is this build's, a host is redeemable by this build only while the served receipt survives,
-   * which nothing here controls; so the install is retried while this coordinator holds the set. A refusal ends it,
-   * and so does a control channel that closed, because this coordinator then holds the set no longer and its next
-   * holder redeems it afresh.
-   */
   async function completeTransfer(identity: ProviderProxySetIdentity): Promise<void> {
     let delayMs = INSTALL_RETRY_BASE_MS;
     let reported: string | null = null;
@@ -318,10 +319,6 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
       try {
         const installed = await set.installRecoveryCredential(AbortSignal.timeout(PROXY_CONTROL_RPC_TIMEOUT_MS * 2));
         if (installed.kind === 'installed') return;
-        if (installed.kind === 'refused') {
-          ports.log(`Provider host refused this controller's recovery grant: ${installed.incident.role}\n`);
-          return;
-        }
         if (
           installed.kind === 'retryable' &&
           installed.incident.exchange.kind === 'not-sent' &&
@@ -330,7 +327,7 @@ export function createProviderHostTransfer(ports: ProviderHostTransferPorts): Re
           ports.log("Provider host control closed before its recovery grant became this controller's.\n");
           return;
         }
-        pending = installed.kind;
+        pending = installed.kind === 'refused' ? `refused by ${installed.incident.role}` : installed.kind;
       } catch (error: unknown) {
         pending = formatError(error);
       }

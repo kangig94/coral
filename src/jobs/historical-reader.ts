@@ -66,16 +66,25 @@ const progressBodySchema = z
     timing: jobProgressTimingSchema,
   })
   .passthrough();
-const launchBodySchema = z
-  .object({
-    projectRoot: z.string().min(1),
-    jobKind: jobKindSchema,
-    request: z
-      .object({ cwd: z.string().min(1) })
-      .passthrough()
-      .optional(),
-  })
-  .passthrough();
+const launchBodySchema = z.discriminatedUnion('jobKind', [
+  z
+    .object({
+      projectRoot: z.string().min(1),
+      jobKind: z.literal('kb'),
+      request: z.object({}).passthrough().optional(),
+    })
+    .passthrough(),
+  z
+    .object({
+      projectRoot: z.string().min(1),
+      jobKind: z.enum(['provider', 'workflow']),
+      request: z
+        .object({ cwd: z.string().min(1) })
+        .passthrough()
+        .optional(),
+    })
+    .passthrough(),
+]);
 
 type Projection = z.infer<typeof olderProjectionSchema> & { work_dir?: string | null };
 type HistoricalReader = (db: SqliteDatabasePort) => Projection[];
@@ -368,6 +377,18 @@ export function refreshHistoricalEpoch(
 ): 'read' | 'unreadable' {
   const source = historicalSources.get(index)?.get(epochKey);
   if (source === undefined) return 'unreadable';
+  if (index.unknownLocationHold(epochKey) !== null) {
+    const seeded = seedHistoricalEpoch(
+      source.runtime,
+      index,
+      source.originalEpoch,
+      epochKey,
+      source.fingerprint,
+      source.jobsRoot,
+      source.storage,
+    );
+    if (seeded.kind === 'unrecoverable-retained') return 'unreadable';
+  }
   if (source.epoch === null) {
     try {
       const { runtime, originalEpoch } = source;
@@ -408,7 +429,6 @@ export function refreshHistoricalEpoch(
       const resultPath = writeResultArtifact(source.storage, source.jobsRoot, row.job_id, markdown);
       index.recordTerminal(row.job_id, detail, resultPath, terminal.seq);
     }
-    index.clearUnknownLocations(epochKey);
     return 'read';
   } catch {
     // An unreadable refresh cannot certify absence or void an earlier terminal certificate.

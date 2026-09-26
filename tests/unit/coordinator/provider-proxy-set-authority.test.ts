@@ -3,7 +3,7 @@ import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -41,6 +41,8 @@ import type { SpawnedRoleProcess } from '#src/provider-proxy/role-spawn.js';
 import type { ChildProcessLike } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { discoverProviderHandoffCapsules } from '#src/coordinator/services/provider-proxy-capsule-discovery.js';
+import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { VirtualTime } from '#tools/simulation/core/virtual-time.js';
 
 const GUARDIAN_IDENTITY: GuardianIdentity = {
@@ -700,11 +702,17 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     recovery?: Readonly<{ capsule: HandoffCapsuleV3; operations: ReadonlyArray<typeof OPERATION> }>;
     coordinatorBuildSetId?: string;
     capsuleFileName?: string;
-  }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string } {
+    canonicalRecoveryPath?: boolean;
+  }): { authority: ReturnType<typeof createProviderProxySetAuthority>; handoffCapsulePath: string; runtime: Runtime } {
     const tempRoot = mkdtempSync(join(tmpdir(), 'coral-install-handoff-grant-'));
     tempRoots.push(tempRoot);
-    const handoffCapsulePath = join(tempRoot, options.capsuleFileName ?? 'proxy.handoff.json');
+    const handoffCapsulePath =
+      options.canonicalRecoveryPath && options.recovery !== undefined
+        ? providerHandoffCapsulePath(options.recovery.capsule, 3, { baseDir: tempRoot })
+        : join(tempRoot, options.capsuleFileName ?? 'proxy.handoff.json');
     const runtime = createRealRuntime('dev', { baseDir: tempRoot });
+    if (options.canonicalRecoveryPath)
+      runtime.storage.mkdirSync(dirname(handoffCapsulePath), { recursive: true, mode: 0o700 });
     const common = {
       proxyInstanceId: PROXY_IDENTITY.proxyInstanceId,
       guardianClient: recordingClient(
@@ -754,7 +762,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
             recoveryCapsule: options.recovery.capsule,
             recoveryOperations: options.recovery.operations,
           };
-    return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath };
+    return { authority: createProviderProxySetAuthority(deps), handoffCapsulePath, runtime };
   }
 
   it('installs one standing credential on all roles and keeps its secret only in the mode-0600 capsule', async () => {
@@ -1048,11 +1056,12 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       return { ...fields, version: 3 };
     }
 
-    function recoveredAt(capsule: HandoffCapsuleV3, coordinatorBuildSetId?: string) {
+    function recoveredAt(capsule: HandoffCapsuleV3, coordinatorBuildSetId?: string, canonicalRecoveryPath = false) {
       const recovered = authorityForInstall({
         calls: [],
         recovery: { capsule, operations: [OPERATION] },
         capsuleFileName: 'provider-1a.handoff.v3.json',
+        canonicalRecoveryPath,
         ...(coordinatorBuildSetId === undefined ? {} : { coordinatorBuildSetId }),
       });
       writeFileSync(recovered.handoffCapsulePath, JSON.stringify(capsule), { mode: 0o600 });
@@ -1072,7 +1081,8 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
 
     it('moves a capsule that names another controller to the current generation address', async () => {
       const capsule = await inheritedV3();
-      const { authority, handoffCapsulePath } = recoveredAt(capsule, OTHER_CONTROLLER_BUILD);
+      const { authority, handoffCapsulePath, runtime } = recoveredAt(capsule, OTHER_CONTROLLER_BUILD);
+      const syncDirectory = vi.spyOn(runtime.storage, 'syncDirectoryDurableSync');
 
       await authority.installRecoveryCredential(new AbortController().signal);
 
@@ -1085,6 +1095,35 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
         controllerBuildSetId: OTHER_CONTROLLER_BUILD,
         grantId: capsule.grantId,
       });
+      expect(syncDirectory).toHaveBeenCalledWith(dirname(handoffCapsulePath));
+    });
+
+    it('discovers v4 after an interruption between its durable write and v3 retirement', async () => {
+      const capsule = await inheritedV3();
+      const { authority, handoffCapsulePath, runtime } = recoveredAt(capsule, OTHER_CONTROLLER_BUILD, true);
+      const interruption = new Error('simulated crash after v4 write');
+      vi.spyOn(runtime.storage, 'unlinkSync').mockImplementationOnce(() => {
+        throw interruption;
+      });
+
+      await expect(authority.installRecoveryCredential(new AbortController().signal)).rejects.toThrow(interruption);
+      const currentPath = handoffCapsulePath.replace(/\.handoff\.v3\.json$/u, '.handoff.v4.json');
+      expect(() => statSync(handoffCapsulePath)).not.toThrow();
+      expect(() => statSync(currentPath)).not.toThrow();
+
+      const runDir = dirname(handoffCapsulePath);
+      const stat = runtime.storage.statSync(runDir, { bigint: true });
+      if (stat.uid === undefined) throw new Error('capsule directory has no owner');
+      const discovered = discoverProviderHandoffCapsules({
+        runDir,
+        generationRoot: runtime.paths.coral.generation.root,
+        storage: runtime.storage,
+        uid: Number(stat.uid),
+      });
+      expect(discovered).toEqual([
+        { path: currentPath, capsule: { ...capsule, version: 4, controllerBuildSetId: OTHER_CONTROLLER_BUILD } },
+      ]);
+      expect(() => statSync(handoffCapsulePath)).toThrow();
     });
   });
 
