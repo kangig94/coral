@@ -201,6 +201,15 @@ function prepareRetainedControllerHandoffForLineage(
   return target === null ? null : { target, epochKey };
 }
 
+/** An unreadable receipt store may name the epoch, so only a readable one can rule it out. */
+function controllerReceiptsMayNameEpoch(runtime: Runtime, epochKey: string, lineageKey: string): boolean {
+  const receipts = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
+  return (
+    receipts === null ||
+    receipts.some((receipt) => receipt.epochKey === epochKey || receipt.lineageEpochKey === lineageKey)
+  );
+}
+
 export function createStartupMintAuthorizer(
   runtime: Runtime,
   index: JobLocationIndex,
@@ -274,6 +283,7 @@ export function createStartupMintAuthorizer(
       for (const location of index.locationsFor(epochKey)) index.markUncertified(location.jobId);
     }
     let custodySettled: boolean;
+    let custodyNamesEpoch = true;
     try {
       const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
       const matching = custody.filter(
@@ -282,6 +292,7 @@ export function createStartupMintAuthorizer(
           entry.intent.epochKey === lineageKey ||
           entry.intent.epoch === dirname(incumbent.path),
       );
+      custodyNamesEpoch = matching.length > 0;
       custodySettled = true;
       for (const entry of matching) {
         if (entry.kind === 'absent') continue;
@@ -360,7 +371,11 @@ export function createStartupMintAuthorizer(
       })
     )
       throw new Error('Retirement patience could not be recorded durably.');
-    if (!liveHistory && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
+    const holdsNoWork =
+      index.locationsFor(epochKey).length === 0 &&
+      !custodyNamesEpoch &&
+      !controllerReceiptsMayNameEpoch(runtime, epochKey, lineageKey);
+    if (!liveHistory && !holdsNoWork && attempts < UNOPENABLE_STARTUP_ATTEMPTS) return null;
     recordEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, {
       version: 'v1',
       epochKey: lineageKey,

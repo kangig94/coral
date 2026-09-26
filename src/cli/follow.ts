@@ -14,7 +14,7 @@ import {
   type WaitCursor,
   type WaitStreamEvent,
 } from '../jobs/wait.js';
-import { advanceWaitRenderCursor, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
+import { advanceWaitRenderCursor, isWaitHandoverNotice, parseWaitStreamEventValue } from '../jobs/wait-stream-event.js';
 import { HEALTH_TIMEOUT_MS } from '../transport/health.js';
 import { BackendUnreachableError, isTransientStreamError, TransientHttpError } from '../infra/http-errors.js';
 import { assertNever } from '../infra/error-format.js';
@@ -491,6 +491,10 @@ export async function followJobs(options: FollowJobsOptions): Promise<number> {
             return await finishAbortAttempt(abortState.promise, options.emitError);
           }
 
+          if (isWaitHandoverNotice(raw)) {
+            reconnect = true;
+            break;
+          }
           const event = parseWaitStreamEventValue(raw);
           if (event === null) {
             // Unrecognized event type: a newer coordinator emitted something this build predates.
@@ -667,6 +671,7 @@ export async function launchAndFollow(options: FollowOptions): Promise<number> {
             // coordinator new enough to derive it actually put one on the wire.
             supportsInterrupted: true,
             supportsWaitV2: true,
+            supportsHandover: true,
           },
           {
             timeoutMs: HEALTH_TIMEOUT_MS,

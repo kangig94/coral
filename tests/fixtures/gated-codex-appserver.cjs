@@ -46,7 +46,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
       const turnId = 'turn-' + message.id;
       send({ method: 'turn/started', params: { threadId, turn: { id: turnId, status: 'inProgress' } } });
       send({ id: message.id, result: { turn: { id: turnId, status: 'inProgress' } } });
-      fs.writeFileSync(path.join(state, 'job-running'), 'running');
+      fs.writeFileSync(path.join(state, 'job-running'), String(process.pid));
       waitForGate(message.id, turnId);
       break;
     }

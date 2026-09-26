@@ -213,6 +213,7 @@ export function registerSessionCommands(program: Command, providerRegistry: Prov
             // wait switch has no arm for an unknown type — keeps working against a newer backend.
             supportsInterrupted: true,
             supportsWaitV2: true,
+            supportsHandover: true,
             ...(cursor ? { cursor } : {}),
           },
           { signal },

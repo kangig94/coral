@@ -30,6 +30,8 @@ export const jobWaitSchema = z
     // that sends `false` are indistinguishable to the coordinator, and both get the pre-`interrupted` stream.
     supportsInterrupted: z.boolean().optional(),
     supportsWaitV2: z.boolean().optional(),
+    // A subscriber that omits this reads a clean end as final, so it must never be sent a handover notice.
+    supportsHandover: z.boolean().optional(),
   })
   .strict();
 

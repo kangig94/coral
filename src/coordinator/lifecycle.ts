@@ -1,5 +1,5 @@
 import type { Server, ServerResponse } from 'node:http';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { backendLog } from '../infra/backend-log.js';
 import { readBackendInfo, type BackendInfo, type BackendInfoRemovalResult } from '../infra/backend-discovery.js';
 import { formatError, serializeThrown, type SerializedThrown } from '../infra/error-format.js';
@@ -173,6 +173,7 @@ import { decodeDurableCliTransfer, verifyDurableCliRecoveryGrant } from './servi
 import { decodeChildPrincipalTransfer } from './child-principal-registry.js';
 import { verifyChildPrincipalRecoveryGrant } from '../infra/child-principal-nonce-ledger.js';
 import { JobLocationIndex } from '../jobs/location-index.js';
+import { readCustodyLedger } from '../store/custody-ledger.js';
 import {
   crashedJobTerminalizationSource,
   type RawCrashedJobRow,
@@ -1174,6 +1175,23 @@ async function prepareSuccessionAttemptStore(
   return { store, retirement };
 }
 
+/**
+ * Only work the dead successor may still control justifies bypassing ordinary build selection for its build.
+ * An unreadable ledger may name such work, so it counts as control.
+ */
+function committedSuccessorMayControlWork(runtime: Runtime, epochKey: string): boolean {
+  const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+  if (index.locationsFor(epochKey).some((location) => location.disposition !== 'terminal')) return true;
+  const epoch = decodeResolvedStoreEpoch(runtime, epochKey);
+  if (epoch === undefined) return true;
+  return readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir).some(
+    (entry) =>
+      entry.kind === 'unreadable' ||
+      (entry.kind !== 'absent' &&
+        (entry.intent.epochKey === epoch.lineageKey || entry.intent.epoch === dirname(epoch.path))),
+  );
+}
+
 function prepareCommittedSuccessorRecovery(
   runtime: Runtime,
   identity: CoordinatorIdentity,
@@ -1233,6 +1251,10 @@ function prepareCommittedSuccessorRecovery(
   ) {
     throw new SuccessionAttemptStartupHoldError('committed successor identity does not match its writer');
   }
+  const runsTargetBuild =
+    intent.target.build.buildSetId === currentBuild.buildSetId &&
+    intent.target.build.bundleHash === currentBuild.bundleHash;
+  if (!runsTargetBuild && !committedSuccessorMayControlWork(runtime, receipt.epochKey)) return null;
   // A committed successor controls live work, so its own retained root stands in for an uninstalled one.
   const installed = revalidateUpgradeIntentTarget(intent);
   const targetRoot =

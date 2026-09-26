@@ -77,6 +77,8 @@ const SHIPPED_PROTOCOL_GROUPS = [
 ] as const;
 
 const DIRECT_UPGRADE_TAGS = ['v0.10.0', 'v0.10.5', 'v0.10.13'] as const;
+// Builds before the v0.10.11 epoch cutover keep jobs in a flat store that later builds never index or read.
+const PRE_EPOCH_STORE_TAGS: ReadonlySet<ShippedReleaseTag> = new Set(['v0.10.0', 'v0.10.5']);
 const LEGACY_CLI_REPLACEMENT_TAGS = ['v0.10.0', 'v0.10.1', 'v0.10.2', 'v0.10.3', 'v0.10.4'] as const;
 
 afterEach(async () => {
@@ -232,6 +234,24 @@ async function launchShippedJob(
 }
 
 async function readJobDetail(cliPath: string, home: string, projectRoot: string, jobId: string): Promise<string> {
+  const { code, output } = await runJobDetail(cliPath, home, projectRoot, jobId);
+  expect(code, output).toBe(0);
+  return output;
+}
+
+async function expectPreEpochHistory(cliPath: string, home: string, projectRoot: string, jobId: string): Promise<void> {
+  const { code, output } = await runJobDetail(cliPath, home, projectRoot, jobId);
+  expect(code, output).not.toBe(0);
+  expect(output).toContain('job_pre_epoch_history');
+  expect(output).toContain(jobId);
+}
+
+async function runJobDetail(
+  cliPath: string,
+  home: string,
+  projectRoot: string,
+  jobId: string,
+): Promise<{ code: number | null; output: string }> {
   const child = spawn(process.execPath, [cliPath, 'jobs', 'detail', jobId], {
     cwd: projectRoot,
     env: { ...process.env, HOME: home, TMPDIR: home, CLAUDE_PLUGIN_ROOT: dirname(dirname(cliPath)) },
@@ -258,8 +278,7 @@ async function readJobDetail(cliPath: string, home: string, projectRoot: string,
       resolve(status);
     });
   });
-  expect(code, output).toBe(0);
-  return output;
+  return { code, output };
 }
 
 describe('AC18 first-release version pairing', () => {
@@ -450,9 +469,14 @@ describe('AC18 first-release version pairing', () => {
       expect(readFileSync(join(home, '.coral', 'exports', 'jobs', completedJobId, 'result.md'), 'utf8')).toContain(
         'done',
       );
-      const detail = await readJobDetail(join(branch.root, 'bridge', 'coral-cli'), home, projectRoot, completedJobId);
-      expect(detail).toContain(`Job ${completedJobId}`);
-      expect(detail).toContain('Phase: completed');
+      const branchCli = join(branch.root, 'bridge', 'coral-cli');
+      if (PRE_EPOCH_STORE_TAGS.has(tag)) {
+        await expectPreEpochHistory(branchCli, home, projectRoot, completedJobId);
+      } else {
+        const detail = await readJobDetail(branchCli, home, projectRoot, completedJobId);
+        expect(detail).toContain(`Job ${completedJobId}`);
+        expect(detail).toContain('Phase: completed');
+      }
       expect(readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir)).toMatchObject({
         kind: 'readable',
         intent: { disposition: 'completed' },
@@ -483,8 +507,10 @@ describe('AC18 first-release version pairing', () => {
       const completedJobId = await launchShippedJob(shipped, home, projectRoot, binDir, 'completed');
       rmSync(join(state, 'release-job'), { force: true });
       rmSync(join(state, 'job-running'), { force: true });
+      let liveProviderPid: number | null = null;
       try {
         const liveJobId = await launchShippedJob(shipped, home, projectRoot, binDir, 'running');
+        liveProviderPid = Number(readFileSync(join(state, 'job-running'), 'utf8'));
         incumbent.child.kill('SIGKILL');
         await waitForProcessExit(incumbent, 20_000);
         const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
@@ -507,24 +533,25 @@ describe('AC18 first-release version pairing', () => {
           throw new Error('Direct crash upgrade did not reach a serving coordinator.');
         }
         rememberSuccessor(serving.pid);
-        const completed = await readJobDetail(
-          join(branch.root, 'bridge', 'coral-cli'),
-          home,
-          projectRoot,
-          completedJobId,
-        );
-        expect(completed).toContain(`Job ${completedJobId}`);
-        expect(completed).toContain('Phase: completed');
-        const liveOrUnresolved = await readJobDetail(
-          join(branch.root, 'bridge', 'coral-cli'),
-          home,
-          projectRoot,
-          liveJobId,
-        );
-        expect(liveOrUnresolved).toContain(`Job ${liveJobId}`);
-        expect(liveOrUnresolved).not.toMatch(/jobs?_not_found/u);
+        const branchCli = join(branch.root, 'bridge', 'coral-cli');
+        if (PRE_EPOCH_STORE_TAGS.has(tag)) {
+          await expectPreEpochHistory(branchCli, home, projectRoot, completedJobId);
+          await expectPreEpochHistory(branchCli, home, projectRoot, liveJobId);
+          expect(liveProviderPid).not.toBeNull();
+          expect(observeProcessLiveness(liveProviderPid ?? 0)).toBe('alive');
+        } else {
+          const completed = await readJobDetail(branchCli, home, projectRoot, completedJobId);
+          expect(completed).toContain(`Job ${completedJobId}`);
+          expect(completed).toContain('Phase: completed');
+          const liveOrUnresolved = await readJobDetail(branchCli, home, projectRoot, liveJobId);
+          expect(liveOrUnresolved).toContain(`Job ${liveJobId}`);
+          expect(liveOrUnresolved).not.toMatch(/jobs?_not_found/u);
+        }
       } finally {
         writeFileSync(join(state, 'release-job'), 'released');
+        if (liveProviderPid !== null && observeProcessLiveness(liveProviderPid) === 'alive') {
+          process.kill(liveProviderPid, 'SIGKILL');
+        }
       }
     },
     240_000,
@@ -577,6 +604,48 @@ describe('AC18 first-release version pairing', () => {
     expect(serving.bundleHash).toBe(shipped.bundleHash);
     expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
   }, 50_000);
+
+  it('lets the older build take rollback after a completed upgrade once the successor root stops validating', async () => {
+    assertBuildArtifactsAvailable();
+    const home = newHome();
+    const older = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
+    const incumbent = spawnCoordinator({ fixture: older, home, tempRoots: roots });
+    coordinators.push(incumbent);
+    const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
+    const newer = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
+    const contender = spawnCoordinator({ fixture: newer, home, tempRoots: roots });
+    coordinators.push(contender);
+    expect(await waitForProcessExit(contender, 30_000)).toEqual({ code: 0, signal: null });
+    await waitForCondition(() => {
+      const current = readDiscoveryRecordForHome(home, 'prod');
+      const intent = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+      return (
+        current !== null &&
+        current.pid !== initial.pid &&
+        current.bundleHash === newer.bundleHash &&
+        intent.kind === 'readable' &&
+        intent.intent.disposition === 'completed'
+      );
+    }, 60_000);
+    const successor = readDiscoveryRecordForHome(home, 'prod');
+    if (successor === null) throw new Error('Completed upgrade has no serving successor.');
+    await waitForProcessExit(incumbent, 30_000);
+    process.kill(successor.pid, 'SIGTERM');
+    await waitForCondition(() => observeProcessLiveness(successor.pid) === 'absent', 30_000);
+    rmSync(newer.root, { recursive: true, force: true });
+
+    const rollback = spawnCoordinator({ fixture: older, home, tempRoots: roots });
+    coordinators.push(rollback);
+    await waitForCondition(() => {
+      const current = readDiscoveryRecordForHome(home, 'prod');
+      return current !== null && current.pid === rollback.child.pid;
+    }, 30_000).catch((error: unknown) => {
+      throw new Error(`Older build did not take rollback: ${rollback.output()}`, { cause: error });
+    });
+    const serving = readDiscoveryRecordForHome(home, 'prod');
+    expect(serving?.bundleHash).toBe(older.bundleHash);
+    expect(await probeCoordinatorSocket(serving?.socketPath ?? '')).toBe('accepting');
+  }, 150_000);
 
   it.each(SHIPPED_RELEASE_TAGS)(
     'refuses a %s contender while a newer incumbent serves',

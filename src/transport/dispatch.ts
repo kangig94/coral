@@ -1,7 +1,7 @@
 import type { DiscussSessionsListResponse } from '../discuss/read-contract.js';
 import type { JobLaunchRequest } from '../jobs/launch.js';
 import type { JobsListResponse } from '../jobs/records.js';
-import type { WaitCursor, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
+import type { WaitCursor, WaitHandoverNotice, WaitStreamEvent, WaitStreamRequest } from '../jobs/wait.js';
 import type { InvocationContext } from '../runtime/invocation-context.js';
 import {
   canonicalizeWorkDir,
@@ -278,6 +278,42 @@ async function* withInterruptedGate(
       continue;
     }
     yield event;
+  }
+}
+
+/**
+ * Ends the stream with a handover notice once the jobs belong to a successor. The inner stream is released
+ * without awaiting it: it is parked on its own wait, which ends only when the subscription aborts, and the
+ * subscription aborts only after this generator returns.
+ */
+async function* withSuccessionHandover(
+  events: AsyncIterable<WaitStreamEvent>,
+  handover: AbortSignal | undefined,
+): AsyncGenerator<WaitStreamEvent | WaitHandoverNotice> {
+  if (handover === undefined) {
+    yield* events;
+    return;
+  }
+  const iterator = events[Symbol.asyncIterator]();
+  let onHandover = (): void => {};
+  const handedOver = new Promise<null>((resolve) => {
+    onHandover = () => resolve(null);
+  });
+  if (handover.aborted) onHandover();
+  else handover.addEventListener('abort', onHandover, { once: true });
+  try {
+    for (;;) {
+      const next = await Promise.race([iterator.next(), handedOver]);
+      if (next === null) {
+        void iterator.return?.(undefined).catch(() => undefined);
+        yield { type: 'handover' };
+        return;
+      }
+      if (next.done) return;
+      yield next.value;
+    }
+  } finally {
+    handover.removeEventListener('abort', onHandover);
   }
 }
 
@@ -1029,13 +1065,19 @@ async function executeJobsDetailCatalogRequest({
   if (scopeCheck.mismatch.length > 0) {
     return unaryHttp(domainResultToHttp(jobScopeMismatchResult(scopeCheck.mismatch)));
   }
-  if (scopeCheck.missing.length === 1) {
-    return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
-  }
 
   const detail = rpcPorts.jobs.detail(parsed.jobId);
   if (!detail) {
     return unary({ code: 'job_not_found', message: `Job not found: ${parsed.jobId}` }, 404);
+  }
+  if ('kind' in detail && detail.kind === 'pre-epoch-history') {
+    return unary(
+      {
+        code: 'job_pre_epoch_history',
+        message: `Job ${parsed.jobId} is not in this coordinator's job history. History written before Coral v0.10.11 is kept in a store this build does not read, so details of a job that ran there are not available.`,
+      },
+      404,
+    );
   }
   if ('kind' in detail && detail.kind === 'unresolved') {
     return unary(
@@ -1063,6 +1105,7 @@ async function executeJobsWaitCatalogRequest({
     cursor?: WaitCursor;
     supportsInterrupted?: boolean;
     supportsWaitV2?: boolean;
+    supportsHandover?: boolean;
   };
   const callerRoot = canonicalRequest.projectRoot;
   if (callerRoot === undefined) return unaryHttp(domainResultToHttp(invalidRequestResult()));
@@ -1081,15 +1124,18 @@ async function executeJobsWaitCatalogRequest({
     );
   }
 
-  const { supportsInterrupted, ...waitFields } = parsed;
+  const { supportsInterrupted, supportsHandover, ...waitFields } = parsed;
   const waitRequest: WaitStreamRequest = waitFields;
   const cursorError = rpcPorts.jobs.validateWait?.(waitRequest);
   if (cursorError) return unary(cursorError, 400);
   return {
     kind: 'subscription',
-    notifications: withInterruptedGate(
-      rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
-      supportsInterrupted === true,
+    notifications: withSuccessionHandover(
+      withInterruptedGate(
+        rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
+        supportsInterrupted === true,
+      ),
+      supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal?.() : undefined,
     ),
   };
 }

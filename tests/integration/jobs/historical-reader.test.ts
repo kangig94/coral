@@ -307,12 +307,16 @@ describe('historical job readers', () => {
     ).toBe('complete');
     expect(index.resultsReleased('lineage-old:7')).toBe(true);
     rmSync(epochDir, { recursive: true });
-    const addressing = new JobAddressing(index, {
-      epochKey: () => 'lineage-new:8',
-      detail: () => null,
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
-    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+    );
     expect(addressing.detail('finished')).toMatchObject({
       status: { jobId: 'finished', phase: 'completed' },
       exit: { content: 'finished result' },

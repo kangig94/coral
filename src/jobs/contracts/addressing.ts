@@ -12,4 +12,8 @@ export type JobDetailLookup =
       jobId: string;
       epochKey: string;
     }>
+  | Readonly<{
+      kind: 'pre-epoch-history';
+      jobId: string;
+    }>
   | null;

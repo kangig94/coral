@@ -6,7 +6,7 @@ import { jobPhaseSchema } from './phase.js';
 import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobTerminalSchema } from './terminal/result.js';
 import { usageSummarySchema } from '../providers/contract.js';
-import { isWaitCursorV2, type WaitCursor, type WaitStreamEvent } from './wait.js';
+import { isWaitCursorV2, type WaitCursor, type WaitHandoverNotice, type WaitStreamEvent } from './wait.js';
 
 const KNOWN_WAIT_STREAM_EVENT_TYPES = new Set<string>(['progress', 'queued', 'terminal', 'interrupted', 'waiting']);
 const waitCursorV2Schema = z.object({
@@ -188,4 +188,8 @@ export function parseWaitStreamEventValue(value: unknown): WaitStreamEvent | nul
     return null;
   }
   return waitStreamEventSchema.parse(value);
+}
+
+export function isWaitHandoverNotice(value: unknown): value is WaitHandoverNotice {
+  return isRecord(value) && value.type === 'handover';
 }

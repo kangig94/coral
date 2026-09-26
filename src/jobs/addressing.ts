@@ -16,13 +16,21 @@ export interface ActiveJobAccess {
 
 const HISTORICAL_POLL_MS = 250;
 
+/**
+ * Whether a store written before the epoch layout exists. Only its existence may be observed: its jobs are never
+ * indexed, opened, or read, so an id absent from every epoch may still name one of them.
+ */
+export type PreEpochHistoryProbe = () => boolean;
+
 export class JobAddressing {
   private readonly locations: JobLocationIndex;
   private readonly active: ActiveJobAccess;
+  private readonly preEpochHistoryExists: PreEpochHistoryProbe;
 
-  constructor(locations: JobLocationIndex, active: ActiveJobAccess) {
+  constructor(locations: JobLocationIndex, active: ActiveJobAccess, preEpochHistoryExists: PreEpochHistoryProbe) {
     this.locations = locations;
     this.active = active;
+    this.preEpochHistoryExists = preEpochHistoryExists;
   }
 
   private location(jobId: string): JobLocation | null {
@@ -66,7 +74,7 @@ export class JobAddressing {
 
   detail(jobId: string): JobDetailLookup {
     const location = this.location(jobId);
-    if (location === null) return null;
+    if (location === null) return this.preEpochHistoryExists() ? { kind: 'pre-epoch-history', jobId } : null;
     const historical = location.epochKey !== this.active.epochKey();
     if (!historical) {
       const active = this.active.detail(jobId);

@@ -156,6 +156,14 @@ export type WaitStreamEvent =
     };
 
 /**
+ * Wire-only notice that the coordinator serving this subscription has handed its jobs to a successor. The
+ * stream ends right after it; a subscriber that resubscribes with the cursor it already holds continues the
+ * same wait there. It is sent only to a subscriber that declared `supportsHandover`, because to any other
+ * subscriber the end that follows it would read as final.
+ */
+export type WaitHandoverNotice = { type: 'handover' };
+
+/**
  * The wire-only report that a job's carrier was observed absent.
  *
  * Deliberately nonterminal, and deliberately missing everything a terminal has: no journal `seq`, no

@@ -135,12 +135,16 @@ describe('job addressing across a process-owned epoch switch', () => {
       expect(seeded.kind).toBe('uncertified');
       expect(index.certificate(oldEpochKey)).toBeNull();
       let activeEpochKey = oldEpochKey;
-      const addressing = new JobAddressing(index, {
-        epochKey: () => activeEpochKey,
-        detail: () => null,
-        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
-      });
+      const addressing = new JobAddressing(
+        index,
+        {
+          epochKey: () => activeEpochKey,
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          waitStream: async function* () {},
+        },
+        () => false,
+      );
       createNewFormatEpoch(root);
       activeEpochKey = newEpochKey;
       expect(addressing.detail('old-live')).toMatchObject({ exit: { content: 'old result' } });
@@ -180,12 +184,16 @@ describe('job addressing across a process-owned epoch switch', () => {
         jobKind: 'provider',
       });
       createNewFormatEpoch(root);
-      const addressing = new JobAddressing(index, {
-        epochKey: () => newEpochKey,
-        detail: () => null,
-        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-        waitStream: async function* () {},
-      });
+      const addressing = new JobAddressing(
+        index,
+        {
+          epochKey: () => newEpochKey,
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          waitStream: async function* () {},
+        },
+        () => false,
+      );
       expect(addressing.detail('old-live')).toMatchObject({
         status: { jobId: 'old-live', phase: 'running' },
       });

@@ -39,7 +39,10 @@ export function retainedBuildRoot(runtime: Runtime, buildSetId: string): string 
   return join(dirname(runtime.paths.coral.coordinator.runDir), 'builds', buildSetId);
 }
 
-/** Retains the running build as a whole plugin root whose `bridge/` is the bundle directory this process runs from. */
+/**
+ * Retains the running build as a whole plugin root whose `bridge/` is the bundle directory this process runs from.
+ * A retained copy that no longer validates is replaced, because nothing but this process will ever repair it.
+ */
 export function pinRunningBuildRoot(runtime: Runtime, pluginRoot: string, manifest: StrictBundleManifest): string {
   const runningBundleDir = resolveRunningBundleDir(pluginRoot);
   if (runningBundleDir === null) throw new Error('Running bundle directory is unobservable.');
@@ -50,10 +53,13 @@ export function pinRunningBuildRoot(runtime: Runtime, pluginRoot: string, manife
   const target = retainedBuildRoot(runtime, manifest.buildSetId);
   const validate = createForeignTargetValidator();
   if (existsSync(target)) {
-    if (validate(join(target, 'bridge'), manifest).kind !== 'validated') {
-      throw new Error('Previously retained build root no longer validates.');
+    if (validate(join(target, 'bridge'), manifest).kind === 'validated') return target;
+    if (realpathSync(target) === realpathSync(pluginRoot)) {
+      throw new Error('The running build root is its own retained copy and no longer validates.');
     }
-    return target;
+    const superseded = join(dirname(target), `.superseded-${randomUUID()}`);
+    renameSync(target, superseded);
+    rmSync(superseded, { recursive: true, force: true });
   }
   const parent = dirname(target);
   mkdirSync(parent, { recursive: true, mode: 0o700 });

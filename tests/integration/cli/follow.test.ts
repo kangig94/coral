@@ -374,6 +374,7 @@ describe('cli follow', () => {
         projectRoot: '/project/root',
         supportsInterrupted: true,
         supportsWaitV2: true,
+        supportsHandover: true,
       },
       {
         timeoutMs: 3_000,
@@ -666,6 +667,48 @@ describe('cli follow', () => {
       },
       exitCode: 75,
     });
+  });
+
+  it('resubscribes with the current cursor after a handover notice, without spending a retry', async () => {
+    const { followJobs } = await loadFollowModule();
+    const progressEvent = makeProgressEvent('Before handover');
+    const terminalEvent = makeTerminalEvent({}, { seq: 2 });
+    const emitError = vi.fn();
+    const backoffScheduler = vi.fn(async (_delayMs: number) => undefined);
+    const handedOver = {
+      close: vi.fn().mockResolvedValue(undefined),
+      [Symbol.asyncIterator]: async function* (): AsyncGenerator<unknown> {
+        yield progressEvent;
+        yield { type: 'handover' };
+      },
+    };
+    const connect = vi
+      .fn()
+      .mockResolvedValueOnce({ kind: 'subscription', subscription: handedOver })
+      .mockResolvedValueOnce({
+        kind: 'subscription',
+        subscription: makeSubscription(async function* () {
+          yield terminalEvent;
+        }),
+      });
+
+    const exitCode = await followJobs({
+      start: { kind: 'jobs', jobIds: ['job-1'] },
+      reconnectPolicy: 'bounded',
+      projectRoot: '/project/root',
+      emitError,
+      render: { isTTY: false, columns: 80, embed: false, verbose: false },
+      abortJobs: vi.fn(),
+      connect,
+      backoffScheduler,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(emitError).not.toHaveBeenCalled();
+    expect(backoffScheduler).not.toHaveBeenCalled();
+    expect(handedOver.close).toHaveBeenCalledOnce();
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(connect.mock.calls[1]?.[0]).toMatchObject({ jobIds: ['job-1'], cursor: { afterSeq: 1 } });
   });
 
   it('retries transient stream failures with a 1s backoff and resumes from the current cursor', async () => {

@@ -17,6 +17,7 @@ import { certifyRetiringEpochCustody, settleSupersededEpochClosures } from '../s
 import { createEpochClosureRetryPlan } from '../services/recovery/epoch-closure-retry-plan.js';
 import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
+import { writeAuditEvent } from '../../infra/audit-log.js';
 import { pinRunningBuildRoot } from '../../infra/retained-build-root.js';
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
@@ -1515,24 +1516,33 @@ export function createCoordinatorCore(
       exit: detail.exit,
     };
   };
-  const jobAddressing = new JobAddressing(jobLocationIndex, {
-    epochKey: currentJobEpochKey,
-    detail: activeJobDetail,
-    abort: control.abortJobs,
-    waitStream: (request) =>
-      services
-        .getExecutionService(
-          createSystemInvocationContext(
-            request.projectRoot === undefined
-              ? readOnlyProjectRoot
-              : canonicalWorkDirWireSchema.parse(request.projectRoot),
-            'coordinator-readonly',
-            readOnlyInvocationContext.coralEnv,
-          ),
-        )
-        .waitStream(request),
-  });
+  const jobAddressing = new JobAddressing(
+    jobLocationIndex,
+    {
+      epochKey: currentJobEpochKey,
+      detail: activeJobDetail,
+      abort: control.abortJobs,
+      waitStream: (request) =>
+        services
+          .getExecutionService(
+            createSystemInvocationContext(
+              request.projectRoot === undefined
+                ? readOnlyProjectRoot
+                : canonicalWorkDirWireSchema.parse(request.projectRoot),
+              'coordinator-readonly',
+              readOnlyInvocationContext.coralEnv,
+            ),
+          )
+          .waitStream(request),
+    },
+    () =>
+      [
+        join(runtime.paths.coral.store.dbDir, 'store.db'),
+        join(runtime.paths.coral.generation.legacyDataRoot, 'store', 'store.db'),
+      ].some((path) => runtime.storage.existsSync(path)),
+  );
 
+  let waitHandover = new AbortController();
   const rpcPorts: RpcPorts = {
     sessions: {
       start: (providerName, input, ctx) => services.getExecutionService(ctx).start(providerName, input, ctx),
@@ -1542,6 +1552,7 @@ export function createCoordinatorCore(
       abort: (jobIds) => jobAddressing.abort(jobIds),
       validateWait: (request) => jobAddressing.validateWait(request),
       waitStream: (request) => jobAddressing.waitStream(request),
+      waitHandoverSignal: () => waitHandover.signal,
       list: (filters) => {
         const progressStore = getProgressStore();
         const jobs: ReturnType<typeof progressStore.listJobProjections> = [];
@@ -1916,6 +1927,11 @@ export function createCoordinatorCore(
     },
   ];
   let activeSuccessionAttempt: SuccessionAttempt | null = null;
+  /** Precedes every exit to a serving successor: an open wait learns to resubscribe there instead of ending. */
+  async function handOverOpenConnections(attempt: SuccessionAttempt): Promise<void> {
+    waitHandover.abort();
+    await Promise.race([attempt.drainIncumbentConnections(ipcServer), runtime.time.sleep(500)]);
+  }
   let successionCommitPromise: Promise<void> | null = null;
   let successionAbortRequested = false;
   const updateAttempt = async (attemptId: string, change: (intent: UpgradeIntent) => UpgradeIntent): Promise<void> => {
@@ -2071,6 +2087,9 @@ export function createCoordinatorCore(
     const pause = world.launchCoordinator.beginSuccessionCommitWindow(attempt.attemptId, preparation.admissionRevision);
     if (pause.kind !== 'paused') throw new Error(`Succession admission pause was ${pause.reason}.`);
     const stopAttemptForwarding = attempt.forwardConnections(ipcServer);
+    // Only after forwarding starts: a wait that resubscribes must reach the successor, never this incumbent,
+    // whose store reads fail once its writers park.
+    waitHandover.abort();
     let forwarding = true;
     const stopForwarding = (): void => {
       if (!forwarding) return;
@@ -2189,7 +2208,7 @@ export function createCoordinatorCore(
           ) {
             throw new Error('injected succession release failure');
           }
-          await Promise.race([attempt.drainIncumbentConnections(ipcServer), runtime.time.sleep(500)]);
+          await handOverOpenConnections(attempt);
           process.exit(0);
         }
         if (hold !== null) throw new Error(hold);
@@ -2202,8 +2221,12 @@ export function createCoordinatorCore(
       }
     } catch (error: unknown) {
       const serving = observeSuccessionServing(runtime, attempt.attemptId);
-      if (serving !== null) process.exit(0);
+      if (serving !== null) {
+        await handOverOpenConnections(attempt);
+        process.exit(0);
+      }
       stopForwarding();
+      waitHandover = new AbortController();
       const reason = formatError(error);
       try {
         await updateAttempt(attempt.attemptId, (intent) => ({
@@ -2798,7 +2821,17 @@ export function createCoordinatorCore(
       if (openStore.path !== ':memory:') {
         const runningBuild = resolveStrictBundleIdentity();
         if (runningBuild.ok && runningBuild.manifest.buildSetId === identity.buildSetId) {
-          pinRunningBuildRoot(runtime, identity.pluginRoot, runningBuild.manifest);
+          try {
+            pinRunningBuildRoot(runtime, identity.pluginRoot, runningBuild.manifest);
+          } catch (error: unknown) {
+            // The retained copy only serves a later crash hand-back, which falls back to unresolved retention
+            // without it; refusing to serve over it would leave nothing running to retry the copy.
+            writeAuditEvent(
+              'retained_build_root_unavailable',
+              { buildSetId: runningBuild.manifest.buildSetId, reason: formatError(error) },
+              'warn',
+            );
+          }
           const writerGeneration = observeSuccessionWriterGeneration(runtime);
           const generation =
             writerGeneration !== null &&
@@ -3157,12 +3190,16 @@ export function createCoordinatorCore(
     beforeShutdown: () => {
       const attempt = activeSuccessionAttempt;
       if (attempt === null) return 'continue';
-      if (observeSuccessionServing(runtime, attempt.attemptId) !== null) return 'succession-release';
+      if (observeSuccessionServing(runtime, attempt.attemptId) !== null) {
+        return handOverOpenConnections(attempt).then(() => 'succession-release' as const);
+      }
       successionAbortRequested = true;
       return (async () => {
         await attempt.abort().catch(() => {});
         await successionCommitPromise;
-        return observeSuccessionServing(runtime, attempt.attemptId) === null ? 'continue' : 'succession-release';
+        if (observeSuccessionServing(runtime, attempt.attemptId) === null) return 'continue';
+        await handOverOpenConnections(attempt);
+        return 'succession-release';
       })();
     },
     ...(options.acceptProcessExitRemainder === undefined

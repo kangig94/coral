@@ -285,6 +285,54 @@ describe('subscription carriage', () => {
     }
   });
 
+  it.each([
+    [true, [makeWaitEvents()[0], { type: 'handover' }]],
+    [false, [makeWaitEvents()[0]]],
+  ] as const)(
+    'ends an open wait with a handover notice only for a subscriber that declared it (declared=%s)',
+    async (supportsHandover, expected) => {
+      const requests: WaitStreamRequest[] = [];
+      const ports = createPorts(requests);
+      const handover = new AbortController();
+      ports.jobs.waitHandoverSignal = () => handover.signal;
+      ports.jobs.waitStream = vi.fn(async function* (request: WaitStreamRequest) {
+        requests.push(request);
+        yield makeWaitEvents()[0];
+        await new Promise<void>((resolve) => request.abortSignal?.addEventListener('abort', () => resolve()));
+      });
+      const socketPath = makeSocketPath();
+      const listener = createIpcServer(ports);
+
+      await listenIpcServer(listener, socketPath);
+      try {
+        const subscription = await createIpcClient(socketPath, undefined, {
+          kind: 'boot',
+          token: 'test-boot-token',
+        }).subscribe<unknown>('jobs.wait', {
+          jobIds: ['job-1'],
+          projectRoot: PROJECT_ROOT,
+          timeoutSeconds: 30,
+          ...(supportsHandover ? { supportsHandover: true } : {}),
+        });
+        const received: unknown[] = [];
+        for await (const event of subscription) {
+          received.push(event);
+          if (received.length === 1) {
+            handover.abort();
+            if (!supportsHandover) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 200));
+              await subscription.close();
+            }
+          }
+        }
+
+        expect(received).toEqual(expected);
+      } finally {
+        await closeIpcServer(listener);
+      }
+    },
+  );
+
   it('lets an explicit drain start while a subscription is still streaming', async () => {
     const requests: WaitStreamRequest[] = [];
     const base = createPorts(requests);

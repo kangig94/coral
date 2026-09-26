@@ -89,6 +89,16 @@ afterEach(async () => {
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
 
+type KbSearchRecord = { status: number | null; stdout: string; stderr: string; error?: string };
+
+function readKbSearch(path: string): KbSearchRecord {
+  return JSON.parse(readFileSync(path, 'utf8')) as KbSearchRecord;
+}
+
+function kbSearchAuthorization(search: KbSearchRecord): { status: number | null; code: string | null } {
+  return { status: search.status, code: /\bcode=(\w+)/u.exec(search.stderr)?.[1] ?? null };
+}
+
 async function createDurableFixture(version?: string, schemaSuffix?: string): Promise<PluginFixture> {
   const fixture = createPluginFixture(roots, { flavor: 'prod', ...(version === undefined ? {} : { version }) });
   const bridge = join(fixture.root, 'bridge');
@@ -274,7 +284,7 @@ async function abortDurableJob(
     }
     expect(status, lastOutput).toBe(3);
     expect(attempt.stdout(), attempt.stderr()).toMatch(
-      /Abort held.*(?:process absence is not yet proven|cleanup attempt is still settling)/iu,
+      /Abort held.*(?:process absence is not yet proven|cleanup attempt is still settling|reaping is in progress)/iu,
     );
     if (pid !== null) await waitForCondition(() => observeProcessLiveness(pid) === 'absent', 30_000);
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
@@ -948,13 +958,10 @@ describe('real-process durable-cli succession', () => {
     );
     expect(Number(readFileSync(join(jobState, 'running'), 'utf8'))).toBe(childPid);
     expect(observeProcessLiveness(childPid)).toBe('alive');
-    const search = JSON.parse(readFileSync(join(jobState, 'kb-search.json'), 'utf8')) as {
-      status: number | null;
-      stdout: string;
-      stderr: string;
-      error?: string;
-    };
-    expect(search.status, JSON.stringify(search)).toBe(0);
+    const before = readKbSearch(join(jobState, 'kb-search-before.json'));
+    const after = readKbSearch(join(jobState, 'kb-search.json'));
+    expect(before.error, JSON.stringify(before)).toBeUndefined();
+    expect(kbSearchAuthorization(after), JSON.stringify({ before, after })).toEqual(kbSearchAuthorization(before));
 
     const queued = await runCli(newerFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']);
     const queuedJobId = launchedJobId(queued);

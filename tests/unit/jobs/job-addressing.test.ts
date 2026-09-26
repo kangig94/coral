@@ -160,12 +160,16 @@ describe('job addressing', () => {
     expect(index.resultsReleased('lineage-old:7')).toBe(false);
     writeFileSync(resultPath, 'old result\n');
 
-    const addressing = new JobAddressing(index, {
-      epochKey: () => 'lineage-new:8',
-      detail: () => null,
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
-    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+    );
     expect(addressing.scopeCheck(['old'], canonicalWorkDirWireSchema.parse('/workspace'), 'contains').missing).toEqual(
       [],
     );
@@ -177,6 +181,22 @@ describe('job addressing', () => {
     const stream = addressing.waitStream({ jobIds: ['old'], supportsWaitV2: true });
     expect((await stream.next()).value).toMatchObject({ type: 'terminal', jobId: 'old', epochKey: 'lineage-old:7' });
     await stream.return(undefined);
+  });
+
+  it('answers an id unknown to every epoch as pre-epoch history only while a pre-epoch store exists', () => {
+    const { index } = fixture();
+    const access = {
+      epochKey: () => 'lineage-new:8',
+      detail: () => null,
+      abort: () => ({ kind: 'answered' as const, result: { aborted: [], notFound: [] } }),
+      waitStream: async function* () {},
+    };
+
+    expect(new JobAddressing(index, access, () => true).detail('flat-store-job')).toEqual({
+      kind: 'pre-epoch-history',
+      jobId: 'flat-store-job',
+    });
+    expect(new JobAddressing(index, access, () => false).detail('flat-store-job')).toBeNull();
   });
 
   it('invalidates a completeness certificate before accepting queued work', () => {
@@ -211,12 +231,16 @@ describe('job addressing', () => {
       workDir: '/workspace/project',
       jobKind: 'provider',
     });
-    const addressing = new JobAddressing(index, {
-      epochKey: () => 'lineage-new:8',
-      detail: (jobId) => (jobId === 'live' ? detail(jobId, 'running') : null),
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
-    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: (jobId) => (jobId === 'live' ? detail(jobId, 'running') : null),
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+    );
     const jobIds = ['live', 'older-b', 'older-a'];
     expect(addressing.validateWait({ jobIds, cursor: { afterSeq: 2 } })?.code).toBe('wait_cursor_epoch_required');
     const cursor: WaitCursor = {
@@ -314,12 +338,16 @@ describe('job addressing', () => {
       },
     });
     index.recordObserved('old-live', oldDetail);
-    const addressing = new JobAddressing(index, {
-      epochKey: () => 'lineage-new:8',
-      detail: (jobId) => (jobId === 'new-live' ? detail(jobId, 'running') : null),
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
-    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: (jobId) => (jobId === 'new-live' ? detail(jobId, 'running') : null),
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+    );
     const stream = addressing.waitStream({
       jobIds: ['old-live', 'new-live'],
       supportsWaitV2: true,
@@ -367,12 +395,16 @@ describe('job addressing', () => {
       });
       index.recordObserved(jobId, observed);
     }
-    const addressing = new JobAddressing(index, {
-      epochKey: () => 'lineage-new:8',
-      detail: () => null,
-      abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
-      waitStream: async function* () {},
-    });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+    );
     const stream = addressing.waitStream({ jobIds: ['later', 'earlier'], supportsWaitV2: true });
     expect((await stream.next()).value).toMatchObject({ type: 'progress', jobId: 'earlier', seq: 3 });
     expect((await stream.next()).value).toMatchObject({ type: 'progress', jobId: 'later', seq: 4 });
