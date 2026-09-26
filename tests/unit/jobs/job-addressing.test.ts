@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import { newRawDatabase } from '../../helpers/test-db.js';
 
 import { JobAddressing } from '../../../src/jobs/addressing.js';
@@ -174,9 +175,9 @@ describe('job addressing', () => {
       [],
     );
     expect(addressing.detail('old')).toEqual(detail('old', 'completed'));
-    expect(addressing.abort(['old'])).toMatchObject({
+    expect(addressing.abort(['old'])).toEqual({
       kind: 'answered',
-      result: { notFound: [], refused: [{ jobId: 'old', reason: 'already_terminal' }] },
+      result: { aborted: [], notFound: ['old'] },
     });
     const stream = addressing.waitStream({ jobIds: ['old'], supportsWaitV2: true });
     expect((await stream.next()).value).toMatchObject({ type: 'terminal', jobId: 'old', epochKey: 'lineage-old:7' });
@@ -249,7 +250,10 @@ describe('job addressing', () => {
       positions: { 'lineage-new:8': 5, 'lineage-old:7': 0 },
     };
     expect(addressing.validateWait({ jobIds, cursor })).toBeNull();
-    expect(addressing.validateWait({ jobIds: ['older-b'], cursor })?.code).toBe('wait_cursor_mismatch');
+    expect(addressing.validateWait({ jobIds: ['older-b'], cursor })).toMatchObject({
+      code: 'wait_cursor_mismatch',
+      message: expect.stringContaining('start a fresh wait without the cursor') as unknown,
+    });
     const stream = addressing.waitStream({ jobIds, cursor, supportsWaitV2: true });
     const first = await stream.next();
     expect(first.value).toMatchObject({
@@ -409,5 +413,102 @@ describe('job addressing', () => {
     expect((await stream.next()).value).toMatchObject({ type: 'progress', jobId: 'earlier', seq: 3 });
     expect((await stream.next()).value).toMatchObject({ type: 'progress', jobId: 'later', seq: 4 });
     await stream.return(undefined);
+  });
+
+  it('should keep interrupted events decodable by a caller that did not declare wait v2', async () => {
+    // The v0.10.13 CLI decodes `interrupted` with this exact strict shape; an added `cursor` key fails its parse.
+    const shippedInterruptedSchema = z
+      .object({
+        type: z.literal('interrupted'),
+        jobId: z.string().min(1),
+        storedPhase: z.string(),
+        observedMaxJournalSeq: z.number().int().nonnegative(),
+        remainingJobIds: z.array(z.string().min(1)),
+        observation: z.object({ kind: z.literal('carrier_interrupted'), reason: z.literal('carrier_absent') }).strict(),
+        continuity: z.literal('unavailable'),
+        outcome: z.literal('unknown'),
+      })
+      .strict();
+    const { index } = fixture();
+    index.register('old-live', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    index.recordObserved('old-live', detail('old-live', 'running'));
+    index.register('new-live', 'lineage-new:8', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const interrupted: WaitStreamEvent = {
+      type: 'interrupted',
+      jobId: 'new-live',
+      storedPhase: 'running',
+      observedMaxJournalSeq: 5,
+      remainingJobIds: ['old-live', 'new-live'],
+      observation: { kind: 'carrier_interrupted', reason: 'carrier_absent' },
+      continuity: 'unavailable',
+      outcome: 'unknown',
+    };
+    const addressing = (supportsWaitV2: boolean) =>
+      new JobAddressing(
+        index,
+        {
+          epochKey: () => 'lineage-new:8',
+          detail: () => null,
+          abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+          waitStream: async function* () {
+            yield interrupted;
+          },
+        },
+        () => false,
+      ).waitStream({ jobIds: ['old-live', 'new-live'], supportsWaitV2 });
+
+    const shipped = addressing(false);
+    const legacyEvent = (await shipped.next()).value;
+    await shipped.return(undefined);
+    expect(shippedInterruptedSchema.safeParse(legacyEvent).success).toBe(true);
+
+    const current = addressing(true);
+    expect((await current.next()).value).toMatchObject({ type: 'interrupted', cursor: { version: 'jobs.wait.v2' } });
+    await current.return(undefined);
+  });
+
+  it('should report a recorded detail it cannot decode as unreadable and keep it through a rewrite', () => {
+    const { root, index } = fixture();
+    index.register('newer', 'lineage-old:7', {
+      projectRoot: '/workspace/project',
+      workDir: '/workspace/project',
+      jobKind: 'provider',
+    });
+    const jobPath = join(root, 'job-locations.v1', 'jobs', `${Buffer.from('newer').toString('base64url')}.json`);
+    const stored = JSON.parse(readFileSync(jobPath, 'utf-8')) as Record<string, unknown>;
+    const laterDetail = { status: { phase: 'a-later-phase' }, events: 'a-later-shape' };
+    writeFileSync(jobPath, `${JSON.stringify({ ...stored, detail: laterDetail, laterField: 1 })}\n`);
+
+    expect(index.read('newer')?.detail).toEqual({ kind: 'unreadable' });
+    const addressing = new JobAddressing(
+      index,
+      {
+        epochKey: () => 'lineage-new:8',
+        detail: () => null,
+        abort: () => ({ kind: 'answered', result: { aborted: [], notFound: [] } }),
+        waitStream: async function* () {},
+      },
+      () => false,
+    );
+    expect(addressing.detail('newer')).toEqual({
+      kind: 'detail-unreadable',
+      jobId: 'newer',
+      epochKey: 'lineage-old:7',
+    });
+
+    index.markUnresolved('newer');
+    expect(JSON.parse(readFileSync(jobPath, 'utf-8'))).toMatchObject({
+      disposition: 'unresolved',
+      detail: laterDetail,
+      laterField: 1,
+    });
   });
 });

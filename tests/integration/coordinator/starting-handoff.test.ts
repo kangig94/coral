@@ -13,6 +13,7 @@ import {
   createShippedPluginFixture,
   spawnCoordinator,
   stopCoordinator,
+  terminateChildProcess,
   waitForProcessExit,
   type SpawnedCoordinator,
 } from './helpers.js';
@@ -129,7 +130,7 @@ function buildPorts(opts: {
 
 afterEach(async () => {
   for (const contender of contenders.splice(0)) await stopCoordinator(contender);
-  for (const child of liveChildren.splice(0)) child.kill('SIGKILL');
+  for (const child of liveChildren.splice(0)) await terminateChildProcess(child, 'SIGKILL');
   for (const listener of liveListeners.splice(0)) {
     try {
       await closeIpcServer(listener);
@@ -150,7 +151,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       const requestDrain = vi.fn();
       const decideLegacyShutdown = vi.fn(() => ({
         code: 'shutdown_unauthorized' as const,
-        message: 'Manual shutdown required: incumbent rejected shutdown capability.',
+        message: 'Shutdown refused: the incumbent keeps serving, and the upgrade is deferred to automatic succession.',
       }));
       const ports = buildPorts({
         state,
@@ -189,7 +190,7 @@ describe('legacy transport.shutdown at a new incumbent', () => {
       const startingAt = Date.now();
       const decideLegacyShutdown = vi.fn(() => ({
         code: 'shutdown_unauthorized' as const,
-        message: 'Manual shutdown required: incumbent rejected shutdown capability.',
+        message: 'Shutdown refused: the incumbent keeps serving, and the upgrade is deferred to automatic succession.',
       }));
       const ports = buildPorts({
         state,

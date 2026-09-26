@@ -127,7 +127,8 @@ describe('real-process incumbent self-escalation', () => {
       const shipped = createShippedPluginFixture(roots, tag);
       const olderContender = spawnCoordinator({ fixture: shipped, home, tempRoots: roots });
       coordinators.push(olderContender);
-      await waitForProcessExit(olderContender, 30_000);
+      // A shipped v0.10.0 contender polls a refusing incumbent for its whole 30s handoff drain budget before exiting.
+      await waitForProcessExit(olderContender, 45_000);
       expect(readDiscoveryRecordForHome(home, 'prod')?.pid).toBe(initial.pid);
       expect(existsSync(join(state, 'job-running'))).toBe(true);
     }
@@ -162,5 +163,5 @@ describe('real-process incumbent self-escalation', () => {
     await waitForProcessExit(old, 30_000);
     expect(observeProcessLiveness(serving.pid)).toBe('alive');
     expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { disposition: 'completed' } });
-  });
+  }, 150_000);
 });

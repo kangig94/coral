@@ -92,6 +92,7 @@ import type {
 import type { CoralEventInput } from '../../store/envelope.js';
 import type { CommitEventsFn } from '../../store/append.js';
 import { StoreCodecError } from '../../store/body-codec.js';
+import { SuccessionWriterParkedError } from '../../store/db.js';
 import { consumeJobStream } from './continuity-consumer.js';
 import { appendJobTerminalRecorded, failedTerminalOutcome } from '../terminal/recording.js';
 import { SessionClaimError } from '../../sessions/claim-error.js';
@@ -897,7 +898,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           return;
         }
         try {
-          disposition = this.handleProviderJobError(jobId, sessionId, signal, error);
+          disposition = await this.handleProviderJobErrorOnceWritable(jobId, sessionId, signal, error);
         } catch (finalizeError: unknown) {
           if (finalizeError instanceof TerminalWriteError) {
             backendLog.error(finalizeError.message, finalizeError.cause);
@@ -989,7 +990,7 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
           return;
         }
         try {
-          disposition = this.handleProviderJobError(jobId, sessionId, signal, error);
+          disposition = await this.handleProviderJobErrorOnceWritable(jobId, sessionId, signal, error);
         } catch (finalizeError: unknown) {
           if (finalizeError instanceof TerminalWriteError) {
             backendLog.error(finalizeError.message, finalizeError.cause);
@@ -1288,6 +1289,26 @@ export class LaunchOrchestrator implements ProviderOperationCleanupOwner {
         return `Live job ${jobId} had no session claim to release ${context}.`;
       case 'owned_by_another_job':
         return `Live job ${jobId} was not released ${context}; its session claim was owned by another job.`;
+    }
+  }
+
+  /**
+   * A writer parked for a succession commit cannot record this job's outcome. The decision waits for this
+   * process to reclaim the writer; a committed successor owns the job instead, and the wait ends with this process.
+   */
+  private async handleProviderJobErrorOnceWritable(
+    jobId: string,
+    sessionId: string,
+    signal: AbortSignal,
+    error: unknown,
+  ): Promise<JobExecutionDisposition> {
+    for (;;) {
+      try {
+        return this.handleProviderJobError(jobId, sessionId, signal, error);
+      } catch (finalizeError: unknown) {
+        if (!(finalizeError instanceof SuccessionWriterParkedError)) throw finalizeError;
+        await finalizeError.unparked;
+      }
     }
   }
 

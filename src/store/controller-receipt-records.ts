@@ -71,7 +71,13 @@ export function readControllerRecoveryGrant(
   }
 }
 
-export function readControllerReceipts(runtime: Pick<Runtime, 'storage'>, runDir: string): readonly string[] {
+export type ControllerReceiptText = Readonly<{ path: string; text: string | null }>;
+
+/** A receipt that cannot be read is listed with `text: null`; it is never dropped from the set. */
+export function readControllerReceipts(
+  runtime: Pick<Runtime, 'storage'>,
+  runDir: string,
+): readonly ControllerReceiptText[] {
   const dir = receiptDir(runDir);
   let names: string[];
   try {
@@ -82,5 +88,12 @@ export function readControllerReceipts(runtime: Pick<Runtime, 'storage'>, runDir
   }
   return names
     .filter((name) => name.endsWith('.receipt.json'))
-    .map((name) => runtime.storage.readFileSync(join(dir, name), 'utf-8'));
+    .map((name) => {
+      const path = join(dir, name);
+      try {
+        return { path, text: runtime.storage.readFileSync(path, 'utf-8') };
+      } catch {
+        return { path, text: null };
+      }
+    });
 }

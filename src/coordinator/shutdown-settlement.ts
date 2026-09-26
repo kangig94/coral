@@ -64,6 +64,8 @@ export type ShutdownObligationLabel =
   | 'process incarnation probe shutdown'
   | 'lifecycle reactor dispose'
   | 'store epoch sweep cancellation'
+  | 'succession attempt settlement'
+  | 'succession connection handover'
   | `provider proxy lifecycle fatal incident${'' | ` ${number}`}`;
 
 export type ShutdownObligation<Label extends string = ShutdownObligationLabel> = SettlementObligation<

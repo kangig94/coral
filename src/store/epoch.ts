@@ -29,7 +29,12 @@ import {
 } from './succession-writer-generation.js';
 import { STORE_RESET_QUARANTINE_DIRECTORY } from './reset-incident.js';
 import { inspectEpochKey, readEpochKey, readOrCreateEpochKey } from './epoch-key.js';
-import { closureCapability, readEpochClosure, recordEpochCustodyCoverage } from './epoch-closure.js';
+import {
+  closureCapability,
+  observeEpochClosure,
+  recordEpochCustodyCoverage,
+  type EpochClosureEvidence,
+} from './epoch-closure.js';
 import { initializeCustodyLedger, readCustodyLedger, type CustodyEntry } from './custody-ledger.js';
 import {
   protectStoreEpoch,
@@ -190,10 +195,21 @@ export type StoreMintObservation = Readonly<{
   observedEpochCount: number;
 }>;
 
+const storeMintDispositionBrand: unique symbol = Symbol('StoreMintDisposition');
+
+/** A mint is authorized only by a disposition from `retirementMintDisposition`, never by a matching literal. */
 export type StoreMintDisposition = Readonly<{
   kind: 'initial' | 'retired' | 'unopenable';
   incumbentEpochKey: string | null;
+  [storeMintDispositionBrand]: true;
 }>;
+
+export function retirementMintDisposition(
+  kind: StoreMintDisposition['kind'],
+  incumbentEpochKey: string | null,
+): StoreMintDisposition {
+  return { kind, incumbentEpochKey, [storeMintDispositionBrand]: true };
+}
 
 export type StoreEpoch = string;
 
@@ -1986,13 +2002,18 @@ function mintNextEpoch(
   }
 }
 
-export function mintRetiredStoreEpoch(
+/**
+ * `beforeGenerationTransfer` runs after the successor epoch is published and before the writer generation moves to
+ * it; a throw there must release the published mint exactly as a failed transfer does.
+ */
+export async function mintRetiredStoreEpoch(
   runtime: Runtime,
   options: Omit<StoreEpochOptions, 'path'> & { readonly path?: never },
   incumbentEpochKey: string,
   attemptId: string,
   expectedGeneration: SuccessionWriterGeneration,
-): StoreEpochSettlement & { generation: SuccessionWriterGeneration } {
+  beforeGenerationTransfer: () => void | Promise<void>,
+): Promise<StoreEpochSettlement & { generation: SuccessionWriterGeneration }> {
   const expected = decodeResolvedStoreEpoch(runtime, incumbentEpochKey);
   if (expected === undefined || expected.path === ':memory:' || expected.lineageKey === undefined) {
     throw new Error('Retiring epoch is unproven.');
@@ -2011,9 +2032,7 @@ export function mintRetiredStoreEpoch(
   if (published.kind !== 'published') throw new Error(`Retirement mint was ${published.kind}.`);
   let generation: SuccessionWriterGeneration;
   try {
-    if (runtime.env.get('NODE_ENV') === 'test' && runtime.env.get('CORAL_TEST_RETIREMENT_GENERATION_FAILURE') === '1') {
-      throw new Error('injected retirement generation transfer failure');
-    }
+    await beforeGenerationTransfer();
     generation = advanceSuccessionWriterGeneration(runtime, expectedGeneration, {
       storeRoot: dbDir,
       epoch: successor,
@@ -2623,7 +2642,7 @@ export function listStoreEpochs(
   const custody = readCustodyLedger(runtime, runtime.paths.coral.coordinator.runDir);
   const custodyState = (
     epochKey: string | null,
-    closure: ReturnType<typeof readEpochClosure>,
+    closure: EpochClosureEvidence | null,
   ): StoreEpochListEntry['custodyState'] => {
     if (closure?.executionDischarge === 'certified') return 'certified';
     if (closure?.executionDischarge === 'undecidable') return 'undecidable';
@@ -2647,14 +2666,10 @@ export function listStoreEpochs(
           : unavailableClassification();
       const resolved = observation.proof.kind === 'proven' ? resolvedStoreEpoch(dbDir, epoch) : null;
       const epochKey = resolved === null ? null : inspectEpochKey(runtime, resolved);
-      let closure: ReturnType<typeof readEpochClosure> = null;
-      let closureUnreadable = false;
-      try {
-        closure =
-          epochKey === null ? null : readEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, epochKey);
-      } catch {
-        closureUnreadable = true;
-      }
+      const read =
+        epochKey === null ? null : observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, epochKey);
+      const closure = read?.kind === 'recorded' ? read.evidence : null;
+      const closureUnreadable = read?.kind === 'unreadable';
       return {
         epoch,
         address: resolved?.path ?? epochDirectory(dbDir, epoch),
@@ -2713,13 +2728,9 @@ export function listStoreEpochs(
     }
     const metadata = readEpochMetadata(runtime.storage, address.protectedPath);
     const publicationReason = metadata.kind === 'valid' ? metadata.value.classification : unavailableClassification();
-    let closure: ReturnType<typeof readEpochClosure> = null;
-    let closureUnreadable = false;
-    try {
-      closure = readEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey);
-    } catch {
-      closureUnreadable = true;
-    }
+    const read = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, address.epochKey);
+    const closure = read.kind === 'recorded' ? read.evidence : null;
+    const closureUnreadable = read.kind === 'unreadable';
     return {
       epoch,
       address: address.protectedPath,

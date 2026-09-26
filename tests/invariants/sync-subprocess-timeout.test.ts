@@ -311,7 +311,7 @@ describe('synchronous subprocess timeout invariant', () => {
   });
 
   it('bounds both retained-epoch subprocesses through the runtime process port', () => {
-    const file = 'src/coordinator/succession/retained-epoch-executor.ts';
+    const file = 'src/coordinator/services/retained-epoch-executor.ts';
     const source = ts.createSourceFile(
       file,
       readFileSync(join(REPO_ROOT, file), 'utf-8'),

@@ -734,8 +734,17 @@ export function formatBackendStatus(
   return sections.join('\n');
 }
 
+const UPGRADE_INTENT_RECORD = 'the upgrade intent record (upgrade.v1.json in the coordinator run directory)';
+
 export function formatUpgradeRecordProblem(problem: UpgradeIntentProblem): string {
-  return `Upgrade intent record is ${problem}. Automatic succession is held until the durable record can be read and reconciled.`;
+  switch (problem) {
+    case 'unreadable':
+      return `Upgrade intent record is unreadable. Automatic succession is held until ${UPGRADE_INTENT_RECORD} can be read again.`;
+    case 'unsupported':
+      return `Upgrade intent record is unsupported: a newer Coral build wrote it. Automatic succession is held until a build that reads ${UPGRADE_INTENT_RECORD} is serving.`;
+    case 'corrupt':
+      return `Upgrade intent record is corrupt. Automatic succession is held, and nothing in Coral repairs this record. Do not edit or delete ${UPGRADE_INTENT_RECORD}; file a Coral issue with this output.`;
+  }
 }
 
 export function formatPendingUpgrade(upgrade: UpgradeIntentVisibility): string {

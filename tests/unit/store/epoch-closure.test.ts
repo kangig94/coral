@@ -28,7 +28,13 @@ import {
   recordCustodyIntent,
   reconcileCustodyLedger,
 } from '#src/store/custody-ledger.js';
-import { readEpochClosure, recordEpochClosure, recordEpochCustodyCoverage } from '#src/store/epoch-closure.js';
+import {
+  closureCapability,
+  observeEpochClosure,
+  recordEpochClosure,
+  recordEpochCustodyCoverage,
+} from '#src/store/epoch-closure.js';
+import { sha256Hex } from '#src/infra/hash.js';
 import { readOrCreateEpochKey } from '#src/store/epoch-key.js';
 import {
   knownProtectedEpochAddresses,
@@ -116,6 +122,34 @@ describe('epoch closure and protected addressing', () => {
     recordEpochClosure(runtime, stateRoot, { ...evidence, dataOutcome: 'retained' as const, observedAtMs: 3 });
     expect(events).toHaveLength(2);
   });
+  it('should read an extended closure and report an unreadable one without throwing', () => {
+    const runtime = harness();
+    const stateRoot = runtime.paths.coral.generation.dataRoot;
+    mkdirSync(stateRoot, { recursive: true });
+    expect(observeEpochClosure(runtime, stateRoot, 'lineage:1')).toEqual({ kind: 'absent' });
+    recordEpochClosure(runtime, stateRoot, {
+      version: 'v1',
+      epochKey: 'lineage:1',
+      disposition: 'closed',
+      dataOutcome: 'retained',
+      executionDischarge: 'certified',
+      obligations: [],
+      reason: 'covered epoch has no recorded external effects',
+      observedAtMs: 1,
+    });
+    const path = join(stateRoot, 'epoch-closure.v1', `${sha256Hex('lineage:1')}.json`);
+    const record = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+    writeFileSync(path, `${JSON.stringify({ ...record, laterField: 1 })}\n`);
+    expect(observeEpochClosure(runtime, stateRoot, 'lineage:1')).toMatchObject({
+      kind: 'recorded',
+      evidence: { disposition: 'closed' },
+    });
+
+    writeFileSync(path, '{"version":');
+    expect(observeEpochClosure(runtime, stateRoot, 'lineage:1')).toEqual({ kind: 'unreadable', path });
+    expect(closureCapability(runtime, stateRoot, 'lineage:1')).toBeNull();
+  });
+
   it('retains an unprovable earlier epoch while publishing a successor', () => {
     const runtime = harness();
     const root = runtime.paths.coral.store.dbDir;
@@ -259,7 +293,10 @@ describe('epoch closure and protected addressing', () => {
         join(protectedStoreEpochRoot(root), 'addresses', `${Buffer.from(old.epochKey).toString('base64url')}.json`),
       ),
     ).toBe(true);
-    expect(readEpochClosure(runtime, stateRoot, old.epochKey)?.disposition).toBe('closed');
+    expect(observeEpochClosure(runtime, stateRoot, old.epochKey)).toMatchObject({
+      kind: 'recorded',
+      evidence: { disposition: 'closed' },
+    });
   });
 
   it('finishes a closed protected deletion interrupted after its durable rename', async () => {
@@ -289,8 +326,63 @@ describe('epoch closure and protected addressing', () => {
       resultsReleased: (epochKey) => index.resultsReleased(epochKey),
     });
     expect(existsSync(tombstone)).toBe(false);
-    expect(readEpochClosure(runtime, stateRoot, old.epochKey)?.disposition).toBe('closed');
+    expect(observeEpochClosure(runtime, stateRoot, old.epochKey)).toMatchObject({
+      kind: 'recorded',
+      evidence: { disposition: 'closed' },
+    });
   });
+
+  it.each([
+    { location: 'protected', missing: 'closure' },
+    { location: 'protected', missing: 'released results' },
+    { location: 'reaping', missing: 'closure' },
+    { location: 'reaping', missing: 'released results' },
+  ] as const)(
+    'retains a $location superseded epoch without $missing for its exact key',
+    async ({ location, missing }) => {
+      const runtime = harness();
+      const root = runtime.paths.coral.store.dbDir;
+      publish(runtime, '1', '2026-09-25T00:00:00.000Z');
+      const old = protectStoreEpoch(runtime, resolvedStoreEpoch(root, '1'));
+      publish(runtime, '2', '2026-09-25T00:01:00.000Z');
+      protectStoreEpoch(runtime, resolvedStoreEpoch(root, '2'));
+      publish(runtime, '3', '2026-09-25T00:02:00.000Z');
+      const stateRoot = runtime.paths.coral.generation.dataRoot;
+      const index = new JobLocationIndex(runtime, stateRoot);
+      const close = (): void => {
+        recordEpochClosure(runtime, stateRoot, {
+          version: 'v1',
+          epochKey: old.epochKey,
+          disposition: 'closed',
+          dataOutcome: 'retained',
+          executionDischarge: 'certified',
+          obligations: [],
+          reason: 'owner certificate',
+          observedAtMs: 1,
+        });
+      };
+      const release = (): void => {
+        expect(index.certify(old.epochKey, 0)).not.toBeNull();
+      };
+      const target =
+        location === 'protected' ? old.protectedPath : join(dirname(old.protectedPath), '.reaping-epoch-1');
+      if (location === 'reaping') renameSync(old.protectedPath, target);
+      const sweep = (): Promise<unknown> =>
+        sweepStoreEpochsPostReady(runtime, resolvedStoreEpoch(root, '3'), {
+          resultsReleased: (epochKey) => index.resultsReleased(epochKey),
+        });
+
+      if (missing === 'closure') release();
+      else close();
+      await sweep();
+      expect(existsSync(target)).toBe(true);
+
+      if (missing === 'closure') close();
+      else release();
+      await sweep();
+      expect(existsSync(target)).toBe(false);
+    },
+  );
 
   it('retains undecidable history and a reaping residue even with released results', async () => {
     const runtime = harness();
@@ -332,9 +424,10 @@ describe('epoch closure and protected addressing', () => {
       disposition: 'unrecoverable-retained',
       executionDischarge: 'undecidable',
     });
-    expect(readEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, key)?.disposition).toBe(
-      'unrecoverable-retained',
-    );
+    expect(observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, key)).toMatchObject({
+      kind: 'recorded',
+      evidence: { disposition: 'unrecoverable-retained' },
+    });
     expect(listStoreEpochs(runtime).find((entry) => entry.epochKey === key)?.closureDisposition).toBe(
       'unrecoverable-retained',
     );

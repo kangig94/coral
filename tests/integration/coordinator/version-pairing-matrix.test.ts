@@ -32,6 +32,7 @@ import {
   SHIPPED_RELEASE_TAGS,
   spawnCoordinator,
   stopCoordinator,
+  terminateChildProcess,
   waitForDiscoveryRecord,
   waitForProcessExit,
   type ShippedReleaseTag,
@@ -422,7 +423,7 @@ describe('AC18 first-release version pairing', () => {
         expect(serving.pid).toBe(contender.child.pid);
         expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
       } finally {
-        if (shutdown.exitCode === null && shutdown.signalCode === null) shutdown.kill('SIGTERM');
+        await terminateChildProcess(shutdown, 'SIGTERM');
       }
     },
     70_000,
@@ -514,23 +515,22 @@ describe('AC18 first-release version pairing', () => {
         incumbent.child.kill('SIGKILL');
         await waitForProcessExit(incumbent, 20_000);
         const branch = createPluginFixture(roots, { flavor: 'prod', version: '0.10.14' });
-        let serving = readDiscoveryRecordForHome(home, 'prod');
-        for (let attempt = 0; attempt < 3 && (serving === null || serving.pid === initial.pid); attempt++) {
-          const recovery = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
-          coordinators.push(recovery);
-          await waitForCondition(() => {
-            const current = readDiscoveryRecordForHome(home, 'prod');
-            return (
-              (current !== null && current.pid !== initial.pid) ||
-              recovery.child.exitCode !== null ||
-              recovery.child.signalCode !== null
-            );
-          }, 45_000);
-          serving = readDiscoveryRecordForHome(home, 'prod');
-          if (serving !== null && serving.pid !== initial.pid) break;
-        }
+        const recovery = spawnCoordinator({ fixture: branch, home, tempRoots: roots });
+        coordinators.push(recovery);
+        await waitForCondition(() => {
+          const current = readDiscoveryRecordForHome(home, 'prod');
+          return (
+            (current !== null && current.pid !== initial.pid) ||
+            recovery.child.exitCode !== null ||
+            recovery.child.signalCode !== null
+          );
+        }, 45_000);
+        const serving = readDiscoveryRecordForHome(home, 'prod');
         if (serving === null || serving.pid === initial.pid) {
-          throw new Error('Direct crash upgrade did not reach a serving coordinator.');
+          throw new Error(
+            `The first recovery coordinator after a direct crash upgrade did not serve ` +
+              `(exit=${recovery.child.exitCode}, signal=${recovery.child.signalCode}).\n${recovery.output()}`,
+          );
         }
         rememberSuccessor(serving.pid);
         const branchCli = join(branch.root, 'bridge', 'coral-cli');

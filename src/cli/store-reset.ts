@@ -229,7 +229,7 @@ export async function reportStoreResetLocal(
     const matches = epochs.filter(
       (candidate) => candidate.epochKey === reference || (isCanonicalEpoch(reference) && candidate.epoch === reference),
     );
-    if (matches.length > 1) throw new StoreResetCliError('store_reset_reporting_failed');
+    if (matches.length > 1) throw new StoreResetCliError('store_reset_epoch_ambiguous');
     const epoch = matches[0];
     if (epoch === undefined) {
       if (isCanonicalEpoch(reference) && epochs.some((candidate) => candidate.role === 'unobservable')) {

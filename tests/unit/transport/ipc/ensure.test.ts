@@ -1,6 +1,7 @@
 import type * as BundleManifestMod from '#src/infra/bundle-manifest.js';
 import type * as IpcClientMod from '#src/transport/ipc/client.js';
-import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
+import type * as NodeProcessMod from '#src/infra/node-process.js';
+import { probeProcessIncarnation, type ProcessIncarnation, type ProcessLiveness } from '#src/infra/node-process.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,7 +36,23 @@ const mockState = vi.hoisted(() => ({
   platform: process.platform,
   /** What this build can prove about its own bundle; a unit run has no injected identity, so default is a refusal. */
   strictIdentity: { ok: false, reason: 'embedded_identity_unavailable' } as StrictBundleIdentityResult,
+  /** Overrides for the recorded owner's observed state; `null` leaves the real probe in charge. */
+  ownerLiveness: null as ProcessLiveness | null,
+  ownerIncarnationUnprobeable: false,
 }));
+
+vi.mock('#src/infra/node-process.js', async () => {
+  const actual = await vi.importActual<typeof NodeProcessMod>('#src/infra/node-process.js');
+  return {
+    ...actual,
+    observeProcessLiveness: (pid: number): ProcessLiveness => {
+      if (mockState.ownerLiveness !== null) return mockState.ownerLiveness;
+      return actual.observeProcessLiveness(pid);
+    },
+    probeProcessIncarnation: (pid: number, platform?: NodeJS.Platform) =>
+      mockState.ownerIncarnationUnprobeable ? null : actual.probeProcessIncarnation(pid, platform),
+  };
+});
 
 // Only `resolveStrictBundleIdentity` is replaced: the flavor and manifest reads below must stay real, because
 // the temporary plugin roots these tests build are what those reads are supposed to see.
@@ -274,6 +291,8 @@ beforeEach(() => {
   for (const key of childEnvKeys) delete process.env[key];
   mockState.spawn.mockImplementation(() => spawnedChild());
   mockState.strictIdentity = { ok: false, reason: 'embedded_identity_unavailable' };
+  mockState.ownerLiveness = null;
+  mockState.ownerIncarnationUnprobeable = false;
 });
 
 afterEach(() => {
@@ -2282,6 +2301,43 @@ describe('ipc ensure', () => {
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(`action=kill -9 ${process.pid}`);
+  });
+
+  // A printed `kill -9` is run by whoever reads it, so it may name only a process proven to be the recorded
+  // owner and proven alive: every weaker observation must withhold the command.
+  it.each([
+    { owner: 'a recorded pid observed absent', record: 'matching', liveness: 'absent', unprobeable: false },
+    { owner: 'a recorded pid whose liveness is unknown', record: 'matching', liveness: 'unknown', unprobeable: false },
+    { owner: 'a live pid wearing another incarnation', record: 'mismatched', liveness: null, unprobeable: false },
+    { owner: 'a live pid whose incarnation cannot be probed', record: 'matching', liveness: null, unprobeable: true },
+    { owner: 'a live pid recorded without an incarnation', record: 'none', liveness: null, unprobeable: false },
+  ] as const)('withholds force-kill guidance for $owner', async ({ record, liveness, unprobeable }) => {
+    makeHome();
+    vi.useFakeTimers();
+    const root = createPluginRoot();
+    const incarnation = probeProcessIncarnation(process.pid);
+    expect(incarnation).not.toBeNull();
+    writeDiscovery(root, {
+      pid: process.pid,
+      ...(record === 'matching' ? { incarnation: incarnation! } : {}),
+      ...(record === 'mismatched' ? { incarnation: testIncarnation('another-process') } : {}),
+    });
+    mockState.ownerLiveness = liveness;
+    mockState.ownerIncarnationUnprobeable = unprobeable;
+    const child = spawnedChild();
+    mockState.health.mockRejectedValue(createErrnoError('ECONNREFUSED'));
+    mockState.spawn.mockReturnValue(child);
+
+    const { ensure } = await importEnsure();
+    const ensuredPromise = ensure('sessions.create', root).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    child.emit('exit', 0, null);
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await ensuredPromise;
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain('action=kill -9');
+    expect((error as Error).message).toBe(UNREACHABLE_AFTER_CHILD_STOPPED);
   });
 
   // A child that never spawned did not stop before binding, and the reason it never spawned is this process's

@@ -49,6 +49,8 @@ export const SHUTDOWN_OBLIGATION_OWNERS = {
   'process incarnation probe shutdown': 'recovery',
   'lifecycle reactor dispose': 'recovery',
   'store epoch sweep cancellation': 'recovery',
+  'succession attempt settlement': 'recovery',
+  'succession connection handover': 'session-continuation',
   'provider proxy lifecycle fatal incident': 'provider-proxy-sets',
 } as const satisfies Record<ShutdownObligationRegistryKey, SuccessionOwnerId>;
 

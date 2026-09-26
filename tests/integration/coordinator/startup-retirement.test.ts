@@ -1,9 +1,13 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createStartupMintAuthorizer } from '#src/coordinator/services/startup-retirement.js';
+import { recordControllerOpen } from '#src/coordinator/succession/controller-open.js';
+import { CURRENT_STRICT_BUNDLE_MANIFEST_FILE } from '#src/infra/bundle-manifest-address.js';
+import type { StrictBundleManifest } from '#src/infra/bundle-manifest.js';
+import { retainedBuildRoot } from '#src/infra/retained-build-root.js';
 import { JobLocationIndex } from '#src/jobs/location-index.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import type { Runtime } from '#src/runtime/ports.js';
@@ -15,11 +19,13 @@ import {
   type StoreMintObservation,
 } from '#src/store/epoch.js';
 import { openSettledTestStoreDb } from '#tests/helpers/store-db.js';
+import { assertBuildArtifactsAvailable, createPluginFixture } from '#tests/integration/coordinator/helpers.js';
 import { newRawDatabase } from '#tests/helpers/test-db.js';
 
 const homes: string[] = [];
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
 });
 
@@ -93,5 +99,35 @@ describe('startup mint authorizer', () => {
 
     expect(startUp(runtime, index, 'startup-1', registerJob)).toBeNull();
     expect(startUp(runtime, index, 'startup-2')).toMatchObject({ kind: 'unopenable' });
+  });
+
+  it.each([
+    ['a transient executor failure waits out bounded patience', 73, [null, 'unopenable']],
+    ['an executor that cannot identify as the controller mints at once', 71, ['unopenable']],
+  ] as const)('should treat %s', (_label, executorExit, dispositions) => {
+    assertBuildArtifactsAvailable();
+    const runtime = unreadableEpochRuntime();
+    const index = new JobLocationIndex(runtime, runtime.paths.coral.generation.dataRoot);
+    const fixture = createPluginFixture(homes, { flavor: 'prod' });
+    const manifest = JSON.parse(
+      readFileSync(join(fixture.root, 'bridge', CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf8'),
+    ) as StrictBundleManifest;
+    cpSync(fixture.root, retainedBuildRoot(runtime, manifest.buildSetId), { recursive: true });
+    vi.spyOn(runtime.process, 'execSync').mockReturnValue({ status: executorExit, stdout: '', stderr: '' });
+    const liveJobUnderRetainedController = (observation: StoreMintObservation): void => {
+      if (observation.incumbent === null) throw new Error('Expected the unreadable epoch as incumbent.');
+      const epochKey = encodeResolvedStoreEpoch(runtime, observation.incumbent);
+      index.register('live-job', epochKey, {
+        projectRoot: '/workspace/project',
+        workDir: '/workspace/project',
+        jobKind: 'provider',
+      });
+      recordControllerOpen(runtime, epochKey, 'retained-instance', null, fixture.root, manifest, 1);
+    };
+
+    expect(startUp(runtime, index, 'startup-1', liveJobUnderRetainedController)?.kind ?? null).toBe(dispositions[0]);
+    if (dispositions.length > 1) {
+      expect(startUp(runtime, index, 'startup-2')?.kind ?? null).toBe(dispositions[1]);
+    }
   });
 });

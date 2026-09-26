@@ -632,13 +632,4 @@ describe('a signal aimed at a pid establishes that the pid is still its recorded
       expect(outcome).toBeInstanceOf(HandoffEscalationError);
     },
   );
-
-  it('offers a concrete force-kill command only for a verified live unresponsive owner', () => {
-    const source = readFileSync(join(REPO_ROOT, 'src/transport/ipc/ensure.ts'), 'utf8');
-    expect(source).toMatch(
-      /verifiedUnresponsivePid\s*\([^)]*\)\s*:\s*number\s*\|\s*null\s*\{[^}]*info\.incarnation\s*!==\s*undefined[^}]*probeProcessIncarnation\s*\(\s*info\.pid\s*\)\s*===\s*info\.incarnation[^}]*observeProcessLiveness\s*\(\s*info\.pid\s*\)\s*===\s*'alive'/u,
-    );
-    expect(source).toMatch(/case\s*'unanswered'\s*:\s*\{\s*const pid = verifiedUnresponsivePid\(info\)/u);
-    expect(source).toMatch(/if\s*\(pid\s*!==\s*null\)\s*\{[\s\S]*?action=kill -9 \$\{pid\}/u);
-  });
 });

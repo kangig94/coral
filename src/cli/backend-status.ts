@@ -157,6 +157,7 @@ const OPERATOR_FACING_ERROR_NAMES = [
   'SocketDirectoryError',
   'SuccessionAdmissionPausedError',
   'SuccessionAttemptStartupHoldError',
+  'SuccessionWriterParkedError',
   'StartupStoreHandoffError',
   'StoreCodecError',
   'StoreDecodeError',
@@ -226,6 +227,8 @@ const OPERATOR_FACING_SHUTDOWN_LABELS = [
   'server connection close',
   'store epoch sweep cancellation',
   'store services availability check',
+  'succession attempt settlement',
+  'succession connection handover',
 ] as const;
 type OperatorFacingShutdownLabel = (typeof OPERATOR_FACING_SHUTDOWN_LABELS)[number];
 type OperatorFacingShutdownObligation =
@@ -625,6 +628,11 @@ function recordedAuthorIdentity(value: Record<string, unknown>): SetupErrorAutho
  * `provenSelfIdentity` is deferred because proving this build's own identity hashes bundle artifacts; a status
  * probe that finds no setup-error diagnostic must not pay for an attribution it never makes.
  */
+/** An older contender refused by a newer incumbent deferred its upgrade; the incumbent keeps serving. */
+function isDeferredUpgradeRefusal(code: unknown): boolean {
+  return code === 'handoff_shutdown_capability_rejected' || code === 'handoff_shutdown_credential_unavailable';
+}
+
 export function statusFromStartupDiagnostic(
   value: unknown,
   now: number,
@@ -660,7 +668,7 @@ export function statusFromStartupDiagnostic(
   }
 
   const error = value.error;
-  if (error.code === 'handoff_shutdown_capability_rejected') return { status: 'deferred_upgrade' };
+  if (isDeferredUpgradeRefusal(error.code)) return { status: 'deferred_upgrade' };
   const setupError: OperatorFacingCoralSetupError | null =
     error.kind === 'coral_setup_error'
       ? readOperatorFacingCoralSetupError(
@@ -771,7 +779,7 @@ export function statusFromStartupSentinel(
     value.state !== 'stopped_with_diagnostic' ||
     !isRecord(value.error) ||
     value.error.kind !== 'coral_setup_error' ||
-    value.error.code !== 'handoff_shutdown_capability_rejected' ||
+    !isDeferredUpgradeRefusal(value.error.code) ||
     typeof value.recordedAt !== 'number' ||
     value.recordedAt > now ||
     now - value.recordedAt > RECENT_COORDINATOR_RECORD_MS

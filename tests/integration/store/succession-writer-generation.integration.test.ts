@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createRealRuntime } from '#src/runtime/real.js';
-import { openWritableStoreDatabase, type Database } from '#src/store/db.js';
+import { openWritableStoreDatabase, SuccessionWriterParkedError, type Database } from '#src/store/db.js';
 import { resolveGenerationBoundaryPaths } from '#src/store/generation-mutation-coordination.js';
 import {
   advanceSuccessionWriterGeneration,
@@ -114,6 +114,34 @@ describe('succession writer generation', () => {
     writer.park();
     advanceSuccessionWriterGeneration(runtime, writer.generation, store);
     expect(() => writer.unpark()).toThrow(/cannot unpark/u);
+  });
+
+  it('refuses a parked handle with a typed error that settles only on reclaim, and a closed one with none', async () => {
+    const { runtime, store, open } = fixture();
+    const writer = joinSuccessionWriterGeneration(runtime, store);
+    const db = open();
+    writer.park();
+    let refusal: unknown;
+    try {
+      db.prepare('SELECT 1');
+    } catch (error: unknown) {
+      refusal = error;
+    }
+    expect(refusal).toBeInstanceOf(SuccessionWriterParkedError);
+    if (!(refusal instanceof SuccessionWriterParkedError)) return;
+    let reclaimed = false;
+    void refusal.unparked.then(() => {
+      reclaimed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(reclaimed).toBe(false);
+
+    writer.unpark();
+    await refusal.unparked;
+    expect(db.prepare<[], { one: number }>('SELECT 1 AS one').get()?.one).toBe(1);
+    db.close();
+    expect(() => db.prepare('SELECT 1')).toThrow(/closed/u);
+    expect(() => db.prepare('SELECT 1')).not.toThrow(SuccessionWriterParkedError);
   });
 
   it('recovers after a parked process crashes and hands back monotonically', () => {

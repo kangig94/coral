@@ -569,6 +569,21 @@ function openPhysicalWritableStoreDatabase(
   }
 }
 
+/**
+ * A store access refused because a succession commit parked this process's writer. `unparked` settles only when
+ * this process reclaims the writer; a committed successor never hands it back, so it stays pending until exit.
+ */
+export class SuccessionWriterParkedError extends Error {
+  readonly unparked: Promise<void>;
+
+  constructor(unparked: Promise<void>) {
+    super('Succession store writer is parked.');
+    this.name = 'SuccessionWriterParkedError';
+    this.unparked = unparked;
+    Object.setPrototypeOf(this, SuccessionWriterParkedError.prototype);
+  }
+}
+
 function reopenableWritableStoreDatabase(
   initial: Database,
   options: AuthorizedWritableStoreOptions & { writerEntitlement: SuccessionWriterEntitlement },
@@ -576,6 +591,11 @@ function reopenableWritableStoreDatabase(
   let active: Database | null = initial;
   let revision = 0;
   let closed = false;
+  let parkedUntil: Readonly<{ unparked: Promise<void>; resolve: () => void }> | null = null;
+  const unavailable = (): Error => {
+    if (closed || parkedUntil === null) return new Error('Succession store writer is closed.');
+    return new SuccessionWriterParkedError(parkedUntil.unparked);
+  };
   const target = {
     close() {
       if (closed) return;
@@ -587,11 +607,11 @@ function reopenableWritableStoreDatabase(
       current?.close();
     },
     prepare<TParams extends unknown[] = unknown[], TRow = unknown>(sql: string): Statement<TParams, TRow> {
-      if (active === null) throw new Error('Succession store writer is parked or closed.');
+      if (active === null) throw unavailable();
       let statement: Statement<TParams, TRow> | null = null;
       let statementRevision = -1;
       const currentStatement = (): Statement<TParams, TRow> => {
-        if (active === null) throw new Error('Succession store writer is parked or closed.');
+        if (active === null) throw unavailable();
         if (statementRevision !== revision) {
           statement = active.prepare<TParams, TRow>(sql);
           statementRevision = revision;
@@ -610,6 +630,13 @@ function reopenableWritableStoreDatabase(
   const unregisterPark = options.writerEntitlement.onPark(() => {
     const current = active;
     active = null;
+    if (parkedUntil === null) {
+      let resolve!: () => void;
+      const unparked = new Promise<void>((settle) => {
+        resolve = settle;
+      });
+      parkedUntil = { unparked, resolve };
+    }
     current?.close();
   });
   const unregisterUnpark = options.writerEntitlement.onUnpark(() => {
@@ -620,11 +647,14 @@ function reopenableWritableStoreDatabase(
     }
     active = reopened.db;
     revision += 1;
+    const parked = parkedUntil;
+    parkedUntil = null;
+    parked?.resolve();
   });
   return new Proxy(target as unknown as Database, {
     get(object, property, receiver) {
       if (property in object) return Reflect.get(object, property, receiver);
-      if (active === null) throw new Error('Succession store writer is parked or closed.');
+      if (active === null) throw unavailable();
       const value: unknown = Reflect.get(active, property, active);
       return typeof value === 'function' ? value.bind(active) : value;
     },

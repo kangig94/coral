@@ -47,7 +47,7 @@ const HANDOFF_REFUSAL_CASES = [
     userMessage:
       'Handoff refused during the shutdown request for incumbent pid=unknown: the incumbent rejected the shutdown capability.',
     remediation:
-      'Stop the incumbent that owns the coordinator socket through the service or account that owns it, then retry handoff.',
+      'No action is needed: the incumbent keeps serving, and Coral retries the upgrade automatically when its recorded conditions change.',
     exitCode: 77,
     observation: undefined,
     retryable: false,
@@ -56,7 +56,8 @@ const HANDOFF_REFUSAL_CASES = [
     init: { code: 'handoff_shutdown_credential_unavailable', context: { stage: 'shutdown-request', pid: 4242 } },
     userMessage:
       'Handoff refused during the shutdown request for incumbent pid=4242: verified discovery had no boot credential for shutdown.',
-    remediation: 'Stop the identified incumbent through the service or account that owns it, then retry handoff.',
+    remediation:
+      'No action is needed: the incumbent keeps serving, and Coral retries the upgrade automatically when its recorded conditions change.',
     exitCode: 77,
     observation: undefined,
     retryable: false,
@@ -510,8 +511,8 @@ describe('CoralSetupError', () => {
     },
     {
       failure: 'a missing required field',
-      code: 'handoff_shutdown_credential_unavailable',
-      context: { stage: 'shutdown-request' },
+      code: 'handoff_socket_holder_unverified',
+      context: { stage: 'handoff-deadline' },
     },
   ])('still names the code when backend status reads a known refusal with $failure', ({ code, context }) => {
     const now = Date.parse('2026-09-01T00:00:00.000Z');

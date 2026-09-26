@@ -31,6 +31,7 @@ export const successionRequestSchema = z
       })
       .passthrough(),
   })
+  // A field added to this wire request needs a new protocol address; v1 means exactly these fields.
   .strict();
 
 export const successionPrepareSchema = z.object({ requestId: z.string().min(1) }).strict();
@@ -47,7 +48,7 @@ export const successionReadySchema = z
     admissionRevision: z.number().int().nonnegative(),
     receiptIds: z.array(z.string().min(1)),
   })
-  .strict();
+  .passthrough();
 
 export type SuccessionReady = z.infer<typeof successionReadySchema>;
 
@@ -60,7 +61,7 @@ export const successionTransferReceiptSchema = z
     recoveryGrantId: z.string().min(1),
     payload: jsonValueSchema,
   })
-  .strict();
+  .passthrough();
 
 export const successionPreparationSchema = z
   .object({
@@ -74,12 +75,12 @@ export const successionPreparationSchema = z
     capabilitiesKey: z.string().min(1),
     epochKey: z.string().min(1),
     admissionRevision: z.number().int().nonnegative(),
-    accepts: z.array(z.object({ owner: z.string().min(1), generation: z.number().int().positive() }).strict()),
+    accepts: z.array(acceptanceSchema),
     receipts: z.array(successionTransferReceiptSchema),
     stage: z.enum(['prepared', 'ready', 'committing']),
     ready: successionReadySchema.nullable(),
   })
-  .strict();
+  .passthrough();
 
 export type SuccessionPreparation = z.infer<typeof successionPreparationSchema>;
 

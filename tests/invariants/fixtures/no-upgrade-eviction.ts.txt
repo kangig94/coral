@@ -27,5 +27,10 @@ function inspectStoreDirectoryLiveWork() { return 'retained-work'; }
 // @end
 
 // @mutation inspection-computed-store-role src/store/epoch.ts
-type StoreEpochListEntry = { role: 'current' | 'retained' | 'garbage' };
+type StoreEpochListEntry = {
+  role:
+    | 'current'
+    | 'retained'
+    | 'garbage';
+};
 // @end

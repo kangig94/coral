@@ -86,6 +86,8 @@ function spawnBackend(pluginRoot) {
       stdio: ['ignore', 'ignore', stderr],
       env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: randomUUID() },
     });
+    // A spawn failure is reported asynchronously as 'error'; unheard, it would throw past every catch here.
+    child.on('error', () => {});
     child.unref();
   } catch {}
 }
@@ -105,6 +107,7 @@ function recoverExpiredUpgradeWaiter(pluginRoot) {
       detached: true,
       stdio: 'ignore',
     });
+    child.on('error', () => {});
     child.unref();
   } catch {}
 }
@@ -168,8 +171,10 @@ function readRecentStartupFailureNotice(runDir) {
     ) {
       return null;
     }
-    if (coordinatorAlive !== false && code !== 'handoff_shutdown_capability_rejected') return null;
-    if (code === 'handoff_shutdown_capability_rejected') {
+    const deferredUpgrade =
+      code === 'handoff_shutdown_capability_rejected' || code === 'handoff_shutdown_credential_unavailable';
+    if (coordinatorAlive !== false && !deferredUpgrade) return null;
+    if (deferredUpgrade) {
       return 'Coral backend: an older contender deferred its upgrade while the incumbent continues serving. Coral will retry the upgrade automatically when its recorded conditions change.';
     }
     if (!recordsCauseAndNextStep(error)) return null;

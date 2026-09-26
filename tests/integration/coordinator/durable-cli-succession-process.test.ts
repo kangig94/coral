@@ -36,7 +36,7 @@ import { readCustodyLedger } from '#src/store/custody-ledger.js';
 import { readControllerRecoveryGrant } from '#src/store/controller-receipt-records.js';
 import { decodeResolvedStoreEpoch, encodeResolvedStoreEpoch, resolveCurrentStore } from '#src/store/epoch.js';
 import { protectStoreEpoch, protectedStoreEpochRoot, resolveProtectedEpoch } from '#src/store/epoch-protection.js';
-import { readEpochClosure } from '#src/store/epoch-closure.js';
+import { observeEpochClosure } from '#src/store/epoch-closure.js';
 import {
   observeSuccessionServing,
   observeSuccessionWriterGeneration,
@@ -67,24 +67,23 @@ afterEach(async () => {
   for (const cli of cliChildren.splice(0)) {
     if (cli.exitCode === null && cli.signalCode === null) cli.kill('SIGKILL');
   }
-  for (const provider of providerChildren.splice(0)) {
+  // A signalled process may still be writing into the home it ran under, so removal waits for its exit.
+  const terminated: { pid: number; incarnation: ProcessIncarnation }[] = [];
+  for (const recorded of [...providerChildren.splice(0), ...successors.splice(0)]) {
+    const incarnation = recorded.incarnation;
     if (
-      provider.incarnation !== null &&
-      probeProcessIncarnation(provider.pid) === provider.incarnation &&
-      observeProcessLiveness(provider.pid) === 'alive'
+      incarnation !== null &&
+      probeProcessIncarnation(recorded.pid) === incarnation &&
+      observeProcessLiveness(recorded.pid) === 'alive'
     ) {
-      process.kill(provider.pid, 'SIGTERM');
+      process.kill(recorded.pid, 'SIGTERM');
+      terminated.push({ pid: recorded.pid, incarnation });
     }
   }
-  for (const successor of successors.splice(0)) {
-    if (
-      successor.incarnation !== null &&
-      probeProcessIncarnation(successor.pid) === successor.incarnation &&
-      observeProcessLiveness(successor.pid) === 'alive'
-    ) {
-      process.kill(successor.pid, 'SIGTERM');
-    }
-  }
+  await waitForCondition(
+    () => terminated.every(({ pid, incarnation }) => probeProcessIncarnation(pid) !== incarnation),
+    15_000,
+  );
   for (const coordinator of coordinators.splice(0)) await stopCoordinator(coordinator);
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
 });
@@ -272,24 +271,23 @@ async function abortDurableJob(
 ): Promise<void> {
   const running = join(projectRoot, '.durable-state', jobId, 'running');
   const pid = existsSync(running) ? Number(readFileSync(running, 'utf8')) : null;
+  const attempt = startCli(fixture, home, projectRoot, ['abort', 'jobs', jobId]);
+  const status = await attempt.completed;
+  if (pid !== null) await waitForCondition(() => observeProcessLiveness(pid) === 'absent', 30_000);
+  if (status === 0) return;
+  expect(status, `${attempt.stdout()}\n${attempt.stderr()}`).toBe(3);
+  expect(attempt.stdout(), attempt.stderr()).toMatch(
+    /Abort held.*(?:process absence is not yet proven|cleanup attempt is still settling|reaping is in progress)/iu,
+  );
+  // A held abort settles by itself once absence is proven; aborting the held job again would abandon it instead.
   const deadline = Date.now() + 30_000;
-  let lastOutput: string;
+  let detail: string;
   do {
-    const attempt = startCli(fixture, home, projectRoot, ['abort', 'jobs', jobId]);
-    const status = await attempt.completed;
-    lastOutput = `${attempt.stdout()}\n${attempt.stderr()}`;
-    if (status === 0) {
-      if (pid !== null) await waitForCondition(() => observeProcessLiveness(pid) === 'absent', 30_000);
-      return;
-    }
-    expect(status, lastOutput).toBe(3);
-    expect(attempt.stdout(), attempt.stderr()).toMatch(
-      /Abort held.*(?:process absence is not yet proven|cleanup attempt is still settling|reaping is in progress)/iu,
-    );
-    if (pid !== null) await waitForCondition(() => observeProcessLiveness(pid) === 'absent', 30_000);
+    detail = await runCli(fixture, home, projectRoot, ['jobs', 'detail', jobId]);
+    if (/aborted/iu.test(detail)) return;
     await new Promise<void>((resolve) => setTimeout(resolve, 100));
   } while (Date.now() < deadline);
-  throw new Error(`Abort did not settle: ${lastOutput}`);
+  throw new Error(`Held abort did not settle: ${detail}`);
 }
 
 function launchedJobId(output: string): string {
@@ -504,9 +502,9 @@ describe('real-process durable-cli succession', () => {
     const runDir = coordinatorFilesForHome(home, 'prod').runDir;
     await waitForCondition(
       () =>
-        readDurableCliControllerReceipts(runtime, runDir)?.some(
+        readDurableCliControllerReceipts(runtime, runDir).receipts.some(
           (receipt) => receipt.jobId === jobId && receipt.controllerInstanceId === reopened.instanceId,
-        ) ?? false,
+        ),
       30_000,
     );
     expect(resolveCurrentStore(runtime).epoch?.epoch).toBe(originalEpoch.epoch);
@@ -660,12 +658,12 @@ describe('real-process durable-cli succession', () => {
       'unresolved',
     );
     expect(
-      readEpochClosure(
+      observeEpochClosure(
         runtime,
         runtime.paths.coral.generation.dataRoot,
         decodeResolvedStoreEpoch(runtime, oldEpochKey)!.lineageKey!,
-      )?.disposition,
-    ).toBe('unrecoverable-retained');
+      ),
+    ).toMatchObject({ kind: 'recorded', evidence: { disposition: 'unrecoverable-retained' } });
   }, 180_000);
 
   it.each([false, true])(
@@ -717,12 +715,12 @@ describe('real-process durable-cli succession', () => {
         disposition: 'unresolved',
       });
       expect(
-        readEpochClosure(
+        observeEpochClosure(
           runtime,
           runtime.paths.coral.generation.dataRoot,
           decodeResolvedStoreEpoch(runtime, oldKey)!.lineageKey!,
-        )?.disposition,
-      ).toBe('unrecoverable-retained');
+        ),
+      ).toMatchObject({ kind: 'recorded', evidence: { disposition: 'unrecoverable-retained' } });
     },
     180_000,
   );
@@ -829,6 +827,11 @@ describe('real-process durable-cli succession', () => {
     const successor = readDiscoveryRecordForHome(home, 'prod');
     expect(successor).not.toBeNull();
     successors.push({ pid: successor!.pid, incarnation: probeProcessIncarnation(successor!.pid) });
+    // The incumbent records the completion receipt after the successor publishes discovery, not with it.
+    await waitForCondition(() => {
+      const observed = readUpgradeIntent(runDir);
+      return observed.kind === 'readable' && observed.intent.disposition === 'completed';
+    }, 15_000);
     const intent = readUpgradeIntent(runDir);
     expect(intent.kind).toBe('readable');
     if (intent.kind !== 'readable') throw new Error('Completed upgrade intent is unavailable.');
@@ -938,10 +941,10 @@ describe('real-process durable-cli succession', () => {
       expect.arrayContaining([expect.objectContaining({ owner: 'durable-cli' })]),
     );
     await waitForCondition(
-      () => readDurableCliControllerReceipts(runtime, runDir)?.some((receipt) => receipt.jobId === jobId) === true,
+      () => readDurableCliControllerReceipts(runtime, runDir).receipts.some((receipt) => receipt.jobId === jobId),
       30_000,
     );
-    expect(readDurableCliControllerReceipts(runtime, runDir)).toEqual(
+    expect(readDurableCliControllerReceipts(runtime, runDir).receipts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           jobId,
@@ -961,6 +964,10 @@ describe('real-process durable-cli succession', () => {
     const before = readKbSearch(join(jobState, 'kb-search-before.json'));
     const after = readKbSearch(join(jobState, 'kb-search.json'));
     expect(before.error, JSON.stringify(before)).toBeUndefined();
+    // `scope_mismatch` is decided only after the child's token authenticated and carried `kb:read`; a token the
+    // incumbent could not authenticate answers `unauthenticated` instead. The unscoped KB request is refused
+    // for every project-bound principal, so the baseline names that refusal rather than success.
+    expect(kbSearchAuthorization(before), JSON.stringify(before)).toEqual({ status: 1, code: 'scope_mismatch' });
     expect(kbSearchAuthorization(after), JSON.stringify({ before, after })).toEqual(kbSearchAuthorization(before));
 
     const queued = await runCli(newerFixture, home, projectRoot, ['claude', '-i', prompt, '--detach']);

@@ -106,7 +106,7 @@ describe('jobs read contracts stay synchronous and carrier-free', () => {
     );
     expect(lookup).toBeDefined();
     expect(normalizedType(lookup!.type)).toBe(
-      "| JobDetailResponse | Readonly<{ kind: 'unresolved'; jobId: string; epochKey: string; }> | Readonly<{ kind: 'pre-epoch-history'; jobId: string; }> | null",
+      "| JobDetailResponse | Readonly<{ kind: 'unresolved'; jobId: string; epochKey: string; }> | Readonly<{ kind: 'detail-unreadable'; jobId: string; epochKey: string; }> | Readonly<{ kind: 'pre-epoch-history'; jobId: string; }> | null",
     );
   });
 

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runUpgradeWaiter } from '#src/upgrade-waiter/index.js';
+import { createRealUpgradeWaiterPorts, type UpgradeWaiterPorts } from '#src/runtime/upgrade-waiter.js';
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
@@ -42,6 +43,13 @@ function pendingIntent(): UpgradeIntentChange {
     attemptDeadline: null,
     completionReceipt: null,
   };
+}
+
+function waiterPorts(
+  now: () => number,
+  sleep: (ms: number) => Promise<void> = async () => undefined,
+): UpgradeWaiterPorts {
+  return { ...createRealUpgradeWaiterPorts(), time: { now, sleep } };
 }
 
 describe('upgrade waiter', () => {
@@ -85,10 +93,12 @@ describe('upgrade waiter', () => {
       validateTarget: () => true,
       observeRetirement: observe,
       launchTarget: launch,
-      now: () => time,
-      sleep: async (ms) => {
-        time += ms;
-      },
+      ports: waiterPorts(
+        () => time,
+        async (ms) => {
+          time += ms;
+        },
+      ),
     });
 
     expect(result).toEqual({ kind: 'completed' });
@@ -110,10 +120,12 @@ describe('upgrade waiter', () => {
       validateTarget: () => true,
       observeRetirement: observe,
       launchTarget: launch,
-      now: () => time,
-      sleep: async (ms) => {
-        time += ms;
-      },
+      ports: waiterPorts(
+        () => time,
+        async (ms) => {
+          time += ms;
+        },
+      ),
     });
     expect(result).toEqual({ kind: 'expired' });
     expect(launch).toHaveBeenCalledTimes(1);
@@ -136,21 +148,23 @@ describe('upgrade waiter', () => {
       validateTarget: () => true,
       observeRetirement: async () => 'unknown',
       launchTarget: launch,
-      now: () => time,
-      sleep: async (ms) => {
-        time += ms;
-        if (++polls === 5) {
-          const observed = readUpgradeIntent(dir);
-          if (observed.kind !== 'readable') throw new Error('intent disappeared');
-          await compareAndSwapUpgradeIntent(dir, observed.intent.revision, {
-            ...observed.intent,
-            disposition: 'closed',
-            attemptId: null,
-            attemptOwner: null,
-            attemptDeadline: null,
-          });
-        }
-      },
+      ports: waiterPorts(
+        () => time,
+        async (ms) => {
+          time += ms;
+          if (++polls === 5) {
+            const observed = readUpgradeIntent(dir);
+            if (observed.kind !== 'readable') throw new Error('intent disappeared');
+            await compareAndSwapUpgradeIntent(dir, observed.intent.revision, {
+              ...observed.intent,
+              disposition: 'closed',
+              attemptId: null,
+              attemptOwner: null,
+              attemptDeadline: null,
+            });
+          }
+        },
+      ),
     });
     expect(result).toEqual({ kind: 'closed' });
     expect(launch).not.toHaveBeenCalled();
@@ -173,7 +187,7 @@ describe('upgrade waiter', () => {
         targetRoot: '/installed/target',
         validateTarget: () => true,
         launchTarget: launch,
-        now: () => now,
+        ports: waiterPorts(() => now),
       }),
     ).toEqual({ kind: 'lease-held' });
     expect(launch).not.toHaveBeenCalled();
@@ -190,21 +204,23 @@ describe('upgrade waiter', () => {
       targetRoot: '/installed/target',
       validateTarget: () => true,
       observeRetirement: async () => 'serving',
-      now: () => time,
-      sleep: async (ms) => {
-        time += ms;
-        if (changed) return;
-        changed = true;
-        const observed = readUpgradeIntent(dir);
-        if (observed.kind !== 'readable') throw new Error('intent not readable');
-        await compareAndSwapUpgradeIntent(dir, observed.intent.revision, {
-          ...observed.intent,
-          target: {
-            build: { ...build, version: '0.12.0' },
-            pluginRootLabel: '/installed/newer',
-          },
-        });
-      },
+      ports: waiterPorts(
+        () => time,
+        async (ms) => {
+          time += ms;
+          if (changed) return;
+          changed = true;
+          const observed = readUpgradeIntent(dir);
+          if (observed.kind !== 'readable') throw new Error('intent not readable');
+          await compareAndSwapUpgradeIntent(dir, observed.intent.revision, {
+            ...observed.intent,
+            target: {
+              build: { ...build, version: '0.12.0' },
+              pluginRootLabel: '/installed/newer',
+            },
+          });
+        },
+      ),
     });
 
     expect(result).toEqual({ kind: 'superseded' });

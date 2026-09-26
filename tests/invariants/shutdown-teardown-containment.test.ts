@@ -253,8 +253,14 @@ function isCaughtWithin(node: ts.Node, boundary: NamedFunction): boolean {
   return false;
 }
 
-function shutdownThrowViolations(sourceFile: ts.SourceFile): string[] {
-  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+const SHUTDOWN_SEQUENCES = ['runShutdownSequence', 'runSuccessionReleaseSequence'] as const;
+type ShutdownSequenceName = (typeof SHUTDOWN_SEQUENCES)[number];
+
+function shutdownThrowViolations(
+  sourceFile: ts.SourceFile,
+  sequenceName: ShutdownSequenceName = 'runShutdownSequence',
+): string[] {
+  const shutdownSequence = findFunction(sourceFile, sequenceName);
   const violations: string[] = [];
 
   function visit(node: ts.Node): void {
@@ -269,8 +275,11 @@ function shutdownThrowViolations(sourceFile: ts.SourceFile): string[] {
   return violations;
 }
 
-function shutdownAwaitBoundaryViolations(sourceFile: ts.SourceFile): string[] {
-  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+function shutdownAwaitBoundaryViolations(
+  sourceFile: ts.SourceFile,
+  sequenceName: ShutdownSequenceName = 'runShutdownSequence',
+): string[] {
+  const shutdownSequence = findFunction(sourceFile, sequenceName);
   const violations: string[] = [];
   const obligationTasks = new Set<ts.SignatureDeclaration>();
   const obligationBindings = new Map<string, ts.ObjectLiteralExpression>();
@@ -333,8 +342,11 @@ function shutdownAwaitBoundaryViolations(sourceFile: ts.SourceFile): string[] {
   return violations;
 }
 
-function shutdownReturnViolations(sourceFile: ts.SourceFile): string[] {
-  const shutdownSequence = findFunction(sourceFile, 'runShutdownSequence');
+function shutdownReturnViolations(
+  sourceFile: ts.SourceFile,
+  sequenceName: ShutdownSequenceName = 'runShutdownSequence',
+): string[] {
+  const shutdownSequence = findFunction(sourceFile, sequenceName);
   const returns: ts.ReturnStatement[] = [];
 
   function visit(node: ts.Node): void {
@@ -345,7 +357,7 @@ function shutdownReturnViolations(sourceFile: ts.SourceFile): string[] {
 
   if (shutdownSequence.body) visit(shutdownSequence.body);
   if (returns.length !== 1) {
-    return [`${sourceFile.fileName} runShutdownSequence: expected one exit-gate return, found ${returns.length}`];
+    return [`${sourceFile.fileName} ${sequenceName}: expected one exit-gate return, found ${returns.length}`];
   }
 
   const expression = returns[0].expression && unwrapExpression(returns[0].expression);
@@ -359,6 +371,30 @@ function shutdownReturnViolations(sourceFile: ts.SourceFile): string[] {
     return [formatViolation(shutdownSequence, returns[0], 'return bypasses ledger.gate(authorityRelease)')];
   }
   return [];
+}
+
+/** A succession release hands its listeners to the successor, so it may never carry an IPC close capability. */
+function successionReleaseIpcViolations(sourceFile: ts.SourceFile): string[] {
+  const releaseSequence = findFunction(sourceFile, 'runSuccessionReleaseSequence');
+  const violations: string[] = [];
+
+  function visit(node: ts.Node): void {
+    if (
+      ts.isPropertyAssignment(node) &&
+      ts.isIdentifier(node.name) &&
+      (node.name.text === 'ipcServer' || node.name.text === 'closeIpcServerFn') &&
+      !(ts.isIdentifier(node.initializer) && node.initializer.text === 'undefined')
+    ) {
+      violations.push(formatViolation(releaseSequence, node, `${node.name.text} hands the release an IPC capability`));
+    }
+    if (ts.isShorthandPropertyAssignment(node) && /^(ipcServer|closeIpcServerFn)$/u.test(node.name.text)) {
+      violations.push(formatViolation(releaseSequence, node, `${node.name.text} hands the release an IPC capability`));
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  if (releaseSequence.body) visit(releaseSequence.body);
+  return violations;
 }
 
 function settlementConstructorImportViolations(sourceFile: ts.SourceFile): string[] {
@@ -483,9 +519,12 @@ describe('shutdown teardown containment invariant', () => {
     expect([
       ...shutdownDispositionLiteralViolations(shutdownSource),
       ...readSourceTree('src').flatMap(shutdownDispositionConstructorViolations),
-      ...shutdownThrowViolations(shutdownSource),
-      ...shutdownAwaitBoundaryViolations(shutdownSource),
-      ...shutdownReturnViolations(shutdownSource),
+      ...SHUTDOWN_SEQUENCES.flatMap((sequence) => [
+        ...shutdownThrowViolations(shutdownSource, sequence),
+        ...shutdownAwaitBoundaryViolations(shutdownSource, sequence),
+        ...shutdownReturnViolations(shutdownSource, sequence),
+      ]),
+      ...successionReleaseIpcViolations(shutdownSource),
       ...settlementConstructorImportViolations(shutdownSource),
       ...settlementConstructorDefinitionViolations(
         settlementSource,
@@ -496,6 +535,33 @@ describe('shutdown teardown containment invariant', () => {
         new Set(['createShutdownSettlementLedger']),
       ),
     ]).toEqual([]);
+  });
+
+  it('rejects a succession release that could close a handed-over listener', () => {
+    const mutation = parseSource(
+      SHUTDOWN_PATH,
+      `async function runSuccessionReleaseSequence() {
+        const authorityRelease = buildAuthorityReleaseBoundary({ ipcServer, closeIpcServerFn: closeIpcServer });
+        return ledger.gate(authorityRelease);
+      }`,
+    );
+    expect(successionReleaseIpcViolations(mutation)).toEqual([
+      `${SHUTDOWN_PATH}:2 runSuccessionReleaseSequence: ipcServer hands the release an IPC capability`,
+      `${SHUTDOWN_PATH}:2 runSuccessionReleaseSequence: closeIpcServerFn hands the release an IPC capability`,
+    ]);
+  });
+
+  it('rejects a succession release await outside the settlement ledger', () => {
+    const mutation = parseSource(
+      SHUTDOWN_PATH,
+      `async function runSuccessionReleaseSequence() {
+        await release.handOver();
+        return ledger.gate(authorityRelease);
+      }`,
+    );
+    expect(shutdownAwaitBoundaryViolations(mutation, 'runSuccessionReleaseSequence')).toEqual([
+      `${SHUTDOWN_PATH}:2 runSuccessionReleaseSequence: await bypasses the settlement ledger`,
+    ]);
   });
 
   it('rejects a bare awaited shutdown finalizer mutation', () => {

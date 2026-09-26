@@ -1,17 +1,13 @@
-import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { join } from 'node:path';
 
-import { observeProcessLiveness, probeProcessIncarnation } from '../infra/node-process.js';
-import { UPGRADE_WAITER_BUNDLE_FILE } from '../infra/bundle-manifest-address.js';
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
   revalidateUpgradeIntentTarget,
   type UpgradeIntent,
 } from '../infra/upgrade-intent.js';
+import type { UpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
 import { createIpcClient } from '../transport/ipc/client.js';
 
 const LEASE_MS = 30_000;
@@ -23,11 +19,10 @@ export type UpgradeWaiterOptions = Readonly<{
   runDir: string;
   socketPath: string;
   targetRoot: string;
+  ports: UpgradeWaiterPorts;
   observeRetirement?: (intent: UpgradeIntent) => Promise<RetirementObservation>;
   launchTarget?: (intent: UpgradeIntent, attemptId: string) => Promise<void>;
   validateTarget?: (intent: UpgradeIntent) => boolean;
-  now?: () => number;
-  sleep?: (ms: number) => Promise<void>;
   pollMs?: number;
   waitForIntentMs?: number;
 }>;
@@ -35,70 +30,6 @@ export type UpgradeWaiterOptions = Readonly<{
 export type UpgradeWaiterResult =
   | Readonly<{ kind: 'completed' | 'closed' | 'superseded' | 'target-unavailable' | 'lease-held' | 'expired' }>
   | Readonly<{ kind: 'unobservable'; reason: string }>;
-
-export type UpgradeWaiterStart =
-  | Readonly<{ kind: 'started' | 'existing'; pid: number }>
-  | Readonly<{ kind: 'unavailable'; reason: string }>;
-
-/** The contender must observe a durable waiter owner before it exits. */
-export async function startUpgradeWaiter(
-  options: Readonly<{
-    runDir: string;
-    socketPath: string;
-    targetRoot: string;
-    timeoutMs?: number;
-  }>,
-): Promise<UpgradeWaiterStart> {
-  const observed = readUpgradeIntent(options.runDir);
-  if (observed.kind !== 'readable') return { kind: 'unavailable', reason: `intent is ${observed.kind}` };
-  if (observed.intent.target.pluginRootLabel !== options.targetRoot) {
-    return { kind: 'unavailable', reason: 'intent target changed' };
-  }
-  if (observed.intent.disposition === 'completed' || observed.intent.disposition === 'closed') {
-    return { kind: 'unavailable', reason: 'intent has ended' };
-  }
-  const owner = observed.intent.attemptOwner;
-  if (
-    owner?.kind === 'waiter' &&
-    observed.intent.attemptDeadline !== null &&
-    Date.parse(observed.intent.attemptDeadline) > Date.now()
-  ) {
-    return waiterAlive(owner)
-      ? { kind: 'existing', pid: owner.pid }
-      : { kind: 'unavailable', reason: 'recorded waiter died before its lease expired' };
-  }
-  const entryPoint = join(options.targetRoot, 'bridge', UPGRADE_WAITER_BUNDLE_FILE);
-  const child = spawn(process.execPath, [entryPoint, options.runDir, options.socketPath, options.targetRoot], {
-    detached: true,
-    stdio: 'ignore',
-  });
-  const started = await new Promise<boolean>((resolve) => {
-    child.once('error', () => resolve(false));
-    child.once('spawn', () => resolve(true));
-  });
-  if (!started || child.pid === undefined) return { kind: 'unavailable', reason: 'waiter process could not start' };
-  child.unref();
-  const deadline = Date.now() + (options.timeoutMs ?? 5_000);
-  while (Date.now() < deadline) {
-    const current = readUpgradeIntent(options.runDir);
-    if (current.kind !== 'readable') return { kind: 'unavailable', reason: `intent is ${current.kind}` };
-    if (current.intent.requestId !== observed.intent.requestId) {
-      return { kind: 'unavailable', reason: 'intent was superseded' };
-    }
-    const claimant = current.intent.attemptOwner;
-    if (claimant?.kind === 'waiter' && claimant.pid === child.pid) return { kind: 'started', pid: child.pid };
-    if (
-      claimant?.kind === 'waiter' &&
-      current.intent.attemptDeadline !== null &&
-      Date.parse(current.intent.attemptDeadline) > Date.now() &&
-      waiterAlive(claimant)
-    ) {
-      return { kind: 'existing', pid: claimant.pid };
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 50));
-  }
-  return { kind: 'unavailable', reason: 'waiter did not claim the intent before the startup deadline' };
-}
 
 function sameIncumbent(
   intent: UpgradeIntent,
@@ -109,24 +40,6 @@ function sameIncumbent(
     ping.pid === intent.incumbent.pid &&
     (intent.incumbent.incarnation === null || ping.incarnation === intent.incumbent.incarnation)
   );
-}
-
-function waiterAlive(owner: NonNullable<UpgradeIntent['attemptOwner']>): boolean {
-  if (owner.incarnation === null) return false;
-  try {
-    return probeProcessIncarnation(owner.pid) === owner.incarnation;
-  } catch {
-    return false;
-  }
-}
-
-function discoveryReleased(runDir: string): boolean {
-  try {
-    readFileSync(join(runDir, 'coordinator.json'));
-    return false;
-  } catch (error: unknown) {
-    return error instanceof Error && 'code' in error && error.code === 'ENOENT';
-  }
 }
 
 function socketReleased(socketPath: string): Promise<boolean> {
@@ -149,7 +62,8 @@ function socketReleased(socketPath: string): Promise<boolean> {
 }
 
 /** Only ping and health may poll a legacy incumbent; catalog requests renew its idle timer. */
-export async function observeNaturalRetirement(
+async function observeNaturalRetirement(
+  ports: UpgradeWaiterPorts,
   runDir: string,
   socketPath: string,
   intent: UpgradeIntent,
@@ -163,47 +77,46 @@ export async function observeNaturalRetirement(
     return sameIncumbent(intent, ping) ? 'serving' : 'unknown';
   } catch {
     const recorded = intent.incumbent.incarnation;
-    const current = recorded === null ? null : probeProcessIncarnation(intent.incumbent.pid);
+    const current = recorded === null ? null : ports.processIncarnation(intent.incumbent.pid);
     const liveness =
       current !== null && recorded !== null
         ? current === recorded
           ? 'alive'
           : 'absent'
-        : observeProcessLiveness(intent.incumbent.pid);
+        : ports.processLiveness(intent.incumbent.pid);
     if (liveness !== 'absent') return 'unknown';
-    if (!discoveryReleased(runDir)) return 'unknown';
+    if (!ports.pathAbsent(join(runDir, 'coordinator.json'))) return 'unknown';
     return (await socketReleased(socketPath)) ? 'retired' : 'unknown';
   }
 }
 
-async function launchInstalledTarget(intent: UpgradeIntent, attemptId: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, [join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs')], {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, CORAL_STARTUP_ATTEMPT_ID: attemptId },
-    });
-    child.once('error', reject);
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
-    });
+async function launchInstalledTarget(
+  ports: UpgradeWaiterPorts,
+  intent: UpgradeIntent,
+  attemptId: string,
+): Promise<void> {
+  const pid = await ports.launchDetached(join(intent.target.pluginRootLabel, 'bridge', 'coral-backend.cjs'), [], {
+    CORAL_STARTUP_ATTEMPT_ID: attemptId,
   });
+  if (pid === null) throw new Error('Upgrade target process could not be started.');
 }
 
 /** An unanswered probe never authorizes retirement or target launch. */
 export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<UpgradeWaiterResult> {
-  const now = options.now ?? Date.now;
-  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const { ports } = options;
+  const now = (): number => ports.time.now();
+  const sleep = (ms: number): Promise<void> => ports.time.sleep(ms);
   const observe =
     options.observeRetirement ??
-    ((intent: UpgradeIntent) => observeNaturalRetirement(options.runDir, options.socketPath, intent));
-  const launch = options.launchTarget ?? launchInstalledTarget;
+    ((intent: UpgradeIntent) => observeNaturalRetirement(ports, options.runDir, options.socketPath, intent));
+  const launch =
+    options.launchTarget ??
+    ((intent: UpgradeIntent, attemptId: string) => launchInstalledTarget(ports, intent, attemptId));
   const validate =
     options.validateTarget ?? ((intent: UpgradeIntent) => revalidateUpgradeIntentTarget(intent).kind === 'validated');
   const pollMs = options.pollMs ?? POLL_MS;
-  const instanceId = randomUUID();
-  const incarnation = probeProcessIncarnation(process.pid);
+  const instanceId = ports.uuid();
+  const incarnation = ports.processIncarnation(ports.pid);
   const firstDeadline = now() + (options.waitForIntentMs ?? 10_000);
   let requestId: string | null = null;
   let attemptId: string | null = null;
@@ -279,7 +192,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
     const deadline = intent.attemptDeadline === null ? 0 : Date.parse(intent.attemptDeadline);
     if (attemptId === null) {
       if (intent.attemptOwner !== null && deadline > now()) return { kind: 'lease-held' };
-      attemptId = randomUUID();
+      attemptId = ports.uuid();
     } else if (intent.attemptId !== attemptId || intent.attemptOwner?.instanceId !== instanceId) {
       return { kind: 'superseded' };
     }
@@ -303,7 +216,7 @@ export async function runUpgradeWaiter(options: UpgradeWaiterOptions): Promise<U
       const claimed = await compareAndSwapUpgradeIntent(options.runDir, intent.revision, {
         ...intent,
         attemptId,
-        attemptOwner: { kind: 'waiter', instanceId, pid: process.pid, incarnation },
+        attemptOwner: { kind: 'waiter', instanceId, pid: ports.pid, incarnation },
         attemptDeadline: new Date(now() + LEASE_MS).toISOString(),
         retryCondition: { kind: 'incumbent-retirement', evidence: 'waiting for verified idle retirement' },
       });

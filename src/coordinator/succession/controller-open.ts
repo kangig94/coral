@@ -25,7 +25,7 @@ const openSchema = z
     controlGeneration: z.number().int().nonnegative(),
     openedAtMs: z.number().int().nonnegative(),
   })
-  .strict();
+  .passthrough();
 const servingSchema = z
   .object({
     version: z.literal('v1'),
@@ -34,9 +34,15 @@ const servingSchema = z
     successorInstanceId: z.string().min(1),
     controlGeneration: z.number().int().positive(),
   })
-  .strict();
+  .passthrough();
 
 export type ControllerOpen = z.infer<typeof openSchema>;
+
+/** Unreadable records are named, never folded into absence: one of them may be the latest controller. */
+export type ControllerOpenObservation = Readonly<{
+  latest: ControllerOpen | null;
+  unreadable: readonly string[];
+}>;
 
 function epochDirectory(runtime: Runtime, epochKey: string): string {
   return join(runtime.paths.coral.coordinator.runDir, 'controller-opens.v1', runtime.ids.sha256(epochKey));
@@ -50,16 +56,33 @@ function controllerRoot(runtime: Runtime): string {
   return join(runtime.paths.coral.coordinator.runDir, 'controller-opens.v1');
 }
 
-function readControllerServing(runtime: Runtime, attemptId: string): z.infer<typeof servingSchema> | null {
+type ControllerServingRead =
+  | Readonly<{ kind: 'recorded'; serving: z.infer<typeof servingSchema> }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable' }>;
+
+function servingPath(runtime: Runtime, attemptId: string): string {
+  return join(controllerRoot(runtime), 'served', `${attemptId}.json`);
+}
+
+function readControllerServing(runtime: Runtime, attemptId: string): ControllerServingRead {
+  let raw: string;
   try {
-    return servingSchema.parse(
-      JSON.parse(
-        runtime.storage.readFileSync(join(controllerRoot(runtime), 'served', `${attemptId}.json`), 'utf-8'),
-      ) as unknown,
-    );
+    raw = runtime.storage.readFileSync(servingPath(runtime, attemptId), 'utf-8');
   } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
-    throw error;
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unreadable' };
+  }
+  const parsed = servingSchema.safeParse(parseJson(raw));
+  return parsed.success ? { kind: 'recorded', serving: parsed.data } : { kind: 'unreadable' };
+}
+
+function parseJson(raw: string): unknown {
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
   }
 }
 
@@ -117,21 +140,51 @@ export function recordControllerOpen(
   }
 }
 
-export function latestControllerOpen(runtime: Runtime, epochKey: string, instanceId?: string): ControllerOpen | null {
+export function latestControllerOpen(
+  runtime: Runtime,
+  epochKey: string,
+  instanceId?: string,
+): ControllerOpenObservation {
   const directory = epochDirectory(runtime, epochKey);
-  if (!runtime.storage.existsSync(directory)) return null;
+  let names: string[];
+  try {
+    names = runtime.storage.readdirSync(directory);
+  } catch (error: unknown) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return { latest: null, unreadable: [] };
+    return { latest: null, unreadable: [directory] };
+  }
   let latest: ControllerOpen | null = null;
-  for (const name of runtime.storage.readdirSync(directory)) {
+  const unreadable: string[] = [];
+  for (const name of names) {
     if (!name.endsWith('.json')) continue;
-    const parsed = openSchema.safeParse(
-      JSON.parse(runtime.storage.readFileSync(join(directory, name), 'utf-8')) as unknown,
-    );
-    if (!parsed.success || parsed.data.epochKey !== epochKey) throw new Error('Controller-open record is invalid.');
+    const path = join(directory, name);
+    let raw: string;
+    try {
+      raw = runtime.storage.readFileSync(path, 'utf-8');
+    } catch {
+      unreadable.push(path);
+      continue;
+    }
+    const parsed = openSchema.safeParse(parseJson(raw));
+    if (!parsed.success || parsed.data.epochKey !== epochKey) {
+      unreadable.push(path);
+      continue;
+    }
     const record = parsed.data;
     if (instanceId !== undefined && record.instanceId !== instanceId) continue;
     if (record.attemptId !== null) {
-      const serving =
-        readControllerServing(runtime, record.attemptId) ?? observeSuccessionServing(runtime, record.attemptId);
+      const recorded = readControllerServing(runtime, record.attemptId);
+      if (recorded.kind === 'unreadable') {
+        unreadable.push(servingPath(runtime, record.attemptId));
+        continue;
+      }
+      let serving: Readonly<{ epochKey: string; successorInstanceId: string; controlGeneration: number }> | null;
+      try {
+        serving = recorded.kind === 'recorded' ? recorded.serving : observeSuccessionServing(runtime, record.attemptId);
+      } catch {
+        unreadable.push(servingPath(runtime, record.attemptId));
+        continue;
+      }
       if (
         serving?.epochKey !== epochKey ||
         serving.successorInstanceId !== record.instanceId ||
@@ -147,5 +200,5 @@ export function latestControllerOpen(runtime: Runtime, epochKey: string, instanc
       latest = record;
     }
   }
-  return latest;
+  return { latest, unreadable };
 }

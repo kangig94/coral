@@ -36,7 +36,13 @@ const coverageSchema = z
 const COVERAGE_FILE = '.coral-custody-coverage.v1.json';
 
 export type EpochClosureEvidence = z.infer<typeof closureSchema>;
-export type EpochClosureCapability = Readonly<{ epochKey: string; executionDischarge: 'certified' }>;
+const epochClosureCapabilityBrand: unique symbol = Symbol('EpochClosureCapability');
+/** Only a recorded, certified closure constructs this; a structurally matching literal cannot. */
+export type EpochClosureCapability = Readonly<{
+  epochKey: string;
+  executionDischarge: 'certified';
+  [epochClosureCapabilityBrand]: true;
+}>;
 
 export function recordEpochCustodyCoverage(runtime: Runtime, epochDirectory: string, ledgerId: string): void {
   const path = join(epochDirectory, COVERAGE_FILE);
@@ -72,21 +78,35 @@ function closurePath(stateRoot: string, epochKey: string): string {
   return join(stateRoot, 'epoch-closure.v1', `${sha256Hex(epochKey)}.json`);
 }
 
-export function readEpochClosure(
+export type EpochClosureRead =
+  | Readonly<{ kind: 'recorded'; evidence: EpochClosureEvidence }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable'; path: string }>;
+
+export function observeEpochClosure(
   runtime: Pick<Runtime, 'storage'>,
   stateRoot: string,
   epochKey: string,
-): EpochClosureEvidence | null {
+): EpochClosureRead {
+  const path = closurePath(stateRoot, epochKey);
+  let raw: string;
   try {
-    const evidence = closureSchema.parse(
-      JSON.parse(runtime.storage.readFileSync(closurePath(stateRoot, epochKey), 'utf-8')) as unknown,
-    );
-    if (evidence.epochKey !== epochKey) throw new Error('Epoch closure key does not match its address.');
-    return evidence;
+    raw = runtime.storage.readFileSync(path, 'utf-8');
   } catch (error: unknown) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
-    throw error;
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unreadable', path };
   }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return { kind: 'unreadable', path };
+  }
+  const parsed = closureSchema.safeParse(value);
+  return parsed.success && parsed.data.epochKey === epochKey
+    ? { kind: 'recorded', evidence: parsed.data }
+    : { kind: 'unreadable', path };
 }
 
 export function recordEpochClosure(
@@ -98,7 +118,9 @@ export function recordEpochClosure(
   if ((evidence.disposition === 'closed') !== (evidence.executionDischarge === 'certified')) {
     throw new Error('Execution discharge must agree with the closure disposition.');
   }
-  const existing = readEpochClosure(runtime, stateRoot, evidence.epochKey);
+  const read = observeEpochClosure(runtime, stateRoot, evidence.epochKey);
+  if (read.kind === 'unreadable') throw new Error(`Epoch closure is unreadable: ${read.path}`);
+  const existing = read.kind === 'recorded' ? read.evidence : null;
   if (existing?.disposition === 'closed' && evidence.disposition !== 'closed') return existing;
   const path = closurePath(stateRoot, evidence.epochKey);
   const parent = dirname(path);
@@ -139,8 +161,10 @@ export function closureCapability(
   stateRoot: string,
   epochKey: string,
 ): EpochClosureCapability | null {
-  const evidence = readEpochClosure(runtime, stateRoot, epochKey);
-  return evidence?.disposition === 'closed' && evidence.executionDischarge === 'certified'
-    ? { epochKey, executionDischarge: 'certified' }
+  const read = observeEpochClosure(runtime, stateRoot, epochKey);
+  return read.kind === 'recorded' &&
+    read.evidence.disposition === 'closed' &&
+    read.evidence.executionDischarge === 'certified'
+    ? { epochKey, executionDischarge: 'certified', [epochClosureCapabilityBrand]: true }
     : null;
 }

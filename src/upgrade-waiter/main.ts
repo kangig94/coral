@@ -1,6 +1,7 @@
 import { runUpgradeWaiter } from './index.js';
 import { socketPathForRunDir } from '../infra/path/index.js';
 import { readUpgradeIntent } from '../infra/upgrade-intent.js';
+import { createRealUpgradeWaiterPorts } from '../runtime/upgrade-waiter.js';
 
 const [runDir, socketPath, targetRoot] = process.argv.slice(2);
 if (runDir === undefined || socketPath === undefined || targetRoot === undefined) {
@@ -14,7 +15,12 @@ if (runDir === undefined || socketPath === undefined || targetRoot === undefined
       : null);
   if (addressedSocket === null) process.exitCode = 1;
   else
-    void runUpgradeWaiter({ runDir, socketPath: addressedSocket, targetRoot }).then(
+    void runUpgradeWaiter({
+      runDir,
+      socketPath: addressedSocket,
+      targetRoot,
+      ports: createRealUpgradeWaiterPorts(),
+    }).then(
       (result) => {
         process.exitCode = result.kind === 'unobservable' ? 1 : 0;
       },

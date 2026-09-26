@@ -197,6 +197,12 @@ describe('cli errors', () => {
         1,
       ],
       [
+        'store_reset_epoch_ambiguous',
+        'Store-reset report target names an epoch number that more than one store lineage uses.',
+        'Run `coral-cli backend store-reset list --target gen2` and retry with the full epoch key shown there. An epoch listed with an unobservable key has no facts to report beyond its list row.',
+        2,
+      ],
+      [
         'store_reset_build_mismatch',
         'Store-reset reporting is unavailable because the installed build artifacts do not match.',
         'Reinstall or update Coral through the same install method without deleting Coral data, then retry. If it persists, file a Store-reset incident issue with this fixed error output; do not attach DB, WAL, SHM, or raw logs.',
@@ -474,6 +480,7 @@ describe('cli errors', () => {
       const EXPECTED_LAUNCH_AND_DOMAIN_RETRY_LATER_CODES = [
         'backend_recovering',
         'busy',
+        'job_unresolved',
         'kb_disabled',
         'provider_preflight_undetermined',
         'succession_admission_paused',

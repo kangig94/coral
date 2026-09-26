@@ -2,6 +2,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { upgradeIntentPath } from '#src/infra/path/coordinator.js';
+import { readUpgradeIntent } from '#src/infra/upgrade-intent.js';
+
 import {
   SESSION_START_HOOK,
   cleanupFixtures,
@@ -187,15 +190,15 @@ describe('session-start.mjs startup failure notice', () => {
     WARM_START_TIMEOUT_MS,
   );
 
-  it(
-    'reports a legacy contender refusal as a deferred upgrade',
-    async () => {
+  it.each(['handoff_shutdown_capability_rejected', 'handoff_shutdown_credential_unavailable'])(
+    'reports the legacy contender refusal %s as a deferred upgrade',
+    async (code) => {
       const fixture = setupFixture();
       writeDiagnostic(fixture, {
         ...documentedFailure(new Date().toISOString()),
         error: {
           kind: 'coral_setup_error',
-          code: 'handoff_shutdown_capability_rejected',
+          code,
           userMessage: 'The new incumbent refused an old shutdown request.',
           remediation: 'Wait for automatic succession.',
         },
@@ -204,7 +207,7 @@ describe('session-start.mjs startup failure notice', () => {
         join(fixture.root, '.coral', 'gen2', 'run', 'coordinator.json'),
         JSON.stringify({ pid: process.pid }),
       );
-      const context = await contextFor(fixture, 'test-session-deferred-upgrade');
+      const context = await contextFor(fixture, `test-session-deferred-upgrade-${code}`);
       expect(context).toContain('deferred its upgrade');
       expect(context).not.toContain('start attempt failed');
       expect(context).not.toContain('coral-cli');
@@ -286,6 +289,168 @@ describe('session-start.mjs startup failure notice', () => {
 
       expect(context).not.toContain('the most recent start attempt failed');
       expect(context).not.toContain('super-secret');
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+});
+
+/**
+ * The hook cannot import `upgradeIntentSchema`, so its guard reads the intent by field name. Every case writes
+ * through `upgradeIntentPath` and the base intent must stay readable by the real reader, so a renamed field or
+ * file fails here instead of silently disabling recovery.
+ */
+describe('session-start.mjs expired upgrade waiter recovery', () => {
+  const build = {
+    version: '0.11.0',
+    buildSetId: '00000000-0000-4000-8000-000000000001',
+    flavor: 'prod' as const,
+    storeFormatFingerprint: `sha256:${'0'.repeat(64)}`,
+    bundleHash: '0123456789abcdef',
+    cliBundleHash: '0123456789abcdef',
+    claudeAppserverBundleHash: '0123456789abcdef',
+    durableWrapperBundleHash: '0123456789abcdef',
+  };
+  const expired = '2020-01-01T00:00:00.000Z';
+  const live = '2999-01-01T00:00:00.000Z';
+  const owner = (kind: 'incumbent' | 'waiter') => ({ kind, instanceId: `${kind}-1`, pid: 4242, incarnation: null });
+
+  function setupFixture() {
+    const fixture = createFixture();
+    const markerPath = join(fixture.pluginRoot, 'waiter-argv.json');
+    const runDir = join(fixture.root, '.coral', 'gen2', 'run');
+    mkdirSync(join(fixture.pluginRoot, 'bridge'), { recursive: true });
+    mkdirSync(runDir, { recursive: true });
+    writeFileSync(
+      join(fixture.pluginRoot, 'bridge', 'manifest.json'),
+      JSON.stringify({ bundleHash: 'test-hash', flavor: 'prod' }),
+      'utf-8',
+    );
+    writeFileSync(join(fixture.pluginRoot, 'bridge', 'coral-backend.cjs'), '', 'utf-8');
+    writeFileSync(
+      join(fixture.pluginRoot, 'bridge', 'coral-upgrade-waiter.cjs'),
+      [
+        "const fs = require('node:fs');",
+        `const marker = ${JSON.stringify(markerPath)};`,
+        'fs.writeFileSync(`${marker}.tmp`, JSON.stringify(process.argv.slice(2)));',
+        'fs.renameSync(`${marker}.tmp`, marker);',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const intent = {
+      version: 'v1',
+      requestId: 'request-1',
+      revision: 1,
+      incumbent: {
+        instanceId: 'incumbent-1',
+        pid: 4242,
+        incarnation: null,
+        version: '0.10.13',
+        bundleHash: 'fedcba9876543210',
+        flavor: 'prod',
+      },
+      target: { build, pluginRootLabel: fixture.pluginRoot },
+      attemptId: null,
+      attemptOwner: null,
+      disposition: 'pending',
+      blockers: [],
+      retryCondition: { kind: 'incumbent-retirement', evidence: 'incumbent-1' },
+      attemptDeadline: null,
+      completionReceipt: null,
+    };
+    return { fixture, markerPath, runDir, intent };
+  }
+
+  async function runWith(change: (intent: Record<string, unknown>, pluginRoot: string) => Record<string, unknown>) {
+    const { fixture, markerPath, runDir, intent } = setupFixture();
+    writeFileSync(upgradeIntentPath(runDir), JSON.stringify(change(intent, fixture.pluginRoot)), 'utf-8');
+    const result = await runHookAsync(
+      SESSION_START_HOOK,
+      { session_id: 'test-session-waiter' },
+      { HOME: fixture.root, CLAUDE_PLUGIN_ROOT: fixture.pluginRoot },
+    );
+    expect(result.status).toBe(0);
+    return { fixture, markerPath, runDir };
+  }
+
+  it(
+    'keeps the base intent readable by the production reader',
+    () => {
+      const { runDir, intent } = setupFixture();
+      writeFileSync(upgradeIntentPath(runDir), JSON.stringify(intent), 'utf-8');
+      expect(readUpgradeIntent(runDir)).toMatchObject({ kind: 'readable', intent: { disposition: 'pending' } });
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it.each([
+    { name: 'a pending intent with no attempt', change: (intent: Record<string, unknown>) => intent },
+    {
+      name: 'a deferred intent',
+      change: (intent: Record<string, unknown>) => ({ ...intent, disposition: 'deferred' }),
+    },
+    {
+      name: "an expired waiter's attempt",
+      change: (intent: Record<string, unknown>) => ({
+        ...intent,
+        attemptId: 'attempt-1',
+        attemptOwner: owner('waiter'),
+        attemptDeadline: expired,
+      }),
+    },
+  ])(
+    'starts the target waiter for $name',
+    async ({ change }) => {
+      const { fixture, markerPath, runDir } = await runWith(change);
+      expect(await waitForFile(markerPath)).toBe(true);
+      expect(JSON.parse(readFileSync(markerPath, 'utf-8'))).toEqual([runDir, '', fixture.pluginRoot]);
+    },
+    WARM_START_TIMEOUT_MS,
+  );
+
+  it.each([
+    { name: 'an unknown intent version', change: (intent: Record<string, unknown>) => ({ ...intent, version: 'v2' }) },
+    {
+      name: 'another plugin root',
+      change: (intent: Record<string, unknown>, pluginRoot: string) => ({
+        ...intent,
+        target: { build, pluginRootLabel: `${pluginRoot}-other` },
+      }),
+    },
+    {
+      name: 'an attempting intent',
+      change: (intent: Record<string, unknown>) => ({ ...intent, disposition: 'attempting' }),
+    },
+    {
+      name: 'a retry condition other than incumbent retirement',
+      change: (intent: Record<string, unknown>) => ({
+        ...intent,
+        retryCondition: { kind: 'obligation-change', evidence: 'job-1' },
+      }),
+    },
+    {
+      name: "an expired incumbent's attempt",
+      change: (intent: Record<string, unknown>) => ({
+        ...intent,
+        attemptId: 'attempt-1',
+        attemptOwner: owner('incumbent'),
+        attemptDeadline: expired,
+      }),
+    },
+    {
+      name: "a waiter's attempt whose deadline has not passed",
+      change: (intent: Record<string, unknown>) => ({
+        ...intent,
+        attemptId: 'attempt-1',
+        attemptOwner: owner('waiter'),
+        attemptDeadline: live,
+      }),
+    },
+  ])(
+    'does not start a waiter for $name',
+    async ({ change }) => {
+      const { markerPath } = await runWith(change);
+      expect(await waitForFile(markerPath, 1_000)).toBe(false);
     },
     WARM_START_TIMEOUT_MS,
   );

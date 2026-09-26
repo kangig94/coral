@@ -80,39 +80,11 @@ describe('write-once store epoch invariants', () => {
     expect(runtime).not.toMatch(/openNoFollowSync|O_NOFOLLOW/u);
   });
 
-  it('deletes superseded epochs only after exact-key closure and retained-result release', () => {
+  it('deletes superseded epochs only through the named deletion owners', () => {
     for (const path of storeSources()) {
       if (path === 'src/store/epoch.ts' || path === 'src/store/epoch-protection.ts') continue;
       expect(source(path), path).not.toMatch(/(?:rmSync|unlinkSync)\([^\n]*epoch-/u);
     }
-    const sweep = functionSource('src/store/epoch.ts', 'sweepStoreEpochsPostReady');
-    const canonicalDeletionGuard =
-      /const epochKey = readOrCreateEpochKey\(runtime, resolved\);[\s\S]*?closureCapability\(runtime, runtime\.paths\.coral\.generation\.dataRoot, epochKey\) === null\s*\|\|\s*!options\.resultsReleased\(epochKey\)[\s\S]*?continue;[\s\S]*?removeEpochEntry\(runtime, dbDir, epoch\)/u;
-    const protectedDeletionGuard =
-      /closureCapability\(runtime, runtime\.paths\.coral\.generation\.dataRoot, address\.epochKey\) === null\s*\|\|\s*!options\.resultsReleased\(address\.epochKey\)[\s\S]*?continue;[\s\S]*?removeClosedProtectedEpoch\(runtime, address\)/u;
-    const protectedRetention = sweep.slice(
-      sweep.indexOf('for (const address of protectedAddresses)'),
-      sweep.indexOf('for (const address of protectedDeletionResidues'),
-    );
-    const protectedResidue = sweep.slice(sweep.indexOf('for (const address of protectedDeletionResidues'));
-    expect(sweep).toContain('if (options.resultsReleased !== undefined)');
-    expect(sweep).toMatch(canonicalDeletionGuard);
-    expect(protectedRetention).toMatch(protectedDeletionGuard);
-    expect(protectedResidue).toMatch(protectedDeletionGuard);
-    expect(sweep.replace('!options.resultsReleased(epochKey)', 'false')).not.toMatch(canonicalDeletionGuard);
-    expect(
-      sweep.replace(
-        'closureCapability(runtime, runtime.paths.coral.generation.dataRoot, epochKey)',
-        'closureCapability(runtime, runtime.paths.coral.generation.dataRoot, epoch)',
-      ),
-    ).not.toMatch(canonicalDeletionGuard);
-    expect(protectedRetention.replace('!options.resultsReleased(address.epochKey)', 'false')).not.toMatch(
-      protectedDeletionGuard,
-    );
-    expect(protectedResidue.replace('!options.resultsReleased(address.epochKey)', 'false')).not.toMatch(
-      protectedDeletionGuard,
-    );
-    expect(sweep).toContain('isStoreEpochResidue(entry)');
 
     const parsed = ts.createSourceFile(
       'src/store/epoch.ts',

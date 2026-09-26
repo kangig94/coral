@@ -201,7 +201,7 @@ export function createCoordinatorControl({
     isDrainRequested,
     decideLegacyShutdown: () => ({
       code: 'shutdown_unauthorized',
-      message: 'Manual shutdown required: incumbent rejected shutdown capability.',
+      message: 'Shutdown refused: the incumbent keeps serving, and the upgrade is deferred to automatic succession.',
     }),
     requestDrain,
   };

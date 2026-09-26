@@ -423,14 +423,6 @@ export async function receiveSuccessionAttemptChild(
     },
     acknowledge: (acknowledgment) =>
       new Promise<void>((resolve, reject) => {
-        if (
-          acknowledgment.kind === 'serving' &&
-          ports.env('NODE_ENV') === 'test' &&
-          ports.env('CORAL_TEST_SUCCESSION_DROP_SERVING_ACK') === '1'
-        ) {
-          resolve();
-          return;
-        }
         if (!ports.channel.connected) {
           reject(new Error('Succession attempt channel is unavailable'));
           return;

@@ -1,4 +1,5 @@
 import type { SettlePendingLaunchesFn, TerminateRegisteredChildrenFn } from '../shutdown.js';
+import type { SuccessionInterposition } from '../succession/interposition.js';
 import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import type { BackendInfo, BackendInfoRemovalResult } from '../../infra/backend-discovery.js';
 import type { ProviderRegistry } from '../../providers/registry.js';
@@ -85,6 +86,8 @@ export type CoordinatorCoreOptions = {
   recoverPersistedDiscussFn?: RecoverPersistedDiscussFn;
   providerHostManager?: ProviderHostManager;
   providerHostAdmission?: HostAdmissionCollection;
+  /** Supplied only by a test harness; production composes no interposition. */
+  successionInterposition?: SuccessionInterposition;
   /**
    * Builds the durable-effect handler for a proxy's `provider.event.v1` pushes (W2.3), fresh, once per proxy
    * set acquisition — never an already-built handler, because this option is consumed while composing

@@ -14,6 +14,7 @@ import {
   isKbDaemonParentRequestMessage,
   isKbDaemonParentResponseMessage,
   isKbDaemonRequestMessage,
+  kbDaemonWriterReclaimParamsSchema,
 } from '#src/kb-daemon/protocol.js';
 
 const daemonCtx = {
@@ -147,5 +148,18 @@ describe('KB daemon protocol', () => {
     ).toBe(false);
     expect(isKbDaemonCurateRequestCancelRequest({ requestId: 'parent:1', reason: 'stopping' })).toBe(true);
     expect(isKbDaemonCurateRequestCancelRequest({ requestId: '' })).toBe(false);
+  });
+});
+
+describe('KB daemon writer reclaim params', () => {
+  it('should accept only a whole writer generation with its store address', () => {
+    const generation = { generation: 3, storeRoot: '/store', epoch: '2' };
+    expect(kbDaemonWriterReclaimParamsSchema.safeParse(generation).success).toBe(true);
+    expect(kbDaemonWriterReclaimParamsSchema.safeParse({ ...generation, generation: 3.5 }).success).toBe(false);
+    expect(
+      kbDaemonWriterReclaimParamsSchema.safeParse({ ...generation, generation: Number.MAX_SAFE_INTEGER + 1 }).success,
+    ).toBe(false);
+    expect(kbDaemonWriterReclaimParamsSchema.safeParse({ generation: 3, storeRoot: '/store' }).success).toBe(false);
+    expect(kbDaemonWriterReclaimParamsSchema.safeParse(undefined).success).toBe(false);
   });
 });

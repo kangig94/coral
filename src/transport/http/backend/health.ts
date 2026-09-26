@@ -872,11 +872,7 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     !Array.isArray(value.components) ||
     !value.components.every(isRuntimeComponentStatus) ||
     (value.systemProviderScope !== undefined && !isSystemProviderScope(value.systemProviderScope)) ||
-    (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon)) ||
-    (value.successionProblem !== undefined &&
-      value.successionProblem !== 'unreadable' &&
-      value.successionProblem !== 'corrupt' &&
-      value.successionProblem !== 'unsupported')
+    (value.kbDaemon !== undefined && !isKbDaemonHealth(value.kbDaemon))
   ) {
     return null;
   }
@@ -886,15 +882,23 @@ export function parseBackendHealth(value: unknown): BackendHealthParseResult | n
     return null;
   }
   const shutdown = value.shutdown === undefined ? null : parseShutdownRemainderProjection(value.shutdown);
-  const succession = value.succession === undefined ? null : parseVisibleUpgradeIntent(value.succession);
-  if (value.succession !== undefined && succession === null) return null;
+  // Succession fields are optional additions: one this build cannot decode is dropped, never a rejected health.
+  const { succession: rawSuccession, successionProblem: rawSuccessionProblem, ...reported } = value;
+  const succession = rawSuccession === undefined ? null : parseVisibleUpgradeIntent(rawSuccession);
+  const successionProblem =
+    rawSuccessionProblem === 'unreadable' ||
+    rawSuccessionProblem === 'corrupt' ||
+    rawSuccessionProblem === 'unsupported'
+      ? rawSuccessionProblem
+      : null;
 
   return {
     health: {
-      ...value,
+      ...reported,
       ...(diagnostics === null ? {} : { diagnostics: diagnostics.diagnostics }),
       ...(shutdown === null ? {} : { shutdown }),
       ...(succession === null ? {} : { succession }),
+      ...(successionProblem === null ? {} : { successionProblem }),
     } as BackendHealth,
     skippedProviderProxySetRows: diagnostics?.skippedProviderProxySetRows ?? 0,
     skippedProviderProxySetTokens: diagnostics?.skippedProviderProxySetTokens ?? [],

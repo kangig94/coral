@@ -180,7 +180,7 @@ const durableCliControllerReceiptSchema = z
     custodyIntentId: z.string().uuid(),
     acknowledgedAtMs: z.number().int().nonnegative(),
   })
-  .strict();
+  .passthrough();
 
 export type DurableCliControllerReceipt = z.infer<typeof durableCliControllerReceiptSchema>;
 
@@ -222,15 +222,37 @@ export function recordDurableCliControllerReceipts(
   }
 }
 
+/** `unreadable` names receipts that may concern any job or epoch; a consumer must not read them as absent. */
+export type DurableCliControllerReceiptSet = Readonly<{
+  receipts: readonly DurableCliControllerReceipt[];
+  unreadable: readonly string[];
+}>;
+
 export function readDurableCliControllerReceipts(
   runtime: Pick<Runtime, 'storage'>,
   runDir: string,
-): readonly DurableCliControllerReceipt[] | null {
+): DurableCliControllerReceiptSet {
+  let records: ReturnType<typeof readControllerReceipts>;
   try {
-    return readControllerReceipts(runtime, runDir).map((record) =>
-      durableCliControllerReceiptSchema.parse(JSON.parse(record)),
-    );
+    records = readControllerReceipts(runtime, runDir);
   } catch {
-    return null;
+    return { receipts: [], unreadable: [runDir] };
+  }
+  const receipts: DurableCliControllerReceipt[] = [];
+  const unreadable: string[] = [];
+  for (const record of records) {
+    const parsed =
+      record.text === null ? null : durableCliControllerReceiptSchema.safeParse(parseReceiptJson(record.text));
+    if (parsed?.success === true) receipts.push(parsed.data);
+    else unreadable.push(record.path);
+  }
+  return { receipts, unreadable };
+}
+
+function parseReceiptJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
   }
 }

@@ -114,6 +114,8 @@ function createPorts(requests: WaitStreamRequest[]): HttpHandlerPorts {
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: ['job-1'], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      validateWait: vi.fn(() => null),
+      waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(async function* (request: WaitStreamRequest) {
         requests.push(request);
         for (const event of makeWaitEvents()) {

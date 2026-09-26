@@ -20,6 +20,7 @@ import type { JobStore } from '#src/jobs/store.js';
 import type { SessionOpenedBody } from '#src/sessions/event-bodies.js';
 import { pluginRootNamespace } from '#src/infra/plugin-identity.js';
 import { createRealRuntime } from '#src/runtime/real.js';
+import { retirementMintDisposition } from '#src/store/epoch.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import {
   KB_COMPONENT_ID,
@@ -788,7 +789,7 @@ function createLifecycleHarness(
       storeFormat: currentCoralStoreFormat(),
       authorizeStartupMint: (observation) =>
         observation.incumbent === null && observation.observedEpochCount === 0
-          ? { kind: 'initial', incumbentEpochKey: null }
+          ? retirementMintDisposition('initial', null)
           : null,
       identity: {
         pluginRoot: options.pluginRoot,

@@ -40,6 +40,7 @@ import {
 } from '#src/coordinator/handoff-routing/status.js';
 import { incumbentIdentitySummarySchema, type HandoffRoutingBasis } from '#src/coordinator/handoff-routing/policy.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
+import type { ShutdownObligationLabel } from '#src/coordinator/shutdown-settlement.js';
 import { createRecoveryComponent } from '#src/coordinator/runtime-components/recovery-component.js';
 import { createRuntimeComponentRegistry } from '#src/coordinator/runtime-components/registry.js';
 import { RecoveryQuarantineStore } from '#src/recovery/quarantine.js';
@@ -48,6 +49,7 @@ import { applyBundledStoreSchema } from '#src/store/db.js';
 import { handoffRoutingStatusGeneration } from '#src/store/handoff-routing-status-store/index.js';
 import { parseBackendHealth } from '#src/transport/http/backend/health.js';
 import {
+  operatorFacingShutdownObligation,
   statusFromStartupDiagnostic,
   statusFromStartupSentinel,
   type BackendStatusFull,
@@ -166,6 +168,43 @@ const UPGRADE_TARGET = {
   pluginRootLabel: '/installed/new',
 } as const;
 
+type FixedShutdownObligationLabel = Exclude<
+  ShutdownObligationLabel,
+  `stream response close ${number}` | `provider proxy lifecycle fatal incident${string}`
+>;
+
+// Keyed by the coordinator's own label union, so a new shutdown obligation cannot ship without a status projection.
+const FIXED_SHUTDOWN_OBLIGATION_LABELS: Record<FixedShutdownObligationLabel, true> = {
+  'inflight drain': true,
+  'server connection close': true,
+  'server close': true,
+  'recovery coordinator teardown': true,
+  'ownership checker teardown': true,
+  'kb child shutdown': true,
+  'provider operation mutation drain': true,
+  'store services availability check': true,
+  'provider host shutdown': true,
+  'pending launch settlement': true,
+  'child termination': true,
+  'crashed job terminalization': true,
+  'app-server handoff quiesce': true,
+  'provider host drain for handoff': true,
+  'components disposeAll': true,
+  'hooks.onShutdown': true,
+  'discuss store dispose': true,
+  'process incarnation probe shutdown': true,
+  'lifecycle reactor dispose': true,
+  'store epoch sweep cancellation': true,
+  'succession attempt settlement': true,
+  'succession connection handover': true,
+};
+
+describe('shutdown obligation projection', () => {
+  it.each(Object.keys(FIXED_SHUTDOWN_OBLIGATION_LABELS))('should name the %s obligation to the reader', (label) => {
+    expect(operatorFacingShutdownObligation(label)).toEqual({ label });
+  });
+});
+
 describe('pending upgrade visibility', () => {
   it('keeps the incumbent serving and states the legacy idle-retirement delay without an exit command', () => {
     const rendered = formatBackendStatus(
@@ -226,35 +265,40 @@ describe('pending upgrade visibility', () => {
     expect(rendered).toContain('Backend ok');
     expect(rendered).toContain('Upgrade intent record is corrupt');
     expect(rendered).toContain('Automatic succession is held');
+    expect(rendered).toContain('nothing in Coral repairs this record');
+    expect(rendered).toContain('file a Coral issue with this output');
   });
 
-  it('classifies a legacy shutdown refusal as a deferred upgrade', () => {
-    const diagnostic = statusFromStartupDiagnostic(
-      {
-        schemaVersion: 1,
-        state: 'stopped_with_diagnostic',
-        phase: 'startup_failed',
-        retryable: false,
-        recordedAt: '2026-08-03T00:00:00.000Z',
-        error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
-      },
-      TEST_TIME.now(),
-      () => null,
-    );
-    expect(diagnostic).toEqual({ status: 'deferred_upgrade' });
-    expect(formatBackendStatus(diagnostic!, { kind: 'absent' }, null)).toContain('Upgrade deferred');
-    expect(
-      statusFromStartupSentinel(
+  it.each(['handoff_shutdown_capability_rejected', 'handoff_shutdown_credential_unavailable'])(
+    'classifies the legacy shutdown refusal %s as a deferred upgrade',
+    (code) => {
+      const diagnostic = statusFromStartupDiagnostic(
         {
-          version: 1,
+          schemaVersion: 1,
           state: 'stopped_with_diagnostic',
-          recordedAt: TEST_TIME.now(),
-          error: { kind: 'coral_setup_error', code: 'handoff_shutdown_capability_rejected' },
+          phase: 'startup_failed',
+          retryable: false,
+          recordedAt: '2026-08-03T00:00:00.000Z',
+          error: { kind: 'coral_setup_error', code },
         },
         TEST_TIME.now(),
-      ),
-    ).toEqual({ status: 'deferred_upgrade' });
-  });
+        () => null,
+      );
+      expect(diagnostic).toEqual({ status: 'deferred_upgrade' });
+      expect(formatBackendStatus(diagnostic!, { kind: 'absent' }, null)).toContain('Upgrade deferred');
+      expect(
+        statusFromStartupSentinel(
+          {
+            version: 1,
+            state: 'stopped_with_diagnostic',
+            recordedAt: TEST_TIME.now(),
+            error: { kind: 'coral_setup_error', code },
+          },
+          TEST_TIME.now(),
+        ),
+      ).toEqual({ status: 'deferred_upgrade' });
+    },
+  );
 });
 
 function runningBackendStatus(

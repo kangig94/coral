@@ -77,6 +77,7 @@ import { LaunchOrchestrator } from '#src/jobs/shell/launch.js';
 import { ProviderRegistry } from '#src/providers/registry.js';
 import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import { decodeStoredBody, encodeEventBody, StoreCodecError } from '#src/store/body-codec.js';
+import { SuccessionWriterParkedError } from '#src/store/db.js';
 import type { CommitEventsFn } from '#src/store/append.js';
 import {
   toProviderDefinition,
@@ -899,6 +900,48 @@ describe('ExecutionService launch', () => {
     expect(abortRegistry.has(jobId)).toBe(false);
     expect(launchCoordinator.getActiveJobIds()).not.toContain(jobId);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('defers a provider failure seen through a parked succession writer until the writer is reclaimed', async () => {
+    let rejectProvider!: (error: Error) => void;
+    const providerResult = new Promise<TestProviderTurnResult>((_resolve, reject) => {
+      rejectProvider = reject;
+    });
+    const { provider } = makeProvider({ execute: () => providerResult });
+    mockState.getNewProvider.mockReturnValue(provider);
+    const progressStore = createCompositionProgressStore();
+    const service = createService(ctx, { progressStore });
+    const { abortRegistry } = getInternals(service);
+    const decision = await service.start('codex', { prompt: 'parked writer failure' }, ctx);
+    expect(decision.status).toBe('running');
+    if (decision.status !== 'running') throw new Error('expected running launch');
+    trackJob(decision.jobId);
+    let reclaim!: () => void;
+    const unparked = new Promise<void>((resolve) => {
+      reclaim = resolve;
+    });
+    const readStatus = progressStore.readStatus.bind(progressStore);
+    const parkedRead = vi.spyOn(progressStore, 'readStatus').mockImplementationOnce(() => {
+      throw new SuccessionWriterParkedError(unparked);
+    });
+
+    rejectProvider(new Error('provider failed while the writer was parked'));
+    await vi.waitFor(() => expect(parkedRead).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(abortRegistry.has(decision.jobId)).toBe(true);
+    expect(readStatus(decision.jobId)?.phase).not.toBe('error');
+
+    reclaim();
+    await vi.waitFor(() => expect(readStatus(decision.jobId)?.phase).toBe('error'));
+    expect(readStatus(decision.jobId)).toMatchObject({
+      result: {
+        outcome: {
+          kind: 'job_fault',
+          fault: { kind: 'wrapper_crashed', cause: { message: 'provider failed while the writer was parked' } },
+        },
+      },
+    });
+    await vi.waitFor(() => expect(abortRegistry.has(decision.jobId)).toBe(false));
   });
 
   it('durably releases malformed-status launch ownership through production execution-service composition', async () => {

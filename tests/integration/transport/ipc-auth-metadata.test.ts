@@ -131,6 +131,8 @@ function createPorts(succession?: (method: string, params: unknown) => Promise<u
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      validateWait: vi.fn(() => null),
+      waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
@@ -300,11 +302,15 @@ describe('IPC auth metadata invariant', () => {
       });
 
       await expect(requestIpcMethod(socketPath, 'transport.shutdown')).rejects.toMatchObject({
-        message: 'Manual shutdown required: shutdown capability missing or invalid',
+        message:
+          'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
       });
       await expect(
         requestIpcMethod(socketPath, 'transport.shutdown', undefined, { auth: { kind: 'boot', token: 'boot-token' } }),
-      ).rejects.toMatchObject({ message: 'Manual shutdown required: shutdown capability missing or invalid' });
+      ).rejects.toMatchObject({
+        message:
+          'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
+      });
       expect(ports.admin.requestDrain).not.toHaveBeenCalled();
     });
   });

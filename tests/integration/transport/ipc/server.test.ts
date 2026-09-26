@@ -295,6 +295,8 @@ function createPorts(): HttpHandlerPorts {
     jobs: {
       scopeCheck: vi.fn(() => ({ valid: [], missing: [], mismatch: [] })),
       abort: vi.fn(),
+      validateWait: vi.fn(() => null),
+      waitHandoverSignal: vi.fn(() => new AbortController().signal),
       waitStream: vi.fn(),
       list: vi.fn(() => []),
       detail: vi.fn(() => null),
@@ -902,7 +904,7 @@ describe('ipc server', () => {
 
     await listenIpcServer(listener, socketPath);
     try {
-      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow('Manual shutdown required');
+      await expect(requestIpcMethod(socketPath, 'transport.shutdown', {})).rejects.toThrow('Shutdown refused');
       expect(requestDrain).not.toHaveBeenCalled();
     } finally {
       await closeIpcServer(listener);

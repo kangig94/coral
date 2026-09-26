@@ -86,7 +86,10 @@ export class JobAddressing {
     if (!historical && latest.disposition === 'unresolved') {
       return { kind: 'unresolved', jobId, epochKey: latest.epochKey };
     }
-    return latest.detail ?? { kind: 'unresolved', jobId, epochKey: latest.epochKey };
+    if (latest.detail.kind === 'recorded') return latest.detail.value;
+    return latest.detail.kind === 'unreadable'
+      ? { kind: 'detail-unreadable', jobId, epochKey: latest.epochKey }
+      : { kind: 'unresolved', jobId, epochKey: latest.epochKey };
   }
 
   abort(jobIds: string[]): AbortDecision {
@@ -98,20 +101,12 @@ export class JobAddressing {
         ? this.active.abort(activeIds)
         : { kind: 'answered' as const, result: { aborted: [], notFound: [] } };
     if (active.kind !== 'answered') return active;
-    const refused = [
-      ...(active.result.refused ?? []),
-      ...historicalIds
-        .filter((jobId) => this.location(jobId)?.disposition === 'terminal')
-        .map((jobId) => ({
-          jobId,
-          reason: 'already_terminal',
-          nextStep: 'The job has already reached a terminal outcome.',
-        })),
-    ];
+    const refused = active.result.refused ?? [];
+    const historicalTerminal = historicalIds.filter((jobId) => this.location(jobId)?.disposition === 'terminal');
     const held = [
       ...(active.result.held ?? []),
       ...historicalIds
-        .filter((jobId) => this.location(jobId)?.disposition !== 'terminal')
+        .filter((jobId) => !historicalTerminal.includes(jobId))
         .map((jobId) => ({
           jobId,
           reason: 'historical_owner_unresolved',
@@ -122,7 +117,13 @@ export class JobAddressing {
       kind: 'answered',
       result: {
         ...active.result,
-        notFound: [...active.result.notFound, ...jobIds.filter((jobId) => this.location(jobId) === null)],
+        // A terminal job answers as not found in every epoch: a refusal would send the caller retrying an abort
+        // that has nothing left to stop.
+        notFound: [
+          ...active.result.notFound,
+          ...jobIds.filter((jobId) => this.location(jobId) === null),
+          ...historicalTerminal,
+        ],
         ...(refused.length === 0 ? {} : { refused }),
         ...(held.length === 0 ? {} : { held }),
       },
@@ -152,7 +153,10 @@ export class JobAddressing {
       Object.entries(requestedLocations).some(([jobId, key]) => cursor.locations[jobId] !== key) ||
       JSON.stringify(requestedEpochs) !== JSON.stringify(cursorEpochs)
     ) {
-      return { code: 'wait_cursor_mismatch', message: 'The wait cursor belongs to a different job-location set.' };
+      return {
+        code: 'wait_cursor_mismatch',
+        message: 'The wait cursor belongs to a different job-location set; start a fresh wait without the cursor.',
+      };
     }
     return null;
   }
@@ -198,13 +202,15 @@ export class JobAddressing {
       location.disposition !== 'terminal' ||
       location.terminalSeq === undefined ||
       location.resultPath === undefined ||
-      !location.detail?.exit ||
+      location.detail.kind !== 'recorded' ||
+      location.detail.value.exit === null ||
       cursor.deliveredJobIds?.includes(location.jobId)
     )
       return null;
+    const exit = location.detail.value.exit;
     cursor.positions[location.epochKey] = Math.max(cursor.positions[location.epochKey] ?? 0, location.terminalSeq);
     cursor.deliveredJobIds = [...(cursor.deliveredJobIds ?? []), location.jobId];
-    const { content, outcome, durationMs } = location.detail.exit;
+    const { content, outcome, durationMs } = exit;
     return {
       type: 'terminal',
       version: 'jobs.wait.v2',
@@ -215,7 +221,7 @@ export class JobAddressing {
       remainingJobIds: requested.filter((jobId) => jobId !== location.jobId),
       resultPath: location.resultPath,
       result: { content, outcome, durationMs },
-      usage: location.detail.exit.diagnostics.usage,
+      usage: exit.diagnostics.usage,
       continuity: null,
     };
   }
@@ -224,8 +230,8 @@ export class JobAddressing {
     location: JobLocation,
     cursor: Extract<WaitCursor, { version: 'jobs.wait.v2' }>,
   ): JobProgressEvent | null {
-    if (location.disposition === 'terminal') return null;
-    const progress = location.detail?.events.find(
+    if (location.disposition === 'terminal' || location.detail.kind !== 'recorded') return null;
+    const progress = location.detail.value.events.find(
       (event) => event.type === 'progress' && event.seq > (cursor.positions[location.epochKey] ?? 0),
     );
     return progress?.type === 'progress' ? progress : null;
@@ -363,13 +369,14 @@ export class JobAddressing {
           };
           if (event.type === 'terminal') return;
         } else {
-          yield { ...event, cursor: this.snapshotCursor(cursor) };
+          // A caller that did not declare v2 may decode `interrupted` strictly; a cursor key would fail it.
+          yield request.supportsWaitV2 === true ? { ...event, cursor: this.snapshotCursor(cursor) } : event;
         }
       }
       yield {
         type: 'waiting',
         waitingJobIds: [...request.jobIds],
-        cursor: this.snapshotCursor(cursor),
+        ...(request.supportsWaitV2 === true ? { cursor: this.snapshotCursor(cursor) } : {}),
       };
     } finally {
       request.abortSignal?.removeEventListener('abort', onAbort);

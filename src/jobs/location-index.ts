@@ -5,8 +5,14 @@ import { acquireDirectoryLockSync } from '../infra/fs-lock.js';
 import type { TimePort } from '../infra/port-types.js';
 import type { Runtime } from '../runtime/ports.js';
 import type { ResolvableCoralEventInput } from '../store/envelope.js';
+import { executionOwnerSchema } from '../runtime/execution-owner.js';
+import { canonicalWorkDirWireSchema } from '../runtime/canonical-work-dir.js';
+import { usageSummarySchema } from '../providers/contract.js';
+import { jobProgressTimingSchema } from './event-bodies.js';
 import { jobLaunchRequestBodySchema } from './launch.js';
-import type { JobDetailResponse, JobKind } from './records.js';
+import { jobPhaseSchema } from './phase.js';
+import { jobKindSchema, type JobDetailResponse, type JobKind } from './records.js';
+import { jobDiagnosticsSchema, jobTerminalSchema } from './terminal/result.js';
 
 const subjectSchema = z.object({
   projectRoot: z.string().min(1),
@@ -18,17 +24,59 @@ const controllerSchema = z.object({
   instanceId: z.string().min(1),
   controlGeneration: z.number().int().nonnegative(),
 });
-const locationSchema = z
+const locationIdentitySchema = z.object({
+  version: z.literal('v1'),
+  jobId: z.string().min(1),
+  epochKey: z.string().min(1),
+  subject: subjectSchema,
+  controller: controllerSchema.optional(),
+  disposition: z.enum(['active-owner', 'unresolved', 'terminal']),
+  terminalSeq: z.number().int().nonnegative().optional(),
+  resultPath: z.string().optional(),
+});
+const locationSchema = locationIdentitySchema.extend({ detail: z.unknown().optional() }).passthrough();
+const jobEventBaseSchema = z.object({
+  jobId: z.string(),
+  sessionId: z.string().nullable(),
+  seq: z.number().int().nonnegative(),
+  ts: z.string(),
+});
+// Another build may write a detail this one cannot decode; that detail is reported unreadable, never guessed at.
+const storedJobDetailSchema: z.ZodType<JobDetailResponse, z.ZodTypeDef, unknown> = z
   .object({
-    version: z.literal('v1'),
-    jobId: z.string().min(1),
-    epochKey: z.string().min(1),
-    subject: subjectSchema,
-    controller: controllerSchema.optional(),
-    disposition: z.enum(['active-owner', 'unresolved', 'terminal']),
-    terminalSeq: z.number().int().nonnegative().optional(),
-    resultPath: z.string().optional(),
-    detail: z.unknown().optional(),
+    status: z
+      .object({
+        jobId: z.string().min(1),
+        owner: executionOwnerSchema,
+        sessionId: z.string().nullable(),
+        provider: z.string().nullable(),
+        projectRoot: z.string().min(1),
+        workDir: canonicalWorkDirWireSchema.nullable(),
+        backendNamespace: z.string(),
+        bundleHash: z.string().optional(),
+        jobKind: jobKindSchema,
+        parentWorkflowJobId: z.string().optional(),
+        workflowSlotId: z.string().optional(),
+        workflowSlotGeneration: z.number().int().nonnegative().optional(),
+        replacesWorkflowJobId: z.string().optional(),
+        phase: jobPhaseSchema,
+        updatedAt: z.string(),
+        lastSeq: z.number().int().nonnegative().optional(),
+        result: jobTerminalSchema.optional(),
+      })
+      .passthrough(),
+    events: z.array(
+      z.discriminatedUnion('type', [
+        jobEventBaseSchema
+          .extend({ type: z.literal('progress'), message: z.string(), timing: jobProgressTimingSchema })
+          .passthrough(),
+        jobEventBaseSchema
+          .extend({ type: z.literal('terminal'), result: jobTerminalSchema, usage: usageSummarySchema.optional() })
+          .passthrough(),
+      ]),
+    ),
+    readiness: z.enum(['pending', 'queued', 'ready', 'error']),
+    exit: jobTerminalSchema.extend({ diagnostics: jobDiagnosticsSchema, endTime: z.string() }).passthrough().nullable(),
   })
   .passthrough();
 const revisionSchema = z.object({ version: z.literal('v1'), revision: z.number().int().nonnegative() }).passthrough();
@@ -43,7 +91,21 @@ const certificateSchema = z
   .passthrough();
 const unknownHoldSchema = z.object({ version: z.literal('v1'), reason: z.string().min(1) }).passthrough();
 
-export type JobLocation = z.infer<typeof locationSchema> & { detail?: JobDetailResponse };
+type StoredJobLocation = z.infer<typeof locationSchema>;
+
+export type JobLocationDetail =
+  | Readonly<{ kind: 'recorded'; value: JobDetailResponse }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable' }>;
+
+export type JobLocation = z.infer<typeof locationIdentitySchema> & { detail: JobLocationDetail };
+
+function viewLocation(stored: StoredJobLocation): JobLocation {
+  const { detail: raw, ...identity } = stored;
+  if (raw === undefined) return { ...identity, detail: { kind: 'absent' } };
+  const parsed = storedJobDetailSchema.safeParse(raw);
+  return { ...identity, detail: parsed.success ? { kind: 'recorded', value: parsed.data } : { kind: 'unreadable' } };
+}
 export type JobLocationSubject = Readonly<{ projectRoot: string; workDir: string | null; jobKind: JobKind }>;
 export type JobLocationController = z.infer<typeof controllerSchema>;
 export type JobLocationCertificate = z.infer<typeof certificateSchema>;
@@ -106,9 +168,14 @@ export class JobLocationIndex {
     return revision;
   }
 
+  /** Rewrites spread the stored record so a detail this build cannot decode is preserved, not dropped. */
+  private readStored(jobId: string): StoredJobLocation | null {
+    return optionalJson(this.runtime, this.jobPath(jobId), locationSchema);
+  }
+
   read(jobId: string): JobLocation | null {
-    const record = optionalJson(this.runtime, this.jobPath(jobId), locationSchema);
-    return record === null ? null : (record as JobLocation);
+    const stored = this.readStored(jobId);
+    return stored === null ? null : viewLocation(stored);
   }
 
   register(
@@ -118,13 +185,13 @@ export class JobLocationIndex {
     controller?: JobLocationController,
   ): JobLocation {
     return this.withRevisionLock(epochKey, () => {
-      const existing = this.read(jobId);
+      const existing = this.readStored(jobId);
       if (existing !== null) {
         if (existing.epochKey !== epochKey) throw new Error(`Job ${jobId} already belongs to another epoch`);
-        return existing;
+        return viewLocation(existing);
       }
       this.advanceRevision(epochKey);
-      const location: JobLocation = {
+      const location: StoredJobLocation = {
         version: 'v1',
         jobId,
         epochKey,
@@ -133,7 +200,7 @@ export class JobLocationIndex {
         disposition: 'active-owner',
       };
       atomicJson(this.runtime, this.jobPath(jobId), location);
-      return location;
+      return viewLocation(location);
     });
   }
 
@@ -170,9 +237,9 @@ export class JobLocationIndex {
     const existing = this.read(jobId);
     if (existing === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
     return this.withRevisionLock(existing.epochKey, () => {
-      const current = this.read(jobId);
+      const current = this.readStored(jobId);
       if (current === null) throw new Error(`Terminal has no durable job location: ${jobId}`);
-      const location: JobLocation = {
+      const location: StoredJobLocation = {
         ...current,
         subject: {
           projectRoot: detail.status.projectRoot,
@@ -185,7 +252,7 @@ export class JobLocationIndex {
         detail,
       };
       atomicJson(this.runtime, this.jobPath(jobId), location);
-      return location;
+      return viewLocation(location);
     });
   }
 
@@ -193,14 +260,14 @@ export class JobLocationIndex {
     const existing = this.read(jobId);
     if (existing === null || existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
-      const current = this.read(jobId);
+      const current = this.readStored(jobId);
       if (current === null || current.disposition === 'terminal') return;
       atomicJson(this.runtime, this.jobPath(jobId), { ...current, detail });
     });
   }
 
   markUnresolved(jobId: string): void {
-    const existing = this.read(jobId);
+    const existing = this.readStored(jobId);
     if (existing === null) throw new Error(`Unresolved job has no durable location: ${jobId}`);
     if (existing.disposition === 'terminal') return;
     this.withRevisionLock(existing.epochKey, () => {
@@ -213,7 +280,7 @@ export class JobLocationIndex {
     const existing = this.read(jobId);
     if (existing === null) throw new Error(`Uncertified job has no durable location: ${jobId}`);
     this.withRevisionLock(existing.epochKey, () => {
-      const current = this.read(jobId);
+      const current = this.readStored(jobId);
       if (current === null) throw new Error(`Uncertified job has no durable location: ${jobId}`);
       this.advanceRevision(current.epochKey);
       const { terminalSeq: _terminalSeq, resultPath: _resultPath, detail: _detail, ...identity } = current;
@@ -254,8 +321,8 @@ export class JobLocationIndex {
       .readdirSync(dir)
       .filter((name) => name.endsWith('.json'))
       .map((name) => optionalJson(this.runtime, join(dir, name), locationSchema))
-      .filter((value): value is z.infer<typeof locationSchema> => value !== null)
-      .map((value) => value as JobLocation);
+      .filter((value): value is StoredJobLocation => value !== null)
+      .map(viewLocation);
   }
 
   locationsFor(epochKey: string): JobLocation[] {

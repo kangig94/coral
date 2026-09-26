@@ -53,10 +53,10 @@ interface SessionRequestPort {
 interface JobsRequestPort {
   scopeCheck(jobIds: string[], callerRoot: CanonicalWorkDir, relation: JobScopeRelation): ScopeCheckResult;
   abort(jobIds: string[]): AbortDecision;
-  validateWait?(req: WaitStreamRequest): WaitCursorError | null;
+  validateWait(req: WaitStreamRequest): WaitCursorError | null;
   waitStream(req: WaitStreamRequest): AsyncGenerator<WaitStreamEvent>;
   /** Aborted once this coordinator's jobs belong to a serving successor. */
-  waitHandoverSignal?(): AbortSignal;
+  waitHandoverSignal(): AbortSignal;
   list(filters: JobsListFilters): Array<{ jobId: string; status: JobStatus }>;
   detail(jobId: string): JobDetailLookup;
 }

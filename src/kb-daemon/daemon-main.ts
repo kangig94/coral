@@ -12,6 +12,7 @@ import {
   isKbDaemonKbReadRequest,
   isKbDaemonParentResponseMessage,
   isKbDaemonRequestMessage,
+  kbDaemonWriterReclaimParamsSchema,
   type KbDaemonCurateAssistantCompleteRequest,
   type KbDaemonExpansionRequest,
   type KbDaemonExpansionResult,
@@ -562,17 +563,9 @@ export async function runKbDaemonMain(options: KbDaemonMainOptions = {}): Promis
         writeControlMessage({ type: KB_DAEMON_RESPONSE_MESSAGE, id: request.id, ok: true, result: { kind: 'parked' } });
         return;
       case 'writer.reclaim': {
-        const generation = request.params as { generation?: unknown; storeRoot?: unknown; epoch?: unknown } | undefined;
-        if (
-          generation === undefined ||
-          !Number.isSafeInteger(generation.generation) ||
-          typeof generation.storeRoot !== 'string' ||
-          typeof generation.epoch !== 'string'
-        )
-          throw new Error('Invalid KB daemon writer generation.');
-        await runWriterTurn(() =>
-          kbWriteHost.reclaimWriterTurn(generation as { generation: number; storeRoot: string; epoch: string }),
-        );
+        const generation = kbDaemonWriterReclaimParamsSchema.safeParse(request.params);
+        if (!generation.success) throw new Error('Invalid KB daemon writer generation.');
+        await runWriterTurn(() => kbWriteHost.reclaimWriterTurn(generation.data));
         writeControlMessage({
           type: KB_DAEMON_RESPONSE_MESSAGE,
           id: request.id,

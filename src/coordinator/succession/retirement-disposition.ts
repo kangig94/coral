@@ -14,7 +14,7 @@ const retirementDispositionSchema = z
     certificateJobIds: z.array(z.string().min(1)),
     custodySettled: z.literal(true),
   })
-  .strict();
+  .passthrough();
 
 export type RetirementDisposition = z.infer<typeof retirementDispositionSchema>;
 
@@ -38,11 +38,27 @@ export function recordRetirementDisposition(runtime: Runtime, disposition: Retir
     throw new Error('Retirement disposition could not be recorded durably.');
 }
 
-export function readRetirementDisposition(runtime: Runtime, attemptId: string): RetirementDisposition | null {
+export type RetirementDispositionRead =
+  | Readonly<{ kind: 'recorded'; disposition: RetirementDisposition }>
+  | Readonly<{ kind: 'absent' }>
+  | Readonly<{ kind: 'unreadable'; path: string }>;
+
+export function observeRetirementDisposition(runtime: Runtime, attemptId: string): RetirementDispositionRead {
+  const path = dispositionPath(runtime, attemptId);
+  let raw: string;
   try {
-    const raw = runtime.storage.readFileSync(dispositionPath(runtime, attemptId), 'utf-8');
-    return retirementDispositionSchema.parse(JSON.parse(raw) as unknown);
-  } catch {
-    return null;
+    raw = runtime.storage.readFileSync(path, 'utf-8');
+  } catch (error: unknown) {
+    return error instanceof Error && 'code' in error && error.code === 'ENOENT'
+      ? { kind: 'absent' }
+      : { kind: 'unreadable', path };
   }
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return { kind: 'unreadable', path };
+  }
+  const parsed = retirementDispositionSchema.safeParse(value);
+  return parsed.success ? { kind: 'recorded', disposition: parsed.data } : { kind: 'unreadable', path };
 }

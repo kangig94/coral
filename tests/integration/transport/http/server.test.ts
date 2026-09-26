@@ -5785,7 +5785,8 @@ describe('execution backend server', () => {
     expect(response.status).toBe(401);
     expect(await response.json()).toEqual({
       code: 'shutdown_unauthorized',
-      message: 'Manual shutdown required: shutdown capability missing or invalid',
+      message:
+        'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
     });
     expect(backend.controller.getLifecycle()).toBe('running');
   });

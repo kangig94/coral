@@ -3,7 +3,12 @@ import { createRealRuntime } from '#src/runtime/real.js';
 import type { StoragePort } from '#src/infra/port-types.js';
 import type { Runtime } from '#src/runtime/ports.js';
 import { openStoreDatabase, type Database } from '#src/store/db.js';
-import { settleStoreEpoch, type StoreMintDisposition, type StoreMintObservation } from '#src/store/epoch.js';
+import {
+  retirementMintDisposition,
+  settleStoreEpoch,
+  type StoreMintDisposition,
+  type StoreMintObservation,
+} from '#src/store/epoch.js';
 import type { StoreFormatDescription } from '#src/store/format-fingerprint.js';
 import { assertTestDatabaseLocation } from '#tools/testing/store-db-location.js';
 
@@ -62,7 +67,7 @@ export function openSettledTestStoreDb(runtime: Runtime): Database {
       storeFormatFingerprint: storeFormat.fingerprint,
     },
     authorizeMint: ({ incumbent, observedEpochCount }: StoreMintObservation): StoreMintDisposition | null =>
-      incumbent === null && observedEpochCount === 0 ? { kind: 'initial', incumbentEpochKey: null } : null,
+      incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
   }).db;
 }
 
@@ -71,10 +76,10 @@ export function authorizeFixtureStoreMint({
   incumbentEpochKey,
   observedEpochCount,
 }: StoreMintObservation): StoreMintDisposition {
-  return {
-    kind: incumbent === null ? (observedEpochCount === 0 ? 'initial' : 'unopenable') : 'retired',
+  return retirementMintDisposition(
+    incumbent === null ? (observedEpochCount === 0 ? 'initial' : 'unopenable') : 'retired',
     incumbentEpochKey,
-  };
+  );
 }
 
 let kbTestStorage: StoragePort | undefined;

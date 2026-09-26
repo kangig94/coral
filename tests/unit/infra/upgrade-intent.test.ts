@@ -7,6 +7,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import {
   compareAndSwapUpgradeIntent,
   readUpgradeIntent,
+  retryUpgradeIntentCas,
   revalidateUpgradeIntentTarget,
   visibleUpgradeIntent,
   type UpgradeIntentChange,
@@ -201,5 +202,58 @@ describe('upgrade intent', () => {
       },
     });
     expect(completed).toMatchObject({ kind: 'written', intent: { disposition: 'completed', revision: 2 } });
+  });
+
+  it('should decide again from the winning revision after losing a write race', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+    const decided: number[] = [];
+    const outcome = await retryUpgradeIntentCas(dir, async (observed) => {
+      if (observed.kind !== 'readable') throw new Error('intent not readable');
+      decided.push(observed.intent.revision);
+      if (decided.length === 1) {
+        await compareAndSwapUpgradeIntent(dir, observed.intent.revision, pendingIntent('winner'));
+      }
+      return {
+        kind: 'write',
+        expectedRevision: observed.intent.revision,
+        change: { ...observed.intent, blockers: [{ owner: 'jobs', reason: 'loser' }] },
+        settle: (written) => written.requestId,
+      };
+    });
+    expect(decided).toEqual([0, 1]);
+    expect(outcome).toEqual({ kind: 'settled', value: 'winner' });
+  });
+
+  it('should refuse instead of overwriting a record this build cannot decode', async () => {
+    const dir = runDir();
+    writeFileSync(upgradeIntentPath(dir), '{not json');
+    const outcome = await retryUpgradeIntentCas(dir, () => ({
+      kind: 'write',
+      expectedRevision: null,
+      change: pendingIntent('first'),
+      settle: () => 'written',
+    }));
+    expect(outcome).toEqual({ kind: 'refused', problem: 'corrupt' });
+    expect(readFileSync(upgradeIntentPath(dir), 'utf-8')).toBe('{not json');
+  });
+
+  it('should report exhaustion when every write loses its revision race', async () => {
+    const dir = runDir();
+    await compareAndSwapUpgradeIntent(dir, null, pendingIntent('first'));
+    let decisions = 0;
+    const outcome = await retryUpgradeIntentCas(dir, async (observed) => {
+      if (observed.kind !== 'readable') throw new Error('intent not readable');
+      decisions++;
+      await compareAndSwapUpgradeIntent(dir, observed.intent.revision, pendingIntent(`winner-${decisions}`));
+      return {
+        kind: 'write',
+        expectedRevision: observed.intent.revision,
+        change: pendingIntent('loser'),
+        settle: () => 'written',
+      };
+    });
+    expect(outcome).toEqual({ kind: 'exhausted' });
+    expect(decisions).toBeGreaterThan(1);
   });
 });

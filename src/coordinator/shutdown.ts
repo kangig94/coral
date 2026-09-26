@@ -115,9 +115,20 @@ type RunShutdownSequenceContext = {
   hooks: { onShutdown(mode: ShutdownMode, signal: AbortSignal): Promise<void> };
   discussStores: Map<string, DiscussSessionStore>;
   stopStoreEpochSweepFn?: () => Promise<void>;
+  settleSuccessionAttempt?: () => Promise<void>;
   log: (message: string) => void;
   acceptProcessExitRemainder?: (remainder: ProcessExitRemainder) => ProcessExitRemainderAcceptance;
 };
+
+/**
+ * The authority a succession hands on when this incumbent exits: to a successor that durably serves, or to
+ * the next startup of this build through the same-build recovery grant it recorded.
+ */
+export type SuccessionRelease =
+  | Readonly<{ kind: 'successor'; handOver: () => Promise<void> }>
+  | Readonly<{ kind: 'restart'; reason: string }>;
+
+const SUCCESSION_RELEASE_BUDGET_MS = 5_000;
 
 export type SettlePendingLaunchesFn = (
   signal: AbortSignal,
@@ -1039,6 +1050,7 @@ export async function runShutdownSequence({
   hooks,
   discussStores,
   stopStoreEpochSweepFn,
+  settleSuccessionAttempt,
   log,
   acceptProcessExitRemainder,
 }: RunShutdownSequenceContext): Promise<ShutdownSequenceDisposition> {
@@ -1082,6 +1094,15 @@ export async function runShutdownSequence({
   log(`Coral backend shutting down (${initialReason}, mode=${initialMode})...\n`);
   runtimeState.setLifecycle('draining');
   idleTimer.stopWatching();
+  // Teardown must not start while an uncommitted attempt still holds this incumbent's writers parked.
+  if (settleSuccessionAttempt !== undefined) {
+    void (await ledger.run({
+      label: 'succession attempt settlement',
+      task: () => confirmedTask(settleSuccessionAttempt),
+      retainedAuthority: () => cleanupContribution('succession attempt settlement'),
+      remainder: () => ({ owner: 'process-exit' }),
+    }));
+  }
   if (stopStoreEpochSweepFn !== undefined) {
     void (await ledger.run({
       label: 'store epoch sweep cancellation',
@@ -1198,5 +1219,45 @@ export async function runShutdownSequence({
   });
 
   recordPendingIncidents();
+  return ledger.gate(authorityRelease);
+}
+
+/**
+ * Every authority this release hands on is already owned by its successor, so the boundary carries no IPC
+ * capability: closing a handed-over listener would unlink the address the successor now serves.
+ */
+export async function runSuccessionReleaseSequence({
+  release,
+  runtime,
+  providerHostManager,
+  log,
+}: Readonly<{
+  release: SuccessionRelease;
+  runtime: Runtime;
+  providerHostManager: ProviderHostLifecycle;
+  log: (message: string) => void;
+}>): Promise<ShutdownSequenceDisposition> {
+  const ledger = createShutdownSettlementLedger<ShutdownObligationLabel>({
+    budgetMs: SUCCESSION_RELEASE_BUDGET_MS,
+    time: runtime.time,
+    log,
+    pollMs: SHUTDOWN_POLL_MS,
+  });
+  log(`Coral backend releasing authority to its ${release.kind === 'successor' ? 'successor' : 'next startup'}...\n`);
+  if (release.kind === 'successor') {
+    void (await ledger.run({
+      label: 'succession connection handover',
+      task: () => confirmedTask(release.handOver),
+      retainedAuthority: () => cleanupContribution('succession connection handover'),
+      remainder: () => ({ owner: 'process-exit' }),
+    }));
+  }
+  const authorityRelease = buildAuthorityReleaseBoundary({
+    closeIpcServerFn: undefined,
+    ipcServer: undefined,
+    providerCleanup: createProviderCleanupController({ providerHostManager, providerProxyAuthority: undefined }),
+    providerProxyAuthority: undefined,
+    time: runtime.time,
+  });
   return ledger.gate(authorityRelease);
 }

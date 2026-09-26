@@ -396,7 +396,7 @@ in a corpus whose index is the entry point is a file nobody reads.
 
 |                                                                            |                                                                                                                                                                                                                                                                                                          |
 | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`six-reviewer-sweep-backlog.md`](./six-reviewer-sweep-backlog.md) | **Open sweep members.** The `WorkflowExecutionPort` cast in recovery, unreachable defensive branches, three-answer process observations, weak type contracts, and assertions without positive witnesses remain. `verifySignalTarget` now returns an unverifiable refusal and `removeDeadWriterLeases` records unknown blockers explicitly. The PR3 start condition is obsolete; the surviving members are independent. |
+| [`six-reviewer-sweep-backlog.md`](./six-reviewer-sweep-backlog.md) | **Open sweep members.** The `WorkflowExecutionPort` cast in recovery, unreachable defensive branches, three-answer process observations, weak type contracts, and assertions without positive witnesses remain. `removeDeadWriterLeases` records unknown blockers explicitly. The PR3 start condition is obsolete; the surviving members are independent. |
 
 ---
 

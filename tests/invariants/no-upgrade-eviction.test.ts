@@ -56,7 +56,7 @@ const RULES: readonly Rule[] = [
   {
     id: 'inspection-computed-store-role',
     appliesTo: (file) => file.startsWith('src/store/'),
-    pattern: /\brole\s*:[^;\n]*['"]retained['"]/u,
+    pattern: /\brole\s*:\s*(?:\|\s*)?(?:['"][\w-]+['"]\s*\|\s*)*['"]retained['"]/u,
   },
 ];
 

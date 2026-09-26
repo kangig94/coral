@@ -1,8 +1,9 @@
 import { dirname, join } from 'node:path';
+import { z } from 'zod';
 
 import type { ValidatedHandoffTarget } from '../../infra/handoff-target.js';
 import { observeRecordedContainment } from '../../infra/process-containment.js';
-import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
+import { seedHistoricalEpoch, type HistoricalSeedResult } from '../../jobs/historical-reader.js';
 import type { JobLocationIndex } from '../../jobs/location-index.js';
 import type { Runtime } from '../../runtime/ports.js';
 import { readCustodyLedger } from '../../store/custody-ledger.js';
@@ -14,19 +15,30 @@ import {
   listStoreEpochs,
   observeResolvedStoreEpoch,
   observeResolvedStoreEpochKey,
+  retirementMintDisposition,
   type ResolvedStoreEpoch,
   type StoreMintDisposition,
   type StoreMintObservation,
 } from '../../store/epoch.js';
-import { readEpochClosure, recordEpochClosure } from '../../store/epoch-closure.js';
+import { observeEpochClosure, recordEpochClosure } from '../../store/epoch-closure.js';
 import { readEpochKey } from '../../store/epoch-key.js';
 import { observeProtectedEpoch } from '../../store/epoch-protection.js';
 import type { StoreFormatDescription } from '../../store/format-fingerprint.js';
 import { latestControllerOpen } from '../succession/controller-open.js';
 import { readDurableCliControllerReceipts } from './durable-cli-transfer.js';
-import { controllerRecoveryTarget, settleWithRetainedExecutor } from '../succession/retained-epoch-executor.js';
+import {
+  controllerRecoveryTarget,
+  settleWithRetainedExecutor,
+  type RetainedExecutorSettlement,
+} from './retained-epoch-executor.js';
 
 const UNOPENABLE_STARTUP_ATTEMPTS = 2;
+
+const retirementPatienceSchema = z
+  .object({ startupId: z.string(), attempts: z.number().int().nonnegative() })
+  .passthrough();
+
+type RetirementPatience = z.infer<typeof retirementPatienceSchema>;
 
 export function prepareRetainedControllerHandoff(
   runtime: Runtime,
@@ -102,8 +114,8 @@ function prepareRetainedControllerHandoffForLineage(
     [...liveJobIds].some((jobId) => !unresolved.some((location) => location.jobId === jobId))
   )
     return null;
-  const receipts = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
-  if (receipts === null) return null;
+  const { receipts, unreadable } = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
+  if (unreadable.length > 0) return null;
   let selectedController: Readonly<{ instanceId: string; buildSetId: string; controlGeneration: number }> | null = null;
   for (const location of unresolved) {
     const jobReceipts = receipts
@@ -131,13 +143,10 @@ function prepareRetainedControllerHandoffForLineage(
             controlGeneration: latest.controlGeneration,
           };
     if (controller === undefined) return null;
-    let opened: ReturnType<typeof latestControllerOpen>;
-    try {
-      opened = latestControllerOpen(runtime, epochKey, controller.instanceId);
-    } catch {
-      return null;
-    }
+    const observation = latestControllerOpen(runtime, epochKey, controller.instanceId);
+    const opened = observation.latest;
     if (
+      observation.unreadable.length > 0 ||
       opened === null ||
       opened.build.buildSetId !== controller.buildSetId ||
       opened.controlGeneration !== controller.controlGeneration ||
@@ -149,7 +158,7 @@ function prepareRetainedControllerHandoffForLineage(
       return null;
     selectedController = controller;
     if (!liveJobIds.has(location.jobId)) {
-      if (location.detail?.status?.phase !== 'queued') return null;
+      if (location.detail.kind !== 'recorded' || location.detail.value.status.phase !== 'queued') return null;
       continue;
     }
     let bound = false;
@@ -201,11 +210,11 @@ function prepareRetainedControllerHandoffForLineage(
   return target === null ? null : { target, epochKey };
 }
 
-/** An unreadable receipt store may name the epoch, so only a readable one can rule it out. */
+/** An unreadable receipt may name the epoch, so only readable receipts can rule it out. */
 function controllerReceiptsMayNameEpoch(runtime: Runtime, epochKey: string, lineageKey: string): boolean {
-  const receipts = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
+  const { receipts, unreadable } = readDurableCliControllerReceipts(runtime, runtime.paths.coral.coordinator.runDir);
   return (
-    receipts === null ||
+    unreadable.length > 0 ||
     receipts.some((receipt) => receipt.epochKey === epochKey || receipt.lineageEpochKey === lineageKey)
   );
 }
@@ -225,11 +234,8 @@ export function createStartupMintAuthorizer(
       )
         continue;
       const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-      if (
-        readEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey)?.disposition ===
-        'unrecoverable-retained'
-      )
-        continue;
+      const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey);
+      if (closure.kind === 'recorded' && closure.evidence.disposition === 'unrecoverable-retained') continue;
       const fingerprint =
         historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
       void seedHistoricalEpoch(
@@ -244,10 +250,7 @@ export function createStartupMintAuthorizer(
     }
     const incumbent = observation.incumbent;
     if (incumbent === null) {
-      return {
-        kind: observation.observedEpochCount === 0 ? 'initial' : 'unopenable',
-        incumbentEpochKey: null,
-      };
+      return retirementMintDisposition(observation.observedEpochCount === 0 ? 'initial' : 'unopenable', null);
     }
     const epochKey = encodeResolvedStoreEpoch(runtime, incumbent);
     const lineageKey = decodeResolvedStoreEpoch(runtime, epochKey)?.lineageKey;
@@ -265,8 +268,12 @@ export function createStartupMintAuthorizer(
     // Liveness is judged from locations known before this startup marks its own unresolved holds.
     const knownLive = knownLocations.some((location) => location.disposition !== 'terminal');
     const priorController = latestControllerOpen(runtime, epochKey);
-    const needsRetainedExecutor = priorController !== null && !index.resultsReleased(epochKey);
-    const executorSettled = !needsRetainedExecutor || settleWithRetainedExecutor(runtime, epochKey);
+    const needsRetainedExecutor =
+      (priorController.latest !== null || priorController.unreadable.length > 0) && !index.resultsReleased(epochKey);
+    const executor: RetainedExecutorSettlement = needsRetainedExecutor
+      ? settleWithRetainedExecutor(runtime, epochKey)
+      : { kind: 'settled' };
+    const executorSettled = executor.kind === 'settled';
     const seeded = seedHistoricalEpoch(
       runtime,
       index,
@@ -336,29 +343,22 @@ export function createStartupMintAuthorizer(
       custodySettled = false;
     }
     if (executorSettled && seeded.kind === 'complete' && custodySettled && index.resultsReleased(epochKey)) {
-      return { kind: 'retired', incumbentEpochKey: epochKey };
+      return retirementMintDisposition('retired', epochKey);
     }
     const liveHistory =
       (seeded.kind === 'unrecoverable-retained' && seeded.reason === 'known-jobs-unresolved') ||
-      (!executorSettled && knownLive);
+      (executor.kind === 'no-capable-root' && knownLive);
     const attemptsPath = join(
       runtime.paths.coral.coordinator.runDir,
       'retirement-patience.v1',
       `${runtime.ids.sha256(epochKey)}.json`,
     );
-    let previous: { startupId: string; attempts: number } | null = null;
+    let previous: RetirementPatience | null = null;
     try {
-      const raw = JSON.parse(runtime.storage.readFileSync(attemptsPath, 'utf-8')) as unknown;
-      if (
-        typeof raw === 'object' &&
-        raw !== null &&
-        'startupId' in raw &&
-        'attempts' in raw &&
-        typeof raw.startupId === 'string' &&
-        typeof raw.attempts === 'number'
-      ) {
-        previous = { startupId: raw.startupId, attempts: raw.attempts };
-      }
+      const parsed = retirementPatienceSchema.safeParse(
+        JSON.parse(runtime.storage.readFileSync(attemptsPath, 'utf-8')) as unknown,
+      );
+      if (parsed.success) previous = parsed.data;
     } catch {
       // An unreadable patience record starts a fresh observation count.
     }
@@ -383,9 +383,23 @@ export function createStartupMintAuthorizer(
       dataOutcome: index.resultsReleased(epochKey) ? 'retained' : 'unreadable',
       executionDischarge: 'undecidable',
       obligations: [],
-      reason: seeded.kind === 'unrecoverable-retained' ? seeded.reason : 'custody remains unresolved',
+      reason: retirementReason(seeded, executor, priorController.unreadable),
       observedAtMs: runtime.time.now(),
     });
-    return { kind: 'unopenable', incumbentEpochKey: epochKey };
+    return retirementMintDisposition('unopenable', epochKey);
   };
+}
+
+function retirementReason(
+  seeded: HistoricalSeedResult,
+  executor: RetainedExecutorSettlement,
+  unreadableControllerOpens: readonly string[],
+): string {
+  if (seeded.kind === 'unrecoverable-retained') return seeded.reason;
+  if (executor.kind === 'no-capable-root') return `retained executor unavailable: ${executor.reason}`;
+  if (executor.kind === 'transient-failure')
+    return `retained executor did not settle after bounded patience (exit ${executor.status ?? 'none'})`;
+  if (unreadableControllerOpens.length > 0)
+    return `controller-open records are unreadable: ${unreadableControllerOpens.join(', ')}`;
+  return 'custody remains unresolved';
 }

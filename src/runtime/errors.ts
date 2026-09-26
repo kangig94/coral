@@ -734,13 +734,14 @@ const DOCUMENTED_CORAL_SETUP_ERRORS = {
     userMessage: (context) =>
       `Handoff refused during the shutdown request for incumbent pid=${context.pid}: the incumbent rejected the shutdown capability.`,
     remediation:
-      'Stop the incumbent that owns the coordinator socket through the service or account that owns it, then retry handoff.',
+      'No action is needed: the incumbent keeps serving, and Coral retries the upgrade automatically when its recorded conditions change.',
     exitCode: 77,
   },
   handoff_shutdown_credential_unavailable: {
     userMessage: (context) =>
       `Handoff refused during the shutdown request for incumbent pid=${context.pid}: verified discovery had no boot credential for shutdown.`,
-    remediation: 'Stop the identified incumbent through the service or account that owns it, then retry handoff.',
+    remediation:
+      'No action is needed: the incumbent keeps serving, and Coral retries the upgrade automatically when its recorded conditions change.',
     exitCode: 77,
   },
   handoff_socket_holder_unverified: {
@@ -797,6 +798,7 @@ export const NOT_OBSERVED_CORAL_SETUP_ERROR_CODES: ReadonlySet<string> = new Set
 export const LAUNCH_AND_DOMAIN_RETRY_LATER_ERROR_CODES: ReadonlySet<string> = new Set([
   'backend_recovering',
   'busy',
+  'job_unresolved',
   'kb_disabled',
   'provider_preflight_undetermined',
   'succession_admission_paused',

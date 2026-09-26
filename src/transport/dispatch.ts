@@ -1084,6 +1084,17 @@ async function executeJobsDetailCatalogRequest({
       {
         code: 'job_unresolved',
         message: `Job ${parsed.jobId} remains addressable while its retained epoch is recovered.`,
+        remediation: 'Retry shortly; recovery is automatic.',
+        detail: { epochKey: detail.epochKey },
+      },
+      409,
+    );
+  }
+  if ('kind' in detail && detail.kind === 'detail-unreadable') {
+    return unary(
+      {
+        code: 'job_detail_unreadable',
+        message: `Job ${parsed.jobId} has a recorded detail that this Coral build cannot read.`,
         detail: { epochKey: detail.epochKey },
       },
       409,
@@ -1126,7 +1137,7 @@ async function executeJobsWaitCatalogRequest({
 
   const { supportsInterrupted, supportsHandover, ...waitFields } = parsed;
   const waitRequest: WaitStreamRequest = waitFields;
-  const cursorError = rpcPorts.jobs.validateWait?.(waitRequest);
+  const cursorError = rpcPorts.jobs.validateWait(waitRequest);
   if (cursorError) return unary(cursorError, 400);
   return {
     kind: 'subscription',
@@ -1135,7 +1146,7 @@ async function executeJobsWaitCatalogRequest({
         rpcPorts.jobs.waitStream(withAbortSignal(waitRequest, abortSignal)) as AsyncIterable<WaitStreamEvent>,
         supportsInterrupted === true,
       ),
-      supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal?.() : undefined,
+      supportsHandover === true ? rpcPorts.jobs.waitHandoverSignal() : undefined,
     ),
   };
 }

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { reclaimIncumbentWriter } from '#src/coordinator/composition/index.js';
+import { reclaimIncumbentWriter } from '#src/coordinator/succession/commit.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { openWritableStoreDatabase } from '#src/store/db.js';
 import { joinSuccessionWriterGeneration } from '#src/store/succession-writer-generation.js';

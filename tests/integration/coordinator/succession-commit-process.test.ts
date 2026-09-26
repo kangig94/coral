@@ -78,7 +78,11 @@ describe('real-process succession commit', () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-succession-commit-'));
     roots.push(home);
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const oldFixture = createPluginFixture(roots, {
+      flavor: 'prod',
+      backend: 'succession-interposition',
+      version: '0.0.1',
+    });
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
@@ -94,7 +98,7 @@ describe('real-process succession commit', () => {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
     })();
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
 
@@ -128,7 +132,11 @@ describe('real-process succession commit', () => {
       assertBuildArtifactsAvailable();
       const home = mkdtempSync(join(tmpdir(), 'coral-succession-open-hold-'));
       roots.push(home);
-      const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+      const oldFixture = createPluginFixture(roots, {
+        flavor: 'prod',
+        backend: 'succession-interposition',
+        version: '0.0.1',
+      });
       const old = spawnCoordinator({
         fixture: oldFixture,
         home,
@@ -137,7 +145,7 @@ describe('real-process succession commit', () => {
       });
       coordinators.push(old);
       const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-      const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+      const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
       const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
       coordinators.push(contender);
       await waitForProcessExit(contender, 30_000);
@@ -162,7 +170,11 @@ describe('real-process succession commit', () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-succession-recovery-child-'));
     roots.push(home);
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const oldFixture = createPluginFixture(roots, {
+      flavor: 'prod',
+      backend: 'succession-interposition',
+      version: '0.0.1',
+    });
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
@@ -174,7 +186,7 @@ describe('real-process succession commit', () => {
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
@@ -266,7 +278,11 @@ describe('real-process succession commit', () => {
     writeFileSync(join(home, '.fake-codex-state', 'release-job'), 'released');
     const prompt = join(projectRoot, 'prompt.txt');
     writeFileSync(prompt, 'Work accepted after the incumbent reclaims its writer.');
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const oldFixture = createPluginFixture(roots, {
+      flavor: 'prod',
+      backend: 'succession-interposition',
+      version: '0.0.1',
+    });
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
@@ -280,7 +296,7 @@ describe('real-process succession commit', () => {
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
@@ -359,7 +375,11 @@ describe('real-process succession commit', () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-succession-sigterm-before-'));
     roots.push(home);
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const oldFixture = createPluginFixture(roots, {
+      flavor: 'prod',
+      backend: 'succession-interposition',
+      version: '0.0.1',
+    });
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
@@ -368,7 +388,7 @@ describe('real-process succession commit', () => {
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);
@@ -391,7 +411,11 @@ describe('real-process succession commit', () => {
     assertBuildArtifactsAvailable();
     const home = mkdtempSync(join(tmpdir(), 'coral-succession-sigterm-after-'));
     roots.push(home);
-    const oldFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.0.1' });
+    const oldFixture = createPluginFixture(roots, {
+      flavor: 'prod',
+      backend: 'succession-interposition',
+      version: '0.0.1',
+    });
     const old = spawnCoordinator({
       fixture: oldFixture,
       home,
@@ -400,7 +424,7 @@ describe('real-process succession commit', () => {
     });
     coordinators.push(old);
     const initial = await waitForDiscoveryRecord(home, 'prod', 15_000);
-    const newerFixture = createPluginFixture(roots, { flavor: 'prod' });
+    const newerFixture = createPluginFixture(roots, { flavor: 'prod', backend: 'succession-interposition' });
     const contender = spawnCoordinator({ fixture: newerFixture, home, tempRoots: roots });
     coordinators.push(contender);
     await waitForProcessExit(contender, 30_000);

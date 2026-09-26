@@ -76,7 +76,8 @@ const HTTP_UNAUTHORIZED_RESPONSE = {
 };
 const HTTP_SHUTDOWN_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
-  message: 'Manual shutdown required: shutdown capability missing or invalid',
+  message:
+    'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
 };
 const HTTP_KB_RESTART_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',

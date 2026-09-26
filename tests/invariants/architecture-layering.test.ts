@@ -57,6 +57,27 @@ const PROVIDER_PROXY_FORBIDDEN = [
   'src/workflow/',
   'src/kb/',
 ] as const;
+/**
+ * The upgrade waiter is a detached process launched from the target build and outlives the contender that
+ * started it. It decides from the upgrade intent, recorded process identity, and the coordinator's IPC address
+ * alone, so it reaches only its own module, infra, runtime ports, and the IPC client — never a store, domain, or
+ * coordinator module whose state belongs to a process it may outlive.
+ */
+const UPGRADE_WAITER_ROOT = 'src/upgrade-waiter/';
+const UPGRADE_WAITER_ALLOWED = [UPGRADE_WAITER_ROOT, 'src/infra/', 'src/runtime/'] as const;
+const UPGRADE_WAITER_ALLOWED_FILES = new Set(['src/transport/ipc/client.ts']);
+
+function upgradeWaiterImportViolations(edges: readonly ParsedImportEdge[]): string[] {
+  return edges
+    .filter(
+      ({ source, target }) =>
+        source.startsWith(UPGRADE_WAITER_ROOT) &&
+        !startsWithAny(target, UPGRADE_WAITER_ALLOWED) &&
+        !UPGRADE_WAITER_ALLOWED_FILES.has(target),
+    )
+    .map(({ source, target }) => `${source} -> ${target}`)
+    .sort();
+}
 const SECURITY_ROOT = 'src/security/';
 const SECURITY_ALLOWED = new Set([
   // Security owns work-directory admission, but the branded canonical path and its realpath implementation
@@ -349,6 +370,28 @@ describe('architecture layering invariants', () => {
       .map((edge) => `${edge.source} -> ${edge.target}`);
 
     expect(violations).toEqual([]);
+  });
+
+  it('the upgrade waiter reaches only infra, runtime ports, and the IPC client', () => {
+    expect(IMPORT_EDGES.some((edge) => edge.source.startsWith(UPGRADE_WAITER_ROOT))).toBe(true);
+    expect(upgradeWaiterImportViolations(IMPORT_EDGES)).toEqual([]);
+  });
+
+  it.each([
+    ['src/store/epoch.ts', '../store/epoch.js'],
+    ['src/coordinator/lifecycle.ts', '../coordinator/lifecycle.js'],
+    ['src/transport/ipc/server.ts', '../transport/ipc/server.js'],
+  ] as const)('rejects an upgrade waiter import of %s', (target, specifier) => {
+    const mutation: ParsedImportEdge = {
+      source: 'src/upgrade-waiter/index.ts',
+      target,
+      specifier,
+      via: 'ImportDeclaration',
+      runtime: true,
+      typeOnly: false,
+    };
+
+    expect(upgradeWaiterImportViolations([mutation])).toEqual([`${mutation.source} -> ${target}`]);
   });
 
   it('the shared providers domain reaches neither provider-host owner', () => {

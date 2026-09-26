@@ -23,6 +23,7 @@ import { createEventBodyCodec } from '#src/store/event-body-codec.js';
 import {
   encodeResolvedStoreEpoch,
   listStoreEpochs,
+  retirementMintDisposition,
   settleStoreEpoch,
   type ResolvedStoreEpoch,
 } from '#src/store/epoch.js';
@@ -83,7 +84,7 @@ function lifecycleHarness(
       identity,
       runtime,
       authorizeStartupMint: ({ incumbent, observedEpochCount }) =>
-        incumbent === null && observedEpochCount === 0 ? { kind: 'initial', incumbentEpochKey: null } : null,
+        incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
       backendPid: process.pid,
       runtimeState,
       idleTimer: {
@@ -210,7 +211,7 @@ describe('lifecycle store epoch handoff', () => {
       storeFormat,
       build,
       authorizeMint: ({ incumbent, observedEpochCount }) =>
-        incumbent === null && observedEpochCount === 0 ? { kind: 'initial', incumbentEpochKey: null } : null,
+        incumbent === null && observedEpochCount === 0 ? retirementMintDisposition('initial', null) : null,
     });
     initial.db.close();
     agreedPath = initial.store.path;

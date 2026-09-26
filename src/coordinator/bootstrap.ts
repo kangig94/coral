@@ -17,9 +17,10 @@ import type { UnresolvedIncumbentCause } from './handoff-routing/policy.js';
 import type { handoffRoutingStatusExitContribution } from './handoff-routing/status.js';
 import { createCoordinatorServer } from './index.js';
 import { installSuccessionAttemptChild, receiveSuccessionAttemptChild } from './succession/attempt-child.js';
-import { probeRetainedEpochOpen } from './succession/retained-epoch-executor.js';
-import { runRetainedEpochRecovery } from './services/retained-epoch-recovery.js';
-import { StartupStoreHandoffError, SuccessionAttemptStartupHoldError } from './lifecycle.js';
+import { parseRetainedEpochArgv, runRetainedEpochCommand } from './services/retained-epoch-executor.js';
+import { StartupStoreHandoffError } from './lifecycle.js';
+import { SuccessionAttemptStartupHoldError } from './succession/startup.js';
+import type { SuccessionInterposition } from './succession/interposition.js';
 import { runKbDaemonMain } from '../kb-daemon/daemon-main.js';
 import { backendLog } from '../infra/backend-log.js';
 import { assertNever } from '../infra/error-format.js';
@@ -278,7 +279,10 @@ function logStartupHandoffPublicationIncident(incident: HandoffPublicationIncide
   backendLog.warn(`Backend startup handoff routing-status publication incident: ${JSON.stringify(incident)}`);
 }
 
-export async function main(): Promise<number> {
+/** Seams only a test harness entry point supplies; the shipped entry point passes none. */
+export type BackendHarness = Readonly<{ successionInterposition?: SuccessionInterposition }>;
+
+export async function main(harness: BackendHarness = {}): Promise<number> {
   // Before any child spawn, shed the Claude Code identity inherited from the daemon's launcher.
   shedInheritedClaudeCodeEnv(process.env);
 
@@ -294,11 +298,9 @@ export async function main(): Promise<number> {
     return 0;
   }
 
-  if (process.argv.length === 4 && process.argv[2] === '--recover-retained-epoch') {
-    return runRetainedEpochRecovery(process.argv[3]);
-  }
-  if (process.argv.length === 5 && process.argv[2] === '--probe-retained-epoch') {
-    return probeRetainedEpochOpen(process.argv[3], currentCoralStoreFormat(), process.argv[4]);
+  const retainedEpochCommand = parseRetainedEpochArgv(process.argv);
+  if (retainedEpochCommand !== null) {
+    return runRetainedEpochCommand(retainedEpochCommand, createRealRuntime, currentCoralStoreFormat());
   }
 
   // Provider-proxy role dispatch runs before ordinary coordinator construction: a guardian, reaper, or proxy
@@ -348,6 +350,7 @@ export async function main(): Promise<number> {
 
   try {
     const coordinator = createCoordinatorServer({
+      ...harness,
       pluginRoot: __PLUGIN_ROOT__,
       ...(successionAttempt === null ? {} : { bootSnapshot: { bootToken: successionAttempt.bootToken } }),
       onStopped: (exitCode = 0) => {
@@ -442,8 +445,8 @@ export async function main(): Promise<number> {
   }
 }
 
-if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN__) {
-  void main()
+export function runBackendMain(harness: BackendHarness = {}): void {
+  void main(harness)
     .then((code) => {
       if (code !== 0) {
         bootstrapProbeExitGate.requestExit(code);
@@ -465,3 +468,5 @@ if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN_
       bootstrapProbeExitGate.requestExit(1);
     });
 }
+
+if (typeof __IS_CORAL_BACKEND_MAIN__ !== 'undefined' && __IS_CORAL_BACKEND_MAIN__) runBackendMain();

@@ -6,6 +6,7 @@ import type * as NodeOs from 'node:os';
 import { join } from 'node:path';
 
 import { createRealRuntime } from '#src/runtime/real.js';
+import { retirementMintDisposition } from '#src/store/epoch.js';
 import { createKbDaemonHealthComponent } from '#src/coordinator/runtime-components/kb-health-component.js';
 import { createMockKbDaemonSupervisor } from '#tools/testing/kb-daemon-supervisor.js';
 import { jobsDir } from '#src/jobs/paths.js';
@@ -480,7 +481,7 @@ function createCoordinatorShutdownHarness(options: HarnessOptions) {
       storeFormat: currentCoralStoreFormat(),
       authorizeStartupMint: (observation) =>
         observation.incumbent === null && observation.observedEpochCount === 0
-          ? { kind: 'initial', incumbentEpochKey: null }
+          ? retirementMintDisposition('initial', null)
           : null,
       identity: {
         pluginRoot,

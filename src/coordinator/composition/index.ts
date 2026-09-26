@@ -28,12 +28,11 @@ import { JobAddressing } from '../../jobs/addressing.js';
 import { JobLocationIndex } from '../../jobs/location-index.js';
 import { createJobLocationRecoveryRetryPlan, recoverJobLocations } from '../../jobs/location-recovery.js';
 import { seedHistoricalEpoch } from '../../jobs/historical-reader.js';
-import { recordRetirementDisposition, readRetirementDisposition } from '../succession/retirement-disposition.js';
 import { createStartupMintAuthorizer, prepareRetainedControllerHandoff } from '../services/startup-retirement.js';
 import { recordControllerOpen, recordControllerServing } from '../succession/controller-open.js';
-import { controllerRecoveryTarget } from '../succession/retained-epoch-executor.js';
+import { controllerRecoveryTarget } from '../services/retained-epoch-executor.js';
 import { readOrCreateEpochKey } from '../../store/epoch-key.js';
-import { readEpochClosure } from '../../store/epoch-closure.js';
+import { observeEpochClosure } from '../../store/epoch-closure.js';
 import type { EventStreamHandlers, HealthSnapshot, HttpHandlerPorts } from '../../transport/server-ports.js';
 import type { StoragePort, TimerHandle } from '../../infra/port-types.js';
 import {
@@ -90,11 +89,9 @@ import {
 import { createUnreadableProviderOperationDiscardService } from '../services/recovery/unreadable-provider-operation-discard.js';
 import { createSettledUnboundStatusPort } from '../services/recovery/settled-unbound-status.js';
 import {
-  acquireProviderOperationMutationAdmission,
   observeProviderOperationRecord,
   providerOperationRecordKeyPrefix,
   readProviderOperations,
-  type ProviderOperationMutationAdmission,
 } from '../../store/provider-operation-journal.js';
 import { createRuntimeComponentRegistry } from '../runtime-components/registry.js';
 import type { CoordinatorCoreOptions, CoordinatorCoreResult } from './types.js';
@@ -133,7 +130,6 @@ import { createKbDaemonHealthComponent } from '../runtime-components/kb-health-c
 import { readCorpusState } from '../../kb/state/corpus-state.js';
 import {
   decodeResolvedStoreEpoch,
-  discardUnservedRetirementMint,
   encodeResolvedStoreEpoch,
   inspectCurrentStore,
   listStoreEpochs,
@@ -142,31 +138,14 @@ import {
   type ResolvedStoreEpoch,
 } from '../../store/epoch.js';
 import {
-  handbackSuccessionWriterGeneration,
   observeSuccessionServing,
   observeSuccessionWriterGeneration,
-  joinSuccessionWriterGeneration,
-  SuccessionServingCommittedError,
-  type SuccessionWriterEntitlement,
-  type SuccessionWriterGeneration,
 } from '../../store/succession-writer-generation.js';
-import {
-  compareAndSwapUpgradeIntent,
-  readUpgradeIntent,
-  upgradeIntentProblem,
-  visibleUpgradeIntent,
-  type UpgradeIntent,
-} from '../../infra/upgrade-intent.js';
-import { probeProcessIncarnation } from '../../infra/node-process.js';
+import { readUpgradeIntent, upgradeIntentProblem, visibleUpgradeIntent } from '../../infra/upgrade-intent.js';
 import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
-import { gracefulKillByPid } from '../../infra/process-supervision.js';
-import {
-  currentSuccessionAttemptChild,
-  startSuccessionAttempt,
-  type SuccessionAttempt,
-  type AttemptAcknowledgment,
-} from '../succession/attempt-child.js';
-import type { SuccessionPreparation } from '../succession/protocol.js';
+import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succession/attempt-child.js';
+import { createSuccessionCommitter } from '../succession/commit.js';
+import { NO_SUCCESSION_INTERPOSITION } from '../succession/interposition.js';
 import {
   prepareDurableCliTransfer,
   prepareDurableCliRecoveryGrant,
@@ -176,7 +155,6 @@ import {
   verifyDurableCliRecoveryGrant,
 } from '../services/durable-cli-transfer.js';
 import { decodeChildPrincipalTransfer } from '../child-principal-registry.js';
-import type { Database } from '../../store/db.js';
 import { createDefaultStoreReadContext } from '../../read-model/read-context.js';
 import { createSuccessionCoordinator } from '../succession/index.js';
 import type { SuccessionOwner } from '../succession/obligations.js';
@@ -611,89 +589,12 @@ function createKbDaemonExpansionRpc(kbDaemonSupervisor: KbDaemonSupervisor): Exp
   };
 }
 
-export type IncumbentWriterReclaim =
-  | Readonly<{
-      kind: 'reclaimed';
-      generation: SuccessionWriterGeneration;
-      providerOperationAdmission: ProviderOperationMutationAdmission;
-    }>
-  | Readonly<{ kind: 'same-build-succession'; reason: string }>;
-
-export async function reclaimIncumbentWriter(
-  options: Readonly<{
-    runtime: CoordinatorCoreOptions['runtime'];
-    writer: SuccessionWriterEntitlement;
-    failedGeneration?: SuccessionWriterGeneration;
-    storeDb: Database;
-    reopenStore?: () => void;
-    incumbentInstanceId: string;
-    deadlineMs: number;
-    reclaimKbDaemonWriter: (generation: SuccessionWriterGeneration, signal: AbortSignal) => Promise<void>;
-    startSameBuildSuccession: (reason: string) => void;
-  }>,
-): Promise<IncumbentWriterReclaim> {
-  const controller = new AbortController();
-  const expiresAt = options.runtime.time.monotonicNow() + BigInt(Math.max(0, Math.ceil(options.deadlineMs)));
-  let timer: TimerHandle | null = null;
-  const admissionState: { current: ProviderOperationMutationAdmission | null } = { current: null };
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = options.runtime.time.setTimeout(
-      () => reject(new Error('Incumbent writer reclaim deadline expired.')),
-      options.deadlineMs,
-    );
-  });
-  try {
-    const reclaim = async (): Promise<IncumbentWriterReclaim> => {
-      if (options.failedGeneration !== undefined) {
-        handbackSuccessionWriterGeneration(options.runtime, options.failedGeneration, {
-          storeRoot: options.writer.generation.storeRoot,
-          epoch: options.writer.generation.epoch,
-        });
-      }
-      options.writer.unpark();
-      options.reopenStore?.();
-      if (options.runtime.time.monotonicNow() >= expiresAt) {
-        throw new Error('Incumbent writer reclaim deadline expired.');
-      }
-      const acquired = acquireProviderOperationMutationAdmission(options.storeDb, options.incumbentInstanceId);
-      if (acquired.kind !== 'acquired') {
-        throw new Error(`Provider operation journal reclaim is holding: ${acquired.exit}.`);
-      }
-      admissionState.current = acquired.admission;
-      await options.reclaimKbDaemonWriter(options.writer.generation, controller.signal);
-      controller.signal.throwIfAborted();
-      if (options.runtime.time.monotonicNow() >= expiresAt) {
-        throw new Error('Incumbent writer reclaim deadline expired.');
-      }
-      return {
-        kind: 'reclaimed',
-        generation: options.writer.generation,
-        providerOperationAdmission: acquired.admission,
-      };
-    };
-    return await Promise.race([reclaim(), timeout]);
-  } catch (error: unknown) {
-    if (error instanceof SuccessionServingCommittedError) throw error;
-    controller.abort();
-    if (admissionState.current !== null) void admissionState.current.close();
-    try {
-      options.writer.park();
-    } catch {
-      // The generation fence still refuses writes if the local close failed.
-    }
-    const reason = formatError(error);
-    options.startSameBuildSuccession(reason);
-    return { kind: 'same-build-succession', reason };
-  } finally {
-    options.runtime.time.clearTimeout(timer);
-  }
-}
-
 export function createCoordinatorCore(
   options: CoordinatorCoreOptions & Readonly<{ onFatalShutdownError: (error: unknown) => void }>,
   runStartupRecovery: RunStartupRecoveryOrchestratorFn,
 ): CoordinatorCoreResult {
   const runtime = options.runtime;
+  const successionInterposition = options.successionInterposition ?? NO_SUCCESSION_INTERPOSITION;
 
   const defaultsPlan = resolveCoordinatorDefaults(options, runtime);
   const startupRecoveryBarrier = createStartupRecoveryBarrier();
@@ -1368,6 +1269,9 @@ export function createCoordinatorCore(
 
   const localProviderHosts = world.providerHostManager as ProviderHostManager &
     Partial<ProviderHostAdministrationAuthority>;
+  const holdsProviderHost = (
+    record: ReturnType<ProviderHostAdministrationAuthority['listProviderHosts']>[number],
+  ): boolean => record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed';
   const localProviderHostOwner: ProviderHostAdministrationOwner = {
     ownerId: `coordinator:${world.identity.instanceId}`,
     listProviderHosts: () => {
@@ -1680,14 +1584,10 @@ export function createCoordinatorCore(
       ...readProviderOperations(db).records.map((record) => record.operation.jobId),
       ...world.operationRegistry.liveJobIds(),
     ];
-    const hostManager = world.providerHostManager as ProviderHostManager & Partial<ProviderHostAdministrationAuthority>;
     const hostIds =
-      hostManager
+      localProviderHosts
         .listProviderHosts?.()
-        .filter(
-          (record) =>
-            record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed',
-        )
+        .filter(holdsProviderHost)
         .map((record) => record.host.ownerJobId)
         .filter((jobId): jobId is string => typeof jobId === 'string') ?? [];
     const recoveryIds = [...(lifecycleController?.getRecoveryRegistry() ?? [])].map(([jobId]) => jobId);
@@ -1699,14 +1599,8 @@ export function createCoordinatorCore(
     ]);
   };
   const liveProviderHosts = () => {
-    const manager = world.providerHostManager as ProviderHostManager & Partial<ProviderHostAdministrationAuthority>;
-    if (manager.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
-    return manager
-      .listProviderHosts()
-      .filter(
-        (record) =>
-          record.status === 'live' || record.status === 'shutdown-held' || record.status === 'reclamation-failed',
-      );
+    if (localProviderHosts.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
+    return localProviderHosts.listProviderHosts().filter(holdsProviderHost);
   };
   const successionOwners: readonly SuccessionOwner[] = [
     {
@@ -1926,496 +1820,55 @@ export function createCoordinatorCore(
       },
     },
   ];
-  let activeSuccessionAttempt: SuccessionAttempt | null = null;
-  /** Precedes every exit to a serving successor: an open wait learns to resubscribe there instead of ending. */
-  async function handOverOpenConnections(attempt: SuccessionAttempt): Promise<void> {
-    waitHandover.abort();
-    await Promise.race([attempt.drainIncumbentConnections(ipcServer), runtime.time.sleep(500)]);
-  }
-  let successionCommitPromise: Promise<void> | null = null;
-  let successionAbortRequested = false;
-  const updateAttempt = async (attemptId: string, change: (intent: UpgradeIntent) => UpgradeIntent): Promise<void> => {
-    for (let retry = 0; retry < 8; retry++) {
-      const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-      if (observed.kind !== 'readable' || observed.intent.attemptId !== attemptId) {
-        throw new Error('Succession attempt changed while recording its commit window.');
-      }
-      const written = await compareAndSwapUpgradeIntent(
-        runtime.paths.coral.coordinator.runDir,
-        observed.intent.revision,
-        change(observed.intent),
-      );
-      if (written.kind === 'conflict') continue;
-      if (written.kind === 'written') return;
-      throw new Error(`Succession intent could not be recorded: ${written.kind}`);
-    }
-    throw new Error('Succession intent changed throughout its commit window.');
-  };
-  const waitForAttemptReady = (
-    attempt: SuccessionAttempt,
-  ): Promise<Extract<AttemptAcknowledgment, { kind: 'ready' }>> =>
-    new Promise((resolve, reject) => {
-      let settled = false;
-      let unsubscribe = (): void => {};
-      const timeout = runtime.time.setTimeout(
-        () => finish(new Error('Successor did not report read-only readiness.')),
-        10_000,
-      );
-      const onExit = (): void => finish(new Error('Successor exited before readiness.'));
-      attempt.child.once('exit', onExit);
-      unsubscribe = attempt.onAcknowledgment((acknowledgment) => {
-        if (acknowledgment.kind === 'hold') finish(new Error(acknowledgment.reason));
-        if (acknowledgment.kind === 'ready') finish(null, acknowledgment);
-      });
-      if (settled) unsubscribe();
-      function finish(error: Error | null, ready?: Extract<AttemptAcknowledgment, { kind: 'ready' }>): void {
-        if (settled) return;
-        settled = true;
-        runtime.time.clearTimeout(timeout);
-        unsubscribe();
-        attempt.child.off('exit', onExit);
-        if (error !== null) reject(error);
-        else if (ready !== undefined) resolve(ready);
-      }
-    });
-  const reapAttempt = async (
-    attempt: SuccessionAttempt,
-    requireDurableIdentity = true,
-  ): Promise<Readonly<{ kind: 'observed-absent' }>> => {
-    const recorded = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    const identityRecord = recorded.kind === 'readable' ? recorded.intent.attemptChild : null;
-    if (
-      requireDurableIdentity &&
-      (identityRecord?.attemptId !== attempt.attemptId ||
-        identityRecord.pid !== attempt.childIdentity.pid ||
-        identityRecord.incarnation !== attempt.childIdentity.incarnation)
-    ) {
-      throw new Error('Failed successor identity does not match the durable attempt record.');
-    }
-    if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) return { kind: 'observed-absent' };
-    const { pid, incarnation } = attempt.childIdentity;
-    if (probeProcessIncarnation(pid) !== incarnation) {
-      throw new Error('Failed successor identity cannot be verified for reaping.');
-    }
-    // The owned child's exit is decisive absence evidence; reaping must not wait for the escalation deadline.
-    const exited = new Promise<Readonly<{ kind: 'observed-absent' }>>((resolve) => {
-      if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) resolve({ kind: 'observed-absent' });
-      else attempt.child.once('exit', () => resolve({ kind: 'observed-absent' }));
-    });
-    const termination = gracefulKillByPid(runtime, pid, incarnation);
-    if (termination.kind !== 'escalation-scheduled') {
-      throw new Error(`Failed successor reaping was ${termination.kind}.`);
-    }
-    const settled = await Promise.race([termination.settlement, exited]);
-    if (settled.kind !== 'observed-absent') {
-      throw new Error(`Failed successor reaping remained ${settled.kind}.`);
-    }
-    return { kind: 'observed-absent' };
-  };
-  const retirementServes = (attemptId: string, incumbentEpochKey: string, servedEpochKey: string): boolean => {
-    const disposition = readRetirementDisposition(runtime, attemptId);
-    const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    const incumbent = decodeResolvedStoreEpoch(runtime, incumbentEpochKey);
-    const successor = decodeResolvedStoreEpoch(runtime, servedEpochKey);
-    const certificate = jobLocationIndex.certificate(incumbentEpochKey);
-    if (
-      disposition === null ||
-      disposition.incumbentEpochKey !== incumbentEpochKey ||
-      observed.kind !== 'readable' ||
-      observed.intent.attemptId !== attemptId ||
-      disposition.successorFingerprint !== observed.intent.target.build.storeFormatFingerprint ||
-      incumbent === undefined ||
-      successor === undefined ||
-      certificate === null ||
-      certificate.revision !== disposition.certificateRevision ||
-      JSON.stringify(certificate.jobIds) !== JSON.stringify(disposition.certificateJobIds) ||
-      !jobLocationIndex.resultsReleased(incumbentEpochKey)
-    )
-      return false;
-    return (
-      successor.storeRoot === (incumbent.canonicalStoreRoot ?? incumbent.storeRoot) &&
-      BigInt(successor.epoch) === BigInt(incumbent.epoch) + 1n
-    );
-  };
-  const runSuccessionCommit = async (
-    attempt: SuccessionAttempt,
-    preparation: SuccessionPreparation,
-    recoveryFromAttemptId?: string,
-  ): Promise<void> => {
-    const recovering = recoveryFromAttemptId !== undefined;
-    const intentAtStart = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-    if (intentAtStart.kind !== 'readable' || intentAtStart.intent.attemptId !== attempt.attemptId) {
-      throw new Error('Succession intent changed before commit.');
-    }
-    const formatChanging =
-      !recovering && intentAtStart.intent.target.build.storeFormatFingerprint !== options.storeFormat.fingerprint;
-    const transfersChildPrincipals = preparation.receipts.some((receipt) => receipt.owner === 'child-principals');
-    const ready = await waitForAttemptReady(attempt);
-    if (
-      ready.epochKey !== preparation.epochKey ||
-      JSON.stringify([...ready.receiptIds].sort()) !==
-        JSON.stringify(preparation.receipts.map((receipt) => receipt.receiptId).sort())
-    ) {
-      throw new Error('Successor readiness does not match the prepared epoch and receipts.');
-    }
-    if (!recovering) {
-      const reported = await succession.reconciler.reportReady({
-        attemptId: preparation.attemptId,
-        successorPid: attempt.childIdentity.pid,
-        targetKey: preparation.targetKey,
-        epochKey: preparation.epochKey,
-        admissionRevision: preparation.admissionRevision,
-        receiptIds: [...ready.receiptIds],
-      });
-      if (reported.kind !== 'ready') throw new Error(`Succession readiness was ${reported.kind}.`);
-    }
-    let transferTimeout: ReturnType<typeof runtime.time.setTimeout> | null = null;
-    try {
-      await Promise.race([
-        attempt.transferListeners(ipcServer),
-        new Promise<never>((_resolve, reject) => {
-          transferTimeout = runtime.time.setTimeout(
-            () => reject(new Error('Successor did not accept every listening address.')),
-            10_000,
-          );
-        }),
-      ]);
-    } finally {
-      runtime.time.clearTimeout(transferTimeout);
-    }
-    if (recoveryFromAttemptId !== undefined) world.launchCoordinator.endSuccessionCommitWindow(recoveryFromAttemptId);
-    const pause = world.launchCoordinator.beginSuccessionCommitWindow(attempt.attemptId, preparation.admissionRevision);
-    if (pause.kind !== 'paused') throw new Error(`Succession admission pause was ${pause.reason}.`);
-    const stopAttemptForwarding = attempt.forwardConnections(ipcServer);
-    // Only after forwarding starts: a wait that resubscribes must reach the successor, never this incumbent,
-    // whose store reads fail once its writers park.
-    waitHandover.abort();
-    let forwarding = true;
-    const stopForwarding = (): void => {
-      if (!forwarding) return;
-      forwarding = false;
-      stopAttemptForwarding();
-    };
-    const deadlineAt = pause.deadlineAtMs - 2_500;
-    let writer: SuccessionWriterEntitlement | null = null;
-    let parked = false;
-    let hold: string | null = null;
-    let recoveryPreparation: SuccessionPreparation | null = null;
-    let retirementStoreParked = false;
-    const unsubscribe = attempt.onAcknowledgment((acknowledgment) => {
-      if (acknowledgment.kind === 'hold') hold = acknowledgment.reason;
-    });
-    try {
-      await updateAttempt(attempt.attemptId, (intent) => ({
-        ...intent,
-        disposition: 'attempting',
-        attemptDeadline: new Date(deadlineAt).toISOString(),
-      }));
-      await attempt.setDeadline(deadlineAt);
-      const inspected = inspectCurrentStore(runtime);
-      if (inspected.kind !== 'current' || encodeResolvedStoreEpoch(runtime, inspected.epoch) !== preparation.epochKey) {
-        throw new Error('Incumbent store epoch changed before writer park.');
-      }
-      writer = joinSuccessionWriterGeneration(runtime, inspected.epoch);
-      if (lifecycleController === null || kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn === undefined) {
-        throw new Error('Incumbent writer park capabilities are unavailable.');
-      }
-      if (formatChanging) {
-        if (preparation.receipts.length > 0 || readSuccessionJobs().length > 0) {
-          throw new Error('Format-changing retirement still has live obligations.');
-        }
-        recoverJobLocations(jobLocationIndex, preparation.epochKey, getProgressStore());
-      }
-      const parkAbort = new AbortController();
-      const parkDeadline = runtime.time.setTimeout(
-        () => parkAbort.abort(new Error('Writer park exceeded the commit deadline.')),
-        Math.max(0, deadlineAt - runtime.time.now()),
-      );
-      try {
-        if (!recovering) {
-          await lifecycleController.parkProviderOperationMutations(parkAbort.signal);
-          await kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn(parkAbort.signal);
-        }
-        parkAbort.signal.throwIfAborted();
-      } finally {
-        runtime.time.clearTimeout(parkDeadline);
-      }
-      if (!recovering) writer.park();
-      parked = true;
-      if (transfersChildPrincipals) world.childPrincipalRegistry.fenceAuthentication();
-      if (formatChanging) {
-        const certificate = jobLocationIndex.certificate(preparation.epochKey);
-        if (certificate === null || !jobLocationIndex.resultsReleased(preparation.epochKey)) {
-          throw new Error('Historical job inventory and result retention are not certified.');
-        }
-        const custodySettled = await certifyRetiringEpochCustody(
-          runtime,
-          jobLocationIndex,
-          preparation.epochKey,
-          AbortSignal.timeout(Math.max(1, deadlineAt - Date.now())),
-        );
-        if (!custodySettled) throw new Error('Retiring epoch custody has not settled.');
-        if (Date.now() >= deadlineAt) throw new Error('Retirement certification exceeded the commit deadline.');
-        if (
-          runtime.env.get('NODE_ENV') === 'test' &&
-          runtime.env.get('CORAL_TEST_RETIREMENT_PROTECTION_FAILURE') === '1'
-        ) {
-          throw new Error('injected retirement protection failure');
-        }
-        retirementStoreParked = true;
-        lifecycleController.protectRetiringStore(preparation.epochKey);
-        if (
-          runtime.env.get('NODE_ENV') === 'test' &&
-          runtime.env.get('CORAL_TEST_RETIREMENT_AUTHORIZATION_FAILURE') === '1'
-        ) {
-          throw new Error('injected retirement authorization failure');
-        }
-        recordRetirementDisposition(runtime, {
-          version: 'v1',
-          attemptId: attempt.attemptId,
-          incumbentEpochKey: preparation.epochKey,
-          incumbentFingerprint: options.storeFormat.fingerprint,
-          successorFingerprint: intentAtStart.intent.target.build.storeFormatFingerprint,
-          certificateRevision: certificate.revision,
-          certificateJobIds: certificate.jobIds,
-          custodySettled: true,
-        });
-      }
-      await attempt.allowCommittedOpen();
-      for (;;) {
-        const serving = observeSuccessionServing(runtime, attempt.attemptId);
-        if (serving !== null) {
-          if (
-            (serving.epochKey !== preparation.epochKey &&
-              !retirementServes(attempt.attemptId, preparation.epochKey, serving.epochKey)) ||
-            serving.controlGeneration <= writer.generation.generation
-          ) {
-            throw new Error('Durable serving record does not match the prepared takeover.');
-          }
-          if (!recovering) {
-            const committed = await succession.reconciler.commit(attempt.attemptId);
-            if (committed.kind !== 'committed') {
-              world.log(`Succession serves, but completion receipt is ${committed.kind}.\n`);
-            }
-          }
-          const releaseDelay = Number(runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_DELAY_MS'));
-          if (runtime.env.get('NODE_ENV') === 'test' && releaseDelay > 0) {
-            await runtime.time.sleep(releaseDelay);
-          }
-          if (
-            runtime.env.get('NODE_ENV') === 'test' &&
-            runtime.env.get('CORAL_TEST_SUCCESSION_RELEASE_FAILURE') === '1'
-          ) {
-            throw new Error('injected succession release failure');
-          }
-          await handOverOpenConnections(attempt);
-          process.exit(0);
-        }
-        if (hold !== null) throw new Error(hold);
-        if (successionAbortRequested) throw new Error('Incumbent shutdown aborted the uncommitted attempt.');
-        if (attempt.child.exitCode !== null || attempt.child.signalCode !== null) {
-          throw new Error('Successor exited before durable serving.');
-        }
-        if (runtime.time.now() >= deadlineAt) throw new Error('Successor missed its serving deadline.');
-        await runtime.time.sleep(25);
-      }
-    } catch (error: unknown) {
-      const serving = observeSuccessionServing(runtime, attempt.attemptId);
-      if (serving !== null) {
-        await handOverOpenConnections(attempt);
-        process.exit(0);
-      }
-      stopForwarding();
-      waitHandover = new AbortController();
-      const reason = formatError(error);
-      try {
-        await updateAttempt(attempt.attemptId, (intent) => ({
-          ...intent,
-          disposition: 'deferred',
-          blockers: [{ owner: 'succession-commit', reason }],
-          retryCondition: { kind: 'attempt-expiry', evidence: 'incumbent writer reclaim' },
-        }));
-      } catch (recordError: unknown) {
-        world.log(`Succession hold recording failed: ${formatError(recordError)}\n`);
-      }
-      await attempt.abort().catch(() => {});
-      await reapAttempt(attempt);
-      if (formatChanging) discardUnservedRetirementMint(runtime, preparation.epochKey, attempt.attemptId);
-      if (writer !== null) {
-        const observed = observeSuccessionWriterGeneration(runtime);
-        const failedGeneration =
-          observed !== null && observed.generation > writer.generation.generation ? observed : undefined;
-        const reclaimed = await reclaimIncumbentWriter({
-          runtime,
-          writer,
-          ...(failedGeneration === undefined ? {} : { failedGeneration }),
-          storeDb: getStoreServices().storeDb,
-          ...(retirementStoreParked
-            ? { reopenStore: () => lifecycleController?.reopenRetiringStore(preparation.epochKey) }
-            : {}),
-          incumbentInstanceId: identity.instanceId,
-          deadlineMs: Math.max(0, pause.deadlineAtMs - Date.now()),
-          reclaimKbDaemonWriter: async (generation, signal) => {
-            if (
-              runtime.env.get('NODE_ENV') === 'test' &&
-              runtime.env.get('CORAL_TEST_SUCCESSION_RECLAIM_FAILURE') === '1' &&
-              !recovering
-            ) {
-              throw new Error('injected incumbent writer reclaim failure');
-            }
-            const reclaim = kbDaemonSupervisorWithTrackedShutdown.reclaimWriterTurn?.(generation, signal);
-            if (reclaim === undefined) throw new Error('KB daemon writer reclaim capability is unavailable.');
-            let acknowledged: boolean;
-            try {
-              acknowledged = await Promise.race([
-                reclaim.then(() => true),
-                runtime.time.sleep(500).then(() => false as const),
-              ]);
-            } catch {
-              acknowledged = false;
-            }
-            if (acknowledged) return;
-            const stopped = await kbDaemonSupervisorWithTrackedShutdown.stop('succession writer reclaim', { signal });
-            if (stopped.pid !== null) throw new Error('KB daemon writer remained alive after bounded stop.');
-          },
-          startSameBuildSuccession: (failure) => world.log(`Same-build writer recovery required: ${failure}\n`),
-        });
-        if (reclaimed.kind === 'reclaimed') {
-          if (strictHealthIdentity.ok) {
-            recordControllerOpen(
-              runtime,
-              preparation.epochKey,
-              identity.instanceId,
-              null,
-              identity.pluginRoot,
-              strictHealthIdentity.manifest,
-              reclaimed.generation.generation,
-            );
-          }
-          if (
-            transfersChildPrincipals &&
-            !world.childPrincipalRegistry.reclaimAuthentication(reclaimed.generation.generation)
-          ) {
-            throw new Error('Incumbent child authentication could not reclaim its consumed-nonce ledger.', {
-              cause: error,
-            });
-          }
-          lifecycleController?.adoptProviderOperationAdmission(reclaimed.providerOperationAdmission);
-          if (recovering) runtimeState.setLaunchFenceActive(false);
-          await updateAttempt(attempt.attemptId, (intent) => ({
-            ...intent,
-            disposition: 'deferred',
-            attemptId: null,
-            attemptChild: null,
-            attemptOwner: null,
-            attemptDeadline: null,
-            recoveryAttemptId: null,
-            recoveryBuildSetId: null,
-            successionPreparation: null,
-            blockers: [{ owner: 'succession-commit', reason: `incumbent reclaimed after ${reason}` }],
-            retryCondition: { kind: 'target-change', evidence: 'successor committed-open failure' },
-          }));
-          world.log(`Succession attempt held and incumbent writer reclaimed: ${reason}\n`);
-        } else {
-          if (recovering) {
-            world.log(`Same-build recovery child failed to serve: ${reclaimed.reason}\n`);
-          } else {
-            if (strictHealthBundleDir === null || !strictHealthIdentity.ok) {
-              throw new Error('Same-build recovery target is unavailable.', { cause: error });
-            }
-            runtimeState.setLaunchFenceActive(true);
-            const recoveryAttemptId = runtime.ids.uuid();
-            recoveryPreparation = {
-              ...preparation,
-              attemptId: recoveryAttemptId,
-              admissionRevision: world.launchCoordinator.admissionRevision(),
-              stage: 'prepared',
-              ready: null,
-            };
-            await updateAttempt(attempt.attemptId, (intent) => ({
-              ...intent,
-              attemptId: recoveryAttemptId,
-              attemptChild: null,
-              attemptDeadline: null,
-              attemptOwner: {
-                kind: 'incumbent',
-                instanceId: identity.instanceId,
-                pid: world.backendPid,
-                incarnation: readSelfIncarnation(),
-              },
-              recoveryAttemptId,
-              recoveryBuildSetId: strictHealthIdentity.manifest.buildSetId,
-              successionPreparation: recoveryPreparation,
-              disposition: 'deferred',
-              blockers: [{ owner: 'succession-commit', reason: `same-build recovery after ${reclaimed.reason}` }],
-              retryCondition: { kind: 'target-change', evidence: 'same-build recovery in progress' },
-            }));
-          }
-        }
-      } else {
-        await updateAttempt(attempt.attemptId, (intent) => ({
-          ...intent,
-          disposition: 'deferred',
-          attemptId: null,
-          attemptChild: null,
-          attemptOwner: null,
-          attemptDeadline: null,
-          successionPreparation: null,
-          blockers: [{ owner: 'succession-commit', reason: `incumbent retained authority after ${reason}` }],
-          retryCondition: { kind: 'target-change', evidence: 'successor commit preparation failure' },
-        }));
-      }
-    } finally {
-      unsubscribe();
-      if (!parked || observeSuccessionServing(runtime, attempt.attemptId) === null) stopForwarding();
-      if (recoveryPreparation === null) world.launchCoordinator.endSuccessionCommitWindow(attempt.attemptId);
-      activeSuccessionAttempt = null;
-      successionCommitPromise = null;
-      successionAbortRequested = false;
-    }
-    if (recoveryPreparation !== null) {
-      let recoveryAttempt: SuccessionAttempt | null = null;
-      try {
-        const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
-        if (
-          observed.kind !== 'readable' ||
-          observed.intent.attemptId !== recoveryPreparation.attemptId ||
-          strictHealthBundleDir === null
-        ) {
-          throw new Error('Same-build recovery attempt changed before launch.');
-        }
-        const started = await startSuccessionAttempt({
-          ports: createRealSuccessionAttemptPorts(),
-          intent: observed.intent,
-          preparation: recoveryPreparation,
-          listener: ipcServer,
-          bootToken: identity.bootToken,
-          recoveryBundleDir: strictHealthBundleDir,
-        });
-        recoveryAttempt = started;
-        await updateAttempt(started.attemptId, (intent) => ({
-          ...intent,
-          attemptChild: {
-            attemptId: started.attemptId,
-            pid: started.childIdentity.pid,
-            incarnation: started.childIdentity.incarnation,
-          },
-        }));
-        activeSuccessionAttempt = recoveryAttempt;
-        successionCommitPromise = runSuccessionCommit(recoveryAttempt, recoveryPreparation, attempt.attemptId);
-        await successionCommitPromise;
-      } catch (error: unknown) {
-        if (recoveryAttempt !== null) {
-          await recoveryAttempt.abort().catch(() => {});
-          await reapAttempt(recoveryAttempt).catch((reapError: unknown) =>
-            world.log(`Same-build recovery reap failed: ${formatError(reapError)}\n`),
-          );
-        }
-        world.launchCoordinator.endSuccessionCommitWindow(attempt.attemptId);
-        world.log(`Same-build succession launch failed: ${formatError(error)}\n`);
-      }
-    }
-  };
+  const successionCommitter = createSuccessionCommitter({
+    runtime,
+    log: world.log,
+    listener: () => ipcServer,
+    incumbent: {
+      instanceId: identity.instanceId,
+      pid: world.backendPid,
+      version: identity.version,
+      bundleHash: identity.bundleHash,
+      flavor: identity.flavor,
+      pluginRoot: identity.pluginRoot,
+      storeFormatFingerprint: options.storeFormat.fingerprint,
+      incarnation: readSelfIncarnation,
+      build:
+        strictHealthIdentity.ok && strictHealthBundleDir !== null
+          ? { manifest: strictHealthIdentity.manifest, bundleDir: strictHealthBundleDir }
+          : null,
+    },
+    reconciler: () => succession.reconciler,
+    writers: () => lifecycleController,
+    kbDaemon: kbDaemonSupervisorWithTrackedShutdown,
+    launchCoordinator: world.launchCoordinator,
+    childPrincipals: world.childPrincipalRegistry,
+    setLaunchFenceActive: (active) => runtimeState.setLaunchFenceActive(active),
+    waitHandover: {
+      abort: () => waitHandover.abort(),
+      renew: () => {
+        waitHandover = new AbortController();
+      },
+    },
+    liveJobIds: readSuccessionJobs,
+    retiringEpoch: {
+      certificate: (epochKey) => jobLocationIndex.certificate(epochKey),
+      resultsReleased: (epochKey) => jobLocationIndex.resultsReleased(epochKey),
+      recoverLocations: (epochKey) => recoverJobLocations(jobLocationIndex, epochKey, getProgressStore()),
+      certifyCustody: (epochKey, signal) => certifyRetiringEpochCustody(runtime, jobLocationIndex, epochKey, signal),
+    },
+    storeDb: () => getStoreServices().storeDb,
+    startAttempt: ({ intent, preparation, recoveryBundleDir }) =>
+      startSuccessionAttempt({
+        ports: createRealSuccessionAttemptPorts(),
+        intent,
+        preparation,
+        listener: ipcServer,
+        bootToken: identity.bootToken,
+        ...(recoveryBundleDir === undefined ? {} : { recoveryBundleDir }),
+      }),
+    interposition: successionInterposition,
+  });
   const succession = createSuccessionCoordinator({
     runtime,
     runDir: runtime.paths.coral.coordinator.runDir,
@@ -2437,66 +1890,11 @@ export function createCoordinatorCore(
     },
     admissionRevision: () => world.launchCoordinator.admissionRevision(),
     observeServing: (attemptId) => observeSuccessionServing(runtime, attemptId),
-    retirementServing: retirementServes,
+    retirementServing: successionCommitter.retirementServes,
     commitAvailable:
       kbDaemonSupervisorWithTrackedShutdown.parkWriterTurn !== undefined &&
       kbDaemonSupervisorWithTrackedShutdown.reclaimWriterTurn !== undefined,
-    launchPrepared: async (intent, preparation) => {
-      if (activeSuccessionAttempt !== null) throw new Error('Another succession attempt is active.');
-      const attempt = await startSuccessionAttempt({
-        ports: createRealSuccessionAttemptPorts(),
-        intent,
-        preparation,
-        listener: ipcServer,
-        bootToken: identity.bootToken,
-      });
-      try {
-        await updateAttempt(attempt.attemptId, (current) => ({
-          ...current,
-          attemptChild: {
-            attemptId: attempt.attemptId,
-            pid: attempt.childIdentity.pid,
-            incarnation: attempt.childIdentity.incarnation,
-          },
-        }));
-      } catch (error: unknown) {
-        await attempt.abort().catch(() => {});
-        await reapAttempt(attempt, false);
-        throw error;
-      }
-      activeSuccessionAttempt = attempt;
-      successionAbortRequested = false;
-      successionCommitPromise = runSuccessionCommit(attempt, preparation).catch(async (error: unknown) => {
-        const reason = formatError(error);
-        try {
-          await updateAttempt(attempt.attemptId, (current) => ({
-            ...current,
-            disposition: 'deferred',
-            blockers: [{ owner: 'succession-prepare', reason }],
-            retryCondition: { kind: 'attempt-expiry', evidence: 'successor attempt exit' },
-          }));
-          await attempt.abort().catch(() => {});
-          await reapAttempt(attempt);
-          await updateAttempt(attempt.attemptId, (current) => ({
-            ...current,
-            disposition: 'deferred',
-            attemptId: null,
-            attemptChild: null,
-            attemptOwner: null,
-            attemptDeadline: null,
-            successionPreparation: null,
-            blockers: [{ owner: 'succession-prepare', reason: `incumbent retained authority after ${reason}` }],
-            retryCondition: { kind: 'target-change', evidence: 'successor readiness failure' },
-          }));
-        } catch (cleanupError: unknown) {
-          world.log(`Succession preparation cleanup failed: ${formatError(cleanupError)}\n`);
-        } finally {
-          activeSuccessionAttempt = null;
-          successionCommitPromise = null;
-          successionAbortRequested = false;
-        }
-      });
-    },
+    launchPrepared: successionCommitter.launchPrepared,
     subscribeObligationChanges: (notify) => {
       notifySuccessionObligationChange = notify;
       const unsubscribe = subscribeSuccessionObligationChanges(world.eventBus, world.launchCoordinator, notify);
@@ -2865,11 +2263,8 @@ export function createCoordinatorCore(
           )
             continue;
           const historicalKey = encodeResolvedStoreEpoch(runtime, historical.resolved);
-          if (
-            readEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey)?.disposition ===
-            'unrecoverable-retained'
-          )
-            continue;
+          const closure = observeEpochClosure(runtime, runtime.paths.coral.generation.dataRoot, historical.epochKey);
+          if (closure.kind === 'recorded' && closure.evidence.disposition === 'unrecoverable-retained') continue;
           const fingerprint =
             historical.epochJson.kind === 'valid' ? historical.epochJson.value.build.storeFormatFingerprint : '';
           void seedHistoricalEpoch(
@@ -3153,55 +2548,10 @@ export function createCoordinatorCore(
           publishedCompatibilitySocketAddresses,
         )),
     onStopped: options.onStopped,
-    onSuccessionServing: async (attemptId) => {
-      if (currentSuccessionAttemptChild()?.recovery === true) {
-        await updateAttempt(attemptId, (intent) => ({
-          ...intent,
-          incumbent: {
-            instanceId: identity.instanceId,
-            pid: world.backendPid,
-            incarnation: readSelfIncarnation(),
-            version: identity.version,
-            bundleHash: identity.bundleHash,
-            flavor: identity.flavor,
-          },
-          attemptId: null,
-          attemptChild: null,
-          attemptOwner: null,
-          attemptDeadline: null,
-          recoveryAttemptId: null,
-          recoveryBuildSetId: null,
-          successionPreparation: null,
-          disposition: 'deferred',
-          blockers: [{ owner: 'succession-commit', reason: 'same-build recovery serves after failed target commit' }],
-          retryCondition: { kind: 'target-change', evidence: 'successor committed-open failure' },
-          completionReceipt: null,
-        }));
-        succession.reconciler.notifyObligationChange();
-        return;
-      }
-      for (let retry = 0; retry < 20; retry++) {
-        const decision = await succession.reconciler.commit(attemptId);
-        if (decision.kind === 'committed') return;
-        await runtime.time.sleep(50);
-      }
-      world.log('Durable succession serving could not publish its completion receipt.\n');
-    },
-    beforeShutdown: () => {
-      const attempt = activeSuccessionAttempt;
-      if (attempt === null) return 'continue';
-      if (observeSuccessionServing(runtime, attempt.attemptId) !== null) {
-        return handOverOpenConnections(attempt).then(() => 'succession-release' as const);
-      }
-      successionAbortRequested = true;
-      return (async () => {
-        await attempt.abort().catch(() => {});
-        await successionCommitPromise;
-        if (observeSuccessionServing(runtime, attempt.attemptId) === null) return 'continue';
-        await handOverOpenConnections(attempt);
-        return 'succession-release';
-      })();
-    },
+    onSuccessionServing: (attemptId) =>
+      successionCommitter.publishServing(attemptId, currentSuccessionAttemptChild()?.recovery === true),
+    succession: successionCommitter.shutdown,
+    successionInterposition,
     ...(options.acceptProcessExitRemainder === undefined
       ? {}
       : { acceptProcessExitRemainder: options.acceptProcessExitRemainder }),

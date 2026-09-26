@@ -135,6 +135,7 @@ function createHarness(): {
       abort: control.abortJobs,
       list: () => [],
       detail: (jobId: string) => store.loadJobProjectionDetail(jobId),
+      validateWait: () => null,
       waitStream: async function* () {},
     },
   } as unknown as HttpHandlerPorts;

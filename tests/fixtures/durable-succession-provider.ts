@@ -9,8 +9,7 @@ import {
   installSuccessionAttemptChild,
   receiveSuccessionAttemptChild,
 } from '#src/coordinator/succession/attempt-child.js';
-import { probeRetainedEpochOpen } from '#src/coordinator/succession/retained-epoch-executor.js';
-import { runRetainedEpochRecovery } from '#src/coordinator/services/retained-epoch-recovery.js';
+import { parseRetainedEpochArgv, runRetainedEpochCommand } from '#src/coordinator/services/retained-epoch-executor.js';
 import { resolveStrictBundleIdentity } from '#src/infra/bundle-manifest.js';
 import { runKbDaemonMain } from '#src/kb-daemon/daemon-main.js';
 import { claudeArtifactCapability } from '#src/providers/claude/artifacts.js';
@@ -20,7 +19,9 @@ import type { ProviderExecutionPlan } from '#src/providers/execution-plan.js';
 import { defineProvider } from '#src/providers/registry.js';
 import { providerProgressEvent, providerTerminalEvent, streamProviderEvents } from '#src/providers/stream.js';
 import { currentCoralStoreFormat } from '#src/store-format.js';
+import { createRealRuntime } from '#src/runtime/real.js';
 import { createRealSuccessionAttemptPorts } from '#src/runtime/succession-attempt.js';
+import { successionInterpositionFromEnvironment } from '#tests/fixtures/succession-interposition.js';
 
 declare const __PLUGIN_ROOT__: string;
 
@@ -105,12 +106,9 @@ async function main(): Promise<void> {
     process.stdout.write(`${JSON.stringify(identity.manifest)}\n`);
     return;
   }
-  if (process.argv.length === 4 && process.argv[2] === '--recover-retained-epoch') {
-    process.exitCode = runRetainedEpochRecovery(process.argv[3]);
-    return;
-  }
-  if (process.argv.length === 5 && process.argv[2] === '--probe-retained-epoch') {
-    process.exitCode = probeRetainedEpochOpen(process.argv[3], currentCoralStoreFormat(), process.argv[4]);
+  const retainedEpochCommand = parseRetainedEpochArgv(process.argv);
+  if (retainedEpochCommand !== null) {
+    process.exitCode = runRetainedEpochCommand(retainedEpochCommand, createRealRuntime, currentCoralStoreFormat());
     return;
   }
   if (process.env.CORAL_KB_DAEMON === '1') {
@@ -124,6 +122,7 @@ async function main(): Promise<void> {
     const coordinator = createCoordinatorServer({
       pluginRoot: __PLUGIN_ROOT__,
       ...(attempt === null ? {} : { bootSnapshot: { bootToken: attempt.bootToken } }),
+      successionInterposition: successionInterpositionFromEnvironment(),
       registerBuiltInProvidersFn: (registry) => {
         registry.register(codexProviderDefinition);
         registry.register(durableClaude);

@@ -1897,7 +1897,7 @@ export function registerBackendCommands(program: Command, operations: BackendCom
     .description('Report observable epoch facts or inspect a legacy incident')
     .argument(
       '<epoch-or-legacy-incident-id>',
-      'Positive numeric epoch or canonical legacy incident UUID shown by the list',
+      'Epoch key (collision-safe across lineages), positive numeric epoch, or canonical legacy incident UUID shown by the list',
     )
     .requiredOption(
       '--target <target>',

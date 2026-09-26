@@ -51,7 +51,8 @@ const INVALID_JSON_RESPONSE = {
 };
 const SHUTDOWN_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',
-  message: 'Manual shutdown required: shutdown capability missing or invalid',
+  message:
+    'Shutdown refused: the shutdown capability is missing or invalid. The incumbent keeps serving, and any upgrade is deferred.',
 };
 const KB_RESTART_UNAUTHORIZED_RESPONSE = {
   code: 'shutdown_unauthorized',

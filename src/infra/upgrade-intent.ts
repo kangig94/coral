@@ -452,3 +452,40 @@ export async function compareAndSwapUpgradeIntent(
     lease();
   }
 }
+
+const UPGRADE_INTENT_CAS_ATTEMPTS = 8;
+
+export type UpgradeIntentCasStep<T> =
+  | Readonly<{ kind: 'settle'; value: T }>
+  | Readonly<{ kind: 'retry' }>
+  | Readonly<{
+      kind: 'write';
+      expectedRevision: number | null;
+      change: UpgradeIntentChange;
+      settle: (written: UpgradeIntent) => T;
+    }>;
+
+export type UpgradeIntentCasOutcome<T> =
+  | Readonly<{ kind: 'settled'; value: T }>
+  | Readonly<{ kind: 'refused'; problem: UpgradeIntentProblem }>
+  | Readonly<{ kind: 'exhausted' }>;
+
+/**
+ * A lost revision race re-reads and decides again; a record this build cannot decode refuses rather than being
+ * overwritten, and a writer that keeps losing reports exhaustion instead of spinning.
+ */
+export async function retryUpgradeIntentCas<T>(
+  runDir: string,
+  decide: (observed: UpgradeIntentRead) => UpgradeIntentCasStep<T> | Promise<UpgradeIntentCasStep<T>>,
+): Promise<UpgradeIntentCasOutcome<T>> {
+  for (let attempt = 0; attempt < UPGRADE_INTENT_CAS_ATTEMPTS; attempt++) {
+    const step = await decide(readUpgradeIntent(runDir));
+    if (step.kind === 'settle') return { kind: 'settled', value: step.value };
+    if (step.kind === 'retry') continue;
+    const written = await compareAndSwapUpgradeIntent(runDir, step.expectedRevision, step.change);
+    if (written.kind === 'conflict') continue;
+    if (written.kind !== 'written') return { kind: 'refused', problem: written.kind };
+    return { kind: 'settled', value: step.settle(written.intent) };
+  }
+  return { kind: 'exhausted' };
+}

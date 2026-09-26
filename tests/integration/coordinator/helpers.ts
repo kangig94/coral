@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   appendFileSync,
@@ -14,6 +14,9 @@ import {
 import { tmpdir } from 'node:os';
 import { createConnection } from 'node:net';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { buildSync } from 'esbuild';
 
 import type { BuildFlavor } from '#src/infra/build-flavor.js';
 import {
@@ -59,6 +62,53 @@ type SourceManifest = {
 function readSourceManifest(): SourceManifest {
   assertBuildArtifactsAvailable();
   return JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as SourceManifest;
+}
+
+let successionInterpositionBundle: string | null = null;
+
+/**
+ * Builds the succession interposition entry point with the bridge build's embedded identity, so a fixture that
+ * ships it differs from the bridge backend only in the fault plan it reads from its environment.
+ */
+function buildSuccessionInterpositionBundle(manifest: SourceManifest): string {
+  if (successionInterpositionBundle !== null && existsSync(successionInterpositionBundle)) {
+    return successionInterpositionBundle;
+  }
+  const outfile = join(mkdtempSync(join(tmpdir(), 'coral-succession-interposition-')), 'coral-backend.cjs');
+  const embeddedIdentity = {
+    version: manifest.version,
+    buildSetId: manifest.buildSetId,
+    flavor: manifest.flavor,
+    storeFormatFingerprint: manifest.storeFormatFingerprint,
+  };
+  buildSync({
+    entryPoints: [fileURLToPath(new URL('./fixtures/succession-interposition-backend.ts', import.meta.url))],
+    outfile,
+    bundle: true,
+    platform: 'node',
+    target: 'node22',
+    format: 'cjs',
+    external: ['node:*', '@lydell/node-pty'],
+    loader: { '.sql': 'text' },
+    minify: true,
+    banner: {
+      js:
+        `var __CORAL_BUILD_IDENTITY__=${JSON.stringify(embeddedIdentity)};` +
+        'var __PLUGIN_ROOT__=require("path").resolve(__dirname,"..");' +
+        'var __BUNDLE_DIR__=__dirname;' +
+        'var __importMetaUrl=require("url").pathToFileURL(__filename).href;',
+    },
+    define: {
+      __VERSION__: JSON.stringify(manifest.version),
+      __BUILD_SET_ID__: JSON.stringify(manifest.buildSetId),
+      __BUILD_FLAVOR__: JSON.stringify(manifest.flavor),
+      __STORE_FORMAT_FINGERPRINT__: JSON.stringify(manifest.storeFormatFingerprint),
+      __IS_CORAL_BACKEND_MAIN__: 'false',
+      'import.meta.url': '__importMetaUrl',
+    },
+  });
+  successionInterpositionBundle = outfile;
+  return outfile;
 }
 
 export type PluginFixture = {
@@ -122,6 +172,8 @@ export function createPluginFixture(
     flavor: BuildFlavor;
     bundleHash?: string;
     version?: string;
+    /** Ships a backend whose succession protocol follows the fault plan in its environment. */
+    backend?: 'succession-interposition';
   },
 ): PluginFixture {
   const sourceManifest = readSourceManifest();
@@ -160,7 +212,12 @@ export function createPluginFixture(
       'utf-8',
     );
   };
-  copyBundle(sourceBackendBundle, backendPath);
+  copyBundle(
+    options.backend === 'succession-interposition'
+      ? buildSuccessionInterpositionBundle(sourceManifest)
+      : sourceBackendBundle,
+    backendPath,
+  );
   if (options.bundleHash !== undefined) {
     appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
   }
@@ -449,6 +506,27 @@ export async function waitForCoordinatorSocketRelease(
     throw new Error(`Timed out waiting for coordinator socket release: ${socketPath}`);
   }
   return observed;
+}
+
+/** Signals a helper child and resolves only once it has exited, so cleanup never races a still-running child. */
+export async function terminateChildProcess(
+  child: ChildProcess,
+  signal: NodeJS.Signals,
+  timeoutMs = 10_000,
+): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Timed out waiting for helper pid ${child.pid} to exit.`)),
+      timeoutMs,
+    );
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+  child.kill(signal);
+  await exited;
 }
 
 export async function waitForProcessExit(

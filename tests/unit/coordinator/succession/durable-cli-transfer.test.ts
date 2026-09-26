@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -118,7 +118,7 @@ describe('durable-cli succession transfer', () => {
     db.close();
   });
 
-  it('should retain an epoch-bound acknowledged controller receipt for each accepted job', () => {
+  it('should retain an epoch-bound acknowledged controller receipt for each accepted job, tolerating additions and naming unreadable receipts', () => {
     const { runDir, epoch, db, meta, progressStore, runtime } = fixture();
     const intent = recordCustodyIntent(runtime, runDir, {
       effect: 'process-spawn',
@@ -146,16 +146,30 @@ describe('durable-cli succession transfer', () => {
     };
     recordDurableCliControllerReceipts(runtime, runDir, transfer, controller);
     recordDurableCliControllerReceipts(runtime, runDir, transfer, controller);
-    expect(readDurableCliControllerReceipts(runtime, runDir)).toMatchObject([
-      {
-        jobId: JOB_ID,
-        epochKey: controller.epochKey,
-        controllerInstanceId: 'successor',
-        controlGeneration: 2,
-        runtimeRecordGeneration: 2,
-        custodyIntentId: intent.id,
-      },
-    ]);
+    expect(readDurableCliControllerReceipts(runtime, runDir)).toMatchObject({
+      receipts: [
+        {
+          jobId: JOB_ID,
+          epochKey: controller.epochKey,
+          controllerInstanceId: 'successor',
+          controlGeneration: 2,
+          runtimeRecordGeneration: 2,
+          custodyIntentId: intent.id,
+        },
+      ],
+      unreadable: [],
+    });
+
+    const receiptDir = join(runDir, 'controller-receipts.v1');
+    const [written] = readdirSync(receiptDir).filter((name) => name.endsWith('.receipt.json'));
+    const receipt = JSON.parse(readFileSync(join(receiptDir, written), 'utf-8')) as Record<string, unknown>;
+    writeFileSync(join(receiptDir, written), `${JSON.stringify({ ...receipt, laterField: 'added' })}\n`);
+    const corrupt = join(receiptDir, 'other-job.corrupt.1.receipt.json');
+    writeFileSync(corrupt, '{"version":');
+    expect(readDurableCliControllerReceipts(runtime, runDir)).toMatchObject({
+      receipts: [{ jobId: JOB_ID, laterField: 'added' }],
+      unreadable: [corrupt],
+    });
     db.close();
   });
 

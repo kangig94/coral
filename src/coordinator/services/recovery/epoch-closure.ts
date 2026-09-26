@@ -12,7 +12,7 @@ import {
 import { custodyLedgerDir, readCustodyLedger, type CustodyEntry } from '../../../store/custody-ledger.js';
 import {
   hasEpochCustodyCoverage,
-  readEpochClosure,
+  observeEpochClosure,
   recordEpochClosure,
   type EpochClosureEvidence,
 } from '../../../store/epoch-closure.js';
@@ -203,11 +203,17 @@ async function certifyCustody(
           reason: `durable-cli ${entry.intent.operationId} location is unreadable`,
         };
       }
-      const transfers = receipts?.filter((receipt) => receipt.jobId === entry.intent.operationId);
+      if (receipts.unreadable.length > 0) {
+        return {
+          executionDischarge: 'undecidable',
+          obligations,
+          reason: `controller receipts are unreadable: ${receipts.unreadable.join(', ')}`,
+        };
+      }
+      const transfers = receipts.receipts.filter((receipt) => receipt.jobId === entry.intent.operationId);
       if (
         location?.epochKey !== jobEpochKey ||
         location.disposition !== 'terminal' ||
-        transfers === undefined ||
         (transfers.length > 0 &&
           !transfers.some(
             (receipt) => receipt.custodyIntentId === entry.intent.id && receipt.lineageEpochKey === candidate.epochKey,
@@ -358,12 +364,9 @@ export async function settleSupersededEpochClosures(
     if (subjectKey !== undefined && subjectKey !== candidate.epochKey) continue;
     if (candidate.epochKey === selectedKey) continue;
     const jobEpochKey = candidate.epochKey;
-    let previous: EpochClosureEvidence | null;
-    try {
-      previous = readEpochClosure(runtime, stateRoot, candidate.epochKey);
-    } catch {
-      continue;
-    }
+    const read = observeEpochClosure(runtime, stateRoot, candidate.epochKey);
+    if (read.kind === 'unreadable') continue;
+    const previous = read.kind === 'recorded' ? read.evidence : null;
     let dataOutcome: EpochClosureEvidence['dataOutcome'];
     try {
       dataOutcome = index.resultsReleased(jobEpochKey)

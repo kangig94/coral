@@ -185,7 +185,7 @@ describe('store-reset operator epochs', () => {
     });
   });
 
-  it('lists distinct protected and legacy-root lineages with the same epoch number and their holds', () => {
+  it('lists distinct protected and legacy-root lineages with the same epoch number and their holds', async () => {
     const runtime = harness();
     const opened = settleStoreEpoch(runtime, { storeFormat, build, authorizeMint: authorizeFixtureStoreMint });
     opened.db.close();
@@ -215,6 +215,15 @@ describe('store-reset operator epochs', () => {
     expect(rendered).toContain('Result retention');
     expect(rendered).toContain('automatic custody reconciliation and closure retry');
     expect(rendered).not.toContain('store-reset release');
+    await expect(reportStoreResetLocal('gen2', '1', dependencies)).rejects.toMatchObject({
+      code: 'store_reset_epoch_ambiguous',
+    });
+    for (const epoch of twins.filter((twin) => typeof twin.epochKey === 'string')) {
+      await expect(reportStoreResetLocal('gen2', String(epoch.epochKey), dependencies)).resolves.toMatchObject({
+        kind: 'epoch',
+        epoch: { epochKey: epoch.epochKey },
+      });
+    }
   });
 
   it('keeps mapped protected epochs visible when the legacy root is absent', () => {
