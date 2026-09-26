@@ -124,7 +124,10 @@ import {
   type ProviderOperationTerminalDirective,
 } from '#src/store/provider-operation-record.js';
 import { InMemoryStorage } from '#tools/simulation/core/memory-storage.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -629,6 +632,7 @@ function fakeAuthority(
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     providerHosts: unexercisedProviderHostControls,
+    ...unexercisedControllerSuccessionControls,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       adoptionWindowMs: options.adoptionWindowMs ?? Number.MAX_SAFE_INTEGER,

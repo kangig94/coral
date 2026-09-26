@@ -97,8 +97,20 @@ export interface ProviderHostManager {
    * the first time a session is actually acquired for this identity (see `ensureProxySetFor`).
    */
   routeAppServerOperation(spec: ProviderServerSpec): ProviderProxyOperationAuthority | null;
+  /**
+   * The live proxy set for `spec`, acquiring one first when none is live. Work that must outlive this
+   * coordinator cannot run in a coordinator-local host, so a launch waits for an independently living host
+   * and falls back to local placement only when none can be established within the acquisition's own deadline.
+   */
+  awaitAppServerOperationRoute?(
+    spec: ProviderServerSpec,
+    signal: AbortSignal,
+  ): Promise<ProviderProxyOperationAuthority | null>;
   providerProxySlotReleased?(routeKey: string): void;
 }
+
+/** What a proxy-set acquisition needs from the host it is acquired for: its executable identity. */
+type ProxySetAcquisitionTarget = Pick<ProviderHostEntry, 'identityKey' | 'spec'>;
 
 export type ProviderHostQuiescenceReceipt = Readonly<{
   kind: 'provider-hosts-quiesced';
@@ -338,6 +350,7 @@ type ProviderHostClosingRecord = Readonly<{
 
 type PendingProviderProxySetAcquisition = {
   readonly slotId: string;
+  readonly identityKey: string;
   readonly outcome: Promise<ProviderProxySetAcquisitionOutcome>;
   readonly resolveOutcome: (outcome: ProviderProxySetAcquisitionOutcome) => void;
   readonly cleanupCompletion: Promise<ProviderProxySetAcquisitionCleanupOutcome>;
@@ -389,7 +402,7 @@ export class DefaultProviderHostManager
   private readonly carrierBlocksRetirement: (hostRef: HostRef) => boolean;
   private readonly proxySetAcquisitionConfig?: ProviderProxySetAcquisitionConfig;
   private readonly providerProxyLifecycleRef?: ProviderProxySetLifecycleRef;
-  private readonly proxySetRotationEntries = new Map<string, ProviderHostEntry>();
+  private readonly proxySetRotationEntries = new Map<string, ProxySetAcquisitionTarget>();
   /** Abort cannot shorten an admitted handshake; `pendingProxySetAcquisitions` owns every later outcome. */
   private readonly proxySetAcquisitionStop = new AbortController();
   constructor(options: {
@@ -556,6 +569,32 @@ export class DefaultProviderHostManager
     return this.providerProxyLifecycleRef?.get()?.routeFor(hostKeyFromSpec(spec)) ?? null;
   }
 
+  async awaitAppServerOperationRoute(
+    spec: ProviderServerSpec,
+    signal: AbortSignal,
+  ): Promise<ProviderProxyOperationAuthority | null> {
+    const live = this.routeAppServerOperation(spec);
+    if (live !== null || !this.acceptingAcquisitions) return live;
+    const identityKey = hostKeyFromSpec(spec);
+    this.ensureProxySetFor({ identityKey, spec });
+    const pending = [...this.pendingProxySetAcquisitions].find((candidate) => candidate.identityKey === identityKey);
+    const settlement = pending?.settlement;
+    if (settlement === undefined || settlement === null) return this.routeAppServerOperation(spec);
+    await new Promise<void>((resolve) => {
+      const settle = (): void => {
+        signal.removeEventListener('abort', settle);
+        resolve();
+      };
+      if (signal.aborted) {
+        resolve();
+        return;
+      }
+      signal.addEventListener('abort', settle, { once: true });
+      void settlement.then(settle, settle);
+    });
+    return this.routeAppServerOperation(spec);
+  }
+
   providerProxySlotReleased(routeKey: string): void {
     const rotationEntry = this.proxySetRotationEntries.get(routeKey);
     this.proxySetRotationEntries.delete(routeKey);
@@ -569,7 +608,7 @@ export class DefaultProviderHostManager
   }
 
   /** An acquisition must remain owned until publication or its assigned stop disposition completes. */
-  private ensureProxySetFor(entry: ProviderHostEntry): void {
+  private ensureProxySetFor(entry: ProxySetAcquisitionTarget): void {
     const config = this.proxySetAcquisitionConfig;
     const lifecycle = this.providerProxyLifecycleRef?.get();
     if (config === undefined || lifecycle === null || lifecycle === undefined) return;
@@ -598,6 +637,7 @@ export class DefaultProviderHostManager
     });
     const pending: PendingProviderProxySetAcquisition = {
       slotId: admission.slotId,
+      identityKey,
       outcome,
       resolveOutcome,
       cleanupCompletion,
@@ -757,7 +797,7 @@ export class DefaultProviderHostManager
 
   private observeGenerationCapacity(
     identityKey: string,
-    entry: ProviderHostEntry,
+    entry: ProxySetAcquisitionTarget,
     set: ProviderProxyOperationAuthority,
   ): DurableProviderProxyOperationAuthority {
     if (!isProviderProxyOperationAuthority(set)) {

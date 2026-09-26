@@ -18,11 +18,15 @@ import type { PublicationReceipt } from '#src/coordinator/live/provider-proxy/se
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, providerProxyDisappearanceReceipt } from '#src/provider-proxy/protocol.js';
 import { providerProxySetAddress } from '#src/coordinator/services/provider-proxy-set/identity.js';
 import { createPublicationUnknownAcquisitionSessionFixture } from '#tests/helpers/provider-proxy-acquisition-session.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 const SET: ProviderProxyOperationAuthority = {
   proxyInstanceId: 'p1',
   providerHosts: unexercisedProviderHostControls,
+  ...unexercisedControllerSuccessionControls,
   autonomousDeadline: {
     orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
     adoptionWindowMs: Number.MAX_SAFE_INTEGER,

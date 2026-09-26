@@ -56,7 +56,10 @@ import {
 } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import { createPublicationUnknownAcquisitionSessionFixture } from '#tests/helpers/provider-proxy-acquisition-session.js';
 import { testProviderProxySetLifecycleDurability } from '#tests/helpers/provider-proxy-set-lifecycle-durability.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 /** The build this fixture lifecycle belongs to — the same one `providerOperationRecord` stamps on its identities, so a discovered capsule is inheritable rather than foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -101,6 +104,7 @@ function fakeInheritedProxySet(proxyInstanceId: string): ProviderProxyOperationA
   const base = fakeProxySet(proxyInstanceId);
   return {
     ...base,
+    ...unexercisedControllerSuccessionControls,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       adoptionWindowMs: Number.MAX_SAFE_INTEGER,
@@ -1433,7 +1437,7 @@ describe('provider host pool proxy set registry', () => {
     const second = await manager.openSession(createLaunch(createExclusiveSpec()), { jobId: 'job-b' });
 
     // Two distinct entries — the per-job isolation of the hosts themselves is unchanged — but one set.
-    const entryKeys = mockedEnsureProxySet.mock.calls.map((call) => call[0].hostKey);
+    const entryKeys = mockedEnsureProxySet.mock.calls.map((call) => call[0].identityKey);
     expect(new Set(entryKeys).size).toBe(1);
     expect(mockedEnsureProxySet).toHaveBeenCalledTimes(1);
     expect(manager.liveSets()).toHaveLength(1);

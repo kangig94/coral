@@ -84,7 +84,10 @@ import type {
 import type { ProxyAppServerHostAuthority } from '#src/provider-proxy/provider-root-authority.js';
 import { createSemanticOperationRuntime } from '#src/provider-proxy/semantic-operation-runner.js';
 import { asJointContainmentReceipt, asReservation } from '#tests/helpers/provider-proxy-correlation.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 const NONCE = 'a'.repeat(64);
 const FINGERPRINT = 'b'.repeat(64);
@@ -579,6 +582,7 @@ async function launchThroughRoute(
   const base = {
     proxyInstanceId: set.shared.proxyInstanceId,
     providerHosts: unexercisedProviderHostControls,
+    ...unexercisedControllerSuccessionControls,
     autonomousDeadline: {
       orphanTimeoutMs: 37_000,
       adoptionWindowMs: 23_000,

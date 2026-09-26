@@ -18,7 +18,7 @@ import { createEpochClosureRetryPlan } from '../services/recovery/epoch-closure-
 import { providerProxySetAddress } from '../services/provider-proxy-set/identity.js';
 import { resolveRunningBundleDir, resolveStrictBundleIdentity } from '../../infra/bundle-manifest.js';
 import { writeAuditEvent } from '../../infra/audit-log.js';
-import { pinRunningBuildRoot } from '../../infra/retained-build-root.js';
+import { pinRunningBuildRoot, validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
 import { assertNever, formatError } from '../../infra/error-format.js';
 import { invocationCoralEnvSnapshot } from '../../infra/env-sanitize.js';
 import { isRecord } from '../../infra/json.js';
@@ -144,6 +144,11 @@ import {
 import { readUpgradeIntent, upgradeIntentProblem, visibleUpgradeIntent } from '../../infra/upgrade-intent.js';
 import { createRealSuccessionAttemptPorts } from '../../runtime/succession-attempt.js';
 import { currentSuccessionAttemptChild, startSuccessionAttempt } from '../succession/attempt-child.js';
+import {
+  PROVIDER_OPERATIONS_OWNER,
+  PROVIDER_PROXY_SETS_OWNER,
+  createProviderHostTransfer,
+} from '../succession/provider-host-transfer.js';
 import { createSuccessionCommitter } from '../succession/commit.js';
 import { NO_SUCCESSION_INTERPOSITION } from '../succession/interposition.js';
 import {
@@ -1602,6 +1607,28 @@ export function createCoordinatorCore(
     if (localProviderHosts.listProviderHosts === undefined) throw new Error('provider host inventory unavailable');
     return localProviderHosts.listProviderHosts().filter(holdsProviderHost);
   };
+  const providerHostTransfer = createProviderHostTransfer({
+    runtime,
+    flavor: identity.flavor,
+    buildSetId: identity.buildSetId,
+    lifecycle: () => world.providerProxyLifecycleRef.get(),
+    db: () => getProgressStore().getDb(),
+    jobSettled: (jobId) => {
+      const status = getProgressStore().readStatus(jobId);
+      return status !== null && isTerminalPhase(status.phase);
+    },
+    localOperationJobIds: () => world.operationRegistry.liveJobIds(),
+    hostRootRetained: (buildSetId) => validatedRetainedBuildRoot(runtime, buildSetId) !== null,
+    attemptId: () => currentSuccessionAttemptChild()?.attemptId ?? null,
+    targetChangesStoreFormat: () => {
+      const observed = readUpgradeIntent(runtime.paths.coral.coordinator.runDir);
+      return (
+        observed.kind !== 'readable' ||
+        observed.intent.target.build.storeFormatFingerprint !== options.storeFormat.fingerprint
+      );
+    },
+    log: world.log,
+  });
   const successionOwners: readonly SuccessionOwner[] = [
     {
       id: 'launch-admission',
@@ -1668,38 +1695,7 @@ export function createCoordinatorCore(
         };
       },
     },
-    {
-      id: 'provider-operations',
-      classify: async () => {
-        const scan = readProviderOperations(getProgressStore().getDb());
-        const jobIds = [
-          ...new Set([
-            ...scan.records.map((record) => record.operation.jobId),
-            ...world.operationRegistry.liveJobIds(),
-          ]),
-        ];
-        return jobIds.length === 0 && scan.unreadableKeys.length === 0
-          ? { kind: 'completed', reason: 'no provider operation custody' }
-          : { kind: 'blocking', reason: 'provider operation custody requires a control receipt', jobIds };
-      },
-    },
-    {
-      id: 'provider-proxy-sets',
-      classify: async () => {
-        const lifecycle = world.providerProxyLifecycleRef.get();
-        const sets = lifecycle?.liveSets() ?? [];
-        if (sets.length === 0) return { kind: 'completed', reason: 'no live provider proxy set' };
-        if (sets.some((set) => world.providerProxyClaims.claimsFor(set.setIdentity).length > 0)) {
-          return { kind: 'blocking', reason: 'live provider proxy set lacks a fenced transfer receipt' };
-        }
-        if (liveProviderHosts().length > 0) {
-          return { kind: 'blocking', reason: 'idle provider proxy set still backs a live provider host' };
-        }
-        // Idle retained capacity carries no obligation; retiring it is the event that ends this hold.
-        for (const set of sets) lifecycle?.beginGracefulDrain(set.setIdentity);
-        return { kind: 'blocking', reason: 'idle provider proxy set is retiring before succession' };
-      },
-    },
+    ...providerHostTransfer.owners,
     {
       id: 'provider-hosts',
       classify: async () => {
@@ -1843,6 +1839,7 @@ export function createCoordinatorCore(
     kbDaemon: kbDaemonSupervisorWithTrackedShutdown,
     launchCoordinator: world.launchCoordinator,
     childPrincipals: world.childPrincipalRegistry,
+    providerHosts: providerHostTransfer,
     setLaunchFenceActive: (active) => runtimeState.setLaunchFenceActive(active),
     waitHandover: {
       abort: () => waitHandover.abort(),
@@ -2329,10 +2326,11 @@ export function createCoordinatorCore(
           if (decodeChildPrincipalTransfer(receipt.payload) === null) {
             throw new Error('Child-principal transfer receipt is invalid.');
           }
-        } else {
+        } else if (receipt.owner !== PROVIDER_PROXY_SETS_OWNER && receipt.owner !== PROVIDER_OPERATIONS_OWNER) {
           throw new Error(`Unsupported succession receipt owner: ${receipt.owner}`);
         }
       }
+      for (const jobId of providerHostTransfer.verifyReceipts(preparation)) accepted.add(jobId);
       const live = readSuccessionJobs();
       // A crashed committed successor's own admissions are ordinary recovery obligations of this same build.
       const admittedByCommittedSuccessor = (jobId: string): boolean =>
@@ -2342,13 +2340,17 @@ export function createCoordinatorCore(
         live.some((jobId) => !accepted.has(jobId) && !admittedByCommittedSuccessor(jobId)) ||
         (committedSuccessorInstanceId === null && live.length !== accepted.size)
       ) {
-        throw new Error('Accepted durable-cli receipts do not cover every live job.');
+        throw new Error('Accepted receipts do not cover every live job.');
       }
       return [...accepted];
     },
+    transferredHostJobIds: (preparation) => providerHostTransfer.transferredJobIds(preparation),
     adoptSuccessionReceipts: (preparation, acceptedJobIds, generation, recovery) => {
       const accepted = new Set(acceptedJobIds);
+      providerHostTransfer.adoptReceipts(preparation);
+      const hostTransferredJobIds = new Set(providerHostTransfer.transferredJobIds(preparation));
       for (const jobId of accepted) {
+        if (hostTransferredJobIds.has(jobId)) continue;
         const status = getProgressStore().readStatus(jobId);
         if (status !== null && isTerminalPhase(status.phase)) continue;
         const permit = world.launchCoordinator.activeLaunchPermits().find((entry) => entry.jobId === jobId);
@@ -2377,6 +2379,8 @@ export function createCoordinatorCore(
     recordSuccessionControllerReceipts: (preparation, epochKey, generation, recordedAt) => {
       const epoch = decodeResolvedStoreEpoch(runtime, epochKey);
       if (epoch === undefined) throw new Error('Committed epoch is invalid.');
+      // The old controller releases on the serving record, so each host's grant now becomes this build's alone.
+      if (providerHostTransfer.transfersHosts(preparation)) void providerHostTransfer.completeTransfers();
       for (const receipt of preparation.receipts) {
         if (receipt.owner !== 'durable-cli') continue;
         const transfer = decodeDurableCliTransfer(receipt.payload, epoch);

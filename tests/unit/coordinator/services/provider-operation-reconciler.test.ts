@@ -2096,6 +2096,7 @@ describe('ProviderOperationReconciler publication', () => {
       proxyInstanceId: capsule.proxyInstanceId,
       operations: [],
       orphanTimeoutMs: capsule.orphanTimeoutMs,
+      controllerBuild: { generation: capsule.generation, flavor: capsule.flavor, buildSetId: capsule.buildSetId },
     });
 
     // This is the only remote effect left by the dead coordinator: the full tuple landed, then its
@@ -2125,6 +2126,7 @@ describe('ProviderOperationReconciler publication', () => {
           pid: 999,
           incarnation: testIncarnation(999),
         },
+        successorBuild: { generation: capsule.generation, flavor: capsule.flavor, buildSetId: capsule.buildSetId },
         binding: {
           generation: capsule.generation,
           flavor: capsule.flavor,

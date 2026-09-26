@@ -1,7 +1,9 @@
 import {
   currentHandoffCapsulePath,
+  handoffCapsuleControllerBuildSetId,
   readHandoffCapsuleFile,
-  type HandoffCapsuleV3,
+  type HandoffCapsule,
+  type RedeemableHandoffCapsule,
 } from '../../../provider-proxy/handoff-capsule.js';
 import { PROXY_CONTROL_RPC_TIMEOUT_MS, type CoordinatorIdentity } from '../../../provider-proxy/protocol.js';
 import type { ProviderEventHandler } from '../../../provider-proxy/control-client.js';
@@ -97,6 +99,8 @@ export type ProviderProxySetInheritanceDeps = Readonly<{
   onProviderEvent?(): ProviderEventHandler;
   collectContainmentProof: ProviderProxySetContainmentProver['collectContainmentProof'];
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
+  /** Whether an accepted succession receipt hands a set whose capsule names another controller to this build. */
+  acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
   registerInheritedSet?(
     set: ProviderProxyOperationAuthority,
     publicationReceipt: PublicationReceipt,
@@ -278,39 +282,58 @@ export type ProviderProxySetInheritanceRefusal = 'other-build' | 'unreadable-ide
 /**
  * Whether this build may inherit a set, and why not when it may not. One home because the rule is enforced at
  * two entry points that cannot be merged — discovery classifying a capsule it found, and a claimed record
- * deriving its capsule's address for itself — and the two disagreeing is how a foreign set gets dialed.
+ * reading the capsule at its derived address — and the two disagreeing is how a foreign set gets dialed.
  *
- * Dialing one is not a failed attempt but a fatal one: `handoff.redeem` is gated on build identity at the role
- * (`assertNamedCoordinatorBuild`), a foreign set answers `identity_mismatch`, and the recovery policy retires
- * that fatally — taking this coordinator down over a set it never owned. `capsuleMatchesLocator` cannot catch
- * it either, because it compares a capsule against the *record's* build, and for a foreign set those agree.
+ * Dialing a set whose grant does not authorize this build is not a failed attempt but a fatal one: the host
+ * answers `identity_mismatch`, and the recovery policy retires that fatally — taking this coordinator down over
+ * a set it does not control.
  *
- * The rule has no version exceptions, and that is the whole of it: **a capsule this build cannot derive a set
- * identity from is represented, never dialed.** `providerProxySetIdentityFromCapsule` accepts V3 alone, so V1
- * and V2 both fail it and both are refused here.
+ * Host provenance never decides it. The capsule names the build its grant authorizes (V3 implicitly its host's
+ * own), and an accepted succession receipt may hand the set to the successor it names; a capsule this build
+ * cannot derive a set identity from is represented, never dialed.
  */
-export type ProviderProxySetInheritanceVerdict<T> =
-  | Readonly<{ kind: 'inheritable'; candidate: T }>
+/**
+ * What an accepted succession receipt says about a set another build controls: nothing, handed to this build's
+ * successor that has not yet served, or handed to a successor that serves.
+ */
+export type ControllerTransferAcceptance = 'not-accepted' | 'before-serving' | 'served';
+
+/**
+ * How this build may take a set over. `transfer-before-serving` redeems without taking the grant over: the
+ * grant must keep authorizing the incumbent's build until this successor serves, because that is the recovery
+ * path of an attempt that fails before then.
+ */
+export type ProviderProxySetInheritanceRoute = 'controller' | 'transfer-before-serving' | 'transfer-served';
+
+export type ProviderProxySetInheritanceVerdict =
+  | Readonly<{ kind: 'inheritable'; candidate: RedeemableHandoffCapsule; via: ProviderProxySetInheritanceRoute }>
   | Readonly<{ kind: 'refused'; reason: ProviderProxySetInheritanceRefusal }>;
 
-export function classifyProviderProxySetInheritance<T extends Readonly<{ buildSetId: string; version?: number }>>(
-  candidate: T,
+export function classifyProviderProxySetInheritance(
+  capsule: HandoffCapsule,
   ownBuildSetId: string,
-): ProviderProxySetInheritanceVerdict<Exclude<T, { version: 1 | 2 }>> {
-  if (candidate.buildSetId !== ownBuildSetId) return { kind: 'refused', reason: 'other-build' };
-  if (candidate.version === 1 || candidate.version === 2) {
+  acceptsControllerTransfer: (capsule: RedeemableHandoffCapsule) => ControllerTransferAcceptance = () => 'not-accepted',
+): ProviderProxySetInheritanceVerdict {
+  if (capsule.version === 1 || capsule.version === 2) {
     return { kind: 'refused', reason: 'unreadable-identity' };
   }
-  // The verdict carries the narrowing so callers need no cast: refusing every generation whose identity this
-  // build cannot read is what leaves the shapes it can actually act on, and saying so in the return type is
-  // what keeps it true.
-  return { kind: 'inheritable', candidate: candidate as Exclude<T, { version: 1 | 2 }> };
+  if (handoffCapsuleControllerBuildSetId(capsule) === ownBuildSetId) {
+    return { kind: 'inheritable', candidate: capsule, via: 'controller' };
+  }
+  switch (acceptsControllerTransfer(capsule)) {
+    case 'before-serving':
+      return { kind: 'inheritable', candidate: capsule, via: 'transfer-before-serving' };
+    case 'served':
+      return { kind: 'inheritable', candidate: capsule, via: 'transfer-served' };
+    case 'not-accepted':
+      return { kind: 'refused', reason: 'other-build' };
+  }
 }
 
 /** Every field a capsule read back from disk must agree with the locator that named its address, plus this
  *  successor's own build, because bytes for any other set cannot establish authority over this one. */
 function capsuleMatchesLocator(
-  capsule: HandoffCapsuleV3,
+  capsule: RedeemableHandoffCapsule,
   reference: ProviderProxySetLocator,
   successor: CoordinatorIdentity,
 ): boolean {
@@ -354,10 +377,11 @@ function inheritanceRefusalError(refusal: ProviderProxyControlRedemptionRefusal)
 async function buildInheritedAuthority(
   redemption: RedeemedProviderProxyControl,
   capsulePath: string,
-  capsule: HandoffCapsuleV3,
+  capsule: RedeemableHandoffCapsule,
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
+  via: ProviderProxySetInheritanceRoute,
 ): Promise<
   Readonly<{
     set: DurableProviderProxyOperationAuthority;
@@ -391,15 +415,17 @@ async function buildInheritedAuthority(
       operationRegistry: deps.operationRegistry,
       ...(deps.onProviderEvent === undefined ? {} : { onProviderEvent: deps.onProviderEvent }),
     });
-    const installation = await base.installRecoveryCredential(signal);
-    switch (installation.kind) {
-      case 'installed':
-      case 'retryable':
-      case 'refused':
-        break;
-      case 'cancelled':
-        signal.throwIfAborted();
-        throw new Error('provider_proxy_recovery_credential_install_cancelled');
+    if (via !== 'transfer-before-serving') {
+      const installation = await base.installRecoveryCredential(signal);
+      switch (installation.kind) {
+        case 'installed':
+        case 'retryable':
+        case 'refused':
+          break;
+        case 'cancelled':
+          signal.throwIfAborted();
+          throw new Error('provider_proxy_recovery_credential_install_cancelled');
+      }
     }
     const set = createProviderProxyOperationAuthority({
       base,
@@ -418,10 +444,11 @@ async function buildInheritedAuthority(
 
 async function redeemCapsule(
   capsulePath: string,
-  capsule: HandoffCapsuleV3,
+  capsule: RedeemableHandoffCapsule,
   expectedIdentity: ProviderProxySetIdentity | null,
   deps: ProviderProxySetInheritanceDeps,
   signal: AbortSignal,
+  via: ProviderProxySetInheritanceRoute,
 ): Promise<ProviderProxySetRedemptionAttempt> {
   const redemption = await redeemProviderProxyControl(
     capsule,
@@ -444,7 +471,15 @@ async function redeemCapsule(
     }
     throw inheritanceRefusalError(redemption.refusal);
   }
-  const inherited = await buildInheritedAuthority(redemption, capsulePath, capsule, expectedIdentity, deps, signal);
+  const inherited = await buildInheritedAuthority(
+    redemption,
+    capsulePath,
+    capsule,
+    expectedIdentity,
+    deps,
+    signal,
+    via,
+  );
   return { kind: 'redeemed', ...inherited };
 }
 
@@ -454,12 +489,6 @@ async function redeem(
   signal: AbortSignal,
 ): Promise<ProviderProxySetInheritanceOutcome> {
   const { operation, locator } = reference;
-  // Refused before the capsule is even read, because reading it is one step from dialing it. Not-bequeathed is
-  // the honest outcome rather than an error: there is genuinely nothing here this build may inherit, and the
-  // caller already knows how to settle a set it could not take over.
-  if (classifyProviderProxySetInheritance(operation, deps.coordinatorIdentity.buildSetId).kind === 'refused') {
-    return { kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' };
-  }
   const capsulePath = currentHandoffCapsulePath(
     {
       generation: deps.coordinatorIdentity.generation,
@@ -475,9 +504,21 @@ async function redeem(
     uid: process.getuid?.() ?? 0,
   });
   if (capsule === null) return { kind: 'not-bequeathed', reason: NOTHING_TO_INHERIT_REASON };
-  const verdict = classifyProviderProxySetInheritance(capsule, deps.coordinatorIdentity.buildSetId);
+  const verdict = classifyProviderProxySetInheritance(
+    capsule,
+    deps.coordinatorIdentity.buildSetId,
+    deps.acceptsControllerTransfer,
+  );
   if (verdict.kind === 'refused') {
-    return { kind: 'not-bequeathed', reason: 'the capsule predates the process incarnation token' };
+    // Not-bequeathed is the honest outcome rather than an error: there is genuinely nothing here this build may
+    // inherit, and the caller already knows how to settle a set it could not take over.
+    return {
+      kind: 'not-bequeathed',
+      reason:
+        verdict.reason === 'other-build'
+          ? 'the set is controlled by another build'
+          : 'the capsule predates the process incarnation token',
+    };
   }
   const inheritableCapsule = verdict.candidate;
   if (!capsuleMatchesLocator(inheritableCapsule, reference, deps.coordinatorIdentity)) {
@@ -489,6 +530,7 @@ async function redeem(
     providerProxySetIdentityFromRecord(reference),
     deps,
     signal,
+    verdict.via,
   );
   if (redemption.kind !== 'redeemed') return redemption;
   return {
@@ -569,6 +611,20 @@ export async function attemptProviderProxySetInheritance(
   throw new Error(`provider_proxy_inheritance_reap_${reapResult.kind}`);
 }
 
+/** A discovered capsule was already classified inheritable; this recovers which route made it so. */
+function discoveredCapsuleRoute(
+  capsule: RedeemableHandoffCapsule,
+  deps: ProviderProxySetInheritanceDeps,
+): ProviderProxySetInheritanceRoute {
+  const verdict = classifyProviderProxySetInheritance(
+    capsule,
+    deps.coordinatorIdentity.buildSetId,
+    deps.acceptsControllerTransfer,
+  );
+  if (verdict.kind === 'refused') throw new Error('provider_proxy_discovered_capsule_no_longer_inheritable');
+  return verdict.via;
+}
+
 /**
  * The narrow capability startup saga reconciliation and generic running-job recovery drive: attempt
  * inheritance for one locator, given only the locator, store, and caller signal. Everything
@@ -584,7 +640,7 @@ export interface ProviderProxySetInheritance {
     signal: AbortSignal,
   ): Promise<ProviderProxySetInheritanceOutcome>;
   redeemDiscoveredCapsule(
-    capsule: HandoffCapsuleV3,
+    capsule: RedeemableHandoffCapsule,
     capsulePath: string,
     signal: AbortSignal,
   ): Promise<ProviderProxySetRedemptionOutcome>;
@@ -597,6 +653,7 @@ export type CreateProviderProxySetInheritanceOptions = Readonly<{
   containmentProver: ProviderProxySetContainmentProver;
   reapRecordedContainment: ProviderProxySetRecordedContainmentReaper;
   onProviderEvent?(): ProviderEventHandler;
+  acceptsControllerTransfer?(capsule: RedeemableHandoffCapsule): ControllerTransferAcceptance;
   /** Where a successfully inherited set is folded in so it participates in this coordinator's own later
    *  shutdown. */
   registerInheritedSet(
@@ -640,6 +697,9 @@ export function createProviderProxySetInheritance(
       operationRegistry: options.operationRegistry,
       collectContainmentProof: options.containmentProver.collectContainmentProof,
       reapRecordedContainment: options.reapRecordedContainment,
+      ...(options.acceptsControllerTransfer === undefined
+        ? {}
+        : { acceptsControllerTransfer: options.acceptsControllerTransfer }),
       ...(registerInheritedSet === undefined ? {} : { registerInheritedSet }),
       ...(options.onProviderEvent === undefined ? {} : { onProviderEvent: options.onProviderEvent }),
     };
@@ -685,7 +745,15 @@ export function createProviderProxySetInheritance(
         time: options.runtime.time,
         signal,
         timeoutMs: INHERITANCE_REDEMPTION_DEADLINE_MS,
-        produce: (bounded) => redeemCapsule(capsulePath, capsule, null, inheritanceDeps, bounded),
+        produce: (bounded) =>
+          redeemCapsule(
+            capsulePath,
+            capsule,
+            null,
+            inheritanceDeps,
+            bounded,
+            discoveredCapsuleRoute(capsule, inheritanceDeps),
+          ),
       });
       if (
         deadline.kind === 'unavailable' &&

@@ -4,7 +4,7 @@ import {
   ProviderOperationTerminalMetadataError,
   type ProviderOperationTerminalizationResult,
 } from '../../jobs/provider-operation-terminalization.js';
-import type { HandoffCapsuleV3 } from '../../provider-proxy/handoff-capsule.js';
+import type { RedeemableHandoffCapsule } from '../../provider-proxy/handoff-capsule.js';
 import type { OperationIdentity } from '../../provider-proxy/protocol.js';
 import type { Database } from '../../store/db.js';
 import { ProviderOperationJournalError } from '../../store/provider-operation-journal.js';
@@ -92,7 +92,7 @@ type SetInheritanceInput = Readonly<{
 }>;
 
 type CapsuleRedemptionInput = Readonly<{
-  capsule: HandoffCapsuleV3;
+  capsule: RedeemableHandoffCapsule;
   capsulePath: string;
   signal: AbortSignal;
 }>;
@@ -238,7 +238,7 @@ export interface ProviderProxyRecoveryFatalSink {
 export type ProviderProxyRecoveryExactContext = Readonly<{
   operation?: OperationIdentity;
   setIdentity?: ProviderProxySetIdentity;
-  capsule?: HandoffCapsuleV3;
+  capsule?: RedeemableHandoffCapsule;
   retiredSources?: Set<string>;
 }>;
 

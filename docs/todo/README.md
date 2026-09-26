@@ -53,7 +53,7 @@ from an unexpected result on its own. Both halves live in
 than wait on them. The decision leaves one constraint in its place: a CLI surface may not be changed so
 that a stale reader's existing expectation silently becomes wrong.
 
-**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` and `result-artifact-availability` consume that rule. Phase 6 host transfer remains in [`cross-build-provider-host-succession.md`](./cross-build-provider-host-succession.md).
+**What the compatibility decision left behind.** `build-identity-and-upgrade` asks for a repository-wide mixed-build record gate. `jobs-read-contract-schema-first` and `result-artifact-availability` consume that rule.
 
 **Relationships that matter before starting.** `legacy-v1-capsule-retirement` and
 `foreign-capsule-retirement-terminal-recovery`
@@ -120,7 +120,6 @@ provider-socket lifecycle remains open.
 | [`quarantine-terminal-without-session.md`](./quarantine-terminal-without-session.md) | The counted rows are from the retired flat store, not the active epoch. Automatic re-evaluation of stale quarantine rows is absent; `LifecycleReactor.enforceRetention` in `src/sessions/lifecycle-reactor.ts` still retries a changed-login binding refusal. Per-row operator clear is not an unattended exit under principle 12. |
 | [`legacy-v1-capsule-retirement.md`](./legacy-v1-capsule-retirement.md) | V1, recycled-pid V2 and persistently unknown observations still cannot prove absence. The proposed operator-command exit is withdrawn by principle 12; decide another exit or an explicit bounded-residue policy. |
 | [`foreign-capsule-retirement-terminal-recovery.md`](./foreign-capsule-retirement-terminal-recovery.md) | A crash-exact retirement receipt remains unbuilt; G3 instead keeps bounded, non-capacity-consuming residue for a later boot to rescan. The registry now has thirteen boundaries including `provider-operation-unreadable`; a capsule boundary would be a separate addition. Admission-hold's operator clear is no longer a settled unattended exit. |
-| [`cross-build-provider-host-succession.md`](./cross-build-provider-host-succession.md) | Phase 6: transfer live provider hosts across compatible builds with authenticated receipts, recovery grants, and continuous output/cancellation. |
 | [`no-store-migration-path.md`](./no-store-migration-path.md) | Store data migration across formats remains unbuilt. Historical readers and retained results preserve job access without copying old rows into a new store. |
 | [`store-format-routing.md`](./store-format-routing.md) | **Dormant:** fingerprint-keyed multi-format routing remains unbuilt. Its flat `formats/<fingerprint>/store.db` layout predates write-once epochs and needs redesign. `routeOrOpenBackendStoreAtStartup` in `src/store/startup-store-routing.ts` owns startup routing, the pre-compact hook uses `resolveCurrentStoreDbPath` in `clients/hooks/lib/store-epoch.mjs`, and `recovery_quarantine` is already in the current format. |
 

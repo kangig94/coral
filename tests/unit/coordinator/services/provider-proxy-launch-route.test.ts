@@ -16,7 +16,10 @@ import type { WorkflowExecutionPort } from '#src/workflow/execution-contract.js'
 import { parseExpression } from '#src/workflow/parser.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testProjectPrincipal } from '#tests/helpers/principal.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 const TEST_WORKSPACE = mkdtempSync(join(tmpdir(), 'coral-provider-proxy-launch-route-'));
 
@@ -66,6 +69,7 @@ function authority(): DurableProviderProxyOperationAuthority {
   return {
     proxyInstanceId,
     providerHosts: unexercisedProviderHostControls,
+    ...unexercisedControllerSuccessionControls,
     faulted: new Promise<never>(() => {}),
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,

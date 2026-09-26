@@ -3,6 +3,7 @@ import type { ProviderEventBody } from '../providers/contract.js';
 import { createBootstrapNonceCredential, type ProxyBootstrapCapsule } from './bootstrap-capsule.js';
 import { ControlLeaseEvidence } from './control-lease.js';
 import {
+  activeControlHolder,
   controlTenancyHolderOf,
   createControlEndpoint,
   type ControlChallengeAuthority,
@@ -10,6 +11,14 @@ import {
   type ControlEndpointTimer,
   type ControlMethod,
 } from './control-endpoint.js';
+import {
+  assertCompatibleControlGeneration,
+  controllerBuildOf,
+  controllerTransferParamsSchema,
+  controllerTransferResultSchema,
+  createControllerBuildLedger,
+  requireInstallerBuild,
+} from './controller-succession.js';
 import {
   createGrantRegistry,
   proxyHandoffRedeemFieldsSchema,
@@ -122,6 +131,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
   const grants = createGrantRegistry(mintReceipt, {
     mayReplaceRedemption: () => !evidence.isControlLive(clock.now()),
   });
+  const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
 
   const supervisor = new OperationSupervisor({
     host,
@@ -209,9 +219,12 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         handle: (params) => {
           const request = openParamsSchema.parse(params);
           bootstrapNonce.spend(request.bootstrapNonce);
+          // Bootstrap control belongs to the host's own build: only its spawner holds the nonce.
           assertNamedCoordinatorBuild(request.coordinator);
+          const holder = controlTenancyHolderOf(request.coordinator);
+          controllers.admit(holder, controllerBuildOf(request.coordinator));
           return {
-            holder: controlTenancyHolderOf(request.coordinator),
+            holder,
             fields: { proxy: identity },
           };
         },
@@ -500,7 +513,7 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
       'handoff.install.v1',
       {
         authority: 'active',
-        handle: (params) => {
+        handle: (params, authorization) => {
           const request = handoffInstallParamsSchema.parse(params);
           assertNamedSet(request);
           return grants.install({
@@ -509,7 +522,19 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
             ...setIdentity,
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
+            controllerBuild: requireInstallerBuild(controllers, activeControlHolder(authorization), null),
           });
+        },
+      },
+    ],
+    [
+      'controller-transfer.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = controllerTransferParamsSchema.parse(params);
+          assertCompatibleControlGeneration(request.controlGeneration);
+          return controllerTransferResultSchema.parse(grants.authorizeTransfer(request));
         },
       },
     ],
@@ -531,13 +556,15 @@ export function createProxy<Scope extends symbol>(options: ProxyOptions<Scope>):
         handle: (params) => {
           const request = handoffRedeemParamsSchema.parse(params);
           assertNamedSet(request);
-          assertNamedCoordinatorBuild(request.successor);
+          const holder = controlTenancyHolderOf(request.successor);
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successor: controlTenancyHolderOf(request.successor),
+            successor: holder,
+            successorBuild: controllerBuildOf(request.successor),
             binding: setIdentity,
           });
+          controllers.admit(holder, redemption.successorBuild);
           return {
             holder: controlTenancyHolderOf(request.successor),
             fields: proxyHandoffRedeemFieldsSchema.parse({

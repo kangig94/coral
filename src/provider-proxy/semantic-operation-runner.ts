@@ -627,7 +627,11 @@ export function createSemanticOperationRuntime(options: SemanticOperationRuntime
       // The stored activation ACK makes a retry return before reaching `host.start`, so nothing outside this
       // single call ever resolves `entry.done` concurrently with it.
       while (true) {
-        entry.abortController.signal.throwIfAborted();
+        // A stop against a shared host is answered by the provider itself: the kernel observes the same signal,
+        // runs the interrupt handshake, and still yields events until the terminal that settles it.
+        if (entry.pendingStopCause === null || entry.cancellationMode !== 'shared-acknowledged-interrupt') {
+          entry.abortController.signal.throwIfAborted();
+        }
         const step = await Promise.race([
           iterator.next(),
           entry.transportClosed.then((error) => {

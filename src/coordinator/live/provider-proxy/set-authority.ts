@@ -6,11 +6,19 @@ import {
   successionOperationRegisterParamsSchema,
   successionOperationRegisterResultSchema,
   CURRENT_HANDOFF_CAPSULE_VERSION,
+  handoffCapsuleControllerBuildSetId,
   writeHandoffCapsuleFile,
-  type HandoffCapsuleV3,
+  type HandoffCapsuleV4,
+  type RedeemableHandoffCapsule,
   proxyHandoffInstallParamsSchema,
   canonicalHandoffOperationSet,
 } from '../../../provider-proxy/handoff-capsule.js';
+import {
+  PROVIDER_PROXY_CONTROL_GENERATION,
+  controllerTransferParamsSchema,
+  controllerTransferResultSchema,
+  type ControllerBuild,
+} from '../../../provider-proxy/controller-succession.js';
 import type { ProviderProxyOperationSnapshot } from '../../services/operation-registry.js';
 import { ProviderHostOwnerTornDown } from '../../services/provider-host-administration.js';
 import {
@@ -100,10 +108,37 @@ export type SuccessionOperationRegistrationOutcome =
   | Readonly<{ kind: 'registered' }>
   | Exclude<RecoveryCredentialInstallOutcome, { kind: 'installed' }>;
 
+type ControllerTransferRole = 'guardian' | 'proxy';
+
+export type ControllerTransferIncident = Readonly<{
+  role: ControllerTransferRole | RecoveryCredentialInstallRole;
+  method: 'guardian.controller-transfer.v1' | 'controller-transfer.v1' | RecoveryCredentialInstallIncident['method'];
+  exchange: ControlInstallIncidentExchange;
+}>;
+
+/**
+ * What asking a host to accept another build as its next controller produced. `legacy-host` is the one answer
+ * that no retry can change: a role that does not serve the transfer method predates controller succession.
+ */
+export type ControllerTransferOutcome =
+  | Readonly<{ kind: 'authorized'; recoveryGrantId: string }>
+  | Readonly<{ kind: 'legacy-host'; role: ControllerTransferRole }>
+  | Readonly<{ kind: 'retryable'; incident: ControllerTransferIncident }>
+  | Readonly<{ kind: 'refused'; incident: ControllerTransferIncident }>
+  | Readonly<{ kind: 'cancelled' }>;
+
 export interface ProviderProxySetRecoveryAuthority extends ProviderProxySetAuthority {
   readonly autonomousDeadline: ProviderProxyAutonomousDeadline;
   readonly controlReattachment: ProviderProxySetControlReattachment;
   installRecoveryCredential(signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome>;
+  /**
+   * Authorizes `successor` to redeem this set's recovery grant for one succession attempt. The grant keeps
+   * authorizing this controller's own build, so a successor that fails before it serves can be reclaimed.
+   */
+  authorizeControllerTransfer(
+    transfer: Readonly<{ attemptId: string; successor: ControllerBuild }>,
+    signal: AbortSignal,
+  ): Promise<ControllerTransferOutcome>;
   registerSuccessionOperation(
     operation: OperationIdentity,
     signal?: AbortSignal,
@@ -171,8 +206,8 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
   reaperIdentity: ReaperIdentity;
   proxyIdentityFields: ProxyIdentity;
   heartbeats: ProviderProxyRoleHeartbeats;
-  /** This coordinator's own identity — named on every install call so a peer that checks it (build match
-   *  only; see `assertNamedCoordinatorBuild`) can report a disagreement instead of installing blind. */
+  /** This coordinator's own identity — named on every install call so a peer can refuse a grant that names a
+   *  build other than the one it admitted this controller under (`requireInstallerBuild`). */
   coordinatorIdentity: CoordinatorIdentity;
   /** Where fresh acquisition writes this set's recovery capsule. Precomputed by the caller
    *  (`establishControl`), which already resolves `baseDir`/generation/flavor the same way every other
@@ -189,7 +224,7 @@ type ProviderProxySetAuthorityCommonDependencies = Readonly<{
 export type ProviderProxySetAuthorityDependencies = ProviderProxySetAuthorityCommonDependencies &
   (
     | Readonly<{ recoveryCapsule?: never; recoveryOperations?: never }>
-    | Readonly<{ recoveryCapsule: HandoffCapsuleV3; recoveryOperations: readonly OperationIdentity[] }>
+    | Readonly<{ recoveryCapsule: RedeemableHandoffCapsule; recoveryOperations: readonly OperationIdentity[] }>
   );
 
 /**
@@ -223,12 +258,13 @@ export function createProviderProxySetAuthority(
   });
 
   // Distinct from `deps.recoveryCapsule` on purpose: this one is *this* build's, and the writer accepts only
-  // V3. Conflating them let a redeemed V1 reach a write that must never emit a shape this build cannot verify.
-  let mintedRecoveryCapsule: HandoffCapsuleV3 | null = null;
-  const mintRecoveryCapsule = (): HandoffCapsuleV3 => {
+  // V4. Conflating them let a redeemed V1 reach a write that must never emit a shape this build cannot verify.
+  let mintedRecoveryCapsule: HandoffCapsuleV4 | null = null;
+  const mintRecoveryCapsule = (): HandoffCapsuleV4 => {
     if (mintedRecoveryCapsule !== null) return mintedRecoveryCapsule;
     mintedRecoveryCapsule = {
       version: CURRENT_HANDOFF_CAPSULE_VERSION,
+      controllerBuildSetId: coordinatorIdentity.buildSetId,
       grantId: runtime.ids.uuid(),
       secret: runtime.ids.randomBytes(32).toString('hex'),
       generation: guardianIdentity.generation,
@@ -257,8 +293,9 @@ export function createProviderProxySetAuthority(
   let recoveryCredentialInstallState: RecoveryCredentialInstallState = { kind: 'idle' };
 
   const performRecoveryCredentialInstall = async (): Promise<RecoveryCredentialInstallOutcome> => {
-    const capsule = deps.recoveryCapsule ?? mintRecoveryCapsule();
-    const operations = deps.recoveryCapsule === undefined ? [] : canonicalHandoffOperationSet(deps.recoveryOperations);
+    const inherited = deps.recoveryCapsule;
+    const capsule = inherited ?? mintRecoveryCapsule();
+    const operations = inherited === undefined ? [] : canonicalHandoffOperationSet(deps.recoveryOperations);
     const secretSha256 = handoffSecretDigest(capsule.secret);
     const guardianReaperInstallPayload = guardianReaperHandoffInstallParamsSchema.parse({
       grantId: capsule.grantId,
@@ -332,8 +369,8 @@ export function createProviderProxySetAuthority(
     if (refusal !== undefined && refusal !== null) return refusal;
     const retryable = outcomes.find((outcome) => outcome?.kind === 'retryable');
     if (retryable !== undefined && retryable !== null) return retryable;
-    if (deps.recoveryCapsule === undefined) {
-      writeHandoffCapsuleFile(handoffCapsulePath, capsule, {
+    if (inherited === undefined) {
+      writeHandoffCapsuleFile(handoffCapsulePath, mintRecoveryCapsule(), {
         storage: runtime.storage,
         uid: process.getuid?.() ?? 0,
       });
@@ -343,12 +380,29 @@ export function createProviderProxySetAuthority(
         run: () => runtime.storage.rmSync(handoffCapsulePath, { force: true }),
       });
     }
+    if (inherited !== undefined && !capsuleNamesThisController(inherited)) {
+      // The roles now authorize only this controller's build, so the durable half must say the same before
+      // a later coordinator of this build decides whether it may dial the set.
+      writeHandoffCapsuleFile(
+        handoffCapsulePath,
+        {
+          ...inherited,
+          version: CURRENT_HANDOFF_CAPSULE_VERSION,
+          controllerBuildSetId: coordinatorIdentity.buildSetId,
+        },
+        { storage: runtime.storage, uid: process.getuid?.() ?? 0 },
+      );
+    }
     const receipt = Object.freeze({
       kind: 'installed-recovery-credential',
       grantId: capsule.grantId,
     }) as InstalledRecoveryCredential;
     return { kind: 'installed', receipt };
   };
+
+  const capsuleNamesThisController = (capsule: RedeemableHandoffCapsule): boolean =>
+    capsule.version === CURRENT_HANDOFF_CAPSULE_VERSION &&
+    handoffCapsuleControllerBuildSetId(capsule) === coordinatorIdentity.buildSetId;
 
   const installRecoveryCredential = async (signal: AbortSignal): Promise<RecoveryCredentialInstallOutcome> => {
     if (signal.aborted) return { kind: 'cancelled' };
@@ -372,6 +426,57 @@ export function createProviderProxySetAuthority(
     const completion = recoveryCredentialInstallState.completion;
     const outcome = await completion;
     return signal.aborted ? { kind: 'cancelled' } : outcome;
+  };
+
+  const transferExchangeOutcome = (
+    role: ControllerTransferRole,
+    method: 'guardian.controller-transfer.v1' | 'controller-transfer.v1',
+    exchange: ControlExchange,
+    expected: Readonly<{ grantId: string; attemptId: string }>,
+  ): Exclude<ControllerTransferOutcome, { kind: 'authorized' | 'cancelled' }> | null => {
+    if (controlMethodAvailability(exchange).kind === 'method-absent') return { kind: 'legacy-host', role };
+    if (exchange.kind !== 'response') return { kind: 'retryable', incident: { role, method, exchange } };
+    if (exchange.response.kind === 'refusal') {
+      return {
+        kind: 'refused',
+        incident: { role, method, exchange: { kind: 'response', response: exchange.response } },
+      };
+    }
+    const acknowledged = controllerTransferResultSchema.parse(exchange.response.value);
+    if (acknowledged.grantId !== expected.grantId || acknowledged.attemptId !== expected.attemptId) {
+      throw new Error('provider_proxy_controller_transfer_ack_mismatch');
+    }
+    return null;
+  };
+
+  const authorizeControllerTransfer = async (
+    transfer: Readonly<{ attemptId: string; successor: ControllerBuild }>,
+    signal: AbortSignal,
+  ): Promise<ControllerTransferOutcome> => {
+    const installation = await installRecoveryCredential(signal);
+    if (installation.kind === 'cancelled') return installation;
+    if (installation.kind !== 'installed') return installation;
+    const params = controllerTransferParamsSchema.parse({
+      grantId: installation.receipt.grantId,
+      attemptId: transfer.attemptId,
+      successor: transfer.successor,
+      controlGeneration: PROVIDER_PROXY_CONTROL_GENERATION,
+    });
+    const [guardianExchange, proxyExchange] = await Promise.all([
+      guardianClient.exchange('guardian.controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+      proxyClient.exchange('controller-transfer.v1', params, PROXY_CONTROL_RPC_TIMEOUT_MS),
+    ]);
+    if (signal.aborted) return { kind: 'cancelled' };
+    const outcomes = [
+      transferExchangeOutcome('guardian', 'guardian.controller-transfer.v1', guardianExchange, params),
+      transferExchangeOutcome('proxy', 'controller-transfer.v1', proxyExchange, params),
+    ];
+    const decisive =
+      outcomes.find((outcome) => outcome?.kind === 'legacy-host') ??
+      outcomes.find((outcome) => outcome?.kind === 'refused') ??
+      outcomes.find((outcome) => outcome?.kind === 'retryable');
+    if (decisive !== undefined && decisive !== null) return decisive;
+    return { kind: 'authorized', recoveryGrantId: installation.receipt.grantId };
   };
 
   const registerInstalledSuccessionOperation = async (
@@ -533,6 +638,7 @@ export function createProviderProxySetAuthority(
       },
     }),
     installRecoveryCredential,
+    authorizeControllerTransfer,
     registerSuccessionOperation,
     commitContainment,
     // The coarse compatibility result must not translate either unresolved outcome into completion.

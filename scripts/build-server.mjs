@@ -258,6 +258,8 @@ writeFileSync(
     accepts: [
       { owner: 'durable-cli', generation: 1 },
       { owner: 'child-principals', generation: 1 },
+      { owner: 'provider-operations', generation: 1 },
+      { owner: 'provider-proxy-sets', generation: 1 },
     ],
   }) + '\n',
 );

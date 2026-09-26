@@ -43,7 +43,11 @@ import {
   readProviderOperations,
   readProviderOperationsDue,
 } from '#src/store/provider-operation-journal.js';
-import type { HandoffCapsuleV1, HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import type {
+  HandoffCapsuleV1,
+  HandoffCapsuleV3,
+  RedeemableHandoffCapsule,
+} from '#src/provider-proxy/handoff-capsule.js';
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
 import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
@@ -246,7 +250,7 @@ function lifecycleFor(
       signal: AbortSignal,
     ) => Promise<ProviderProxySetContainmentEvidence>;
     redeemCapsule?: (
-      capsule: HandoffCapsuleV3,
+      capsule: RedeemableHandoffCapsule,
       path: string,
       signal: AbortSignal,
     ) => Promise<ProviderProxySetRedemptionOutcome>;
@@ -1697,5 +1701,33 @@ describe('production provider proxy startup classification', () => {
         capsuleExists: false,
       },
     });
+  });
+});
+
+describe('provider operation startup ownership across both startup hydrations', () => {
+  // Startup hydrates once before reconciliation and again after it. The binding prepared by the first pass still
+  // holds the job's permit, so the second pass restoring another one fails and fences a live operation.
+  it('reuses the binding the first hydration prepared instead of restoring a second permit', () => {
+    const record = providerOperationRecord('executing');
+    const db = createDb([record]);
+    const runtime = sandboxedRuntime(new VirtualTime());
+    const launchCoordinator = new LaunchCoordinator({ runtime });
+    const startupOwnership = createProviderOperationStartupOwnership({
+      runtime,
+      progressStore: startupProgressStore(db, [record]),
+      binding: launchCoordinator,
+      log: () => undefined,
+    });
+
+    const first = startupOwnership.hydrate(startupOwnership.snapshot());
+    const second = startupOwnership.hydrate(startupOwnership.snapshot());
+
+    expect(first.completion.kind).not.toBe('held');
+    expect(second.completion.kind).not.toBe('held');
+    expect(second.records[0]?.bindingDisposition.kind).not.toBe('refused');
+    expect(readProviderOperation(db, record.operation)?.retryNotBeforeMs).toBe(record.retryNotBeforeMs);
+    expect(
+      launchCoordinator.activeLaunchPermits().filter((permit) => permit.jobId === record.operation.jobId),
+    ).toHaveLength(1);
   });
 });

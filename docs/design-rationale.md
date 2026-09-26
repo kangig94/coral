@@ -553,7 +553,13 @@ Process absence does not prove a completed result is dispensable; unreadable byt
 
 Copying old rows into a new schema would change event ownership and still would not carry their processes. `JobLocationIndex` in `src/jobs/location-index.ts` binds observed ids to the originating epoch before a mint, and retained readers recover terminal records and artifacts from their original format. A mixed wait uses one sequence per full epoch key because journal sequence numbers from different epochs have no shared order. These records preserve a known job's identity even when its execution controller cannot be recovered.
 
-Cross-build provider-host transfer remains a separate protocol change in [`cross-build-provider-host-succession.md`](todo/cross-build-provider-host-succession.md). Until a host can accept a controller receipt and recover from a partial transfer, its owner must block immediate succession.
+### 13.5 Why a provider host changes controller but never build
+
+A running provider host cannot be relaunched without losing its turn, so an upgrade moves the authority to control it rather than the host. The host's build stays immutable provenance: it is what its processes run, from a retained plugin root that outlives the install that spawned it. The controller build is a separate, mutable fact the host records beside each recovery grant (`createControllerBuildLedger` in `src/provider-proxy/controller-succession.ts`). Folding the two together is what made every cross-build controller look like an impostor.
+
+The incumbent authorizes exactly one successor build per attempt, and only after the host holds the recovery grant that the successor will redeem (`authorizeControllerTransfer` in `src/coordinator/live/provider-proxy/set-authority.ts`). The incumbent gives up control only at commit, once the writer is parked, and reclaims it through its own grant if the commit fails, so a failed attempt always leaves one controller. The successor installs its own grant only after it serves (`createProviderHostTransfer` in `src/coordinator/succession/provider-host-transfer.ts`), so a successor that dies before serving leaves the incumbent's grant intact.
+
+A host that predates the transfer methods, a successor that does not declare the host control generation, or a job the saga does not describe returns `blocking` rather than a guess. That keeps the deferred path for anything the protocol cannot prove, and it is why the answer is decided per host rather than per build.
 
 ## 14. Cross-References
 

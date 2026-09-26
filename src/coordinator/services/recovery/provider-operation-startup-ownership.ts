@@ -83,6 +83,19 @@ type StartupPreparationRecord = Exclude<
   { phase: 'settlement-pending' | 'local-recovery-pending' | 'prestart-cleanup-pending' }
 >;
 
+type PreparedStartupOwnership = Extract<
+  ProviderOperationStartupRecordOwnership,
+  { phase: StartupPreparationRecord['phase'] }
+>;
+
+function isStartupPreparationRecord(record: ProviderOperationRecord): record is StartupPreparationRecord {
+  return (
+    record.phase !== 'settlement-pending' &&
+    record.phase !== 'local-recovery-pending' &&
+    record.phase !== 'prestart-cleanup-pending'
+  );
+}
+
 type StartupOwnershipBinding = Pick<
   JobLaunchRecoveryPort,
   'restoreActiveLaunch' | 'holdUndecidedProviderOperationLaunch' | 'reclaimLaunchPermit'
@@ -154,6 +167,9 @@ export function createProviderOperationStartupOwnership(
 ): ProviderOperationStartupOwnershipService {
   const { progressStore, runtime, log, binding } = deps;
   const permits = new Map<string, StartupPermitOwnership>();
+  // A binding prepared here owns its permit from then on; hydrating the same operation again must not
+  // restore a second permit for a job whose first one the binding still holds.
+  const preparedBindings = new Map<string, PreparedStartupOwnership>();
   const quarantine = new RecoveryQuarantineStore(progressStore.getDb(), runtime.time);
 
   for (const entry of quarantine.list().filter(({ boundary }) => boundary === SETTLED_UNBOUND_STATUS_BOUNDARY)) {
@@ -412,12 +428,14 @@ export function createProviderOperationStartupOwnership(
     const disposition = binding.prepareProviderOperationBinding(permit, record.operation);
     if (disposition.kind !== 'refused') {
       permits.delete(record.operation.jobId);
-      return {
+      const ownership: PreparedStartupOwnership = {
         phase: record.phase,
         operation: record.operation,
         restoredPermit: permit,
         bindingDisposition: disposition,
       };
+      preparedBindings.set(providerOperationStartupIdentityKey(record.operation), ownership);
+      return ownership;
     }
     const dispositionHold = hold(record, disposition.reason);
     return resolveHold(record, permit, dispositionHold, {
@@ -429,6 +447,11 @@ export function createProviderOperationStartupOwnership(
 
   const hydrateRecord = (snapshotRecord: ProviderOperationRecord): ProviderOperationStartupRecordOwnership => {
     const snapshotRestoresPermit = phaseRestoresPermit(snapshotRecord.phase);
+    const prepared = preparedBindings.get(providerOperationStartupIdentityKey(snapshotRecord.operation));
+    if (prepared !== undefined && snapshotRestoresPermit) {
+      const current = readProviderOperation(progressStore.getDb(), snapshotRecord.operation);
+      if (current !== null && isStartupPreparationRecord(current)) return { ...prepared, phase: current.phase };
+    }
     let existingPermit = permits.get(snapshotRecord.operation.jobId);
     if (snapshotRecord.phase === 'local-recovery-pending' && existingPermit?.kind === 'undecided-provider-operation') {
       permits.delete(snapshotRecord.operation.jobId);

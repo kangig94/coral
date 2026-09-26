@@ -11,7 +11,7 @@ import {
   writeHandoffCapsuleFile,
   type HandoffCapsuleV1,
   type HandoffCapsuleV2,
-  type HandoffCapsuleV3,
+  type HandoffCapsuleV4,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { encodeProviderProxySetAddress } from '#src/provider-proxy/set-address.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -21,14 +21,16 @@ import {
   formatProviderProxySetHolderStatusDirect,
 } from '#src/cli/commands/backend.js';
 
-function testCapsule(runDir: string, pid: number): HandoffCapsuleV3 {
+function testCapsule(runDir: string, pid: number): HandoffCapsuleV4 {
+  const buildSetId = randomUUID();
   return {
     version: CURRENT_HANDOFF_CAPSULE_VERSION,
     grantId: randomUUID(),
     secret: 'a'.repeat(64),
     generation: 'gen2',
     flavor: 'prod',
-    buildSetId: randomUUID(),
+    buildSetId,
+    controllerBuildSetId: buildSetId,
     hostFingerprint: pid.toString(16).padStart(64, '0'),
     guardianInstanceId: randomUUID(),
     reaperInstanceId: randomUUID(),
@@ -101,7 +103,7 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     const malformedIdentity = testCapsule(runDir, 300);
     const malformedPath = providerHandoffCapsulePath(malformedIdentity, malformedIdentity.version, { baseDir });
     runtime.storage.writeAtomicDurableSync(malformedPath, '{', { encoding: 'utf-8', mode: 0o600 });
-    const futurePath = join(runDir, `provider-1${'a'.repeat(23)}.handoff.v4.json`);
+    const futurePath = join(runDir, `provider-1${'a'.repeat(23)}.handoff.v5.json`);
     runtime.storage.writeAtomicDurableSync(futurePath, '{', { encoding: 'utf-8', mode: 0o600 });
 
     const readings = await readProviderProxySetHolderStatusDirect(runtime);

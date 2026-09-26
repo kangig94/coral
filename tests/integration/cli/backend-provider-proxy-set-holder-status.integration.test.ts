@@ -14,7 +14,7 @@ import {
 } from '#src/cli/commands/backend.js';
 import { providerHandoffCapsulePath } from '#src/infra/path/index.js';
 import { createControlEndpoint, type ControlChallengeAuthority } from '#src/provider-proxy/control-endpoint.js';
-import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV4 } from '#src/provider-proxy/handoff-capsule.js';
 import { createControlHolderAuthority } from '#src/provider-proxy/holder-lifecycle.js';
 import { runtimeControlTimer } from '#src/provider-proxy/role-spawn.js';
 import { createRealRuntime } from '#src/runtime/real.js';
@@ -136,13 +136,15 @@ describe('readProviderProxySetHolderStatusDirect', () => {
     let closeReaper: (() => Promise<void>) | null = await startBareReaper(reaperSocket, timer);
 
     try {
-      const capsule: HandoffCapsuleV3 = {
+      const buildSetId = randomUUID();
+      const capsule: HandoffCapsuleV4 = {
         version: CURRENT_HANDOFF_CAPSULE_VERSION,
         grantId: randomUUID(),
         secret: 'a'.repeat(64),
         generation: 'gen2',
         flavor: 'prod',
-        buildSetId: randomUUID(),
+        buildSetId,
+        controllerBuildSetId: buildSetId,
         hostFingerprint: 'b'.repeat(64),
         guardianInstanceId: randomUUID(),
         reaperInstanceId: randomUUID(),

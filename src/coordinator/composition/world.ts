@@ -3,6 +3,9 @@ import { join } from 'node:path';
 
 import { type PluginRegistry, createPluginRegistry } from '../../infra/plugin-registry.js';
 import { pluginRootNamespace } from '../../infra/plugin-identity.js';
+import { validatedRetainedBuildRoot } from '../../infra/retained-build-root.js';
+import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
+import { acceptedControllerTransferHandsCapsule } from '../succession/provider-host-transfer.js';
 import { ProviderRegistry } from '../../providers/registry.js';
 import type { HostRef } from '../../providers/contract.js';
 import { providerScopeSchema, type ProviderScope } from '../../infra/provider-scope.js';
@@ -488,6 +491,7 @@ export function createCoordinatorWorld(
       carrierBlocksRetirement,
       proxySetAcquisition: {
         pluginRoot,
+        retainedHostRoot: () => validatedRetainedBuildRoot(runtime, buildSetId),
         identity: { instanceId, buildSetId, flavor },
         operationRegistry,
         custody: () => {
@@ -524,6 +528,13 @@ export function createCoordinatorWorld(
       runtime,
       identity: { instanceId, buildSetId, flavor },
       operationRegistry,
+      acceptsControllerTransfer: (capsule) =>
+        acceptedControllerTransferHandsCapsule(
+          runtime,
+          buildSetId,
+          currentSuccessionAttemptChild()?.attemptId ?? null,
+          capsule,
+        ),
       containmentProver: providerProxySetContainmentProver,
       reapRecordedContainment,
       ...(options.buildProviderEventHandler === undefined

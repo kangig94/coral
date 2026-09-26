@@ -43,6 +43,7 @@ export type StartupRecoveryContext = {
   log: (message: string) => void;
   coordinatorCommit: CommitEventsFn;
   interruptedAppServerReason?: InterruptedAppServerReason;
+  transferredJobIds?: ReadonlySet<string>;
 };
 
 export type RunCoordinatorStartupRecoveryFn = (ctx: StartupRecoveryContext) => Promise<JobsStartupRecoveryDisposition>;
@@ -290,7 +291,10 @@ export function createCoordinatorStartupRecovery(
           : [],
       ),
     ]);
-    const recoveryItems = walkedRecoveryItems.filter((item) => !sagaOwnedJobIds.has(item.jobId));
+    const transferredJobIds = ctx.transferredJobIds ?? new Set<string>();
+    const recoveryItems = walkedRecoveryItems.filter(
+      (item) => !sagaOwnedJobIds.has(item.jobId) && !transferredJobIds.has(item.jobId),
+    );
     const snapshot = buildRecoverySnapshot(recoveryItems, runtime.process);
     const plan = planRecovery(snapshot);
     const itemsByJobId = new Map(recoveryItems.map((item) => [item.jobId, item]));

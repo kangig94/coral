@@ -41,7 +41,12 @@ import type { ProviderProxySetAuthority } from './authority.js';
 import type { ProviderProxySetRecoveryAuthority } from './set-authority.js';
 
 export interface ProviderProxyOperationAuthority
-  extends ProviderProxySetAuthority, Pick<ProviderProxySetRecoveryAuthority, 'autonomousDeadline'> {
+  extends
+    ProviderProxySetAuthority,
+    Pick<
+      ProviderProxySetRecoveryAuthority,
+      'autonomousDeadline' | 'installRecoveryCredential' | 'authorizeControllerTransfer'
+    > {
   readonly setIdentity: ProviderProxySetIdentity;
   registerSuccessionOperation: ProviderProxySetRecoveryAuthority['registerSuccessionOperation'];
 }
@@ -181,7 +186,11 @@ export function createProviderProxyOperationAuthority(deps: {
   base: ProviderProxySetAuthority &
     Pick<
       ProviderProxySetRecoveryAuthority,
-      'autonomousDeadline' | 'controlReattachment' | 'registerSuccessionOperation'
+      | 'autonomousDeadline'
+      | 'controlReattachment'
+      | 'registerSuccessionOperation'
+      | 'installRecoveryCredential'
+      | 'authorizeControllerTransfer'
     >;
   setIdentity: ProviderProxySetIdentity;
   clients: ProviderProxyRoleClients<ControlClient>;

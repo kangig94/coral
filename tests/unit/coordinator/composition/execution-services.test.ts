@@ -38,7 +38,7 @@ import { backendLog } from '#src/infra/backend-log.js';
 import { JobStore } from '#src/jobs/store.js';
 import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { heartbeatObservationFromExchange } from '#src/provider-proxy/heartbeat-observation.js';
-import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
+import { CURRENT_HANDOFF_CAPSULE_VERSION, type HandoffCapsuleV4 } from '#src/provider-proxy/handoff-capsule.js';
 import {
   CORAL_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS_ENV,
   MAX_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS,
@@ -71,7 +71,10 @@ import { seedTestSessionProjection } from '#tests/helpers/session.js';
 import { providerOperationRecord } from '#tests/unit/store/provider-operation-fixtures.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
 import { createProviderOperationStartupOwnership } from '#src/coordinator/services/recovery/provider-operation-startup-ownership.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 /** The build these fixture worlds belong to; capsules built from the same fixtures are inheritable, not foreign. */
 const FIXTURE_BUILD_SET_ID = '00000000-0000-4000-8000-000000000004';
@@ -213,6 +216,7 @@ describe('provider proxy operation routing', () => {
     const base = {
       proxyInstanceId: setIdentity.proxyInstanceId,
       providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
       get autonomousDeadline() {
         return deadline;
       },
@@ -355,6 +359,7 @@ async function createSharedSetHarness(control: SharedSetControl) {
     base: {
       proxyInstanceId: setIdentity.proxyInstanceId,
       providerHosts: unexercisedProviderHostControls,
+      ...unexercisedControllerSuccessionControls,
       autonomousDeadline: TEST_AUTONOMOUS_DEADLINE,
       stopAndReap,
       commitContainment,
@@ -1416,13 +1421,14 @@ describe('execution services provider-proxy heartbeat-hold composition', () => {
 
     const setIdentity = providerProxySetIdentityFromRecord(providerOperationRecord('executing'));
     const faults = createProviderProxyAuthorityFaultLatch();
-    const recoveryCapsule: HandoffCapsuleV3 = {
+    const recoveryCapsule: HandoffCapsuleV4 = {
       version: CURRENT_HANDOFF_CAPSULE_VERSION,
       grantId: randomUUID(),
       secret: 'f'.repeat(64),
       generation: 'gen2',
       flavor: 'prod',
       buildSetId: setIdentity.buildSetId,
+      controllerBuildSetId: setIdentity.buildSetId,
       hostFingerprint: setIdentity.hostFingerprint,
       guardianInstanceId: setIdentity.guardianInstanceId,
       reaperInstanceId: setIdentity.reaperInstanceId,

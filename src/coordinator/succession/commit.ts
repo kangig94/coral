@@ -160,6 +160,15 @@ export type SuccessionCommitPorts = Readonly<{
     'admissionRevision' | 'beginSuccessionCommitWindow' | 'endSuccessionCommitWindow'
   >;
   childPrincipals: Pick<ChildPrincipalRegistry, 'fenceAuthentication' | 'reclaimAuthentication'>;
+  /**
+   * Provider hosts that authorized the successor. Control is released only once the incumbent's writers are
+   * parked, and taken back through each host's recovery grant when the attempt fails before it serves.
+   */
+  providerHosts: Readonly<{
+    transfersHosts(preparation: SuccessionPreparation): boolean;
+    releaseForTransfer(attemptId: string): Promise<void>;
+    reclaimTransferred(): void;
+  }>;
   setLaunchFenceActive: (active: boolean) => void;
   /** Open job waits resubscribe to whichever coordinator serves once their handover signal fires. */
   waitHandover: Readonly<{ abort(): void; renew(): void }>;
@@ -555,6 +564,9 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
         writer.park();
       }
       if (transfersChildPrincipals) ports.childPrincipals.fenceAuthentication();
+      if (!recovering && ports.providerHosts.transfersHosts(preparation)) {
+        await ports.providerHosts.releaseForTransfer(attempt.attemptId);
+      }
       if (formatChanging) {
         await authorizeRetirement(attempt, preparation, successorFingerprint, deadlineAt, () => {
           retirementStoreParked = true;
@@ -710,6 +722,7 @@ export function createSuccessionCommitter(ports: SuccessionCommitPorts): Success
           ]
         : [];
     writers.adoptProviderOperationAdmission(reclaimed.providerOperationAdmission);
+    ports.providerHosts.reclaimTransferred();
     ports.setLaunchFenceActive(false);
     closePause();
     await recordBestEffort(attemptId, (intent) => ({

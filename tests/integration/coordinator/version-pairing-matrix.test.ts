@@ -14,11 +14,12 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { observeProcessLiveness, probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { v0109CoordinatorSocketGuardSetForRunDir } from '#src/infra/path/coordinator.js';
 import { readUpgradeIntent, visibleUpgradeIntent } from '#src/infra/upgrade-intent.js';
+import { readHandoffCapsuleFile } from '#src/provider-proxy/handoff-capsule.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import { readActiveStoreSelectionForCoordination } from '#src/store/active-store-selection.js';
 import { probeIncumbent } from '#src/transport/ipc/handoff.js';
@@ -27,6 +28,7 @@ import {
   coordinatorFilesForHome,
   createPluginFixture,
   createShippedPluginFixture,
+  materializeFirstReleaseBuild,
   probeCoordinatorSocket,
   readDiscoveryRecordForHome,
   SHIPPED_RELEASE_TAGS,
@@ -35,6 +37,7 @@ import {
   terminateChildProcess,
   waitForDiscoveryRecord,
   waitForProcessExit,
+  type PluginFixture,
   type ShippedReleaseTag,
   type ShippedPluginFixture,
   type SpawnedCoordinator,
@@ -42,6 +45,7 @@ import {
 import { waitForCondition } from '#tests/support/wait-for-condition.js';
 
 const roots: string[] = [];
+const firstReleaseRoots: string[] = [];
 const coordinators: SpawnedCoordinator[] = [];
 const successors: { pid: number; incarnation: ProcessIncarnation }[] = [];
 const SHIPPED_IPC_BOUNDARY_PRELOAD = join(
@@ -703,7 +707,12 @@ describe('AC18 first-release version pairing', () => {
       });
       coordinators.push(incumbent);
       const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
-      const successorFixture = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15' });
+      // Only the interposition backend honors the serving delay the incumbent's environment hands its successor.
+      const successorFixture = createPluginFixture(roots, {
+        flavor: 'prod',
+        version: '0.10.15',
+        backend: 'succession-interposition',
+      });
       const contender = spawnCoordinator({ fixture: successorFixture, home, tempRoots: roots });
       coordinators.push(contender);
       const [contenderExit] = await Promise.all([
@@ -758,10 +767,11 @@ describe('AC18 first-release version pairing', () => {
         if (serving === null) throw new Error('Committed successor has no discovery record.');
         rememberSuccessor(serving.pid);
         expect(await probeCoordinatorSocket(serving.socketPath)).toBe('accepting');
-        expect(readUpgradeIntent(paths.runDir)).toMatchObject({
-          kind: 'readable',
-          intent: { disposition: 'completed' },
-        });
+        // The successor publishes discovery before the incumbent records the completion it acknowledges.
+        await waitForCondition(() => {
+          const observed = readUpgradeIntent(paths.runDir);
+          return observed.kind === 'readable' && observed.intent.disposition === 'completed';
+        }, 30_000);
       } finally {
         sampling = false;
         await addressSamples;
@@ -771,4 +781,245 @@ describe('AC18 first-release version pairing', () => {
     },
     100_000,
   );
+});
+
+type HostedWork = Readonly<{
+  home: string;
+  projectRoot: string;
+  binDir: string;
+  hosts: readonly { pid: number; incarnation: ProcessIncarnation }[];
+}>;
+
+const hostProcesses: { pid: number; incarnation: ProcessIncarnation }[] = [];
+
+afterEach(() => {
+  for (const recorded of hostProcesses.splice(0)) {
+    if (
+      probeProcessIncarnation(recorded.pid) === recorded.incarnation &&
+      observeProcessLiveness(recorded.pid) === 'alive'
+    ) {
+      process.kill(recorded.pid, 'SIGKILL');
+    }
+  }
+});
+
+function installTransferCodex(home: string): string {
+  const binDir = join(home, 'bin');
+  mkdirSync(binDir);
+  mkdirSync(join(home, '.fake-codex-state'));
+  mkdirSync(join(home, '.codex'));
+  writeFileSync(
+    join(home, '.codex', 'auth.json'),
+    JSON.stringify({ tokens: { access_token: 'fake-access-token', account_id: 'fake-account-id' } }),
+  );
+  copyFileSync(join(process.cwd(), 'tests/fixtures/transfer-codex-appserver.cjs'), join(binDir, 'codex'));
+  chmodSync(join(binDir, 'codex'), 0o755);
+  return binDir;
+}
+
+async function runFixtureCli(
+  pluginRoot: string,
+  work: Pick<HostedWork, 'home' | 'projectRoot' | 'binDir'>,
+  args: readonly string[],
+): Promise<string> {
+  const child = spawn(process.execPath, [join(pluginRoot, 'bridge', 'coral-cli'), ...args], {
+    cwd: work.projectRoot,
+    env: {
+      ...process.env,
+      HOME: work.home,
+      TMPDIR: work.home,
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      PATH: `${work.binDir}:${process.env.PATH ?? ''}`,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+    output += chunk;
+  });
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+    output += chunk;
+  });
+  const code = await new Promise<number | null>((resolve, reject) => {
+    const deadline = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`CLI ${args.join(' ')} timed out: ${output}`));
+    }, 30_000);
+    child.once('error', (error) => {
+      clearTimeout(deadline);
+      reject(error);
+    });
+    child.once('close', (status) => {
+      clearTimeout(deadline);
+      resolve(status);
+    });
+  });
+  expect(code, output).toBe(0);
+  return output;
+}
+
+/** The processes of the one host set whose capsule the incumbent published, of whatever capsule generation. */
+function readHostProcesses(home: string): readonly { pid: number; incarnation: ProcessIncarnation }[] | null {
+  const runDir = coordinatorFilesForHome(home, 'prod').runDir;
+  if (!existsSync(runDir)) return null;
+  const paths = readdirSync(runDir).filter((entry) =>
+    /^provider-1[0-9a-f]{23}\.handoff(?:\.v\d+)?\.json$/u.test(entry),
+  );
+  if (paths.length !== 1) return null;
+  const storage = createRealRuntime('prod', { baseDir: join(home, '.coral') }).storage;
+  const capsule = readHandoffCapsuleFile(join(runDir, paths[0]), { storage, uid: process.getuid?.() ?? 0 });
+  if (capsule === null || (capsule.version !== 3 && capsule.version !== 4)) return null;
+  return [
+    { pid: capsule.guardianPid, incarnation: capsule.guardianIncarnation },
+    { pid: capsule.reaperPid, incarnation: capsule.reaperIncarnation },
+    { pid: capsule.proxyPid, incarnation: capsule.proxyIncarnation },
+  ];
+}
+
+function hostsAlive(hosts: readonly { pid: number; incarnation: ProcessIncarnation }[]): boolean {
+  return hosts.every(({ pid, incarnation }) => probeProcessIncarnation(pid) === incarnation);
+}
+
+async function waitForJobPhase(pluginRoot: string, work: HostedWork, jobId: string, phase: string): Promise<void> {
+  let detail = '';
+  for (let attempt = 0; attempt < 300; attempt++) {
+    detail = await runFixtureCli(pluginRoot, work, ['jobs', 'detail', jobId]);
+    if (detail.includes(`Phase: ${phase}`)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 200));
+  }
+  throw new Error(`Job ${jobId} never reached ${phase}: ${detail}`);
+}
+
+/**
+ * Starts `incumbentRoot`'s coordinator and leaves one gated codex job running inside a provider host. A warm-up
+ * job goes first because a build may run the job that starts a host set outside it.
+ */
+async function startHostedJob(incumbentRoot: PluginFixture): Promise<HostedWork & { jobId: string; pid: number }> {
+  const home = newHome();
+  const projectRoot = mkdtempSync(join(tmpdir(), 'coral-version-pairing-work-'));
+  roots.push(projectRoot);
+  const binDir = installTransferCodex(home);
+  const work = { home, projectRoot, binDir, hosts: [] };
+  const incumbent = spawnCoordinator({
+    fixture: incumbentRoot,
+    home,
+    tempRoots: roots,
+    env: { PATH: `${binDir}:${process.env.PATH ?? ''}` },
+  });
+  coordinators.push(incumbent);
+  const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
+  const state = join(home, '.fake-codex-state');
+  const prompt = join(projectRoot, 'prompt.txt');
+  writeFileSync(prompt, 'Keep working while a newer build arrives.');
+
+  writeFileSync(join(state, 'complete-next'), 'warm-up');
+  const warmUp = (await runFixtureCli(incumbentRoot.root, work, ['codex', '-i', prompt, '-d'])).match(
+    /wait jobs ([0-9a-f-]{36})\b/u,
+  )?.[1];
+  if (warmUp === undefined) throw new Error('The warm-up job did not launch.');
+  await waitForJobPhase(incumbentRoot.root, work, warmUp, 'completed');
+
+  const jobId = (await runFixtureCli(incumbentRoot.root, work, ['codex', '-i', prompt, '-d'])).match(
+    /wait jobs ([0-9a-f-]{36})\b/u,
+  )?.[1];
+  if (jobId === undefined) throw new Error('The hosted job did not launch.');
+  await waitForCondition(() => existsSync(join(state, 'job-running')), 60_000);
+  await waitForCondition(() => readHostProcesses(home) !== null, 30_000);
+  const recorded = readHostProcesses(home);
+  if (recorded === null) throw new Error('The hosted job runs in no provider host.');
+  hostProcesses.push(...recorded);
+  return { ...work, hosts: recorded, jobId, pid: initial.pid };
+}
+
+describe('AC18 Phase 6 version pairing', () => {
+  let firstReleaseBuild = '';
+
+  beforeAll(() => {
+    assertBuildArtifactsAvailable();
+    firstReleaseBuild = materializeFirstReleaseBuild(firstReleaseRoots);
+  }, 300_000);
+
+  afterAll(() => {
+    for (const root of firstReleaseRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it('upgrades an idle first-release incumbent to the host-transferring build', async () => {
+    const home = newHome();
+    const firstRelease = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.10.14',
+      sourceBuildDir: firstReleaseBuild,
+    });
+    const incumbent = spawnCoordinator({ fixture: firstRelease, home, tempRoots: roots });
+    coordinators.push(incumbent);
+    const initial = await waitForDiscoveryRecord(home, 'prod', 20_000);
+
+    const phase6 = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15', accepts: 'bundled' });
+    const contender = spawnCoordinator({ fixture: phase6, home, tempRoots: roots });
+    coordinators.push(contender);
+    expect(await waitForProcessExit(contender, 30_000), contender.output()).toEqual({ code: 0, signal: null });
+    await waitForCondition(() => {
+      const current = readDiscoveryRecordForHome(home, 'prod');
+      const intent = readUpgradeIntent(coordinatorFilesForHome(home, 'prod').runDir);
+      return (
+        current !== null &&
+        current.pid !== initial.pid &&
+        current.bundleHash === phase6.bundleHash &&
+        intent.kind === 'readable' &&
+        intent.intent.disposition === 'completed'
+      );
+    }, 60_000);
+    const successor = readDiscoveryRecordForHome(home, 'prod');
+    if (successor === null) throw new Error('The first-release upgrade has no serving successor.');
+    rememberSuccessor(successor.pid);
+    expect(await probeCoordinatorSocket(successor.socketPath)).toBe('accepting');
+    await waitForProcessExit(incumbent, 30_000);
+  }, 120_000);
+
+  it('keeps a first-release incumbent serving while its legacy host runs a job', async () => {
+    const firstRelease = createPluginFixture(roots, {
+      flavor: 'prod',
+      version: '0.10.14',
+      sourceBuildDir: firstReleaseBuild,
+    });
+    const work = await startHostedJob(firstRelease);
+
+    const phase6 = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15', accepts: 'bundled' });
+    const contender = spawnCoordinator({ fixture: phase6, home: work.home, tempRoots: roots });
+    coordinators.push(contender);
+    expect(await waitForProcessExit(contender, 30_000), contender.output()).toEqual({ code: 0, signal: null });
+    const runDir = coordinatorFilesForHome(work.home, 'prod').runDir;
+    await waitForCondition(() => {
+      const intent = readUpgradeIntent(runDir);
+      return (
+        intent.kind === 'readable' &&
+        intent.intent.blockers.some(
+          (blocker) => blocker.owner === 'provider-proxy-sets' || blocker.owner === 'provider-operations',
+        )
+      );
+    }, 60_000);
+    expect(readDiscoveryRecordForHome(work.home, 'prod')?.pid).toBe(work.pid);
+    expect(hostsAlive(work.hosts)).toBe(true);
+
+    writeFileSync(join(work.home, '.fake-codex-state', 'release-job'), 'released');
+    await waitForJobPhase(firstRelease.root, work, work.jobId, 'completed');
+    expect(readDiscoveryRecordForHome(work.home, 'prod')?.pid).toBe(work.pid);
+  }, 240_000);
+
+  it('keeps a shipped incumbent serving while its legacy host runs a job', async () => {
+    const shipped = createShippedPluginFixture(roots, 'v0.10.13');
+    const work = await startHostedJob(shipped);
+
+    const phase6 = createPluginFixture(roots, { flavor: 'prod', version: '0.10.15', accepts: 'bundled' });
+    const contender = spawnCoordinator({ fixture: phase6, home: work.home, tempRoots: roots });
+    coordinators.push(contender);
+    expect(await waitForProcessExit(contender, 30_000), contender.output()).toEqual({ code: 0, signal: null });
+    expect(readDiscoveryRecordForHome(work.home, 'prod')?.pid).toBe(work.pid);
+    expect(hostsAlive(work.hosts)).toBe(true);
+
+    writeFileSync(join(work.home, '.fake-codex-state', 'release-job'), 'released');
+    await waitForJobPhase(shipped.root, work, work.jobId, 'completed');
+    expect(readDiscoveryRecordForHome(work.home, 'prod')?.pid).toBe(work.pid);
+    expect(hostsAlive(work.hosts)).toBe(true);
+  }, 240_000);
 });

@@ -27,7 +27,7 @@ import {
   CURRENT_HANDOFF_CAPSULE_VERSION,
   type HandoffCapsule,
   type HandoffCapsuleV2,
-  type HandoffCapsuleV3,
+  type HandoffCapsuleV4,
 } from '#src/provider-proxy/handoff-capsule.js';
 import { probeProcessIncarnation, type ProcessIncarnation } from '#src/infra/node-process.js';
 import { createMonotonicClock } from '#src/infra/monotonic-clock.js';
@@ -56,6 +56,7 @@ import { currentCoralStoreFormat } from '#src/store-format.js';
 import { createRealRuntime } from '#src/runtime/real.js';
 import {
   attemptProviderProxySetInheritance as attemptProviderProxySetInheritanceWithRequiredContainment,
+  classifyProviderProxySetInheritance,
   createProviderProxySetInheritance,
   type CreateProviderProxySetInheritanceOptions,
   type ProviderProxySetInheritanceDeps,
@@ -310,7 +311,7 @@ beforeEach(() => {
 
 // The current generation, because that is the only one this build may inherit: a capsule whose identity it
 // cannot read is represented and never dialed, whatever the number on it.
-function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV3> = {}): HandoffCapsule {
+function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<HandoffCapsuleV4> = {}): HandoffCapsule {
   const { operation, locator: set } = reference;
   return {
     version: CURRENT_HANDOFF_CAPSULE_VERSION,
@@ -327,6 +328,7 @@ function capsuleFor(reference: ProviderProxySetLocator, overrides: Partial<Hando
     generation: 'gen2',
     flavor: 'prod',
     buildSetId: operation.buildSetId,
+    controllerBuildSetId: operation.buildSetId,
     hostFingerprint: set.hostFingerprint,
     guardianInstanceId: set.guardian.instanceId,
     reaperInstanceId: set.reaper.instanceId,
@@ -809,12 +811,13 @@ describe('attemptProviderProxySetInheritance', () => {
   });
 
   // The upgrade path, and the one a discovery-side build gate cannot cover: this entry derives the capsule's
-  // address from the record itself rather than from anything discovery classified. Dialing a set from another
-  // build returns `identity_mismatch`, which the recovery policy retires fatally — the coordinator dies over a
-  // set it never owned. `capsuleMatchesLocator` cannot catch it either, because it compares the capsule
+  // address from the record itself rather than from anything discovery classified. Dialing a set another build
+  // controls returns `identity_mismatch`, which the recovery policy retires fatally — the coordinator dies over
+  // a set it does not control. `capsuleMatchesLocator` cannot catch it either, because it compares the capsule
   // against the *record's* build, and for a foreign set those two agree.
-  it('reports not-bequeathed without reading a foreign build’s capsule at all', async () => {
+  it('reports not-bequeathed without dialing a set another build controls', async () => {
     const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
 
     const outcome = await attemptProviderProxySetInheritance(
       loc,
@@ -827,17 +830,53 @@ describe('attemptProviderProxySetInheritance', () => {
       neverAborts,
     );
 
-    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the recorded set belongs to another build' });
-    expect(mockedReadCapsule, 'a foreign capsule is refused before it is even read').not.toHaveBeenCalled();
+    expect(outcome).toEqual({ kind: 'not-bequeathed', reason: 'the set is controlled by another build' });
     expect(mockedConnect).not.toHaveBeenCalled();
+  });
+
+  // Host provenance does not decide: a set whose capsule names this build as controller is inherited even
+  // though its host runs another build, and one only an unaccepted receipt names stays another build's.
+  it('dials a foreign-host set only when its capsule or an accepted receipt names this build', async () => {
+    const loc = locator({ buildSetId: '77777777-7777-4777-8777-777777777777' });
+    const acceptsControllerTransfer = vi.fn(() => 'not-accepted' as const);
+    mockedReadCapsule.mockReturnValueOnce(capsuleFor(loc));
+
+    const refused = await attemptProviderProxySetInheritance(
+      loc,
+      unusedDb,
+      {
+        runtime,
+        coordinatorIdentity: COORDINATOR_IDENTITY,
+        operationRegistry: { operationsFor: () => [], providerRootsFor: () => [] },
+        acceptsControllerTransfer,
+      },
+      neverAborts,
+    );
+
+    expect(refused).toEqual({ kind: 'not-bequeathed', reason: 'the set is controlled by another build' });
+    expect(acceptsControllerTransfer).toHaveBeenCalledTimes(1);
+    expect(mockedConnect).not.toHaveBeenCalled();
+    expect(
+      classifyProviderProxySetInheritance(
+        capsuleFor(loc, { controllerBuildSetId: COORDINATOR_IDENTITY.buildSetId }),
+        COORDINATOR_IDENTITY.buildSetId,
+      ),
+    ).toMatchObject({ kind: 'inheritable', via: 'controller' });
+    expect(
+      classifyProviderProxySetInheritance(capsuleFor(loc), COORDINATOR_IDENTITY.buildSetId, () => 'before-serving'),
+    ).toMatchObject({ kind: 'inheritable', via: 'transfer-before-serving' });
+    expect(
+      classifyProviderProxySetInheritance(capsuleFor(loc), COORDINATOR_IDENTITY.buildSetId, () => 'served'),
+    ).toMatchObject({ kind: 'inheritable', via: 'transfer-served' });
   });
 
   // Same build, shipped-V2 capsule. Its process fields are seconds this build cannot verify, so there is no
   // identity to redeem against — and inventing one from them reports a live process as absent.
   it('reports not-bequeathed for a capsule that predates the incarnation token', async () => {
     const loc = locator();
+    const { controllerBuildSetId: _controller, ...currentFields } = capsuleFor(loc) as HandoffCapsuleV4;
     const shippedV2: HandoffCapsuleV2 = {
-      ...(capsuleFor(loc) as HandoffCapsuleV3),
+      ...currentFields,
       version: 2,
       guardianPid: loc.locator.guardian.pid,
       guardianProcessStartedAtSeconds: 1_700_000_001,
@@ -1075,7 +1114,7 @@ describe('attemptProviderProxySetInheritance', () => {
       },
     };
     const capsule = capsuleFor(loc);
-    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
+    if (capsule.version !== 4) throw new Error('expected a current recovery capsule');
     mockedReadCapsule.mockReturnValueOnce(capsule);
     const otherIdentity = { jobId: randomUUID(), operationId: randomUUID() };
     const guardianOperations = byteSorted([operationFor(loc), operationFor(loc, otherIdentity)]);
@@ -1152,7 +1191,7 @@ describe('attemptProviderProxySetInheritance', () => {
   it('returns a redeemed authority with capsule timing when credential installation is refused', async () => {
     const loc = locator();
     const capsule = capsuleFor(loc);
-    if (capsule.version !== 3) throw new Error('expected a V3 recovery capsule');
+    if (capsule.version !== 4) throw new Error('expected a current recovery capsule');
     mockedReadCapsule.mockReturnValueOnce(capsule);
     const calls: { method: string; params: unknown }[] = [];
     const client = fakeClient(

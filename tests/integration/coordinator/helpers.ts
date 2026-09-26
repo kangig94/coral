@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -59,9 +60,11 @@ type SourceManifest = {
   storeFormatFingerprint: string;
 };
 
-function readSourceManifest(): SourceManifest {
-  assertBuildArtifactsAvailable();
-  return JSON.parse(readFileSync(sourceManifestPath, 'utf-8')) as SourceManifest;
+function readSourceManifest(buildDir: string | null): SourceManifest {
+  if (buildDir === null) assertBuildArtifactsAvailable();
+  return JSON.parse(
+    readFileSync(buildDir === null ? sourceManifestPath : join(buildDir, CURRENT_STRICT_BUNDLE_MANIFEST_FILE), 'utf-8'),
+  ) as SourceManifest;
 }
 
 let successionInterpositionBundle: string | null = null;
@@ -174,9 +177,19 @@ export function createPluginFixture(
     version?: string;
     /** Ships a backend whose succession protocol follows the fault plan in its environment. */
     backend?: 'succession-interposition';
+    /** Declares the owner acceptances the bridge build ships, instead of accepting no transferred obligation. */
+    accepts?: 'bundled';
+    /** Builds the fixture from another build's `clients/build` instead of this tree's. */
+    sourceBuildDir?: string;
   },
 ): PluginFixture {
-  const sourceManifest = readSourceManifest();
+  const sourceBuildDir = options.sourceBuildDir ?? null;
+  if (sourceBuildDir !== null && options.backend !== undefined) {
+    throw new Error('Only this tree can build the succession interposition backend.');
+  }
+  const sourceBundle = (name: string): string =>
+    sourceBuildDir === null ? join(process.cwd(), 'clients', 'build', name) : join(sourceBuildDir, name);
+  const sourceManifest = readSourceManifest(sourceBuildDir);
   const variant = options.version !== undefined || options.bundleHash !== undefined;
   const variantHash = createHash('sha256')
     .update(
@@ -215,16 +228,16 @@ export function createPluginFixture(
   copyBundle(
     options.backend === 'succession-interposition'
       ? buildSuccessionInterpositionBundle(sourceManifest)
-      : sourceBackendBundle,
+      : sourceBundle('coral-backend.cjs'),
     backendPath,
   );
   if (options.bundleHash !== undefined) {
     appendFileSync(backendPath, `\n// fixture ${options.bundleHash}\n`);
   }
-  copyBundle(sourceCliBundle, cliPath);
-  copyBundle(sourceClaudeAppserverBundle, claudeAppserverPath);
-  copyBundle(sourceDurableWrapperBundle, durableWrapperPath);
-  copyBundle(sourceUpgradeWaiterBundle, upgradeWaiterPath);
+  copyBundle(sourceBundle('coral-cli'), cliPath);
+  copyBundle(sourceBundle('coral-claude-appserver.cjs'), claudeAppserverPath);
+  copyBundle(sourceBundle('coral-durable-wrapper.cjs'), durableWrapperPath);
+  copyBundle(sourceBundle(UPGRADE_WAITER_BUNDLE_FILE), upgradeWaiterPath);
   const bundleHash = createHash('sha256').update(readFileSync(backendPath)).digest('hex').slice(0, 16);
   const fixtureManifest = {
     version: options.version ?? sourceManifest.version,
@@ -264,7 +277,11 @@ export function createPluginFixture(
       buildSetId: fixtureManifest.buildSetId,
       bundleHash: fixtureManifest.bundleHash,
       protocols: ['prepare', 'commit'],
-      accepts: [],
+      accepts:
+        options.accepts === 'bundled'
+          ? (JSON.parse(readFileSync(sourceBundle(SUCCESSION_CAPABILITIES_FILE), 'utf-8')) as { accepts: unknown[] })
+              .accepts
+          : [],
     })}\n`,
     'utf-8',
   );
@@ -281,6 +298,44 @@ export function createPluginFixture(
     flavor: options.flavor,
     bundleHash,
   };
+}
+
+/**
+ * The Phases 1–5 release build, the supported predecessor the Phase 6 release is paired with (AC18). It is
+ * pinned by commit until that release is tagged; the pin must then move to the tag, because a squash merge
+ * leaves the commit out of main's history.
+ */
+export const FIRST_RELEASE_REF = 'b451360ee7657db62d5e5da2ee37403a6529c481';
+
+/**
+ * Builds the first-release source into a new directory registered in `tempRoots` and returns its
+ * `clients/build`. The tree comes from the pinned commit alone, so nothing in this checkout can leak into the
+ * predecessor it stands for.
+ */
+export function materializeFirstReleaseBuild(tempRoots: string[]): string {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', `${FIRST_RELEASE_REF}^{commit}`], { stdio: 'pipe' });
+  } catch (error: unknown) {
+    throw new Error(`The first-release commit ${FIRST_RELEASE_REF} is missing. Fetch the full history.`, {
+      cause: error,
+    });
+  }
+  const root = mkdtempSync(join(tmpdir(), 'coral-first-release-'));
+  tempRoots.push(root);
+  const archive = execFileSync('git', ['archive', '--format=tar', FIRST_RELEASE_REF], {
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  execFileSync('tar', ['-xf', '-', '-C', root], { input: archive });
+  // A copy, not a link: the build receipt refuses any bundled input that resolves outside its own tree.
+  cpSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), { recursive: true, verbatimSymlinks: true });
+  for (const step of [
+    ['scripts/clean-dist.mjs'],
+    ['node_modules/typescript/bin/tsc'],
+    ['scripts/build-server.mjs', '--flavor', 'prod'],
+  ]) {
+    execFileSync(process.execPath, step, { cwd: root, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+  }
+  return join(root, 'clients', 'build');
 }
 
 /** A shipped plugin root must retain its tag's files and manifest bytes. */

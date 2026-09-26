@@ -54,7 +54,7 @@ import {
   type HandoffCapsule,
   type HandoffCapsuleV1,
   type HandoffCapsuleV2,
-  type HandoffCapsuleV3,
+  type RedeemableHandoffCapsule,
 } from '../../provider-proxy/handoff-capsule.js';
 import {
   providerHandoffCapsuleCandidatePaths,
@@ -671,7 +671,7 @@ function readProviderHandoffCapsulesForDiagnostics(runtime: Runtime): readonly D
 async function readDirectHolderStatus(
   endpoint: string,
   method: 'guardian.holder-status.v1' | 'reaper.holder-status.v1',
-  capsule: HandoffCapsuleV3,
+  capsule: RedeemableHandoffCapsule,
   timer: ControlClientTimer,
 ): Promise<DirectHolderStatusReading> {
   let client: ControlClient;
@@ -704,7 +704,7 @@ async function readDirectHolderStatus(
   }
 }
 
-function holderStatusCredential(capsule: HandoffCapsuleV3): z.infer<typeof holderStatusParamsSchema> {
+function holderStatusCredential(capsule: RedeemableHandoffCapsule): z.infer<typeof holderStatusParamsSchema> {
   return holderStatusParamsSchema.parse({
     grantId: capsule.grantId,
     secret: capsule.secret,
@@ -719,7 +719,7 @@ function holderStatusCredential(capsule: HandoffCapsuleV3): z.infer<typeof holde
 }
 
 type ProviderProxyRoleCapsuleLookup =
-  | Readonly<{ kind: 'found'; capsule: HandoffCapsuleV3 }>
+  | Readonly<{ kind: 'found'; capsule: RedeemableHandoffCapsule }>
   | Readonly<{ kind: 'unreachable'; reason: string }>;
 
 function findProviderProxyRoleCapsule(
@@ -728,7 +728,7 @@ function findProviderProxyRoleCapsule(
 ): ProviderProxyRoleCapsuleLookup {
   const discovered = readProviderHandoffCapsulesForDiagnostics(runtime);
   const capsules = discovered.flatMap((entry) => {
-    if (entry.kind !== 'readable' || entry.capsule.version !== 3) return [];
+    if (entry.kind !== 'readable' || (entry.capsule.version !== 3 && entry.capsule.version !== 4)) return [];
     const capsule = entry.capsule;
     const recorded =
       roleIdentity.role === 'guardian'
@@ -880,7 +880,7 @@ export async function readProviderProxySetHolderStatusDirect(
       continue;
     }
     const { capsule } = discoveredCapsule;
-    if (capsule.version !== 3) {
+    if (capsule.version !== 3 && capsule.version !== 4) {
       readings.push({
         kind: 'legacy-capsule',
         path: providerHandoffCapsulePath(capsule, capsule.version, {

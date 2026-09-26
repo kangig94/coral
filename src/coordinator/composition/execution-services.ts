@@ -12,6 +12,8 @@ import { aggregateWorkflowUsage } from '../../jobs/workflow-usage.js';
 import { admittedByThisCoordinator, createObserveCarriers } from './carrier-observation.js';
 import { observeCarrierStatuses } from '../live/carrier-observer.js';
 import { createAppServerProxyRoute } from '../services/provider-proxy-launch-route.js';
+import { currentSuccessionAttemptChild } from '../succession/attempt-child.js';
+import { acceptedControllerTransferHandsCapsule } from '../succession/provider-host-transfer.js';
 import {
   ProviderOperationReconciler,
   type ProviderOperationReconcilerFatalError,
@@ -371,6 +373,13 @@ export function createExecutionServices({
   });
   const providerProxyLifecycle: ProviderProxySetLifecycle = new ProviderProxySetLifecycle({
     buildSetId: world.identity.buildSetId,
+    acceptsControllerTransfer: (capsule) =>
+      acceptedControllerTransferHandsCapsule(
+        runtime,
+        world.identity.buildSetId,
+        currentSuccessionAttemptChild()?.attemptId ?? null,
+        capsule,
+      ),
     claims: world.providerProxyClaims,
     controlEstablished: notifyProviderProxyControlEstablished,
     time: runtime.time,

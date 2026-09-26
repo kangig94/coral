@@ -6,7 +6,7 @@ import {
   proxyHandoffRedeemFieldsSchema,
   proxyHandoffRedeemParamsSchema,
   reaperHandoffRotateFieldsSchema,
-  type HandoffCapsuleV3,
+  type RedeemableHandoffCapsule,
 } from '../../../provider-proxy/handoff-capsule.js';
 import type { ControlClient, ProviderEventHandler } from '../../../provider-proxy/control-client.js';
 import {
@@ -287,7 +287,7 @@ export function closeRedeemedProviderProxyControl(redemption: RedeemedProviderPr
 }
 
 export async function redeemProviderProxyControl(
-  capsule: HandoffCapsuleV3,
+  capsule: RedeemableHandoffCapsule,
   setIdentity: ProviderProxySetIdentity,
   deps: Readonly<{
     runtime: Runtime;

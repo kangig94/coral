@@ -67,6 +67,7 @@ const CONTRACT_TARGETS = new Set([
   'src/providers/registry.ts',
   'src/provider-proxy/bootstrap-capsule.ts',
   'src/provider-proxy/control-client.ts',
+  'src/provider-proxy/controller-succession.ts',
   'src/provider-proxy/guardian.ts',
   'src/provider-proxy/handoff-capsule.ts',
   'src/provider-proxy/heartbeat-observation.ts',

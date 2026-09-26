@@ -41,6 +41,8 @@ export type ProviderProxySetAcquisitionIdentity = Readonly<{
  *  configured to attempt acquisition at all. */
 export type ProviderProxySetAcquisitionConfig = Readonly<{
   pluginRoot: string;
+  /** Resolved at each acquisition: a pin that failed at startup may succeed later, and a root may stop validating. */
+  retainedHostRoot?: () => string | null;
   identity: ProviderProxySetAcquisitionIdentity;
   /** Supplies the live provider roots used for stop-and-reap agreement. */
   operationRegistry: ProviderProxyOperationSnapshot;
@@ -159,7 +161,7 @@ export async function disposeStoppedProviderProxySetAcquisition(
  * failure or release its recovery owner.
  */
 export function ensureProviderProxySet(
-  entry: ProviderHostEntry,
+  entry: Pick<ProviderHostEntry, 'identityKey' | 'spec'>,
   env: ProviderProxySetAcquisitionEnvironment,
   onSettled: (outcome: ProviderProxySetAcquisitionOutcome) => void | Promise<void>,
 ): Promise<void> {
@@ -189,6 +191,7 @@ export function ensureProviderProxySet(
   const steps = createProviderProxyAcquisitionSteps({
     runtime: env.runtime,
     pluginRoot: env.pluginRoot,
+    ...(env.retainedHostRoot === undefined ? {} : { retainedHostRoot: env.retainedHostRoot() }),
     coordinatorIdentity,
     hostFingerprint: hostFingerprintFromSpec(entry.spec),
     operationRegistry: env.operationRegistry,

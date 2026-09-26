@@ -132,6 +132,11 @@ export type JobsStartupContext = {
    * the durable session interruption trigger.
    */
   interruptedAppServerReason?: InterruptedAppServerReason;
+  /**
+   * Jobs an accepted succession receipt handed over together with the execution host that still runs them.
+   * They are adopted through that host's saga, so the interrupted-job path must never finalize or reap them.
+   */
+  transferredJobIds?: ReadonlySet<string>;
 };
 
 export type JobsStartupRecoveryDisposition =

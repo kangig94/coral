@@ -22,7 +22,10 @@ import { readProviderOperation } from '#src/store/provider-operation-journal.js'
 import type { ProviderOperationRecord } from '#src/store/provider-operation-record.js';
 import { fixtureCanonicalWorkDir } from '#tests/helpers/canonical-work-dir.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 import { createTestProviderProxyRecoveryDispatcher } from '#tests/helpers/provider-proxy-recovery-dispatcher.js';
 import {
   asJointActivationReceipt,
@@ -187,6 +190,7 @@ export function createProviderOperationReconcilerHarness(overrides: ProviderOper
   const authority: DurableProviderProxyOperationAuthority = {
     proxyInstanceId: record.operation.proxyInstanceId,
     providerHosts: unexercisedProviderHostControls,
+    ...unexercisedControllerSuccessionControls,
     autonomousDeadline: {
       orphanTimeoutMs: Number.MAX_SAFE_INTEGER,
       adoptionWindowMs: Number.MAX_SAFE_INTEGER,

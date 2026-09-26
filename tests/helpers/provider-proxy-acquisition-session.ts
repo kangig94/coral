@@ -12,7 +12,10 @@ import { providerProxySetIdentityFromCapsule } from '#src/coordinator/services/p
 import { ControlClientError, controlExchangeForTest, type ControlClient } from '#src/provider-proxy/control-client.js';
 import { handoffCapsuleV3Schema, type HandoffCapsuleV3 } from '#src/provider-proxy/handoff-capsule.js';
 import { guardianIdentitySchema, proxyIdentitySchema, reaperIdentitySchema } from '#src/provider-proxy/protocol.js';
-import { unexercisedProviderHostControls } from '#tests/helpers/provider-host-controls.js';
+import {
+  unexercisedControllerSuccessionControls,
+  unexercisedProviderHostControls,
+} from '#tests/helpers/provider-host-controls.js';
 
 function publicationUnknownCapsule(): HandoffCapsuleV3 {
   return {
@@ -46,6 +49,7 @@ function recoveryAuthority(capsule: HandoffCapsuleV3): ProviderProxySetRecoveryA
   const authority: ProviderProxySetRecoveryAuthority = {
     proxyInstanceId: capsule.proxyInstanceId,
     providerHosts: unexercisedProviderHostControls,
+    ...unexercisedControllerSuccessionControls,
     stopAndReap: async () => ({ disappearanceReceipt: 'publication-unknown-fixture-absent' }),
     commitContainment: async () => ({
       kind: 'containment-absent',

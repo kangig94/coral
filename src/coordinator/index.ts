@@ -479,8 +479,13 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
       providerRegistry,
       runtime,
       emitSessionReleased: (payload) => eventBus.emit('session:released', payload),
-      // Export only: this path has never fed the lifecycle reactor, and widening that is a separate change.
-      observeCommitted: exportTerminalResults,
+      // Not the lifecycle reactor: this path has never fed it, and widening that is a separate change. The
+      // announcement is owed, because a terminal committed here must still release what the job held in
+      // process, such as its child principal handles.
+      observeCommitted: (appended) => {
+        exportTerminalResults(appended);
+        getStoreServices().progressStore.announceCommitted(appended);
+      },
       // The registry is the one party that knows which cause `activateCommittedProviderLaunch`'s abort action
       // (`jobs/shell/launch.ts`) most recently sent as `operation.stop.v1` for this operation — see
       // `LocalOperationRegistry.stop()`. `null` for an operation that was never stopped through it stays a
@@ -594,6 +599,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
         recoveryCoordinator,
         signal,
         recoverPersistedDiscussFn,
+        transferredJobIds,
       },
       runCoordinatorStartupRecovery,
     ) => {
@@ -650,6 +656,7 @@ export function createCoordinatorServer(options: CoordinatorServerOptions): Coor
         signal,
         log: identity.log,
         coordinatorCommit,
+        ...(transferredJobIds === undefined ? {} : { transferredJobIds }),
       });
       const recoveryProgressStore = jobsStartup.progressStore;
       signal.throwIfAborted();

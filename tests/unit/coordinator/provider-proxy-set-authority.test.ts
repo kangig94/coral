@@ -779,6 +779,7 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
     const written = JSON.parse(readFileSync(handoffCapsulePath, 'utf-8')) as {
       version: number;
       buildSetId: string;
+      controllerBuildSetId: string;
       orphanTimeoutMs: number;
       teardownReserveMs: number;
       operations?: readonly unknown[];
@@ -792,8 +793,9 @@ describe('createProviderProxySetAuthority: continuous recovery', () => {
       proxyIncarnation: ProcessIncarnation;
       proxyProcessGroupId: number;
     };
-    expect(written.version).toBe(3);
+    expect(written.version).toBe(4);
     expect(written.buildSetId).toBe(GUARDIAN_IDENTITY.buildSetId);
+    expect(written.controllerBuildSetId).toBe(COORDINATOR_IDENTITY.buildSetId);
     expect(written.orphanTimeoutMs).toBe(DEFAULT_PROVIDER_PROXY_ORPHAN_TIMEOUT_MS);
     expect(written.teardownReserveMs).toBe(PROXY_TEARDOWN_RESERVE_MS);
     // The two fields the design review found with a second, non-authoritative home: neither belongs in a

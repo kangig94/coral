@@ -1,7 +1,7 @@
 import type { ProcessIncarnation } from '#src/infra/node-process.js';
 import { strictControlExchangeResult as strictTestExchange } from '#tests/support/control-exchange.js';
 import { testIncarnation } from '#tests/helpers/process-incarnation.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1289,5 +1289,166 @@ describe('provider-proxy proxy: proxy.acquisition-publish.v1 / proxy.acquisition
         5_000,
       ),
     ).rejects.toThrow(/different guardian\/reaper set/u);
+  });
+});
+
+describe('provider-proxy proxy: controller succession', () => {
+  const SECRET = 'd'.repeat(64);
+
+  async function installRecoveryGrant(
+    control: ControlClient,
+    capsule: ProxyBootstrapCapsule,
+  ): Promise<Readonly<{ grantId: string; set: Record<string, string> }>> {
+    const grantId = randomUUID();
+    const set = {
+      generation: capsule.generation,
+      hostFingerprint: capsule.hostFingerprint,
+      buildSetId: capsule.buildSetId,
+      proxyInstanceId: capsule.proxyInstanceId,
+    };
+    await strictTestExchange(
+      control,
+      'handoff.install.v1',
+      {
+        grantId,
+        secretSha256: createHash('sha256').update(SECRET, 'utf8').digest('hex'),
+        ...set,
+        operations: [],
+        orphanTimeoutMs: 30_000,
+      },
+      5_000,
+    );
+    return { grantId, set };
+  }
+
+  function successorOf(buildSetId: string) {
+    return {
+      instanceId: randomUUID(),
+      pid: 2,
+      incarnation: testIncarnation(2),
+      generation: 'gen2' as const,
+      flavor: 'prod' as const,
+      buildSetId,
+    };
+  }
+
+  async function redeem(
+    endpoint: string,
+    grantId: string,
+    set: Record<string, string>,
+    successor: ReturnType<typeof successorOf>,
+  ): Promise<unknown> {
+    const client = await connectControlClient(endpoint, timer, 5_000);
+    cleanups.push(() => client.close());
+    return strictTestExchange(client, 'handoff.redeem.v1', { grantId, secret: SECRET, successor, ...set }, 5_000);
+  }
+
+  it('lets only the build its controller authorized redeem a recovery grant across a build change', async () => {
+    const { control, capsule } = await startProxy(fakeHost());
+    const { grantId, set } = await installRecoveryGrant(control, capsule);
+    const successorBuild = { generation: 'gen2' as const, flavor: 'prod' as const, buildSetId: randomUUID() };
+
+    await expect(
+      strictTestExchange(
+        control,
+        'controller-transfer.v1',
+        { grantId, attemptId: 'attempt-1', successor: successorBuild, controlGeneration: 2 },
+        5_000,
+      ),
+    ).rejects.toThrow(/controller-succession generation 1, not 2/u);
+    await expect(
+      strictTestExchange(
+        control,
+        'controller-transfer.v1',
+        { grantId: randomUUID(), attemptId: 'attempt-1', successor: successorBuild, controlGeneration: 1 },
+        5_000,
+      ),
+    ).rejects.toThrow(/recovery grant already installed/u);
+
+    control.close();
+    // No transfer authorized yet: a coordinator of another build holding the capsule secret is still refused.
+    await expect(
+      redeem(capsule.canonicalEndpoint, grantId, set, successorOf(successorBuild.buildSetId)),
+    ).rejects.toThrow(/build this grant does not authorize/u);
+  });
+
+  it('admits the authorized successor build, then hands the grant to it and away from the old controller', async () => {
+    const { control, capsule } = await startProxy(fakeHost());
+    const { grantId, set } = await installRecoveryGrant(control, capsule);
+    const successorBuild = { generation: 'gen2' as const, flavor: 'prod' as const, buildSetId: randomUUID() };
+    expect(
+      await strictTestExchange(
+        control,
+        'controller-transfer.v1',
+        { grantId, attemptId: 'attempt-1', successor: successorBuild, controlGeneration: 1 },
+        5_000,
+      ),
+    ).toEqual({ state: 'transfer-authorized', grantId, attemptId: 'attempt-1' });
+    control.close();
+
+    const successor = successorOf(successorBuild.buildSetId);
+    const successorControl = await connectControlClient(capsule.canonicalEndpoint, timer, 5_000);
+    cleanups.push(() => successorControl.close());
+    const opened = (await strictTestExchange(
+      successorControl,
+      'handoff.redeem.v1',
+      { grantId, secret: SECRET, successor, ...set },
+      5_000,
+    )) as { state: string; controlEpoch: number; heartbeatChallenge: string };
+    expect(opened.state).toBe('redeemed-provisional');
+    await strictTestExchange(
+      successorControl,
+      'control.heartbeat.v1',
+      { controlEpoch: opened.controlEpoch, heartbeatChallenge: opened.heartbeatChallenge },
+      5_000,
+    );
+
+    // The successor takes the grant over for its own build; a coordinator of the host's build may no longer
+    // redeem it once the successor's control lapses.
+    await strictTestExchange(
+      successorControl,
+      'handoff.install.v1',
+      {
+        grantId,
+        secretSha256: createHash('sha256').update(SECRET, 'utf8').digest('hex'),
+        ...set,
+        operations: [],
+        orphanTimeoutMs: 30_000,
+      },
+      5_000,
+    );
+    successorControl.close();
+    await expect(redeem(capsule.canonicalEndpoint, grantId, set, successorOf(capsule.buildSetId))).rejects.toThrow(
+      /build this grant does not authorize/u,
+    );
+  });
+
+  it('keeps the old controller’s recovery grant redeemable after an authorized successor fails before serving', async () => {
+    const { control, capsule } = await startProxy(fakeHost());
+    const { grantId, set } = await installRecoveryGrant(control, capsule);
+    const successorBuild = { generation: 'gen2' as const, flavor: 'prod' as const, buildSetId: randomUUID() };
+    await strictTestExchange(
+      control,
+      'controller-transfer.v1',
+      { grantId, attemptId: 'attempt-1', successor: successorBuild, controlGeneration: 1 },
+      5_000,
+    );
+    control.close();
+
+    const failedSuccessor = await connectControlClient(capsule.canonicalEndpoint, timer, 5_000);
+    const redeemed = (await strictTestExchange(
+      failedSuccessor,
+      'handoff.redeem.v1',
+      { grantId, secret: SECRET, successor: successorOf(successorBuild.buildSetId), ...set },
+      5_000,
+    )) as { state: string };
+    expect(redeemed.state).toBe('redeemed-provisional');
+    // The successor dies before it serves or takes the grant over: its connection ends.
+    failedSuccessor.close();
+
+    const reclaimed = (await redeem(capsule.canonicalEndpoint, grantId, set, successorOf(capsule.buildSetId))) as {
+      state: string;
+    };
+    expect(reclaimed.state).toBe('redeemed-provisional');
   });
 });

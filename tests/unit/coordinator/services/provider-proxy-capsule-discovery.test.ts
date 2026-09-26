@@ -133,8 +133,8 @@ describe('provider proxy capsule discovery', () => {
     if (stat.uid === undefined) throw new Error('real storage did not report the temporary directory owner');
 
     // A well-formed name of a generation this build has never heard of, holding bytes it cannot parse.
-    const future = join(runDir, 'provider-1aaaaaaaaaaaaaaaaaaaaaaa.handoff.v4.json');
-    runtime.storage.writeAtomicDurableSync(future, JSON.stringify({ version: 4 }), {
+    const future = join(runDir, 'provider-1aaaaaaaaaaaaaaaaaaaaaaa.handoff.v5.json');
+    runtime.storage.writeAtomicDurableSync(future, JSON.stringify({ version: 5 }), {
       encoding: 'utf-8',
       mode: 0o600,
     });

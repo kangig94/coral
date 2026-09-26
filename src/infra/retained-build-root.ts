@@ -14,7 +14,12 @@ import {
 } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
-import { resolveRunningBundleDir, type StrictBundleManifest } from './bundle-manifest.js';
+import {
+  readBoundedAdjacentManifest,
+  resolveRunningBundleDir,
+  strictBundleManifestSchema,
+  type StrictBundleManifest,
+} from './bundle-manifest.js';
 import { createForeignTargetValidator } from './handoff-target.js';
 import type { Runtime } from '../runtime/ports.js';
 
@@ -37,6 +42,17 @@ function syncTree(path: string): void {
 export function retainedBuildRoot(runtime: Runtime, buildSetId: string): string {
   if (!/^[0-9a-f-]{36}$/u.test(buildSetId)) throw new Error('Retained build identity is invalid.');
   return join(dirname(runtime.paths.coral.coordinator.runDir), 'builds', buildSetId);
+}
+
+/** The retained root of `buildSetId` when its own manifest names that build and its bundles still validate. */
+export function validatedRetainedBuildRoot(runtime: Runtime, buildSetId: string): string | null {
+  const root = retainedBuildRoot(runtime, buildSetId);
+  const bundleDir = join(root, 'bridge');
+  const adjacent = readBoundedAdjacentManifest(bundleDir);
+  if (!adjacent.ok) return null;
+  const manifest = strictBundleManifestSchema.safeParse(adjacent.value);
+  if (!manifest.success || manifest.data.buildSetId !== buildSetId) return null;
+  return createForeignTargetValidator()(bundleDir, manifest.data).kind === 'validated' ? root : null;
 }
 
 /**

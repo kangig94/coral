@@ -5,6 +5,7 @@ import type { MonotonicClock } from '../infra/monotonic-clock.js';
 import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from '../infra/process-containment.js';
 import { createBootstrapNonceCredential, type ReaperBootstrapCapsule } from './bootstrap-capsule.js';
 import {
+  activeControlHolder,
   controlTenancyHolderOf,
   createControlEndpoint,
   sameControlTenancyHolder,
@@ -21,6 +22,13 @@ import {
   type EnforcementScheduler,
 } from './enforcement.js';
 import {
+  controllerBuildOf,
+  createControllerBuildLedger,
+  requireInstallerBuild,
+  sameControllerBuild,
+  type ControllerBuild,
+} from './controller-succession.js';
+import {
   createGrantRegistry,
   grantBindingFromCapsule,
   guardianReaperHandoffInstallParamsSchema,
@@ -36,7 +44,6 @@ import {
 import {
   PROXY_CONTROL_RPC_TIMEOUT_MS,
   ProxyControlProtocolError,
-  assertNamedCoordinatorBuild,
   assertNamedOrphanTimeout,
   assertNamedProxyIdentity,
   assertNamedTeardownReserve,
@@ -157,9 +164,11 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
   let recordedRedemption: Readonly<{
     grantId: string;
     successor: ControlTenancyHolder;
+    successorBuild: ControllerBuild;
     operations: readonly OperationIdentity[];
     redemptionReceipt: string;
   }> | null = null;
+  const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
 
   const requireEnforcer = (): ArmedEnforcer => {
     if (enforcer === null) {
@@ -220,8 +229,10 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           }
           assertNamedGuardianCapsuleIdentity(request.guardian, capsule);
           assertNamedProxyIdentity('reaper', request.proxy, capsule);
+          const holder = controlTenancyHolderOf(request.coordinator);
+          controllers.admit(holder, controllerBuildOf(request.coordinator));
           return {
-            holder: controlTenancyHolderOf(request.coordinator),
+            holder,
             fields: { reaper: identityOf(recorded) },
           };
         },
@@ -321,9 +332,13 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
       'reaper.handoff-install.v1',
       {
         authority: 'active',
-        handle: (params) => {
+        handle: (params, authorization) => {
           const request = guardianReaperHandoffInstallParamsSchema.parse(params);
-          assertNamedCoordinatorBuild(request.successor, capsule);
+          const controllerBuild = requireInstallerBuild(
+            controllers,
+            activeControlHolder(authorization),
+            controllerBuildOf(request.successor),
+          );
           assertNamedTeardownReserve(request.teardownReserveMs, PROXY_TEARDOWN_RESERVE_MS);
           assertNamedOrphanTimeout(request.orphanTimeoutMs, deadlines.orphanTimeoutMs());
           const result = grants.install({
@@ -332,6 +347,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
             ...setIdentity,
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
+            controllerBuild,
           });
           return result;
         },
@@ -347,10 +363,12 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         handle: (params) => {
           const request = reaperRecordRedemptionParamsSchema.parse(params);
           const successor = controlTenancyHolderOf(request.successor);
+          const successorBuild = controllerBuildOf(request.successor);
           if (recordedRedemption !== null) {
             const different =
               recordedRedemption.grantId !== request.grantId ||
               !sameControlTenancyHolder(recordedRedemption.successor, successor) ||
+              !sameControllerBuild(recordedRedemption.successorBuild, successorBuild) ||
               recordedRedemption.redemptionReceipt !== request.redemptionReceipt ||
               !sameOperations(recordedRedemption.operations, request.operations);
             if (different && deadlines.controlIsLive()) {
@@ -366,9 +384,18 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
           recordedRedemption = {
             grantId: request.grantId,
             successor,
+            successorBuild,
             operations: request.operations,
             redemptionReceipt: request.redemptionReceipt,
           };
+          // The redeemer's reinstall replaces the grant only where a redemption is recorded; a forward naming a
+          // grant this reaper never installed still authorizes rotation, which is what it exists for.
+          void grants.recordForwardedRedemption({
+            grantId: request.grantId,
+            redemptionReceipt: request.redemptionReceipt,
+            successor,
+            successorBuild,
+          });
           return reaperRecordRedemptionResultSchema.parse({ state: 'redemption-recorded' });
         },
       },
@@ -411,12 +438,14 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
         authority: 'establishes-control',
         handle: (params) => {
           const request = reaperHandoffRotateParamsSchema.parse(params);
-          assertNamedCoordinatorBuild(request.successor, capsule);
           const successor = controlTenancyHolderOf(request.successor);
+          // The build was authorized by the guardian, which alone verifies the grant; this reaper only
+          // requires the rotating coordinator to be the one the guardian's forward named, build included.
           if (
             recordedRedemption === null ||
             recordedRedemption.grantId !== request.grantId ||
             !sameControlTenancyHolder(recordedRedemption.successor, successor) ||
+            !sameControllerBuild(recordedRedemption.successorBuild, controllerBuildOf(request.successor)) ||
             recordedRedemption.redemptionReceipt !== request.guardianRedemptionReceipt
           ) {
             throw new ProxyControlProtocolError(
@@ -424,6 +453,7 @@ export function createReaper<Scope extends symbol>(options: ReaperOptions<Scope>
               'Rotation did not present a redemption this reaper recorded.',
             );
           }
+          controllers.admit(successor, recordedRedemption.successorBuild);
           return {
             holder: successor,
             fields: reaperHandoffRotateFieldsSchema.parse({

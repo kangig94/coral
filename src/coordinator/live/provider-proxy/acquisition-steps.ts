@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import { z } from 'zod';
 import { bindCustodyIdentity, recordCustodyIntent, type CustodyIntent } from '../../../store/custody-ledger.js';
 
@@ -32,7 +34,7 @@ import {
 } from '../../../provider-proxy/role-spawn.js';
 import {
   currentHandoffCapsulePath,
-  handoffCapsuleV3Schema,
+  handoffCapsuleV4Schema,
   readHandoffCapsuleFile,
 } from '../../../provider-proxy/handoff-capsule.js';
 import { DETACHED_CONTAINMENT_KIND } from '../../../provider-proxy/guardian.js';
@@ -104,6 +106,12 @@ export const PROXY_OPERATION_ACTIVATION_RPC_TIMEOUT_MS =
 export type ProviderProxyAcquisitionStepsOptions = Readonly<{
   runtime: Runtime;
   pluginRoot: string;
+  /**
+   * This build's retained whole plugin root, when it validates. Roles spawned from it keep their own bundle
+   * and assets after the installed plugin directory is replaced, which a host that outlives its coordinator
+   * across an upgrade depends on.
+   */
+  retainedHostRoot?: string | null;
   /** This coordinator's own identity — the set's `buildSetId`/`generation`/`flavor` are its own, since every
    *  role dispatches from the exact same backend artifact this coordinator is running. */
   coordinatorIdentity: CoordinatorIdentity;
@@ -312,7 +320,12 @@ export function createProviderProxyAcquisitionSteps(
       }
       const spawned = await requireSpawnedRole(
         spawnRoleProcess('guardian', setMinted.guardianCapsulePath, spawnPorts, {
-          pluginRoot: options.pluginRoot,
+          ...(options.retainedHostRoot === undefined || options.retainedHostRoot === null
+            ? { pluginRoot: options.pluginRoot }
+            : {
+                pluginRoot: options.retainedHostRoot,
+                currentEntrypoint: join(options.retainedHostRoot, 'bridge', 'coral-backend.cjs'),
+              }),
           detached: true,
           envAdditions: {
             [BUILD_FLAVOR_ENV_KEY]: flavor,
@@ -594,7 +607,7 @@ export function createProviderProxyAcquisitionSteps(
         if (installation.kind !== 'installed') {
           throw new Error(`provider_proxy_recovery_credential_${installation.kind}`);
         }
-        const capsuleBinding = handoffCapsuleV3Schema.parse(
+        const capsuleBinding = handoffCapsuleV4Schema.parse(
           readHandoffCapsuleFile(handoffCapsulePath, {
             storage: runtime.storage,
             uid: process.getuid?.() ?? 0,

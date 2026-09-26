@@ -1125,8 +1125,12 @@ export class ProviderOperationReconciler
     return created;
   }
 
+  // A reclaimed writer registers a new admission for the same database; until this reconciler is stopped, it
+  // must mutate through whichever admission is registered now, never one a succession park already closed.
   #admission(): ProviderOperationMutationAdmission {
-    this.#mutationAdmission ??= providerOperationMutationAdmission(this.#deps.getProgressStore().getDb());
+    if (this.#mutationAdmission === null || !this.#admissionClosed) {
+      this.#mutationAdmission = providerOperationMutationAdmission(this.#deps.getProgressStore().getDb());
+    }
     return this.#mutationAdmission;
   }
 

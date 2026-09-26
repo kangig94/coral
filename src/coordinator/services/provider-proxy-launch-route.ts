@@ -16,17 +16,20 @@ import { providerOperationPrepareAttempt, providerOperationSetLocator } from './
 import type { ProviderOperationReconciler } from './provider-operation-reconciler.js';
 
 export function createAppServerProxyRoute(deps: {
-  readonly hostManager: Pick<ProviderHostManager, 'routeAppServerOperation'>;
+  readonly hostManager: Pick<ProviderHostManager, 'routeAppServerOperation' | 'awaitAppServerOperationRoute'>;
   readonly reconciler: Pick<ProviderOperationReconciler, 'begin'>;
   readonly now: () => number;
 }): AppServerProxyRoute {
   return {
     async activate(request: AppServerProxyRouteRequest, signal: AbortSignal) {
-      const authority = deps.hostManager.routeAppServerOperation(request.hostSpec);
+      const authority =
+        deps.hostManager.routeAppServerOperation(request.hostSpec) ??
+        (await deps.hostManager.awaitAppServerOperationRoute?.(request.hostSpec, signal)) ??
+        null;
       if (authority === null) {
         return {
           kind: 'local-authorized',
-          reason: 'No live proxy set was selected before any journal row or remote mutation existed.',
+          reason: 'No proxy set could be established before any journal row or remote mutation existed.',
         };
       }
       if (!isProviderProxyOperationAuthority(authority)) {

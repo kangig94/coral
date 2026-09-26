@@ -7,6 +7,7 @@ import type { ProcessContainmentEnvironment, RecordedContainmentIdentity } from 
 import { createBootstrapNonceCredential, type GuardianBootstrapCapsule } from './bootstrap-capsule.js';
 import type { ControlClient, ControlExchange } from './control-client.js';
 import {
+  activeControlHolder,
   controlTenancyHolderOf,
   createControlEndpoint,
   type ControlEndpoint,
@@ -21,6 +22,14 @@ import {
   type EnforcementScheduler,
 } from './enforcement.js';
 import { mintExplicitTeardownAuthorization, type ControlHolderAuthority } from './holder-lifecycle.js';
+import {
+  assertCompatibleControlGeneration,
+  controllerBuildOf,
+  controllerTransferParamsSchema,
+  controllerTransferResultSchema,
+  createControllerBuildLedger,
+  requireInstallerBuild,
+} from './controller-succession.js';
 import {
   createGrantRegistry,
   grantBindingFromCapsule,
@@ -333,6 +342,7 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
   const grants = createGrantRegistry(mintReceipt, {
     mayReplaceRedemption: () => !deadlines.controlIsLive(),
   });
+  const controllers = createControllerBuildLedger(controllerBuildOf(capsule));
   const staged = new Map<string, StagedMembership>();
   const activating = new Map<string, Promise<z.infer<typeof guardianOperationActivateResultSchema>>>();
 
@@ -395,11 +405,14 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             throw new ProxyControlProtocolError('invalid_state', 'This guardian holds no containment yet.');
           }
           bootstrapNonce.spend(request.bootstrapNonce);
+          // Bootstrap control belongs to the host's own build: only its spawner holds the nonce.
           assertNamedCoordinatorBuild(request.coordinator, capsule);
+          const holder = controlTenancyHolderOf(request.coordinator);
+          controllers.admit(holder, controllerBuildOf(request.coordinator));
           // The result names the proxy this guardian was issued for, so a coordinator that opened against
           // the wrong set learns it from the response rather than from a later staging failure.
           return {
-            holder: controlTenancyHolderOf(request.coordinator),
+            holder,
             fields: { guardian: identity, proxy: request.proxy },
           };
         },
@@ -409,9 +422,13 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
       'guardian.handoff-install.v1',
       {
         authority: 'active',
-        handle: (params) => {
+        handle: (params, authorization) => {
           const request = guardianReaperHandoffInstallParamsSchema.parse(params);
-          assertNamedCoordinatorBuild(request.successor, capsule);
+          const controllerBuild = requireInstallerBuild(
+            controllers,
+            activeControlHolder(authorization),
+            controllerBuildOf(request.successor),
+          );
           assertNamedTeardownReserve(request.teardownReserveMs, PROXY_TEARDOWN_RESERVE_MS);
           assertNamedOrphanTimeout(request.orphanTimeoutMs, deadlines.orphanTimeoutMs());
           const result = grants.install({
@@ -420,8 +437,20 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
             ...setIdentity,
             operations: request.operations,
             orphanTimeoutMs: request.orphanTimeoutMs,
+            controllerBuild,
           });
           return result;
+        },
+      },
+    ],
+    [
+      'guardian.controller-transfer.v1',
+      {
+        authority: 'active',
+        handle: (params) => {
+          const request = controllerTransferParamsSchema.parse(params);
+          assertCompatibleControlGeneration(request.controlGeneration);
+          return controllerTransferResultSchema.parse(grants.authorizeTransfer(request));
         },
       },
     ],
@@ -434,13 +463,15 @@ export function createGuardian<Scope extends symbol>(options: GuardianOptions<Sc
         authority: 'establishes-control',
         handle: async (params) => {
           const request = handoffRedeemParamsSchema.parse(params);
-          assertNamedCoordinatorBuild(request.successor, capsule);
+          const holder = controlTenancyHolderOf(request.successor);
           const redemption = grants.redeem({
             grantId: request.grantId,
             secret: request.secret,
-            successor: controlTenancyHolderOf(request.successor),
+            successor: holder,
+            successorBuild: controllerBuildOf(request.successor),
             binding: setIdentity,
           });
+          controllers.admit(holder, redemption.successorBuild);
           // The guardian is the sole linearization point: it is the only party that ever sees the plaintext
           // secret, so it is the only party that can tell a genuine redemption from a replay. Pushing the
           // receipt over the paired channel — the same shape `register-provider-root.v1`/`record-containment.v1`

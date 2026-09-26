@@ -797,6 +797,8 @@ export type StartupRecoveryInputs = {
    * sets this to `'handoff'`.
    */
   readonly interruptedAppServerReason?: InterruptedAppServerReason;
+  /** Jobs whose execution host an accepted receipt handed over; they continue in that host, never finalize. */
+  readonly transferredJobIds?: ReadonlySet<string>;
 };
 
 export type RunStartupRecoveryFn = (inputs: StartupRecoveryInputs) => Promise<RecoveredDiscussResume[]>;
@@ -896,6 +898,8 @@ export type LifecycleDeps = {
     epoch: ResolvedStoreEpoch,
     committedSuccessorInstanceId: string | null,
   ) => readonly string[];
+  /** The jobs an accepted preparation hands over together with the execution host that runs them. */
+  readonly transferredHostJobIds?: (preparation: SuccessionPreparation) => readonly string[];
   readonly adoptSuccessionReceipts?: (
     preparation: SuccessionPreparation,
     acceptedJobIds: readonly string[],
@@ -1505,6 +1509,11 @@ async function runLifecycleStartup({
       signal,
       recoverPersistedDiscussFn,
       interruptedAppServerReason: bound?.acquiredViaHandoff ? 'handoff' : 'restart',
+      transferredJobIds: new Set(
+        acceptedSuccessionPreparation === null
+          ? []
+          : (deps.transferredHostJobIds?.(acceptedSuccessionPreparation) ?? []),
+      ),
     };
     // A startup that bound no socket owes recovery only for work it was handed: a succession child that
     // inherited its listeners owns exactly the obligations its accepted receipts transferred, and nothing else.

@@ -51,6 +51,11 @@ import { decodeDurableCliTransfer, verifyDurableCliRecoveryGrant } from '../serv
 import type { IpcListener } from '../../transport/ipc/server.js';
 import type { SuccessionAttemptChild } from './attempt-child.js';
 import type { SuccessionInterposition } from './interposition.js';
+import {
+  PROVIDER_OPERATIONS_OWNER,
+  PROVIDER_PROXY_SETS_OWNER,
+  providerHostRecoveryGrantVerifies,
+} from './provider-host-transfer.js';
 import { readSuccessionCapabilities, successionPreparationSchema, type SuccessionPreparation } from './protocol.js';
 import { observeRetirementDisposition, type RetirementDisposition } from './retirement-disposition.js';
 
@@ -226,7 +231,12 @@ function runsCurrentBuild(target: ValidatedHandoffTarget, currentBuild: StrictBu
   return build.buildSetId === currentBuild.buildSetId && build.bundleHash === currentBuild.bundleHash;
 }
 
-function recoveryGrantsVerify(runtime: Runtime, attemptId: string, preparation: SuccessionPreparation): boolean {
+function recoveryGrantsVerify(
+  runtime: Runtime,
+  flavor: 'prod' | 'dev',
+  attemptId: string,
+  preparation: SuccessionPreparation,
+): boolean {
   const oldEpoch = observeResolvedStoreEpoch(runtime, preparation.epochKey);
   return (
     oldEpoch !== undefined &&
@@ -246,6 +256,9 @@ function recoveryGrantsVerify(runtime: Runtime, attemptId: string, preparation: 
             transfer,
           )
         );
+      }
+      if (receipt.owner === PROVIDER_PROXY_SETS_OWNER || receipt.owner === PROVIDER_OPERATIONS_OWNER) {
+        return providerHostRecoveryGrantVerifies(runtime, flavor, preparation, receipt);
       }
       if (receipt.owner === 'child-principals') {
         const transfer = decodeChildPrincipalTransfer(receipt.payload);
@@ -351,7 +364,7 @@ export async function resolveIncompleteSuccessionAtStartup(
   let recovery: DeadAttemptRecovery | null = null;
   let preferredEpochKey: string | null = null;
   if (preparation.data.receipts.length > 0) {
-    if (!recoveryGrantsVerify(runtime, attemptId, preparation.data)) {
+    if (!recoveryGrantsVerify(runtime, options.currentBuild.flavor, attemptId, preparation.data)) {
       return holdOrAbandon({ kind: 'recovery-grants-unverified', attemptId });
     }
     const recoveryTarget = options.prepareRecoveryGrantHandoff?.(

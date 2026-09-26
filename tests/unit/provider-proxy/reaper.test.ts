@@ -217,3 +217,41 @@ describe('reaper redemption successor identity', () => {
     ).toBe('grant_invalid');
   });
 });
+
+describe('reaper rotation across a controller build change', () => {
+  it('rotates to a successor of another build exactly as the guardian forwarded it', () => {
+    const harness = createHarness();
+    const method = (name: string): ControlMethod => {
+      const found = (endpointHarness.options as ControlEndpointOptions).role.methods.get(name);
+      if (found === undefined) throw new Error(`Reaper method ${name} was not registered.`);
+      return found;
+    };
+    const grantId = randomUUID();
+    const redemptionReceipt = 'guardian-redemption';
+    const successor = { ...harness.successor, buildSetId: randomUUID() };
+    const containment = method('reaper.record-containment.v1');
+    if (containment.authority !== 'pairing') throw new Error('record-containment must require pairing authority');
+    containment.handle({
+      pid: 6_001,
+      incarnation: testIncarnation('proxy'),
+      processGroupId: 6_001,
+      containmentKind: 'posix-group',
+    });
+    harness.recordRedemption({ grantId, successor, operations: [], redemptionReceipt });
+
+    // The guardian alone verified the grant for this build; a coordinator claiming a different build than the
+    // one it forwarded is not the redeemer.
+    expect(
+      refusalCode(() =>
+        harness.rotate({
+          grantId,
+          successor: { ...successor, buildSetId: harness.successor.buildSetId },
+          guardianRedemptionReceipt: redemptionReceipt,
+        }),
+      ),
+    ).toBe('grant_invalid');
+    expect(harness.rotate({ grantId, successor, guardianRedemptionReceipt: redemptionReceipt })).toMatchObject({
+      holder: { instanceId: successor.instanceId, pid: successor.pid, incarnation: successor.incarnation },
+    });
+  });
+});

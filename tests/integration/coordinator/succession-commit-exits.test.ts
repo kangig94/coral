@@ -200,6 +200,11 @@ async function harness(
       endSuccessionCommitWindow: () => true,
     },
     childPrincipals: { fenceAuthentication: () => undefined, reclaimAuthentication: () => true },
+    providerHosts: {
+      transfersHosts: () => false,
+      releaseForTransfer: async () => undefined,
+      reclaimTransferred: () => undefined,
+    },
     setLaunchFenceActive: (active) => state.launchFence.push(active),
     waitHandover: { abort: () => undefined, renew: () => undefined },
     liveJobIds: () => [],

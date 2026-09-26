@@ -30,4 +30,13 @@ The minimum supported predecessor remains **v0.10.0**. All fourteen tags remain 
 | Rollback selection with a valid or invalid newer root | `version-pairing-matrix.test.ts`; v0.10.13 hands back to a still-valid newer root after its coordinator exits, then takes rollback in a separate isolated home only after that root is removed. |
 | Retained addresses across shipped post-ready sweeps | `protected-epoch-shipped-sweep.test.ts`, v0.10.10–v0.10.13, the tags containing `reapPostReadyStoreEpochEntries`; v0.10.0 separately covers the legacy `store.db` startup and reset path. |
 
-This is the Phases 1–5 release matrix. The Phase 6 release must add the shipped first-release build as a predecessor, pair it with the Phase 6 build, and rerun the applicable rows with AC14 host transfer.
+## Phase 6 pairing window
+
+The first-release build is built from its pinned commit (`FIRST_RELEASE_REF` in `helpers.ts`) rather than from a tag, so these rows need the full history that CI already fetches. Hosts that predate controller succession answer the transfer methods with `method_not_found`; the pairings below prove that such a host stays with its incumbent and that only a compatible host moves.
+
+| Pairing or boundary | Real-process coverage |
+| --- | --- |
+| Phase 6 contender → idle first-release incumbent | `version-pairing-matrix.test.ts`; the first-release build is a supported predecessor and the Phase 6 successor serves with a completed intent. |
+| Phase 6 contender → first-release incumbent whose legacy host runs a job | `version-pairing-matrix.test.ts`; succession defers on the provider host owners, the incumbent keeps serving, and the job completes in the same host processes. |
+| Phase 6 contender → v0.10.13 incumbent whose legacy host runs a job | `version-pairing-matrix.test.ts`; the shipped incumbent keeps serving and its host completes the job. |
+| Compatible Phase 6 incumbent → Phase 6 contender with a live host | `provider-host-transfer-process.test.ts`; transfer at once through startup recovery with live output, cancellation through the successor, a lost serving acknowledgment, a successor that dies before serving, and a successor that declares no host control generation. |
